@@ -9103,3 +9103,353 @@ pub fn a_relayed_stop_with_an_unreadable_strand_is_not_acknowledged_test() {
   assert gateway.stop_relayed(harness.hub) == Error(Nil)
   let assert Ok(Nil) = api.close(harness.runtime)
 }
+
+// --- the pull follows what changed, not how many strands exist -------------
+
+// Counts the register reads the hub's own store performs, by sending one
+// message to a counter per read. The hub reads through `options.runtime`, so
+// wrapping that store sees exactly what a pull costs.
+type ReadCount {
+  ReadHappened
+  ReadTotal(Subject(Int))
+}
+
+fn read_counter() -> Subject(ReadCount) {
+  let assert Ok(started) =
+    actor.new(0)
+    |> actor.on_message(fn(count, message) {
+      case message {
+        ReadHappened -> actor.continue(count + 1)
+        ReadTotal(reply) -> {
+          process.send(reply, count)
+          actor.continue(count)
+        }
+      }
+    })
+    |> actor.start
+  started.data
+}
+
+fn read_total(counter: Subject(ReadCount)) -> Int {
+  process.call(counter, waiting: 5000, sending: ReadTotal)
+}
+
+// A network hub over a session holding `strands` idle strands besides main,
+// whose store counts register reads. Returns the reads one settled turn on
+// main costs after the seeding has fallen behind the high-water.
+fn reads_for_one_turn(strands: Int) -> Int {
+  let counter = read_counter()
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 640)).0
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      Some(id),
+      SettlingProvider,
+      None,
+      None,
+      fn(options) {
+        let backend = options.runtime.session.store
+        let counted =
+          storage.Storage(
+            ..backend,
+            get_register: fn(handle, ns, key) {
+              process.send(counter, ReadHappened)
+              backend.get_register(handle, ns, key)
+            },
+            list_registers: fn(handle, ns, prefix) {
+              process.send(counter, ReadHappened)
+              backend.list_registers(handle, ns, prefix)
+            },
+          )
+        gateway.Options(
+          ..options,
+          runtime: api.Runtime(
+            ..options.runtime,
+            session: session.Session(..options.runtime.session, store: counted),
+          ),
+        )
+      },
+    )
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    )
+  let #(socket, _, _) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      access.Owner,
+      process.self(),
+    )
+  let assert protocol.SnapshotBegin(header) =
+    queued_request(
+      socket,
+      1,
+      protocol.Subscribe(
+        ids.session_id_to_string(api.session_id(harness.runtime)),
+        None,
+      ),
+    )
+    as "the fixture subscribes with a credited cut"
+  let assert json.String(snapshot_id) = queue_field(header, "snapshot_id")
+    as "the cut names its continuation"
+  finish_queue_capture(socket, snapshot_id, 0, 1000, 100)
+  seed_idle_strands(harness.runtime, configuration, strands)
+
+  // One turn lets the silent seeding writes fall behind the high-water, and
+  // the second is the one measured.
+  let _warm = queued_request(socket, 2, protocol.Prompt("main", "warm"))
+  settle_reads(counter)
+  let before = read_total(counter)
+  let _turn = queued_request(socket, 3, protocol.Prompt("main", "measured"))
+  settle_reads(counter)
+  read_total(counter) - before
+}
+
+fn seed_idle_strands(
+  runtime: api.Runtime,
+  configuration: machine_strand.StrandConfiguration,
+  count: Int,
+) -> Nil {
+  case count > 0 {
+    False -> Nil
+    True -> {
+      let assert Ok(Nil) =
+        api.create_idle_strand(
+          runtime,
+          "idle-" <> int.to_string(count),
+          configuration,
+          None,
+        )
+      seed_idle_strands(runtime, configuration, count - 1)
+    }
+  }
+}
+
+// Waits until the counter has stopped moving for a quiet interval.
+fn settle_reads(counter: Subject(ReadCount)) -> Nil {
+  let first = read_total(counter)
+  process.sleep(200)
+  case read_total(counter) == first {
+    True -> Nil
+    False -> settle_reads(counter)
+  }
+}
+
+// Before the pull was bounded by what changed, one turn read the state and
+// result registers of every strand and listed every configuration, so the
+// count grew in step with the strands: 700 cells listed and 1,200 reads at a
+// hundred strands. The hub now asks storage which registers moved, and a
+// turn costs the same reads whether the session holds ten strands or two
+// hundred.
+pub fn a_turn_costs_the_same_reads_whatever_the_strand_count_test() {
+  let few = reads_for_one_turn(10)
+  let many = reads_for_one_turn(200)
+  assert few > 0 as "a turn reads registers"
+  assert many <= few + 4
+    as "the pull's reads must not follow the number of strands"
+}
+
+// --- a backlog past the pull window keeps its attribution ------------------
+
+// A user entry whose text names the strand it was written for.
+fn backlog_entry(
+  id: ids.EntryId,
+  parent: Option(ids.EntryId),
+  text: String,
+) -> core_entry.Entry {
+  core_entry.MessageEntry(
+    id:,
+    parent:,
+    seq: 0,
+    ts: 0,
+    message: message.UserMessage(
+      content: [message.UserText(text:, text_signature: None)],
+      timestamp: 0,
+      origin: None,
+    ),
+    terminate: False,
+  )
+}
+
+// A usage row on `entry` whose `input` count identifies it in the test.
+fn backlog_usage(
+  id: ids.UsageId,
+  entry: ids.EntryId,
+  input: Int,
+) -> core_entry.UsageRow {
+  core_entry.UsageRow(
+    id:,
+    seq: 0,
+    entry_id: Some(entry),
+    adjustment: False,
+    usage: message.Usage(
+      input:,
+      output: 1,
+      cache_read: 0,
+      cache_write: 0,
+      cache_write_1h: None,
+      reasoning: None,
+      total_tokens: input + 1,
+      cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+      evidence: usage_evidence.priced_api(),
+    ),
+    details: None,
+  )
+}
+
+// The writes of two strands that grow side by side, `pairs` entries each, a
+// usage row on each strand's second entry, and then both leaves. Every write
+// has its own seq, so the leaves land past any window the pull reads. The
+// accumulator holds the writes newest first.
+fn backlog_writes(
+  pairs: Int,
+  at: Int,
+  generator: ids.Generator,
+  steady_tip: Option(ids.EntryId),
+  late_tip: Option(ids.EntryId),
+  writes: List(tx.Write),
+) -> List(tx.Write) {
+  case at > pairs {
+    True ->
+      list.reverse([
+        tx.SetRegister(
+          ns: register.StrandLeaf,
+          key: "scale-late",
+          value: register.leaf_value(late_tip),
+        ),
+        tx.SetRegister(
+          ns: register.StrandLeaf,
+          key: "scale-steady",
+          value: register.leaf_value(steady_tip),
+        ),
+        ..writes
+      ])
+
+    False -> {
+      let #(steady_id, generator) = ids.mint_entry(generator)
+      let #(late_id, generator) = ids.mint_entry(generator)
+      let #(steady_usage, generator) = ids.mint_usage(generator)
+      let #(late_usage, generator) = ids.mint_usage(generator)
+      let entries = [
+        tx.InsertEntry(backlog_entry(late_id, late_tip, "late")),
+        tx.InsertEntry(backlog_entry(steady_id, steady_tip, "steady")),
+      ]
+      let usage = case at == 2 {
+        True -> [
+          tx.InsertUsage(backlog_usage(late_usage, late_id, 22)),
+          tx.InsertUsage(backlog_usage(steady_usage, steady_id, 11)),
+        ]
+        False -> []
+      }
+
+      backlog_writes(
+        pairs,
+        at + 1,
+        generator,
+        Some(steady_id),
+        Some(late_id),
+        list.flatten([usage, entries, writes]),
+      )
+    }
+  }
+}
+
+// What a hub made of the backlog: the strand each usage observation named,
+// keyed by the `input` count that identifies its row.
+fn observed_usage(inbox: Subject(String)) -> List(#(Int, String)) {
+  case process.receive(inbox, within: 1500) {
+    Error(Nil) -> []
+
+    Ok(frame) -> {
+      let assert Ok(envelope) = protocol.decode_event(frame)
+        as "every emitted frame must decode"
+      let rest = observed_usage(inbox)
+
+      case envelope.event {
+        protocol.UsageObservationEvent(strand:, usage:, ..) -> [
+          #(usage.input, strand),
+          ..rest
+        ]
+
+        _ -> rest
+      }
+    }
+  }
+}
+
+// A pull whose backlog outruns the window of 1,000 seqs reads every strand.
+// The entries a window can see end at its edge, but a strand's leaf is read
+// live, so a strand still appending past the edge has a leaf the scan never
+// reaches. Its entries inside the window then claim no branch, fall to their
+// parents, and the usage rows on them lose their observation for good: the
+// high-water has passed them by the time anything could correct it. The
+// backlog here is one commit, so the hub cannot pull between its halves. It
+// holds a strand born inside it and one that keeps appending past the window.
+pub fn a_backlog_past_the_window_keeps_its_attribution_test() {
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 641)).0
+  let harness = reserved_fixture(id)
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    )
+  let assert Ok(Nil) =
+    api.create_idle_strand(harness.runtime, "scale-steady", configuration, None)
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  process.sleep(300)
+
+  // The steady strand's state register is written early, inside the window,
+  // and the late strand is born there. Neither leaf moves until the end.
+  let idle =
+    register.value(
+      codec.encode_strand_state(
+        machine_strand.StrandState(
+          current_operation: None,
+          pending_next_run: [],
+        ),
+      ),
+    )
+  let opening = [
+    tx.SetRegister(ns: register.StrandState, key: "scale-steady", value: idle),
+    tx.SetRegister(
+      ns: register.StrandConfig,
+      key: "scale-late",
+      value: register.value(codec.encode_configuration(configuration)),
+    ),
+    tx.SetRegister(ns: register.StrandState, key: "scale-late", value: idle),
+  ]
+  let writes =
+    backlog_writes(
+      600,
+      1,
+      ids.generator(clock.fixed(1_700_000_000_003), 642),
+      None,
+      None,
+      list.reverse(opening),
+    )
+  let assert Ok(_commit) =
+    writer.commit(harness.runtime.tree.writer, tx.Tx(writes, []))
+    as "the backlog commits as one transaction"
+
+  let observed = observed_usage(inbox)
+  assert list.sort(observed, fn(a, b) { int.compare(a.0, b.0) })
+    == [#(11, "scale-steady"), #(22, "scale-late")]
+    as "each row is observed under the strand whose branch holds its entry"
+  let assert Ok(Nil) = api.close(harness.runtime)
+}

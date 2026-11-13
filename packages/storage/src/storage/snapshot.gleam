@@ -129,6 +129,19 @@ pub type Predicate {
 
   /// Select a field's exact string value, after validating its shape.
   StringFieldEquals(field: String, expected: String)
+
+  /// Select only cells written at a sequence above `after` and at or below
+  /// `through`.
+  ///
+  /// This is how a reader that remembers a high-water asks what changed since
+  /// without reading every cell in the namespace: the cost of the answer is the
+  /// number of cells that changed, not the number that exist. Every write has
+  /// its own sequence, so a window of `n` sequences holds at most `n` cells,
+  /// and a reader that keeps `n` under the metadata cell limit cannot be
+  /// refused for a burst of changes. The backend applies the window at the
+  /// source, because a payload carries no sequence, so `matches` has nothing
+  /// to test and admits every payload.
+  SeqBetween(after: Int, through: Int)
 }
 
 /// One nullable string field names an exact cell in another namespace.
@@ -300,7 +313,7 @@ pub fn validate(plan: Plan) -> Result(Nil, Error) {
             string.byte_size(prefix) + string.byte_size(after) + 65,
           )
         }
-        Selection(_, _, All) -> Ok(Nil)
+        Selection(_, _, All) | Selection(_, _, SeqBetween(..)) -> Ok(Nil)
         Selection(_, _, StringFieldEquals(field, _)) -> validate_field(field)
       }
     }),
@@ -438,7 +451,9 @@ pub fn matches(
 ) -> Result(Bool, Error) {
   // Evaluate whether the payload satisfies the predicate condition.
   case predicate {
-    All -> Ok(True)
+    // A sequence is not part of the payload, so the backend has already
+    // applied `SeqBetween` to the header it selected.
+    All | SeqBetween(..) -> Ok(True)
     StringFieldEquals(field, expected) -> {
       use value <- result.try(field_value(payload, field))
 

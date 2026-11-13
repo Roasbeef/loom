@@ -570,6 +570,10 @@ pub opaque type Message {
   FromClient(connection: Int, text: String)
   CommitHint
   BusHint(published: bus.Published)
+
+  /// The pull that every hint received since it was queued is waiting on.
+  /// Only `hinted` sends it, and one is queued at a time.
+  PullDue
   ProviderDelta(operation: OpId, generation: String, delta: stream.Delta)
   ProviderEnded(operation: OpId, generation: String)
 
@@ -611,6 +615,16 @@ type State {
     // a slot.
     captures: Dict(Int, PendingCapture),
     next_capture: Int,
+    // Whether a `PullDue` is already in this mailbox. A hint that finds one
+    // queued has nothing to add, because that pull reads everything above the
+    // high-water and so covers the commit the hint announced.
+    pull_hint: PullHint,
+    // The greatest seq below which a pull has inspected every strand register
+    // change. It trails or equals the high-water only in that a strand whose
+    // registers changed silently (a leaf move, a queue edit) holds the
+    // high-water back while the cursor passes it, so the next pull does not
+    // look at that strand again.
+    register_cursor: Int,
     // Decisions sent to another orchestrator and not yet answered, by number.
     // The call is a network round trip, so it runs in a weft run that reports
     // back, as a capture does, and this mailbox never waits for it.
@@ -1481,6 +1495,8 @@ fn start_with_delivery(
         observations: dict.new(),
         captures: dict.new(),
         next_capture: 1,
+        pull_hint: NoPullQueued,
+        register_cursor: 0,
         resolves: dict.new(),
         next_resolve: 1,
         spawner: options.spawner,
@@ -2497,7 +2513,9 @@ fn dispatch_message(state: State, message: Message) -> State {
         HostOnly -> dispatch(revalidate(state, connection), connection, text)
         Network -> remove_connection(state, connection)
       }
-    CommitHint -> pull_and_broadcast(revalidate_all(state))
+    CommitHint -> hinted(state)
+    PullDue ->
+      pull_and_broadcast(revalidate_all(State(..state, pull_hint: NoPullQueued)))
 
     // The pull that follows decides: an idle session reopens now, and a busy
     // one when the pull that sees its last run end comes round.
@@ -2587,7 +2605,7 @@ fn dispatch_message(state: State, message: Message) -> State {
       broadcast_remote_children(state)
       state
     }
-    BusHint(published: _) -> pull_and_broadcast(revalidate_all(state))
+    BusHint(published: _) -> hinted(state)
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
     // as the frame leaves, and a second check on the same evidence in the
@@ -4049,32 +4067,187 @@ fn notice_strand(state: State, event: WireEvent) -> String {
   }
 }
 
+// The strands a pull inspects, in name order, the strand an entry no branch
+// reaches is attributed to when its parent is unknown too, and the first seq
+// the pull does not own.
+//
+// A prime inspects every strand and owns every seq, which is what a roster
+// built by `full_roster` says. A pull above a high-water inspects the strands
+// whose registers changed above it and the ones with a live operation, so its
+// cost follows what happened rather than how many strands the session has ever
+// had. Such a pull is bounded by the cut that named those strands: it owns the
+// seqs below that cut's `next_seq`, and a commit landing after the cut waits
+// for the next pull, which its own hint has already queued. Reading it now
+// could advance the high-water past a strand this roster left out.
+type Roster {
+  Roster(inspect: List(String), fallback: String, horizon: Option(Int))
+}
+
+// The last seq a roster owns, for the scans of its pull.
+fn through_of(roster: Roster) -> Option(Int) {
+  option.map(roster.horizon, fn(next_seq) { next_seq - 1 })
+}
+
+/// Every strand of the session, owning every seq.
+fn full_roster(strands: List(String)) -> Roster {
+  Roster(inspect: strands, fallback: first_or_main(strands), horizon: None)
+}
+
+fn first_or_main(strands: List(String)) -> String {
+  case strands {
+    [first, ..] -> first
+    [] -> "main"
+  }
+}
+
+// Whether `seq` is inside a roster's horizon. An unbounded roster owns all.
+fn below(horizon: Option(Int), seq: Int) -> Bool {
+  case horizon {
+    Some(next_seq) -> seq < next_seq
+    None -> True
+  }
+}
+
+/// The strands a pull has to look at.
+///
+/// A strand can have something to report only if one of the four registers a
+/// pull reads for it was written above the point both the high-water and the
+/// register cursor have passed, or it has an operation the last pull saw
+/// open, whose phase moves in a register keyed by the operation. One capture
+/// answers which registers moved.
+///
+/// The capture covers a window of `pull_window` seqs. Every write has its own
+/// seq, so a window holds at most that many cells and the metadata cell limit
+/// cannot refuse it however fast the writers ran. A backlog past the window
+/// is not paged: a capped entry scan cannot see the current leaf of a strand
+/// that kept appending beyond it, so the pull would misattribute that
+/// strand's entries for good. It inspects every strand with no horizon
+/// instead, which is the pull as it was and costs what the session's strand
+/// count costs, once per backlog that long. A failed capture does the same.
+fn pull_roster(state: State, hw: Int) -> Roster {
+  // The first strand's configuration rides along because the roster has to
+  // name the fallback strand, which is the least name in the session and
+  // need not be among the strands that changed.
+  let floor = int.max(hw, state.register_cursor)
+  let through = floor + pull_window
+  let plan =
+    snapshot.Plan(
+      [
+        snapshot.KeyPage(register.StrandConfig, "", "", 1),
+        ..list.map(strand_registers, fn(namespace) {
+          snapshot.Selection(
+            namespace,
+            "",
+            snapshot.SeqBetween(after: floor, through:),
+          )
+        })
+      ],
+      [],
+      0,
+    )
+
+  // A capture that fails leaves no way to know what changed, so every strand
+  // is inspected. That is the old pull, taken rarely, and never wrong.
+  case state.runtime.session.snapshot_reader.capture(plan, capture_wait_ms) {
+    Ok(cut) -> changed_roster(state, cut, through)
+    Error(_) -> full_roster(strand_names(state))
+  }
+}
+
+// How many seqs of history one pull's capture covers. It stays under the
+// metadata cell limit of 1024, which a window cannot exceed because a cell
+// holds the seq of one write.
+const pull_window = 1000
+
+/// The roster a cut of changed registers names, with the strands that have a
+/// live operation, in name order.
+fn changed_roster(state: State, cut: snapshot.Cut, through: Int) -> Roster {
+  let names =
+    list.map(cut.cells, fn(cell) { cell.key })
+    |> list.append(dict.keys(state.live))
+    |> list.unique
+    |> list.sort(string.compare)
+
+  // Every strand has a configuration cell, so the least configuration key in
+  // the cut is the least strand name there is.
+  let fallback =
+    list.filter(cut.cells, fn(cell) { cell.namespace == register.StrandConfig })
+    |> list.map(fn(cell) { cell.key })
+    |> list.sort(string.compare)
+    |> first_or_main
+
+  // A cut that ends past the window abandons windowing. Branch claims read
+  // each strand's current leaf, and a strand still appending beyond `through`
+  // has a leaf the capped scan never reaches, so its entries inside the window
+  // would fall to their parents and keep that attribution forever.
+  case through < cut.next_seq - 1 {
+    True -> full_roster(strand_names(state))
+    False -> Roster(inspect: names, fallback:, horizon: Some(cut.next_seq))
+  }
+}
+
+// The registers a strand's events are read from.
+const strand_registers = [
+  register.StrandConfig,
+  register.StrandLeaf,
+  register.StrandState,
+  register.StrandLastResult,
+]
+
+// Whether the hub has queued a pull for the hints it has received.
+type PullHint {
+  NoPullQueued
+  PullQueued
+}
+
+/// Answers a hint that something in the store moved by queuing one pull behind
+/// everything already in the mailbox, unless one is queued.
+///
+/// A pull reads every row above the high-water, and its cost grows with the
+/// session's strands rather than with what changed, so answering each hint with
+/// its own pull made a burst of N commits cost N full pulls. The hub fell
+/// behind its writer by exactly that quadratic. The queued `PullDue` runs after
+/// every hint already waiting in the mailbox, so the whole burst is read once,
+/// and a hint that arrives while it waits is read by it too. No commit is
+/// skipped: the pull is bounded below by the high-water, not by the hint.
+fn hinted(state: State) -> State {
+  // Whether this hint is the first since the last pull decides whether a
+  // `PullDue` is sent: one waiting already covers it.
+  case state.pull_hint {
+    PullQueued -> state
+    NoPullQueued -> {
+      process.send(state.subject, PullDue)
+      State(..state, pull_hint: PullQueued)
+    }
+  }
+}
+
 /// Reads everything above the high-water from storage and returns it as
 /// seq-ordered emits, advancing the high-water. Read-only; never
 /// commits.
 fn pull(state: State) -> #(State, List(Emit)) {
   let hw = state.high_water
-  let strands = strand_names(state)
+  let roster = pull_roster(state, hw)
 
   // 1. New entries reachable from each strand's leaf, plus a
   //    completeness pass for entries no leaf covers (e.g. a branch
   //    summary left behind by a navigation).
   let #(entry_strand, entry_emits) =
-    new_entries(state.runtime.session, strands, hw, state.entry_strand)
+    new_entries(state.runtime.session, roster, hw, state.entry_strand)
 
   // 2. New usage-ledger rows.
-  let usage_emits = new_usage(state, entry_strand, hw)
+  let usage_emits = new_usage(state, entry_strand, hw, through_of(roster))
 
   // 3. Operation transitions and terminal results from the strand
   //    registers.
-  let #(live, register_emits) = register_events(state, strands, hw)
+  let #(live, register_emits) = register_events(state, roster, hw)
 
   // 4. Escalation records.
   let escalation_emits = escalation_events(state, hw)
   let emits =
     [entry_emits, usage_emits, register_emits, escalation_emits]
     |> list.flatten
-    |> list.filter(fn(emit) { emit.seq > hw })
+    |> list.filter(fn(emit) { emit.seq > hw && below(roster.horizon, emit.seq) })
     |> list.sort(fn(a, b) { int.compare(a.seq, b.seq) })
     |> dedupe_by_seq
 
@@ -4086,7 +4259,18 @@ fn pull(state: State) -> #(State, List(Emit)) {
   // (e.g. to a register tail read *after* the scans) would race a
   // commit landing between the reads and silently drop its events.
   let high_water = greatest_seq(emits, hw)
-  #(State(..state, high_water:, live:, entry_strand:), emits)
+
+  // A bounded pull has inspected every register change below its horizon, so
+  // the next one starts there. An unbounded one proves nothing about a cut.
+  let register_cursor = case roster.horizon {
+    Some(next_seq) -> int.max(state.register_cursor, next_seq - 1)
+    None -> state.register_cursor
+  }
+
+  let state =
+    State(..state, high_water:, live:, entry_strand:, register_cursor:)
+
+  #(state, emits)
 }
 
 /// Opens a session's gateway at the end of its history: the same `high_water`,
@@ -4102,11 +4286,11 @@ fn pull(state: State) -> #(State, List(Emit)) {
 /// greatest seq any of them, or the entries, reached, exactly as in `pull`.
 fn prime(state: State) -> State {
   let hw = state.high_water
-  let strands = strand_names(state)
+  let roster = full_roster(strand_names(state))
   let #(entry_strand, entry_top) =
-    learn_entries(state.runtime.session, strands, hw, state.entry_strand)
-  let usage_emits = new_usage(state, entry_strand, hw)
-  let #(live, register_emits) = register_events(state, strands, hw)
+    learn_entries(state.runtime.session, roster, hw, state.entry_strand)
+  let usage_emits = new_usage(state, entry_strand, hw, through_of(roster))
+  let #(live, register_emits) = register_events(state, roster, hw)
   let escalation_emits = escalation_events(state, hw)
   let high_water =
     [usage_emits, register_emits, escalation_emits]
@@ -4144,7 +4328,7 @@ pub type EntryHistory {
 @internal
 pub fn entry_history_by_heads(store: session.Session) -> EntryHistory {
   let #(cache, high_water) =
-    learn_entries(store, strand_names_in(store), 0, dict.new())
+    learn_entries(store, full_roster(strand_names_in(store)), 0, dict.new())
   render_entry_history(cache, high_water)
 }
 
@@ -4158,7 +4342,7 @@ pub fn entry_history_by_heads(store: session.Session) -> EntryHistory {
 @internal
 pub fn entry_history_by_decoding(store: session.Session) -> EntryHistory {
   let #(cache, emits) =
-    new_entries(store, strand_names_in(store), 0, dict.new())
+    new_entries(store, full_roster(strand_names_in(store)), 0, dict.new())
   render_entry_history(cache, greatest_seq(emits, 0))
 }
 
@@ -4235,7 +4419,7 @@ fn strand_names_in(store: session.Session) -> List(String) {
 /// it was for the next pull to try again.
 fn new_entries(
   store: session.Session,
-  strands: List(String),
+  roster: Roster,
   hw: Int,
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), List(Emit)) {
@@ -4244,13 +4428,13 @@ fn new_entries(
     storage.scan_entries(
       store.store,
       storage.entry_scan()
-        |> storage.entry_seq_range(Some(hw + 1), None),
+        |> storage.entry_seq_range(Some(hw + 1), through_of(roster)),
     )
   {
     Error(_) -> #(cache, [])
     Ok(rows) -> {
       let #(cache, attributed) =
-        attribute(store, strands, list.map(rows, storage.entry_head_of), cache)
+        attribute(store, roster, list.map(rows, storage.entry_head_of), cache)
 
       // Every claim names a head derived from these rows a moment ago, so
       // the lookup cannot miss; `filter_map` states that by having no arm
@@ -4279,7 +4463,7 @@ fn new_entries(
 /// claims nothing and leaves the cache and the high-water as they were.
 fn learn_entries(
   store: session.Session,
-  strands: List(String),
+  roster: Roster,
   hw: Int,
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), Int) {
@@ -4293,7 +4477,7 @@ fn learn_entries(
   {
     Error(_) -> #(cache, hw)
     Ok(heads) -> {
-      let #(cache, _attributed) = attribute(store, strands, heads, cache)
+      let #(cache, _attributed) = attribute(store, roster, heads, cache)
       #(
         cache,
         list.fold(heads, hw, fn(highest, head) { int.max(highest, head.seq) }),
@@ -4318,7 +4502,7 @@ type Attributed {
 /// back to the first strand.
 fn attribute(
   store: session.Session,
-  strands: List(String),
+  roster: Roster,
   heads: List(EntryHead),
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), List(Attributed)) {
@@ -4335,19 +4519,14 @@ fn attribute(
   // Per-strand branches above the high-water attribute entries to
   // the strand whose branch they extend.
   let #(cache, claimed) =
-    list.fold(strands, #(cache, []), fn(accumulator, strand) {
+    list.fold(roster.inspect, #(cache, []), fn(accumulator, strand) {
       claim_branch(store, by_id, strand, accumulator)
     })
 
   // Completeness pass: whatever the leaves missed, attributed through
   // the parent chain (fallback: the first strand).
-  let fallback = case strands {
-    [first, ..] -> first
-    [] -> "main"
-  }
-
   list.fold(heads, #(cache, claimed), fn(accumulator, head) {
-    claim_by_parent(accumulator, head, fallback)
+    claim_by_parent(accumulator, head, roster.fallback)
   })
 }
 
@@ -4477,6 +4656,7 @@ fn new_usage(
   state: State,
   entry_strand: Dict(String, EntryAttribution),
   hw: Int,
+  through: Option(Int),
 ) -> List(Emit) {
   let store = state.runtime.session.store
 
@@ -4485,7 +4665,7 @@ fn new_usage(
     storage.scan_usage(
       store,
       storage.usage_scan()
-        |> storage.usage_seq_range(Some(hw + 1), None),
+        |> storage.usage_seq_range(Some(hw + 1), through),
     )
   {
     Error(_) -> []
@@ -4557,11 +4737,11 @@ fn single_live_strand(state: State) -> String {
 /// Discovers newly registered strand lifecycle events since the last high-water mark.
 fn register_events(
   state: State,
-  strands: List(String),
+  roster: Roster,
   hw: Int,
 ) -> #(Dict(String, String), List(Emit)) {
   let store = state.runtime.session
-  list.fold(strands, #(state.live, []), fn(accumulator, strand) {
+  list.fold(roster.inspect, #(state.live, []), fn(accumulator, strand) {
     let #(live, emits) = accumulator
     let #(current, state_seq) = current_operation(store, strand)
     let emits =
