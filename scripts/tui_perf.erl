@@ -206,6 +206,151 @@ run("scale_paint_profile", [CountS], Label) ->
      || {N, C, V} <- lists:sublist(Flat, Top)],
     ok;
 
+%% A long reply of mixed ASCII and glyph text (TUI_PERF_SHAPE=glyphs is set
+%% by this scenario), then what one more event costs on a transcript of
+%% thousands of rows: an idle tick, a pointer move and a key that change
+%% nothing on screen, the next streamed word, and a wheel notch. The reply
+%% is first measured open, as streaming leaves it, and then closed into the
+%% transcript, which is what a long scrollback is. Reductions, words and wall
+%% time per event; the model is the same for every sample of one event.
+run("mixed", [SizeS], Label) ->
+    glyph_shape(),
+    Size = list_to_integer(SizeS),
+    {Inbox, M0} = ready(),
+    M1 = stream_drawn(Inbox, M0, 1, Size),
+    {Rows, _} = tui_agents_dev:render_witness(M1),
+    io:format("MIXED ~s words=~p rows=~p~n", [Label, Size, Rows]),
+    %% The viewport walks toward the newest row over several ticks, and every
+    %% step is a real repaint. Ticks with nothing arriving let it arrive, so
+    %% the events below are measured on a model that is only streaming.
+    M1a = lists:foldl(fun(_, Acc) -> advance(), tui:update(tick, Acc) end,
+                      M1, lists:seq(1, 80)),
+    ChainTicks = 40,
+    {_, ChainR, ChainT} = sample(fun() ->
+        lists:foldl(fun(_, Acc) -> advance(), tui:update(tick, Acc) end,
+                    M1a, lists:seq(1, ChainTicks))
+    end),
+    io:format("RESULT ~s open_idle_chain reductions_per_tick=~.1f "
+              "ns_per_tick=~.1f~n",
+              [Label, ChainR / ChainTicks, ChainT / ChainTicks]),
+    ChainDelta = sample(fun() ->
+        lists:foldl(fun(I, Acc) ->
+                        send(Inbox, delta(Size + I)), advance(),
+                        tui:update(tick, Acc)
+                    end, M1a, lists:seq(1, ChainTicks))
+    end),
+    {_, DR, DT} = ChainDelta,
+    io:format("RESULT ~s open_stream_chain reductions_per_tick=~.1f "
+              "ns_per_tick=~.1f~n",
+              [Label, DR / ChainTicks, DT / ChainTicks]),
+    Nothing = fun() -> ok end,
+    Next = fun() -> send(Inbox, delta(Size + 100)) end,
+    Open = [{"open_tick", Nothing, tick},
+            {"open_move", Nothing, {mouse_move, 5, 5}},
+            {"open_key", Nothing, {key_press, <<"j">>}},
+            {"open_delta", Next, tick},
+            {"open_scroll", Nothing, {mouse_scroll, 2, 3, true}}],
+    mixed_report(Label, M1a, Open),
+    mixed_scroll_chain(Label, "open_scroll_chain", M1a),
+    [send(Inbox, F) || F <- closing()],
+    M2 = settle(M1),
+    Closed = [{"closed_tick", Nothing, tick},
+              {"closed_move", Nothing, {mouse_move, 5, 5}},
+              {"closed_key", Nothing, {key_press, <<"j">>}},
+              {"closed_scroll", Nothing, {mouse_scroll, 2, 3, true}}],
+    mixed_report(Label, M2, Closed),
+    mixed_scroll_chain(Label, "closed_scroll_chain", M2),
+    ok;
+
+%% Where one event's calls go on the same long glyph reply, by function, for
+%% an idle tick, a key or the next streamed word (TUI_PERF_TYPE as for
+%% profile_at), after the reply has been drawn open.
+run("mixed_profile", [SizeS, Kind], Label) ->
+    glyph_shape(),
+    Size = list_to_integer(SizeS),
+    {Inbox, M0} = ready(),
+    M1b = stream_drawn(Inbox, M0, 1, Size),
+    M1 = lists:foldl(fun(_, Acc) -> advance(), tui:update(tick, Acc) end,
+                     M1b, lists:seq(1, 80)),
+    Event = case Kind of
+                "key" -> {key_press, <<"j">>};
+                "scroll" -> {mouse_scroll, 2, 3, true};
+                _ -> tick
+            end,
+    Type = list_to_atom(os:getenv("TUI_PERF_TYPE", "call_count")),
+    Start = case Kind of
+                "scroll" -> advance(), tui:update(Event, M1);
+                "reading" ->
+                    lists:foldl(fun(_, Acc) ->
+                        advance(),
+                        tui:update({mouse_scroll, 2, 3, true}, Acc)
+                    end, M1, lists:seq(1, 30));
+                _ -> M1
+            end,
+    {ok, _} = tprof:start(#{type => Type}),
+    _ = tprof:set_pattern('_', '_', '_'),
+    advance(),
+    case Kind of
+        "delta" -> send(Inbox, delta(Size + 1));
+        "reading" -> send(Inbox, delta(Size + 1));
+        _ -> ok
+    end,
+    tprof:restart(),
+    tprof:enable_trace(self()),
+    _ = tui:update(Event, Start),
+    tprof:disable_trace(self()),
+    {Type, Rows} = tprof:collect(),
+    Flat = lists:reverse(lists:keysort(3,
+        [{io_lib:format("~s:~s/~p", [Mo, Fu, Ar]), C, V}
+         || {Mo, Fu, Ar, PerPid} <- Rows, {_, C, V} <- PerPid])),
+    io:format("PROFILE ~s ~s mixed=~p ~s~n", [Label, Type, Size, Kind]),
+    Top = list_to_integer(os:getenv("TUI_PERF_TOP", "30")),
+    [io:format("  ~10w ~8w calls  ~s~n", [V, C, N])
+     || {N, C, V} <- lists:sublist(Flat, Top)],
+    ok;
+
+%% The reader has scrolled up into a long open reply while it keeps
+%% streaming: one word per tick arrives below the screen. Each tick is timed,
+%% and the frame it leaves is compared with the one before, so the report
+%% says how many ticks repainted a frame that was cell for cell the same.
+run("mixed_reading", [SizeS], Label) ->
+    glyph_shape(),
+    Size = list_to_integer(SizeS),
+    {Inbox, M0} = ready(),
+    M1 = stream_drawn(Inbox, M0, 1, Size),
+    M2 = lists:foldl(fun(_, Acc) -> advance(), tui:update(tick, Acc) end,
+                     M1, lists:seq(1, 80)),
+    Up = lists:foldl(fun(_, Acc) ->
+                         advance(), tui:update({mouse_scroll, 2, 3, true}, Acc)
+                     end, M2, lists:seq(1, 30)),
+    Screen = 'etui@geometry':rect_new(0, 0, 133, 40),
+    {Offset0, _} = 'tui@render':view(Up, Screen),
+    Ticks = 60,
+    {Final, Stats, Cost} = lists:foldl(
+        fun(I, {Acc, {Same, Total}, {R, T}}) ->
+            send(Inbox, delta(Size + I)),
+            advance(),
+            {B0, _} = 'tui@render':view(Acc, Screen),
+            R0 = reds(),
+            T0 = erlang:monotonic_time(nanosecond),
+            Next = tui:update(tick, Acc),
+            T1 = erlang:monotonic_time(nanosecond),
+            R1 = reds(),
+            {B1, _} = 'tui@render':view(Next, Screen),
+            Rendered = R1 - R0 > 50000,
+            Identical = Rendered andalso B0 =:= B1,
+            {Next, {Same + bool(Identical), Total + bool(Rendered)},
+             {R + R1 - R0, T + T1 - T0}}
+        end, {Up, {0, 0}, {0, 0}}, lists:seq(1, Ticks)),
+    _ = {Offset0, Final},
+    {Same, Rendered} = Stats,
+    {R, T} = Cost,
+    io:format("RESULT ~s reading_stream ticks=~p rendered=~p "
+              "rendered_identical=~p reductions_per_tick=~.1f "
+              "ns_per_tick=~.1f~n",
+              [Label, Ticks, Rendered, Same, R / Ticks, T / Ticks]),
+    ok;
+
 %% One keypress, one idle tick, and a tick and a keypress with 64 frames
 %% waiting, each applied to the same ready model, so every sample of one
 %% event does the same work.
@@ -447,6 +592,43 @@ scale_one(Count, Label) ->
      end || {Event, F} <- Cases],
     ok.
 
+%% Wheel notches one after another, the first already taken, so that the
+%% cost of leaving the tail is not counted against every notch. Reported per
+%% notch, in one direction, for the first twenty notches up from the tail.
+%% The glyph shape unless the caller chose another, so the same scenario
+%% can be run on plain ASCII for comparison.
+glyph_shape() ->
+    case os:getenv("TUI_PERF_SHAPE") of
+        false -> true = os:putenv("TUI_PERF_SHAPE", "glyphs"), ok;
+        _ -> ok
+    end.
+
+mixed_scroll_chain(Label, Name, M) ->
+    Notches = 20,
+    advance(),
+    First = tui:update({mouse_scroll, 2, 3, true}, M),
+    {_, R, T} = sample(fun() ->
+        lists:foldl(fun(_, Acc) ->
+                        advance(),
+                        tui:update({mouse_scroll, 2, 3, true}, Acc)
+                    end, First, lists:seq(1, Notches))
+    end),
+    io:format("RESULT ~s ~s reductions_per_notch=~.1f ns_per_notch=~.1f~n",
+              [Label, Name, R / Notches, T / Notches]).
+
+mixed_report(Label, M, Events) ->
+    Nothing = fun() -> ok end,
+    _ = samples(5, Nothing, fun() -> tui:update(tick, M) end),
+    [report(Label, Name, samples(30, Prepare,
+        fun() -> advance(), tui:update(E, M) end))
+     || {Name, Prepare, E} <- Events],
+    trace_words(),
+    [report_words(Label, Name, Prepare,
+        fun() -> advance(), tui:update(E, M) end)
+     || {Name, Prepare, E} <- Events],
+    tprof:stop(),
+    ok.
+
 %% Both directions participate, so the burst does not just hit one clamp.
 scroll_burst(M, 0) -> M;
 scroll_burst(M, N) ->
@@ -546,6 +728,9 @@ growth(Inbox, M, From, Size, Batch, Measure, Acc) ->
 %% unless TUI_PERF_BATCH says otherwise.
 batch() -> list_to_integer(os:getenv("TUI_PERF_BATCH", "64")).
 
+bool(true) -> 1;
+bool(false) -> 0.
+
 %% Moves the pinned presentation clock on by one 50 ms tick.
 advance() -> put(tui_perf_now, get(tui_perf_now) + 50).
 
@@ -596,11 +781,13 @@ delta_text(N) ->
     Break = case {N rem 12, N rem 48, Shape} of
                 {11, 47, "markdown"} -> "\n\n- ";
                 {11, _, "paragraphs"} -> "\n\n";
+                {11, _, "glyphs"} -> "\n\n";
                 {11, _, _} -> "\n";
                 _ -> ""
             end,
     I = integer_to_list(N),
     Word = case {Shape, N rem 6} of
+               {"glyphs", _} -> ["word", I, glyph(N)];
                {"markdown", 1} -> ["**word", I, "**"];
                {"markdown", 3} -> ["`word", I, "`"];
                {"markdown", 5} -> ["[word", I, "](https://x.test/", I, ")"];
@@ -611,6 +798,16 @@ delta_text(N) ->
         <<"body">> => #{<<"strand">> => <<"main">>, <<"op">> => ?OP,
                         <<"ephemeral">> => true, <<"kind">> => <<"text">>,
                         <<"text">> => iolist_to_binary([Word, " ", Break])}})).
+
+%% Every third word is followed by one of the glyphs a transcript is full of:
+%% a check mark, bullet, middle dot, guillemet, dash, box rule, an emoji and
+%% two CJK characters. The rest is ASCII, which is how real output reads, so
+%% nearly every row holds a non-ASCII byte and none is mostly non-ASCII.
+glyph(N) when N rem 3 =:= 0 ->
+    G = lists:nth((N div 3) rem 8 + 1,
+                  ["✓", "●", "·", "›", "—", "─", "🚀", "日本"]),
+    [" ", unicode:characters_to_binary(G)];
+glyph(_) -> [].
 
 delta(N) -> {incoming, delta_text(N)}.
 
