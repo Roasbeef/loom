@@ -55,6 +55,7 @@ import core/tx.{
 }
 import core/usage_evidence
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import storage/storage.{
@@ -84,6 +85,7 @@ pub fn run(backend: Backend(handle)) -> Nil {
   write_order_checks(backend)
   duplicate_id_checks(backend)
   register_checks(backend)
+  register_batch_checks(backend)
 
   // Run CAS, placement, and branch verification suites.
   cas_checks(backend)
@@ -501,6 +503,87 @@ fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
     as "conformance storage check"
   let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
+}
+
+// Both actors must answer exactly the selected cells from one read.
+/// Verifies the bounded register read contract across both storage backends.
+fn register_batch_checks(backend: Backend(handle)) -> Nil {
+  let store = backend.open("register-batch")
+  let keys =
+    int.range(1, 129, [], fn(keys, n) { [int.to_string(n), ..keys] })
+    |> list.reverse
+  let writes =
+    list.map(keys, fn(key) { SetRegister(register.OpState, key, json_value(1)) })
+  let assert Ok(committed) = storage.commit(store, Tx(writes:, expected: []))
+    as "batch fixture commits"
+
+  // Empty and single-key reads establish the basic contract.
+  let assert Ok(empty) = storage.get_registers(store, register.OpState, [])
+    as "empty read succeeds"
+  assert dict.size(empty) == 0
+  let assert Ok(one) = storage.get_registers(store, register.OpState, ["1"])
+    as "single read succeeds"
+  let assert Ok(cell) = dict.get(one, "1") as "the selected cell exists"
+  assert cell.seq == committed.first_seq
+
+  // Compare every selected value and sequence against point reads.
+  let assert Ok(all) = storage.get_registers(store, register.OpState, keys)
+    as "maximum read succeeds"
+  let point_reads =
+    list.fold(keys, dict.new(), fn(found, key) {
+      let assert Ok(Some(value)) =
+        storage.get_register(store, register.OpState, key)
+        as "point read exists"
+      dict.insert(found, key, value)
+    })
+  assert all == point_reads
+  assert dict.size(all) == 128
+
+  // Input order and duplicates cannot alter the selected dictionary.
+  let assert Ok(reversed) =
+    storage.get_registers(store, register.OpState, list.reverse(keys))
+    as "reversed read succeeds"
+  assert all == reversed
+  let repeated = list.map(keys, fn(_) { "1" })
+  let assert Ok(single) =
+    storage.get_registers(store, register.OpState, repeated)
+    as "duplicate read succeeds"
+  assert dict.size(single) == 1
+  assert storage.get_registers(store, register.OpState, ["1", ..repeated])
+    == Error(storage.RegisterReadLimitExceeded(limit: 128))
+
+  // Namespace isolation and subsequent writes remain visible.
+  let assert Ok(missing) =
+    storage.get_registers(store, register.OpMeta, ["1", "absent"])
+    as "other namespace is empty"
+  assert dict.size(missing) == 0
+  let assert Ok(updated) =
+    storage.commit(
+      store,
+      Tx(
+        writes: [
+          SetRegister(register.OpState, "1", json_value(2)),
+          DeleteRegister(register.OpState, "2"),
+        ],
+        expected: [],
+      ),
+    )
+    as "update and deletion commit"
+
+  let assert Ok(changed) =
+    storage.get_registers(store, register.OpState, ["1", "2", "missing"])
+    as "updated read succeeds"
+  let assert Ok(cell) = dict.get(changed, "1") as "updated cell exists"
+  assert cell.seq == updated.first_seq
+  assert cell.value == json_value(2)
+  assert dict.size(changed) == 1
+
+  // Validation precedes closed-handle admission.
+  assert storage.close(store) == Ok(Nil)
+  assert storage.get_registers(store, register.OpState, [])
+    == Error(storage.HandleClosed)
+  assert storage.get_registers(store, register.OpState, ["1", ..repeated])
+    == Error(storage.RegisterReadLimitExceeded(limit: 128))
 }
 
 // Proves register lifecycle (set, replace, delete, delete-absent as a

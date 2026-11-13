@@ -4210,12 +4210,13 @@ fn read_pending_for(
   case request {
     AcceptRun(..) -> {
       let w = writer_subject(runtime)
-      list.try_fold(strand_state.pending_next_run, dict.new(), fn(pending, id) {
-        let key = ids.entry_id_to_string(id)
-        use cell <- result.try(
-          writer.get_register(w, register.PendingEntry, key)
-          |> result.map_error(read_failure),
-        )
+      let keys = list.map(strand_state.pending_next_run, ids.entry_id_to_string)
+      use cells <- result.try(
+        writer.get_registers_batched(w, register.PendingEntry, keys)
+        |> result.map_error(read_failure),
+      )
+      list.try_fold(keys, dict.new(), fn(pending, key) {
+        let cell = dict.get(cells, key) |> option.from_result
 
         // Leave missing IDs to the acceptance machine's corruption check.
         case cell {
@@ -4278,6 +4279,8 @@ fn describe_storage(error: storage.StorageError) -> String {
     storage.CorruptRow(report:) -> "corrupt row at " <> report.boundary
     storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)
     storage.BackendFault(reason:) -> reason
+    storage.RegisterReadLimitExceeded(limit: _) ->
+      "register read limit exceeded"
     storage.HandleClosed -> "storage handle closed"
   }
 }

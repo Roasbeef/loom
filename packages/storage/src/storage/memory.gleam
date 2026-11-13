@@ -111,6 +111,13 @@ pub opaque type Message {
     reply: Subject(Result(Option(Register), StorageError)),
   )
 
+  /// Read selected register cells in one actor turn.
+  GetRegisters(
+    ns: RegisterNs,
+    keys: List(String),
+    reply: Subject(Result(Dict(String, Register), StorageError)),
+  )
+
   /// List a namespace's cells.
   ListRegisters(
     ns: RegisterNs,
@@ -782,6 +789,13 @@ pub fn open(clock: Clock) -> Result(Storage(Subject(Message)), StorageError) {
           get_register: fn(handle, ns, key) {
             call(handle, GetRegister(ns, key, _), on_gone: Error(HandleClosed))
           },
+          get_registers: fn(handle, ns, keys) {
+            call(
+              handle,
+              GetRegisters(ns, keys, _),
+              on_gone: Error(HandleClosed),
+            )
+          },
           list_registers: fn(handle, ns, prefix) {
             call(
               handle,
@@ -1097,6 +1111,10 @@ fn handle_message(
       process.send(reply, Error(HandleClosed))
       actor.continue(actor_state)
     }
+    GetRegisters(reply:, ..), True -> {
+      process.send(reply, Error(HandleClosed))
+      actor.continue(actor_state)
+    }
     ListRegisters(reply:, ..), True -> {
       process.send(reply, Error(HandleClosed))
       actor.continue(actor_state)
@@ -1142,6 +1160,17 @@ fn handle_message(
     }
     GetRegister(ns:, key:, reply:), False -> {
       process.send(reply, get_register(actor_state.state, ns, key))
+      actor.continue(actor_state)
+    }
+    GetRegisters(ns:, keys:, reply:), False -> {
+      let found =
+        list.fold(keys, dict.new(), fn(found, key) {
+          case lookup_register(actor_state.state, ns, key) {
+            Some(value) -> dict.insert(found, key, value)
+            None -> found
+          }
+        })
+      process.send(reply, Ok(found))
       actor.continue(actor_state)
     }
     ListRegisters(ns:, key_prefix:, reply:), False -> {

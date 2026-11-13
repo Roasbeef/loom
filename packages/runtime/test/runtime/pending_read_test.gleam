@@ -8,6 +8,8 @@ import core/register
 import core/tx.{DeleteRegister, SetRegister, Tx}
 import gleam/dict
 import gleam/erlang/process
+import gleam/int
+import gleam/list
 import gleam/option.{Some}
 import machine/operation.{PendingCustom, ReplayNever, ReplaySafe}
 import machine/queue
@@ -28,6 +30,7 @@ pub fn owned_inbox_and_staged_result_survive_unrelated_corruption_test() {
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
     as "the memory session opens"
   let get_register = original.store.get_register
+  let get_registers = original.store.get_registers
   let list_registers = original.store.list_registers
   let store =
     storage.Storage(
@@ -45,6 +48,30 @@ pub fn owned_inbox_and_staged_result_survive_unrelated_corruption_test() {
           _, _ -> Nil
         }
         get_register(handle, ns, key)
+      },
+      get_registers: fn(handle, ns, keys) {
+        case ns {
+          register.PendingEntry -> {
+            let _ = recorder.bump(rec, "pending-batch")
+            case list.length(keys) > 128 {
+              True -> {
+                let _ = recorder.bump(rec, "oversize")
+                Nil
+              }
+              False -> Nil
+            }
+            case list.contains(keys, "unrelated-corrupt") {
+              True -> {
+                let _ = recorder.bump(rec, "unrelated-read")
+                Nil
+              }
+              False -> Nil
+            }
+            Nil
+          }
+          _ -> Nil
+        }
+        get_registers(handle, ns, keys)
       },
       list_registers: fn(handle, ns, prefix) {
         case ns {
@@ -156,11 +183,83 @@ pub fn owned_inbox_and_staged_result_survive_unrelated_corruption_test() {
   assert recorder.read(rec, "tool:read:c1") == 1
   assert recorder.read(rec, "pending-list") == 0
   assert recorder.read(rec, "unrelated-read") == 0
-  assert recorder.read(rec, "pending-point") > 0
+  assert recorder.read(rec, "pending-point") == 0
+  assert recorder.read(rec, "pending-batch") > 0
+  assert recorder.read(rec, "oversize") == 0
   assert api.close(rt) == Ok(Nil)
   let assert Ok(recorder_pid) = process.subject_owner(rec)
   process.unlink(recorder_pid)
   process.kill(recorder_pid)
+}
+
+// The in-flight inbox is read in multiple exact batches before placement.
+pub fn large_inbox_crosses_batch_boundary_test() {
+  let rec = recorder.start()
+  let started = process.new_subject()
+  let assert Ok(original) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session opens"
+  let get_registers = original.store.get_registers
+  let store =
+    storage.Storage(..original.store, get_registers: fn(handle, ns, keys) {
+      case ns, list.length(keys) {
+        register.PendingEntry, 128 -> {
+          let _ = recorder.bump(rec, "full-batch")
+          Nil
+        }
+        _, _ -> Nil
+      }
+      get_registers(handle, ns, keys)
+    })
+  let sess = session.Session(..original, store:)
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [#("read", ReplaySafe)],
+      fn(spec) {
+        case fake.turn(spec) {
+          0 -> fake.Reply(fake.tool_use("working", [#("c1", "read")], 4))
+          _ -> fake.Reply(fake.answer("done", 3))
+        }
+      },
+      fn(_) {
+        let release = process.new_subject()
+        process.send(started, release)
+        let assert Ok(Nil) = process.receive(release, within: 20_000)
+          as "the queued inputs land before tool completion"
+        fake.ToolReply(text: "result", is_error: False, terminate: False)
+      },
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+    as "the runtime opens"
+  let assert Ok(op) = api.prompt(rt, [fake.user("hello")]) as "the run starts"
+  let assert Ok(release) = process.receive(started, within: 5000)
+    as "the tool is in flight"
+  let labels =
+    int.range(from: 1, to: 131, with: [], run: fn(acc, n) {
+      ["queued-" <> int.to_string(n), ..acc]
+    })
+    |> list.reverse
+  list.each(labels, fn(label) {
+    let assert Ok(_) = api.steer_quietly(rt, fake.user(label))
+      as "each steer is queued"
+    Nil
+  })
+  process.send(release, Nil)
+  let assert Ok(outcome) = api.await_result(rt, op, within_ms: 20_000)
+    as "the run completes"
+  harness.assert_completed(outcome)
+  let projection = harness.final_projection(sess)
+  list.each(labels, fn(label) {
+    assert list.length(
+        list.filter(projection, fn(line) { line == "user:" <> label }),
+      )
+      == 1
+  })
+  assert recorder.read(rec, "full-batch") > 0
+  assert api.close(rt) == Ok(Nil)
 }
 
 pub fn missing_owned_steer_faults_recovered_run_test() {

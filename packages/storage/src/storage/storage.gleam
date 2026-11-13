@@ -30,6 +30,7 @@ import core/message.{type Usage}
 import core/register.{type RegisterNs, type RegisterValue}
 import core/tx.{type CommitError, type CommitResult, type Tx}
 import gleam/dict.{type Dict}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 
 /// One session's storage, as a record of functions over a backend handle.
@@ -50,6 +51,9 @@ pub type Storage(handle) {
     /// See `storage.get_register`.
     get_register: fn(handle, RegisterNs, String) ->
       Result(Option(Register), StorageError),
+    /// See `storage.get_registers`. The wrapper enforces the key limit.
+    get_registers: fn(handle, RegisterNs, List(String)) ->
+      Result(Dict(String, Register), StorageError),
     /// See `storage.list_registers`.
     list_registers: fn(handle, RegisterNs, Option(String)) ->
       Result(List(#(String, Register)), StorageError),
@@ -84,6 +88,9 @@ pub type StorageError {
   /// process. The reason is a human-readable description, not for
   /// dispatch.
   BackendFault(reason: String)
+
+  /// The requested raw key count exceeded the limit.
+  RegisterReadLimitExceeded(limit: Int)
 
   /// The handle was used after `close`.
   HandleClosed
@@ -313,6 +320,25 @@ pub fn get_register(
   key: String,
 ) -> Result(Option(Register), StorageError) {
   storage.get_register(storage.handle, ns, key)
+}
+
+/// Reads at most 128 raw keys in one snapshot. Duplicates collapse and
+/// missing cells are omitted; the result has no ordering guarantee.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // storage.get_registers(store, register.StrandLeaf, ["main"])
+/// ```
+pub fn get_registers(
+  storage: Storage(handle),
+  ns: RegisterNs,
+  keys: List(String),
+) -> Result(Dict(String, Register), StorageError) {
+  case list.drop(keys, 128) {
+    [] -> storage.get_registers(storage.handle, ns, keys)
+    [_, ..] -> Error(RegisterReadLimitExceeded(limit: 128))
+  }
 }
 
 /// Lists a namespace's cells in key-ascending order, optionally restricted

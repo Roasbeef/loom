@@ -3304,12 +3304,13 @@ fn load_pending_for(
 
       let pending_ids =
         list.flatten([inbox.steer, inbox.follow_up, inbox.writes, staged])
-      list.try_fold(pending_ids, dict.new(), fn(pending, id) {
-        let key = ids.entry_id_to_string(id)
-        use cell <- result.try(
-          writer.get_register(state.writer, register.PendingEntry, key)
-          |> result.map_error(describe_read_error),
-        )
+      let keys = list.map(pending_ids, ids.entry_id_to_string)
+      use cells <- result.try(
+        writer.get_registers_batched(state.writer, register.PendingEntry, keys)
+        |> result.map_error(describe_read_error),
+      )
+      list.try_fold(keys, dict.new(), fn(pending, key) {
+        let cell = dict.get(cells, key) |> option.from_result
 
         // Missing IDs stay absent so the planner reports its usual corruption.
         case cell {
@@ -3730,6 +3731,8 @@ fn describe_storage_error(error: storage.StorageError) -> String {
     storage.CorruptRow(report:) -> corruption.describe(report)
     storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)
     storage.BackendFault(reason:) -> reason
+    storage.RegisterReadLimitExceeded(limit: _) ->
+      "register read limit exceeded"
     storage.HandleClosed -> "storage handle closed"
   }
 }

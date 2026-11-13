@@ -1427,6 +1427,55 @@ pub fn a_corrupt_queue_payload_only_refuses_a_run_admission_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// Captured next-run inputs can exceed one storage read batch. All remain
+// ordered and are placed exactly once by the accepting run.
+pub fn captured_next_run_crosses_batch_boundary_test() {
+  let rt = answering_runtime()
+  let ids =
+    int.range(from: 1, to: 131, with: [], run: fn(acc, n) {
+      let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(at: 1), seed: n))
+      [id, ..acc]
+    })
+    |> list.reverse
+  let writes =
+    list.map(ids, fn(id) {
+      let key = ids.entry_id_to_string(id)
+      SetRegister(
+        register.PendingEntry,
+        key,
+        register.value(
+          codec.encode_pending_entry(operation.PendingMessage(fake.user(key))),
+        ),
+      )
+    })
+  let state =
+    SetRegister(
+      register.StrandState,
+      "main",
+      register.value(
+        codec.encode_strand_state(strand.StrandState(
+          current_operation: None,
+          pending_next_run: ids,
+        )),
+      ),
+    )
+  let assert Ok(_) =
+    writer.commit(rt.tree.writer, Tx(writes: [state, ..writes], expected: []))
+    as "the captured queue commits"
+  let assert Ok(op) = api.prompt(rt, [fake.user("after batch")])
+    as "the run accepts the queue"
+  let assert Ok(outcome) = api.await_result(rt, op, within_ms: 10_000)
+    as "the run completes"
+  harness.assert_completed(outcome)
+  let projection = harness.final_projection(rt.session)
+  list.each(ids, fn(id) {
+    let expected = "user:" <> ids.entry_id_to_string(id)
+    assert list.length(list.filter(projection, fn(line) { line == expected }))
+      == 1
+  })
+  process.kill(rt.tree.supervisor)
+}
+
 // A runtime whose provider answers whatever it is asked, so a run
 // accepted here reaches a terminal result and leaves the strand idle.
 fn answering_runtime() -> api.Runtime {
