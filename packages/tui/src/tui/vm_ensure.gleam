@@ -32,10 +32,19 @@
 //// 3. `answer` is the pure reading of a status and its output, and
 ////    `parse_line` the total parser of the line that names the guest.
 ////
-//// The standard library port that runs the server merges standard error into
-//// standard output, so the progress `ensure` writes on standard error reaches
-//// this module in the same text as its answer. It is shown after the command
-//// ends, not as it is written, and the answer is the last line either way.
+//// ## Progress
+////
+//// The port that runs the server merges standard error into standard output,
+//// so by default the progress `ensure` writes on standard error reaches this
+//// module in the same text as its answer, and is shown after the command ends.
+//// An interactive launch has a terminal, so it runs the server through
+//// `/bin/sh` with its standard error redirected to `/dev/tty` when that device
+//// can be opened (`command`), and the progress then appears as it is written
+//// and the captured text is the answer alone. Without a terminal device the
+//// shell falls back to the merged form. A headless caller never uses the
+//// terminal, because its standard error belongs to whoever called it. Either
+//// way the answer is the last line that reads as one (`answer`), since two
+//// writers share the merged stream and nothing orders them.
 
 import gleam/erlang/process
 import gleam/list
@@ -87,19 +96,72 @@ pub type Answer {
 pub type Runner =
   fn(List(String)) -> Result(#(Int, String), String)
 
+/// Where `ensure`'s progress goes while it runs.
+pub type Progress {
+  /// To the controlling terminal as it is written, when it can be opened.
+  OnTerminal
+
+  /// Into the captured text, shown when the command ends.
+  Captured
+}
+
+/// The program and arguments that run the server with these arguments.
+///
+/// `Captured` runs the server itself. `OnTerminal` runs `/bin/sh`, which opens
+/// `/dev/tty` in a subshell first, so a host with no terminal device falls
+/// back to running the server as it is instead of failing the redirect, and
+/// then replaces itself with the server with standard error on the terminal.
+/// The server and its arguments are positional parameters, never text of the
+/// script.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_ensure.command("/bin/loomd", ["vm"], vm_ensure.Captured)
+///   == #("/bin/loomd", ["vm"])
+/// ```
+pub fn command(
+  server: String,
+  arguments: List(String),
+  progress: Progress,
+) -> #(String, List(String)) {
+  case progress {
+    Captured -> #(server, arguments)
+    OnTerminal -> #("/bin/sh", [
+      "-c",
+      terminal_script,
+      "sh",
+      server,
+      ..arguments
+    ])
+  }
+}
+
+// Tests the terminal in a subshell, because a failed redirect of `exec` ends
+// the shell that runs it, and then either puts the server's standard error on
+// the terminal or leaves it merged.
+const terminal_script =
+  "if ( exec 2>/dev/tty ) 2>/dev/null; then exec \"$@\" 2>/dev/tty; else exec \"$@\"; fi"
+
 /// The arguments the server is run with: `vm ensure` for the launch's
 /// workspace directory and configuration.
 ///
 /// With no `--workspace` the directory is the launcher's own, which `ensure`
 /// inherits and resolves the way a plain launch does; the dot says so.
 ///
+/// `flags` are the `--github` and `--allow` words the launch carried, which
+/// `ensure` takes and the launch's options do not hold.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_ensure.arguments(options)
+/// assert vm_ensure.arguments(options, [])
 ///   == ["vm", "ensure", "--workspace", ".", "--config", "/c/loom.toml"]
 /// ```
-pub fn arguments(options: bootstrap.Options) -> List(String) {
+pub fn arguments(
+  options: bootstrap.Options,
+  flags: List(String),
+) -> List(String) {
   // An empty option is the launcher's default, which the server resolves the
   // same way, so it is passed as the current directory or not at all.
   let directory = case options.workspace {
@@ -113,7 +175,52 @@ pub fn arguments(options: bootstrap.Options) -> List(String) {
     path -> ["--config", path]
   }
 
-  list.flatten([["vm", "ensure", "--workspace", directory], config])
+  list.flatten([["vm", "ensure", "--workspace", directory], config, flags])
+}
+
+/// Takes `--github gh|env|off` and `--allow HOST` out of a launch's words and
+/// answers them with the words that remain. A `--github` that is not one of the
+/// three is refused here, before a guest is touched; a host name is the
+/// server's to judge, so only a missing value is refused for `--allow`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_ensure.guest_flags(["--github", "off", "--workspace", "/w"])
+///   == Ok(#(["--github", "off"], ["--workspace", "/w"]))
+/// ```
+pub fn guest_flags(
+  words: List(String),
+) -> Result(#(List(String), List(String)), String) {
+  // The two flags take a value each; every other word stays where it is.
+  case words {
+    [] -> Ok(#([], []))
+    ["--github", value, ..rest] ->
+      case value {
+        "gh" | "env" | "off" -> carry(["--github", value], rest)
+        _ -> Error("--github must be gh, env or off, got " <> value)
+      }
+    ["--allow", value, ..rest] ->
+      case value {
+        "" -> Error("--allow needs a host")
+        _ -> carry(["--allow", value], rest)
+      }
+    ["--github"] -> Error("--github needs gh, env or off")
+    ["--allow"] -> Error("--allow needs a host")
+    [word, ..rest] -> {
+      use #(flags, others) <- result.map(guest_flags(rest))
+      #(flags, [word, ..others])
+    }
+  }
+}
+
+/// Adds a flag and its value to what the rest of the words yield.
+fn carry(
+  flag: List(String),
+  rest: List(String),
+) -> Result(#(List(String), List(String)), String) {
+  use #(flags, others) <- result.map(guest_flags(rest))
+  #(list.append(flag, flags), others)
 }
 
 /// Reads the line `ensure` ends its standard output with.
@@ -158,41 +265,71 @@ pub fn answer(status: Int, output: String) -> Answer {
   let lines =
     string.split(output, "\n")
     |> list.map(string.trim_end)
-    |> list.reverse
-    |> list.drop_while(fn(line) { line == "" })
-
-  // The last non-blank line is the answer and what precedes it is progress.
-  let #(last, before) = case lines {
-    [last, ..rest] -> #(last, string.join(list.reverse(rest), "\n"))
-    [] -> #("", "")
-  }
+    |> list.filter(fn(line) { line != "" })
 
   // Only the two statuses `ensure` documents have an answer line to read.
   case status {
-    0 -> succeeded(last, before, output)
-    s if s == daemon_required_status -> daemon_asked(last, before, output)
+    0 -> succeeded(lines, output)
+    s if s == daemon_required_status -> daemon_asked(lines, output)
     _ -> Failed(status, string.trim(output))
   }
 }
 
-/// Status zero must end with a guest line the launcher can place a session on.
-fn succeeded(last: String, progress: String, output: String) -> Answer {
-  // A line that is not a guest is the server's fault, and the whole output
-  // goes with the reason.
-  case parse_line(last) {
-    Ok(guest) -> Ready(guest, progress)
-    Error(reason) -> Failed(1, string.trim(output) <> "\n" <> reason)
+/// Status zero must hold a guest line the launcher can place a session on.
+/// The last line that reads as one is the answer, because two writers share the
+/// merged stream and a progress line can land after it.
+fn succeeded(lines: List(String), output: String) -> Answer {
+  // A run with no guest line is the server's fault, and the whole output goes
+  // with the reason.
+  case answer_line(list.reverse(lines), read_guest, []) {
+    Some(#(guest, others)) -> Ready(guest, others)
+    None -> Failed(1, string.trim(output) <> "\n" <> no_guest_line)
   }
 }
 
+fn read_guest(line: String) -> Result(Guest, Nil) {
+  result.replace_error(parse_line(line), Nil)
+}
+
 /// Status 75 means a missing daemon only when its line says so.
-fn daemon_asked(last: String, progress: String, output: String) -> Answer {
+fn daemon_asked(lines: List(String), output: String) -> Answer {
   // The status alone could be any other failure that happened to exit 75.
-  case last == daemon_required_line {
-    True -> NeedsDaemon(progress)
-    False -> Failed(daemon_required_status, string.trim(output))
+  case answer_line(list.reverse(lines), read_daemon_line, []) {
+    Some(#(Nil, others)) -> NeedsDaemon(others)
+    None -> Failed(daemon_required_status, string.trim(output))
   }
 }
+
+fn read_daemon_line(line: String) -> Result(Nil, Nil) {
+  case line == daemon_required_line {
+    True -> Ok(Nil)
+    False -> Error(Nil)
+  }
+}
+
+/// Walks the lines from the end to the first that `read` accepts. The other
+/// lines are answered in their original order, so they can be shown as progress.
+/// `after` holds the lines already passed, which came after the answer.
+fn answer_line(
+  reversed: List(String),
+  read: fn(String) -> Result(a, Nil),
+  after: List(String),
+) -> option.Option(#(a, String)) {
+  case reversed {
+    [] -> None
+    [line, ..before] ->
+      case read(line) {
+        Ok(value) ->
+          Some(#(
+            value,
+            string.join(list.append(list.reverse(before), after), "\n"),
+          ))
+        Error(Nil) -> answer_line(before, read, [line, ..after])
+      }
+  }
+}
+
+const no_guest_line = "vm ensure did not end with `executor=NAME workspace=NAME`"
 
 /// Makes the guest ready and answers the options the session starts with: the
 /// executor placement of `--executor E --workspace W`, and no `--workspace`
@@ -212,16 +349,24 @@ fn daemon_asked(last: String, progress: String, output: String) -> Answer {
 /// ```
 pub fn ensure(
   options: bootstrap.Options,
+  flags flags: List(String),
   run run: Runner,
   start_daemon start_daemon: fn() -> Result(Nil, String),
   report report: fn(String) -> Nil,
 ) -> Result(bootstrap.Options, Failure) {
-  use first <- result.try(attempt(options, run, report))
+  // A cold start is a long, quiet wait, so the launch says what it is doing
+  // before it starts.
+  report(
+    "making the microVM guest for "
+    <> directory_of(options)
+    <> " ready; a first run installs the artifacts and can take minutes",
+  )
+  use first <- result.try(attempt(options, flags, run, report))
 
   // A missing daemon is the one answer the launcher can repair, once.
   use guest <- result.try(case first {
     Ready(guest, _) -> Ok(guest)
-    NeedsDaemon(_) -> after_daemon(options, run, start_daemon, report)
+    NeedsDaemon(_) -> after_daemon(options, flags, run, start_daemon, report)
     Failed(status, output) -> Error(Failure(status, output))
   })
 
@@ -236,17 +381,19 @@ pub fn ensure(
 /// a second request for a daemon is an error and not a second retry.
 fn after_daemon(
   options: bootstrap.Options,
+  flags: List(String),
   run: Runner,
   start_daemon: fn() -> Result(Nil, String),
   report: fn(String) -> Nil,
 ) -> Result(Guest, Failure) {
+  report("starting the daemon so the guest can join")
   use Nil <- result.try(
     start_daemon()
     |> result.map_error(fn(reason) {
       Failure(1, "could not start the daemon: " <> reason)
     }),
   )
-  use second <- result.try(attempt(options, run, report))
+  use second <- result.try(attempt(options, flags, run, report))
 
   // Only a guest ends it well; the daemon is up now, so asking for it again
   // would mean it did not take.
@@ -265,11 +412,12 @@ fn after_daemon(
 /// a failure with status 1.
 fn attempt(
   options: bootstrap.Options,
+  flags: List(String),
   run: Runner,
   report: fn(String) -> Nil,
 ) -> Result(Answer, Failure) {
   use #(status, output) <- result.map(
-    run(arguments(options))
+    run(arguments(options, flags))
     |> result.map_error(fn(reason) {
       Failure(1, "could not run vm ensure: " <> reason)
     }),
@@ -289,8 +437,11 @@ fn attempt(
 /// which the caller reports, so a failure has no progress of its own.
 fn progress_of(read: Answer) -> String {
   case read {
-    Ready(progress:, ..) | NeedsDaemon(progress:) -> progress
-    Failed(..) -> ""
+    Ready(progress:, ..) -> progress
+
+    // What the refused first run said is not shown: the launch says it is
+    // starting the daemon, and the retry usually succeeds.
+    NeedsDaemon(_) | Failed(..) -> ""
   }
 }
 
@@ -308,6 +459,8 @@ fn progress_of(read: Answer) -> String {
 /// ```
 pub fn launch(
   options: bootstrap.Options,
+  flags flags: List(String),
+  progress progress: Progress,
   report report: fn(String) -> Nil,
 ) -> Result(bootstrap.Options, Failure) {
   use server <- result.try(
@@ -317,8 +470,10 @@ pub fn launch(
 
   ensure(
     options,
+    flags:,
     run: fn(arguments) {
-      host.run_captured(server, arguments, ensure_budget_ms)
+      let #(program, words) = command(server, arguments, progress)
+      host.run_captured(program, words, ensure_budget_ms)
       |> result.map(fn(captured) { #(captured.status, captured.output) })
     },
     start_daemon: fn() {
@@ -331,4 +486,13 @@ pub fn launch(
     },
     report:,
   )
+}
+
+/// The directory the launch asks the guest to serve, as it is named to the
+/// server.
+fn directory_of(options: bootstrap.Options) -> String {
+  case options.workspace {
+    "" -> "the current directory"
+    path -> path
+  }
 }

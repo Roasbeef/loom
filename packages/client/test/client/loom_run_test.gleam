@@ -69,6 +69,7 @@ fn request(
     model: None,
     retention: run.StopAtExit,
     tools: run.OnThisMachine,
+    guest_flags: [],
   )
 }
 

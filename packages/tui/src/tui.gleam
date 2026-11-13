@@ -185,7 +185,7 @@ type Launch {
   // executor placement of `--executor <guest> --workspace <name>`. The options
   // hold the launch's own workspace directory, which `--executor` would have
   // taken as a registered name.
-  Vm(options: bootstrap.Options)
+  Vm(options: bootstrap.Options, flags: List(String))
 
   // `loom project board --watch` keeps the project board open in the terminal
   // (protocol-change/106). It is a local launch that lands on the board in
@@ -512,7 +512,7 @@ pub fn main() {
         Access(arguments:) -> access_command.main(arguments)
         View(request:) -> run_view(request)
         Invalid(reason) -> rejected_launch(reason)
-        Vm(options:) -> interactive_vm(options, record)
+        Vm(options:, flags:) -> interactive_vm(options, flags, record)
         Demo | Local(..) | Remote(..) | ProjectWatch(..) ->
           interactive_terminal(launch, record)
       }
@@ -524,17 +524,55 @@ pub fn main() {
 /// before the alternate screen, so a failure prints on the ordinary terminal and
 /// ends with the status `ensure` gave. A launch with no terminal is refused
 /// first, so a script never boots a guest for a screen it cannot draw.
-fn interactive_vm(options: bootstrap.Options, record: String) -> Nil {
+///
+/// The guest serves the repository a plain launch would create its sessions
+/// for: the nearest `.git` ancestor of the directory (`vm_directory`), so a
+/// launch from a subdirectory finds the guest the root's launch made. The
+/// terminal is there, so `ensure`'s progress is written to it as it happens.
+fn interactive_vm(
+  options: bootstrap.Options,
+  flags: List(String),
+  record: String,
+) -> Nil {
   case ffi_terminal.require_terminal() {
     Error(reason) -> rejected_launch(reason)
     Ok(Nil) ->
-      case vm_ensure.launch(options, io.println_error) {
+      case
+        vm_ensure.launch(
+          bootstrap.Options(..options, workspace: vm_directory(options)),
+          flags:,
+          progress: vm_ensure.OnTerminal,
+          report: io.println_error,
+        )
+      {
         Ok(chosen) -> interactive(Local(chosen, ""), record)
         Error(vm_ensure.Failure(status:, reason:)) -> {
           io.println_error("loom: " <> reason)
           ffi_terminal.halt(status)
           Nil
         }
+      }
+  }
+}
+
+/// The directory an interactive `--vm` launch asks the guest to serve: the
+/// nearest repository around `--workspace`, or around the current directory
+/// when there is none, as `workspace.discover` finds it for a plain launch. A
+/// directory with no repository around it is itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.vm_directory(options_with_workspace("/src/proj/lib")) == "/src/proj"
+/// ```
+@internal
+pub fn vm_directory(options: bootstrap.Options) -> String {
+  case options.workspace {
+    "" -> workspace.discover().path
+    path ->
+      case host_bootstrap.absolute_path(path) {
+        Ok(absolute) -> workspace.discover_from(absolute).path
+        Error(_) -> path
       }
   }
 }
@@ -1500,6 +1538,10 @@ fn vm_refusals() -> List(#(String, String)) {
       "--addr",
       "--vm starts a guest on this machine; --addr attaches to a daemon elsewhere",
     ),
+    #(
+      "--state-dir",
+      "--vm keeps the guest's deployment in ~/.loom/loom.toml and looks for its daemon under ~/.loom, so --state-dir would send the session to another daemon; drop it",
+    ),
   ]
 }
 
@@ -1514,11 +1556,26 @@ fn parse_vm_launch(arguments: List(String)) -> Launch {
   // cannot be there at all.
   case refused {
     Ok(#(_, reason)) -> Invalid(reason <> "\n" <> launch_usage())
-    Error(Nil) ->
-      case parse_local_options(arguments, default_bootstrap_options()) {
-        Ok(options) -> Vm(options)
-        Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
-      }
+    Error(Nil) -> parse_vm_words(arguments)
+  }
+}
+
+/// The words of a `--vm` launch that no refusal named: `--github` and `--allow`
+/// are the guest's and go to `ensure`, and the rest are the local options.
+fn parse_vm_words(arguments: List(String)) -> Launch {
+  let parsed = {
+    use #(flags, rest) <- result.try(vm_ensure.guest_flags(arguments))
+    use options <- result.map(parse_local_options(
+      rest,
+      default_bootstrap_options(),
+    ))
+    Vm(options, flags)
+  }
+
+  // A word that cannot be read is an invalid launch with the usage beside it.
+  case parsed {
+    Ok(launch) -> launch
+    Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
   }
 }
 
@@ -1536,7 +1593,26 @@ fn parse_vm_launch(arguments: List(String)) -> Launch {
 @internal
 pub fn launch_vm(arguments: List(String)) -> Result(bootstrap.Options, String) {
   case parse_launch(arguments) {
-    Vm(options:) -> Ok(options)
+    Vm(options:, ..) -> Ok(options)
+    Invalid(reason) -> Error(reason)
+    _other -> Error("not a --vm launch")
+  }
+}
+
+/// Classifies a `--vm` launch's words as `launch_vm` does, answering the
+/// `--github` and `--allow` words that go to `ensure`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(["--github", "off"]) = tui.launch_vm_flags(["--vm", "--github", "off"])
+/// ```
+@internal
+pub fn launch_vm_flags(
+  arguments: List(String),
+) -> Result(List(String), String) {
+  case parse_launch(arguments) {
+    Vm(flags:, ..) -> Ok(flags)
     Invalid(reason) -> Error(reason)
     _other -> Error("not a --vm launch")
   }
@@ -3357,8 +3433,8 @@ fn launch_usage() -> String {
   <> "[--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom --pool <name> --workspace <registered name> "
   <> "[--config <loom.toml>] [--model-profile <name>]\n"
-  <> "       loom --vm [--workspace <path>] "
-  <> "[--config <loom.toml>] [--model-profile <name>]\n"
+  <> "       loom --vm [--workspace <path>] [--github gh|env|off] "
+  <> "[--allow <host>]... [--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
   <> "  version            Print version, build commit and platform.\n"
@@ -3402,10 +3478,13 @@ fn launch_usage() -> String {
   <> "  --pool is the same for a [pools.<name>]: the daemon picks the executor\n"
   <> "       when the session first opens. It cannot be combined with --executor\n"
   <> "  --vm runs the session's tools in a microVM guest of this workspace\n"
-  <> "       (--workspace <path>, default the current directory), set up and\n"
-  <> "       started if needed by `loom vm ensure`, and creates new sessions\n"
-  <> "       there. It cannot be combined with --executor, --pool, --session\n"
-  <> "       or --addr. `loom run -p ... --vm` does the same headless\n"
+  <> "       (--workspace <path>, default the current directory; the guest\n"
+  <> "       serves the repository around it), set up and started if needed by\n"
+  <> "       `loom vm ensure`, and creates new sessions there. --github and\n"
+  <> "       --allow go to `loom vm ensure` and are ignored while the guest\n"
+  <> "       already serves. It cannot be combined with --executor, --pool,\n"
+  <> "       --session, --addr or --state-dir. `loom run -p ... --vm` does the\n"
+  <> "       same headless, for the directory itself\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]\n"
@@ -3694,7 +3773,10 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             microVM artifacts when they are missing or from another release,
             then boots the guest as up does, resuming one that ran before.
             --github, --allow and --config mean what they mean for up, and a
-            resume keeps the access and hosts the guest was started with.
+            resume keeps the access and hosts the guest was started with. A
+            guest that already serves ignores --github and --allow, and says
+            so. A guest whose root came from another release, or whose
+            executor is still booting, is refused with the command to run.
             Progress goes to standard error. The last line of standard output
             is `executor=NAME workspace=NAME`, the words `loom --executor E
             --workspace W` takes. Exit status 75 with the line `daemon=required`
@@ -4503,7 +4585,8 @@ fn run_usage() -> String {
   "usage: loom run -p <prompt> [--workspace <dir>] [--model <name>]\n"
   <> "                [--config <loom.toml>] [--model-profile <name>]\n"
   <> "                [--server <path>] [--state-dir <path>]\n"
-  <> "                [--timeout <seconds>] [--keep] [--json] [--vm]\n\n"
+  <> "                [--timeout <seconds>] [--keep] [--json]\n"
+  <> "                [--vm [--github gh|env|off] [--allow <host>]...]\n\n"
   <> "Creates a session, sends the prompt once, waits for the run to end and\n"
   <> "prints one JSON object on standard output: session_id, session_db (when\n"
   <> "the file is found), state_dir, outcome (completed, failed, aborted or\n"
@@ -4513,8 +4596,12 @@ fn run_usage() -> String {
   <> "--json is accepted and changes nothing, the output is always JSON.\n"
   <> "--vm first makes the microVM guest of the workspace ready, as\n"
   <> "`loom vm ensure` does, and creates the session with its tools in the\n"
-  <> "guest; --workspace is then the directory the guest serves. Progress\n"
-  <> "goes to standard error. A guest that cannot be made ready exits 1.\n\n"
+  <> "guest; --workspace is then the directory the guest serves, itself and\n"
+  <> "not the repository around it. --github and --allow go to ensure and\n"
+  <> "are ignored while the guest serves. Progress goes to standard error.\n"
+  <> "--timeout does not bound ensure, which may install artifacts and boot.\n"
+  <> "A guest that cannot be made ready exits 1, and the jail is reported\n"
+  <> "unverified, since the tools ran in the guest.\n\n"
   <> "exit status: 0 completed, 1 the run failed or was aborted, 2 bad\n"
   <> "arguments, 3 no daemon could be reached or started, 124 timeout.\n"
 }

@@ -10,7 +10,9 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/result
 import gleam/string
+import host/bootstrap as host
 import qcheck
+import simplifile
 import tui
 import tui/bootstrap
 import tui/placement
@@ -99,9 +101,9 @@ fn options(workspace: String, config: String) -> bootstrap.Options {
 }
 
 pub fn the_server_is_asked_for_the_launch_s_directory_test() {
-  assert vm_ensure.arguments(options("/src/proj", ""))
+  assert vm_ensure.arguments(options("/src/proj", ""), [])
     == ["vm", "ensure", "--workspace", "/src/proj"]
-  assert vm_ensure.arguments(options("", "/c/loom.toml"))
+  assert vm_ensure.arguments(options("", "/c/loom.toml"), [])
     == ["vm", "ensure", "--workspace", ".", "--config", "/c/loom.toml"]
 }
 
@@ -248,6 +250,7 @@ fn drained(events: Subject(String)) -> List(String) {
 fn run(script: Script) -> Result(bootstrap.Options, vm_ensure.Failure) {
   vm_ensure.ensure(
     options("/src/proj", ""),
+    flags: [],
     run: script.runner,
     start_daemon: script.start_daemon,
     report: fn(_) { Nil },
@@ -311,6 +314,7 @@ pub fn a_server_that_cannot_run_is_a_failure_test() {
   let assert Error(vm_ensure.Failure(1, reason)) =
     vm_ensure.ensure(
       options("", ""),
+      flags: [],
       run: fn(_) { Error("no such file") },
       start_daemon: fn() { Ok(Nil) },
       report: fn(_) { Nil },
@@ -332,6 +336,7 @@ pub fn the_launch_options_other_than_the_workspace_survive_test() {
   let assert Ok(chosen) =
     vm_ensure.ensure(
       given,
+      flags: [],
       run: fn(_) { Ok(guest_answer) },
       start_daemon: fn() { Ok(Nil) },
       report: fn(_) { Nil },
@@ -341,4 +346,201 @@ pub fn the_launch_options_other_than_the_workspace_survive_test() {
   assert chosen.config == "/c/loom.toml"
   assert chosen.profile == "cheap"
   assert chosen.workspace == ""
+}
+
+// --- the guest's own flags ------------------------------------------------------------
+
+pub fn github_and_allow_go_to_ensure_and_nothing_else_does_test() {
+  assert vm_ensure.guest_flags([
+      "--workspace", "/w", "--github", "off", "--allow", "deb.debian.org",
+      "--allow", "*.golang.org", "--config", "/c",
+    ])
+    == Ok(
+      #(
+        [
+          "--github", "off", "--allow", "deb.debian.org", "--allow",
+          "*.golang.org",
+        ],
+        ["--workspace", "/w", "--config", "/c"],
+      ),
+    )
+  assert vm_ensure.guest_flags([]) == Ok(#([], []))
+}
+
+pub fn a_bad_github_or_a_missing_value_is_refused_test() {
+  let assert Error(bad) = vm_ensure.guest_flags(["--github", "ssh"])
+  assert string.contains(bad, "gh, env or off")
+  assert result.is_error(vm_ensure.guest_flags(["--github"]))
+  assert result.is_error(vm_ensure.guest_flags(["--allow"]))
+  assert result.is_error(vm_ensure.guest_flags(["--allow", ""]))
+}
+
+pub fn the_launch_carries_the_guest_flags_to_ensure_test() {
+  let assert Ok(flags) =
+    tui.launch_vm_flags(["--vm", "--github", "off", "--allow", "h.example.com"])
+  assert flags == ["--github", "off", "--allow", "h.example.com"]
+  let assert Ok(options) =
+    tui.launch_vm(["--vm", "--github", "env", "--workspace", "/w"])
+  assert options.workspace == "/w"
+
+  assert vm_ensure.arguments(options, ["--github", "env"])
+    == ["vm", "ensure", "--workspace", "/w", "--github", "env"]
+  let assert Error(_) = tui.launch_vm(["--vm", "--github", "ssh"])
+}
+
+pub fn run_takes_the_guest_flags_with_vm_only_test() {
+  let assert Ok(request) =
+    tui.launch_run(["run", "-p", "hi", "--vm", "--github", "off"])
+  assert request.guest_flags == ["--github", "off"]
+  let assert Error(reason) =
+    tui.launch_run(["run", "-p", "hi", "--github", "off"])
+  assert string.contains(reason, "need --vm")
+}
+
+// --- a state directory is another daemon -----------------------------------------------
+
+pub fn a_state_directory_is_refused_with_vm_test() {
+  let assert Error(reason) = tui.launch_vm(["--vm", "--state-dir", "/s"])
+  assert string.contains(reason, "--state-dir")
+  let assert Error(run_reason) =
+    tui.launch_run(["run", "-p", "hi", "--vm", "--state-dir", "/s"])
+  assert string.contains(run_reason, "--state-dir")
+
+  // Without `--vm` the flag is the plain launch's, unchanged.
+  let assert Ok(_) = tui.launch_run(["run", "-p", "hi", "--state-dir", "/s"])
+}
+
+// --- which directory the guest serves --------------------------------------------------
+
+pub fn a_subdirectory_launch_serves_the_repository_around_it_test() {
+  let root = scratch_root() <> "/vm_launch_test_" <> unique()
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/repo/.git")
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/repo/src/deep")
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/bare/sub")
+  let assert Ok(base) = host.absolute_path(root)
+
+  // A repository around the directory is the directory, as for a plain launch.
+  assert tui.vm_directory(options(base <> "/repo/src/deep", ""))
+    == base <> "/repo"
+  assert tui.vm_directory(options(base <> "/repo", "")) == base <> "/repo"
+
+  // A directory with no repository around it is itself, however it is spelled.
+  assert tui.vm_directory(options(base <> "/bare/sub", ""))
+    == base <> "/bare/sub"
+  let _ = simplifile.delete_all([root])
+  Nil
+}
+
+// A directory with no repository above it. A path inside this checkout has one,
+// so the cases that expect none would find the checkout's own.
+fn scratch_root() -> String {
+  result.unwrap(host.getenv("TMPDIR"), "/tmp")
+}
+
+fn unique() -> String {
+  string.inspect(host.current_process_id())
+  <> "_"
+  <> string.inspect(host.system_time_ms())
+}
+
+// --- reading the answer from a merged stream -------------------------------------------
+
+pub fn the_last_line_that_reads_as_the_answer_wins_test() {
+  // A progress line that lands after the answer does not hide it.
+  let assert vm_ensure.Ready(guest, progress) =
+    vm_ensure.answer(
+      0,
+      "booting\nexecutor=g-1 workspace=app\nloom vm ensure: g-1: the guest serves port 9.\n",
+    )
+  assert guest == vm_ensure.Guest("g-1", "app")
+  assert progress == "booting\nloom vm ensure: g-1: the guest serves port 9."
+
+  // The daemon line is found the same way.
+  let assert vm_ensure.NeedsDaemon(_) =
+    vm_ensure.answer(75, "daemon=required\nloomd: late line\n")
+
+  // An earlier line that parses is not preferred to a later one.
+  let assert vm_ensure.Ready(later, _) =
+    vm_ensure.answer(0, "executor=a-1 workspace=a\nexecutor=b-2 workspace=b\n")
+  assert later == vm_ensure.Guest("b-2", "b")
+}
+
+// --- what the launch says --------------------------------------------------------------
+
+fn collecting(events: Subject(String)) -> fn(String) -> Nil {
+  fn(text) { process.send(events, text) }
+}
+
+pub fn the_launch_says_what_it_does_before_it_does_it_test() {
+  let script = script([guest_answer], Ok(Nil))
+  let reports = process.new_subject()
+  let assert Ok(_) =
+    vm_ensure.ensure(
+      options("/src/proj", ""),
+      flags: [],
+      run: script.runner,
+      start_daemon: script.start_daemon,
+      report: collecting(reports),
+    )
+  let assert Ok(first) = process.receive(reports, 0)
+  assert string.contains(first, "/src/proj")
+  assert string.contains(first, "can take minutes")
+}
+
+pub fn a_missing_daemon_prints_one_launch_line_not_the_refusal_test() {
+  let script = script([daemon_answer, guest_answer], Ok(Nil))
+  let reports = process.new_subject()
+  let assert Ok(_) =
+    vm_ensure.ensure(
+      options("/src/proj", ""),
+      flags: [],
+      run: script.runner,
+      start_daemon: script.start_daemon,
+      report: collecting(reports),
+    )
+  let said = drained(reports)
+  assert list.contains(said, "starting the daemon so the guest can join")
+  assert !list.any(said, string.contains(_, "starts none"))
+  assert !list.any(said, string.contains(_, "join needs the daemon"))
+}
+
+// --- the terminal wrapper ---------------------------------------------------------------
+
+pub fn the_captured_form_runs_the_server_itself_test() {
+  assert vm_ensure.command("/bin/loomd", ["vm", "ensure"], vm_ensure.Captured)
+    == #("/bin/loomd", ["vm", "ensure"])
+}
+
+pub fn the_terminal_form_passes_the_server_as_parameters_test() {
+  let #(program, words) =
+    vm_ensure.command("/bin/loomd", ["vm", "ensure"], vm_ensure.OnTerminal)
+  assert program == "/bin/sh"
+  let assert ["-c", script, "sh", "/bin/loomd", "vm", "ensure"] = words
+  assert string.contains(script, "/dev/tty")
+  assert string.contains(script, "exec \"$@\"")
+}
+
+pub fn the_terminal_form_still_answers_with_or_without_a_terminal_test() {
+  // A stand-in server writes progress on standard error and its answer on
+  // standard output. Whether this host can open a terminal device or not, the
+  // status is the server's and the answer is the last line captured.
+  let directory = scratch_root() <> "/vm_launch_test_" <> unique()
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+  let assert Ok(base) = host.absolute_path(directory)
+  let server = base <> "/server.sh"
+  let assert Ok(Nil) =
+    simplifile.write(
+      server,
+      "#!/bin/sh\necho progress >&2\necho executor=g-1 workspace=app\nexit 0\n",
+    )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(server, 0o755)
+
+  let #(program, words) = vm_ensure.command(server, [], vm_ensure.OnTerminal)
+  let assert Ok(captured) = host.run_captured(program, words, 20_000)
+  assert captured.status == 0
+  let assert vm_ensure.Ready(guest, _) =
+    vm_ensure.answer(captured.status, captured.output)
+  assert guest == vm_ensure.Guest("g-1", "app")
+  let _ = simplifile.delete_all([directory])
+  Nil
 }

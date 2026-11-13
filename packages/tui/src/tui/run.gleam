@@ -144,6 +144,8 @@ pub type Request {
     retention: Retention,
     /// Where the session's tools run.
     tools: Tools,
+    /// The `--github` and `--allow` words that go to `ensure` with `--vm`.
+    guest_flags: List(String),
   )
 }
 
@@ -266,14 +268,38 @@ pub fn parse(arguments: List(String)) -> Result(Request, String) {
       model: None,
       retention: StopAtExit,
       tools: OnThisMachine,
+      guest_flags: [],
     )
-  use request <- result.try(parse_words(arguments, start))
+
+  // The guest's flags are the guest's, so they are taken out before the rest.
+  use #(flags, rest) <- result.try(vm_ensure.guest_flags(arguments))
+  use request <- result.try(parse_words(
+    rest,
+    Request(..start, guest_flags: flags),
+  ))
+  use Nil <- result.try(check_guest(request))
 
   // A prompt is the whole point; an empty one would start a session to send
   // nothing.
   case string.trim(request.prompt) {
     "" -> Error("run needs a prompt: loom run -p <text>")
     _ -> Ok(request)
+  }
+}
+
+/// What `--vm` allows and what only it allows.
+fn check_guest(request: Request) -> Result(Nil, String) {
+  // The guest's flags mean nothing without a guest, and a state directory would
+  // send the session to a daemon `ensure` does not look at.
+  case request.tools, request.guest_flags, request.options.state_directory {
+    OnThisMachine, [_, ..], _ -> Error("--github and --allow need --vm")
+    InTheGuest, _, directory if directory != "" ->
+      Error(
+        "--vm keeps the guest's deployment in ~/.loom/loom.toml and looks for "
+        <> "its daemon under ~/.loom, so --state-dir would send the session to "
+        <> "another daemon; drop it",
+      )
+    _, _, _ -> Ok(Nil)
   }
 }
 
@@ -597,7 +623,12 @@ fn ready(request: Request) -> Result(Request, String) {
   case request.tools {
     OnThisMachine -> Ok(request)
     InTheGuest ->
-      vm_ensure.launch(request.options, io.println_error)
+      vm_ensure.launch(
+        request.options,
+        flags: request.guest_flags,
+        progress: vm_ensure.Captured,
+        report: io.println_error,
+      )
       |> result.map(fn(options) { Request(..request, options:) })
       |> result.map_error(fn(failure) { failure.reason })
   }
@@ -1145,6 +1176,23 @@ fn await_saved(
 /// report. `sh` only redirects; the helper is a positional argument, never
 /// spliced into the script text.
 fn measure_posture(options: bootstrap.Options, scratch: String) -> Posture {
+  // The self-test measures this host's helper, so it says nothing about tools
+  // that ran on an executor, such as a guest.
+  case options.placement {
+    placement.OnThisHost -> measure_host_posture(options, scratch)
+    placement.OnExecutor(..) | placement.InPool(..) ->
+      Unverified(
+        "the tools ran on an executor, whose jail this host's self-test does "
+        <> "not measure",
+      )
+  }
+}
+
+/// The posture of this host's own helper.
+fn measure_host_posture(
+  options: bootstrap.Options,
+  scratch: String,
+) -> Posture {
   // Without a resolvable server there is no helper to ask.
   case bootstrap.server_executable(options.server) {
     Error(_) -> Unverified("no server executable to find the helper beside")
