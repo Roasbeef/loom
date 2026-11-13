@@ -68,6 +68,7 @@ fn request(
     timeout_ms:,
     model: None,
     retention: run.StopAtExit,
+    tools: run.OnThisMachine,
   )
 }
 
