@@ -48,6 +48,7 @@ machine Chaos {
           bundleSent = true;
           send orch, eBundleArrives;
         }
+        send orch, eWindow;
         send owner, eQuiet;
         goto Finished;
       }

@@ -58,6 +58,8 @@ machine Orch {
   var epoch: int;
   var unreadableLeft: int;
   var storeFullLeft: int;
+  var agencyFailsLeft: int;
+  var windowPassed: bool;
 
   start state Serving {
     entry (p: (w1: machine, w2: machine, exec: machine, plan: tPlan)) {
@@ -68,6 +70,7 @@ machine Orch {
       held = !p.plan.holdLate;
       unreadableLeft = p.plan.unreadable;
       storeFullLeft = p.plan.storeFull;
+      agencyFailsLeft = p.plan.agencyFails;
     }
 
     on eInR do (m: tMsg) {
@@ -146,6 +149,14 @@ machine Orch {
 
     on eRunEnded do {
       runEnd();
+    }
+
+    // The time the return is given has passed. Time is one event in the model: the
+    // window is longer than an executor takes to restart and a link takes to repair,
+    // so it is spent only after the faults are.
+    on eWindow do {
+      windowPassed = true;
+      announce eWindow;
     }
   }
 
@@ -241,6 +252,16 @@ machine Orch {
       fr = readFresh();
       if (fr == FR_BEGUN) {
         announce eGate, begun;
+
+        // The Agency answers the child it already started, and may fail to. A
+        // resend whose child has begun is asked to come again, and the session of a
+        // running child is not ended on a failure of the answer.
+        if (agencyFailsLeft > 0 && choose(2) == 0) {
+          agencyFailsLeft = agencyFailsLeft - 1;
+          announce eAgencyFailed;
+          toOwner(R_ASKAGAIN, 0, 0, 0);
+          return;
+        }
         toOwner(R_STARTED, 0, 0, 0);
         return;
       }
@@ -333,13 +354,14 @@ machine Orch {
       confirmed = true;
       finishPass();
     } else if (m.kind == Y_STALE) {
-      attached = false;
       if (phase == PH_APPLY) {
+        attached = false;
         transient(W_STALE);
       } else if (phase == PH_CAPTURE) {
-        joining = false;
-        phase = PH_IDLE;
-        toOwner(R_PENDING, 0, 0, 0);
+        // Nothing attaches the session again after the executor restarted, so the
+        // capture is refused as stale every time it is asked, and the return waits
+        // for the window and then gives up.
+        cannotReturn();
       }
     } else if (m.kind == Y_REFUSED && phase == PH_APPLY) {
       refuse(W_WORKSPACE);
@@ -347,12 +369,12 @@ machine Orch {
       joining = false;
       phase = PH_IDLE;
       if (m.b != m.c) {
-        toOwner(R_PENDING, 0, 0, 0);
+        cannotReturn();
       } else if (storeIsFull()) {
         // This node's store has no room for the commits, which passes: the join
-        // is asked again and the session and the commits are kept.
+        // is asked again and the session and the commits are kept, until the window.
         announce eStoreFull;
-        toOwner(R_PENDING, 0, 0, 0);
+        cannotReturn();
       } else {
         storeResult(m.a, m.b, m.c);
       }
@@ -479,6 +501,20 @@ machine Orch {
     } else {
       phase = PH_JATTACH;
       toExec(X_ATTACH, 0, 0, 0);
+    }
+  }
+
+  // The commits cannot be returned now. The join is asked again until the window
+  // has passed, and then it gives up with the child's report and a notice of where
+  // the commits are, which settles the child with no commits and ends its session.
+  fun cannotReturn() {
+    joining = false;
+    phase = PH_IDLE;
+    if (windowPassed) {
+      announce eGaveUp;
+      storeResult(0, 0, 0);
+    } else {
+      toOwner(R_PENDING, 0, 0, 0);
     }
   }
 

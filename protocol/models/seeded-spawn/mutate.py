@@ -157,6 +157,20 @@ MUTATIONS = {
      "    announce eSettleBegan;\n    resultStored = true;",
      "    announce eSettleBegan;\n    releaseSession();\n    resultStored = true;")]),
 
+  # The return waits for the window before it gives up on the commits. Without the
+  # wait it gives up at the first failure.
+  "M20-gives-up-before-the-window": ("tcOnlyWindow", 8000, r"before the window passed", [
+    ("PSrc/Orch.p",
+     "    if (windowPassed) {\n      announce eGaveUp;",
+     "    if (true) {\n      announce eGaveUp;")]),
+
+  # A failure of the Agency's answer to a resend whose child has begun asks the
+  # sender to come again. Taken as a refusal it ends the session of a running child.
+  "M21-failed-answer-ends-a-running-childs-session": ("tcOnlyBegunResend", 8000, r"while its child was running", [
+    ("PSrc/Orch.p",
+     "          announce eAgencyFailed;\n          toOwner(R_ASKAGAIN, 0, 0, 0);",
+     "          announce eAgencyFailed;\n          releaseSession();\n          toOwner(R_REFUSED, 0, 0, 0);")]),
+
   # A second apply of the state being applied joins the run. Starting its own is
   # what ran two checkouts over one tree.
   "M17-second-apply-runs-its-own": ("tcOnlyOneApply", 6000, r"two checkouts", [

@@ -254,6 +254,24 @@ spec ResultKeptBeforeRelease observes eSettleBegan, eKept, eSessionReleased {
   }
 }
 
+// The return gives up only after the window. A child in a session of its own is not
+// given up on by count, and waiting for ever would withhold its report, so the wait is
+// bounded by time: once it has run its course the join returns the report with a notice
+// of where the commits are (`spawn_return.give_up_s`). Before that it asks again.
+spec GivesUpOnlyAfterTheWindow observes eWindow, eGaveUp {
+  var passed: bool;
+
+  start state Watching {
+    on eWindow do {
+      passed = true;
+    }
+
+    on eGaveUp do {
+      assert passed, "the return gave up on a child's commits before the window passed";
+    }
+  }
+}
+
 // An executor runs one checkout at a time for a scope and state. A request that
 // arrives while one is running joins it.
 spec OneApplyAtATime observes eApplyStarted, eApplyEnded {

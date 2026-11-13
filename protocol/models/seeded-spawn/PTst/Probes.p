@@ -114,3 +114,21 @@ spec ProbeRunEndStopped observes eRunEndStopped {
     }
   }
 }
+
+// The return gave up on a child's commits after the window, with the report.
+spec ProbeGaveUp observes eGaveUp {
+  start state Watching {
+    on eGaveUp do {
+      assert false, "witness: the return gave up on the commits after the window";
+    }
+  }
+}
+
+// The Agency failed to answer a resend whose child had begun.
+spec ProbeAgencyFailed observes eAgencyFailed {
+  start state Watching {
+    on eAgencyFailed do {
+      assert false, "witness: the Agency failed to answer a resend whose child had begun";
+    }
+  }
+}

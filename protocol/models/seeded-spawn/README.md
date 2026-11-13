@@ -62,13 +62,25 @@ them, and it is made only when the asker still waits.
 ### The join
 
 `Orch` answers a `Join` for a child that has ended: it captures the child's
-commits from the executor, which needs a fresh attach after an executor restart,
-checks that the bundle arrived whole and that this node's store has room, keeps
-the settled answer, ends the child's session and answers. A join asked again after
-that is answered from the kept answer, so the session's absence does not refuse
-it. A join before the child has ended, or while another is running, answers that
-the child is still finishing. A run end stops a running child first and keeps its
-session, because a join can still bring the commits back.
+commits from the executor, checks that the bundle arrived whole and that this
+node's store has room, keeps the settled answer, ends the child's session and
+answers. A join asked again after that is answered from the kept answer, so the
+session's absence does not refuse it. A join before the child has ended, or while
+another is running, answers that the child is still finishing. A run end stops a
+running child first and keeps its session, because a join can still bring the
+commits back.
+
+Nothing attaches the session again after the executor restarted, so a capture that
+is refused as stale is refused every time it is asked. The same holds for a bundle
+that arrives short and a store with no room. The return does not give up by count,
+because what costs the tries is often an answer that is not about the commits, and
+it does not wait for ever, because that would withhold the child's report. It is
+bounded by time: once the window has passed (`eWindow`, the model's one event for
+`spawn_return.give_up_s`, ten minutes, longer than an executor takes to restart and a
+link to repair) the join gives up, settles the child with its report and no commits
+and ends its session, and the notice says where the commits still are. A session
+that an orchestrator restart closed is opened again by the next join, which attaches
+it, and that is the only attach a join gets.
 
 ### One checkout at a time
 
@@ -92,7 +104,8 @@ repaired, which is how a second request reaches a checkout that is still going.
 | `EverySettledChildIsReleased` | Liveness: a child whose verdict is kept or whose result is kept has its session released. |
 | `JoinIsRepeatable` | A join asked again after the child settled and its session was released is not refused. |
 | `OneRefPerChild` | The child's commits are made into one ref, not two. |
-| `EveryFinishedWorkIsReturned` | Liveness: a child that settled with commits has them in the parent's repository, across a lost reply, a resend, an executor restart and a store with no room. |
+| `EveryFinishedWorkIsReturned` | Liveness: a child that settled with commits has them in the parent's repository, across a lost reply, a resend and an orchestrator restart. Finished work is returned unless the executor cannot answer within the window, and then the report is returned with the notice and no commits (`GivesUpOnlyAfterTheWindow`). |
+| `GivesUpOnlyAfterTheWindow` | The return gives up on a child's commits only once the window has passed. |
 | `NoReleaseWhileRunning` | A session is not released while its child runs. |
 | `ResultKeptBeforeRelease` | A session is not released before the settled answer is kept. |
 | `OneApplyAtATime` | An executor runs one checkout at a time for a scope. |
@@ -157,6 +170,8 @@ a record that cannot be read answered as a session that has begun.
 | A transient failure keeps the claim | `EverySpawnEnds` |
 | A join asked again is refused because the answer was not kept | `JoinIsRepeatable` |
 | A store with no room for the commits settles the child with nothing | `EveryFinishedWorkIsReturned` |
+| The return gives up at the first failure and not after the window | `GivesUpOnlyAfterTheWindow` |
+| A failure of the Agency's answer to a resend whose child began ends the session | `NoReleaseWhileRunning` |
 | The owner makes the ref again for a repeated answer | `OneRefPerChild` |
 | The join captures and ends the session of a child that is still running | `NoReleaseWhileRunning` |
 | The session is ended before the settled answer is kept | `ResultKeptBeforeRelease` |

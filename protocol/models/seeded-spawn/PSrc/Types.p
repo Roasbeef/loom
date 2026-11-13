@@ -67,7 +67,8 @@ type tPlan = (
   works: int,
   storeFull: int,
   runEnds: int,
-  pairFull: bool
+  pairFull: bool,
+  agencyFails: int
 );
 
 // --- the wire ---
@@ -121,6 +122,9 @@ event eSettled: int;
 event eRef: (tip: int, arrived: int, desc: int);
 event eCrashBetween;
 event eSettleBegan;
+event eGaveUp;
+event eWindow;
+event eAgencyFailed;
 event eKept;
 event eRepeated;
 event eGone: bool;
