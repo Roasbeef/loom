@@ -555,6 +555,7 @@ vmm-install-dev: vmm ## Write loom-vm's manifest for the packages/vmm/build tree
 vmm-test: ## Vet, build, and test the Go microVM launcher and the firmware script
 	@cd $(VMM_PKG) && go vet ./... && go build ./... && go test ./...
 	@$(VMM_PKG)/guest/build-libkrunfw-test.sh
+	@$(VMM_PKG)/guest/loom-guest-init-test.sh
 
 .PHONY: selftest
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)

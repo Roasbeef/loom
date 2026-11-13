@@ -67,6 +67,13 @@ for pkg in "${targets[@]}"; do
     )
     (cd "packages/$pkg" && go vet ./... && go build ./... && \
       python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...)
+    # The firmware script's link refusal is shell, so go test does not reach
+    # it. It needs cc, strip and readelf, which the signoff image's
+    # build-essential provides.
+    if [ "$pkg" = "vmm" ]; then
+      packages/vmm/guest/build-libkrunfw-test.sh
+      packages/vmm/guest/loom-guest-init-test.sh
+    fi
     continue
   fi
   # The browser package targets JavaScript. The gate compiles it, warning
