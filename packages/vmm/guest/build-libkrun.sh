@@ -29,6 +29,9 @@ LIBKRUN_REPO=https://github.com/containers/libkrun
 LIBKRUN_TAG=v1.19.7
 # The commit the tag must resolve to. A moved tag fails the build.
 LIBKRUN_COMMIT=43b2f5aadeebb90f42053c9df2ec8b16583e554f
+# The Rust toolchain rustup installs when no cargo is on PATH. This is the
+# version libkrun v1.19.7 was built with on the Linux test box.
+RUST_VERSION=1.100.0
 
 if [ "$(uname -s)" != Linux ]; then
 	echo "build-libkrun.sh: runs on Linux; macOS installs libkrun with Homebrew" >&2
@@ -50,7 +53,8 @@ ${SUDO} apt-get install -y -qq --no-install-recommends \
 if ! command -v cargo >/dev/null 2>&1; then
 	export RUSTUP_HOME=${work}/rustup CARGO_HOME=${work}/cargo
 	if [ ! -x "${CARGO_HOME}/bin/cargo" ]; then
-		curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+		curl -fsSL https://sh.rustup.rs |
+			sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}"
 	fi
 	export PATH=${CARGO_HOME}/bin:${PATH}
 fi
