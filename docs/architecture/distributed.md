@@ -1468,9 +1468,13 @@ that was asked for when the tree's HEAD descends from the tip: on a retry after 
 abandoned attempt, where the tree is at the earlier snapshot, and on a first attempt
 when the executor's workspace is ahead of a clean directory. It also records that
 a landing that fails (a `shared` workspace, or a name the executor does not serve)
-leaves the scope bound to that workspace, so a move with the corrected
-`checkout_workspace` stalls. The README has the traces; the first is fixed on its
-own branch, and the second is not fixed.
+left the scope bound to that workspace, so a move with the corrected
+`checkout_workspace` stalled. The README has the traces. The first is fixed on its
+own branch. The second is fixed too: the executor's ledger rebinds a closed scope
+that holds nothing, a failed attach leaves a closed scope, and a refusal that will not
+change abandons the move. A scope left open by a source that died in the landing is
+refused with the workspace named and stays open, because `loomd executor release`
+refuses an open scope.
 
 ### The executor fence
 

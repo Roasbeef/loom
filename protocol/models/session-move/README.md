@@ -347,7 +347,7 @@ on the source's request compares tokens.
 | `srcStore`, `store` | The tips held by the source's state store and by the executor's. |
 | `exBranch`, `applied` | The tip of the branch `loom/<session>` on the executor, and the tip of the last apply. `-1` is none. |
 | `tok`, `tokAtt` | The scope's attach token, and the attempt that minted it. |
-| `cfgWs`, `bound` | The configured `checkout_workspace`: `good` (a `worktree` workspace the executor serves), `shared` (served in `shared` mode, which refuses a state) or `unknown` (a name the executor does not serve). And the workspace the executor's ledger has bound the session's scope to, or `none`. |
+| `cfgWs`, `bound`, `reb` | The configured `checkout_workspace`: `good` (a `worktree` workspace the executor serves), `shared` (served in `shared` mode, which refuses a state) or `unknown` (a name the executor does not serve). And the workspace the executor's ledger has bound the session's scope to, or `none`. History: an attach changed the workspace of an open scope. |
 | `net`, `answers` | `StateApply` requests in flight to the executor, and replies in flight to the source. |
 | `aliveX`, `lastLand` | The executor is up; how the last apply that changed the tree was admitted. |
 | `pc`, `mtip`, `mtipAtt`, `mreq`, `minc`, `mtok` | The mover's memory: its place in the step, the state it carries, the attempt that captured it, the request it waits on, and the scope it attached. Lost by a crash. |
@@ -368,11 +368,12 @@ The mover's `pc` takes the values `idle`, `start`, `captured`, `recorded`,
 | `CkCapture` | The capture. A clean tree has HEAD as its tip. A dirty tree becomes a new snapshot commit on top of HEAD. |
 | `CkRecord`, `CkSend` | The cell is written; the state is sent whole to the executor. |
 | `CkAttach` | The source attaches a scope for the landing. An open scope accepts a rebind at its own incarnation; a closed one reopens at the next. The first attach branches the executor's tree from the workspace's base, and a reopen recreates the tree from `loom/<session>`. |
-| `CkAttachUnknown`, `FixConfig` | An attach that names a workspace the executor does not serve: the ledger binds the scope to the name and the plane cannot be built, so the attach fails and the move stalls with the scope open. The operator corrects the configuration and restarts the daemon (the mover's memory is lost; no crash is spent). An attach that names a workspace other than the one the scope is bound to is refused by the ledger, and the source reports the refusal as a string it cannot tell from a lost connection, so the move stalls and no action is enabled. |
+| `CkAttachUnknown`, `CkCloseFailed`, `FixConfig` | An attach that names a workspace the executor does not serve: the ledger binds the scope to the name and the plane cannot be built, so the attach fails. With `CloseFailedAttach` the source closes the scope the attach opened and the move is refused. The operator corrects the configuration and restarts the daemon (the mover's memory is lost; no crash is spent), once the move has settled or is stalled at the attach and not while a landing is under way. |
+| `AbandonMismatch` | An attach that the ledger refuses for its workspace, which only an open scope or one with a tree does under the ruled rules, is a final refusal (`MismatchRefused`) and the move is abandoned. |
 | `CkAsk`, `CkResend` | One `StateApply` under the scope's incarnation and token, put in the network; the same request again when no reply came. |
 | `ExApply`, `ExRefuse`, `LoseAnswer` | The executor takes a request. It judges the fence first, then `holds_tip`, and moves the branch with `checkout -B` only when the rule says the tree does not hold the tip. Or it refuses the apply for good. A reply is lost. |
 | `CkReceive`, `CkClose`, `CkMark` | The source takes the reply, closes the scope on every path (which removes the tree and keeps the branch), and writes the `done` cell. |
-| `CkRerun` | The step stalls and is run again from the cell. The scope it left is not closed by it, and a request it sent runs on. |
+| `CkRerun` | The step stalls and is run again from the cell. A rerun from inside a landing closes the scope the landing attached, as `landing` does on every path that returns, and needs the executor to be up. A request it sent runs on. A daemon that dies in a landing closes nothing, which is the crash. |
 | `AbandonCapture`, `AbandonSend`, `AbandonLanded` | The refusals of the step: the capture is refused, the executor's store declines the state, or the apply is refused for good (after which the scope is closed). Each abandons the move. |
 | `AbortEarly2`, `RefuseActivate2` | Move's later abandons, allowed once the checkout is done. |
 | `CrashA2`, `CrashB2`, `CrashX`, `RestartX`, `Restart2` | Crashes of the source, the destination and the executor share `MaxCrashes`. The source's crash loses `pc` and the replies in flight. The executor's crash loses the requests it has not run and keeps its ledger, store and branch. |
@@ -421,7 +422,8 @@ when its HEAD is the tip or the last apply for the session was of this tip.
 | `CheckoutIsWhatWasStopped` | Once the destination owns the session (`b = active` or `a = moved`), the executor's branch holds exactly the content that the laptop directory had when this attempt began. Not the content of an abandoned attempt's snapshot, and not a tree that the executor already had. |
 | `LaptopUntouched` | The directory is as the operator last left it: `<<head, wt>> = opView`. The step never writes it. |
 | `NoApplyOutsideFence` | An apply that changed the tree was admitted by the fence, and the scope it was admitted under was minted by the current attempt. |
-| `AbandonRestores` | After an abandon the laptop owns the session alone (`a = active => b = absent`), the mover never holds a state that another attempt captured, and a corrected configuration is not blocked: once `cfgWs = good` an attach is allowed, so no scope that a failed attempt left stays bound to the workspace it named. |
+| `AbandonRestores` | After an abandon the laptop owns the session alone (`a = active => b = absent`), the mover never holds a state that another attempt captured, and a corrected configuration is not blocked: once `cfgWs = good` an attach is allowed, unless the scope is open, so no closed scope that a failed attempt left stays bound to the workspace it named. |
+| `OpenScopeKeepsWorkspace` | An attach never changes the workspace of a scope that is open. A live session in a `shared` workspace has an open scope and no tree record, and must not find it moved. |
 | `NoLeak` | A settled move leaves no scope that the source attached: not after an abandon, and not after the hand-over. |
 | `CheckoutSettles` | `a = moving ~> a \in {moved, active}`, under weak fairness of every protocol step and restart of the step and of Move, and of the operator's correction of a wrong configuration (`FixConfig`). Operator edits of the directory, refusals, lost replies, reruns and abandons are not fair. |
 
@@ -452,16 +454,18 @@ On TLC 2.19:
 
 | Configuration | Outcome | States generated | Distinct | Depth |
 |---|---|---|---|---|
-| `MoveCheckout.cfg` | no error, `CheckoutSettles` holds | 903,556 | 319,215 | 53 |
-| `MoveCheckoutAlsoWorkspaces.cfg` | no error, `CheckoutSettles` holds | 336,894 | 102,452 | 58 |
-| `MoveCheckoutMutantHoldsTipAncestry.cfg` | `CheckoutIsWhatWasStopped` violated | 276,608 | 117,322 | 29 |
-| `MoveCheckoutMutantHoldsTipAhead.cfg` | `CheckoutIsWhatWasStopped` violated | 12,919 | 5,975 | 15 |
+| `MoveCheckout.cfg` | no error, `CheckoutSettles` holds | 953,905 | 342,799 | 51 |
+| `MoveCheckoutAlsoWorkspaces.cfg` | no error, `CheckoutSettles` holds | 6,237 | 2,871 | 42 |
+| `MoveCheckoutMutantHoldsTipAncestry.cfg` | `CheckoutIsWhatWasStopped` violated | 266,516 | 117,996 | 29 |
+| `MoveCheckoutMutantHoldsTipAhead.cfg` | `CheckoutIsWhatWasStopped` violated | 12,527 | 5,884 | 15 |
 | `MoveCheckoutMutantCellAnyOp.cfg` | `AbandonRestores` violated | 1,023 | 492 | 8 |
-| `MoveCheckoutMutantUnfencedApply.cfg` | `NoApplyOutsideFence` violated | 7,527 | 3,466 | 13 |
+| `MoveCheckoutMutantUnfencedApply.cfg` | `NoApplyOutsideFence` violated | 7,401 | 3,437 | 13 |
 | `MoveCheckoutMutantCaptureCommits.cfg` | `LaptopUntouched` violated | 169 | 86 | 5 |
 | `MoveCheckoutMutantOperatorAbandon.cfg` | `NoLeak` violated | 1,962 | 779 | 8 |
-| `MoveCheckoutMutantScopeKeepsWorkspace.cfg` | `AbandonRestores` violated | 1,913 | 813 | 8 |
+| `MoveCheckoutMutantScopeKeepsWorkspace.cfg` | `AbandonRestores` violated | 2,940 | 1,264 | 9 |
 | `MoveCheckoutMutantScopeKeepsWorkspaceStall.cfg` | `CheckoutSettles` violated | n/a | n/a | n/a |
+| `MoveCheckoutMutantRebindOpen.cfg` | `OpenScopeKeepsWorkspace` violated | 1,414 | 575 | 11 |
+| `MoveCheckoutMutantCrashAfterFailedAttach.cfg` | `NoLeak` violated | 2,174 | 897 | 13 |
 
 A deeper run, outside the gate and before the workspace binding was added to
 the model, with `MaxCrashes = 2`, `MaxInc = 9`, `MaxTok = 9` and
@@ -493,8 +497,10 @@ scope's; and the cell naming a finished attempt. Dropping weak fairness of
 | The executor applies without judging the fence | `FenceApply = FALSE` | A request left in flight by a crashed run lands under the scope a later run attached. |
 | The capture commits into the laptop's repository | `CaptureLeavesLaptop = TRUE` | The directory's HEAD moves to the snapshot. |
 | An abandon on request arrives while the scope is open | `OperatorAbandon = TRUE` | The abandon after the attach and before the close leaves the scope open, so the executor's slot stays held. |
-| The ledger keeps a scope bound to a workspace after a failed landing, and a refused apply | `RebindUnused = FALSE`, `InitWs = {shared}` | See the finding below. The corrected workspace is refused for the scope's binding. `AbandonRestores` breaks. |
-| The same, with a name the executor does not serve | `RebindUnused = FALSE`, `InitWs = {unknown}` | The attach binds the scope and fails, and the corrected attach is refused. The move never settles, so `CheckoutSettles` breaks (exit 13). |
+| The ledger as it was: a scope stays bound to the first workspace, a failed attach leaves its scope open, and a refusal for the workspace stalls the move, with a `shared` workspace | `RebindClosedUnused = FALSE`, `CloseFailedAttach = FALSE`, `MismatchRefused = FALSE`, `InitWs = {shared}` | See the finding below. The apply is refused and the move abandoned, and the corrected workspace is refused for the closed scope's binding. `AbandonRestores` breaks. |
+| The same, with a name the executor does not serve | the same three, `InitWs = {unknown}` | The attach binds the scope and fails, and the corrected attach is refused. The move never settles, so `CheckoutSettles` breaks (exit 13). |
+| An attach also rebinds an open scope | `RebindOpen = TRUE`, `CloseFailedAttach = FALSE`, `InitWs = {unknown}` | The scope a failed attach left open is rebound to the corrected workspace, so an open scope changes workspace. `OpenScopeKeepsWorkspace` breaks. |
+| What the ruled rules leave | the ruled rules, `InitWs = {unknown}`, `MaxCrashes = 1` | Not a rule turned off. The source dies after the failed attach and before its close, the operator corrects the name, and the move is refused for the open scope's workspace and abandoned with the scope still open. `NoLeak` breaks. |
 
 ### Finding: `holds_tip` takes a stale tree for the state that was asked for (lines read at 024afdadf)
 
@@ -580,10 +586,10 @@ model-check` shows them as expected violations of the code on `main`.
 
 ### Finding: a failed landing leaves the scope bound to the wrong workspace (lines read at 024afdadf)
 
-`AbandonRestores` and `CheckoutSettles` do not hold of the shipped code either.
-The drive of exit criterion 2 found it on real daemons (`docs/review/distributed-1137.md`,
-finding 1), and the model reproduces both of its cases.
-`MoveCheckoutMutantScopeKeepsWorkspace.cfg` is the refused case, eight steps:
+`AbandonRestores` and `CheckoutSettles` did not hold of the code at 024afdadf.
+The drive of exit criterion 2 found it on real daemons
+(`docs/review/distributed-1137.md`, finding 1), and the model reproduces both of
+its cases. `MoveCheckoutMutantScopeKeepsWorkspace.cfg` is the refused case:
 
 1. The configured `checkout_workspace` names a workspace the executor serves in
    `shared` mode. The checkout reaches `attach_and_apply`
@@ -607,17 +613,35 @@ build the plane, and the scope stays open. With a fair operator who corrects the
 name, the corrected attach is refused in the same way and `CheckoutSettles`
 fails.
 
-The rule the clean configurations check is `RebindUnused`: an attach that names
-another workspace rebinds a scope that has no tree record, which is every scope a
-failed landing leaves (the tree record is made by the first successful attach to a
-`worktree` workspace). `MoveCheckoutAlsoWorkspaces.cfg` checks it with each wrong
-configuration and a correction. It is not implemented. The change is to
-`exec_ledger.attach_existing`, and it has a cost the model does not show: the
-binding also protects a live session in a `shared` workspace, which has no tree
-record and would then rebind silently to another workspace if its configuration
-changed under it. The options are to allow the rebind only for a scope the move
-created (the landing would name itself in the attach, which is a wire change), to
-allow it only for a closed scope and give the operator a release of an open one
-that is bound to a workspace the executor does not serve, or to have the executor
-bind the scope only after its plane is built, which leaves the refused-apply case
-to the first option.
+The fix is three rules, each a constant of the model, in `distributed/move-checkout-workspace-rebind`:
+
+- `RebindClosedUnused`: `exec_ledger.attach_existing` lets an attach that names
+  another workspace rebind a scope that is closed cleanly and has no tree record.
+  An open scope, a scope with a tree record and a scope closed with unknown
+  cleanup keep their workspace. `OpenScopeKeepsWorkspace` is the property that the
+  `RebindOpen` mutant breaks.
+- `CloseFailedAttach`: an attach for a name the executor does not serve leaves a
+  scope that the ledger bound and no plane was built for. The host closes it as
+  retired (no plane means no call was admitted), and the source closes it too and
+  records the close. Without the host's close the scope would be recorded as an
+  unproven close, which the next attach is refused for.
+- `MismatchRefused`: `workspace.attach_classified` answers a typed failure. A
+  scope bound to another workspace and a name the executor does not serve are final,
+  so the move is abandoned with the reason. The connection, the fence and a plane
+  still being built stay unfinished. The unserved name is told by the prefix of
+  `NoPlane`'s reason (`protocol.unserved_workspace`), because a new refusal would
+  change the wire.
+
+`MoveCheckout.cfg` and `MoveCheckoutAlsoWorkspaces.cfg` pass under them. The
+second starts with each wrong workspace and the operator's correction, and has no
+crash, because of the one case the rules leave.
+
+**What the rules leave.** If the source dies after an attach for an unserved name
+and before it closes the scope, and the operator then corrects the name, the scope
+is open and bound to the old name. The move is refused for that workspace, which the
+refusal names, and abandoned with the scope still open (`NoLeak`;
+`MoveCheckoutMutantCrashAfterFailedAttach.cfg`). `loomd executor release` refuses an
+open scope (`exec_ledger.release`, `NotReleasable`), so nothing frees it today. The
+change is to let `release` take an open scope, which is a few lines in
+`release_text` and `parse_release_text` and a new state word for the release table,
+whose schema may constrain it, and a test: not built here.

@@ -1221,3 +1221,39 @@ the member path.
 
 The placement claims of a pool (PR #1185) are modelled the same way, in
 `protocol/models/placement-claims`; that is not part of this protocol.
+
+## Addendum: a failed landing no longer binds the scope (2026-11-13)
+
+The previous addendum recorded that a move that failed at the executor left the session's
+scope bound to the workspace it named, so that a move with the corrected
+`checkout_workspace` stalled for good. Three rules, none of which changes the wire or a
+configuration key, remove it. The first live drive of `sessions.move` found it
+(`docs/review/distributed-1137.md`, finding 1), and `MoveCheckout.tla` checks the rules.
+Nothing above is edited.
+
+- *The ledger rebinds a closed scope that holds nothing.* An attach that names another
+  workspace takes over a scope that is closed cleanly and has no tree record, in the
+  attach's transaction, and the incarnation rule is the same. An open scope, a scope with
+  a tree record and a scope closed with unknown cleanup keep their workspace and answer
+  `WorkspaceMismatch`. The open scope is the protection for a live session, which in a
+  `shared` workspace has no tree record.
+- *A failed attach leaves a closed scope, not an open one.* An attach for a name the
+  executor does not serve creates a scope and cannot build its plane. The host closes it as
+  retired, since no plane means no call was admitted, and the source closes it too and
+  records the close. The reason of the refusal starts with a fixed sentence
+  (`protocol.unserved_workspace`) so that the source can tell it without a new refusal.
+- *A refusal that will not change abandons the move.* The checkout step used to report every
+  attach error as one that may pass, so the move stalled. A scope bound to another
+  workspace and a workspace the executor does not serve are now final: the move is
+  abandoned with the reason and the session is resident on the source again. A connection
+  failure, the fence and a plane still being built stay unfinished. In the same file a full
+  store on the executor is unfinished and no longer final, and the apply's refusals are
+  classified by naming every variant.
+
+The fix-the-file-and-restart recovery that slice 4c describes now works for a `shared`
+workspace and for a name the executor does not serve. One case is left. If the source dies
+after the attach for an unserved name and before it closes the scope, and the operator then
+corrects the name, the scope is open and bound to the old one. The move is refused for that
+workspace, which the refusal names, and the scope stays open. `loomd executor release`
+refuses an open scope, so nothing frees it yet. Letting `release` take an open scope is a
+few lines of the ledger and a state word in the release table, and is not built.
