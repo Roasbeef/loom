@@ -3493,8 +3493,7 @@ pub fn a_relayed_page_reads_its_image_with_the_headers_of_the_view_test() {
     assert early.raw == <<"unknown image":utf8>>
 
     let path = relayed_path(operator, "box", relayed_identity)
-    let status = relayed_socket(port, operator, path, operator.nonce).status
-    assert status == 298 || status == 299
+    assert relayed_socket(port, operator, path, operator.nonce).status == 280
     let answer = relayed_picture(port, operator, "box", "1.0", "0")
     assert answer.status == 200
     assert answer.raw == png_bytes
@@ -3516,8 +3515,7 @@ pub fn a_relayed_image_is_the_owners_and_names_a_configured_orchestrator_test() 
     let operator = enter(port, operator_home(port, credential))
     let observer = enter(port, home_link(port, credential, []))
     let path = relayed_path(operator, "box", relayed_identity)
-    let status = relayed_socket(port, operator, path, operator.nonce).status
-    assert status == 298 || status == 299
+    assert relayed_socket(port, operator, path, operator.nonce).status == 280
 
     // An orchestrator the daemon does not list, a page minted to read, a
     // malformed address and a fetch from another origin are all refused.
