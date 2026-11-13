@@ -577,7 +577,11 @@ pub type Route {
   /// Compact, the goal's mutations, a fork, proposals, memory, evolution and
   /// schedules), so the page does not draw them and does not ask for them. That
   /// orchestrator's refusal is the authority, and this is only the offer.
-  Relayed
+  Relayed(
+    /// The principal the page attached with, which the other orchestrator keeps
+    /// on every grant this page approves. The page offers Forget only on those.
+    page: String,
+  )
 }
 
 /// How the page was opened, for an owner's page that would otherwise draw the
@@ -4270,7 +4274,7 @@ fn chips(strip: strip.Strip) -> List(strip.Chip) {
 fn lane_failure(model: Model(socket)) -> Ending {
   case model.view.route {
     Local -> ending.ConnectionFailed
-    Relayed -> ending.PeerUnreachable
+    Relayed(..) -> ending.PeerUnreachable
   }
 }
 
@@ -4675,7 +4679,7 @@ fn judging(
 /// // component.ask_forget(model, armed)
 /// ```
 pub fn ask_forget(model: Model(socket), armed: holding.Armed) -> Model(socket) {
-  case may_remember(model) {
+  case may_remember(model) && forgettable(model, armed.forget) {
     True ->
       Model(
         ..model,
@@ -4716,8 +4720,31 @@ pub fn confirm_forget(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case model.view.holding.armed, may_remember(model) {
     None, _ | _, False -> #(model, effect.none())
+
+    // The choice is checked again against the list as it stands now, so a list
+    // that moved between the question and its confirm sends nothing the page did
+    // not offer.
     Some(open), True ->
-      commanded(cancel_forget(model), msg.Forget(forget: open.forget))
+      case forgettable(model, open.forget) {
+        True -> commanded(cancel_forget(model), msg.Forget(forget: open.forget))
+        False -> #(cancel_forget(model), effect.none())
+      }
+  }
+}
+
+/// Whether the page offers this forget. A local page offers every row. A relayed
+/// page offers one permission at a time and only a grant this page approved,
+/// because the other orchestrator withdraws no other: a consent, everything, and
+/// a grant that orchestrator's owner or another page approved are refused there,
+/// so the page never offers them (protocol-change/108).
+fn forgettable(model: Model(socket), forget: kept.Forget) -> Bool {
+  case model.view.route, permissions_kept(model), forget {
+    Local, _, _ -> True
+    Relayed(page:), Some(board), kept.ForgetPermission(wire:, ..) ->
+      list.any(board.grants, fn(grant) {
+        grant.wire == wire && kept.by_page(grant.provenance, page)
+      })
+    Relayed(..), _, _ -> False
   }
 }
 
@@ -4735,8 +4762,24 @@ pub fn confirm_forget(
 pub fn may_review_proposals(model: Model(socket)) -> Bool {
   case model.view.route, model.view.reader {
     // Proposals and memory are the box owner's, at the box.
-    Relayed, _ | Local, Participant -> False
+    Relayed(..), _ | Local, Participant -> False
     Local, DaemonOwner -> True
+  }
+}
+
+/// Whether the lane draws the links to a tool result's whole text. A relayed
+/// page does not: the box serves no result page for a feed, and the link would
+/// be a dead address on this daemon (protocol-change/108).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.result_links(model) == lane.Linked
+/// ```
+pub fn result_links(model: Model(socket)) -> lane.Links {
+  case model.view.route {
+    Local -> lane.Linked
+    Relayed(..) -> lane.Unlinked
   }
 }
 
@@ -5052,7 +5095,7 @@ pub fn evolution_reach(model: Model(socket)) -> evolving.Reach {
 pub fn want_evolution(model: Model(socket)) -> Model(socket) {
   case model.view.route {
     // The other orchestrator refuses evolution, so the page never asks.
-    Relayed -> model
+    Relayed(..) -> model
     Local -> wanting_evolution(model)
   }
 }
@@ -5305,7 +5348,7 @@ pub fn read_core_status(
   case model.view.route, model.view.reader {
     Local, DaemonOwner ->
       commanded(model, msg.Evolve(request: evolution.CoreStatus))
-    Local, Participant | Relayed, _ -> #(model, effect.none())
+    Local, Participant | Relayed(..), _ -> #(model, effect.none())
   }
 }
 
@@ -8060,6 +8103,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         marks(model),
         lane.Folds(FoldToggled, MessageToggled, expanded(model)),
         session_id(model),
+        result_links(model),
       ),
       plan(model),
       html.p([attribute.class("observer-bar")], [
@@ -8453,7 +8497,7 @@ pub fn heading(
 
       // The session's identity on the other orchestrator is not one this
       // daemon holds, so a command naming it would mint nothing.
-      Relayed -> ended.relayed(ended_ending(model.view.status))
+      Relayed(..) -> ended.relayed(ended_ending(model.view.status))
     },
     placement: placement.view(model.view.machine, current_code(model)),
   )

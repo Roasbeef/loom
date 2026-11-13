@@ -484,7 +484,7 @@ fn following_relayed() {
       standing: component.Standing(
         ..component.unplaced,
         machine: "box",
-        route: component.Relayed,
+        route: component.Relayed(page: "page-1"),
       ),
     ),
   )

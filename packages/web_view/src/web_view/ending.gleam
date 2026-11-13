@@ -72,6 +72,12 @@ pub type Ending {
   /// link and never a failure of the session (protocol-change/108, "When the
   /// link drops, and what the page shows").
   PeerUnreachable
+
+  /// The orchestrator that runs the session holds as many live pages for this
+  /// machine as it allows. An ended page counts until the box forgets it, a few
+  /// seconds after it closed, so a reload can meet the limit and clear on its
+  /// own. It is a wait and not a failure, so the browser retries.
+  PeerCrowded
 }
 
 /// How the page's WebSocket should end, for the client runtime that reads
@@ -103,6 +109,7 @@ pub fn all() -> List(Ending) {
     LinkExpired,
     ConnectionFailed,
     PeerUnreachable,
+    PeerCrowded,
   ]
 }
 
@@ -126,6 +133,7 @@ pub fn reason(ending: Ending) -> String {
     LinkExpired -> "the link expired"
     ConnectionFailed -> "the connection failed"
     PeerUnreachable -> "the orchestrator is not answering"
+    PeerCrowded -> "the orchestrator has no room for another page"
   }
 }
 
@@ -163,7 +171,11 @@ pub fn from_reason(given: String, otherwise otherwise: Ending) -> Ending {
 /// ```
 pub fn close(ending: Ending) -> Close {
   case ending {
-    NotOpen | DaemonNotReady | ConnectionFailed | PeerUnreachable -> Retry
+    NotOpen
+    | DaemonNotReady
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded -> Retry
     PageEnded | AccessRevoked | SessionStopped | LinkExpired -> Final
   }
 }
@@ -186,6 +198,8 @@ pub fn headline(ending: Ending) -> String {
     ConnectionFailed -> "The connection to the session failed."
     PeerUnreachable ->
       "The orchestrator that runs this session is not answering."
+    PeerCrowded ->
+      "The orchestrator that runs this session has all the live pages it allows."
   }
 }
 
@@ -258,6 +272,11 @@ pub fn advised(ending: Ending, session_id: String) -> Advice {
         None,
       )
     PeerUnreachable -> Advice("This page will reconnect.", None)
+    PeerCrowded ->
+      Advice(
+        "This machine has the most live pages of this session that it allows. One frees within a few seconds of closing, and this page keeps trying.",
+        None,
+      )
   }
 }
 
@@ -301,8 +320,11 @@ pub fn home_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
-    SessionStopped | NotOpen | ConnectionFailed | PeerUnreachable ->
-      "The connection to the daemon failed."
+    SessionStopped
+    | NotOpen
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded -> "The connection to the daemon failed."
   }
 }
 
@@ -335,7 +357,11 @@ pub fn home_advised(ending: Ending) -> Advice {
         command,
       )
     LinkExpired -> Advice("A link works once, within 60 seconds.", command)
-    SessionStopped | NotOpen | ConnectionFailed | PeerUnreachable ->
+    SessionStopped
+    | NotOpen
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded ->
       Advice(
         "Reload this page. If it fails again, it needs a new link.",
         command,
@@ -356,6 +382,7 @@ pub fn home_advised(ending: Ending) -> Advice {
 pub fn relayed_advice(ending: Ending) -> String {
   case ending {
     PeerUnreachable -> "This page will reconnect."
+    PeerCrowded -> sentence(advised(ending, ""))
     PageEnded
     | AccessRevoked
     | SessionStopped
@@ -381,8 +408,11 @@ pub fn admin_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
-    SessionStopped | NotOpen | ConnectionFailed | PeerUnreachable ->
-      "The connection to the daemon failed."
+    SessionStopped
+    | NotOpen
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded -> "The connection to the daemon failed."
   }
 }
 
@@ -419,7 +449,11 @@ pub fn admin_advised(ending: Ending) -> Advice {
       )
     LinkExpired ->
       Advice("A link works once, within 60 seconds." <> fresh, command)
-    SessionStopped | NotOpen | ConnectionFailed | PeerUnreachable ->
+    SessionStopped
+    | NotOpen
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded ->
       Advice(
         "Reload this page. If it fails again, it needs a new link." <> fresh,
         command,

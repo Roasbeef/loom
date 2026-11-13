@@ -25,7 +25,8 @@ pub fn every_ending_survives_its_reason_string_test() {
       | ending.NotOpen
       | ending.DaemonNotReady
       | ending.LinkExpired
-      | ending.PeerUnreachable -> ending.ConnectionFailed
+      | ending.PeerUnreachable
+      | ending.PeerCrowded -> ending.ConnectionFailed
     }
     assert ending.from_reason(ending.reason(reason), otherwise: other) == reason
   })
@@ -70,6 +71,7 @@ pub fn only_an_ending_that_may_clear_by_itself_is_retried_test() {
       ending.DaemonNotReady,
       ending.ConnectionFailed,
       ending.PeerUnreachable,
+      ending.PeerCrowded,
     ]
   assert ending.close(ending.PageEnded) == ending.Final
   assert ending.close(ending.AccessRevoked) == ending.Final
@@ -94,6 +96,10 @@ pub fn the_advice_names_the_command_for_the_session_test() {
       }
       ending.PeerUnreachable -> {
         assert string.contains(advice, "will reconnect")
+        assert !string.contains(advice, "loom ui")
+      }
+      ending.PeerCrowded -> {
+        assert string.contains(advice, "keeps trying")
         assert !string.contains(advice, "loom ui")
       }
       ending.PageEnded
@@ -194,4 +200,18 @@ pub fn an_orchestrator_that_is_not_answering_is_a_waiting_page_the_browser_retri
     == "The orchestrator that runs this session is not answering."
   assert ending.advice(ending.PeerUnreachable, "S")
     == "This page will reconnect."
+}
+
+// A box that holds the most live pages it allows is a wait with its own words,
+// which say what is true: the limit is this machine's, and it clears.
+pub fn a_box_that_has_no_room_is_a_wait_with_its_own_words_test() {
+  assert ending.close(ending.PeerCrowded) == ending.Retry
+  assert ending.headline(ending.PeerCrowded)
+    != ending.headline(ending.PeerUnreachable)
+  assert string.contains(
+    ending.advice(ending.PeerCrowded, "S"),
+    "most live pages",
+  )
+  assert ending.relayed_advice(ending.PeerCrowded)
+    == ending.advice(ending.PeerCrowded, "S")
 }

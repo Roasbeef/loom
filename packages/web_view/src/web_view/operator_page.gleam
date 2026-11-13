@@ -407,7 +407,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         refresh: Observed(component.ContextRefreshRequested),
         compact: case component.route(model) {
           component.Local -> Some(Controlled(component.CompactStrand))
-          component.Relayed -> None
+          component.Relayed(..) -> None
         },
       ),
     ),
@@ -437,13 +437,14 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           component.expanded(model),
         ),
         component.session_id(model),
+        component.result_links(model),
       ),
       side_panel(model),
       html.footer([attribute.class("dock")], [
         component.plan(model),
         case component.route(model) {
           component.Local -> controls.dock(bar(model))
-          component.Relayed -> element.none()
+          component.Relayed(..) -> element.none()
         },
         approvals(
           component.pending(model),
@@ -487,7 +488,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       ),
       case component.route(model) {
         component.Local -> controls.session(bar(model))
-        component.Relayed -> element.none()
+        component.Relayed(..) -> element.none()
       },
       component.rename_form(model, form_submit_text(Renaming)),
       case component.may_remember(model) {
@@ -498,7 +499,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
             remembered_view.Presses(
               offer: case component.route(model) {
                 component.Local -> remembered_view.Everything
-                component.Relayed -> remembered_view.SpawnerRows
+                component.Relayed(page:) -> remembered_view.PageGrants(page)
               },
               ask: AskingForget,
               confirm: ConfirmingForget,
@@ -537,17 +538,23 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           )
         False -> element.none()
       },
-      evolution_view.view(
-        component.evolution_page(model),
-        evolution_view.Presses(
-          ask: AskingEvolve,
-          approve: ConfirmingEvolve(""),
-          submit: form_submit_text(ConfirmingEvolve),
-          keep: CancellingEvolve,
-          read: ReadingEvolution,
-          core: ReadingCore,
-        ),
-      ),
+      // The other orchestrator refuses evolution and the page never reads it, so
+      // a relayed page would show loading words forever.
+      case component.route(model) {
+        component.Local ->
+          evolution_view.view(
+            component.evolution_page(model),
+            evolution_view.Presses(
+              ask: AskingEvolve,
+              approve: ConfirmingEvolve(""),
+              submit: form_submit_text(ConfirmingEvolve),
+              keep: CancellingEvolve,
+              read: ReadingEvolution,
+              core: ReadingCore,
+            ),
+          )
+        component.Relayed(..) -> element.none()
+      },
     ),
     component.needing(model),
     component.proposals_pending(model),

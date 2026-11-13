@@ -41,8 +41,9 @@ pub type Offer {
   /// Every row, and Forget all.
   Everything
 
-  /// The rows a spawner approved, and no Forget all.
-  SpawnerRows
+  /// The grants this page approved, one at a time, and no Forget all. The page
+  /// is a principal, which the other orchestrator recorded with each grant.
+  PageGrants(page: String)
 }
 
 /// The messages the section's buttons send.
@@ -123,7 +124,7 @@ fn body(
           ),
           case presses.offer {
             Everything -> everything(board, total, state, presses)
-            SpawnerRows -> element.none()
+            PageGrants(_) -> element.none()
           },
         ]
       }
@@ -193,7 +194,7 @@ fn row(
           presses,
         )
       Some(_) | None ->
-        case offered(presses.offer, provenance) {
+        case offered(presses.offer, provenance, armed.forget) {
           True ->
             html.div([attribute.class("share-actions")], [
               html.button(
@@ -215,12 +216,20 @@ fn row(
 }
 
 /// Whether a row offers its Forget button: every row does on a local page, and
-/// on a page of another orchestrator only the rows a spawner approved.
-fn offered(offer: Offer, provenance: session.Provenance) -> Bool {
-  case offer, provenance {
+/// on a page of another orchestrator only a permission this page approved, since
+/// that orchestrator withdraws no consent and no other grant.
+fn offered(
+  offer: Offer,
+  provenance: session.Provenance,
+  forget: session.Forget,
+) -> Bool {
+  case offer, forget {
     Everything, _ -> True
-    SpawnerRows, session.Spawner(..) -> True
-    SpawnerRows, session.Approved(..) | SpawnerRows, session.Unknown -> False
+    PageGrants(page:), session.ForgetPermission(..) ->
+      session.by_page(provenance, page)
+    PageGrants(_), session.ForgetConsent(..)
+    | PageGrants(_), session.ForgetEverything(..)
+    -> False
   }
 }
 

@@ -350,6 +350,22 @@ pub fn login(provenance: Provenance) -> Option(#(String, String)) {
   }
 }
 
+/// Whether a grant was approved through the page of the principal `page`, as
+/// the other orchestrator's spawner recorded it. A relayed page offers Forget
+/// on these alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !remembered.by_page(remembered.Unknown, "page-1")
+/// ```
+pub fn by_page(provenance: Provenance, page: String) -> Bool {
+  case provenance {
+    Spawner(principal: Some(principal), ..) -> principal == page
+    Spawner(principal: None, ..) | Approved(..) | Unknown -> False
+  }
+}
+
 /// The words for what a permission permits.
 ///
 /// ## Examples
