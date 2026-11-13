@@ -958,7 +958,17 @@ fn landed(
     )
   }
 
-  use Nil <- result.try(refused_before(node, name))
+  // A verdict is written before the session is ended, so an ask that arrives
+  // between the two finds a verdict and a session. It ends the session, which does
+  // nothing when it is already gone, because the asker it answers will not ask
+  // again.
+  use Nil <- result.try(
+    refused_before(node, name)
+    |> result.map_error(fn(refusal) {
+      let _released = children.release(spawner, parent, name)
+      refusal
+    }),
+  )
   use begun <- result.try(children.open(spawner, parent, name))
 
   // A child that has begun is a resend of a spawn that went through.

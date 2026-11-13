@@ -1025,11 +1025,17 @@ pub fn a_refusal_of_the_content_is_kept_and_ends_the_session_test() {
   assert string.contains(reason, "does not take this state")
   assert journal_is(world, [Resolved(world.child), Released(world.child)])
 
-  // The resend is answered with the kept refusal and touches nothing.
+  // The resend is answered with the kept refusal and applies nothing. It also ends
+  // the session again, which is what an ask that arrives between the verdict and
+  // the end of the session needs, and which does nothing when the session is gone.
   let assert Ok(Error(remote_spawn.StateRefused(again))) = ask_spawn(world)
   assert again == reason
   assert cell.get(world.applies) == 1
-  assert journal_is(world, [Resolved(world.child), Released(world.child)])
+  assert journal_is(world, [
+    Resolved(world.child),
+    Released(world.child),
+    Released(world.child),
+  ])
   stop(world)
 }
 
