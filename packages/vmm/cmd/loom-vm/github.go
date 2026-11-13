@@ -105,11 +105,12 @@ func (g *githubFlags) apply(spec *machine.Spec, timeout time.Duration) (func(), 
 }
 
 // tokenRemedies is what a developer can do when the host has no token to give
-// the proxy. The flags are `loom vm up` and `loom vm ensure` spellings, since
-// that is where a developer meets this error: loom-vm's own flag is
-// --github-token-from, and `loom vm` maps --github gh, env and off onto it.
-const tokenRemedies = "Run `gh auth login`, or pass `--github env` with " +
-	githubTokenEnv + " set, or pass `--github off` for a guest with no GitHub access"
+// the proxy. The developer meets this error through `loom --vm`, `loom run
+// --vm` or `loom vm ensure|up`, and each takes --github, which maps onto
+// loom-vm's own --github-token-from: gh, env and off.
+const tokenRemedies = "Run `gh auth login`, or pass `--github env` to `loom --vm`, " +
+	"`loom run --vm` or `loom vm ensure|up` with " + githubTokenEnv +
+	" set, or pass `--github off` for a guest with no GitHub access"
 
 // readGitHubToken fetches the token from the host. The value is returned to
 // the caller and nowhere else: it is not logged and not placed in an error.

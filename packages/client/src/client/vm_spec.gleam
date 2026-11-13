@@ -1253,6 +1253,25 @@ pub fn stranded_runners(
   state_disk: String,
   runner: Option(String),
 ) -> List(Int) {
+  stranded_runners_under(
+    listing,
+    root,
+    state_disk,
+    option.map(runner, fn(path) { [path <> " "] }),
+  )
+}
+
+/// `stranded_runners` for a manifest that may not be the only one a live guest
+/// was started from. Setup moves the manifest to `cache/<new tag>` while guests
+/// of the old release keep running, and such a guest's runner no longer starts
+/// with the current manifest's path, so each prefix given counts: the manifest's
+/// runner and the vm home's cache directory. `None` is the JSON alone.
+pub fn stranded_runners_under(
+  listing: String,
+  root: String,
+  state_disk: String,
+  prefixes: Option(List(String)),
+) -> List(Int) {
   let names_root = "\"root_path\":\"" <> root <> "\""
   let names_disk = "\"path\":\"" <> state_disk <> "\""
 
@@ -1270,8 +1289,8 @@ pub fn stranded_runners(
 
     // Only a command that starts with the manifest's runner counts when the
     // manifest is at hand.
-    let started_by_runner = case runner {
-      Some(path) -> string.starts_with(command, path <> " ")
+    let started_by_runner = case prefixes {
+      Some(paths) -> list.any(paths, string.starts_with(command, _))
       None -> True
     }
 
@@ -3171,9 +3190,6 @@ pub type EnsureStep {
   /// `daemon_required_status`.
   NeedsDaemon
 
-  /// Install this build's release, then decide again.
-  NeedsSetup
-
   /// Run `up` for the guest, fresh or resumed.
   Boot
 
@@ -3216,34 +3232,31 @@ fn stopped_step(facts: EnsureFacts) -> EnsureStep {
   case facts.manifest {
     Error(reason) -> Refuse(reason)
     Ok(RefuseManifest(reason)) -> Refuse(reason)
-    Ok(action) -> usable_step(action, facts.enrolment, facts.daemon)
+    Ok(_) -> usable_step(facts.enrolment, facts.daemon)
   }
 }
 
 /// The step once the manifest is usable or installable: the daemon question
-/// comes before setup so that its answer leaves the disk unchanged.
-fn usable_step(
-  action: ManifestAction,
-  enrolment: EnrolmentNeed,
-  daemon: DaemonFact,
-) -> EnsureStep {
-  // A join with the daemon down is reported first. Otherwise a manifest that
-  // still has to be installed starts setup, and a usable one boots.
-  case enrolment, daemon, action {
-    JoinsLedger, DaemonStopped, _ -> NeedsDaemon
-    _, _, InstallRelease(_) -> NeedsSetup
-    _, _, _ -> Boot
+/// comes first so that its answer leaves the disk unchanged. Setup itself is
+/// not a step of its own: `bring_up` installs a missing or stale manifest as
+/// `up` does, so a `Boot` covers it.
+fn usable_step(enrolment: EnrolmentNeed, daemon: DaemonFact) -> EnsureStep {
+  // A join with the daemon down is reported first; anything else boots.
+  case enrolment, daemon {
+    JoinsLedger, DaemonStopped -> NeedsDaemon
+    _, _ -> Boot
   }
 }
 
 /// Why `ensure` will not start a guest whose process is there and whose node is
-/// not in epmd.
+/// not ready: still booting, since the node is listed before the console says
+/// the executor serves, or failed.
 fn starting_refusal(name: String, pid: Int) -> String {
   "the guest "
   <> name
   <> " runs as process "
   <> int.to_string(pid)
-  <> " but its executor is not registered yet, so it is still booting or it "
+  <> " but its executor is not ready yet, so it is still booting or it "
   <> "failed. Wait and run this again, or stop it with `loom vm down --name "
   <> name
   <> "` and read `loom vm logs --name "
@@ -3316,6 +3329,175 @@ pub fn restart_refusal(outcome: DaemonOutcome) -> Result(Nil, String) {
         <> " when it holds none.",
       )
   }
+}
+
+// --- what a first guest may write, and what a kept one still owes --------------
+
+/// Whether the home already has an `.erlang.cookie`.
+pub type HomeCookie {
+  NoHomeCookie
+  HomeCookieThere
+}
+
+/// Decides, before anything is minted, whether a deployment can be installed in
+/// a configuration that holds none. A deployment's cookie is minted fresh, so
+/// it can never equal a file that already exists, and `install` refuses to
+/// replace that file. Deciding it here leaves nothing behind: the bundles and
+/// the sealed key are written only after this answers `Ok`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.mint_check(vm_spec.NoHomeCookie, "/h/.erlang.cookie") == Ok(Nil)
+/// assert result.is_error(vm_spec.mint_check(vm_spec.HomeCookieThere, "/h/.erlang.cookie"))
+/// ```
+pub fn mint_check(cookie: HomeCookie, path: String) -> Result(Nil, String) {
+  case cookie {
+    NoHomeCookie -> Ok(Nil)
+    HomeCookieThere -> Error(cookie_refusal(path))
+  }
+}
+
+/// The refusal for a home that has a cookie already. It says what the choice
+/// costs, because the file is the one every other Erlang node of the user reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.cookie_refusal("/h/.erlang.cookie"), "nothing was written")
+/// ```
+pub fn cookie_refusal(path: String) -> String {
+  path
+  <> " already exists, and a guest's deployment needs its own cookie there. "
+  <> "Erlang reads that one file for every distributed node this user starts, "
+  <> "so `loom vm` will not replace it, and nothing was written. If no other "
+  <> "Erlang, Elixir or Gleam node of yours relies on that cookie, move it "
+  <> "aside and run this again; otherwise this home cannot host a guest's "
+  <> "deployment."
+}
+
+/// What a guest with both of its bundles owes the configuration.
+pub type KeptStep {
+  /// The configuration holds no deployment, as after a refused install: the
+  /// bundles are installed now, which is the install that was refused.
+  InstallKept
+
+  /// The configuration holds a deployment: only the guest's row is checked.
+  CheckKeptRow
+}
+
+/// Decides what a resumed guest with orchestrator bundles does about the
+/// configuration. A deployment that is there means the earlier `up` installed
+/// it and the row is what must still exist. One that is not there means the
+/// earlier `up` minted the bundles and its install was refused, so reporting a
+/// missing row would be false: the bundles are installed instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.kept_step(Ok(vm_spec.NoDeployment)) == vm_spec.InstallKept
+/// ```
+pub fn kept_step(state: Result(DeploymentState, String)) -> KeptStep {
+  case state {
+    Ok(NoDeployment) -> InstallKept
+    Ok(LedgerDeployment(..)) | Ok(StaticDeployment) | Error(_) -> CheckKeptRow
+  }
+}
+
+/// Whether a `deployment.status` reply says the daemon runs without
+/// distribution, which means it has not read a `[distribution]` table. A reply
+/// that says nothing about it is not read as lacking it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.lacks_distribution(core_json.Object([#("distribution", core_json.String("none"))]))
+/// ```
+pub fn lacks_distribution(body: core_json.JsonValue) -> Bool {
+  case body {
+    core_json.Object(fields) ->
+      list.key_find(fields, "distribution") == Ok(core_json.String("none"))
+    _ -> False
+  }
+}
+
+/// The refusal for a guest enrolled in a configuration other than the default,
+/// whose daemon `ensure` cannot find or ask.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.other_config_refusal("/c/loom.toml"), "/c/loom.toml")
+/// ```
+pub fn other_config_refusal(config: String) -> String {
+  "the guest is enrolled in "
+  <> config
+  <> ", which is not the default configuration, so `ensure` cannot tell whether "
+  <> "the daemon running with it has read the deployment; restart that daemon "
+  <> "once to enable microVMs"
+}
+
+/// Why a serving guest is refused: its root came from another release than
+/// this build, so the executor protocol would be refused with no remedy. A
+/// development manifest keeps a root, as `root_step` does, and a build with no
+/// commit to compare cannot tell, so neither is refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.serving_release_refusal("vm", Some("abc1234"), "def5678", Some("def5678"))
+///   != Ok(Nil)
+/// ```
+pub fn serving_release_refusal(
+  name: String,
+  recorded: Option(String),
+  commit: String,
+  manifest_revision: Option(String),
+) -> Result(Nil, String) {
+  let comparable =
+    string.byte_size(commit) >= 7
+    && list.all(string.to_graphemes(commit), string.contains(
+      "0123456789abcdef",
+      _,
+    ))
+  let dev = manifest_revision == Some(dev_revision)
+
+  // The record is the host's own account of what the root was cloned from.
+  case comparable && !dev, recorded {
+    False, _ -> Ok(Nil)
+    True, Some(origin) if origin == commit -> Ok(Nil)
+    True, Some(origin) ->
+      case same_commit(origin, commit) {
+        True -> Ok(Nil)
+        False -> Error(stale_serving(name, Some(origin), commit))
+      }
+    True, None -> Error(stale_serving(name, None, commit))
+  }
+}
+
+/// The refusal for a serving guest whose root is from another release: what it
+/// came from, what this build is, and the command that stops it.
+fn stale_serving(
+  name: String,
+  origin: Option(String),
+  commit: String,
+) -> String {
+  // A root from before the record has no revision to name.
+  let from = case origin {
+    Some(origin) -> "revision " <> printable(origin)
+    None -> "an earlier loom that recorded none"
+  }
+
+  "the guest "
+  <> name
+  <> " runs a root cloned from "
+  <> from
+  <> " and this loom is "
+  <> printable(commit)
+  <> ", so a session on it would be refused on the protocol version. Stop it "
+  <> "with `loom vm down --name "
+  <> name
+  <> "`; the next start upgrades its root."
 }
 
 // --- the pid file and the epmd listing ---------------------------------------

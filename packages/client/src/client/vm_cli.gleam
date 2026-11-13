@@ -227,7 +227,10 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             microVM artifacts when they are missing or from another release,
             then boots the guest as up does, resuming one that ran before.
             --github, --allow and --config mean what they mean for up, and a
-            resume keeps the access and hosts the guest was started with.
+            resume keeps the access and hosts the guest was started with. A
+            guest that already serves ignores --github and --allow, and says
+            so. A guest whose root came from another release, or whose
+            executor is still booting, is refused with the command to run.
             Progress goes to standard error. The last line of standard output
             is `executor=NAME workspace=NAME`, the words `loom --executor E
             --workspace W` takes. Exit status 75 with the line `daemon=required`
@@ -767,13 +770,31 @@ fn ensure(options: UpOptions) -> Result(String, EnsureFailure) {
   let line = vm_spec.ensure_line(name, workspace.name)
   use facts <- result.try(ensure_facts(vm_home, options))
 
+  // A serving guest is answered without the lock, so the common call costs
+  // reads only. Anything else may write, so it takes the guest's lock and
+  // decides again once it holds it.
+  case vm_spec.ensure_step(facts) {
+    vm_spec.AlreadyServing -> serving(vm_home, options, name, line)
+    _ ->
+      exclusive(vm_home, name, fn() { decided(vm_home, options, name, line) })
+  }
+}
+
+/// Decides from the facts as they are now, with the guest's lock held, and
+/// carries the decision out. A caller that waited for the lock finds the guest
+/// already serving when the holder succeeded.
+fn decided(
+  vm_home: String,
+  options: UpOptions,
+  name: String,
+  line: String,
+) -> Result(String, EnsureFailure) {
+  use facts <- result.try(ensure_facts(vm_home, options))
+
   // `ensure_step` is the whole decision; each arm only carries it out and
   // says which step ran.
   case vm_spec.ensure_step(facts) {
-    vm_spec.AlreadyServing -> {
-      progress(name, "already serving, nothing to do")
-      Ok(line)
-    }
+    vm_spec.AlreadyServing -> serving(vm_home, options, name, line)
     vm_spec.NeedsDaemon ->
       Error(DaemonRequired(
         "the guest "
@@ -781,22 +802,125 @@ fn ensure(options: UpOptions) -> Result(String, EnsureFailure) {
         <> " would join the ledger deployment of your configuration, which "
         <> "needs its daemon running; `ensure` starts none",
       ))
-    vm_spec.NeedsSetup -> {
-      progress(name, "installing the microVM artifacts for this build")
-      use _ <- result.try(
-        install_artifacts(vm_home, vm_spec.OwnRelease)
-        |> result.map_error(Refused),
-      )
-      boot_ensured(options, name, line)
-    }
     vm_spec.Boot -> boot_ensured(options, name, line)
     vm_spec.Refuse(reason) -> Error(Refused(reason))
   }
 }
 
+/// The answer for a guest that serves: its root must come from this build, and
+/// flags that would change how it started are said to be ignored.
+fn serving(
+  vm_home: String,
+  options: UpOptions,
+  name: String,
+  line: String,
+) -> Result(String, EnsureFailure) {
+  let guest = instance(vm_home, name)
+  use recorded <- result.try(
+    recorded_root_revision(guest) |> result.map_error(Refused),
+  )
+
+  // A manifest that cannot be read leaves the `dev` exception unknown, and the
+  // comparison then stands on the record and the build alone.
+  let manifest = case read_manifest_if_present(vm_home) {
+    Ok(Some(manifest)) -> Some(manifest.revision)
+    Ok(None) | Error(_) -> None
+  }
+
+  use Nil <- result.try(
+    vm_spec.serving_release_refusal(
+      name,
+      recorded,
+      build_identity.current().commit,
+      manifest,
+    )
+    |> result.map_error(Refused),
+  )
+
+  // The fast path writes nothing, so a flag that would change the guest cannot
+  // take effect, and saying so is better than ignoring it silently.
+  case options.github, options.allow {
+    None, [] -> Nil
+    _, _ ->
+      progress(
+        name,
+        "--github and --allow are ignored while the guest serves; stop it with "
+          <> "`loom vm down --name "
+          <> name
+          <> "` and run this again to change them",
+      )
+  }
+
+  progress(name, "already serving, nothing to do")
+  Ok(line)
+}
+
+/// Runs `work` with the guest's lock held, so two `ensure` calls for one
+/// workspace never stage one root together. The lock is a kernel lock on
+/// `<vm home>/<name>.lock` that dies with the process; a caller that finds it
+/// busy waits for the holder, up to the longest boot, and then reads the facts
+/// again.
+fn exclusive(
+  vm_home: String,
+  name: String,
+  work: fn() -> Result(String, EnsureFailure),
+) -> Result(String, EnsureFailure) {
+  use Nil <- result.try(
+    simplifile.create_directory_all(vm_home)
+    |> result.map_error(fn(error) {
+      Refused(vm_home <> " is unwritable: " <> simplifile.describe_error(error))
+    }),
+  )
+  let path = vm_home <> "/" <> name <> ".lock"
+  use lock <- result.try(acquire(path, name))
+  let outcome = work()
+  bootstrap.release_launch_lock(lock)
+  outcome
+}
+
+/// Takes the lock at `path`, waiting while another call holds it.
+fn acquire(
+  path: String,
+  name: String,
+) -> Result(bootstrap.LaunchLock, EnsureFailure) {
+  // The first try is made before saying anything, so an uncontended call is
+  // silent.
+  case bootstrap.try_launch_lock(path) {
+    Ok(lock) -> Ok(lock)
+    Error("busy") -> {
+      progress(name, "another loom is starting this guest; waiting for it")
+      wait_for(path)
+    }
+    Error(reason) -> Error(Refused(path <> ": " <> reason))
+  }
+}
+
+/// Polls for the lock at `path` until the holder lets go or the longest boot
+/// has passed.
+fn wait_for(path: String) -> Result(bootstrap.LaunchLock, EnsureFailure) {
+  let waited =
+    poll.until(within: vm_spec.provision_budget_ms, every: 250, attempt: fn() {
+      case bootstrap.try_launch_lock(path) {
+        Ok(lock) -> poll.Done(lock)
+        Error("busy") -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+
+  // The wait ends with the lock, a reason, or the end of the budget.
+  case waited {
+    poll.Answered(lock) -> Ok(lock)
+    poll.Failed(reason) -> Error(Refused(path <> ": " <> reason))
+    poll.Expired ->
+      Error(Refused(
+        "another loom still holds " <> path <> " after the boot budget",
+      ))
+  }
+}
+
 /// Boots the guest through `up`'s own path, then refuses when the user's daemon
-/// was left running without the table the guest needs. The guest stays up in
-/// that case, so the next `ensure` after the restart is the fast path.
+/// has not read the deployment the guest needs. The guest stays up in that
+/// case, so the next `ensure` after the restart is the fast path.
 fn boot_ensured(
   options: UpOptions,
   name: String,
@@ -805,24 +929,50 @@ fn boot_ensured(
   progress(name, "booting the guest")
   use upped <- result.try(bring_up(options) |> result.map_error(Refused))
   progress(name, "the guest serves port " <> int.to_string(upped.port))
-
-  // Only a daemon this call missed is asked to restart; `ensure_restart`
-  // answers none for a guest that was resumed or joined.
   use Nil <- result.try(
-    ensure_restart(upped.enrolled)
-    |> restart_outcome
-    |> vm_spec.restart_refusal
-    |> result.map_error(Refused),
+    restart_check(upped.enrolled) |> result.map_error(Refused),
   )
   Ok(line)
 }
 
-/// The daemon outcome a restart decision carries, or none for the cases that
-/// need no restart.
-fn restart_outcome(restart: Restart) -> vm_spec.DaemonOutcome {
-  case restart {
-    Daemon(outcome) -> outcome
-    NoRestart | OtherDaemon -> vm_spec.NoDaemon
+/// Whether the user's daemon must restart to read the deployment, answered as
+/// the refusal that says so, or Ok when it need not.
+///
+/// A deployment this call installed can have been missed by a running daemon.
+/// So can one an earlier call installed whose boot then failed, which is why a
+/// resumed guest asks the daemon whether it runs with distribution at all. A
+/// guest that joined a ledger is derived by the daemon and needs nothing. A
+/// configuration other than the default belongs to a daemon `ensure` cannot
+/// ask, so a daemon that runs after the install is told to restart.
+fn restart_check(enrolled: Enrolled) -> Result(Nil, String) {
+  case enrolled.row, enrolled.file {
+    Derived, _ -> Ok(Nil)
+    Resumed, OtherConfigFile -> Ok(Nil)
+    Resumed, DefaultConfigFile ->
+      case daemon_lacks_distribution() {
+        True -> vm_spec.restart_refusal(daemon_outcome())
+        False -> Ok(Nil)
+      }
+    Written, DefaultConfigFile -> vm_spec.restart_refusal(daemon_outcome())
+    Written, OtherConfigFile ->
+      case running_fence() {
+        Some(_) -> Error(vm_spec.other_config_refusal(enrolled.config))
+        None -> Ok(Nil)
+      }
+  }
+}
+
+/// Whether the running default daemon says it has no distribution, which means
+/// it has not read a `[distribution]` table. No daemon, or one that does not
+/// answer, is not claimed to lack it.
+fn daemon_lacks_distribution() -> Bool {
+  case running_fence() {
+    None -> False
+    Some(_) ->
+      case ask_daemon("deployment.status") {
+        Ok(body) -> vm_spec.lacks_distribution(body)
+        Error(_) -> False
+      }
   }
 }
 
@@ -854,28 +1004,46 @@ fn ensure_facts(
 
   Ok(vm_spec.EnsureFacts(
     name:,
-    state: vm_spec.guest_state(pid, registration_of(names)),
+    state: vm_spec.guest_state(pid, registration_of(names, guest)),
     manifest: manifest_decision(vm_home),
     enrolment: enrolment_need(guest, names, options),
     daemon: daemon_fact(),
   ))
 }
 
-/// Whether the host epmd lists the guest's executor node. An epmd that cannot
-/// be run lists nothing, which reads as not registered: a guest that cannot be
-/// confirmed is not claimed to serve.
-fn registration_of(names: vm_spec.Names) -> vm_spec.Registration {
+/// Whether the guest's executor serves: the host epmd lists its node and its
+/// console says the executor is ready. `loom-vm` registers the node right after
+/// it starts the guest, long before the executor serves (a provisioning script
+/// can take half an hour), so the listing alone would call a booting guest
+/// serving. The console is the witness `await_ready` uses, and it is truncated
+/// at every launch. An epmd that cannot be run lists nothing, which reads as
+/// not registered: a guest that cannot be confirmed is not claimed to serve.
+fn registration_of(
+  names: vm_spec.Names,
+  guest: Instance,
+) -> vm_spec.Registration {
   let listing = tool("epmd", ["-names"], within: quick_ms)
 
-  // Only a listing that names the node counts.
+  // Only a listing that names the node counts, and then only a ready console.
   case listing {
     Ok(listing) ->
-      case vm_spec.registered_port(listing, names.executor_short) {
-        Some(_) -> vm_spec.Registered
-        None -> vm_spec.Unregistered
+      case
+        vm_spec.registered_port(listing, names.executor_short),
+        console_ready(guest)
+      {
+        Some(_), True -> vm_spec.Registered
+        _, _ -> vm_spec.Unregistered
       }
     Error(_) -> vm_spec.Unregistered
   }
+}
+
+/// Whether the guest's console holds the line that says its executor serves.
+fn console_ready(guest: Instance) -> Bool {
+  string.contains(
+    result.unwrap(simplifile.read(guest.log), ""),
+    vm_spec.ready_marker,
+  )
 }
 
 /// Whether the daemon of the default state directory runs.
@@ -1271,9 +1439,18 @@ fn begin(
   // The state of the file is the decision: no deployment to belong to, a
   // ledger to be enrolled in, or peers that nothing can be added to.
   case state {
-    vm_spec.NoDeployment ->
+    vm_spec.NoDeployment -> {
+      // The cookie conflict is decided before anything is written: a minted
+      // cookie never equals a file that exists, and the install refuses to
+      // replace it, which would leave bundles and a sealed key behind.
+      use home <- result.try(home())
+      use Nil <- result.try(vm_spec.mint_check(
+        cookie_file(home),
+        home <> "/.erlang.cookie",
+      ))
       provision(vm_home, guest, names)
       |> result.map(fn(pair) { Minted(pair.0, pair.1) })
+    }
     vm_spec.LedgerDeployment(ledger:) ->
       join(vm_home, guest, names, Joining(config:, file:, text:, ledger:))
     vm_spec.StaticDeployment ->
@@ -1284,6 +1461,14 @@ fn begin(
         <> "ledger mode, or `loom vm rm` the guest that minted it and run "
         <> "`loom vm up` again.",
       )
+  }
+}
+
+/// Whether the home already has the cookie every Erlang node of the user reads.
+fn cookie_file(home: String) -> vm_spec.HomeCookie {
+  case bootstrap.path_exists(home <> "/.erlang.cookie") {
+    True -> vm_spec.HomeCookieThere
+    False -> vm_spec.NoHomeCookie
   }
 }
 
@@ -1751,9 +1936,30 @@ fn enroll(
   // what has to still be there.
   case deployed {
     Reused(orchestrator: Some(orchestrator), ..) ->
-      still_enrolled(orchestrator, config, file)
+      kept_enrolment(orchestrator, config, home, file)
     Minted(orchestrator:, ..) -> install(orchestrator, config, home, file)
     Reused(orchestrator: None, ..) -> Ok(Enrolled(config:, file:, row: Derived))
+  }
+}
+
+/// What a guest with orchestrator bundles owes the configuration. When the
+/// file holds a deployment, an earlier `up` installed it and only the row is
+/// checked. When it holds none, an earlier `up` minted the bundles and its
+/// install was refused, so they are installed now (`vm_spec.kept_step`).
+fn kept_enrolment(
+  orchestrator: Bundle,
+  config: String,
+  home: String,
+  file: ConfigFile,
+) -> Result(Enrolled, String) {
+  // A configuration that does not exist yet holds no deployment.
+  let text = result.unwrap(simplifile.read(config), "")
+
+  // The install is `RefuseExisting`, so a table or cookie that conflicts is
+  // refused here exactly as it was the first time.
+  case vm_spec.kept_step(vm_spec.deployment_state(text)) {
+    vm_spec.InstallKept -> install(orchestrator, config, home, file)
+    vm_spec.CheckKeptRow -> still_enrolled(orchestrator, config, file)
   }
 }
 
@@ -1819,11 +2025,12 @@ fn install(
       <> orchestrator_executor(orchestrator)
       <> "] table or a cookie that differs from the deployment's. If a guest "
       <> "made the conflicting one, `loom vm rm --name NAME` removes it. "
-      <> "Otherwise remove it from "
+      <> "Otherwise remove the table from "
       <> config
-      <> " (the cookie is "
+      <> " or give `--config` another file. The cookie, "
       <> home
-      <> "/.erlang.cookie), or give `--config` another file."
+      <> "/.erlang.cookie, is read by every Erlang node of yours: move it "
+      <> "aside only if none relies on it."
     }),
   )
   use text <- result.try(
@@ -2254,8 +2461,20 @@ fn stranded_in(
   let listing =
     tool("ps", ["-axww", "-o", "pid=,ppid=,command="], within: quick_ms)
     |> result.unwrap("")
+
+  // A runner counts when it is the current manifest's or lives in the vm
+  // home's cache. Setup moves the manifest to `cache/<new tag>` while guests of
+  // the old release keep running, and the runner of such a guest, once its
+  // launcher is killed, would no longer match the manifest alone.
+  let cache = filepath.directory_name(guest.directory) <> "/cache/"
+  let prefixes = option.map(runner, fn(path) { [path <> " ", cache] })
   let pids =
-    vm_spec.stranded_runners(listing, guest.root, guest.state_disk, runner)
+    vm_spec.stranded_runners_under(
+      listing,
+      guest.root,
+      guest.state_disk,
+      prefixes,
+    )
   #(pids, vm_spec.certainty_of(runner))
 }
 
@@ -2944,16 +3163,6 @@ fn restart_after(enrolled: Enrolled) -> Restart {
     Written, OtherConfigFile | Resumed, OtherConfigFile -> OtherDaemon
     Written, DefaultConfigFile | Resumed, DefaultConfigFile ->
       Daemon(daemon_outcome())
-  }
-}
-
-/// What `ensure` does about the daemon: only a deployment this call installed
-/// can have been missed by a running daemon, so a resumed row asks for no
-/// restart. Otherwise it is `restart_after`, which stops an idle daemon.
-fn ensure_restart(enrolled: Enrolled) -> Restart {
-  case enrolled.row {
-    Resumed -> NoRestart
-    Written | Derived -> restart_after(enrolled)
   }
 }
 

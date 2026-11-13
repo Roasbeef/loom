@@ -7,6 +7,7 @@
 //// red run is the same red run everywhere.
 
 import client/vm_spec
+import core/json as core_json
 import gleam/bit_array
 import gleam/crypto
 import gleam/list
@@ -92,14 +93,16 @@ pub fn a_stopped_guest_with_a_usable_manifest_boots_test() {
     == vm_spec.Boot
 }
 
-pub fn a_stopped_guest_with_no_current_manifest_sets_up_first_test() {
+pub fn a_stopped_guest_with_no_current_manifest_boots_and_up_sets_up_test() {
+  // Setup is not a step of its own: `bring_up` installs a missing or stale
+  // manifest as `up` does, so the step is a boot.
   assert vm_spec.ensure_step(facts(
       vm_spec.GuestStopped,
       Ok(vm_spec.InstallRelease("stale")),
       vm_spec.NeedsNoDaemon,
       vm_spec.DaemonStopped,
     ))
-    == vm_spec.NeedsSetup
+    == vm_spec.Boot
 }
 
 pub fn a_join_without_a_daemon_is_reported_before_any_setup_test() {
@@ -390,4 +393,113 @@ pub fn guest_names_never_collide_with_the_authority_directory_test() {
   assert result.is_ok(
     vm_spec.valid_name(vm_spec.guest_name_for("/src/authority")),
   )
+}
+
+// --- a first guest in a home that has a cookie ---------------------------------
+
+pub fn a_home_with_a_cookie_is_refused_before_anything_is_written_test() {
+  assert vm_spec.mint_check(vm_spec.NoHomeCookie, "/h/.erlang.cookie")
+    == Ok(Nil)
+  let assert Error(reason) =
+    vm_spec.mint_check(vm_spec.HomeCookieThere, "/h/.erlang.cookie")
+
+  // The refusal says nothing was written, and says what the choice costs.
+  assert string.contains(reason, "/h/.erlang.cookie already exists")
+  assert string.contains(reason, "nothing was written")
+  assert string.contains(reason, "every distributed node this user starts")
+  assert string.contains(reason, "relies on that cookie")
+}
+
+pub fn bundles_kept_from_a_refused_install_are_installed_not_checked_test() {
+  // No deployment in the file: the earlier install was refused, so a missing
+  // row would be a false report.
+  assert vm_spec.kept_step(Ok(vm_spec.NoDeployment)) == vm_spec.InstallKept
+  assert vm_spec.kept_step(Ok(vm_spec.LedgerDeployment("/l")))
+    == vm_spec.CheckKeptRow
+  assert vm_spec.kept_step(Ok(vm_spec.StaticDeployment)) == vm_spec.CheckKeptRow
+  assert vm_spec.kept_step(Error("bad toml")) == vm_spec.CheckKeptRow
+}
+
+// --- whether the daemon has read the deployment ----------------------------------
+
+pub fn a_daemon_that_says_none_has_no_distribution_test() {
+  assert vm_spec.lacks_distribution(
+    core_json.Object([#("distribution", core_json.String("none"))]),
+  )
+  assert !vm_spec.lacks_distribution(
+    core_json.Object([#("distribution", core_json.String("configured"))]),
+  )
+
+  // A reply that says nothing is not read as lacking it.
+  assert !vm_spec.lacks_distribution(core_json.Object([]))
+  assert !vm_spec.lacks_distribution(core_json.String("none"))
+}
+
+pub fn another_configuration_is_named_in_its_refusal_test() {
+  let reason = vm_spec.other_config_refusal("/c/loom.toml")
+  assert string.contains(reason, "/c/loom.toml")
+  assert string.contains(reason, "restart that daemon once")
+}
+
+// --- a serving guest from another release ----------------------------------------------
+
+pub fn a_serving_guest_from_another_release_is_refused_test() {
+  let long = "def5678def5678def5678def5678def5678def5"
+  let assert Error(reason) =
+    vm_spec.serving_release_refusal("g-1", Some("abc1234"), long, Some(long))
+  assert string.contains(reason, "revision abc1234")
+  assert string.contains(reason, "loom vm down --name g-1")
+  assert string.contains(reason, "upgrades its root")
+
+  // A root from before the record has no revision to name.
+  let assert Error(none) =
+    vm_spec.serving_release_refusal("g-1", None, long, Some(long))
+  assert string.contains(none, "recorded none")
+}
+
+pub fn a_serving_guest_of_this_build_is_left_alone_test() {
+  let long = "def5678def5678def5678def5678def5678def5"
+  assert vm_spec.serving_release_refusal("g", Some("def5678"), long, Some(long))
+    == Ok(Nil)
+  assert vm_spec.serving_release_refusal("g", Some(long), long, None) == Ok(Nil)
+}
+
+pub fn a_development_manifest_or_an_unknown_commit_keeps_a_root_test() {
+  let long = "def5678def5678def5678def5678def5678def5"
+  assert vm_spec.serving_release_refusal(
+      "g",
+      Some("abc1234"),
+      long,
+      Some("dev"),
+    )
+    == Ok(Nil)
+  assert vm_spec.serving_release_refusal("g", None, "unknown", Some("abc1234"))
+    == Ok(Nil)
+}
+
+// --- runners of a guest started from an older release ------------------------------
+
+pub fn a_runner_in_the_cache_is_stranded_whichever_release_it_came_from_test() {
+  let listing =
+    "  42     1 /vm/cache/v1/go-microvm-runner {\"root_path\":\"/vm/g/root\"}\n"
+    <> "  43     1 /elsewhere/runner {\"root_path\":\"/vm/g/root\"}\n"
+
+  // The current manifest names another release; the old guest's runner lives
+  // under the cache and still holds the root.
+  assert vm_spec.stranded_runners_under(
+      listing,
+      "/vm/g/root",
+      "/vm/g/state.img",
+      Some(["/vm/cache/v2/go-microvm-runner ", "/vm/cache/"]),
+    )
+    == [42]
+
+  // With the cache prefix absent only the manifest's runner would match.
+  assert vm_spec.stranded_runners_under(
+      listing,
+      "/vm/g/root",
+      "/vm/g/state.img",
+      Some(["/vm/cache/v2/go-microvm-runner "]),
+    )
+    == []
 }
