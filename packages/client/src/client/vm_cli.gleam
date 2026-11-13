@@ -561,27 +561,40 @@ fn installed_after_setup(vm_home: String) -> Result(Manifest, String) {
   )
 }
 
-/// The manifest `up` boots from. With none installed it installs the running
-/// build's release first and says so; a development build has no release, so
-/// it keeps the refusal that names the make target.
-fn installed_manifest(vm_home: String) -> Result(Manifest, String) {
-  use found <- result.try(read_manifest_if_present(vm_home))
+/// What `up` and `ensure` should do about the manifest on disk, read once.
+fn manifest_decision(
+  vm_home: String,
+) -> Result(vm_spec.ManifestAction, String) {
+  use found <- result.map(read_manifest_if_present(vm_home))
+  let identity = build_identity.current()
+  vm_spec.manifest_action(
+    found,
+    identity.version,
+    identity.commit,
+    manifest_path(vm_home),
+  )
+}
 
-  // An installed manifest is used as it is; only its absence starts a setup.
-  case found {
-    Some(manifest) -> Ok(manifest)
-    None -> {
-      let identity = build_identity.current()
-      use _ <- result.try(
-        vm_spec.release_candidates(identity.version, identity.commit)
-        |> result.map_error(fn(_) {
-          vm_spec.missing_manifest(manifest_path(vm_home), identity.version)
-        }),
-      )
-      io.println_error(
-        "No microVM artifacts are installed; running `loom vm setup` for this "
-        <> "build.",
-      )
+/// The manifest `up` boots from. With none installed, or one from another
+/// release, it installs the running build's release first and says so; a
+/// development build has no release, so it keeps the refusals that name the
+/// make target.
+fn installed_manifest(vm_home: String) -> Result(Manifest, String) {
+  use decision <- result.try(manifest_decision(vm_home))
+  use_decision(vm_home, decision)
+}
+
+/// Carries out a manifest decision: use the manifest, install the release and
+/// answer what it wrote, or refuse.
+fn use_decision(
+  vm_home: String,
+  decision: vm_spec.ManifestAction,
+) -> Result(Manifest, String) {
+  case decision {
+    vm_spec.UseManifest(manifest) -> Ok(manifest)
+    vm_spec.RefuseManifest(reason) -> Error(reason)
+    vm_spec.InstallRelease(why) -> {
+      io.println_error(why)
       install_artifacts(vm_home, vm_spec.OwnRelease)
     }
   }

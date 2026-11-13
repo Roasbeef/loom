@@ -1732,6 +1732,70 @@ pub fn check_revision(
   }
 }
 
+/// What to do about the artifact manifest before a guest boots.
+pub type ManifestAction {
+  /// The installed manifest is usable as it is.
+  UseManifest(manifest: Manifest)
+
+  /// Run `loom vm setup` for this build, then use what it installs. The text
+  /// is the progress line that says why.
+  InstallRelease(why: String)
+
+  /// Neither use nor install: this build has no release to install from, or
+  /// the manifest says something a build must not boot from.
+  RefuseManifest(reason: String)
+}
+
+/// Decides what `up` does about the manifest: use it, install the running
+/// build's release, or refuse.
+///
+/// A manifest that is missing and one from another release have the same
+/// remedy, `loom vm setup`, and a failed setup changes nothing, so a build with
+/// a release runs it for either instead of refusing and naming the command.
+/// Every developer meets the second case after `loom update`. A development
+/// build has no release to install, so it keeps both refusals, which name
+/// `make vmm-install-dev`. A manifest the check passes is used, including a
+/// `dev` one, which a release build also accepts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert vm_spec.InstallRelease(_) =
+///   vm_spec.manifest_action(None, "0.3.2", "abc1234", "/h/manifest.json")
+/// ```
+pub fn manifest_action(
+  found: Option(Manifest),
+  version: String,
+  commit: String,
+  path: String,
+) -> ManifestAction {
+  let release = release_candidates(version, commit)
+
+  // Whether the manifest is missing or only stale decides the words, and
+  // whether the build has a release decides whether setup can fix either.
+  case found, release {
+    None, Ok(_) ->
+      InstallRelease(
+        "No microVM artifacts are installed; running `loom vm setup` for this "
+        <> "build.",
+      )
+    None, Error(_) -> RefuseManifest(missing_manifest(path, version))
+    Some(manifest), _ ->
+      case check_revision(manifest, commit), release {
+        Ok(Nil), _ -> UseManifest(manifest)
+        Error(_), Ok(_) ->
+          InstallRelease(
+            "The installed microVM artifacts were built from revision "
+            <> manifest.revision
+            <> " and this loom is "
+            <> commit
+            <> "; running `loom vm setup` for this build.",
+          )
+        Error(reason), Error(_) -> RefuseManifest(reason)
+      }
+  }
+}
+
 fn same_commit(left: String, right: String) -> Bool {
   let long = string.byte_size(left) >= 7 && string.byte_size(right) >= 7
   long && { string.starts_with(left, right) || string.starts_with(right, left) }

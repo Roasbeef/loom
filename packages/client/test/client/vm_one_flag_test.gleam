@@ -10,7 +10,7 @@ import client/vm_spec
 import gleam/bit_array
 import gleam/crypto
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import qcheck
@@ -19,6 +19,69 @@ import qcheck
 const seed = 1113
 
 const cases = 300
+
+// --- setup for a missing or stale manifest ------------------------------------
+
+const commit = "abc1234def5678abc1234def5678abc1234def56"
+
+fn manifest_at(revision: String) -> vm_spec.Manifest {
+  vm_spec.Manifest(
+    revision:,
+    loom_vm: "/h/loom-vm",
+    runner: "/h/runner",
+    lib_dir: "/h/lib",
+    firmware_dir: None,
+    guest_root: "/h/root",
+  )
+}
+
+fn action(
+  found: Option(vm_spec.Manifest),
+  version: String,
+) -> vm_spec.ManifestAction {
+  vm_spec.manifest_action(found, version, commit, "/h/manifest.json")
+}
+
+pub fn a_release_build_installs_what_is_missing_or_stale_test() {
+  let assert vm_spec.InstallRelease(missing) = action(None, "0.3.2")
+  assert string.contains(missing, "No microVM artifacts are installed")
+  assert string.contains(missing, "loom vm setup")
+
+  // The words for a stale manifest name both revisions.
+  let assert vm_spec.InstallRelease(stale) =
+    action(Some(manifest_at("1111111")), "0.3.2")
+  assert string.contains(stale, "1111111")
+  assert string.contains(stale, commit)
+  assert string.contains(stale, "loom vm setup")
+}
+
+pub fn a_release_build_uses_a_manifest_that_matches_test() {
+  let current = manifest_at(commit)
+  assert action(Some(current), "0.3.2") == vm_spec.UseManifest(current)
+
+  // An abbreviation of seven characters or more is the same commit, and a
+  // development tree's `dev` is accepted by every build.
+  let short = manifest_at("abc1234")
+  assert action(Some(short), "0.3.2") == vm_spec.UseManifest(short)
+  let dev = manifest_at("dev")
+  assert action(Some(dev), "0.3.2") == vm_spec.UseManifest(dev)
+}
+
+pub fn a_development_build_keeps_its_refusals_test() {
+  let assert vm_spec.RefuseManifest(missing) = action(None, "dev")
+  assert string.contains(missing, "make vmm-install-dev")
+
+  let assert vm_spec.RefuseManifest(stale) =
+    action(Some(manifest_at("1111111")), "dev")
+  assert string.contains(stale, "make vmm-install-dev")
+  assert vm_spec.manifest_action(
+      Some(manifest_at("dev")),
+      "dev",
+      "unknown",
+      "/h/manifest.json",
+    )
+    == vm_spec.UseManifest(manifest_at("dev"))
+}
 
 // --- the GitHub access a resume keeps -----------------------------------------
 
