@@ -127,6 +127,8 @@ import client/internal/ffi_os
 import client/ledger_operator
 import client/membership_ledger
 import client/membership_provision
+import client/vm_link
+import client/vm_link_pki
 import client/vm_spec.{
   type Command, type Manifest, type PidRecord, type SyncOptions, type UpOptions,
   Down, Ensure, Guests, Launch, Logs, PidRecord, Remove, Setup, Status, Sync, Up,
@@ -156,8 +158,9 @@ pub const usage =
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
                   [--allow HOST]... [--provision SCRIPT]
+                  [--link distribution|untrusted]
        loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
-                      [--config PATH]
+                      [--config PATH] [--link distribution|untrusted]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -219,7 +222,18 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             in loom-vm.log. A failing script fails up, and the next up runs it
             again. A resume skips a script that succeeded, and refuses a new
             one: add --fresh. Use --allow for the hosts it needs.
-  ensure    Make the guest of one workspace ready, which is what `loom --vm`
+            --link untrusted reaches the guest over a pinned TLS link that is
+            not Erlang distribution, so the guest holds no cookie and its
+            takeover reaches no code in your daemon. It mints a private link
+            authority under the vm home, writes [executor_link] and
+            [executors.NAME] into loom.toml beside whatever is there (it never
+            replaces a table that differs, and leaves [distribution] as it is),
+            and needs no deployment, ledger or running daemon. A daemon that is
+            already running reads the new row only when it restarts. The link
+            is recorded and kept for the guest's life; `distribution` is the
+            default. The link lacks project hooks, goal checks and the Changes
+            tab for now: docs/architecture/microvm.md lists them.
+  ensure   Make the guest of one workspace ready, which is what `loom --vm`
             runs. The guest is named after DIR (default: the current
             directory): its last segment and six digits of its path, so every
             workspace has a guest of its own. A guest that already serves is
@@ -253,7 +267,10 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             other [executors.*] table remains; otherwise it leaves them and
             says so. A guest that joined a ledger deployment is revoked with
             the key, when it is on this machine, and otherwise rm prints the
-            revoke to run. A guest that others joined is removed last. Every other line of loom.toml is kept. A running guest is
+            revoke to run. A guest that others joined is removed last. A guest
+            on the untrusted link has nothing to revoke: rm removes its
+            [executors.NAME] table, and [executor_link] with the vm home's
+            link credentials when no other untrusted guest remains. Every other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
             the workspaces and the local branches that origin lacks.
@@ -389,6 +406,9 @@ type Instance {
     provision_file: String,
     next_root: String,
     building_root: String,
+    kind_file: String,
+    port_file: String,
+    link_credentials: String,
   )
 }
 
@@ -426,6 +446,9 @@ fn instance(vm_home: String, name: String) -> Instance {
     provision_file: directory <> "/" <> vm_spec.provision_copy_file,
     next_root: directory <> "/" <> vm_spec.next_root_dir,
     building_root: directory <> "/" <> vm_spec.building_root_dir,
+    kind_file: directory <> "/" <> vm_link.kind_file,
+    port_file: directory <> "/" <> vm_link.port_file,
+    link_credentials: directory <> "/" <> vm_link.guest_credentials_dir,
   )
 }
 
@@ -676,14 +699,20 @@ fn use_decision(
 // What a finished `up` knows: the options it settled, the workspace copy, the
 // host port and how the daemon learns of the guest.
 type Upped {
-  Upped(options: UpOptions, workspace: Workspace, port: Int, enrolled: Enrolled)
+  Upped(
+    options: UpOptions,
+    workspace: Workspace,
+    port: Int,
+    enrolled: Enrolled,
+    link: vm_spec.LinkKind,
+  )
 }
 
 /// Boots one guest and tells the user how to use it and what to do about the
 /// daemon.
 fn up(options: UpOptions) -> Result(String, String) {
   use upped <- result.try(bring_up(options))
-  Ok(report(upped, restart_after(upped.enrolled)))
+  Ok(report(upped, restart_of(upped)))
 }
 
 /// Provisions, enrolls, stages and boots one guest. `ensure` calls this too, so
@@ -717,6 +746,23 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   use github <- result.try(github_access(guest, options))
   let options = UpOptions(..options, allow:)
 
+  // A guest on the untrusted link has no deployment to settle, and shares only
+  // the checks above and the root, state and boot steps below.
+  use kind <- result.try(link_of(guest, options))
+  use <- on_link(kind, fn() {
+    bring_up_linked(LinkedUp(
+      manifest:,
+      vm_home:,
+      guest:,
+      names:,
+      workspace:,
+      options:,
+      github:,
+      plan:,
+      step:,
+    ))
+  })
+
   // The deployment and the enrollment come before the guest root, so a
   // loom.toml that holds another deployment is refused before a root of
   // several hundred megabytes is cloned.
@@ -735,7 +781,7 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
     step,
   ))
   use port <- result.try(boot(manifest, guest, names, options, github, plan))
-  Ok(Upped(options:, workspace:, port:, enrolled:))
+  Ok(Upped(options:, workspace:, port:, enrolled:, link: vm_spec.Distribution))
 }
 
 // --- ensure ------------------------------------------------------------------
@@ -994,6 +1040,7 @@ fn ensure_facts(
   let names = vm_spec.names(name)
   let guest = instance(vm_home, name)
   use state <- result.try(process_state(guest) |> result.map_error(Refused))
+  use kind <- result.try(link_of(guest, options) |> result.map_error(Refused))
 
   // The record's process is read through its birth marker, so a stale record
   // is no process, and the node's epmd registration is read beside it.
@@ -1004,11 +1051,40 @@ fn ensure_facts(
 
   Ok(vm_spec.EnsureFacts(
     name:,
-    state: vm_spec.guest_state(pid, registration_of(names, guest)),
+    state: vm_spec.guest_state(pid, registration_for(guest, names, kind)),
     manifest: manifest_decision(vm_home),
-    enrolment: enrolment_need(guest, names, options),
+    enrolment: enrolment_for(kind, guest, names, options),
     daemon: daemon_fact(),
   ))
+}
+
+/// Whether the guest's executor serves, by the evidence its link leaves: the
+/// host's epmd for a distribution guest, and the console's ready line for an
+/// untrusted one, which registers no node.
+fn registration_for(
+  guest: Instance,
+  names: vm_spec.Names,
+  kind: vm_spec.LinkKind,
+) -> vm_spec.Registration {
+  case kind {
+    vm_spec.Distribution -> registration_of(names, guest)
+    vm_spec.Untrusted ->
+      vm_link.registration(result.unwrap(simplifile.read(guest.log), ""))
+  }
+}
+
+/// Whether bringing the guest up would need the daemon. An untrusted guest
+/// joins no deployment, so it never does.
+fn enrolment_for(
+  kind: vm_spec.LinkKind,
+  guest: Instance,
+  names: vm_spec.Names,
+  options: UpOptions,
+) -> vm_spec.EnrolmentNeed {
+  case kind {
+    vm_spec.Distribution -> enrolment_need(guest, names, options)
+    vm_spec.Untrusted -> vm_spec.NeedsNoDaemon
+  }
 }
 
 /// Whether the guest's executor serves: the host epmd lists its node and its
@@ -2066,6 +2142,416 @@ fn orchestrator_executor(orchestrator: Bundle) -> String {
   }
 }
 
+// --- the untrusted link ------------------------------------------------------
+
+// What `bring_up_linked` takes from `bring_up`: the checks `bring_up` made and
+// the plans it computed, which a guest of either link shares.
+type LinkedUp {
+  LinkedUp(
+    manifest: Manifest,
+    vm_home: String,
+    guest: Instance,
+    names: vm_spec.Names,
+    workspace: Workspace,
+    options: UpOptions,
+    github: vm_spec.GitHubAccess,
+    plan: vm_spec.ProvisionPlan,
+    step: vm_spec.RootStep,
+  )
+}
+
+/// The link this command gives the guest: the one its `link` record says, one
+/// that bundles imply, or the one `--link` asks for when the guest is new
+/// (`vm_link.settle`). A guest never changes its link, so a mismatch refuses
+/// before anything is written.
+fn link_of(
+  guest: Instance,
+  options: UpOptions,
+) -> Result(vm_spec.LinkKind, String) {
+  use record <- result.try(read_record(guest.kind_file))
+
+  // Bundles in the guest's directory are what a distribution guest has, and
+  // they tell a guest that predates the `link` record from a new one.
+  let bundles = case is_plain_directory(guest.deploy) {
+    True -> vm_link.HasBundles
+    False -> vm_link.NoBundles
+  }
+
+  vm_link.settle(options.name, record, bundles, options.link)
+}
+
+/// The link a guest was made with, for the commands that only read it. A guest
+/// with no record is a distribution guest.
+fn recorded_kind(guest: Instance) -> Result(vm_spec.LinkKind, String) {
+  use record <- result.try(read_record(guest.kind_file))
+  vm_link.decode_kind(record)
+}
+
+/// The text of a record file the host wrote, or none when it is absent.
+fn read_record(path: String) -> Result(option.Option(String), String) {
+  case simplifile.read(path) {
+    Ok(text) -> Ok(Some(text))
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) ->
+      Error(path <> " is unreadable: " <> simplifile.describe_error(error))
+  }
+}
+
+/// Runs the untrusted guest's `up`, or the distribution guest's, which is the
+/// rest of `bring_up`.
+fn on_link(
+  kind: vm_spec.LinkKind,
+  untrusted: fn() -> Result(Upped, String),
+  distribution: fn() -> Result(Upped, String),
+) -> Result(Upped, String) {
+  case kind {
+    vm_spec.Untrusted -> untrusted()
+    vm_spec.Distribution -> distribution()
+  }
+}
+
+/// `up` for a guest reached over the untrusted link: it mints the link's
+/// credentials, settles the guest's port, enrols the guest in the host's
+/// `loom.toml`, stages a root with a listener and no cookie, and boots it with
+/// the port forwarded and no epmd registration. It needs no deployment, ledger,
+/// authority key or running daemon.
+fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
+  let LinkedUp(
+    manifest:,
+    vm_home:,
+    guest:,
+    names:,
+    workspace:,
+    options:,
+    github:,
+    plan:,
+    step:,
+  ) = linked
+  use #(config, file) <- result.try(config_of(options))
+
+  // The credential directories appear whole or not at all, so nothing below
+  // reads half of them.
+  use home <- result.try(vm_link_pki.ensure_home(vm_home))
+  use leaf <- result.try(vm_link_pki.ensure_leaf(home, guest.directory))
+
+  // The port is chosen and the merge is worked out before anything about the
+  // guest is recorded, so an `up` that the user's file refuses leaves no guest
+  // behind, only credentials nothing trusts yet.
+  use chosen <- result.try(chosen_port(guest))
+  let port = port_number(chosen)
+  use merged <- result.try(plan_link(home, leaf, options.name, port, config))
+
+  // The link is recorded before the row is written, so an interrupted `up`
+  // leaves a guest that `rm` can remove and that a retry resumes as untrusted.
+  use Nil <- result.try(record_link(guest))
+  use Nil <- result.try(record_port(guest, chosen))
+  use enrolled <- result.try(enroll_link(merged, config, file))
+
+  // The root, the allowlist, the copy and the boot are the distribution
+  // guest's, with the node written differently and the port forwarded.
+  use Nil <- result.try(stage_with(
+    manifest,
+    guest,
+    stage_linked_node(guest, home, leaf, _, github, options.allow),
+    workspace,
+    options,
+    github,
+    plan,
+    step,
+  ))
+  use Nil <- result.try(launch_guest(
+    manifest,
+    guest,
+    names,
+    options,
+    github,
+    plan,
+    port,
+    vm_spec.Forward,
+  ))
+  Ok(Upped(options:, workspace:, port:, enrolled:, link: vm_spec.Untrusted))
+}
+
+/// Records that the guest is reached over the untrusted link.
+fn record_link(guest: Instance) -> Result(Nil, String) {
+  write_private(guest.kind_file, vm_link.encode_kind(vm_spec.Untrusted))
+}
+
+// The port the guest's row names, and whether it is the one already recorded.
+type Chosen {
+  // The recorded port, which nothing else listens on.
+  KeptPort(Int)
+
+  // A newly reserved port, which `record_port` writes down.
+  NewPort(Int)
+}
+
+/// The number of the chosen port.
+fn port_number(chosen: Chosen) -> Int {
+  case chosen {
+    KeptPort(port) | NewPort(port) -> port
+  }
+}
+
+/// Writes down a newly chosen port, and nothing for the recorded one.
+fn record_port(guest: Instance, chosen: Chosen) -> Result(Nil, String) {
+  case chosen {
+    KeptPort(_) -> Ok(Nil)
+    NewPort(port) -> write_private(guest.port_file, vm_link.encode_port(port))
+  }
+}
+
+/// The host loopback port the guest's row names: the one recorded for the
+/// guest while nothing else listens on it, and otherwise a newly reserved one.
+/// Every boot of a guest then names the same address, so a daemon that read the
+/// row at its start still reaches the guest. Nothing is written here, because
+/// the port belongs to the guest only once the user's file has taken its row.
+fn chosen_port(guest: Instance) -> Result(Chosen, String) {
+  use record <- result.try(read_record(guest.port_file))
+
+  // A record that cannot be read is the same as none: the port is replaced.
+  let recorded = case record {
+    Some(text) -> option.from_result(vm_link.decode_port(text))
+    None -> None
+  }
+
+  // Only a recorded port is probed, since a new one is free by construction.
+  let seen = case recorded {
+    Some(port) -> vm_link.Recorded(port, availability_of(port))
+    None -> vm_link.NotRecorded
+  }
+
+  // The decision keeps a free recorded port and replaces any other.
+  case vm_link.port_step(seen) {
+    vm_link.Keep(port) -> Ok(KeptPort(port))
+    vm_link.Reserve -> bootstrap.reserve_loopback_port() |> result.map(NewPort)
+  }
+}
+
+/// Whether something listens on a host loopback port: `nc -z` exits zero only
+/// when it connects. A host with no `nc` reads as free, and then the launcher's
+/// own failure to bind the forward is the account of a taken port.
+fn availability_of(port: Int) -> vm_link.Availability {
+  let probe =
+    tool(
+      "nc",
+      ["-z", "-w", "1", "127.0.0.1", int.to_string(port)],
+      within: quick_ms,
+    )
+
+  // A connection means a listener; a refusal, a timeout or a missing `nc`
+  // means none was found.
+  case probe {
+    Ok(_) -> vm_link.InUse
+    Error(_) -> vm_link.Free
+  }
+}
+
+/// Works out what `[executor_link]` and the guest's row add to the user's
+/// `loom.toml` beside whatever it holds, and refuses a table of the same name
+/// that differs (`vm_link.install`). Nothing is written, so a refusal leaves
+/// the file and the guest as they were.
+fn plan_link(
+  home: vm_link_pki.Home,
+  leaf: vm_link_pki.Leaf,
+  name: String,
+  port: Int,
+  config: String,
+) -> Result(vm_link.Merged, String) {
+  // A file that does not exist yet is an empty one; any other failure to read
+  // it is the user's to see.
+  use text <- result.try(case simplifile.read(config) {
+    Ok(text) -> Ok(text)
+    Error(simplifile.Enoent) -> Ok("")
+    Error(error) ->
+      Error(config <> " is unreadable: " <> simplifile.describe_error(error))
+  })
+
+  vm_link.install(
+    text,
+    home.files,
+    vm_link.Row(name:, port:, pin: leaf.pin),
+    config,
+  )
+}
+
+/// Writes the merged text to the user's `loom.toml`. A file that already is as
+/// wanted is not written, so a resume leaves it alone, and the row is
+/// `Resumed`, which asks no daemon to restart.
+fn enroll_link(
+  merged: vm_link.Merged,
+  config: String,
+  file: ConfigFile,
+) -> Result(Enrolled, String) {
+  // Only a change is written, and the write is the file's one rename.
+  case merged.change {
+    vm_link.Unchanged -> Ok(Enrolled(config:, file:, row: Resumed))
+    vm_link.Added | vm_link.Moved -> {
+      use Nil <- result.try(
+        simplifile.create_directory_all(filepath.directory_name(config))
+        |> result.map_error(fn(error) {
+          config <> " cannot be made: " <> simplifile.describe_error(error)
+        }),
+      )
+      use Nil <- result.try(write_private(config, merged.text))
+      Ok(Enrolled(config:, file:, row: Written))
+    }
+  }
+}
+
+/// Writes the executor's node into the guest root: the authority's
+/// certificate, the guest's leaf and key, and a configuration with a listener.
+/// The node's home directory is empty, and there is no cookie anywhere, so the
+/// key is the one secret the guest holds
+/// (`vm_link.staging`).
+fn stage_linked_node(
+  guest: Instance,
+  home: vm_link_pki.Home,
+  leaf: vm_link_pki.Leaf,
+  workspaces: List(String),
+  github: vm_spec.GitHubAccess,
+  allow: List(String),
+) -> Result(Nil, String) {
+  use ca <- result.try(read_text(home.files.ca))
+  let config =
+    vm_link.guest_config(
+      vm_spec.guest_files(),
+      home.pin,
+      workspaces,
+      github,
+      allow,
+    )
+  let staged =
+    vm_link.staging(
+      vm_spec.guest_files(),
+      ca,
+      leaf.certificate,
+      leaf.key,
+      config,
+    )
+  use Nil <- result.try(
+    list.try_each(["/home", "/creds", "/state"], fn(directory) {
+      make_inside(guest.root, vm_spec.node_dir <> directory)
+    }),
+  )
+  list.try_each(staged, fn(file) {
+    write_private(guest.root <> file.path, file.contents)
+  })
+}
+
+/// What `up` tells the user about a guest on the untrusted link. The daemon
+/// has no reload command yet, so a row that changed reaches it at its next
+/// start.
+fn linked_report(upped: Upped, restart: Restart) -> String {
+  let Upped(options:, workspace:, port:, enrolled:, ..) = upped
+  let name = options.name
+  string.join(
+    list.flatten([
+      [
+        "The guest "
+          <> name
+          <> " serves its executor over the untrusted link at "
+          <> vm_link.address(port)
+          <> ".",
+        linked_line(name, enrolled),
+        "",
+        "Use it with:",
+        "  loom --executor " <> name <> " --workspace " <> workspace.name,
+        "",
+      ],
+      linked_daemon_lines(name, restart),
+      ["Stop it with: loom vm down --name " <> name],
+    ]),
+    "\n",
+  )
+}
+
+/// The line that says what `up` did to the user's configuration.
+fn linked_line(name: String, enrolled: Enrolled) -> String {
+  case enrolled.row {
+    Written | Derived ->
+      "Wrote [executor_link] and [executors."
+      <> name
+      <> "] in "
+      <> enrolled.config
+      <> ", beside what it held."
+    Resumed ->
+      "[executors."
+      <> name
+      <> "] in "
+      <> enrolled.config
+      <> " is already as this guest needs it."
+  }
+}
+
+/// The lines about the daemon, after `up` did what it does about one that
+/// started before the row existed.
+fn linked_daemon_lines(name: String, restart: Restart) -> List(String) {
+  case restart {
+    NoRestart -> []
+    Daemon(outcome) -> vm_link.daemon_lines(name, outcome)
+    OtherDaemon -> [
+      "A daemon already running with that file must restart to reach the guest.",
+      "",
+    ]
+  }
+}
+
+/// What `up` does about the user's daemon after a guest: nothing for an
+/// untrusted guest whose row was already there, and otherwise what a newly
+/// installed deployment asks, which is the one decision to stop an idle daemon
+/// and leave a busy one running.
+fn restart_of(upped: Upped) -> Restart {
+  case upped.link, upped.enrolled.row {
+    vm_spec.Untrusted, Resumed -> NoRestart
+    _, _ -> restart_after(upped.enrolled)
+  }
+}
+
+/// The report for a distribution guest is `report`'s own; an untrusted guest's
+/// is `linked_report`.
+fn on_untrusted_report(
+  upped: Upped,
+  restart: Restart,
+  distribution: fn() -> String,
+) -> String {
+  case upped.link {
+    vm_spec.Untrusted -> linked_report(upped, restart)
+    vm_spec.Distribution -> distribution()
+  }
+}
+
+/// The `status` lines about how the guest is reached: the node and the host's
+/// epmd entry for a distribution guest, and the link, its address and the
+/// guest's pin for an untrusted one.
+fn link_lines(
+  guest: Instance,
+  names: vm_spec.Names,
+  kind: vm_spec.LinkKind,
+) -> List(String) {
+  // The two links leave different evidence: a node in the host's epmd, or a
+  // port and a pin recorded beside the guest.
+  case kind {
+    vm_spec.Distribution -> [
+      "node:       " <> names.executor_node,
+      "epmd:       " <> epmd_line(names),
+    ]
+    vm_spec.Untrusted -> {
+      let port =
+        read_record(guest.port_file)
+        |> result.unwrap(None)
+        |> option.then(fn(text) {
+          option.from_result(vm_link.decode_port(text))
+        })
+      let pin =
+        read_text(guest.link_credentials <> "/executor.pem")
+        |> result.try(vm_link.pin_of)
+        |> option.from_result
+      vm_link.status_lines(port, pin)
+    }
+  }
+}
+
 // --- the guest root ----------------------------------------------------------
 
 /// Gives the guest its own root, its executor node and its copy of the
@@ -2081,21 +2567,49 @@ fn stage(
   plan: vm_spec.ProvisionPlan,
   step: vm_spec.RootStep,
 ) -> Result(Nil, String) {
+  stage_with(
+    manifest,
+    guest,
+    fn(registered) {
+      stage_node(
+        guest.root,
+        executor,
+        installed,
+        registered,
+        github,
+        options.allow,
+      )
+    },
+    workspace,
+    options,
+    github,
+    plan,
+    step,
+  )
+}
+
+/// Everything `stage` does, with the writing of the executor's node left to
+/// `write_node`, which is given the workspaces the configuration registers. A
+/// distribution guest writes its bundle, cookie and ledger; an untrusted one
+/// writes its listener and a key, and neither differs in how the root, the
+/// allowlist, the script or the workspace copy are made.
+fn stage_with(
+  manifest: Manifest,
+  guest: Instance,
+  write_node: fn(List(String)) -> Result(Nil, String),
+  workspace: Workspace,
+  options: UpOptions,
+  github: vm_spec.GitHubAccess,
+  plan: vm_spec.ProvisionPlan,
+  step: vm_spec.RootStep,
+) -> Result(Nil, String) {
   use uname <- result.try(tool("uname", ["-s"], within: quick_ms))
   use platform <- result.try(vm_spec.platform_of(uname))
   use Nil <- result.try(record_provision_copy(guest, options))
   use Nil <- result.try(prepare_root(manifest, guest, platform, options, step))
   use Nil <- result.try(record_allow(guest, options.allow))
   use Nil <- result.try(record_github(guest, github))
-  let registered = registered_workspaces(guest, workspace)
-  use Nil <- result.try(stage_node(
-    guest.root,
-    executor,
-    installed,
-    registered,
-    github,
-    options.allow,
-  ))
+  use Nil <- result.try(write_node(registered_workspaces(guest, workspace)))
   use Nil <- result.try(stage_script(guest.root, plan))
 
   // The revision is recorded last among the root's contents. A record says the
@@ -2968,6 +3482,32 @@ fn boot(
   plan: vm_spec.ProvisionPlan,
 ) -> Result(Int, String) {
   use port <- result.try(bootstrap.reserve_loopback_port())
+  use Nil <- result.try(launch_guest(
+    manifest,
+    guest,
+    names,
+    options,
+    github,
+    plan,
+    port,
+    vm_spec.Publish,
+  ))
+  Ok(port)
+}
+
+/// Starts `loom-vm run` with the guest's port forwarded from the host's
+/// `port` and waits until the console says its executor serves. `reach` says
+/// whether the executor's node is also registered in the host's epmd.
+fn launch_guest(
+  manifest: Manifest,
+  guest: Instance,
+  names: vm_spec.Names,
+  options: UpOptions,
+  github: vm_spec.GitHubAccess,
+  plan: vm_spec.ProvisionPlan,
+  port: Int,
+  reach: vm_spec.Reach,
+) -> Result(Nil, String) {
   let launch =
     Launch(
       manifest:,
@@ -2979,6 +3519,7 @@ fn boot(
       state_disk: guest.state_disk,
       github:,
       allow: options.allow,
+      reach:,
     )
 
   // The log is appended to, and the console of an earlier run says READY.
@@ -2993,8 +3534,7 @@ fn boot(
     guest,
     vm_spec.launch_arguments(launch),
   ))
-  use Nil <- result.try(await_ready(guest, record, vm_spec.boot_budget_ms(plan)))
-  Ok(port)
+  await_ready(guest, record, vm_spec.boot_budget_ms(plan))
 }
 
 /// Starts `loom-vm run` detached, in its own process group, with its output in
@@ -3169,7 +3709,8 @@ fn restart_after(enrolled: Enrolled) -> Restart {
 /// What `up` tells the user: how to use the guest, and what to do about the
 /// daemon.
 fn report(upped: Upped, restart: Restart) -> String {
-  let Upped(options:, workspace:, port:, enrolled:) = upped
+  use <- on_untrusted_report(upped, restart)
+  let Upped(options:, workspace:, port:, enrolled:, ..) = upped
   let names = vm_spec.names(options.name)
   string.join(
     list.flatten([
@@ -3536,13 +4077,15 @@ fn status(name: String) -> Result(String, String) {
   let guest = instance(vm_home, name)
   let names = vm_spec.names(name)
   use state <- result.try(process_state(guest))
+  use kind <- result.try(recorded_kind(guest))
   Ok(string.join(
     list.flatten([
       [
         "guest:      " <> name,
         "process:    " <> process_line(state),
-        "node:       " <> names.executor_node,
-        "epmd:       " <> epmd_line(names),
+      ],
+      link_lines(guest, names, kind),
+      [
         "revision:   " <> revision_line(vm_home),
         "root:       " <> root_line(guest),
         "root from:  " <> root_origin_line(guest),
@@ -3809,14 +4352,18 @@ fn guests() -> Result(String, String) {
   })
 
   // A guest directory has a valid name, is a directory of its own and holds
-  // the deployment `up` provisions first. The manifest and the artifact cache
-  // that share the home are neither.
+  // the deployment `up` provisions first, or the `link` record an untrusted
+  // guest has instead. The manifest and the artifact cache that share the home
+  // are neither.
   let names =
     entries
     |> list.filter(fn(entry) {
       result.is_ok(vm_spec.valid_name(entry))
       && is_plain_directory(vm_home <> "/" <> entry)
-      && is_plain_directory(vm_home <> "/" <> entry <> "/deploy")
+      && {
+        is_plain_directory(vm_home <> "/" <> entry <> "/deploy")
+        || bootstrap.path_exists(instance(vm_home, entry).kind_file)
+      }
     })
     |> list.sort(string.compare)
   let width =
@@ -3871,6 +4418,9 @@ type RemovalPlan {
     authority: option.Option(String),
     // What happens to the guest's membership of a ledger it joined.
     revocation: Revocation,
+    // The vm home's link credentials, when this is the last untrusted guest
+    // and nothing needs them any more.
+    link_home: option.Option(String),
   )
 }
 
@@ -3931,7 +4481,7 @@ fn remove(
       }),
     ),
   )
-  use plan <- result.try(removal_plan(vm_home, guest, name, config, home))
+  use plan <- result.try(planned_removal(vm_home, guest, name, config, home))
 
   // Nothing is changed until the user has said yes, and the refusal names the
   // copies the answer would lose.
@@ -4009,7 +4559,109 @@ fn removal_plan(
     rewritten:,
     authority: removable_authority(vm_home, name),
     revocation:,
+    link_home: None,
   ))
+}
+
+/// What `rm` undoes for a guest on the untrusted link: its row, and
+/// `[executor_link]` with the vm home's link credentials when it is the last
+/// untrusted guest. There is no cookie to compare, no sealed key and no ledger
+/// entry to revoke, because the guest was never a member of anything.
+fn linked_removal_plan(
+  vm_home: String,
+  name: String,
+  config: String,
+) -> Result(RemovalPlan, String) {
+  // A configuration that does not exist has no row to undo.
+  use text <- result.try(case simplifile.read(config) {
+    Ok(text) -> Ok(text)
+    Error(simplifile.Enoent) -> Ok("")
+    Error(error) ->
+      Error(config <> " is unreadable: " <> simplifile.describe_error(error))
+  })
+
+  use others <- result.try(other_kinds(vm_home, name))
+  let remaining = vm_link.remaining(others)
+  use removal <- result.try(
+    vm_link.uninstall(
+      text,
+      name,
+      remaining,
+      vm_link_pki.files_of(vm_home),
+      config,
+    )
+    |> result.map_error(fn(reason) { reason <> ". Nothing was removed." }),
+  )
+
+  // Text that is unchanged needs no write, so a guest whose row is gone leaves
+  // the user's file untouched.
+  let rewritten = case removal.text == text {
+    True -> None
+    False -> Some(removal.text)
+  }
+
+  // The vm home's credentials go with the last untrusted guest, and stay for
+  // the others while any remains.
+  let link_home = case remaining {
+    vm_link.LastLinked -> Some(vm_home <> "/" <> vm_spec.link_dir)
+    vm_link.OthersRemain -> None
+  }
+
+  Ok(RemovalPlan(
+    config:,
+    teardown: vm_spec.Teardown(
+      tables: removal.removed,
+      cookie: vm_spec.KeepCookie,
+      left: [],
+    ),
+    rewritten:,
+    authority: None,
+    revocation: NoRevocation,
+    link_home:,
+  ))
+}
+
+/// The links of the guests other than `name`, from their `link` records. A
+/// directory with no record is a distribution guest, and a record that cannot
+/// be read counts as untrusted, so the shared credentials are kept rather than
+/// removed under a guest that may still need them.
+fn other_kinds(
+  vm_home: String,
+  name: String,
+) -> Result(List(vm_spec.LinkKind), String) {
+  use entries <- result.try(
+    simplifile.read_directory(vm_home)
+    |> result.map_error(fn(error) {
+      vm_home <> " is unreadable: " <> simplifile.describe_error(error)
+    }),
+  )
+  Ok(
+    entries
+    |> list.filter(fn(entry) {
+      entry != name && result.is_ok(vm_spec.valid_name(entry))
+    })
+    |> list.map(fn(entry) {
+      recorded_kind(instance(vm_home, entry))
+      |> result.unwrap(vm_spec.Untrusted)
+    }),
+  )
+}
+
+/// The plan for the guest's own link: `removal_plan` for a distribution guest.
+fn planned_removal(
+  vm_home: String,
+  guest: Instance,
+  name: String,
+  config: String,
+  home: String,
+) -> Result(RemovalPlan, String) {
+  use kind <- result.try(recorded_kind(guest))
+
+  // The guest's own link says what undoing it means.
+  case kind {
+    vm_spec.Untrusted -> linked_removal_plan(vm_home, name, config)
+    vm_spec.Distribution -> removal_plan(vm_home, guest, name, config, home)
+  }
 }
 
 /// What undoing the guest's enrolment takes out of `config` and the cookie.
@@ -4292,11 +4944,18 @@ fn removed_things(plan: RemovalPlan, home: String) -> List(String) {
     vm_spec.KeepCookie -> tables
   }
 
-  // The sealed key is the last thing listed, since it goes last.
-  case plan.authority {
+  // The sealed key is listed after them, since it goes after them.
+  let with_key = case plan.authority {
     Some(directory) ->
       list.append(with_cookie, ["the sealed authority key in " <> directory])
     None -> with_cookie
+  }
+
+  // The link credentials are the last thing listed, since they go last.
+  case plan.link_home {
+    Some(directory) ->
+      list.append(with_key, ["the link credentials in " <> directory])
+    None -> with_key
   }
 }
 
@@ -4339,6 +4998,14 @@ fn apply_removal(
   // The key goes after the guest it was minted for, so a failure part way
   // leaves a guest that still names its key and can be removed again.
   use Nil <- result.try(case plan.authority {
+    Some(directory) -> remove_tree(directory)
+    None -> Ok(Nil)
+  })
+
+  // The link credentials go after the guest and its row, so a failure part way
+  // leaves a guest that can be removed again, never a row naming files that
+  // are gone.
+  use Nil <- result.try(case plan.link_home {
     Some(directory) -> remove_tree(directory)
     None -> Ok(Nil)
   })

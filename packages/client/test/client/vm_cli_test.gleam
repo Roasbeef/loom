@@ -375,6 +375,7 @@ fn launch(firmware: option.Option(String)) -> vm_spec.Launch {
     state_disk: "/vm/dev/state.img",
     github: vm_spec.GitHubOff,
     allow: [],
+    reach: vm_spec.Publish,
   )
 }
 

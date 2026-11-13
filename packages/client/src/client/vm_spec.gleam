@@ -170,6 +170,11 @@ pub const log_lines_limit = 100_000
 /// cannot be called this, because its directory would be the key's.
 pub const authority_dir = "authority"
 
+/// The directory of the vm home that holds the untrusted link's authority and
+/// the orchestrator's leaf (`client/vm_link_pki`). A guest cannot be called
+/// this either, because its directory would be the credentials'.
+pub const link_dir = "link"
+
 /// The file inside a deployment's authority directory that holds the
 /// passphrase `up` sealed its key under.
 pub const passphrase_file = "passphrase"
@@ -213,7 +218,22 @@ pub type UpOptions {
     allow: List(String),
     /// The host path of the script `--provision` names.
     provision: Option(String),
+    /// How the daemon reaches the guest when `--link` said. `None` means the
+    /// flag was not given, which is not the same as `distribution`: a resume
+    /// keeps the link the guest was made with (`client/vm_link.settle`).
+    link: Option(LinkKind),
   )
+}
+
+/// How the host daemon reaches a guest's executor.
+pub type LinkKind {
+  /// A trusted Erlang distribution peer, which is how every guest was reached
+  /// before `--link` existed.
+  Distribution
+
+  /// An untrusted executor over a pinned TLS link that is not distribution
+  /// (protocol-change/109), so the guest holds no cookie.
+  Untrusted
 }
 
 /// How a standing guest reaches GitHub. The token is read on the host by
@@ -374,6 +394,7 @@ fn only_ensure_flags(arguments: List(String)) -> Result(Nil, String) {
       || flag == "--config"
       || flag == "--github"
       || flag == "--allow"
+      || flag == "--link"
     -> only_ensure_flags(rest)
     [flag, ..]
       if flag == "--name"
@@ -604,6 +625,7 @@ fn default_up() -> UpOptions {
     freshness: Resume,
     allow: [],
     provision: None,
+    link: None,
   )
 }
 
@@ -648,6 +670,10 @@ fn up_flags(
       use github <- result.try(github_access(value))
       up_flags(rest, UpOptions(..options, github: Some(github)))
     }
+    ["--link", value, ..rest] -> {
+      use link <- result.try(link_kind(value))
+      up_flags(rest, UpOptions(..options, link: Some(link)))
+    }
 
     // The one flag with no value: starting again is a choice, not a setting.
     ["--fresh", ..rest] ->
@@ -670,6 +696,16 @@ fn up_flags(
         True -> Error("unknown option " <> word)
         False -> Error("unexpected argument " <> word)
       }
+  }
+}
+
+/// Reads `--link`'s value.
+fn link_kind(value: String) -> Result(LinkKind, String) {
+  // The two words are the ones `status` and the guest's `link` record use.
+  case value {
+    "distribution" -> Ok(Distribution)
+    "untrusted" -> Ok(Untrusted)
+    _ -> Error("--link takes distribution or untrusted, not " <> value)
   }
 }
 
@@ -1524,6 +1560,7 @@ pub fn valid_name(name: String) -> Result(Nil, String) {
     catalogue.is_executor_name(name)
     && string.byte_size(name) <= name_limit
     && name != authority_dir
+    && name != link_dir
   {
     True -> Ok(Nil)
     False ->
@@ -2341,13 +2378,31 @@ pub fn guest_config(
   github: GitHubAccess,
   allow: List(String),
 ) -> String {
+  // The executor's own tables come from the bundle, so its node name, its
+  // listen port and its trust in the orchestrator are what the plan said.
   let tables =
     distribution_bundle.config_tables(bundle, guest_files())
     |> list.map(fn(table) { table.text })
+  guest_config_with(tables, workspaces, github, allow)
+}
 
-  // The executor's own tables come from the bundle, so its node name, its
-  // listen port and its trust in the orchestrator are what the plan said. The
-  // workspace rows are the one thing the plan leaves to `up`.
+/// The executor's `loom.toml` around the tables that say how it is reached.
+/// The workspace rows are the one thing a plan leaves to `up`, and the model,
+/// workspace and tools tables are the same for every kind of link
+/// (`client/vm_link.guest_config` passes the untrusted link's listener).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let text = vm_spec.guest_config_with([], ["proj"], vm_spec.GitHubOff, [])
+/// assert string.contains(text, "[workspaces.proj]")
+/// ```
+pub fn guest_config_with(
+  tables: List(String),
+  workspaces: List(String),
+  github: GitHubAccess,
+  allow: List(String),
+) -> String {
   string.join(
     list.flatten([
       [unused_model],
@@ -2420,7 +2475,20 @@ pub type Launch {
     /// The hosts the guest may reach besides GitHub's. They are allowed and
     /// never injection hosts: nothing here reaches `--inject-host`.
     allow: List(String),
+    /// How the forwarded port is announced.
+    reach: Reach,
   )
+}
+
+/// How `loom-vm run` makes the guest's port reachable from the host.
+pub type Reach {
+  /// `--publish`: forward the port and register the executor's node name in
+  /// the host's epmd, which a distribution peer is found by.
+  Publish
+
+  /// `--forward`: forward the port and register nothing, so the host's epmd
+  /// lists no node for the guest. The untrusted link dials the port directly.
+  Forward
 }
 
 /// `text`, a `loom.toml` just enrolled for a standing guest, with its
@@ -2509,17 +2577,28 @@ pub fn launch_arguments(launch: Launch) -> List(String) {
       "0",
       "--state-disk",
       launch.state_disk,
-      "--publish",
-      launch.names.executor_short
-        <> ":"
-        <> int.to_string(launch.host_port)
-        <> ":"
-        <> int.to_string(guest_port),
     ],
+    reach_arguments(launch),
     github,
     list.flat_map(launch.allow, fn(host) { ["--allow", host] }),
     ["--", guest_entry, node_dir, "--state-device", state_device],
   ])
+}
+
+/// The flag that forwards the guest's port: `--publish` also registers the
+/// executor's node in the host's epmd, and `--forward` does not.
+fn reach_arguments(launch: Launch) -> List(String) {
+  let host = int.to_string(launch.host_port)
+  let guest = int.to_string(guest_port)
+
+  // Only a distribution peer is found through epmd.
+  case launch.reach {
+    Publish -> [
+      "--publish",
+      launch.names.executor_short <> ":" <> host <> ":" <> guest,
+    ]
+    Forward -> ["--forward", host <> ":" <> guest]
+  }
 }
 
 /// `--allow` for each GitHub host.
