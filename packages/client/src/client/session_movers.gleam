@@ -174,6 +174,9 @@ type Entry {
     stalled_since: Option(Int),
     reason: Option(String),
     abandon: Abandon,
+    // How many runs in a row ended stalled, which decides how often the stall
+    // is logged (`session_mover.stall_is_logged`).
+    stalls: Int,
   )
 }
 
@@ -347,6 +350,7 @@ fn handle(
               stalled_since: None,
               reason: None,
               abandon: Unasked,
+              stalls: 0,
             ),
           ))
       }
@@ -441,12 +445,40 @@ fn handle(
               Some(bootstrap.monotonic_time_ms())
           }
 
-          actor.continue(after_run(state, move, since, Some(reason)))
+          actor.continue(stalled(state, move, since, reason))
         }
-        Deferred(reason:) ->
-          actor.continue(after_run(state, move, None, Some(reason)))
+        Deferred(reason:) -> actor.continue(stalled(state, move, None, reason))
       }
   }
+}
+
+// A run that stalled: it counts the attempt, writes the warning when the count
+// says one is due, and goes on as `after_run` does. The count survives the retry
+// on the entry, so a move stalled for an hour logs a few lines and not one for
+// every five seconds.
+
+/// Records a stalled run and logs it at a decreasing rate.
+fn stalled(
+  state: State(instance),
+  move: catalogue.Pending,
+  since: Option(Int),
+  reason: String,
+) -> State(instance) {
+  // The first run of a move has no entry count yet, so it is attempt one.
+  let attempt = case dict.get(state.entries, move.session) {
+    Ok(Entry(stalls:, ..)) -> stalls + 1
+    Error(Nil) -> 1
+  }
+
+  let now = bootstrap.monotonic_time_ms()
+  session_mover.note_stall(
+    state.environment.logger,
+    move,
+    reason,
+    attempt,
+    option.map(since, fn(began) { now - began }) |> option.unwrap(0),
+  )
+  after_run(state, move, since, Some(reason), attempt)
 }
 
 // A run that did not end the move. If the owner asked to give the move up while
@@ -461,21 +493,23 @@ fn after_run(
   move: catalogue.Pending,
   since: Option(Int),
   reason: Option(String),
+  stalls: Int,
 ) -> State(instance) {
   case dict.get(state.entries, move.session) {
     Ok(Entry(abandon: Asked, ..)) ->
       start_giving_up(
-        waiting(state, move, since, reason),
+        waiting(state, move, since, reason, stalls),
         Entry(
           move:,
           phase: Waiting,
           stalled_since: since,
           reason: option.map(reason, node_report.cut_reason),
           abandon: Unasked,
+          stalls:,
         ),
       )
     Ok(Entry(abandon: Unasked, ..)) | Error(Nil) ->
-      waiting(state, move, since, reason)
+      waiting(state, move, since, reason, stalls)
   }
 }
 
@@ -485,6 +519,7 @@ fn waiting(
   move: catalogue.Pending,
   since: Option(Int),
   reason: Option(String),
+  stalls: Int,
 ) -> State(instance) {
   State(
     ..state,
@@ -497,6 +532,7 @@ fn waiting(
         stalled_since: since,
         reason: option.map(reason, node_report.cut_reason),
         abandon: Unasked,
+        stalls:,
       ),
     ),
   )

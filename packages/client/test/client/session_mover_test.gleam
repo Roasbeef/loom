@@ -73,7 +73,10 @@ import support/record_book
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator as host_rig
 import support/remote_stubs
+import telemetry/field
+import telemetry/level
 import telemetry/log
+import telemetry/record as logged
 import tools/agent
 import weft/poll
 
@@ -1600,6 +1603,68 @@ pub fn a_stalled_move_is_retried_until_it_completes_test() {
   control.begin(begin(rig))
   await_custody(rig, catalogue.Moved(op:, to: "bravo"))
   finish(rig)
+}
+
+// The attempts of the next `wanted` stall warnings the logger's subject
+// receives, waiting for each. Other records are passed over.
+fn await_stalls(
+  records: process.Subject(logged.Record),
+  wanted: Int,
+) -> List(Int) {
+  case wanted {
+    0 -> []
+    _ ->
+      case process.receive(records, 20_000) {
+        Error(Nil) -> []
+        Ok(next) ->
+          case
+            next.event,
+            list.find(next.fields, fn(found) { found.key == "attempt" })
+          {
+            "daemon.move_stalled",
+              Ok(field.Field(value: field.Count(attempt), ..))
+            -> [attempt, ..await_stalls(records, wanted - 1)]
+            _, _ -> await_stalls(records, wanted)
+          }
+      }
+  }
+}
+
+// A move that cannot get an answer retries on every tick, and used to warn on
+// every one. It now writes the warning after the first, second, fourth and
+// eighth attempt, each saying how many there have been, so the fifth to
+// seventh retries add nothing.
+pub fn a_stalled_move_logs_at_a_decreasing_rate_test() {
+  let rig =
+    start(
+      "stall-log",
+      91,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  let wire = Wire(..rig.wire, stage: fn(_session, _op) { Error(Nil) })
+  let records = process.new_subject()
+  let logger = log.new(sink: log.to_subject(records), threshold: level.Info)
+  let assert Ok(control) =
+    session_movers.start(
+      session_mover.Environment(
+        ..environment(rig, wire, fn(_) { Nil }),
+        logger:,
+      ),
+      20,
+      no_holder,
+    )
+  control.begin(begin(rig))
+  assert await_stalls(records, 4) == [1, 2, 4, 8]
+  finish(rig)
+}
+
+pub fn only_a_power_of_two_attempt_is_logged_test() {
+  let attempts = list.index_map(list.repeat(Nil, 41), fn(_, at) { at })
+  assert list.filter(attempts, session_mover.stall_is_logged)
+    == [1, 2, 4, 8, 16, 32]
 }
 
 pub fn a_restart_resumes_every_move_that_was_in_flight_test() {
