@@ -148,11 +148,20 @@ spec ProbeCursorAhead observes eCursorRefused {
   }
 }
 
-// The adapter closed the page and showed a failure.
-spec ProbeShownFailed observes eShown {
+// The adapter received an answer with no frame and paused before the next poll.
+spec ProbeEmptyPause observes eEmptyAnswer {
   start state Watching {
-    on eShown do (k: tShown) {
-      assert k != SH_FAILED, "witness: the page showed a failure";
+    on eEmptyAnswer do {
+      assert false, "witness: an empty answer was followed by a pause";
+    }
+  }
+}
+
+// The feed ended with a lane frame still queued, which is dropped with the feed.
+spec ProbeQueuedAtEnd observes eFeedDone {
+  start state Watching {
+    on eFeedDone do (queued: int) {
+      assert queued == 0, "witness: the feed ended with a lane frame still queued";
     }
   }
 }

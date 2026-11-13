@@ -17,11 +17,20 @@
 // An answer that reports the feed ended delivers none of its frames, whatever it
 // carries: an honest box sends none, and a box that sends some is not believed.
 //
-// Showing. The adapter keeps `down`, which is set when a poll has no answer
-// after `PollTimeout` ticks and cleared by an answer to the poll in flight. When
-// the lane closes the page because it failed, the adapter shows waiting if
-// `down` is set and a failure otherwise, so a page whose link is only down never
-// shows a failure.
+// Pacing. An answer that carries no frame is followed by the next poll one
+// `IdlePause` later and not at once. An honest box answers empty only after its
+// hold, so the pause costs nothing, and a box that answers empty at once cannot
+// drive a tight loop.
+//
+// Showing. A page of a session on another orchestrator cannot tell a link that is
+// down from one that is slow, so when the lane fails and closes the page it shows
+// the waiting state, never a failure. The component decides that, in the same
+// update that ends its lane, and this machine states the rule: the shown kind is
+// always waiting, whatever the link did.
+//
+// Ending. When the feed ends, its outbox ends with it. A frame the lane had
+// queued is not sent again by anything, so no piece leaves after the end, and a
+// later feed starts with an empty outbox.
 machine UiFeed {
   var link: machine;
   var lane: machine;
@@ -35,7 +44,8 @@ machine UiFeed {
   var curOff: int;
   var closed: int;
   var dead: int;
-  var down: int;
+  var paused: int;
+  var pauseAge: int;
 
   start state Running {
     entry (l: machine) {
@@ -95,11 +105,18 @@ machine UiFeed {
     }
 
     on eTick do (c: machine) {
+      announce eUiTick;
       if (dead == 0 && closed == 0) {
+        if (paused == 1) {
+          pauseAge = pauseAge + 1;
+          if (pauseAge >= IdlePause()) {
+            paused = 0;
+            sendPoll();
+          }
+        }
         if (pollOut == 1) {
           pollAge = pollAge + 1;
           if (pollAge >= PollTimeout()) {
-            down = 1;
             sendPoll();
           }
         }
@@ -119,6 +136,7 @@ machine UiFeed {
   }
 
   fun sendPoll() {
+    announce ePollSent;
     pollId = pollId + 1;
     pollOut = 1;
     pollAge = 0;
@@ -126,6 +144,7 @@ machine UiFeed {
   }
 
   fun sendPiece() {
+    announce ePieceOut;
     sendOut = 1;
     sendAge = 0;
     send link, eToBox, (kind = RQ_SEND, pollId = 0, after = 0, wait = 0, n = outq[0].n, offset = curOff, total = outq[0].total, cmd = outq[0].cmd);
@@ -144,7 +163,6 @@ machine UiFeed {
       return;
     }
     pollOut = 0;
-    down = 0;
     if (m.ended != EN_NONE) {
       end = 1;
     }
@@ -172,6 +190,14 @@ machine UiFeed {
       finish(m.ended);
       return;
     }
+    // An answer with no frame is followed by a pause, and one with frames by the
+    // next poll at once.
+    if (sizeof(m.frames) == 0) {
+      announce eEmptyAnswer;
+      paused = 1;
+      pauseAge = 0;
+      return;
+    }
     sendPoll();
   }
 
@@ -188,14 +214,13 @@ machine UiFeed {
   }
 
   fun showKind(): tShown {
-    if (down == 1) {
-      return SH_WAITING;
-    }
-    return SH_FAILED;
+    return SH_WAITING;
   }
 
   fun finish(kind: tEnded) {
     dead = 1;
+    announce eFeedDone, sizeof(outq);
+    outq = default(seq[tOut]);
     send lane, eUiEnded, kind;
   }
 }

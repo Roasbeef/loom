@@ -58,6 +58,8 @@ type tLaneCmd = (cmd: tCmd, pieces: int);
 fun Lease(): int { return 10; }
 fun Wait(): int { return 2; }
 fun PollTimeout(): int { return 3; }
+// How many ticks the adapter waits after an answer that carried no frame.
+fun IdlePause(): int { return 1; }
 fun SendTimeout(): int { return 3; }
 fun MaxFrames(): int { return 3; }
 fun MaxBytes(): int { return 4; }
@@ -140,6 +142,12 @@ event eLinkDropped;
 event eCut;
 event eHealed;
 event eDroppedEnded;
+event eUiTick;
+event ePollSent;
+event ePieceOut;
+event eEmptyAnswer;
+// The adapter ended; the number is how many lane frames its outbox still held.
+event eFeedDone: int;
 event eShown: tShown;
 event eGwDetached;
 event eAttachRefused;

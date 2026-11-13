@@ -45,12 +45,17 @@ added to it with a mutant and a probe.
 | **An answer that reports the feed ended hands on no frame, whatever it carries.** | `end == 0` (added) | `Over` hands on nothing |
 | An answer or a refusal that says the feed ended ends the adapter and the lane. | `finish(m.ended)` | `Over(why)` |
 | A poll with no answer is asked again with the same `after`. | `PollTimeout` | `Retry(pause_ms)` |
-| **A page whose last poll went unanswered shows waiting, and one that heard the box last shows a failure, when the lane closes it.** | `down`, `eLaneShut`, `eShown` (added) | `Shut` ends with `PeerUnreachable` when `silent_for > 0`, else `ConnectionFailed` |
+| **A relayed page whose lane fails shows the waiting state and never a failure, whatever the link did.** The page cannot tell a down link from a slow one. | `showKind`, `eLaneShut`, `eShown` | not in `ui_feed`, whose `Shut` ends with `ConnectionFailed` and only picks the socket's close code. The component draws it: `component.lane_failure`, checked by `component_test` (`a_lane_that_fails_on_a_relayed_route_draws_the_waiting_state`) |
+| **An answer with no frame is followed by the next poll one pause later and not at once.** | `paused`, `IdlePause` (added), `EmptyAnswerPauses` | `ui_feed.next_poll` (100 ms) |
+| **When the feed ends, its outbox ends with it: no piece leaves afterwards, and the next feed starts empty.** | `finish`, `NothingSentAfterEnd` (added) | the process exits with its `feed_outbox`; `ui_feed_box_test` shows the next feed does not send it |
 | One send is in flight. A piece with no answer is sent again unchanged, and frame `n + 1` is sent after every piece of `n` was admitted. | `sendPiece`, `onSend` | `feed_outbox.take`, `admitted`, `unanswered` |
 | A lapse at any point is a fresh attach and a redraw, not a continuation. | not modelled: a new feed | `Over(FeedLapsed)` is `ConnectionFailed`, which the browser reconnects from |
 
-The two bold rows are the ones slice 3 added to the model, with `DownShowsWaiting`
-and `NothingAfterEnd`'s hostile case, each with a mutant (`M9`, `M8`) and a probe.
+The bold rows are the ones slice 3 added to the model, each with a mutant and a
+probe: `NothingAfterEnd`'s hostile case (`M8`), `DownShowsWaiting` (`M9`),
+`EmptyAnswerPauses` (`M10`) and `NothingSentAfterEnd` (`M11`). `DownShowsWaiting`
+is checked at the adapter here and at the component by the rendered test named in
+the table, which is where the page decides what a dropped link shows.
 
 Four rules of the box are stated here as the code has them, and the model and the
 code agree on each.
@@ -110,6 +115,8 @@ safety properties under adversarial timing.
 | `NothingAfterEnd` | After a feed ends no frame of it reaches a lane. This is checked at the two places the end is visible: the feed host sends no frame once it has ended, and `ui_feed` delivers no frame from an answer that reports the feed ended. |
 | `RelayedDoorOnly` | A decision reaches the hub only through the relayed door, and the feed host never calls the local door. A command outside the forwarding rows never reaches the gateway as a frame. The box owner's own approve uses the local door and is allowed. |
 | `DownShowsWaiting` | A page whose link is cut when the lane closes it shows the waiting state and never a failure. The cut is observed at the link, not in the adapter. |
+| `EmptyAnswerPauses` | An answer that carries no frame is followed by the next poll at least one tick later. |
+| `NothingSentAfterEnd` | No piece of a lane frame leaves the adapter after its feed ended. |
 | `EveryEndingDetachesOnce` | Every ending of a feed, a lapse by the bound or the lease, the page's detach, a stop and a revocation, detaches the gateway door exactly once. A detach with no ending owed is a violation, and an ending whose detach never comes leaves the spec in its hot state. |
 | `CapNeverExceeded` | The feeds of one spawner that are alive, from the moment each runs until its process exits, never outnumber the cap. An ended feed is alive until it is forgotten, so a feed that attaches while one is kept is refused. |
 | `ShortPartitionLosesNothing` | Liveness. A case that announces a partition shorter than the lease, with the lane deadline above the longest recovery, must end with every written frame delivered. The monitor is hot while a written frame is undelivered, so a run that ends there fails. A lapse or a lane failure in such a run is reported, not excused. |
@@ -137,7 +144,7 @@ bounded.
 | `tcStop`, `tcRevoke`, `tcDetach` | The session stops, access is revoked, and the page detaches twice, each with traffic in flight. |
 | `tcApprovals`, `tcPieces` | Approvals and two-piece frames through a link that loses, duplicates and delays. |
 | `tcLongPartition` | A partition longer than the lane's deadline, begun as the lane sends. The lane fails with the link cut, and the page must show waiting. |
-| `tcFastLane` | A lane whose deadline is shorter than a delayed reply, over a link that is up. The page shows a failure, and `DownShowsWaiting` holds. |
+| `tcFastLane` | A lane whose deadline is shorter than a delayed reply, over a link that is up. The page still shows waiting. |
 | `tcHostileEnd` | A box that is not honest answers the late poll with the frames it had as well as its ending. The adapter delivers none. |
 | `tcCap` | Three feeds of one spawner share a directory with a cap of one. The first lapses by the lease and is kept, the second attaches while it is kept and is refused, and the third attaches after it was forgotten and runs. |
 | `tcOnly*` | One spec each, for `mutate.py`. `tcOnlyDetachOnce*` runs the detach spec over a lapse by the bound, by the lease, a stop, a revocation and a detach. |
@@ -151,7 +158,7 @@ and by the lease, an oversized frame admitted to an empty queue, a superseded po
 a repeated piece answered again, a forgotten token refused, a stopped, revoked and
 detached feed, a decision through the relayed door, a two-piece frame reaching the
 gateway, a lane that failed at its deadline, a message lost to a partition, a page shown
-waiting, a page shown a failure and the frames of an ended answer dropped. A poll ahead of the queue and one behind the
+waiting, an empty answer followed by a pause, a feed that ended with a lane frame still queued and the frames of an ended answer dropped. A poll ahead of the queue and one behind the
 acknowledged point, each refused, are probes too, as are a feed refused a place at
 the cap, a feed refused a place while an ended feed was kept, a place reused after
 a feed was forgotten, and a gateway door detached.
@@ -170,6 +177,8 @@ that names the rule, and requires the case to fail on that rule.
 | The lease is shorter than a partition the lane survives | `ShortPartitionLosesNothing` |
 | The adapter delivers the frames of an answer that reports the feed ended, from a box that sends them | `NothingAfterEnd` |
 | The adapter shows a failure when the lane closes a page whose link is down | `DownShowsWaiting` |
+| The adapter polls again at once after an answer with no frame | `EmptyAnswerPauses` |
+| The adapter resends the piece in flight after its feed ended | `NothingSentAfterEnd` |
 | A lapse ends the feed and leaves the gateway door attached | `EveryEndingDetachesOnce` |
 | An ended feed frees its place at once and not when it is forgotten | `CapNeverExceeded` |
 

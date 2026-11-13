@@ -117,6 +117,48 @@ spec DownShowsWaiting observes eCut, eHealed, eShown {
   }
 }
 
+// An answer that carries no frame is followed by the next poll one tick later and
+// not at once, so a box that answers empty at once cannot drive a tight loop. The
+// adapter announces its empty answers, its ticks and its polls, and the spec
+// requires a tick between an empty answer and the poll that follows it.
+spec EmptyAnswerPauses observes eEmptyAnswer, eUiTick, ePollSent {
+  var armed: int;
+  var ticked: int;
+
+  start state Watching {
+    on eEmptyAnswer do {
+      armed = 1;
+      ticked = 0;
+    }
+
+    on eUiTick do {
+      ticked = 1;
+    }
+
+    on ePollSent do {
+      assert !(armed == 1 && ticked == 0), "a poll followed an empty answer with no pause";
+      armed = 0;
+    }
+  }
+}
+
+// A feed's outbox ends with it. No piece of a lane frame leaves the adapter after
+// the feed ended, so a frame the lane had queued is not sent by the adapter and a
+// later feed, which starts with an empty outbox, cannot send it either.
+spec NothingSentAfterEnd observes eFeedDone, ePieceOut {
+  var done: int;
+
+  start state Watching {
+    on eFeedDone do (queued: int) {
+      done = 1;
+    }
+
+    on ePieceOut do {
+      assert done == 0, "a piece of a lane frame was sent after the feed ended";
+    }
+  }
+}
+
 // Liveness. The scenario's premise is a partition shorter than the lease, during
 // which no lane deadline passes: the test case announces it with
 // `eShortPartition` and sets the lane's deadline above the longest recovery. Given

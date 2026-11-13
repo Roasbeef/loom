@@ -359,63 +359,63 @@ test tcCap [main = TestCap]:
   (union System, { TestCap });
 
 test tcNormal [main = TestNormal]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EveryEndingDetachesOnce in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EveryEndingDetachesOnce, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestNormal });
 
 test tcLossy [main = TestLossy]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestLossy });
 
 test tcRacing [main = TestRacing]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestRacing });
 
 test tcShortPartition [main = TestShortPartition]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, ShortPartitionLosesNothing in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, ShortPartitionLosesNothing, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestShortPartition });
 
 test tcBoundLapse [main = TestBoundLapse]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestBoundLapse });
 
 test tcOversize [main = TestOversize]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestOversize });
 
 test tcByteLapse [main = TestByteLapse]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestByteLapse });
 
 test tcLeaseLapse [main = TestLeaseLapse]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestLeaseLapse });
 
 test tcStop [main = TestStop]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestStop });
 
 test tcRevoke [main = TestRevoke]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestRevoke });
 
 test tcDetach [main = TestDetach]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestDetach });
 
 test tcApprovals [main = TestApprovals]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestApprovals });
 
 test tcPieces [main = TestPieces]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestPieces });
 
 test tcLongPartition [main = TestLongPartition]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestLongPartition });
 
 test tcHostileEnd [main = TestHostileEnd]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestHostileEnd });
 
 // One spec each, for mutate.py.
@@ -510,11 +510,20 @@ test tcProbeShownWaiting [main = TestLongPartition]:
   assert ProbeShownWaiting in (union System, { TestLongPartition });
 
 test tcFastLane [main = TestFastLane]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestFastLane });
 
-test tcProbeShownFailed [main = TestFastLane]:
-  assert ProbeShownFailed in (union System, { TestFastLane });
+test tcOnlyEmptyPause [main = TestNormal]:
+  assert EmptyAnswerPauses in (union System, { TestNormal });
+
+test tcOnlyNoSendAfterEnd [main = TestStop]:
+  assert NothingSentAfterEnd in (union System, { TestStop });
+
+test tcProbeEmptyPause [main = TestNormal]:
+  assert ProbeEmptyPause in (union System, { TestNormal });
+
+test tcProbeQueuedAtEnd [main = TestStop]:
+  assert ProbeQueuedAtEnd in (union System, { TestStop });
 
 test tcProbeDroppedEnded [main = TestHostileEnd]:
   assert ProbeDroppedEnded in (union System, { TestHostileEnd });

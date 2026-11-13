@@ -103,12 +103,27 @@ MUTATIONS = {
      "    if (end == 0) {\n      foreach",
      "    if (true) {\n      foreach")]),
 
-  # A link that is only down shows waiting. Here the adapter always shows a
-  # failure when the lane closes the page.
+  # A page of a session on another orchestrator shows waiting when its lane fails,
+  # whatever the link did, because it cannot tell a down link from a slow one.
+  # Here the adapter shows a failure.
   "M9-shows-a-failure-for-a-link-that-is-down": ("tcOnlyDownWaiting", 4000, r"failure for a link that was only down", [
     ("PSrc/UiFeed.p",
-     "    if (down == 1) {\n      return SH_WAITING;\n    }\n",
-     "")]),
+     "    return SH_WAITING;\n",
+     "    return SH_FAILED;\n")]),
+
+  # An answer with no frame is followed by a pause. Here the adapter polls again
+  # at once, so a box that answers empty at once drives a tight loop.
+  "M10-polls-again-at-once-after-an-empty-answer": ("tcOnlyEmptyPause", 1000, r"no pause", [
+    ("PSrc/UiFeed.p",
+     "      announce eEmptyAnswer;\n      paused = 1;\n      pauseAge = 0;\n",
+     "      announce eEmptyAnswer;\n      sendPoll();\n")]),
+
+  # A feed's outbox ends with it. Here the adapter keeps resending the piece in
+  # flight after the feed ended, which is a lane frame leaving after the end.
+  "M11-resends-a-piece-after-the-feed-ended": ("tcOnlyNoSendAfterEnd", 4000, r"after the feed ended", [
+    ("PSrc/UiFeed.p",
+     "    on eTick do (c: machine) {\n      announce eUiTick;\n      if (dead == 0 && closed == 0) {",
+     "    on eTick do (c: machine) {\n      announce eUiTick;\n      if (closed == 0) {")]),
 }
 
 
