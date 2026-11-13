@@ -102,11 +102,11 @@ fn user_version(path: String) -> List(Int) {
   result.unwrap(versions, [])
 }
 
-pub fn the_catalogue_is_at_version_twenty_test() {
-  assert catalogue.current_version == 20
+pub fn the_catalogue_is_at_version_twenty_one_test() {
+  assert catalogue.current_version == 21
   let #(path, store, _) = catalogue_with("project-version", [])
   assert catalogue.close(store) == Ok(Nil)
-  assert user_version(path) == [20]
+  assert user_version(path) == [21]
 }
 
 pub fn version_nineteen_catalogue_gains_the_project_tables_test() {
@@ -120,7 +120,7 @@ pub fn version_nineteen_catalogue_gains_the_project_tables_test() {
   let assert Ok(Nil) =
     raw(
       path,
-      "DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; PRAGMA user_version=19",
+      "DROP TABLE catalogue_session_agency; DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; PRAGMA user_version=19",
     )
     |> result.replace_error(Nil)
   assert user_version(path) == [19]
@@ -137,7 +137,7 @@ pub fn version_nineteen_catalogue_gains_the_project_tables_test() {
     })
     == Ok(Nil)
   assert catalogue.close(migrated) == Ok(Nil)
-  assert user_version(path) == [20]
+  assert user_version(path) == [catalogue.current_version]
 }
 
 pub fn the_schema_refuses_what_the_wrappers_would_also_refuse_test() {
