@@ -1090,16 +1090,17 @@ load: `pools.spread` puts first the candidate on which this orchestrator has the
 fewest resident sessions (`ledger_holdings.resident_by_name`), and the order the
 pool lists breaks ties, so an unused pool is tried in listed order. A session is
 resident only after its attach, so the registry also keeps a claim for each
-session still being built: `manager.claim_placement` adds the claims to the
-resident counts, runs `pools.spread` and records the session's first choice in
+session still being built: `manager.claim_placement` reads the resident counts from the registry's own rows,
+adds the claims, runs `pools.spread` and records the session's first choice in
 one registry turn, and sessions that open together therefore see one another.
 The count says nothing of what other orchestrators hold on the same machines.
 `protocol/models/placement-claims` ([its README](../../protocol/models/placement-claims/README.md))
 models the claims and states the balance the code guarantees: the executors
 differ by at most one when each session is counted once and each attach lands on
-the first candidate. It also records that the resident counts are read by the
-caller before the registry's turn, so a session that becomes resident between
-the read and the turn is not counted by that ask.
+the first candidate. It also records a defect that
+is fixed: the resident counts were read by the caller before the registry's
+turn, so a session that became resident between the read and the turn was not
+counted by that ask. The registry now reads its own rows in the turn.
 
 The rule that matters is that a session's checkout exists only where its scope
 record says. `remote/workspace` writes the record, naming the executor, after
