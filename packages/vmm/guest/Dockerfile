@@ -109,11 +109,17 @@ COPY . .
 # BUILD_COMMIT names the commit the image is built from: the build context
 # excludes .git, so scripts/build-commit.sh would otherwise report `unknown`
 # and the guest daemon could not say which release it is.
+#
+# Only /opt/loom leaves this stage, and the checkout's build output, which runs
+# to gigabytes, would otherwise be committed with it as a layer. The stage is
+# built on disks that cannot always hold that layer (a 25 GB Linux host ran out
+# of space writing it), so the checkout is removed in the same step.
 ARG LOOM_REVISION=unknown
 RUN --mount=type=cache,target=/root/.cache/gleam \
 	--mount=type=cache,target=/root/go/pkg/mod \
 	--mount=type=cache,target=/root/.cache/go-build \
-	DIST_VM=0 PREFIX=/opt/loom make install BUILD_COMMIT="${LOOM_REVISION}"
+	DIST_VM=0 PREFIX=/opt/loom make install BUILD_COMMIT="${LOOM_REVISION}" \
+	&& cd / && rm -rf /work
 
 # ----------------------------------------------------------- runtime stage
 FROM docker.io/library/debian:trixie-slim AS runtime

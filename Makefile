@@ -509,12 +509,17 @@ vmm-firmware: ## Build libkrunfw with Landlock into packages/vmm/build/firmware
 # directory, because the guest writes into its root in place. Clone with
 # `cp -cRp` on macOS: without -p, cp applies the umask to directory modes and
 # /tmp loses its world-write bit. On Linux, `cp -a` keeps them.
+#
+# VMM_PODMAN_FLAGS go to every podman call. Ubuntu 24.04's podman 4.9 with
+# its runc 1.3 refuses the Dockerfile's cache mounts ("bind mounts cannot
+# have any filesystem-specific options applied"); `apt-get install crun` and
+# VMM_PODMAN_FLAGS='--runtime crun' build it.
 ifeq ($(shell uname -s),Darwin)
 VMM_BUILD_CONNECTION ?= loom-build
-VMM_PODMAN           := podman --connection $(VMM_BUILD_CONNECTION)
+VMM_PODMAN           := podman --connection $(VMM_BUILD_CONNECTION) $(VMM_PODMAN_FLAGS)
 VMM_GUEST_PLATFORM   ?= linux/arm64
 else
-VMM_PODMAN           := podman
+VMM_PODMAN           := podman $(VMM_PODMAN_FLAGS)
 VMM_GUEST_PLATFORM   ?= linux/$(subst x86_64,amd64,$(subst aarch64,arm64,$(shell uname -m)))
 endif
 VMM_GUEST_IMAGE      ?= localhost/loom-vmm-guest-root:dev
