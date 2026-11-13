@@ -461,7 +461,7 @@ On TLC 2.19:
 | `MoveCheckoutMutantCaptureCommits.cfg` | `LaptopUntouched` violated | 169 | 86 | 5 |
 | `MoveCheckoutMutantOperatorAbandon.cfg` | `NoLeak` violated | 1,962 | 779 | 8 |
 | `MoveCheckoutMutantScopeKeepsWorkspace.cfg` | `AbandonRestores` violated | 1,913 | 813 | 8 |
-| `MoveCheckoutMutantScopeKeepsWorkspaceStall.cfg` | `CheckoutSettles` violated | 39,480 | 14,680 | n/a |
+| `MoveCheckoutMutantScopeKeepsWorkspaceStall.cfg` | `CheckoutSettles` violated | n/a | n/a | n/a |
 
 A deeper run, outside the gate and before the workspace binding was added to
 the model, with `MaxCrashes = 2`, `MaxInc = 9`, `MaxTok = 9` and
@@ -496,7 +496,7 @@ scope's; and the cell naming a finished attempt. Dropping weak fairness of
 | The ledger keeps a scope bound to a workspace after a failed landing, and a refused apply | `RebindUnused = FALSE`, `InitWs = {shared}` | See the finding below. The corrected workspace is refused for the scope's binding. `AbandonRestores` breaks. |
 | The same, with a name the executor does not serve | `RebindUnused = FALSE`, `InitWs = {unknown}` | The attach binds the scope and fails, and the corrected attach is refused. The move never settles, so `CheckoutSettles` breaks (exit 13). |
 
-### Finding: `holds_tip` takes a stale tree for the state that was asked for
+### Finding: `holds_tip` takes a stale tree for the state that was asked for (lines read at 024afdadf)
 
 `CheckoutIsWhatWasStopped` does not hold of the shipped code. The model finds two
 traces, both with `state_apply.holds_tip` as written (`git merge-base
@@ -569,12 +569,16 @@ records the last apply per session on the executor in a ref
 leaves a tree alone when that ref names the tip, which keeps the resend rule of
 slice 4a (a resend after the session committed on top), or when the tree's HEAD
 is the tip, and moves the tree in every other case. Its regression tests fail
-against the earlier rule. The drive of exit criterion 2 reproduced the retry
+against the earlier rule. The model separates the ancestry rule from plain
+equality of the tree's HEAD with the tip, but it has no step that commits on the
+executor's branch, so the resend after the session committed on top is covered by
+`applying_into_the_same_tree_twice_changes_nothing_test` in `state_apply_test`
+and not by the model. The drive of exit criterion 2 reproduced the retry
 trace on real daemons (`docs/review/distributed-1137.md`, finding 2). The two
 mutants above are the rule before that change. Until it merges, `make
 model-check` shows them as expected violations of the code on `main`.
 
-### Finding: a failed landing leaves the scope bound to the wrong workspace
+### Finding: a failed landing leaves the scope bound to the wrong workspace (lines read at 024afdadf)
 
 `AbandonRestores` and `CheckoutSettles` do not hold of the shipped code either.
 The drive of exit criterion 2 found it on real daemons (`docs/review/distributed-1137.md`,
