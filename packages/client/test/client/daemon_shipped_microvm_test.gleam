@@ -218,6 +218,11 @@ type Run {
     third_name: String,
     /// The name of the guest that joins the idle guest's deployment.
     join_name: String,
+    /// The name of the guest reached over the untrusted link.
+    untrusted_name: String,
+    /// The orchestrator that dials that guest, with a configuration of its
+    /// own.
+    untrusted: remote_daemons.Layout,
   )
 }
 
@@ -286,10 +291,10 @@ fn second_command(reach: Reach) -> String {
 ///
 /// `bash scripts/test.sh client --match 'client@daemon_shipped_microvm_test:'`.
 pub fn daemon_shipped_microvm_test_() -> EunitTest {
-  // The runner scales EUnit timeouts by ten: 1100 seconds around a body of
-  // 900, which clones a guest root and boots a VM twice, starts an
-  // orchestrator, and runs two turns.
-  Timeout(110, fn() {
+  // The runner scales EUnit timeouts by ten: 1500 seconds around a body of
+  // 1300, which clones a guest root and boots a VM for every step, starts an
+  // orchestrator, and runs a turn on each guest.
+  Timeout(150, fn() {
     case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
       Error(Nil) ->
         io.println_error(
@@ -379,6 +384,8 @@ fn fixture(artifacts: Artifacts) -> Nil {
       failing_name: guest_prefix <> hex(3),
       third_name: guest_prefix <> hex(3),
       join_name: guest_prefix <> hex(3),
+      untrusted_name: guest_prefix <> hex(3),
+      untrusted: remote_daemons.layout(directory, "untrusted"),
     )
 
   let outcomes =
@@ -388,7 +395,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
         Ok(Nil)
       },
     ])
-    |> weft.deadline(900_000)
+    |> weft.deadline(1_300_000)
     |> weft.start
 
   // Teardown runs outside the body's deadline, so a body that failed midway
@@ -397,7 +404,9 @@ fn fixture(artifacts: Artifacts) -> Nil {
   let _idle_stopped = vm(run, ["down", "--name", run.idle_name])
   let _failing_stopped = vm(run, ["down", "--name", run.failing_name])
   let _joined_stopped = vm(run, ["down", "--name", run.join_name])
+  let _untrusted_stopped = vm(run, ["down", "--name", run.untrusted_name])
   retire_default_daemon(run)
+  remote_daemons.retire(run.untrusted.paths)
   remote_daemons.retire(run.orchestrator.paths)
   let assert [weft.Completed(0, Nil)] = outcomes
     as "the microvm body completes before native teardown"
@@ -574,6 +583,7 @@ fn drive(run: Run) -> Nil {
   second_guest_joins(run)
   failing_script_fails_up(run)
   guests_are_removed(run)
+  untrusted_guest(run)
 }
 
 // Whether the guest's jailed shell calls api.github.com.
@@ -2389,6 +2399,298 @@ fn read_marker(run: Run) -> String {
   let assert Ok(text) = simplifile.read(path)
     as "the first turn wrote the marker into the guest's checkout"
   text
+}
+
+// --- a guest reached over the untrusted link -----------------------------------
+
+const untrusted_prompt = "run it in the untrusted guest"
+
+const untrusted_answer = "ran in the untrusted guest"
+
+// What the jailed call reports. The key is read on purpose: a masked file is
+// bound to /dev/null in the jail, so the read succeeds and prints nothing, and
+// the certificate beside it is public and prints its header, which shows the
+// call could have read the key had it not been masked.
+fn untrusted_command() -> String {
+  "echo \"kernel=$(uname -r)\"; grep -E '^NoNewPrivs:' /proc/self/status; "
+  <> "cat "
+  <> node_dir
+  <> "/creds/key.pem; "
+  <> "head -c 27 "
+  <> node_dir
+  <> "/creds/cert.pem; echo; "
+  <> "echo \"home_entries=$(ls -A "
+  <> node_dir
+  <> "/home | tr '\\n' ' ')\"; true"
+}
+
+// A second guest, reached over the untrusted link (protocol-change/109) and not
+// as a distribution peer, in a configuration of its own. `up --link untrusted`
+// writes the link tables beside the model table the step gave the file, an
+// orchestrator started on that file serves a session on the guest, and a jailed
+// call settles on the guest's kernel. What the guest holds is the point: no
+// cookie anywhere in its root, no `[distribution]` table in its configuration,
+// no node in the host's epmd, and a jailed read of the executor's key that
+// returns nothing. The step ends with the daily verbs of such a guest: a resume
+// that changes nothing, a refusal to change its link, and a removal that takes
+// the tables and the credentials with it.
+fn untrusted_guest(run: Run) -> Nil {
+  let layout = run.untrusted
+  let name = run.untrusted_name
+  let flags = [
+    "--name",
+    name,
+    "--workspace",
+    run.repository,
+    "--config",
+    layout.config,
+    "--github",
+    "off",
+    "--mem",
+    "1024",
+    "--cpus",
+    "2",
+  ]
+  let exchanges = [
+    bash_exchange(untrusted_prompt, "untrusted-call", untrusted_command()),
+    reply_after("untrusted-call", untrusted_answer),
+  ]
+  let #(key, report) =
+    provider.with_server_for(
+      exchanges,
+      provider.OnlySuccessful,
+      600_000,
+      fn(url) {
+        // The file starts with only the model table a daemon needs, which is
+        // what a developer's own file would hold.
+        let assert Ok(Nil) =
+          simplifile.write(layout.config, remote_daemons.model_table(url))
+          as "the orchestrator's configuration is written"
+        let model = read_file(layout.config)
+
+        let output =
+          expect_ok(
+            vm(run, ["up", "--link", "untrusted", ..flags]),
+            "loom vm up --link untrusted",
+          )
+        io.println_error(label <> " vm up (untrusted):\n" <> output)
+        let guest = run.vm_home <> "/" <> name
+        let port = untrusted_port(guest)
+        assert string.contains(
+          output,
+          "serves its executor over the untrusted link at 127.0.0.1:" <> port,
+        )
+        assert_untrusted_files(run, guest, port, model)
+
+        // An orchestrator started on that file reads the rows and dials the
+        // guest, with no distribution options file and no cookie.
+        let running = remote_daemons.start_plain(layout)
+        let control = remote_daemons.open_control(running)
+        let #(session, settled) =
+          remote_daemons.create_and_settle(
+            control,
+            1,
+            "untrusted-guest",
+            name,
+            remote_pair.workspace_name,
+          )
+        assert remote_daemons.settled_state(settled) == "resident"
+        remote_pair.converse_for(
+          remote_pair.Opened(orchestrator: running, control:, session:),
+          untrusted_prompt,
+          [untrusted_answer],
+        )
+        remote_daemons.stop_session(running, control, 100, session)
+        remote_pair.close_daemons([running])
+        remote_daemons.retire(layout.paths)
+
+        // The key is read now, because the removal below deletes the root.
+        let key = read_file(guest <> "/root" <> node_dir <> "/creds/key.pem")
+        untrusted_daily_verbs(run, guest, port, flags)
+        key
+      },
+    )
+
+  let assert Ok(requests) = report
+    as "the scripted turn on the untrusted guest completed"
+  let result = remote_daemons.result_text(requests, "untrusted-call")
+  io.println_error(label <> " untrusted tool result:\n" <> result)
+  assert_untrusted_turn(key, result)
+}
+
+// The host port the guest's row names, as `link-port` records it.
+fn untrusted_port(guest: String) -> String {
+  string.trim(read_file(guest <> "/link-port"))
+}
+
+// What `up --link untrusted` leaves, read from the host. The guest's root is
+// untrusted input, but these files are the ones `up` staged before the boot,
+// and a guest that never held a cookie has none to write.
+fn assert_untrusted_files(
+  run: Run,
+  guest: String,
+  port: String,
+  model: String,
+) -> Nil {
+  let root = guest <> "/root"
+  let config = read_file(run.untrusted.config)
+  let name = run.untrusted_name
+
+  // The host's file gained the two tables beside the model table, and no
+  // deployment: nothing here was provisioned, joined or sealed.
+  assert string.starts_with(config, string.trim_end(model))
+  assert string.contains(config, "[executor_link]")
+  assert string.contains(config, "[executors." <> name <> "]")
+  assert string.contains(config, "trust = \"untrusted\"")
+  assert string.contains(config, "address = \"127.0.0.1:" <> port <> "\"")
+  assert !string.contains(config, "[distribution]")
+  assert simplifile.is_directory(guest <> "/deploy") == Ok(False)
+
+  // The guest's configuration has the listener and no `[distribution]`, and
+  // admits the one pin of the orchestrator's leaf.
+  let staged = read_file(root <> node_dir <> "/loom.toml")
+  assert string.contains(staged, "[executor_listener]")
+  assert string.contains(staged, "listen = \"0.0.0.0:4370\"")
+  assert !string.contains(staged, "[distribution]")
+  assert !string.contains(staged, "cookie")
+
+  // No cookie anywhere in the root, which is what a takeover of the guest
+  // would otherwise carry to the host daemon.
+  let assert Ok(find) = ffi_proc.which("find") as "find is on PATH"
+  let assert Ok(#(_, cookies)) =
+    ffi_proc.run(find, [root, "-name", ".erlang.cookie"], in: run.directory)
+    as "find runs over the guest's root"
+  assert cookies == ""
+
+  // The credentials are private on the host, and the guest holds its own key
+  // and not the orchestrator's or the authority's.
+  let link = run.vm_home <> "/link"
+  list.each(["ca.key", "ca.pem", "orchestrator.key", "orchestrator.pem"], fn(f) {
+    assert simplifile.is_file(link <> "/" <> f) == Ok(True)
+  })
+  assert mode_of(link) == 0o700
+  assert mode_of(link <> "/ca.key") == 0o600
+  assert mode_of(link <> "/orchestrator.key") == 0o600
+  let key = read_file(root <> node_dir <> "/creds/key.pem")
+  assert !string.contains(key, string.trim(read_file(link <> "/ca.key")))
+  assert !string.contains(
+    key,
+    string.trim(read_file(link <> "/orchestrator.key")),
+  )
+
+  // The host's epmd has no node for the guest: it was forwarded, not
+  // published.
+  let assert Ok(epmd) = ffi_proc.which("epmd") as "epmd is on PATH"
+  let assert Ok(#(_, names)) = ffi_proc.run(epmd, ["-names"], in: run.directory)
+    as "epmd lists its names"
+  assert !string.contains(names, "loom_vm_" <> name)
+
+  // `status` names the link and the address in place of the epmd line.
+  let status = expect_ok(vm(run, ["status", "--name", name]), "loom vm status")
+  assert string.contains(
+    status,
+    "link:       untrusted, TLS to 127.0.0.1:" <> port,
+  )
+  assert !string.contains(status, "epmd:")
+  assert string.contains(status, "process:    running")
+  let listed = expect_ok(vm(run, ["list"]), "loom vm list")
+  assert string.contains(listed, name)
+  Nil
+}
+
+fn mode_of(path: String) -> Int {
+  let assert Ok(info) = simplifile.file_info(path) as { path <> " is there" }
+  int.bitwise_and(info.mode, 0o777)
+}
+
+// The jailed call ran in the guest, under the jail, and could not read the key
+// that the executor's own configuration names.
+fn assert_untrusted_turn(key: String, result: String) -> Nil {
+  // The tier's own kernel, under loom-exec, as in the first guest's turn.
+  assert string.contains(result, "NoNewPrivs:\t1")
+  assert string.contains(result, "-loom-landlock")
+
+  // The key the executor presents was read from the host's copy of the guest's
+  // root, so its absence from the result says the mask held and not that the
+  // file was missing. The certificate beside it is public and was read.
+  let assert [_header, body, ..] = string.split(key, "\n")
+  assert body != ""
+  assert !string.contains(result, body)
+  assert !string.contains(result, "PRIVATE KEY")
+  assert string.contains(result, "-----BEGIN CERTIFICATE-----")
+
+  // Nothing in the node's home is a cookie. The line is printed whole, so a
+  // file the daemon made there would be named in it.
+  assert string.contains(result, "home_entries=")
+  assert !string.contains(result, "erlang.cookie")
+  Nil
+}
+
+// The verbs a developer uses on the guest afterwards. The orchestrator is gone,
+// so the guest is stopped and the host's files can be compared byte for byte.
+fn untrusted_daily_verbs(
+  run: Run,
+  guest: String,
+  port: String,
+  flags: List(String),
+) -> Nil {
+  let name = run.untrusted_name
+  let config = run.untrusted.config
+  let down = vm(run, ["down", "--name", name])
+  assert string.contains(down.output, "Stopped the guest " <> name)
+
+  // A guest keeps its link for life: the other one is refused, naming the way
+  // out, and nothing changes.
+  let before = read_file(config)
+  let refused =
+    vm(run, ["up", "--link", "distribution", "--name", name, "--config", config])
+  assert refused.status != 0
+  assert string.contains(refused.output, "--fresh")
+  assert string.contains(refused.output, "loom vm rm --name " <> name)
+  assert read_file(config) == before
+  assert untrusted_port(guest) == port
+
+  // A resume needs no `--link`, boots the same port, and changes no file of
+  // the host's: the daemon has nothing new to read.
+  let resumed =
+    expect_ok(
+      vm(run, ["up", ..flags]),
+      "loom vm up resumes the untrusted guest",
+    )
+  io.println_error(label <> " vm up (untrusted resume):\n" <> resumed)
+  assert string.contains(resumed, "already as this guest needs it")
+  assert !string.contains(resumed, "Your daemon")
+  assert !string.contains(resumed, "must restart")
+  assert string.contains(
+    resumed,
+    "serves its executor over the untrusted link at 127.0.0.1:" <> port,
+  )
+  assert read_file(config) == before
+  assert untrusted_port(guest) == port
+  let stopped = vm(run, ["down", "--name", name])
+  assert string.contains(stopped.output, "Stopped the guest " <> name)
+
+  // `rm` lists what it would remove and changes nothing without `--yes`, then
+  // removes the row, the link table and the credentials, since this is the
+  // last untrusted guest, and there is nothing to revoke.
+  let listing = vm(run, ["rm", "--name", name, "--config", config])
+  assert listing.status != 0
+  assert string.contains(listing.output, "[executors." <> name <> "]")
+  assert string.contains(listing.output, "[executor_link]")
+  assert read_file(config) == before
+  let removed =
+    expect_ok(
+      vm(run, ["rm", "--name", name, "--config", config, "--yes"]),
+      "loom vm rm of the untrusted guest",
+    )
+  io.println_error(label <> " vm rm (untrusted):\n" <> removed)
+  let after = read_file(config)
+  assert !string.contains(after, "[executors." <> name <> "]")
+  assert !string.contains(after, "[executor_link]")
+  assert string.contains(after, "[models.fixture]")
+  assert simplifile.is_directory(guest) == Ok(False)
+  assert simplifile.is_directory(run.vm_home <> "/link") == Ok(False)
+  Nil
 }
 
 fn hex(bytes: Int) -> String {
