@@ -835,6 +835,25 @@ pub fn the_executors_a_daemon_lists_are_read_from_its_deployment_status_test() {
   assert vm_link.listed_executors(json.String("x")) == None
 }
 
+// --- names ---------------------------------------------------------------------------------------
+
+pub fn an_existing_guest_named_link_can_still_be_named_by_the_verbs_test() {
+  assert result.is_error(vm_spec.valid_name("link"))
+  assert vm_spec.valid_existing_name("link") == Ok(Nil)
+  assert vm_spec.parse(["down", "--name", "link"]) == Ok(vm_spec.Down("link"))
+  assert vm_spec.parse(["rm", "--name", "link", "--yes"])
+    == Ok(vm_spec.Remove("link", None, vm_spec.Confirmed))
+  assert result.is_error(vm_spec.parse(["up", "--name", "link"]))
+}
+
+pub fn a_command_without_a_name_means_the_directorys_guest_when_none_is_called_vm_test() {
+  let mine = "proj-1a2b3c"
+  assert vm_spec.default_guest(vm_spec.Absent, mine, vm_spec.Present) == mine
+  assert vm_spec.default_guest(vm_spec.Present, mine, vm_spec.Present) == "vm"
+  assert vm_spec.default_guest(vm_spec.Absent, mine, vm_spec.Absent) == "vm"
+  assert vm_spec.default_guest(vm_spec.Present, mine, vm_spec.Absent) == "vm"
+}
+
 // --- a leaf under another authority ---------------------------------------------------------------
 
 pub fn a_leaf_made_under_a_replaced_authority_is_refused_test() {

@@ -1455,7 +1455,7 @@ fn name_flag(arguments: List(String)) -> Result(String, String) {
   // like it did something.
   case arguments {
     [] -> Ok(default_name)
-    ["--name", value] -> valid_name(value) |> result.replace(value)
+    ["--name", value] -> valid_existing_name(value) |> result.replace(value)
     ["--name"] -> Error("--name needs a value")
     [word, ..] -> Error("unexpected argument " <> word)
   }
@@ -1471,7 +1471,7 @@ fn logs_flags(
   case arguments {
     [] -> Ok(Logs(name, lines))
     ["--name", value, ..rest] -> {
-      use Nil <- result.try(valid_name(value))
+      use Nil <- result.try(valid_existing_name(value))
       logs_flags(rest, value, lines)
     }
     ["--lines", value, ..rest] -> {
@@ -1491,7 +1491,7 @@ fn remove_flags(
   case arguments, command {
     [], _ -> Ok(command)
     ["--name", value, ..rest], Remove(_, config, consent) -> {
-      use Nil <- result.try(valid_name(value))
+      use Nil <- result.try(valid_existing_name(value))
       remove_flags(rest, Remove(value, config, consent))
     }
     ["--config", value, ..rest], Remove(name, _, consent) ->
@@ -1511,7 +1511,7 @@ fn sync_flags(
   case arguments {
     [] -> Ok(options)
     ["--name", value, ..rest] -> {
-      use Nil <- result.try(valid_name(value))
+      use Nil <- result.try(valid_existing_name(value))
       sync_flags(rest, SyncOptions(..options, name: value))
     }
     ["--workspace", value, ..rest] -> {
@@ -1556,11 +1556,32 @@ fn unknown_flag(arguments: List(String)) -> Result(a, String) {
 /// assert result.is_error(vm_spec.valid_name(vm_spec.authority_dir))
 /// ```
 pub fn valid_name(name: String) -> Result(Nil, String) {
+  check_name(name, [authority_dir, link_dir])
+}
+
+/// Whether text can name a guest that may already exist. `valid_name` refuses
+/// `link` for a guest being made, because the untrusted link's credentials
+/// live in the vm home's directory of that name; a distribution guest made
+/// before that rule can still be stopped, read and removed by its name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.valid_existing_name("link") == Ok(Nil)
+/// assert result.is_error(vm_spec.valid_existing_name(vm_spec.authority_dir))
+/// ```
+pub fn valid_existing_name(name: String) -> Result(Nil, String) {
+  check_name(name, [authority_dir])
+}
+
+/// The shared rule of `valid_name` and `valid_existing_name`: the executor
+/// grammar, the length limit, and the directory names of the vm home that no
+/// guest can have, which differ between the two.
+fn check_name(name: String, reserved: List(String)) -> Result(Nil, String) {
   case
     catalogue.is_executor_name(name)
     && string.byte_size(name) <= name_limit
-    && name != authority_dir
-    && name != link_dir
+    && !list.contains(reserved, name)
   {
     True -> Ok(Nil)
     False ->
@@ -1571,6 +1592,32 @@ pub fn valid_name(name: String) -> Result(Nil, String) {
         <> " characters, got "
         <> name,
       )
+  }
+}
+
+/// The guest a command without `--name` means. One guest per workspace made the
+/// literal default `vm` the wrong guess in most directories, so when no guest
+/// is named `vm` and the guest of this directory's workspace
+/// (`guest_name_for`) exists, that guest is meant. `up` keeps `vm`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.default_guest(vm_spec.Absent, "proj-1a2b3c", vm_spec.Present)
+///   == "proj-1a2b3c"
+/// assert vm_spec.default_guest(vm_spec.Present, "proj-1a2b3c", vm_spec.Present)
+///   == "vm"
+/// ```
+pub fn default_guest(
+  named_vm: Presence,
+  workspace_guest: String,
+  workspace_guest_present: Presence,
+) -> String {
+  // A guest named `vm` keeps the name it has always had; otherwise the
+  // directory's own guest, when there is one.
+  case named_vm, workspace_guest_present {
+    Absent, Present -> workspace_guest
+    _, _ -> default_name
   }
 }
 

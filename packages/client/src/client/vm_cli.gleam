@@ -353,9 +353,63 @@ pub fn run(arguments: List(String)) -> Result(String, String) {
 /// Parses and runs one command, and says how it ended.
 fn finish(arguments: List(String)) -> Finish {
   case vm_spec.parse(arguments) {
-    Ok(command) -> dispatch(command)
+    Ok(command) -> dispatch(named(command, arguments))
     Error(reason) -> Failed(reason <> "\n\n" <> usage)
   }
+}
+
+/// The command with the guest it means. `down`, `status`, `logs`, `rm` and
+/// `sync` given no `--name` name the guest `vm`, which a developer with one
+/// guest per workspace never made, so they mean this directory's guest when no
+/// guest is named `vm` (`vm_spec.default_guest`), and say which on standard
+/// error. `up` and the rest keep their default.
+fn named(command: Command, arguments: List(String)) -> Command {
+  // A command that named its guest is left as it is.
+  case list.contains(arguments, "--name") {
+    True -> command
+    False ->
+      case command {
+        Down(_) -> Down(default_guest())
+        Status(_) -> Status(default_guest())
+        Logs(_, lines) -> Logs(default_guest(), lines)
+        Remove(_, config, consent) -> Remove(default_guest(), config, consent)
+        Sync(options) ->
+          Sync(vm_spec.SyncOptions(..options, name: default_guest()))
+        Setup(_) | Up(_) | Ensure(_) | Guests -> command
+      }
+  }
+}
+
+/// The guest a command with no `--name` means, found from the vm home and the
+/// current directory. A home or directory that cannot be read means `vm`.
+fn default_guest() -> String {
+  let found = {
+    use vm_home <- result.try(vm_home())
+    use directory <- result.try(
+      bootstrap.absolute_path(".")
+      |> result.try(fn(path) { bootstrap.canonical_directory(path) }),
+    )
+    let workspace_guest = vm_spec.guest_name_for(directory)
+    Ok(vm_spec.default_guest(
+      presence_of(vm_home <> "/" <> vm_spec.default_name),
+      workspace_guest,
+      presence_of(vm_home <> "/" <> workspace_guest),
+    ))
+  }
+  let chosen = result.unwrap(found, vm_spec.default_name)
+
+  // Say which guest was chosen when it is not the one the command always meant.
+  case chosen == vm_spec.default_name {
+    True -> Nil
+    False ->
+      io.println_error(
+        "loom vm: no guest is named vm, so this directory's guest "
+        <> chosen
+        <> " is meant; `--name` names another.",
+      )
+  }
+
+  chosen
 }
 
 /// Runs the command `finish` parsed, each in its own section below.
@@ -4517,7 +4571,7 @@ fn guests() -> Result(String, String) {
   let names =
     entries
     |> list.filter(fn(entry) {
-      result.is_ok(vm_spec.valid_name(entry))
+      result.is_ok(vm_spec.valid_existing_name(entry))
       && is_plain_directory(vm_home <> "/" <> entry)
       && {
         is_plain_directory(vm_home <> "/" <> entry <> "/deploy")
@@ -4805,7 +4859,7 @@ fn other_kinds(
   Ok(
     entries
     |> list.filter(fn(entry) {
-      entry != name && result.is_ok(vm_spec.valid_name(entry))
+      entry != name && result.is_ok(vm_spec.valid_existing_name(entry))
     })
     |> list.map(fn(entry) {
       recorded_kind(instance(vm_home, entry))
@@ -4924,7 +4978,7 @@ fn sharing_guests(vm_home: String, name: String, id: String) -> List(String) {
   |> result.unwrap([])
   |> list.filter(fn(entry) {
     entry != name
-    && result.is_ok(vm_spec.valid_name(entry))
+    && result.is_ok(vm_spec.valid_existing_name(entry))
     && deployment_of(vm_home, entry) == Ok(id)
   })
   |> list.sort(string.compare)
