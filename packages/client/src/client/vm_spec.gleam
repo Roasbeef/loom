@@ -1057,6 +1057,22 @@ pub fn upgrade_line(
   <> "root, such as /home/loom, /work and tools installed by hand, is replaced."
 }
 
+/// The one line `up` prints before it replaces a root that never received a
+/// workspace copy: an earlier `up` stopped after the clone began and before
+/// the copy, so there is nothing of the developer's in it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.unfinished_line("dev"), "dev")
+/// ```
+pub fn unfinished_line(name: String) -> String {
+  "Replacing the unfinished root of the guest "
+  <> name
+  <> ": an earlier `loom vm up` stopped before it copied a workspace in, so "
+  <> "the root holds nothing to keep."
+}
+
 /// The refusal for a root whose `srv/workspaces` cannot be moved safely. It
 /// always names `--fresh`, the way out, and says what that costs.
 ///
@@ -1070,6 +1086,65 @@ pub fn upgrade_refusal(reason: String) -> String {
   <> reason
   <> ". `loom vm up --fresh` replaces the guest, and its workspaces are lost "
   <> "with the old root."
+}
+
+/// What the old root holds at `srv/workspaces`, read entry by entry without
+/// following a link.
+pub type OldWorkspaces {
+  /// `srv` and `srv/workspaces` are both real directories, so the workspaces
+  /// can move as one rename.
+  Movable
+
+  /// `srv` or `srv/workspaces` does not exist.
+  Missing
+
+  /// One of them is a link or not a directory. The reason names it.
+  Unsafe(reason: String)
+}
+
+/// What an upgrade carries from the old root into the new one.
+pub type Carry {
+  /// Move `srv/workspaces` into the new root.
+  CarryWorkspaces
+
+  /// The old root never received a workspace copy, so nothing moves and the
+  /// new root simply takes its place.
+  CarryNothing
+
+  /// The upgrade cannot go on. The reason is what `upgrade_refusal` wraps.
+  RefuseCarry(reason: String)
+}
+
+/// Decides what an upgrade carries over from the old root.
+///
+/// `recorded` is the workspace names in the host's own `checkouts` record,
+/// which `up` writes only after it copied a workspace into this root and
+/// removes when it replaces the root. A root with no `srv/workspaces` and an
+/// empty record is one whose first `up` stopped between the clone and the
+/// copy: it holds nothing of the developer's, so it is replaced without a
+/// move. Before this rule such a root was refused naming `--fresh` on every
+/// later `up`. A missing directory under a record that names copies is still
+/// refused, because the host put workspaces there and something removed them,
+/// and the record is the host's and not the guest's to forge.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.carry_over([], vm_spec.Missing) == vm_spec.CarryNothing
+/// assert vm_spec.carry_over(["app"], vm_spec.Movable) == vm_spec.CarryWorkspaces
+/// ```
+pub fn carry_over(recorded: List(String), found: OldWorkspaces) -> Carry {
+  // The directory decides first: workspaces that are there always move.
+  case found, recorded {
+    Movable, _ -> CarryWorkspaces
+    Missing, [] -> CarryNothing
+    Missing, [_, ..] ->
+      RefuseCarry(
+        "the host copied workspaces into this root and its srv/workspaces is "
+        <> "gone",
+      )
+    Unsafe(reason), _ -> RefuseCarry(reason)
+  }
 }
 
 /// What provisioning does when `up` makes a new root: a first clone, `--fresh`

@@ -816,9 +816,13 @@ behaviour: the root is booted as it is, whatever it was cloned from. The
 upgrade replaces everything in the old root except the workspaces and the
 state disk, such as `/home/loom`, `/work` and tools installed by hand. The steps:
 
-1. checks that `srv/workspaces` and every parent of it in the old root is a real
-   directory, and otherwise refuses with a line naming `--fresh`, because a link
-   there would be carried into the new root;
+1. decides what the old root carries over (`vm_spec.carry_over`). When
+   `srv/workspaces` and every parent of it is a real directory, the workspaces
+   move. A link or a file there is refused with a line naming `--fresh`,
+   because it would be carried into the new root. A root with no
+   `srv/workspaces` whose host-owned `checkouts` record names no copy carries
+   nothing (see "A first `up` that was interrupted" below); with a record that
+   names a copy, the missing directory is refused;
 2. clones the manifest's guest root into `<vm home>/<name>/root.building`, a
    name `up` does not read, removing a leftover `root.next` and `root.building`
    first, makes `srv` in it and removes any `srv/workspaces` the clone brought
@@ -848,6 +852,27 @@ record only makes the next `up` upgrade once more, and the provisioning of that
 old root, which the swap may have partly deleted. A root with neither marker nor
 script but a host copy of the script is a stop between the clone and the
 staging, and the script is staged again.
+
+#### A first `up` that was interrupted
+
+A first `up` clones the export, stages the node, records the revision and
+then copies the workspace in. The clone is made as `root.building` and
+renamed to `root` (`replace_root`), so a `root` that exists is a whole clone:
+a stop during the copy leaves only `root.building`, which the next `up`
+removes before it clones again. The clone used to be copied in place. A stop
+during it left part of a root with no record, which the next `up` read as a
+root from an older loom and tried to upgrade, and the upgrade refused it for
+having no `srv/workspaces`, naming `--fresh` and warning of lost workspaces
+that never existed. Under a `dev` manifest the partial root was kept and
+booted. A stop after the clone and before the workspace copy had the same
+refusal, because the export ships an empty `srv`.
+
+Such a root holds nothing of the developer's, and the host can tell: `up`
+writes the `checkouts` record only after it copied a workspace into the root,
+and removes it when it replaces the root. So a root with no `srv/workspaces`
+and no recorded copy is replaced without a move, and `up` prints
+`unfinished_line` in place of the upgrade line. The record is the host's, so a
+guest cannot make its workspaces look absent by editing it.
 
 Provisioning needs the script, and the root is untrusted, so the script is never
 read back out of it. `up` keeps a host-owned copy at `<vm home>/<name>/provision`

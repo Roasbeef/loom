@@ -248,6 +248,12 @@ before `build_next_root`. `state.img` is kept. The host keeps the `--provision` 
 clears it) and a new root is provisioned from it (`vm_spec.new_root_provision`),
 never from the root; an unfinished script is retried from it too
 (`provision_plan`'s `kept`), and the copy is written by temporary file and rename.
+A first clone (`replace_root`) is made as `root.building` and renamed to
+`root`, so a `root` that exists is whole. `vm_spec.carry_over` decides what an
+upgrade moves from the host's `checkouts` record and what `old_workspaces` finds:
+real `srv/workspaces` moves, a root with none and no recorded copy carries
+nothing (an interrupted first `up`, announced by `unfinished_line`), anything
+else is refused.
 `stranded_in` lists processes; `refuse_stranded` refuses `up` and `rm`, `down`'s
 not-running arm fails and `status` adds a `runner:` line when a runner survives
 whose command starts with the manifest's runner path (`Some`; without a readable

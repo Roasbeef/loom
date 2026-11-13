@@ -1647,14 +1647,24 @@ fn prepare_root(
     }
 
     vm_spec.UpgradeRoot(recorded) -> {
+      // What the old root carries over is settled first, so an unsafe root
+      // is refused before anything is said or changed.
+      use workspaces <- result.try(carried_workspaces(guest))
+
       // The line comes after every refusal of `up` and before the first
-      // change; `build_next_root`'s own refusal of an unsafe root follows it.
-      io.println_error(vm_spec.upgrade_line(
-        options.name,
-        recorded,
-        manifest.revision,
+      // change. A root that never received a workspace copy is an unfinished
+      // first `up`, and calling that an upgrade would mislead.
+      io.println_error(case workspaces {
+        Some(_) ->
+          vm_spec.upgrade_line(options.name, recorded, manifest.revision)
+        None -> vm_spec.unfinished_line(options.name)
+      })
+      use Nil <- result.try(build_next_root(
+        manifest,
+        guest,
+        platform,
+        workspaces,
       ))
-      use Nil <- result.try(build_next_root(manifest, guest, platform))
       swap_roots(guest)
     }
 
@@ -1781,18 +1791,15 @@ fn record_provision_copy(
 /// moved, and what remains is `swap_roots`, which `up` finds by that `root.next`
 /// beside a root with no workspaces (`vm_spec.root_step`, `FinishUpgrade`). The
 /// directory moves as one `rename`, so a link inside it stays a link and nothing
-/// is followed.
+/// is followed. `workspaces` is what `carried_workspaces` found: the old root's
+/// `srv/workspaces`, checked to be a real directory under real directories, or
+/// `None` for a root that never received a workspace copy.
 fn build_next_root(
   manifest: Manifest,
   guest: Instance,
   platform: vm_spec.Platform,
+  workspaces: option.Option(String),
 ) -> Result(Nil, String) {
-  // The directory and every parent of it must be real directories, or the
-  // rename would carry a link the guest left into the new root.
-  use workspaces <- result.try(
-    plain_chain(guest.root, ["srv", "workspaces"])
-    |> result.map_error(vm_spec.upgrade_refusal),
-  )
   use export <- result.try(
     bootstrap.canonical_directory(manifest.guest_root)
     |> result.map_error(fn(reason) {
@@ -1812,6 +1819,72 @@ fn build_next_root(
   move_into_place(workspaces, guest.building_root, guest.next_root)
 }
 
+/// The old root's `srv/workspaces` when the upgrade moves it, `None` when
+/// the root holds no workspace copy, or the refusal (`vm_spec.carry_over`).
+fn carried_workspaces(
+  guest: Instance,
+) -> Result(option.Option(String), String) {
+  use recorded <- result.try(read_checkouts(guest))
+  let names = list.map(recorded, fn(entry) { entry.0 })
+
+  // The record is the host's, so a guest cannot make its workspaces look
+  // absent by editing it.
+  case vm_spec.carry_over(names, old_workspaces(guest.root)) {
+    vm_spec.CarryWorkspaces -> Ok(Some(guest.root <> vm_spec.workspaces_dir))
+    vm_spec.CarryNothing -> Ok(None)
+    vm_spec.RefuseCarry(reason) -> Error(vm_spec.upgrade_refusal(reason))
+  }
+}
+
+/// What `root/srv/workspaces` is, entry by entry and never through a link.
+fn old_workspaces(root: String) -> vm_spec.OldWorkspaces {
+  // `srv` is read first, because nothing below a missing directory exists.
+  case entry_kind(root <> "/srv"), entry_kind(root <> vm_spec.workspaces_dir) {
+    PlainDirectory, PlainDirectory -> vm_spec.Movable
+    NoEntry, _ | PlainDirectory, NoEntry -> vm_spec.Missing
+    Unusable(reason), _ | PlainDirectory, Unusable(reason) ->
+      vm_spec.Unsafe(reason)
+  }
+}
+
+/// One directory entry as `lstat` sees it.
+type EntryKind {
+  /// A real directory.
+  PlainDirectory
+
+  /// Nothing is there.
+  NoEntry
+
+  /// A link, a file, or an entry that cannot be read. The reason names it.
+  Unusable(reason: String)
+}
+
+/// Reads one entry without following it, so a link is reported as a link.
+fn entry_kind(path: String) -> EntryKind {
+  // `link_info` describes the entry itself, never what a link points at.
+  case simplifile.link_info(path) {
+    Error(simplifile.Enoent) -> NoEntry
+    Error(error) ->
+      Unusable(
+        vm_spec.printable(path)
+        <> " is unreadable: "
+        <> simplifile.describe_error(error),
+      )
+    Ok(info) ->
+      case simplifile.file_info_type(info) {
+        simplifile.Directory -> PlainDirectory
+        simplifile.Symlink ->
+          Unusable(
+            vm_spec.printable(path)
+            <> " is a link, so something in the guest left it there. "
+            <> "Replace the guest with --fresh.",
+          )
+        simplifile.File | simplifile.Other ->
+          Unusable(vm_spec.printable(path) <> " is not a directory")
+      }
+  }
+}
+
 /// The steps that put an upgrade's new root in place, in order. The clone of
 /// the export may ship `srv/workspaces`, and `up` takes `root.next/srv/workspaces`
 /// to mean that the real workspaces have moved and the old root may go
@@ -1820,20 +1893,23 @@ fn build_next_root(
 /// it. After every step the workspaces are in exactly one place, and the layout
 /// says they have moved only once they are in `root.next`: a stop before the
 /// last rename leaves a `root.next` without them, which `up` deletes and
-/// redoes from the old root, and a stop after it is a finished move.
+/// redoes from the old root, and a stop after it is a finished move. An old
+/// root with no workspace copy (`workspaces` is `None`) has no last rename:
+/// its `root.next` never reads as a finished move, and the swap that follows
+/// in the same `up` replaces the root.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // vm_cli.upgrade_steps("/vm/dev/root/srv/workspaces", "/vm/dev/root.building", "/vm/dev/root.next")
+/// // vm_cli.upgrade_steps(Some("/vm/dev/root/srv/workspaces"), "/vm/dev/root.building", "/vm/dev/root.next")
 /// ```
 @internal
 pub fn upgrade_steps(
-  workspaces: String,
+  workspaces: option.Option(String),
   building: String,
   next_root: String,
 ) -> List(fn() -> Result(Nil, String)) {
-  [
+  let place = [
     fn() { make_inside(building, "/srv") },
     fn() { clear_workspaces_slot(building) },
     fn() {
@@ -1845,21 +1921,29 @@ pub fn upgrade_steps(
         )
       })
     },
-    fn() {
-      simplifile.rename(workspaces, next_root <> vm_spec.workspaces_dir)
-      |> result.map_error(fn(error) {
-        vm_spec.upgrade_refusal(
-          "the workspaces cannot be moved into the new root: "
-          <> simplifile.describe_error(error),
-        )
-      })
-    },
   ]
+
+  // The move is the last step and exists only when there is something to move.
+  case workspaces {
+    None -> place
+    Some(old) ->
+      list.append(place, [
+        fn() {
+          simplifile.rename(old, next_root <> vm_spec.workspaces_dir)
+          |> result.map_error(fn(error) {
+            vm_spec.upgrade_refusal(
+              "the workspaces cannot be moved into the new root: "
+              <> simplifile.describe_error(error),
+            )
+          })
+        },
+      ])
+  }
 }
 
 /// Runs `upgrade_steps` in order.
 fn move_into_place(
-  workspaces: String,
+  workspaces: option.Option(String),
   building: String,
   next_root: String,
 ) -> Result(Nil, String) {
@@ -1984,12 +2068,22 @@ fn replace_root(
 
   // A record names a copy in this root, and the new root has none.
   use Nil <- result.try(remove_checkouts(guest))
-  tool(
+  use _ <- result.try(tool(
     "cp",
-    vm_spec.copy_arguments(platform, export, guest.root),
+    vm_spec.copy_arguments(platform, export, guest.building_root),
     within: copy_budget_ms,
-  )
-  |> result.replace(Nil)
+  ))
+
+  // The clone takes the name `root` in one rename, so a `root` that exists is
+  // a whole clone. A stop during the copy leaves `root.building`, which the
+  // next `up` removes above, where a copy made in place left part of a root
+  // that the next `up` took for a guest to keep or upgrade.
+  simplifile.rename(guest.building_root, guest.root)
+  |> result.map_error(fn(error) {
+    guest.root
+    <> " cannot be put in place: "
+    <> simplifile.describe_error(error)
+  })
 }
 
 /// Removes this guest's old root, when it has one.

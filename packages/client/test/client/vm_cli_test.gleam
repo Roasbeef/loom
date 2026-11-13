@@ -1639,7 +1639,8 @@ fn upgrade_stopped_after(count: Int) -> #(Bool, Bool, vm_spec.RootStep) {
     simplifile.create_directory_all(root <> "/srv/workspaces/real")
   let assert Ok(Nil) =
     simplifile.create_directory_all(building <> "/srv/workspaces/shipped")
-  let steps = vm_cli.upgrade_steps(root <> "/srv/workspaces", building, next)
+  let steps =
+    vm_cli.upgrade_steps(Some(root <> "/srv/workspaces"), building, next)
   list.take(steps, count)
   |> list.each(fn(step) {
     assert step() == Ok(Nil)
@@ -1691,6 +1692,61 @@ pub fn a_stop_after_the_clone_is_an_upgrade_again_not_a_finish_test() {
   let moved = vm_spec.RootLayout(vm_spec.Present, vm_spec.Present)
   assert vm_spec.root_step(vm_spec.Resume, moved, Some("aaaaaaa"), "bbbbbbb")
     == vm_spec.FinishUpgrade
+}
+
+pub fn a_root_with_no_workspace_copy_carries_nothing_test() {
+  // A first `up` that stopped between the clone and the workspace copy left
+  // no record and no directory, and that root is replaced without a move.
+  assert vm_spec.carry_over([], vm_spec.Missing) == vm_spec.CarryNothing
+
+  // Workspaces that are there always move, whatever the record says.
+  assert vm_spec.carry_over([], vm_spec.Movable) == vm_spec.CarryWorkspaces
+  assert vm_spec.carry_over(["app"], vm_spec.Movable) == vm_spec.CarryWorkspaces
+}
+
+pub fn an_unfinished_root_is_not_announced_as_an_upgrade_test() {
+  // The upgrade line promises that workspaces are kept, which says the wrong
+  // thing about a root that never had any.
+  let line = vm_spec.unfinished_line("dev")
+  assert string.contains(line, "guest dev")
+  assert string.contains(line, "nothing to keep")
+  assert !string.contains(line, "Upgrading")
+}
+
+pub fn recorded_workspaces_that_are_gone_refuse_the_upgrade_test() {
+  // The host's record says a copy was made, so a missing directory is not a
+  // first run: the upgrade would delete a root something already emptied.
+  let assert vm_spec.RefuseCarry(reason) =
+    vm_spec.carry_over(["app"], vm_spec.Missing)
+  assert string.contains(reason, "srv/workspaces is gone")
+
+  // A link or a file is refused with its own reason under either record.
+  assert vm_spec.carry_over(["app"], vm_spec.Unsafe("x is a link"))
+    == vm_spec.RefuseCarry("x is a link")
+  assert vm_spec.carry_over([], vm_spec.Unsafe("x is a link"))
+    == vm_spec.RefuseCarry("x is a link")
+}
+
+pub fn an_upgrade_with_nothing_to_carry_never_reads_as_a_finished_move_test() {
+  // The clone ships an `srv/workspaces` of its own. With no workspaces to
+  // move there is no last rename, so the new root must end with none, or the
+  // next `up` would read it as a finished move.
+  let #(scratch, _, _) = scratch_root()
+  let building = scratch <> "/root.building"
+  let next = scratch <> "/root.next"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(building <> "/srv/workspaces/shipped")
+
+  let steps = vm_cli.upgrade_steps(None, building, next)
+  assert list.length(steps) == 3
+  list.each(steps, fn(step) {
+    assert step() == Ok(Nil)
+  })
+
+  assert simplifile.is_directory(next <> "/srv") == Ok(True)
+  assert simplifile.is_directory(next <> "/srv/workspaces") != Ok(True)
+  assert simplifile.is_directory(building) != Ok(True)
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
 
 pub fn a_host_copy_with_no_staged_script_is_staged_again_test() {
