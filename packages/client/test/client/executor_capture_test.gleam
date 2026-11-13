@@ -455,6 +455,7 @@ pub fn an_executor_puts_a_held_state_in_its_scopes_tree_test() {
   assert list.sort(added, string.compare)
     == [
       "refs/heads/loom/" <> session <> " " <> source.state.tip,
+      "refs/loom/applied/" <> session <> " " <> source.state.tip,
       incoming <> " " <> source.state.tip,
     ]
   assert simplifile.read(root <> "/README") == Ok("one\n")
