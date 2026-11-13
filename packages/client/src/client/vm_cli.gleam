@@ -1907,8 +1907,9 @@ fn stranded_in(
   let listing =
     tool("ps", ["-axww", "-o", "pid=,ppid=,command="], within: quick_ms)
     |> result.unwrap("")
+  let started_as = option.map(runner, running_as)
   let pids =
-    vm_spec.stranded_runners(listing, guest.root, guest.state_disk, runner)
+    vm_spec.stranded_runners(listing, guest.root, guest.state_disk, started_as)
   #(pids, vm_spec.certainty_of(runner))
 }
 
@@ -1919,6 +1920,23 @@ fn manifest_runner(vm_home: String) -> option.Option(String) {
     Ok(Some(manifest)) -> Some(manifest.runner)
     _ -> None
   }
+}
+
+/// The path a runner's command line begins with, given the manifest's path to
+/// it. `loom-vm` resolves symbolic links in the runner path before it starts
+/// the runner, because go-microvm recognises its process by the path the
+/// kernel reports, so a runner installed through a link runs under the link's
+/// target and `stranded_runners` must look for that. A path that cannot be
+/// resolved is returned as written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.running_as("/usr/local/bin/go-microvm-runner")
+/// ```
+@internal
+pub fn running_as(runner: String) -> String {
+  bootstrap.canonical_path(runner) |> result.unwrap(runner)
 }
 
 /// Refuses a command that would use the guest's root and state disk when a
