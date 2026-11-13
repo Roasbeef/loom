@@ -2407,10 +2407,10 @@ const untrusted_prompt = "run it in the untrusted guest"
 
 const untrusted_answer = "ran in the untrusted guest"
 
-// What the jailed call reports. The key is read on purpose: a masked file is
-// bound to /dev/null in the jail, so the read succeeds and prints nothing, and
-// the certificate beside it is public and prints its header, which shows the
-// call could have read the key had it not been masked.
+// What the jailed call reports. The key is read on purpose: the mask makes the
+// read fail (observed: `Permission denied`), so the key's text never reaches
+// the result, and the certificate beside it is public and prints its header,
+// which shows the call could have read the key had it not been masked.
 fn untrusted_command() -> String {
   "echo \"kernel=$(uname -r)\"; grep -E '^NoNewPrivs:' /proc/self/status; "
   <> "cat "
@@ -2495,6 +2495,19 @@ fn untrusted_guest(run: Run) -> Nil {
             remote_pair.workspace_name,
           )
         assert remote_daemons.settled_state(settled) == "resident"
+
+        // The daemon's deployment read lists the untrusted row by name, which
+        // is how `ensure` tells that a daemon has read the row.
+        let shown =
+          string.inspect(remote_daemons.command(
+            control,
+            20,
+            "deployment.status",
+            json.Object([]),
+          ))
+        io.println_error(label <> " deployment.status (untrusted):\n" <> shown)
+        assert string.contains(shown, name)
+
         remote_pair.converse_for(
           remote_pair.Opened(orchestrator: running, control:, session:),
           untrusted_prompt,

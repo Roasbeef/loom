@@ -17,6 +17,7 @@ import client/untrusted_config
 import client/vm_link.{type LinkFiles, type Row, LinkFiles, Row}
 import client/vm_link_pki
 import client/vm_spec
+import core/json
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
@@ -121,18 +122,18 @@ pub fn a_free_recorded_port_is_kept_and_any_other_is_replaced_test() {
 // --- which link a guest has -------------------------------------------------------
 
 pub fn a_new_guest_takes_the_flag_and_defaults_to_distribution_test() {
-  assert vm_link.settle("dev", None, vm_link.NoBundles, Some(vm_spec.Untrusted))
+  assert vm_link.settle("dev", None, vm_link.NoTraces, Some(vm_spec.Untrusted))
     == Ok(vm_spec.Untrusted)
-  assert vm_link.settle("dev", None, vm_link.NoBundles, None)
+  assert vm_link.settle("dev", None, vm_link.NoTraces, None)
     == Ok(vm_spec.Distribution)
 }
 
 pub fn an_existing_guest_keeps_its_link_when_no_flag_is_given_test() {
-  assert vm_link.settle("dev", Some("untrusted\n"), vm_link.NoBundles, None)
+  assert vm_link.settle("dev", Some("untrusted\n"), vm_link.NoTraces, None)
     == Ok(vm_spec.Untrusted)
 
   // Bundles with no record are a guest made before the record existed.
-  assert vm_link.settle("dev", None, vm_link.HasBundles, None)
+  assert vm_link.settle("dev", None, vm_link.DeployTrace, None)
     == Ok(vm_spec.Distribution)
 }
 
@@ -141,7 +142,7 @@ pub fn a_guest_asked_to_change_its_link_is_refused_naming_fresh_and_rm_test() {
     vm_link.settle(
       "dev",
       Some("untrusted\n"),
-      vm_link.NoBundles,
+      vm_link.NoTraces,
       Some(vm_spec.Distribution),
     )
   assert string.contains(reason, "--fresh")
@@ -150,7 +151,7 @@ pub fn a_guest_asked_to_change_its_link_is_refused_naming_fresh_and_rm_test() {
   assert result.is_error(vm_link.settle(
     "dev",
     None,
-    vm_link.HasBundles,
+    vm_link.DeployTrace,
     Some(vm_spec.Untrusted),
   ))
 }
@@ -159,14 +160,14 @@ pub fn a_record_that_cannot_be_read_refuses_instead_of_defaulting_test() {
   assert result.is_error(vm_link.settle(
     "dev",
     Some("tls\n"),
-    vm_link.NoBundles,
+    vm_link.NoTraces,
     None,
   ))
 }
 
 pub fn the_link_a_guest_settles_on_never_disagrees_with_what_it_has_test() {
   let records = [None, Some("distribution\n"), Some("untrusted\n")]
-  let bundles = [vm_link.HasBundles, vm_link.NoBundles]
+  let bundles = [vm_link.DeployTrace, vm_link.NoTraces]
   let asks = [None, Some(vm_spec.Distribution), Some(vm_spec.Untrusted)]
 
   // Every combination: a settled kind is what the guest was made with, or the
@@ -441,7 +442,7 @@ pub fn a_row_that_is_already_there_leaves_the_file_unchanged_test() {
 
 fn removal(text: String, remaining: vm_link.Remaining) -> vm_link.Removal {
   let assert Ok(removal) =
-    vm_link.uninstall(text, "dev", remaining, files(), "loom.toml")
+    vm_link.uninstall(text, row_on(41_000), remaining, files(), "loom.toml")
     as "the removal is accepted"
   removal
 }
@@ -601,12 +602,6 @@ pub fn the_status_lines_name_the_link_and_the_address_test() {
     ]
 }
 
-pub fn an_untrusted_guest_is_serving_when_its_console_says_so_test() {
-  assert vm_link.registration("booting\nLOOM-EXECUTOR-READY untrusted\n")
-    == vm_spec.Registered
-  assert vm_link.registration("booting\n") == vm_spec.Unregistered
-}
-
 // --- the credentials ---------------------------------------------------------------------
 
 fn mode_of(path: String) -> Int {
@@ -714,4 +709,158 @@ pub fn the_minted_credentials_complete_a_pinned_handshake_test() {
       }
     })
   assert result.is_error(rig.dial(port, orchestrator, wrong))
+}
+
+// --- a leaf that is left behind -----------------------------------------------------------
+
+pub fn a_guest_with_a_minted_leaf_is_untrusted_even_with_no_record_test() {
+  // An untrusted first run that stopped before it recorded its link, resumed
+  // with no flag, stays untrusted and is never made a distribution guest.
+  assert vm_link.settle("dev", None, vm_link.LeafTrace, None)
+    == Ok(vm_spec.Untrusted)
+  assert vm_link.settle("dev", None, vm_link.LeafTrace, Some(vm_spec.Untrusted))
+    == Ok(vm_spec.Untrusted)
+  assert result.is_error(vm_link.settle(
+    "dev",
+    None,
+    vm_link.LeafTrace,
+    Some(vm_spec.Distribution),
+  ))
+}
+
+// --- what a removal leaves --------------------------------------------------------------------
+
+pub fn a_row_with_another_pin_is_not_the_guests_and_is_left_test() {
+  // The operator replaced the guest's row with an untrusted row of their own,
+  // under the same name: removing the guest must not remove it.
+  let theirs =
+    "[executor_link]\nca = \"/vm/link/ca.pem\"\ncertificate = \"/vm/link/orchestrator.pem\"\n"
+    <> "key = \"/vm/link/orchestrator.key\"\n\n[executors.dev]\n"
+    <> "trust = \"untrusted\"\naddress = \"127.0.0.1:9000\"\npin = \""
+    <> pin_b
+    <> "\"\n"
+  let removed = removal(theirs, vm_link.LastLinked)
+  assert removed.removed == []
+  assert removed.text == theirs
+  assert removed.table == vm_link.LinkTableKept
+  let assert [line] = removed.left
+  assert string.contains(line, "[executors.dev]")
+}
+
+pub fn the_link_table_is_reported_gone_only_when_it_is_gone_test() {
+  let installed = merged("", row_on(41_000))
+  assert removal(installed.text, vm_link.LastLinked).table
+    == vm_link.LinkTableGone
+  assert removal(installed.text, vm_link.OthersRemain).table
+    == vm_link.LinkTableKept
+
+  // An operator's own untrusted row keeps the table, and so the files it names.
+  let with_theirs = merged(string.join(fragments(), "\n"), row_on(41_000))
+  assert removal(with_theirs.text, vm_link.LastLinked).table
+    == vm_link.LinkTableKept
+
+  // A file that never had the table reports it gone.
+  assert removal("", vm_link.LastLinked).table == vm_link.LinkTableGone
+}
+
+pub fn lines_the_user_wrote_after_the_guests_tables_stay_test() {
+  let before = "[tools]\nnetwork = \"full\"\n"
+  let installed = merged(before, row_on(41_000))
+  let after =
+    installed.text
+    <> "\n# kept: the owner's note about workspaces\n\n[workspaces.proj]\n"
+    <> "root = \"/srv/proj\"\n"
+  let removed = removal(after, vm_link.LastLinked)
+
+  // The guest's tables are gone, and the comment and the blank line that
+  // follow them are kept with the table they lead into.
+  assert string.starts_with(removed.text, before)
+  assert string.contains(
+    removed.text,
+    "# kept: the owner's note about workspaces\n\n[workspaces.proj]\n"
+      <> "root = \"/srv/proj\"\n",
+  )
+  assert !string.contains(removed.text, "[executors.dev]")
+  assert !string.contains(removed.text, "[executor_link]")
+}
+
+// --- whether the daemon has read the row ---------------------------------------------------------
+
+pub fn a_changed_row_always_needs_a_restart_and_a_standing_one_when_unlisted_test() {
+  let changed = vm_link.RowChanged
+  let standing = vm_link.RowStanding
+  assert vm_link.daemon_need(changed, vm_link.SawNoDaemon, "dev")
+    == vm_link.MustRestart
+  assert vm_link.daemon_need(changed, vm_link.SawExecutors(["dev"]), "dev")
+    == vm_link.MustRestart
+
+  // A standing row is unread by a daemon that does not hold the guest, which is
+  // a first `up` whose boot failed after the row was written.
+  assert vm_link.daemon_need(standing, vm_link.SawExecutors(["other"]), "dev")
+    == vm_link.MustRestart
+  assert vm_link.daemon_need(standing, vm_link.SawExecutors(["dev"]), "dev")
+    == vm_link.NeedsNothing
+
+  // No daemon, or none that answers, is not claimed to lack the row.
+  assert vm_link.daemon_need(standing, vm_link.SawNoDaemon, "dev")
+    == vm_link.NeedsNothing
+  assert vm_link.daemon_need(standing, vm_link.SawUnanswered, "dev")
+    == vm_link.NeedsNothing
+}
+
+pub fn the_executors_a_daemon_lists_are_read_from_its_deployment_status_test() {
+  let body =
+    json.Object([
+      #(
+        "placements",
+        json.Object([
+          #(
+            "executors",
+            json.Array([
+              json.Object([
+                #("name", json.String("dev")),
+                #("node", json.String("")),
+              ]),
+              json.Object([#("name", json.String("box"))]),
+            ]),
+          ),
+        ]),
+      ),
+      #("distribution", json.String("none")),
+    ])
+  assert vm_link.listed_executors(body) == Some(["dev", "box"])
+
+  // A body with no placements is a daemon that did not answer in full.
+  assert vm_link.listed_executors(json.Object([])) == None
+  assert vm_link.listed_executors(json.String("x")) == None
+}
+
+// --- a leaf under another authority ---------------------------------------------------------------
+
+pub fn a_leaf_made_under_a_replaced_authority_is_refused_test() {
+  let vm_home = fixtures.scratch("vm-link-replaced")
+  let assert Ok(home) = vm_link_pki.ensure_home(vm_home)
+  let assert Ok(_leaf) = vm_link_pki.ensure_leaf(home, vm_home <> "/dev")
+
+  // The vm home's credentials are made again, as the tool's own advice has a
+  // user do, while the guest's directory survives.
+  let assert Ok(Nil) = simplifile.delete(vm_home <> "/link")
+  let assert Ok(fresh) = vm_link_pki.ensure_home(vm_home)
+  assert fresh.pin != home.pin
+
+  let assert Error(reason) = vm_link_pki.ensure_leaf(fresh, vm_home <> "/dev")
+  assert string.contains(reason, "loom vm rm --name dev --yes")
+  assert string.contains(reason, "chain")
+}
+
+pub fn an_orchestrator_leaf_that_does_not_chain_to_its_authority_is_refused_test() {
+  let vm_home = fixtures.scratch("vm-link-torn-chain")
+  let assert Ok(home) = vm_link_pki.ensure_home(vm_home)
+
+  // The authority file is swapped for another authority's.
+  let #(other, _other_key) = ffi_pki.authority("another authority")
+  let assert Ok(Nil) = simplifile.write(home.files.ca, other)
+  let assert Error(reason) = vm_link_pki.ensure_home(vm_home)
+  assert string.contains(reason, "not usable")
+  assert string.contains(reason, "loom vm rm")
 }

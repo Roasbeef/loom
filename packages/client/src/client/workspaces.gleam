@@ -168,7 +168,10 @@ pub fn from_document(
       case found, link.listener {
         Some(_settings), _ | None, Some(_) -> Ok(configured)
         None, None ->
-          Error("workspaces needs a [distribution] table naming its peers")
+          Error(
+            "workspaces needs a [distribution] table naming its peers, or an "
+            <> "[executor_listener] table naming the orchestrators it admits",
+          )
       }
     }
     Ok(_) -> Error("workspaces must be a table of [workspaces.<name>] tables")

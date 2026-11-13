@@ -26,6 +26,8 @@
 
 import client/internal/ffi_pki
 import client/vm_link.{type LinkFiles, LinkFiles}
+import client/vm_spec
+import filepath
 import gleam/list
 import gleam/result
 import host/bootstrap
@@ -78,7 +80,7 @@ const minting = ".minting"
 /// assert vm_link_pki.files_of("/h/vm").ca == "/h/vm/link/ca.pem"
 /// ```
 pub fn files_of(vm_home: String) -> LinkFiles {
-  let directory = vm_home <> "/" <> vm_link.credentials_dir
+  let directory = vm_home <> "/" <> vm_spec.link_dir
   LinkFiles(
     ca: directory <> "/" <> ca_file,
     certificate: directory <> "/" <> orchestrator_file,
@@ -97,7 +99,7 @@ pub fn files_of(vm_home: String) -> LinkFiles {
 /// // vm_link_pki.ensure_home("/h/vm")
 /// ```
 pub fn ensure_home(vm_home: String) -> Result(Home, String) {
-  let directory = vm_home <> "/" <> vm_link.credentials_dir
+  let directory = vm_home <> "/" <> vm_spec.link_dir
 
   // The directory either exists whole or does not exist.
   case bootstrap.path_exists(directory) {
@@ -131,11 +133,28 @@ const names = ["localhost", "127.0.0.1"]
 /// Reads the home's files and the orchestrator's pin.
 fn read_home(vm_home: String) -> Result(Home, String) {
   let files = files_of(vm_home)
-  let directory = vm_home <> "/" <> vm_link.credentials_dir
+  let directory = vm_home <> "/" <> vm_spec.link_dir
   use certificate <- result.try(read(files.certificate))
   use pin <- result.try(
     vm_link.pin_of(certificate)
     |> result.map_error(fn(reason) { files.certificate <> ": " <> reason }),
+  )
+  use authority <- result.try(read(files.ca))
+  use key <- result.try(read(files.key))
+
+  // The orchestrator's leaf must chain to the authority beside it and be in its
+  // validity period, or no guest would ever complete a handshake with it.
+  use Nil <- result.try(
+    ffi_pki.inspect(authority, certificate, key)
+    |> result.map(fn(_names) { Nil })
+    |> result.map_error(fn(defect) {
+      directory
+      <> " is not usable ("
+      <> describe(defect)
+      <> "). Remove every untrusted guest with `loom vm rm --name NAME --yes`, "
+      <> "which removes the directory with the last of them, and run "
+      <> "`loom vm up --link untrusted` again."
+    }),
   )
 
   // The authority must be there for a later guest to be issued a leaf, and
@@ -166,10 +185,10 @@ pub fn ensure_leaf(
 
   // The directory either exists whole or does not exist.
   case bootstrap.path_exists(directory) {
-    True -> read_leaf(directory)
+    True -> read_leaf(home, directory)
     False -> {
       use Nil <- result.try(mint_leaf(home, directory))
-      read_leaf(directory)
+      read_leaf(home, directory)
     }
   }
 }
@@ -186,15 +205,50 @@ fn mint_leaf(home: Home, directory: String) -> Result(Nil, String) {
   publish(directory, [#(executor_file, certificate), #(executor_key_file, key)])
 }
 
-/// Reads a guest's leaf and its pin.
-fn read_leaf(directory: String) -> Result(Leaf, String) {
+/// Reads a guest's leaf and its pin, and checks it against the home's current
+/// authority. A leaf survives its guest's directory, so one made under an
+/// authority that was since replaced would be staged beside the new
+/// authority's certificate and never complete a handshake, with `up` saying it
+/// had succeeded.
+fn read_leaf(home: Home, directory: String) -> Result(Leaf, String) {
   use certificate <- result.try(read(directory <> "/" <> executor_file))
   use key <- result.try(read(directory <> "/" <> executor_key_file))
+  use authority <- result.try(read(home.files.ca))
   use pin <- result.try(
     vm_link.pin_of(certificate)
     |> result.map_error(fn(reason) { directory <> ": " <> reason }),
   )
+
+  // The guest's name is the directory's parent, and removing the guest is the
+  // way to a leaf the current authority signed.
+  let name = filepath.base_name(filepath.directory_name(directory))
+  use Nil <- result.try(
+    ffi_pki.inspect(authority, certificate, key)
+    |> result.map(fn(_names) { Nil })
+    |> result.map_error(fn(defect) {
+      directory
+      <> " is not usable with the authority in "
+      <> home.files.ca
+      <> " ("
+      <> describe(defect)
+      <> "). Remove the guest with `loom vm rm --name "
+      <> name
+      <> " --yes` and run `loom vm up --link untrusted` again."
+    }),
+  )
   Ok(Leaf(certificate:, key:, pin:))
+}
+
+/// Why a credential check refused, in a few words.
+fn describe(defect: ffi_pki.Defect) -> String {
+  case defect {
+    ffi_pki.UnreadableAuthority -> "the authority is not one certificate"
+    ffi_pki.UnreadableCertificate -> "the certificate is not one certificate"
+    ffi_pki.UnreadableKey -> "the key is not one private key"
+    ffi_pki.ChainRejected ->
+      "the certificate does not chain to the authority or has expired"
+    ffi_pki.KeyMismatch -> "the key is not the certificate's"
+  }
 }
 
 /// Writes `entries` into `directory.minting`, each file private, and renames

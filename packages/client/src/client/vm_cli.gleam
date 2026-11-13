@@ -975,9 +975,7 @@ fn boot_ensured(
   progress(name, "booting the guest")
   use upped <- result.try(bring_up(options) |> result.map_error(Refused))
   progress(name, "the guest serves port " <> int.to_string(upped.port))
-  use Nil <- result.try(
-    restart_check(upped.enrolled) |> result.map_error(Refused),
-  )
+  use Nil <- result.try(restart_check(upped) |> result.map_error(Refused))
   Ok(line)
 }
 
@@ -990,7 +988,73 @@ fn boot_ensured(
 /// guest that joined a ledger is derived by the daemon and needs nothing. A
 /// configuration other than the default belongs to a daemon `ensure` cannot
 /// ask, so a daemon that runs after the install is told to restart.
-fn restart_check(enrolled: Enrolled) -> Result(Nil, String) {
+fn restart_check(upped: Upped) -> Result(Nil, String) {
+  // An untrusted guest needs the daemon to hold its row and nothing of
+  // distribution, so it is asked another question.
+  case upped.link {
+    vm_spec.Distribution -> distribution_restart_check(upped.enrolled)
+    vm_spec.Untrusted -> untrusted_restart_check(upped)
+  }
+}
+
+/// `restart_check` for a guest on the untrusted link. In the default
+/// configuration the daemon is asked which executors it holds, and one that
+/// does not hold the guest has not read its row, whether this call wrote the
+/// row or an earlier call did and then failed to boot. A configuration other
+/// than the default belongs to a daemon that cannot be asked, as for any guest.
+fn untrusted_restart_check(upped: Upped) -> Result(Nil, String) {
+  let enrolled = upped.enrolled
+
+  // The distribution check's other-configuration arms say nothing of
+  // distribution, so they serve here too.
+  case enrolled.file {
+    OtherConfigFile -> distribution_restart_check(enrolled)
+    DefaultConfigFile ->
+      case untrusted_need(upped) {
+        vm_link.MustRestart -> vm_spec.restart_refusal(daemon_outcome())
+        vm_link.NeedsNothing -> Ok(Nil)
+      }
+  }
+}
+
+/// Whether the default daemon must restart to reach an untrusted guest: the
+/// decision of `vm_link.daemon_need`, from what the row's state is and what the
+/// daemon says it holds. A daemon is asked only about a row that was already
+/// there.
+fn untrusted_need(upped: Upped) -> vm_link.DaemonNeed {
+  let name = upped.options.name
+
+  // A row this call wrote is unread without asking anyone.
+  case upped.enrolled.row {
+    Resumed -> vm_link.daemon_need(vm_link.RowStanding, daemon_saw(), name)
+    Written | Derived ->
+      vm_link.daemon_need(vm_link.RowChanged, vm_link.SawNoDaemon, name)
+  }
+}
+
+/// What the default daemon says it holds: nothing when none runs, the names of
+/// its executor rows when its deployment read lists them, and an unanswered
+/// question otherwise.
+fn daemon_saw() -> vm_link.DaemonSaw {
+  // The same observation `daemon_lacks_distribution` makes, read for the
+  // executors instead.
+  case running_fence() {
+    None -> vm_link.SawNoDaemon
+    Some(_) ->
+      case ask_daemon("deployment.status") {
+        Ok(body) ->
+          case vm_link.listed_executors(body) {
+            Some(names) -> vm_link.SawExecutors(names)
+            None -> vm_link.SawUnanswered
+          }
+        Error(_) -> vm_link.SawUnanswered
+      }
+  }
+}
+
+/// The restart check of a distribution guest, which asks whether the daemon
+/// runs with distribution at all.
+fn distribution_restart_check(enrolled: Enrolled) -> Result(Nil, String) {
   case enrolled.row, enrolled.file {
     Derived, _ -> Ok(Nil)
     Resumed, OtherConfigFile -> Ok(Nil)
@@ -1069,7 +1133,10 @@ fn registration_for(
   case kind {
     vm_spec.Distribution -> registration_of(names, guest)
     vm_spec.Untrusted ->
-      vm_link.registration(result.unwrap(simplifile.read(guest.log), ""))
+      case console_ready(guest) {
+        True -> vm_spec.Registered
+        False -> vm_spec.Unregistered
+      }
   }
 }
 
@@ -2169,22 +2236,29 @@ fn link_of(
   options: UpOptions,
 ) -> Result(vm_spec.LinkKind, String) {
   use record <- result.try(read_record(guest.kind_file))
+  vm_link.settle(options.name, record, traces_of(guest), options.link)
+}
 
-  // Bundles in the guest's directory are what a distribution guest has, and
-  // they tell a guest that predates the `link` record from a new one.
-  let bundles = case is_plain_directory(guest.deploy) {
-    True -> vm_link.HasBundles
-    False -> vm_link.NoBundles
+/// What a first `up` left in the guest's directory before it recorded a link:
+/// the leaf an untrusted `up` mints, or the bundles a distribution `up` writes.
+fn traces_of(guest: Instance) -> vm_link.Traces {
+  let leaf = is_plain_directory(guest.link_credentials)
+  let bundles = is_plain_directory(guest.deploy)
+
+  // The leaf is looked for first: it is minted before anything else of an
+  // untrusted guest exists, so it names the link of a run that stopped early.
+  case leaf, bundles {
+    True, _ -> vm_link.LeafTrace
+    False, True -> vm_link.DeployTrace
+    False, False -> vm_link.NoTraces
   }
-
-  vm_link.settle(options.name, record, bundles, options.link)
 }
 
 /// The link a guest was made with, for the commands that only read it. A guest
-/// with no record is a distribution guest.
+/// with no record and no trace of a first run is a distribution guest.
 fn recorded_kind(guest: Instance) -> Result(vm_spec.LinkKind, String) {
   use record <- result.try(read_record(guest.kind_file))
-  vm_link.decode_kind(record)
+  vm_link.settle("", record, traces_of(guest), None)
 }
 
 /// The text of a record file the host wrote, or none when it is absent.
@@ -2229,8 +2303,66 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
   ) = linked
   use #(config, file) <- result.try(config_of(options))
 
+  // The credentials are shared by every guest of the vm home and the file is
+  // read, merged and written back, so the whole of it is done by one `up` at a
+  // time: two first runs would otherwise share one `link.minting` directory,
+  // and two enrolments could each write the file without the other's row.
+  use #(home, leaf, chosen, enrolled) <- result.try(
+    with_link_lock(vm_home, fn() {
+      enroll_linked(vm_home, guest, options, #(config, file))
+    }),
+  )
+  let port = port_number(chosen)
+
+  // The root, the allowlist, the copy and the boot are the distribution
+  // guest's, with the node written differently and the port forwarded.
+  use Nil <- result.try(stage_with(
+    manifest,
+    guest,
+    stage_linked_node(guest, home, leaf, _, github, options.allow),
+    workspace,
+    options,
+    github,
+    plan,
+    step,
+  ))
+  use Nil <- result.try(
+    launch_guest(
+      manifest,
+      guest,
+      names,
+      options,
+      github,
+      plan,
+      port,
+      vm_spec.Forward,
+    )
+    |> result.map_error(fn(reason) {
+      reason
+      <> "\nIf another program holds port "
+      <> int.to_string(port)
+      <> " (the check for that needs `nc`), delete "
+      <> guest.port_file
+      <> " so the next `loom vm up` reserves another."
+    }),
+  )
+  Ok(Upped(options:, workspace:, port:, enrolled:, link: vm_spec.Untrusted))
+}
+
+/// The part of `up` for an untrusted guest that touches what other guests
+/// share, run under `with_link_lock`: the credentials, the guest's port and the
+/// user's `loom.toml`. It answers what the staging and the boot need.
+fn enroll_linked(
+  vm_home: String,
+  guest: Instance,
+  options: UpOptions,
+  target: #(String, ConfigFile),
+) -> Result(#(vm_link_pki.Home, vm_link_pki.Leaf, Chosen, Enrolled), String) {
+  let #(config, file) = target
+
   // The credential directories appear whole or not at all, so nothing below
-  // reads half of them.
+  // reads half of them, and a leaf made under an authority that was since
+  // replaced is refused.
   use home <- result.try(vm_link_pki.ensure_home(vm_home))
   use leaf <- result.try(vm_link_pki.ensure_leaf(home, guest.directory))
 
@@ -2246,30 +2378,49 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
   use Nil <- result.try(record_link(guest))
   use Nil <- result.try(record_port(guest, chosen))
   use enrolled <- result.try(enroll_link(merged, config, file))
+  Ok(#(home, leaf, chosen, enrolled))
+}
 
-  // The root, the allowlist, the copy and the boot are the distribution
-  // guest's, with the node written differently and the port forwarded.
-  use Nil <- result.try(stage_with(
-    manifest,
-    guest,
-    stage_linked_node(guest, home, leaf, _, github, options.allow),
-    workspace,
-    options,
-    github,
-    plan,
-    step,
-  ))
-  use Nil <- result.try(launch_guest(
-    manifest,
-    guest,
-    names,
-    options,
-    github,
-    plan,
-    port,
-    vm_spec.Forward,
-  ))
-  Ok(Upped(options:, workspace:, port:, enrolled:, link: vm_spec.Untrusted))
+/// Runs `work` with the vm home's link lock held. The lock is a kernel lock on
+/// `<vm home>/link.lock` that dies with the process, taken after any guest's
+/// own lock and never the other way, so two callers cannot wait on each other.
+/// A caller that finds it busy waits for the holder.
+fn with_link_lock(
+  vm_home: String,
+  work: fn() -> Result(a, String),
+) -> Result(a, String) {
+  use Nil <- result.try(
+    simplifile.create_directory_all(vm_home)
+    |> result.map_error(fn(error) {
+      vm_home <> " is unwritable: " <> simplifile.describe_error(error)
+    }),
+  )
+  let path = vm_home <> "/link.lock"
+
+  // The first try is made before saying anything, so an uncontended call is
+  // silent.
+  use lock <- result.try(case bootstrap.try_launch_lock(path) {
+    Ok(lock) -> Ok(lock)
+    Error("busy") -> {
+      io.println_error(
+        "loom vm: another loom is changing the link credentials or loom.toml; "
+        <> "waiting for it.",
+      )
+      wait_for(path) |> result.map_error(fn(failure) { ensure_reason(failure) })
+    }
+    Error(reason) -> Error(path <> ": " <> reason)
+  })
+
+  let outcome = work()
+  bootstrap.release_launch_lock(lock)
+  outcome
+}
+
+/// The words of an `ensure` failure, for a caller that reports a plain string.
+fn ensure_reason(failure: EnsureFailure) -> String {
+  case failure {
+    Refused(reason) | DaemonRequired(reason) -> reason
+  }
 }
 
 /// Records that the guest is reached over the untrusted link.
@@ -2301,19 +2452,22 @@ fn record_port(guest: Instance, chosen: Chosen) -> Result(Nil, String) {
   }
 }
 
+/// The port the guest's `link-port` record holds. A record that is missing or
+/// cannot be read is the same as none, and the port is then replaced.
+fn recorded_port(guest: Instance) -> option.Option(Int) {
+  case read_record(guest.port_file) {
+    Ok(Some(text)) -> option.from_result(vm_link.decode_port(text))
+    Ok(None) | Error(_) -> None
+  }
+}
+
 /// The host loopback port the guest's row names: the one recorded for the
 /// guest while nothing else listens on it, and otherwise a newly reserved one.
 /// Every boot of a guest then names the same address, so a daemon that read the
 /// row at its start still reaches the guest. Nothing is written here, because
 /// the port belongs to the guest only once the user's file has taken its row.
 fn chosen_port(guest: Instance) -> Result(Chosen, String) {
-  use record <- result.try(read_record(guest.port_file))
-
-  // A record that cannot be read is the same as none: the port is replaced.
-  let recorded = case record {
-    Some(text) -> option.from_result(vm_link.decode_port(text))
-    None -> None
-  }
+  let recorded = recorded_port(guest)
 
   // Only a recorded port is probed, since a new one is free by construction.
   let seen = case recorded {
@@ -2347,6 +2501,17 @@ fn availability_of(port: Int) -> vm_link.Availability {
   }
 }
 
+/// The text of a configuration file. A file that does not exist is an empty
+/// one; any other failure to read it is the user's to see.
+fn read_or_empty(path: String) -> Result(String, String) {
+  case simplifile.read(path) {
+    Ok(text) -> Ok(text)
+    Error(simplifile.Enoent) -> Ok("")
+    Error(error) ->
+      Error(path <> " is unreadable: " <> simplifile.describe_error(error))
+  }
+}
+
 /// Works out what `[executor_link]` and the guest's row add to the user's
 /// `loom.toml` beside whatever it holds, and refuses a table of the same name
 /// that differs (`vm_link.install`). Nothing is written, so a refusal leaves
@@ -2358,15 +2523,7 @@ fn plan_link(
   port: Int,
   config: String,
 ) -> Result(vm_link.Merged, String) {
-  // A file that does not exist yet is an empty one; any other failure to read
-  // it is the user's to see.
-  use text <- result.try(case simplifile.read(config) {
-    Ok(text) -> Ok(text)
-    Error(simplifile.Enoent) -> Ok("")
-    Error(error) ->
-      Error(config <> " is unreadable: " <> simplifile.describe_error(error))
-  })
-
+  use text <- result.try(read_or_empty(config))
   vm_link.install(
     text,
     home.files,
@@ -2502,9 +2659,16 @@ fn linked_daemon_lines(name: String, restart: Restart) -> List(String) {
 /// installed deployment asks, which is the one decision to stop an idle daemon
 /// and leave a busy one running.
 fn restart_of(upped: Upped) -> Restart {
-  case upped.link, upped.enrolled.row {
-    vm_spec.Untrusted, Resumed -> NoRestart
-    _, _ -> restart_after(upped.enrolled)
+  // The default daemon is asked about an untrusted guest's standing row; a
+  // configuration other than the default has a daemon `up` cannot ask.
+  case upped.link, upped.enrolled.file, upped.enrolled.row {
+    vm_spec.Untrusted, DefaultConfigFile, _ ->
+      case untrusted_need(upped) {
+        vm_link.MustRestart -> Daemon(daemon_outcome())
+        vm_link.NeedsNothing -> NoRestart
+      }
+    vm_spec.Untrusted, OtherConfigFile, Resumed -> NoRestart
+    _, _, _ -> restart_after(upped.enrolled)
   }
 }
 
@@ -2537,12 +2701,7 @@ fn link_lines(
       "epmd:       " <> epmd_line(names),
     ]
     vm_spec.Untrusted -> {
-      let port =
-        read_record(guest.port_file)
-        |> result.unwrap(None)
-        |> option.then(fn(text) {
-          option.from_result(vm_link.decode_port(text))
-        })
+      let port = recorded_port(guest)
       let pin =
         read_text(guest.link_credentials <> "/executor.pem")
         |> result.try(vm_link.pin_of)
@@ -4481,19 +4640,24 @@ fn remove(
       }),
     ),
   )
-  use plan <- result.try(planned_removal(vm_home, guest, name, config, home))
 
-  // Nothing is changed until the user has said yes, and the refusal names the
-  // copies the answer would lose.
-  case consent {
-    vm_spec.Unconfirmed ->
-      Error(
-        vm_spec.removal_refusal(name, held_workspaces(guest))
-        <> "\n"
-        <> removal_preview(plan, name, home),
-      )
-    vm_spec.Confirmed -> apply_removal(guest, name, home, plan)
-  }
+  // The file is read, planned and written back under the link lock, so a first
+  // `up` for another guest cannot write a row between the read and the write.
+  with_link_lock(vm_home, fn() {
+    use plan <- result.try(planned_removal(vm_home, guest, name, config, home))
+
+    // Nothing is changed until the user has said yes, and the refusal names
+    // the copies the answer would lose.
+    case consent {
+      vm_spec.Unconfirmed ->
+        Error(
+          vm_spec.removal_refusal(name, held_workspaces(guest))
+          <> "\n"
+          <> removal_preview(plan, name, home),
+        )
+      vm_spec.Confirmed -> apply_removal(guest, name, home, plan)
+    }
+  })
 }
 
 /// Reads the configuration and the cookie and decides what undoing the guest's
@@ -4569,23 +4733,24 @@ fn removal_plan(
 /// entry to revoke, because the guest was never a member of anything.
 fn linked_removal_plan(
   vm_home: String,
+  guest: Instance,
   name: String,
   config: String,
 ) -> Result(RemovalPlan, String) {
-  // A configuration that does not exist has no row to undo.
-  use text <- result.try(case simplifile.read(config) {
-    Ok(text) -> Ok(text)
-    Error(simplifile.Enoent) -> Ok("")
-    Error(error) ->
-      Error(config <> " is unreadable: " <> simplifile.describe_error(error))
-  })
-
+  use text <- result.try(read_or_empty(config))
   use others <- result.try(other_kinds(vm_home, name))
   let remaining = vm_link.remaining(others)
+
+  // The guest's row is told from another untrusted row of its name by the pin
+  // of its leaf. A leaf that cannot be read matches nothing, so the row stays.
+  let pin =
+    read_text(guest.link_credentials <> "/executor.pem")
+    |> result.try(vm_link.pin_of)
+    |> result.unwrap("")
   use removal <- result.try(
     vm_link.uninstall(
       text,
-      name,
+      vm_link.Row(name:, port: 1, pin:),
       remaining,
       vm_link_pki.files_of(vm_home),
       config,
@@ -4600,11 +4765,13 @@ fn linked_removal_plan(
     False -> Some(removal.text)
   }
 
-  // The vm home's credentials go with the last untrusted guest, and stay for
-  // the others while any remains.
-  let link_home = case remaining {
-    vm_link.LastLinked -> Some(vm_home <> "/" <> vm_spec.link_dir)
-    vm_link.OthersRemain -> None
+  // The vm home's credentials go with the last untrusted guest, and only when
+  // no table names them any more: an operator's own untrusted row keeps
+  // `[executor_link]`, and the files it names.
+  let link_home = case remaining, removal.table {
+    vm_link.LastLinked, vm_link.LinkTableGone ->
+      Some(vm_home <> "/" <> vm_spec.link_dir)
+    _, _ -> None
   }
 
   Ok(RemovalPlan(
@@ -4612,7 +4779,7 @@ fn linked_removal_plan(
     teardown: vm_spec.Teardown(
       tables: removal.removed,
       cookie: vm_spec.KeepCookie,
-      left: [],
+      left: removal.left,
     ),
     rewritten:,
     authority: None,
@@ -4659,7 +4826,7 @@ fn planned_removal(
 
   // The guest's own link says what undoing it means.
   case kind {
-    vm_spec.Untrusted -> linked_removal_plan(vm_home, name, config)
+    vm_spec.Untrusted -> linked_removal_plan(vm_home, guest, name, config)
     vm_spec.Distribution -> removal_plan(vm_home, guest, name, config, home)
   }
 }

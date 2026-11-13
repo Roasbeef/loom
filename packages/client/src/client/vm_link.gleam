@@ -15,7 +15,7 @@
 ////
 //// ## Flow
 ////
-//// - `settle` picks the guest's link from its record, its bundles and the
+//// - `settle` picks the guest's link from its record, the traces of a first run and the
 ////   `--link` flag, and refuses to change it.
 //// - `port_step` decides whether the recorded loopback port is kept or a new
 ////   one is reserved.
@@ -47,6 +47,7 @@ import client/internal/ffi_pki
 import client/vm_spec.{
   type DaemonOutcome, type LinkKind, Distribution, Untrusted,
 }
+import core/json as core_json
 import gleam/bit_array
 import gleam/dict
 import gleam/int
@@ -63,10 +64,6 @@ pub const kind_file = "link"
 /// The file in a guest's directory that records the host loopback port its
 /// row names, so every boot of the guest uses the same address.
 pub const port_file = "link-port"
-
-/// The directory of the vm home that holds the link's authority and the
-/// orchestrator's leaf.
-pub const credentials_dir = vm_spec.link_dir
 
 /// The directory of a guest that holds the guest's own leaf and key. It is not
 /// called `link`, because the guest's `link` record is a file of that name.
@@ -117,35 +114,44 @@ pub fn decode_kind(record: Option(String)) -> Result(LinkKind, String) {
   }
 }
 
-/// Whether a guest's directory holds the bundles a distribution `up` writes.
-pub type Bundles {
-  HasBundles
-  NoBundles
+/// What a guest's directory holds that a first `up` leaves before it records a
+/// link: the bundles a distribution `up` writes, or the leaf an untrusted `up`
+/// mints. Either says which link the guest was started with even when the run
+/// stopped before it wrote the `link` record.
+pub type Traces {
+  /// Neither: the guest is new.
+  NoTraces
+
+  /// The `deploy/` directory of a distribution guest.
+  DeployTrace
+
+  /// The `link-credentials/` directory of an untrusted guest.
+  LeafTrace
 }
 
 /// The link a guest has after this command: the one it was made with, or the
 /// one `--link` asks for when it is new.
 ///
 /// A guest keeps its link for life. A guest with a `link` record has that
-/// kind; one with distribution bundles and no record is a distribution guest;
-/// one with neither is new and takes the flag, defaulting to distribution. A
-/// flag that names the other kind is refused, because the guest's root, its row
+/// kind; one with distribution bundles and no record is a distribution guest,
+/// and one with a minted leaf is an untrusted guest; one with neither is new
+/// and takes the flag, defaulting to distribution. A flag that names the other kind is refused, because the guest's root, its row
 /// and its credentials all belong to one kind, and `--fresh` replaces the root
 /// and the disk but not the host's configuration.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let new = vm_link.settle("dev", None, vm_link.NoBundles, Some(vm_spec.Untrusted))
+/// let new = vm_link.settle("dev", None, vm_link.NoTraces, Some(vm_spec.Untrusted))
 /// assert new == Ok(vm_spec.Untrusted)
 /// ```
 pub fn settle(
   name: String,
   record: Option(String),
-  bundles: Bundles,
+  traces: Traces,
   requested: Option(LinkKind),
 ) -> Result(LinkKind, String) {
-  use made <- result.try(made_with(record, bundles))
+  use made <- result.try(made_with(record, traces))
 
   // A new guest takes the flag; an existing one keeps what it has.
   case made, requested {
@@ -160,14 +166,16 @@ pub fn settle(
 /// The kind a guest was made with, or none when it is new.
 fn made_with(
   record: Option(String),
-  bundles: Bundles,
+  traces: Traces,
 ) -> Result(Option(LinkKind), String) {
-  // A record decides. Without one, bundles say the guest is a distribution
-  // guest, and no bundles say it is new.
-  case record, bundles {
+  // A record decides. Without one, the traces of a first run say which link it
+  // was, so a flagless `up` after an interrupted untrusted one resumes it as
+  // untrusted and never as a distribution guest.
+  case record, traces {
     Some(_), _ -> decode_kind(record) |> result.map(Some)
-    None, HasBundles -> Ok(Some(Distribution))
-    None, NoBundles -> Ok(None)
+    None, DeployTrace -> Ok(Some(Distribution))
+    None, LeafTrace -> Ok(Some(Untrusted))
+    None, NoTraces -> Ok(None)
   }
 }
 
@@ -415,7 +423,7 @@ pub fn install(
   row: Row,
   file: String,
 ) -> Result(Merged, String) {
-  use document <- result.try(parse(text, file))
+  use document <- result.try(distribution_install.parse_document(text, file))
   use wanted <- result.try(wanted_values(files, row))
   use verdicts <- result.try(judge(document, wanted, row, file))
 
@@ -468,9 +476,18 @@ fn judge(
   row: Row,
   file: String,
 ) -> Result(Verdicts, String) {
-  let link = verdict(lookup(document, ["executor_link"]), wanted.link, Foreign)
+  let link =
+    verdict(
+      distribution_install.lookup(document, ["executor_link"]),
+      wanted.link,
+      Foreign,
+    )
   let found =
-    verdict(lookup(document, ["executors", row.name]), wanted.row, Movable)
+    verdict(
+      distribution_install.lookup(document, ["executors", row.name]),
+      wanted.row,
+      Movable,
+    )
 
   // A table that is foreign is the user's, and replacing it is never the
   // command's to do.
@@ -508,10 +525,12 @@ fn verdict(
 /// The refusal for an `[executor_link]` that names other files.
 fn link_refusal(file: String) -> String {
   file
-  <> " already has an [executor_link] table with other files. `loom vm up "
-  <> "--link untrusted` never replaces it, because the guest's certificate "
-  <> "would not chain to that authority. Remove the table, or give `--config` "
-  <> "another file."
+  <> " already has an [executor_link] table that names files other than "
+  <> "this vm home's link credentials. A daemon has one [executor_link] table, "
+  <> "so a guest made here cannot share another authority's: its certificate "
+  <> "would not chain to that authority, and `loom vm up --link untrusted` "
+  <> "never replaces the table. Give `--config` another file for this guest, "
+  <> "or remove the table from this one if nothing else uses it."
 }
 
 /// The refusal for a guest's row that is not the one an earlier `up` wrote.
@@ -555,7 +574,7 @@ fn confirm(
   row: Row,
   file: String,
 ) -> Result(Nil, String) {
-  use document <- result.try(parse(merged, file))
+  use document <- result.try(distribution_install.parse_document(merged, file))
   let tables = [
     #(["executor_link"], wanted.link),
     #(["executors", row.name], wanted.row),
@@ -563,7 +582,7 @@ fn confirm(
 
   // Each wanted table must be found, and be equal.
   list.try_each(tables, fn(entry) {
-    case lookup(document, entry.0) {
+    case distribution_install.lookup(document, entry.0) {
       Ok(found) if found == entry.1 -> Ok(Nil)
       _ ->
         Error(
@@ -614,6 +633,17 @@ pub fn remaining(others: List(LinkKind)) -> Remaining {
   }
 }
 
+/// Whether `[executor_link]` is still in the text after a removal.
+pub type LinkTable {
+  /// It is, because another untrusted row needs it or it is not the one `up`
+  /// wrote, so the credentials it names must stay.
+  LinkTableKept
+
+  /// It is not, either removed or never there, so nothing names the
+  /// credentials any more.
+  LinkTableGone
+}
+
 /// What `uninstall` took out.
 pub type Removal {
   Removal(
@@ -621,54 +651,93 @@ pub type Removal {
     text: String,
     /// The tables that went, each as its path.
     removed: List(List(String)),
+    /// Whether the link table is still in the text.
+    table: LinkTable,
+    /// A line for each table that was left because it is not the guest's.
+    left: List(String),
   )
 }
 
 /// Takes the guest's row out of the configuration text, and `[executor_link]`
 /// with it when this was the last untrusted guest and no other untrusted row
 /// needs it. A table that is not the one `up` wrote is left alone: a row of
-/// that name that is not untrusted, or a link table that names other files,
-/// belongs to the user. Every other line is kept as it was.
+/// that name with another pin than the guest's `pin`, which is a row the user
+/// wrote, or a link table that names other files, belongs to the user. Lines
+/// between the guest's tables and the next table are kept with it, as is every
+/// other line.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let out = vm_link.uninstall(text, "dev", vm_link.LastLinked, files, "loom.toml")
+/// let out = vm_link.uninstall(text, row, vm_link.LastLinked, files, "loom.toml")
 /// ```
 pub fn uninstall(
   text: String,
-  name: String,
+  row: Row,
   remaining: Remaining,
   files: LinkFiles,
   file: String,
 ) -> Result(Removal, String) {
-  use document <- result.try(parse(text, file))
+  use document <- result.try(distribution_install.parse_document(text, file))
   use link <- result.try(table_value(link_table(files), ["executor_link"]))
+  let name = row.name
+  let found = distribution_install.lookup(document, ["executors", name])
 
-  // The guest's row goes only when it is an untrusted one, which is what an
-  // earlier `up` wrote; a trusted row of the same name is the user's.
-  let row = case is_untrusted(lookup(document, ["executors", name])) {
-    True -> [["executors", name]]
-    False -> []
+  // The guest's row goes only when it is an untrusted one with the guest's own
+  // pin, which is what an earlier `up` wrote; a row of the same name that
+  // anything else wrote is the user's.
+  let #(row_goes, left) = case is_guests(found, row.pin) {
+    True -> #([["executors", name]], [])
+    False ->
+      case found {
+        Ok(_) -> #([], [
+          "[executors."
+          <> name
+          <> "]: its pin is not this guest's, so it is not the row `up` wrote",
+        ])
+        Error(Nil) -> #([], [])
+      }
   }
 
-  // Others count only the untrusted rows besides this one: a row a person
+  // Others count the untrusted rows besides the one that goes: a row a person
   // wrote by hand keeps `[executor_link]` for itself.
   let others =
-    list.filter(untrusted_rows(document), fn(other) { other != name })
+    list.filter(untrusted_rows(document), fn(other) {
+      row_goes == [] || other != name
+    })
   let link_goes =
     remaining == LastLinked
     && others == []
-    && lookup(document, ["executor_link"]) == Ok(link)
+    && distribution_install.lookup(document, ["executor_link"]) == Ok(link)
 
   // The link table follows the last guest only when it is the one `up` wrote.
   let tables = case link_goes {
-    True -> list.append(row, [["executor_link"]])
-    False -> row
+    True -> list.append(row_goes, [["executor_link"]])
+    False -> row_goes
   }
 
-  use kept <- result.map(distribution_install.without_tables(text, tables, file))
-  Removal(text: kept, removed: tables)
+  use kept <- result.try(distribution_install.without_tables(text, tables, file))
+  use after <- result.map(distribution_install.parse_document(kept, file))
+  Removal(
+    text: kept,
+    removed: tables,
+    table: case dict.has_key(after, "executor_link") {
+      True -> LinkTableKept
+      False -> LinkTableGone
+    },
+    left:,
+  )
+}
+
+/// Whether a table that may be absent is the guest's own row: untrusted, with
+/// the guest's pin.
+fn is_guests(found: Result(tom.Toml, Nil), pin: String) -> Bool {
+  // The pin names the guest's leaf, which only this guest's directory holds.
+  case found {
+    Ok(tom.Table(fields)) ->
+      is_untrusted(found) && dict.get(fields, "pin") == Ok(tom.String(pin))
+    Ok(_) | Error(Nil) -> False
+  }
 }
 
 /// Whether a table that may be absent says it is untrusted.
@@ -693,38 +762,14 @@ fn untrusted_rows(document: dict.Dict(String, tom.Toml)) -> List(String) {
   }
 }
 
-/// Parses configuration text, naming the file when it is not TOML.
-fn parse(
-  text: String,
-  file: String,
-) -> Result(dict.Dict(String, tom.Toml), String) {
-  tom.parse(text)
-  |> result.map_error(fn(error) {
-    file <> " is not valid TOML: " <> string.inspect(error)
-  })
-}
-
 /// The value a table's own text defines at `path`.
 fn table_value(text: String, path: List(String)) -> Result(tom.Toml, String) {
-  use document <- result.try(parse(text, "the table"))
-  lookup(document, path)
+  use document <- result.try(distribution_install.parse_document(
+    text,
+    "the table",
+  ))
+  distribution_install.lookup(document, path)
   |> result.replace_error("the table text is not a table")
-}
-
-/// The value at a key path of a parsed document.
-fn lookup(
-  document: dict.Dict(String, tom.Toml),
-  path: List(String),
-) -> Result(tom.Toml, Nil) {
-  case path {
-    [] -> Error(Nil)
-    [key] -> dict.get(document, key)
-    [key, ..rest] ->
-      case dict.get(document, key) {
-        Ok(tom.Table(inner)) -> lookup(inner, rest)
-        _ -> Error(Nil)
-      }
-  }
 }
 
 // --- the guest's root ----------------------------------------------------------------
@@ -811,23 +856,105 @@ pub fn staging(
   ]
 }
 
-// --- what the developer is told ------------------------------------------------------
+// --- whether the daemon has read the guest's row ---------------------------------------
 
-/// Whether the guest's console says its executor serves. A guest on the
-/// untrusted link registers nothing in the host's epmd, so the console, which
-/// `up` truncates at each boot, is what `ensure` reads in its place.
+/// Whether the guest's row is one this command wrote or one an earlier command
+/// left standing.
+pub type Rows {
+  /// The command added the row or moved its port, so a daemon that was running
+  /// before it cannot have read it.
+  RowChanged
+
+  /// The row was already as the guest needs it.
+  RowStanding
+}
+
+/// What the default daemon said when asked for its deployment.
+pub type DaemonSaw {
+  /// No daemon runs.
+  SawNoDaemon
+
+  /// A daemon runs and its answer did not say which executors it holds.
+  SawUnanswered
+
+  /// A daemon answered with the names of the executor rows it holds.
+  SawExecutors(names: List(String))
+}
+
+/// Whether the default daemon has to restart to reach the guest.
+pub type DaemonNeed {
+  MustRestart
+  NeedsNothing
+}
+
+/// Decides whether the default daemon has to restart for an untrusted guest.
+/// A daemon reads its rows only at its start, so a row this command wrote is
+/// unread by any daemon already running. A row that was already there is read
+/// when the daemon lists the guest by name, and unread when it does not: that
+/// is a first `up` whose boot failed after the row was written, and a daemon
+/// started before it. A daemon that is absent or does not answer is never
+/// claimed to lack the row. The question is not whether the daemon runs with
+/// distribution, which an untrusted guest never needs.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_link.registration("boot\nLOOM-EXECUTOR-READY\n") == vm_spec.Registered
+/// assert vm_link.daemon_need(vm_link.RowStanding, vm_link.SawExecutors([]), "dev")
+///   == vm_link.MustRestart
 /// ```
-pub fn registration(console: String) -> vm_spec.Registration {
-  case string.contains(console, vm_spec.ready_marker) {
-    True -> vm_spec.Registered
-    False -> vm_spec.Unregistered
+pub fn daemon_need(rows: Rows, saw: DaemonSaw, name: String) -> DaemonNeed {
+  // A changed row is unread whatever the daemon says; a standing one is read
+  // only if the daemon holds it.
+  case rows, saw {
+    RowChanged, _ -> MustRestart
+    RowStanding, SawExecutors(names) ->
+      case list.contains(names, name) {
+        True -> NeedsNothing
+        False -> MustRestart
+      }
+    RowStanding, SawNoDaemon | RowStanding, SawUnanswered -> NeedsNothing
   }
 }
+
+/// The names of the executor rows a daemon's `deployment.status` body lists
+/// under `placements.executors`, or none when the body has no such list, which
+/// is a daemon that does not answer the read in full.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_link.listed_executors(core_json.Object([])) == None
+/// ```
+pub fn listed_executors(body: core_json.JsonValue) -> Option(List(String)) {
+  // The list is two objects down; anything else is no answer.
+  case body {
+    core_json.Object(fields) ->
+      case list.key_find(fields, "placements") {
+        Ok(core_json.Object(placements)) ->
+          case list.key_find(placements, "executors") {
+            Ok(core_json.Array(entries)) ->
+              Some(list.filter_map(entries, name_of))
+            _ -> None
+          }
+        _ -> None
+      }
+    _ -> None
+  }
+}
+
+/// The `name` of one executor entry.
+fn name_of(entry: core_json.JsonValue) -> Result(String, Nil) {
+  case entry {
+    core_json.Object(fields) ->
+      case list.key_find(fields, "name") {
+        Ok(core_json.String(name)) -> Ok(name)
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+// --- what the developer is told ------------------------------------------------------
 
 /// The lines `up` ends with about the daemon after it changed the guest's row.
 /// A daemon reads its rows at start and has no reload command yet, so one that
@@ -840,57 +967,14 @@ pub fn registration(console: String) -> vm_spec.Registration {
 /// assert vm_link.daemon_lines("dev", vm_spec.NoDaemon) != []
 /// ```
 pub fn daemon_lines(name: String, outcome: DaemonOutcome) -> List(String) {
-  let reason =
+  vm_spec.daemon_note_about(
+    outcome,
+    "the guest's row",
     "It read its configuration before [executors."
-    <> name
-    <> "] was written, and it has no reload command yet, so it must restart "
-    <> "to reach the guest."
-
-  // Each outcome is one thing said, and only a daemon that is still running
-  // gets the command that stops it.
-  case outcome {
-    vm_spec.NoDaemon -> [
-      "The next `loom` command starts the daemon with the guest's row in effect.",
-      "",
-    ]
-    vm_spec.Stopped -> [
-      "Your daemon held no sessions, so it was stopped. The next `loom` "
-        <> "command starts it with the guest's row in effect.",
-      "",
-    ]
-    vm_spec.NotStopped(pid, why) -> [
-      "Your daemon holds no sessions but did not stop ("
-        <> why
-        <> "). "
-        <> reason,
-      "Stop it with: " <> vm_spec.stop_command(pid),
-      "",
-    ]
-    vm_spec.Holding(pid, sessions) -> [
-      "Your daemon holds "
-        <> int.to_string(sessions)
-        <> " session"
-        <> plural(sessions)
-        <> ", so it was left running. "
-        <> reason,
-      "When they are finished, stop it with: " <> vm_spec.stop_command(pid),
-      "",
-    ]
-    vm_spec.Unasked(pid) -> [
-      "Your daemon is running and did not say whether it holds sessions, so it "
-        <> "was left running. "
-        <> reason,
-      "When it holds none, stop it with: " <> vm_spec.stop_command(pid),
-      "",
-    ]
-  }
-}
-
-fn plural(count: Int) -> String {
-  case count {
-    1 -> ""
-    _ -> "s"
-  }
+      <> name
+      <> "] was written, and it has no reload command yet, so it must restart "
+      <> "to reach the guest.",
+  )
 }
 
 /// The `status` lines about a guest's link. A guest on the untrusted link has

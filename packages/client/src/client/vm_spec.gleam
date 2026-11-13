@@ -3127,20 +3127,44 @@ pub fn stop_command(pid: Int) -> String {
 /// assert vm_spec.daemon_note(vm_spec.NoDaemon) != []
 /// ```
 pub fn daemon_note(outcome: DaemonOutcome) -> List(String) {
-  let reason =
+  daemon_note_about(
+    outcome,
+    "the table",
     "It read its configuration before the [distribution] table was installed, "
-    <> "so it must restart to use the guest."
+      <> "so it must restart to use the guest.",
+  )
+}
 
+/// The lines `up` ends with about the daemon, for a change to the daemon's
+/// configuration that it reads only at its start: `effect` names what the next
+/// start puts in effect, and `reason` says why a running daemon must restart.
+/// `daemon_note` is the words for a `[distribution]` table, and
+/// `client/vm_link.daemon_lines` the words for an untrusted guest's row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.daemon_note_about(vm_spec.NoDaemon, "the row", "Restart it.") != []
+/// ```
+pub fn daemon_note_about(
+  outcome: DaemonOutcome,
+  effect: String,
+  reason: String,
+) -> List(String) {
   // Each outcome is one thing said, and only a daemon that is still running
   // gets the command that stops it.
   case outcome {
     NoDaemon -> [
-      "The next `loom` command starts the daemon with the table in effect.",
+      "The next `loom` command starts the daemon with "
+        <> effect
+        <> " in effect.",
       "",
     ]
     Stopped -> [
       "Your daemon held no sessions, so it was stopped. The next `loom` "
-        <> "command starts it with the table in effect.",
+        <> "command starts it with "
+        <> effect
+        <> " in effect.",
       "",
     ]
     NotStopped(pid, why) -> [
