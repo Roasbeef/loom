@@ -419,7 +419,7 @@ fn fixture_lasting_with_root(
             // A relayed session's live page registers its image reader as a
             // session page does, so `Pictured` does it for the home upgrade too.
             Pictured -> {
-              register(held)
+              register(visited(visit))
               with_page(
                 homed(
                   ready.state_root,
@@ -3468,9 +3468,27 @@ fn relayed_picture(
   ref: String,
   position: String,
 ) -> Answer {
+  relayed_picture_of(
+    port,
+    entered,
+    orchestrator,
+    relayed_identity,
+    ref,
+    position,
+  )
+}
+
+fn relayed_picture_of(
+  port: Int,
+  entered: Entered,
+  orchestrator: String,
+  session: String,
+  ref: String,
+  position: String,
+) -> Answer {
   get(
     port,
-    relayed_path(entered, orchestrator, relayed_identity)
+    relayed_path(entered, orchestrator, session)
       <> "/image/"
       <> ref
       <> "/"
@@ -3496,7 +3514,7 @@ pub fn a_relayed_page_reads_its_image_with_the_headers_of_the_view_test() {
     assert relayed_socket(port, operator, path, operator.nonce).status == 280
     let answer = relayed_picture(port, operator, "box", "1.0", "0")
     assert answer.status == 200
-    assert answer.raw == png_bytes
+    assert answer.raw == <<png_bytes:bits, relayed_identity:utf8>>
     assert list.key_find(answer.headers, "content-type") == Ok("image/png")
     assert list.key_find(answer.headers, "x-content-type-options")
       == Ok("nosniff")
@@ -3507,6 +3525,31 @@ pub fn a_relayed_page_reads_its_image_with_the_headers_of_the_view_test() {
     assert relayed_picture(port, operator, "box", "1.0", "1").status != 200
     assert relayed_picture(port, operator, "box", "1.0", "2").status != 200
     assert relayed_picture(port, operator, "box", "2.0", "0").status != 200
+  })
+}
+
+// Two tabs of one home share a cookie. Each tab's reader is kept under the
+// session it draws, so the newer tab does not replace the older one's, and a
+// request for a session answers only from that session's tab.
+pub fn two_relayed_tabs_under_one_cookie_read_their_own_images_test() {
+  fixture_with(Pictured, fn(_, port, credential) {
+    let operator = enter(port, operator_home(port, credential))
+    let other = "0198c0de-0000-7000-8000-000000000002"
+    let first = relayed_path(operator, "box", relayed_identity)
+    let second = relayed_path(operator, "box", other)
+    assert relayed_socket(port, operator, first, operator.nonce).status == 280
+    assert relayed_socket(port, operator, second, operator.nonce).status == 280
+
+    let older =
+      relayed_picture_of(port, operator, "box", relayed_identity, "1.0", "0")
+    let newer = relayed_picture_of(port, operator, "box", other, "1.0", "0")
+    assert older.raw == <<png_bytes:bits, relayed_identity:utf8>>
+    assert newer.raw == <<png_bytes:bits, other:utf8>>
+
+    // A session no open tab draws has no reader under this cookie.
+    let absent = "0198c0de-0000-7000-8000-000000000003"
+    assert relayed_picture_of(port, operator, "box", absent, "1.0", "0").status
+      == 404
   })
 }
 
@@ -3701,6 +3744,27 @@ fn held(ref: String, position: Int) -> Result(transcript_image.Image, Nil) {
     "2.0", 0 ->
       Ok(transcript_image.Image("image/png", string.repeat("A", 28_000_000)))
     _, _ -> Error(Nil)
+  }
+}
+
+// The reader of a relayed tab: the page's images, with the tab's own session
+// written after the PNG's bytes so a test can tell whose lane answered. A page
+// that visits nothing reads `held`.
+fn visited(
+  visit: option.Option(server.Visit),
+) -> fn(String, Int) -> Result(transcript_image.Image, Nil) {
+  case visit {
+    None -> held
+    Some(server.Visit(session:, ..)) -> fn(ref, position) {
+      case held(ref, position) {
+        Ok(transcript_image.Image("image/png", _)) ->
+          Ok(transcript_image.Image(
+            "image/png",
+            bit_array.base64_encode(<<png_bytes:bits, session:utf8>>, True),
+          ))
+        other -> other
+      }
+    }
   }
 }
 

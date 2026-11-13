@@ -795,7 +795,7 @@ fn home_socket(
         ),
         ui_sessions.open_until(ui.sessions, cookie, grant),
         visit,
-        ui_sessions.register_images(ui.sessions, cookie, _),
+        relayed_register(ui.sessions, cookie, visit),
       )
   }
 }
@@ -1280,6 +1280,32 @@ fn relayed_document(
   }
 }
 
+/// The scope a relayed tab's image reader is kept under: the orchestrator and the
+/// session the tab draws. Tabs of one home share a cookie, and a reader kept by
+/// the cookie alone would be replaced by the newest tab's, so an older tab's images
+/// would come from another tab's lane.
+fn relayed_scope(visit: Visit) -> String {
+  visit.orchestrator <> "/" <> visit.session
+}
+
+/// How a home socket registers its page's images: a relayed tab's under its own
+/// session, and any other home's as the cookie's only reader.
+fn relayed_register(
+  sessions: ui_sessions.Sessions,
+  cookie: String,
+  visit: Option(Visit),
+) -> fn(ui_sessions.Images) -> Nil {
+  case visit {
+    Some(visit) -> ui_sessions.register_images_for(
+      sessions,
+      cookie,
+      relayed_scope(visit),
+      _,
+    )
+    None -> ui_sessions.register_images(sessions, cookie, _)
+  }
+}
+
 /// A relayed session's image at a row's name and position: the relayed page's
 /// grant (the home's two rules and the two more every relayed request makes),
 /// then the reader the page's socket registered under its cookie, and the bytes
@@ -1309,7 +1335,7 @@ fn relayed_image_of(
       principal,
       ui_sessions.grant(held).ceiling,
     ))
-    ui_sessions.images(ui.sessions, cookie)
+    ui_sessions.images_for(ui.sessions, cookie, relayed_scope(visit))
     |> result.map(fn(read) { picture(read(ref, position)) })
     |> result.map_error(fn(_) { plain(404, "unknown image") })
   }
