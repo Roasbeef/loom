@@ -456,40 +456,67 @@ sandbox-test: ## Vet, build, and test the Go sandbox package
 # the go-microvm runner links libkrun with cgo, so it is built from the same
 # module version loom-vm imports and, on macOS, codesigned with the
 # Hypervisor.framework entitlement or HVF refuses it. KRUN_PREFIX locates
-# libkrun's headers and libraries (Homebrew's prefix on macOS).
+# libkrun's headers and libraries and KRUN_LIBDIR the directory holding the
+# library itself. macOS takes Homebrew's prefix. Linux has no libkrun
+# package, so `make vmm-libkrun` builds one into packages/vmm/build/libkrun,
+# and the runner links it through pkg-config.
+ifeq ($(shell uname -s),Linux)
+KRUN_PREFIX ?= $(CURDIR)/$(VMM_PKG)/build/libkrun
+KRUN_LIBDIR ?= $(KRUN_PREFIX)/lib64
+else
 KRUN_PREFIX ?= $(shell brew --prefix 2>/dev/null || echo /usr/local)
+KRUN_LIBDIR ?= $(KRUN_PREFIX)/lib
+endif
 
 .PHONY: vmm
 vmm: ## Build the loom-vm microVM launcher into packages/vmm/build
 	@scripts/go-build.sh $(VMM_PKG) ./cmd/loom-vm $(VMM_PKG)/build/loom-vm
 
+# Linux only: libkrun from source at the tag go-microvm pins, which takes a
+# few minutes and a Rust toolchain (rustup, in the work directory, when cargo
+# is not on PATH). Its downloads stay in packages/vmm/build/libkrun-work.
+.PHONY: vmm-libkrun
+vmm-libkrun: ## Build libkrun into packages/vmm/build/libkrun (Linux)
+	@$(VMM_PKG)/guest/build-libkrun.sh $(KRUN_PREFIX)
+
 .PHONY: vmm-runner
 vmm-runner: ## Build (and on macOS codesign) the go-microvm runner loom-vm boots with
 	@cd $(VMM_PKG) && CGO_ENABLED=1 CGO_CFLAGS="-I$(KRUN_PREFIX)/include" \
-		CGO_LDFLAGS="-L$(KRUN_PREFIX)/lib" go build -trimpath \
+		CGO_LDFLAGS="-L$(KRUN_LIBDIR)" PKG_CONFIG_PATH="$(KRUN_LIBDIR)/pkgconfig" \
+		go build -trimpath \
 		-o build/go-microvm-runner github.com/stacklok/go-microvm/runner/cmd/go-microvm-runner
 	@if [ "$$(uname -s)" = Darwin ]; then \
 		codesign --entitlements $(VMM_PKG)/runner.entitlements -s - --force \
 			$(VMM_PKG)/build/go-microvm-runner; fi
 
 # The stock libkrunfw has no Landlock (ADR-022, D3). This builds the guest
-# kernel with it in a podman container and bundles it into a macOS dylib that
-# loom-vm loads through --firmware-dir. It takes tens of minutes, needs a
-# running podman machine (PODMAN_CONNECTION, default loom-build), and caches
-# its downloads in packages/vmm/build/firmware-work.
+# kernel with it and bundles it into the library loom-vm loads through
+# --firmware-dir: a macOS dylib, with the kernel built in a podman container
+# (PODMAN_CONNECTION, default loom-build), or a Linux libkrunfw.so.5 for this
+# machine's architecture, with the kernel built natively. It takes tens of
+# minutes and caches its downloads in packages/vmm/build/firmware-work.
 .PHONY: vmm-firmware
 vmm-firmware: ## Build libkrunfw with Landlock into packages/vmm/build/firmware
 	@$(VMM_PKG)/guest/build-libkrunfw.sh $(VMM_PKG)/build/firmware
 
-# The linux/arm64 guest root (packages/vmm/guest/Dockerfile). `make release`
-# cannot cross-compile, so the image builds natively inside the arm64 podman
-# machine named by VMM_BUILD_CONNECTION. The runtime stage's filesystem is
-# exported to packages/vmm/build/guest-root, which `loom-vm run --root-dir`
-# boots. The old root is removed first so that a rebuild never layers new
-# files over stale ones. Boot a copy, not this directory, because the guest
-# writes into its root in place. Clone with `cp -cRp` on macOS: without -p,
-# cp applies the umask to directory modes and /tmp loses its world-write bit.
+# The guest root (packages/vmm/guest/Dockerfile) for the host's architecture.
+# `make release` cannot cross-compile, so the image builds natively: inside
+# the arm64 podman machine named by VMM_BUILD_CONNECTION on macOS, and with
+# the local podman on Linux, as linux/amd64 or linux/arm64 to match the host.
+# The runtime stage's filesystem is exported to packages/vmm/build/guest-root,
+# which `loom-vm run --root-dir` boots. The old root is removed first so that
+# a rebuild never layers new files over stale ones. Boot a copy, not this
+# directory, because the guest writes into its root in place. Clone with
+# `cp -cRp` on macOS: without -p, cp applies the umask to directory modes and
+# /tmp loses its world-write bit. On Linux, `cp -a` keeps them.
+ifeq ($(shell uname -s),Darwin)
 VMM_BUILD_CONNECTION ?= loom-build
+VMM_PODMAN           := podman --connection $(VMM_BUILD_CONNECTION)
+VMM_GUEST_PLATFORM   ?= linux/arm64
+else
+VMM_PODMAN           := podman
+VMM_GUEST_PLATFORM   ?= linux/$(subst x86_64,amd64,$(subst aarch64,arm64,$(shell uname -m)))
+endif
 VMM_GUEST_IMAGE      ?= localhost/loom-vmm-guest-root:dev
 VMM_GUEST_ROOT       := $(VMM_PKG)/build/guest-root
 # The image labels `loom-vm setup` reads. A developer build is version "dev"
@@ -498,30 +525,31 @@ VMM_GUEST_REVISION   ?= $(shell git rev-parse HEAD)
 VMM_GUEST_VERSION    ?= dev
 
 .PHONY: vmm-guest-root
-vmm-guest-root: ## Build the linux/arm64 guest root into packages/vmm/build/guest-root (podman)
-	podman --connection $(VMM_BUILD_CONNECTION) build --platform linux/arm64 \
+vmm-guest-root: ## Build the guest root for this host into packages/vmm/build/guest-root (podman)
+	$(VMM_PODMAN) build --platform $(VMM_GUEST_PLATFORM) \
 		--target runtime -t $(VMM_GUEST_IMAGE) \
 		--build-arg LOOM_REVISION=$(VMM_GUEST_REVISION) \
 		--build-arg LOOM_VERSION=$(VMM_GUEST_VERSION) \
 		-f $(VMM_PKG)/guest/Dockerfile .
 	@set -e; \
-	ctr=$$(podman --connection $(VMM_BUILD_CONNECTION) create $(VMM_GUEST_IMAGE) /bin/true); \
-	trap 'podman --connection $(VMM_BUILD_CONNECTION) rm -f '"$$ctr"' >/dev/null' EXIT; \
+	ctr=$$($(VMM_PODMAN) create $(VMM_GUEST_IMAGE) /bin/true); \
+	trap '$(VMM_PODMAN) rm -f '"$$ctr"' >/dev/null' EXIT; \
 	rm -rf $(VMM_GUEST_ROOT); mkdir -p $(VMM_GUEST_ROOT); \
-	podman --connection $(VMM_BUILD_CONNECTION) export "$$ctr" | tar -xp -C $(VMM_GUEST_ROOT); \
+	$(VMM_PODMAN) export "$$ctr" | tar -xp -C $(VMM_GUEST_ROOT); \
 	echo "exported $(VMM_GUEST_ROOT)"
 
 # The developer path to a manifest: `loom-vm setup --from-build` records where
-# the three targets above put their output, under $LOOM_VM_HOME (default
+# the targets above put their output, under $LOOM_VM_HOME (default
 # ~/.loom/vm), without copying anything. A user who builds nothing runs
 # `loom-vm setup --release TAG` instead (docs/distribution.md).
 .PHONY: vmm-install-dev
 vmm-install-dev: vmm ## Write loom-vm's manifest for the packages/vmm/build tree (LOOM_VM_HOME)
-	@$(VMM_PKG)/build/loom-vm setup --from-build $(VMM_PKG)/build
+	@$(VMM_PKG)/build/loom-vm setup --from-build $(VMM_PKG)/build --lib-dir $(KRUN_LIBDIR)
 
 .PHONY: vmm-test
-vmm-test: ## Vet, build, and test the Go microVM launcher
+vmm-test: ## Vet, build, and test the Go microVM launcher and the firmware script
 	@cd $(VMM_PKG) && go vet ./... && go build ./... && go test ./...
+	@$(VMM_PKG)/guest/build-libkrunfw-test.sh
 
 .PHONY: selftest
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)
