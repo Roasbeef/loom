@@ -700,17 +700,18 @@ fn landed(
   }
 }
 
-/// The executor's store said no to a piece. A full store may have room later, so
-/// that one is unfinished. The rest are about the piece or the description and
-/// asking again is answered the same way. Each variant is named, so a new refusal
-/// has to be classified here.
+/// The executor's store said no to a piece. Every answer is final: a full store
+/// has room again only when held states expire, which takes days, and a move that
+/// stalled on it would send the bundle again from the start at each retry, so the
+/// move is abandoned with the reason. Each variant is named, so a new refusal has
+/// to be classified here.
 fn declined(refusal: state_transfer.Refusal) -> Result(Nil, Failure) {
   let words = state_transfer.describe(refusal)
 
-  // A full store may have room later; every other refusal is final.
+  // Every refusal of the store is final.
   case refusal {
-    state_transfer.NoRoom(..) -> Error(Unfinished(Sending, words))
-    state_transfer.BadState(..)
+    state_transfer.NoRoom(..)
+    | state_transfer.BadState(..)
     | state_transfer.BadPiece(..)
     | state_transfer.TooLarge(..)
     | state_transfer.OutOfOrder(..)

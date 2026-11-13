@@ -495,7 +495,7 @@ fn attach_to(
     }
     Error(refusal) -> {
       owner_port.stop(port)
-      Error(refused_attempt(registered, candidate, incarnation, refusal))
+      Error(refused_attempt(registered, candidate, incarnation, stored, refusal))
     }
     Ok(surface.Attachment(surface: joined, attached: reply)) ->
       case
@@ -534,36 +534,76 @@ fn attach_to(
 
 // What an attach the executor refused means for the open. A scope bound to
 // another workspace and a workspace the executor does not serve are answers that
-// asking again does not change. The second leaves a scope the attach created and
-// the plane could not be built for, so it is closed before the open ends: the
-// executor then holds a closed scope with nothing in it, which a corrected
-// workspace takes over, instead of an open one bound to a name nobody serves.
+// asking again does not change. The second leaves a scope that the attach opened
+// and the plane could not be built for; the executor closes it, and it is closed
+// here too and the close recorded, so that the next attach claims the next
+// incarnation. That holds only when this attach opened the scope: a first open,
+// or a reopen after a close the record shows. A record with no close means the
+// scope may be a session's own, which an attach rebinds, and it is left alone.
 // Every other refusal is worded as before and may pass.
 /// Decides whether an executor's refusal of an attach is final, and tidies.
 fn refused_attempt(
   registered: Registered,
   candidate: Candidate,
   incarnation: Int,
+  stored: Option(Scope),
   refusal: protocol.Refusal,
 ) -> Attempt {
+  // The two final answers are named; every other refusal may pass.
   case refusal {
-    protocol.WorkspaceMismatch(stored:) ->
-      Refused(unavailable(
-        "the executor's scope for this session is bound to the workspace `"
-        <> stored
-        <> "`, which an earlier move named. A scope that is closed is rebound by the next move; one that is "
-        <> "still open has to be released by an operator on the executor first",
-      ))
+    protocol.WorkspaceMismatch(stored: bound) -> Refused(mismatch_words(bound))
     protocol.NoPlane(reason:) ->
       case protocol.is_unserved_workspace(reason) {
         True -> {
-          close_scope(registered, candidate, incarnation)
+          close_if_opened(registered, candidate, incarnation, stored)
           Refused(unavailable(protocol.describe(refusal)))
         }
         False -> Failed(refused(refusal, incarnation, registered.session))
       }
     other -> Failed(refused(other, incarnation, registered.session))
   }
+}
+
+/// Closes the scope the failed attach opened, and leaves one it rebound.
+fn close_if_opened(
+  registered: Registered,
+  candidate: Candidate,
+  incarnation: Int,
+  stored: Option(Scope),
+) -> Nil {
+  // Only a scope this attach created or reopened is closed from here.
+  case opened_by_attach(stored) {
+    True -> close_scope(registered, candidate, incarnation)
+    False -> Nil
+  }
+}
+
+// Whether an attach made under this record opens the scope: there is no record,
+// or the record's last close was written, so the executor's scope was closed.
+/// Whether the attach under this record creates or reopens the scope.
+fn opened_by_attach(stored: Option(Scope)) -> Bool {
+  case stored {
+    None -> True
+    Some(scope.Scope(closed: Some(_), ..)) -> True
+    Some(scope.Scope(closed: None, ..)) -> False
+  }
+}
+
+// The words for a scope bound to another workspace than the one named. An open
+// scope keeps its workspace, and so does a closed one with a tree, so the
+// corrected name is not taken until the scope is closed without a tree. The way
+// there is to name the bound workspace again, so that the move ends and closes
+// the scope, and then to correct the name.
+/// The operator's words for a refusal of a scope bound to another workspace.
+fn mismatch_words(bound: String) -> String {
+  unavailable(
+    "the executor's scope for this session is bound to the workspace `"
+    <> bound
+    <> "`, which an earlier move named, and the scope is open or holds a tree there, "
+    <> "so it keeps that workspace. Set checkout_workspace back to `"
+    <> bound
+    <> "`, move again so that the move ends and closes the scope, then correct the name and move",
+  )
 }
 
 // Asks the executor how the scope's close at `held` ended, records the answer,
@@ -599,7 +639,9 @@ fn learn_unrecorded_close(
         Error(reason) -> Error(Failed(unavailable(reason)))
       }
     }
-    Error(_failure) ->
+    Error(CloseRefused(refusal: protocol.WorkspaceMismatch(stored: bound))) ->
+      Error(Refused(mismatch_words(bound)))
+    Error(CloseRefused(..)) | Error(CloseUnanswered) ->
       Error(
         Failed(refused(
           protocol.StaleIncarnation(stored: held),
