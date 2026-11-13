@@ -1076,6 +1076,22 @@ loom vm ensure --link untrusted --workspace ~/src/proj
   when the daemon has logged `daemon.executor_serving` and
   `daemon.untrusted_listener`, instead of waiting on epmd.
 
+The credentials of a vm home and the user's `loom.toml` are shared by every
+guest, so one `up` at a time changes them: the work from minting the
+credentials to writing the file, and a removal's read and write of the file,
+hold a kernel lock on `<vm home>/link.lock`, taken after a guest's own lock. A
+leaf is checked against the current authority every time it is read, for its
+chain, its validity period and its key, and one that fails is refused naming
+`loom vm rm --name NAME --yes`: a leaf left by an authority that was since
+replaced would otherwise be staged beside the new authority's certificate and
+never complete a handshake. A guest directory that holds a minted leaf is an
+untrusted guest even when its `link` record was never written, so a flagless
+`up` after an interrupted first run resumes it as untrusted. `rm` removes the
+guest's row only when its pin is the guest's own, so an operator's row of the
+same name is left, and removes `<vm home>/link/` only when `[executor_link]` is
+gone from the file, so an operator's untrusted row that relies on the table
+keeps the files it names.
+
 `status` shows the link, the address and the pin in place of the node and epmd
 lines. `down`, `logs`, `list` and `sync` work as they do for any guest, and
 `ensure` reads the console's ready line in place of epmd to tell that the guest
@@ -1096,7 +1112,13 @@ command that rereads them. `up` applies the rule it has for a newly installed
 deployment: with the default configuration, an idle default daemon is stopped
 and the next `loom` command starts it, and a daemon that holds sessions is left
 running with a note, or with `ensure`'s refusal, that names the restart. A
-resumed guest whose row did not change touches no daemon. With `--config` the
+resumed guest whose row did not change is checked instead of assumed: the
+default daemon is asked for its deployment, and one whose executor list does not
+name the guest has not read the row (a first `up` whose boot failed after the
+row was written), and gets the same step. A daemon that is not running or does
+not answer is not claimed to lack it. The question is never whether the daemon
+runs with distribution, which an untrusted guest does not need
+(`vm_link.daemon_need`). With `--config` the
 daemon cannot be found, and the output says it must restart. An owner-only
 `executors.reload` command is the planned fix and is not built.
 
@@ -1221,6 +1243,11 @@ host works and carries no credential, as before; making the proxy the only path
 is #214.
 
 ## Living with a guest: `logs`, `list`, `rm` and `sync`
+
+`down`, `status`, `logs`, `rm` and `sync` given no `--name` mean the guest of
+the current directory's workspace (`vm_spec.guest_name_for`, the name `ensure`
+gives it) when no guest is named `vm`, and say which on standard error; `up`
+keeps `vm` as its default. A guest named `vm` keeps the name's old meaning.
 
 A guest root is written by model-influenced code and is untrusted input to the
 host once a guest has booted. These four commands read it, so they share three

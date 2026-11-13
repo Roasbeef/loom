@@ -231,6 +231,19 @@ reuses `restart_after`: an idle default daemon is stopped, a busy one is
 left and named. `rm` plans through `linked_removal_plan`; `ensure` reads the
 console's ready line in place of epmd (`vm_link.registration`). The executor's
 jails mask the listener's key and the link's key (`executor_plane.masked_files`).
+`bring_up_linked` runs the shared part (`enroll_linked`: credentials, port, merge,
+records, file) under `with_link_lock` (`<vm home>/link.lock`, after any guest
+lock), and `rm` plans and applies under it. `vm_link_pki` checks each leaf with
+`ffi_pki.inspect` against the current authority. `vm_link.Traces` lets a guest
+directory with `link-credentials/` and no record settle as untrusted.
+`vm_link.uninstall` removes the guest's row only on its pin and reports whether
+`[executor_link]` remains (`LinkTable`), which decides whether `rm` removes the
+credentials. `restart_check` and `restart_of` ask an untrusted guest
+`vm_link.daemon_need`, from `deployment.status`'s `placements.executors`
+(`vm_link.listed_executors`), and never `daemon_lacks_distribution`. A command
+with no `--name` means the directory's guest when no guest is named `vm`
+(`vm_cli.named`, `vm_spec.default_guest`). `serve.link_secrets` masks the link
+keys in every managed session's jail.
 Tests: `vm_link_test` (codecs, merge properties against the daemon's own readers,
 a pinned handshake with the minted credentials), `vm_link_model_test` (a `statem`
 model of one home with guests of both kinds), and `executor_mask_test`.

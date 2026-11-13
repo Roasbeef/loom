@@ -47,7 +47,7 @@ loopback port reserved once and recorded beside the guest).
 |---|---|---|
 | Host daemon (`loomd`) | developer | provider keys, every session store, the hook trust record, approvals, clearance; its `[distribution]` key and the home's `.erlang.cookie`; in a minted guest's deployment, the orchestrator bundle under `<vm home>/<name>/orch/` |
 | `loom-vm` launcher | developer | the libkrun VMM, the hosted network stack and its egress policy, the GitHub credential proxy with the developer's token in memory, the host loopback forward and the guest's epmd registration (`--publish`) |
-| Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`client/vm_cli.gleam:2574` (`stage_node`)); the ledger file in ledger mode; the workspace copies; the state disk |
+| Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`client/vm_cli.gleam:2787` (`stage_node`)); the ledger file in ledger mode; the workspace copies; the state disk |
 | Jailed tool process | `loom`, under `loom-exec` | the workspace copy, the network the policy allows (with GitHub access, the proxy's placeholder token); the node key and cookie are masked by `node_credentials` (`client/executor_plane.gleam:323`) |
 
 ### What each party holds under the proposal
@@ -149,15 +149,15 @@ census the link sets to `Uncompiled`.
 | Background jobs and their notices | works | works: `NotifyCall`, `WakeCall`, `StrandActivityCall` need only the binding; `live_jobs` reads the orchestrator's own store | nothing |
 | MCP, orchestrator-run servers | works | works: `McpPlanCall`, then capability callbacks during a program | nothing |
 | MCP, the guest's own `[mcp.<name>]` | works | works (the census's `mcp` statuses cross) | nothing |
-| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4367` (`There`)) | same | same as today |
+| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4356` (`There`)) | same | same as today |
 | Extensions' owner-bound calls | works | works (capability callbacks under `about_work`) | nothing |
 | Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:299`) | refused: every hook run is `RunError.Refused` | slice 3 |
-| Goal checks | works (`client/serve.gleam:6810` (`goal_check_wiring`)) | refused | slice 3 |
-| Changes tab (worktree diff) | works (`client/serve.gleam:4701` (`observe_worktree`)) | refused; the tab shows the broker's refusal | slice 3 |
-| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4690` (`prepare`)) | probed through the refusing broker and stored as `Unavailable` for the session's life (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | slice 3, and a session opened before it never recovers its baseline |
+| Goal checks | works (`client/serve.gleam:6844` (`goal_check_wiring`)) | refused | slice 3 |
+| Changes tab (worktree diff) | works (`client/serve.gleam:4735` (`observe_worktree`)) | refused; the tab shows the broker's refusal | slice 3 |
+| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4724` (`prepare`)) | probed through the refusing broker and stored as `Unavailable` for the session's life (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | slice 3, and a session opened before it never recovers its baseline |
 | Peer view of the worktree (multiplayer) | works (`worktree_diff.peer_observation`) | refused | slice 3 |
 | Agent spawn, `fresh` or `my_conversation` | works (orchestrator side) | works | nothing |
-| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3456` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
+| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3491` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
 | Placed blobs, outcomes over 32 MiB (110) | works | works | nothing |
 | Remote evolution | works when the guest's census says `Compiles` | refused: the link sets `Uncompiled` | 109 slice 4 |
@@ -254,7 +254,7 @@ What the daemon needs, read from the code:
 ### The guest side
 
 `vm_spec.guest_config` stops calling `distribution_bundle.config_tables`
-(`client/vm_spec.gleam:2372` (`guest_config`)) and writes instead:
+(`client/vm_spec.gleam:2419` (`guest_config`)) and writes instead:
 
 ```toml
 [executor_listener]
@@ -274,7 +274,7 @@ reaches it; a guest process that connects without the orchestrator's key fails
 the handshake.
 
 `vm_spec.launch_arguments` passes `--forward <recorded port>:4370` in place of
-`--publish NAME:HOST:GUEST` (`client/vm_spec.gleam:2485` (`--publish`)). The
+`--publish NAME:HOST:GUEST` (`client/vm_spec.gleam:2532` (`--publish`)). The
 launcher already has the flag (`cmd/loom-vm/main.go:156` (`forward`)).
 
 The guest image's `loom-guest-executor` changes in about ten lines: it renders no
@@ -321,7 +321,7 @@ the next `reload`.
 `up` and `ensure` write the file first, then send `reload` if a daemon is
 running. When none is, the next `loom` starts one that reads the file. Either
 way no daemon is stopped, which removes `vm_spec.daemon_step` and the stop
-step (`client/vm_spec.gleam:3075` (`daemon_step`)).
+step (`client/vm_spec.gleam:3122` (`daemon_step`)).
 
 A new control command is a change to the client control protocol, so this
 needs **protocol-change/113**.
@@ -329,7 +329,7 @@ needs **protocol-change/113**.
 ### (b) A stable address
 
 The row names `host:port`, and `boot` reserves a fresh loopback port on every
-boot today (`client/vm_cli.gleam:2327` (`reserve_loopback_port`)), which epmd
+boot today (`client/vm_cli.gleam:2535` (`reserve_loopback_port`)), which epmd
 made harmless.
 
 | Option | Daemon restart | Port taken while the guest is down | Cost |
@@ -449,8 +449,8 @@ Deleted once the migration is complete:
 
 | Module | What goes | Lines, roughly |
 |---|---|---|
-| `client/vm_cli.gleam` | `deployment`, `begin`, `join`, `sealed_authority`, the ledger helpers, `provision`, `seal_authority`, `write_bundles`, `config_of`'s deployment half, `enroll`, `install`, from `deployment` (`client/vm_cli.gleam:848`) to about line 1520; `stage_ledger`; the daemon observation and stop step (`stop_daemon` and its neighbours, about lines 2615 to 2790); `epmd_line`; the revoke and cookie half of `rm` | 1,250 |
-| `client/vm_spec.gleam` | `deployment_plan`, `DeploymentState` and the join decisions (`client/vm_spec.gleam:1992` (`DeploymentState`) to about line 2036); `with_loopback_listener`; `daemon_step` and its types; `registered_port`; `read_enrolment`, the cookie state and `plan_teardown` (`client/vm_spec.gleam:4222` (`plan_teardown`)) | 800 |
+| `client/vm_cli.gleam` | `deployment`, `begin`, `join`, `sealed_authority`, the ledger helpers, `provision`, `seal_authority`, `write_bundles`, `config_of`'s deployment half, `enroll`, `install`, from `deployment` (`client/vm_cli.gleam:824`) to about line 1520; `stage_ledger`; the daemon observation and stop step (`stop_daemon` and its neighbours, about lines 2615 to 2790); `epmd_line`; the revoke and cookie half of `rm` | 1,250 |
+| `client/vm_spec.gleam` | `deployment_plan`, `DeploymentState` and the join decisions (`client/vm_spec.gleam:2039` (`DeploymentState`) to about line 2036); `with_loopback_listener`; `daemon_step` and its types; `registered_port`; `read_enrolment`, the cookie state and `plan_teardown` (`client/vm_spec.gleam:4293` (`plan_teardown`)) | 800 |
 | `test/client/vm_cli_test.gleam` | about 35 of its 155 tests: node names, epmd, loopback listener, deployment state, enrolment, ledger staging, authority sealing, revoke, cookie and teardown | 600 |
 | `test/client/daemon_shipped_microvm_test.gleam` | the ledger and authority assertions, the idle-daemon stop step, the second-guest refusal | 250 |
 
