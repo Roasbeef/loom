@@ -69,6 +69,7 @@ pub fn only_an_ending_that_may_clear_by_itself_is_retried_test() {
       ending.NotOpen,
       ending.DaemonNotReady,
       ending.ConnectionFailed,
+      ending.PeerUnreachable,
     ]
   assert ending.close(ending.PageEnded) == ending.Final
   assert ending.close(ending.AccessRevoked) == ending.Final

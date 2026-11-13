@@ -343,6 +343,29 @@ pub fn home_advised(ending: Ending) -> Advice {
   }
 }
 
+/// The advice for a page of a session on another orchestrator. Its session
+/// identity is not one this daemon holds, so a command naming it would mint
+/// nothing: it is the home's advice, except for a link that is only down, which
+/// says the page will reconnect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ending.relayed_advice(ending.PeerUnreachable) == "This page will reconnect."
+/// ```
+pub fn relayed_advice(ending: Ending) -> String {
+  case ending {
+    PeerUnreachable -> "This page will reconnect."
+    PageEnded
+    | AccessRevoked
+    | SessionStopped
+    | NotOpen
+    | DaemonNotReady
+    | LinkExpired
+    | ConnectionFailed -> home_advice(ending)
+  }
+}
+
 /// `headline` for the admin page (protocol-change/065, the fifth pull
 /// request). It is the home's, with the words for an ending only the admin page
 /// has: the page's fifteen minutes.

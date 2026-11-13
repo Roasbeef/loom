@@ -4260,6 +4260,20 @@ fn chips(strip: strip.Strip) -> List(strip.Chip) {
   }
 }
 
+/// What a lane that failed with a reason that names no ending stands for. On a
+/// local page it is a failure of the connection. On a relayed page the lane
+/// failed because a reply did not come in time, and the only link in the way is
+/// the one to the other orchestrator, which the page cannot tell down from slow,
+/// so it says it is waiting and the browser reconnects (protocol-change/108,
+/// "When the link drops, and what the page shows"). A reason that does name an
+/// ending, such as the feed's own, is drawn as that ending on either route.
+fn lane_failure(model: Model(socket)) -> Ending {
+  case model.view.route {
+    Local -> ending.ConnectionFailed
+    Relayed -> ending.PeerUnreachable
+  }
+}
+
 /// The connection's status follows the lane. A cut makes a connecting page
 /// follow, a lane that ended makes it disconnected, and a disconnected page
 /// stays so: the last drawn cut is what it keeps showing.
@@ -4272,7 +4286,7 @@ fn statused(model: Model(socket)) -> Model(socket) {
   {
     Ended(_), _, _ -> model.view.status
     _, Some(reason), _ ->
-      Ended(ending.from_reason(reason, otherwise: ending.ConnectionFailed))
+      Ended(ending.from_reason(reason, otherwise: lane_failure(model)))
     Connecting, None, Some(_) -> Connected
     Connecting, None, None | Connected, None, _ -> model.view.status
   }
@@ -8434,7 +8448,13 @@ pub fn heading(
     ),
     cost: transcript_lines.cost_words(model.shared.usage),
     rate: session_model.output_rate_tps(model.shared),
-    notice: ended.view(ended_ending(model.view.status), model.shared.session),
+    notice: case model.view.route {
+      Local -> ended.view(ended_ending(model.view.status), model.shared.session)
+
+      // The session's identity on the other orchestrator is not one this
+      // daemon holds, so a command naming it would mint nothing.
+      Relayed -> ended.relayed(ended_ending(model.view.status))
+    },
     placement: placement.view(model.view.machine, current_code(model)),
   )
 }
