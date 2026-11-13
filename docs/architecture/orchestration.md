@@ -234,10 +234,12 @@ what the loaded state names: the assistant entry behind a tool batch, the
 deferred handle behind a suspended poll, the pending payloads for every
 queued id in that run's inbox and every staged `CallOutcomeReady` tool-result
 ID, the structural preparation, and the operation's tool-args and preparation
-keys. Pending payloads are point reads by these referenced IDs, not a listing
-of every queued payload in the session. The driver holds no process-local copy of the durable
-state that could go stale, so a pass after a restart runs the same code as
-a pass mid-run.
+keys. Pending payloads are exact-key bulk reads in batches of at most 128 through
+`writer.get_registers_batched`, not a listing of every queued payload in the
+session. Each batch has one snapshot; batches and control-register reads do not
+share one. Immutable live payloads and the unchanged CAS expectations preserve
+placement correctness. The driver holds no process-local copy of durable state
+that could go stale, so a pass after a restart runs the same code as a pass mid-run.
 
 **Build inputs.** `PlannerInputs` adds:
 

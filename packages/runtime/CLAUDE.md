@@ -428,7 +428,7 @@ extended by the M3 runtime wave.
 
 - **Actor messages**
   - `writer.Message` (all calls except `Subscribe`/`RenewTick`):
-    `Commit(tx, reply)`, `GetEntries`, `GetRegister`, `ListRegisters`,
+    `Commit(tx, reply)`, `GetEntries`, `GetRegister`, `GetRegisters`, `ListRegisters`,
     `ScanBranch`, `ScanUsage`, `Stats`, `Subscribe(subscriber)`,
     `RenewTick`. Senders: `runtime/api`, `runtime/strand_runtime`, and the
     conformance harnesses — except `RenewTick`, which nobody sends. It is
@@ -1069,13 +1069,17 @@ the `CallOutcomeReady` result IDs staged by a tool batch. Those staged results
 are essential: the planner places them in source order after concurrent tool
 effects finish. Structural requests do not dereference pending payloads.
 
-Each payload is selected by its existing register key and decoded normally.
-An absent referenced payload remains absent in the planner input so the
-machine retains its corruption diagnosis; an unrelated queued payload is not
-read or decoded. No pending-payload cache or new storage interface is added.
-Payloads are immutable while live, and placement transactions still expect
-the captured operation or strand state. Point reads are not an atomic snapshot
-of those separate control-register reads.
+`writer.get_registers_batched` deduplicates the referenced keys and sends consecutive
+batches of at most 128 through `GetRegisters`. Empty captured sets send no request.
+Each batch uses protocol 113's `storage.get_registers`: one exact-key snapshot,
+with no pending namespace scan or point-read fallback. Payloads retain their
+existing typed decode. An absent referenced payload remains absent so the machine
+keeps its corruption diagnosis; unrelated queued payloads are not decoded.
+
+There is no pending-payload cache or snapshot shared across batches. Payloads are
+immutable while live, and placement transactions still expect the captured
+operation or strand state. Bulk payload reads do not make those separate
+control-register reads atomic.
 
 The pending-entry benchmark and correctness record is at
 `docs/review/pending-entry-performance.md`; the register-read and group-commit

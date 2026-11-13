@@ -1,8 +1,10 @@
 # Pending entry reads
 
-Latest measurements: [November 4 full run](session-hotpaths-2026-11-04.md).
-Scoped reads isolate unrelated payloads, but point reads are slower for wide
-owned queues with little unrelated backlog. This is not a uniform speedup.
+Current follow-up: [November 13 bounded bulk reads](bulk-register-reads-2026-11-13.md).
+Protocol 114 replaces individual pending reads with exact-key batches while
+retaining unrelated-corruption isolation. The historical point-read results below
+remain the [November 4 full run](session-hotpaths-2026-11-04.md), not measurements
+of the current bulk implementation. Neither candidate uniformly beats scans.
 
 Issue: #1150. Source baseline: `ccb795759`.
 
@@ -19,7 +21,7 @@ missing referenced IDs; an undecodable referenced payload remains an error.
 Abort-drained IDs remain owned by the terminal cleanup transaction and are
 not decoded for placement.
 
-The point reads are separate writer calls, not a snapshot transaction. Queue
+The initial point reads used separate writer calls, not a snapshot transaction. Queue
 payloads are installed with a fresh ID and the corresponding state update;
 placement and terminal transactions compare the state sequence they read.
 A state change therefore prevents a successful stale placement. A concurrent
@@ -30,9 +32,11 @@ namespace listing. This work does not add a retry for that pre-existing race.
 
 ## Measurement
 
-`packages/runtime/dev/pending_read_bench.gleam` compares the original writer
-namespace listing and decode with a point-read simulation. It varies unrelated
-payload count and owned queue width on the memory backend and SQLite `:memory:`.
+At the original measured revision, `packages/runtime/dev/pending_read_bench.gleam`
+compared the writer namespace listing and decode with a point-read simulation.
+It varied unrelated payload count and owned width on memory and SQLite `:memory:`.
+The current module also includes the bulk method; its pinned source and complete
+three-way reruns are recorded in the November 13 follow-up.
 Each sample checks the selected payloads. All keys carry the same encoded
 1 KiB payload, so these results do not model a backlog of distinct payloads.
 The `pending_read_bench_test.benchmark_smoke_test` calls the same setup, reads,

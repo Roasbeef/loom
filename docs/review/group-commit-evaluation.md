@@ -3,6 +3,9 @@
 Issue: #1152. This is an evaluation, not authorization to implement group
 commit.
 
+The [November 13 exact-key read follow-up](bulk-register-reads-2026-11-13.md) adds
+no write batching and does not alter this recommendation or durability policy.
+
 ## Recommendation: defer
 
 The [November 4 full run](session-hotpaths-2026-11-04.md) now measures the

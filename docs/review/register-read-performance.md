@@ -1,5 +1,10 @@
 # Register-read performance investigation
 
+The [November 13 follow-up](bulk-register-reads-2026-11-13.md) records the separately
+approved protocol 114 bulk API and its pending-payload integration. It does not
+batch these general typed control-register reads or change the cache policy.
+The measurements below retain their original source and workload scope.
+
 Latest measurements: [November 4 corrected full run](session-hotpaths-2026-11-04.md).
 The five-register, 500-load medians are now 5/10 ms on memory and 30/38 ms on
 SQLite `:memory:` (direct/writer). The older values below remain historical,

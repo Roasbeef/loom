@@ -27,17 +27,23 @@ register queries and actor crossings without claiming full-turn CPU attribution.
 costs before a decision on group commit. It authorizes no production batching
 or frozen-interface change.
 
-The review records `pending-entry-performance.md`, `register-read-performance.md`
-and `group-commit-evaluation.md` under `docs/review/` carry commands, raw samples
-and limitations. Independent runtime, lint, formatting, documentation and
-prelude gates pass, with 221 runtime tests; the first primary runtime attempt
-and unchanged clean rerun are both retained in the pending-entry record.
-The [November 4 full measurement](review/session-hotpaths-2026-11-04.md)
-completes the corrected workloads under lower observed load. Scoped pending
-points help with unrelated backlogs but regress on wide owned queues; no
-universal speedup or adaptive threshold is claimed. Actual runtime prevalence,
-scoped multi-key read design and a production batching decision remain open.
-Upstream Pi Durable results do not establish Loom speedups or installed savings.
+The [November 4 record](review/session-hotpaths-2026-11-04.md) completes the
+original read and commit measurements. Scoped pending points isolate unrelated
+corruption but regress on wide owned queues. On November 13 the owner approved
+[protocol 114](../protocol-change/114-bounded-register-reads.md): exact-key reads
+bounded to 128 raw keys per call, with an explicit limit refusal and one
+per-call snapshot. The runtime now batches its complete captured pending set
+without a namespace-scan fallback or new cache.
+
+The [bulk-read follow-up](review/bulk-register-reads-2026-11-13.md) retains two
+full contemporaneous scan/point/bulk runs and all 1,008 samples. Wide-owned bulk
+reads improve on individual points in both runs, but do not uniformly beat
+scans. The original `register-read-performance.md` and `group-commit-evaluation.md`
+remain separate historical measurements; typed control polling is unchanged
+and production group commit remains deferred. Actual runtime prevalence and
+installed savings remain unmeasured. Verification receipts, negative controls
+and the independent review are recorded in the dated follow-up, not inferred
+from upstream Pi Durable results.
 
 ## Distributed runtime experience (#1137)
 
