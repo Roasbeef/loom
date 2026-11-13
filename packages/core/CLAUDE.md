@@ -10,6 +10,8 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 
 ## Key Types
 
+- `core/agency_limits.{AgencyLimits, DepthCap, EffectiveLimits}` — optional per-session subagent limit overrides (`fan_out` in `1..10000`, `session_strands` in `1..10000` with `fan_out <= session_strands`, `depth_cap` as `BoundedDepth(1..256)` or `UnlimitedDepth`), shipped defaults (`default_fan_out = 100`, `default_session_strands = 256`, `default_depth_cap = 1`), `validate`, `resolve`, and total JSON codecs (`protocol-change/112`).
+
 - `core/ids.{EntryId, UsageId, OpId, SessionId}` — distinct opaque UUIDv7
   wrappers, so an `EntryId` can never be passed where an `OpId` belongs.
   `Generator` mints them purely from an injected `Clock` plus a seeded
