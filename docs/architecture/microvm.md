@@ -173,7 +173,7 @@ and the last three are the ordinary distributed path.
    the entry while the registering connection stays open, so the entry lives
    exactly as long as `loom-vm`.
 2. **Forward.** `Spec.Forwards` becomes `microvm.WithPorts`
-   (`packages/vmm/machine/libkrun/libkrun.go:273`). The hosted provider listens
+   (`packages/vmm/machine/libkrun/libkrun.go:284`). The hosted provider listens
    on host `127.0.0.1:HOST` only and opens a connection to the guest port,
    admitting it through the guest firewall's ingress rules.
 3. **Listen.** The guest daemon's listener binds every interface, because the
@@ -235,9 +235,9 @@ filesystem layout is not.
    builds.
 4. **Network.** The guest's only interface is a virtio-net device whose other
    end is the hosted provider in `loom-vm`. `libkrun.Backend.Start` always
-   creates that provider (`packages/vmm/machine/libkrun/libkrun.go:161`) and
+   creates that provider (`packages/vmm/machine/libkrun/libkrun.go:172`) and
    always passes a non-nil egress policy
-   (`packages/vmm/machine/libkrun/libkrun.go:244`), which makes the firewall
+   (`packages/vmm/machine/libkrun/libkrun.go:255`), which makes the firewall
    deny by default. A virtio-net device also turns off libkrun's TSI mode,
    under which guest sockets run on the host and reach host loopback.
 
@@ -276,7 +276,7 @@ flowchart LR
 **How the guest reaches it.** `ghproxy.Proxy` is an `http.Handler`.
 `machine.Spec.HostServices` carries it to the libkrun backend, which registers it
 with `hosted.Provider.AddService` before the provider starts
-(`packages/vmm/machine/libkrun/libkrun.go:161`). go-microvm serves a hosted
+(`packages/vmm/machine/libkrun/libkrun.go:172`). go-microvm serves a hosted
 service with an `http.Server` listening on the gateway, 192.168.127.1, inside
 the launcher's own gVisor stack, and it adds a firewall rule that admits the
 guest's egress to that port. No host socket is bound, so nothing but this guest
@@ -417,14 +417,14 @@ stateDiagram-v2
     Stopped --> [*]
 ```
 
-`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:497`) is the one exit
+`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:508`) is the one exit
 and it is idempotent. It stops the hosted provider first, so no packet leaves
 the guest while the VMM shuts down, then branches on who owns the root. An
 `extractedRoot`, which go-microvm unpacked from an image for this guest, goes
 through `VM.Remove`. A `callerRoot`, given as `Spec.Root.Dir`, goes through
 `VM.Stop` only, because `VM.Remove` deletes any rootfs outside go-microvm's
 image cache and would delete the caller's directory
-(`packages/vmm/machine/libkrun/libkrun.go:514`). Teardown runs under its own
+(`packages/vmm/machine/libkrun/libkrun.go:525`). Teardown runs under its own
 30 s context, so a cancelled caller still releases the VMM.
 
 The launcher defers its teardown (`packages/vmm/cmd/loom-vm/main.go:220`), and
@@ -449,7 +449,7 @@ artifacts" below).
 
 `--firmware-dir` puts the custom libkrunfw ahead of the stock one on the
 runner's library path (`libraryPath`,
-`packages/vmm/machine/libkrun/libkrun.go:320`). The firmware script pins the
+`packages/vmm/machine/libkrun/libkrun.go:331`). The firmware script pins the
 libkrunfw tag to a commit and the kernel tarball to a SHA-256
 (`packages/vmm/guest/build-libkrunfw.sh:57`). It has a mode for each half of
 the build, so that the release workflow can run the kernel on a Linux runner
@@ -516,9 +516,8 @@ make vmm-install-dev                         # writes the manifest
 ten (a native kernel build), and `vmm-guest-root` about twenty on two cores,
 because the image builds Gleam from source and then the server release. The
 build host needs `pkg-config` and podman; `vmm-libkrun` and `vmm-firmware`
-install their other dependencies with `apt-get`. `loom-vm probe` needs only
-`/dev/kvm` to exist, and it does not open it, so a user outside the `kvm` group
-passes the probe and fails at the first boot.
+install their other dependencies with `apt-get`. `loom-vm probe` opens `/dev/kvm` for reading and writing, so a user outside
+the `kvm` group is told so by the probe and not by the first boot.
 
 What differs from macOS, each of which was found by booting:
 
@@ -1216,8 +1215,7 @@ the host are not in it.
   host"). On Linux without privilege the guest's system files are owned by the
   loom user, and a `--provision` script that installs packages as root is not
   expected to work, because dpkg's chown to root is refused; neither a
-  privileged runner nor that script has been run. Nothing checks for a host
-  user who is not in the `kvm` group before the boot.
+  privileged runner nor that script has been run.
 - `loom-vm setup --release` has never run against a published release: none
   exists yet. Its download, checksum, signing and extraction steps are covered
   by tests against a local HTTP server and registry, and the extraction was

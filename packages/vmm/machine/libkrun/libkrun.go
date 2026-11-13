@@ -127,15 +127,26 @@ func hostHasHypervisor() (bool, string) {
 		return true, ""
 
 	case "linux":
-		if _, err := os.Stat("/dev/kvm"); err != nil {
-			return false, "libkrun on Linux needs /dev/kvm: " + err.Error()
-		}
-
-		return true, ""
+		return kvmUsable("/dev/kvm")
 
 	default:
 		return false, "libkrun does not run on " + runtime.GOOS
 	}
+}
+
+// kvmUsable reports whether the caller can open the KVM device. Opening it,
+// and not only finding it, is the check: a device that exists but is closed to
+// the user (the user is not in the kvm group) would otherwise pass the probe
+// and fail inside the runner at the first boot.
+func kvmUsable(path string) (bool, string) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return false, "libkrun on Linux needs a usable " + path + ": " + err.Error()
+	}
+
+	_ = f.Close()
+
+	return true, ""
 }
 
 // Start boots spec and returns the running guest. microvm.Run stages the
