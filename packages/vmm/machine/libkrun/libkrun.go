@@ -146,6 +146,10 @@ func (b *Backend) Start(ctx context.Context, spec machine.Spec) (machine.Machine
 		return nil, err
 	}
 
+	if err := raiseNofile(); err != nil {
+		return nil, err
+	}
+
 	dataDir, owned, err := dataDirFor(spec)
 	if err != nil {
 		return nil, err
