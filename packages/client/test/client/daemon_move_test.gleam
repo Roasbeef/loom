@@ -393,8 +393,9 @@ pub fn a_session_imported_from_a_source_that_has_not_retired_cannot_be_deleted_t
     // again, so the delete is refused as busy while the source holds it, is
     // silent, or does not know the session.
     process.send(desk, Answer(Ok(orchestrator_port.Owned)))
-    assert code(command(socket, 1, "sessions.delete", session, ready.epoch))
-      == json.String("busy")
+    let busy = command(socket, 1, "sessions.delete", session, ready.epoch)
+    assert code(busy) == json.String("busy")
+    assert string.contains(words(busy), "has not finished handing it over")
     process.send(desk, Answer(Error(Nil)))
     assert code(command(socket, 2, "sessions.delete", session, ready.epoch))
       == json.String("busy")
@@ -564,6 +565,12 @@ pub fn a_session_in_flight_cannot_be_opened_and_says_where_it_is_going_test() {
       == json.String("moving")
     assert code(command(socket, 4, "sessions.delete", session, ready.epoch))
       == json.String("moving")
+
+    // The refusal says where the session is going, and which move it is.
+    let refused = command(socket, 5, "sessions.archive", session, ready.epoch)
+    assert field(field(refused, "body"), "orchestrator")
+      == json.String("laptop")
+    assert field(field(refused, "body"), "op") == json.String(op)
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
@@ -858,6 +865,10 @@ pub fn a_member_may_not_move_a_session_test() {
     let _hello = wire.frame(socket, within_ms: 1000)
     assert code(move(socket, 1, session, "laptop", ready.epoch))
       == json.String("forbidden")
+    assert words(move(socket, 2, session, "laptop", ready.epoch))
+      == "only the owner of this daemon can move a session or give its move up"
+    assert words(abandon(socket, 3, session, ready.epoch))
+      == "only the owner of this daemon can move a session or give its move up"
     assert told(recorder) == []
     assert manager.custody(ready.registry, session) == Ok(catalogue.Resident)
     let _ = ffi_ws.tcp_close(socket)

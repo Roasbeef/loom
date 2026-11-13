@@ -3239,6 +3239,8 @@ fn dispatch(
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
       |> result.map_error(tombstoned(config, principal, id, _))
+      |> result.map_error(in_flight(state, id, _))
+      |> result.map_error(busy_in_words)
 
     // The ledger commands answer with the step that failed, which the string
     // codes of `dispatch_class` cannot carry, so they are served here.
@@ -3856,6 +3858,23 @@ fn in_flight(
         Ok(_) | Error(_) -> refused
       }
 
+    _ -> refused
+  }
+}
+
+/// Words a `busy` refusal of archive, restore and delete. The code is
+/// unchanged. The refusal has two causes the owner can act on: the session is
+/// open here, or it was imported and its origin has not yet said it retired the
+/// move that brought it (`inbound_settled`).
+fn busy_in_words(refused: Refused) -> Refused {
+  case refused.code {
+    "busy" ->
+      Refused(
+        "busy",
+        "the session is open here, or the orchestrator it was moved from has "
+          <> "not finished handing it over; stop it, or ask again later",
+        [],
+      )
     _ -> refused
   }
 }
@@ -4871,8 +4890,9 @@ type Unsettled {
 }
 
 /// Why a move or an abandon did not happen. The control commands word each as
-/// a code (`move_refusal_code`), and the pages word each in their own fixed
-/// sentences, so no text the daemon produced reaches a browser.
+/// a code (`move_refusal_code`) and a sentence (`move_refusal_words`), and the
+/// pages word each in their own fixed sentences, so no text the daemon produced
+/// reaches a browser.
 pub type MoveRefusal {
   /// The destination is not an `[orchestrators.<name>]` of this daemon.
   UnknownDestination
@@ -5334,12 +5354,12 @@ pub fn move_refusal_words(refusal: MoveRefusal) -> String {
       "no orchestrator with that name is configured on this daemon; name one "
       <> "of its [orchestrators.<name>] tables"
     Declined(error:) -> admin_refusal_words(error)
-    Unanswered ->
-      "the daemon could not begin the move now: the session registry did not "
-      <> "answer, or the session is not at rest here; ask again"
+    Unanswered -> "the daemon could not begin the move now; ask again"
     NotAMember ->
       "only a directory member can abandon a move, and this daemon is not one"
     NotMoving -> "this session has no move in flight"
+    Unreadable(error: manager.Catalogue(catalogue.Missing)) ->
+      "this daemon has no session with that identity"
     Unreadable(..) -> "the session could not be read on this daemon"
   }
 }
@@ -5357,7 +5377,8 @@ fn admin_refusal_words(error: manager.AdminError) -> String {
       "a move of this session toward another orchestrator is already in "
       <> "flight; wait for it to end"
     manager.AdminBusy -> "the session is in use; stop it and ask again"
-    manager.AdminForbidden -> "only the owner of this daemon can move a session"
+    manager.AdminForbidden ->
+      "only the owner of this daemon can move a session or give its move up"
     manager.AdminStaleEpoch ->
       "the daemon restarted since this connection was made; reconnect and ask "
       <> "again"
@@ -5377,6 +5398,22 @@ fn move_refused(refusal: MoveRefusal) -> Refused {
   Refused(move_refusal_code(refusal), move_refusal_words(refusal), [])
 }
 
+/// The gate of the two move commands: the asker must be the owner and must hold
+/// the current epoch. Each failure is worded as the move's other refusals are, so
+/// a member is told that only the owner moves a session.
+fn move_asker(
+  state: root.Ready(instance),
+  principal: access.Principal,
+  supplied: String,
+) -> Result(Nil, Refused) {
+  use Nil <- result.try(
+    owner(principal)
+    |> result.map_error(fn(_) { move_refused(Declined(manager.AdminForbidden)) }),
+  )
+  epoch(state, supplied)
+  |> result.map_error(fn(_) { move_refused(Declined(manager.AdminStaleEpoch)) })
+}
+
 /// The control command `sessions.move`, which begins a move. The asker must be
 /// the owner with a current epoch, and a refusal says why it was refused.
 fn move_command(
@@ -5388,13 +5425,7 @@ fn move_command(
   to: String,
   supplied: String,
 ) -> Result(#(String, JsonValue), Refused) {
-  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
-  use Nil <- result.try(
-    epoch(state, supplied)
-    |> result.map_error(fn(_) {
-      move_refused(Declined(manager.AdminStaleEpoch))
-    }),
-  )
+  use Nil <- result.try(move_asker(state, principal, supplied))
   use begun <- result.map(
     move_session(config, state.registry, digest, supplied, id, to)
     |> result.map_error(move_refused),
@@ -5420,13 +5451,7 @@ fn abandon_command(
   id: String,
   supplied: String,
 ) -> Result(#(String, JsonValue), Refused) {
-  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
-  use Nil <- result.try(
-    epoch(state, supplied)
-    |> result.map_error(fn(_) {
-      move_refused(Declined(manager.AdminStaleEpoch))
-    }),
-  )
+  use Nil <- result.try(move_asker(state, principal, supplied))
   use op <- result.map(
     abandon_move(config, state.registry, id) |> result.map_error(move_refused),
   )
