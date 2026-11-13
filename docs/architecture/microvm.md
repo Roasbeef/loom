@@ -874,6 +874,13 @@ and no recorded copy is replaced without a move, and `up` prints
 `unfinished_line` in place of the upgrade line. The record is the host's, so a
 guest cannot make its workspaces look absent by editing it.
 
+The TLA+ model [`protocol/models/vm-root-upgrade`](../../protocol/models/vm-root-upgrade/README.md)
+checks the upgrade and the first run under a stop of `up` at any step: the
+workspaces are never lost, a guest boots only on a whole root that holds
+them, and `up` finishes once it stops being interrupted. Seven mutants each
+remove one rule and must fail; two of them are the code as it was before the
+clone was made aside and the carry-over rule existed.
+
 Provisioning needs the script, and the root is untrusted, so the script is never
 read back out of it. `up` keeps a host-owned copy at `<vm home>/<name>/provision`
 from the moment `--provision` is given, and stages from that copy into a root it

@@ -253,7 +253,7 @@ A first clone (`replace_root`) is made as `root.building` and renamed to
 upgrade moves from the host's `checkouts` record and what `old_workspaces` finds:
 real `srv/workspaces` moves, a root with none and no recorded copy carries
 nothing (an interrupted first `up`, announced by `unfinished_line`), anything
-else is refused.
+else is refused. `protocol/models/vm-root-upgrade` is the TLA+ model of both.
 `stranded_in` lists processes; `refuse_stranded` refuses `up` and `rm`, `down`'s
 not-running arm fails and `status` adds a `runner:` line when a runner survives
 whose command starts with the manifest's runner path (`Some`; without a readable

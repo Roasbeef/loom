@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# model_check.sh — check every protocol model: the TLA+ session-move models
-# with TLC, then every P project.
+# model_check.sh — check every protocol model: the TLA+ models (session-move
+# and vm-root-upgrade) with TLC, then every P project.
 #
 # Usage: scripts/model_check.sh
 #   (MODEL_SCHEDULES, MODEL_PROBE_SCHEDULES, TLA2TOOLS, TLA_JAVA)
@@ -19,6 +19,11 @@
 # 11 or later ($TLA_JAVA, java on PATH, or a Homebrew openjdk). Without both,
 # this script prints a SKIP line, which the skip census refuses in CI, and
 # moves on to the P projects.
+#
+# protocol/models/vm-root-upgrade holds one specification, RootUpgrade.tla,
+# with several clean configurations (a kept root and a first run, each under
+# a release and a development manifest) and its mutants. Every configuration
+# there whose name does not start with Mutant must pass.
 #
 # Each directory under protocol/models with a .pproj is a P project. Its
 # README says how it is run; this script runs the same commands for every
@@ -148,6 +153,60 @@ check_tla() {
 }
 
 check_tla
+
+# check_tla_single checks a directory that holds one specification: every
+# configuration whose name does not start with Mutant must pass, and every
+# Mutant*.cfg must violate the property its `\* expect-violation:` line
+# names, read the same way as above.
+check_tla_single() {
+	local label="$1" spec="$2" jar java name expected code out log cfg
+	tla="$root/protocol/models/$label"
+	jar="${TLA2TOOLS:-$HOME/tools/tla2tools.jar}"
+	echo "==> $label (TLA+)"
+	[ -r "$jar" ] || {
+		echo "SKIP tla_models: no tla2tools.jar at $jar (set TLA2TOOLS)"
+		return 0
+	}
+	java="$(find_java)" || {
+		echo "SKIP tla_models: no Java 11 or later (set TLA_JAVA)"
+		return 0
+	}
+	out="$root/build/tla/$label"
+	mkdir -p "$out"
+
+	for cfg in "$tla"/*.cfg; do
+		name="$(basename "$cfg" .cfg)"
+		log="$out/$name.log"
+		code=0
+		run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log" || code=$?
+
+		case $name in
+		Mutant*)
+			expected="$(sed -n 's/^\\\* expect-violation: *//p' "$cfg")"
+			if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
+				echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+			elif [ "$code" -eq 13 ] && grep -q "Temporal properties were violated" "$log" &&
+				sed -n '/^PROPERT/,$p' "$cfg" | grep -qw "$expected"; then
+				echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+			else
+				echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
+				failed=1
+			fi
+			;;
+		*)
+			if [ "$code" -eq 0 ]; then
+				echo "   ok   $name ($(tla_counts "$log"))"
+			else
+				echo "   FAIL $name: see $log"
+				failed=1
+			fi
+			;;
+		esac
+	done
+}
+
+# The upgrade in place of a microVM guest's root, and its first clone.
+check_tla_single vm-root-upgrade RootUpgrade
 
 # --- the P projects --------------------------------------------------------
 
