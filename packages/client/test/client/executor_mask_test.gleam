@@ -8,6 +8,10 @@
 //// `daemon_shipped_microvm_test` reads the key from a real jail and fails.
 
 import client/executor_plane
+import client/serve
+import gleam/option.{None, Some}
+import simplifile
+import support/remote_fixtures as fixtures
 
 const listener =
   "[executor_listener]
@@ -56,4 +60,17 @@ pub fn a_configuration_the_daemon_would_refuse_masks_nothing_and_says_why_test()
   // Both tables together are refused by the daemon's own reader, and the mask
   // reports that instead of guessing which files to hide.
   let assert Error(_) = executor_plane.masked_files(node <> listener)
+}
+
+pub fn a_sessions_jail_masks_the_link_keys_its_configuration_names_test() {
+  // A `LOOM_VM_HOME` outside `~/.loom/vm` is not covered by the directory mask,
+  // so the orchestrator's key must be masked by name in every session's jail.
+  let directory = fixtures.scratch("link-secrets")
+  let path = directory <> "/loom.toml"
+  let assert Ok(Nil) = simplifile.write(path, link <> listener)
+    as "the configuration is written"
+  assert serve.link_secrets(Some(path))
+    == ["/vm/link/orchestrator.key", "/srv/loom-node/creds/key.pem"]
+  assert serve.link_secrets(None) == []
+  assert serve.link_secrets(Some(directory <> "/absent.toml")) == []
 }
