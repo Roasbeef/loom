@@ -158,8 +158,8 @@ actual startup repeats validation and can still fail on runtime resources.
 
 ## Standing microVM guest (`loom vm`)
 
-`client.gleam` dispatches `loomd vm setup | up | down | status | logs | list | rm |
-sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
+`client.gleam` dispatches `loomd vm setup | up | ensure | down | status | logs |
+list | rm | sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
 private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
 the artifact manifest decoder and revision check, the two-node
@@ -202,6 +202,27 @@ planted by a jailed call whose marker never appears on the host after `vm sync`
 (with a control repository showing the marker would be writable), `vm sync
 --to-guest` read back by a jailed `git fetch`, a refused second guest, and `vm rm`
 of the idle and failing guests under the isolated home.
+
+`ensure` is what `loom --vm` runs (`tui/vm_ensure`). `vm_spec.guest_name_for`
+names the guest of a workspace from its canonical path (slug, then six hex
+digits of the SHA-256, at most `name_limit` bytes), so there is one guest per
+workspace. `vm_cli.ensure` observes the guest's process (pid record plus birth
+marker), the host epmd and the manifest, and `vm_spec.ensure_step` returns
+`AlreadyServing`, `NeedsDaemon`, `NeedsSetup`, `Boot` or `Refuse`: a serving
+guest answers first and nothing else is read or written; a join of an existing
+ledger deployment with no daemon answers `NeedsDaemon` before any setup, as
+exit status 75 and the last stdout line `daemon=required`; a manifest from
+another release gets `loom vm setup` first (`vm_spec.manifest_action`, which
+`up` uses too); otherwise `vm_cli.bring_up`, the code `up` runs, boots it. The
+last stdout line is `executor=<guest> workspace=<registered name>`
+(`vm_spec.ensure_line`), and progress goes to stderr one line per step. After a
+boot that installed a deployment, `vm_spec.restart_refusal` turns a daemon left
+running into one error sentence; a resumed or joined guest (`Row::Resumed`,
+`Derived`) asks for no restart. `up` records `--github` in
+`<vm home>/<name>/github` (`vm_spec.effective_github`, `encode_github`,
+`decode_github`); `UpOptions.github` is an `Option`, `None` meaning not given.
+Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a `statem` model over
+the pure decisions.
 
 `logs`, `list`, `rm` and `sync` read the guest's root, which model-influenced code
 writes, so they treat it as untrusted: no `git` with a working directory in the
@@ -278,14 +299,18 @@ proves the idle stop on its isolated home.
 Invariants that break things when violated:
 
 - A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `root.next/` (only during an upgrade), `state.img`, `allow`, `checkouts`,
+  `root/`, `root.next/` (only during an upgrade), `state.img`, `allow`, `github`, `checkouts`,
   `root-revision`, `provision`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
   `~/.loom/vm`.
 - `up` reads the bundles in `deploy/` again instead of minting new ones, so the
   orchestrator's installed pins keep matching the executor's certificate.
 - The install is `RefuseExisting`: a `loom.toml` that holds another
   deployment, or a cookie that differs, is refused and never replaced.
-- The manifest's revision must be `dev` or the running build's commit.
+- The manifest's revision must be `dev` or the running build's commit; a
+  release build installs the right one first, and only a development build
+  refuses.
+- `ensure` on a serving guest reads and writes nothing, and `NeedsDaemon` is
+  decided before anything is written.
 - `up` never stops a daemon that holds a session, and never starts one.
 - A linked worktree's copy never keeps a `.git` file or an `origin` that names
   a host path; any failed copy step removes the copy, because a resumed `up`
