@@ -104,6 +104,13 @@ func (g *githubFlags) apply(spec *machine.Spec, timeout time.Duration) (func(), 
 	return cleanup, nil
 }
 
+// tokenRemedies is what a developer can do when the host has no token to give
+// the proxy. The flags are `loom vm up` and `loom vm ensure` spellings, since
+// that is where a developer meets this error: loom-vm's own flag is
+// --github-token-from, and `loom vm` maps --github gh, env and off onto it.
+const tokenRemedies = "Run `gh auth login`, or pass `--github env` with " +
+	githubTokenEnv + " set, or pass `--github off` for a guest with no GitHub access"
+
 // readGitHubToken fetches the token from the host. The value is returned to
 // the caller and nowhere else: it is not logged and not placed in an error.
 func readGitHubToken(from string) (string, error) {
@@ -113,7 +120,8 @@ func readGitHubToken(from string) (string, error) {
 	case "gh":
 		out, err := exec.Command("gh", "auth", "token").Output()
 		if err != nil {
-			return "", fmt.Errorf("--github-token-from gh: gh auth token failed: %w", err)
+			return "", fmt.Errorf("--github-token-from gh: gh auth token failed: %w. %s",
+				err, tokenRemedies)
 		}
 		token = string(out)
 
@@ -126,7 +134,7 @@ func readGitHubToken(from string) (string, error) {
 
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return "", fmt.Errorf("--github-token-from %s: no token", from)
+		return "", fmt.Errorf("--github-token-from %s: no token. %s", from, tokenRemedies)
 	}
 
 	return token, nil
