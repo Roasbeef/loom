@@ -1907,6 +1907,7 @@ fn stranded_in(
   let listing =
     tool("ps", ["-axww", "-o", "pid=,ppid=,command="], within: quick_ms)
     |> result.unwrap("")
+
   // A runner's command line begins with the path it was started under. That is
   // the manifest's text for a runner an older `loom-vm` started, and the
   // resolved path for one the current `loom-vm` started. `realpath` also
