@@ -293,6 +293,7 @@ pub fn stage(
 /// // session_importer.activate(context, activation)
 /// ```
 pub fn activate(context: Context(instance), activation: Activation) -> Verdict {
+  let started = bootstrap.monotonic_time_ms()
   let outcome = activated(context, activation)
 
   // Decide how to handle let verdict =  outcome {.
@@ -302,7 +303,7 @@ pub fn activate(context: Context(instance), activation: Activation) -> Verdict {
   }
 
   discard_refused(context, activation, verdict)
-  record(context, activation, verdict)
+  record(context, activation, verdict, started)
   verdict
 }
 
@@ -695,6 +696,12 @@ fn import_it(
       context.state_root,
     )
 
+  // The copy is renamed into place by the import, so its size is read first.
+  let size = case simplifile.file_info(received) {
+    Ok(info) -> Some(info.size)
+    Error(_) -> None
+  }
+
   // Decide how to handle the branch input.
   case
     manager.import_session(
@@ -709,13 +716,39 @@ fn import_it(
       ),
     )
   {
-    Ok(_) -> Ok(Nil)
+    Ok(_) -> {
+      told_imported(context, activation, from, size)
+      Ok(Nil)
+    }
     Error(manager.AdminMetadata(catalogue.Conflict))
     | Error(manager.AdminBusy) -> Error(Refused(session_move.Conflict))
     Error(manager.AdminMetadata(catalogue.Invalid(reason))) ->
       Error(Refused(session_move.Malformed(reason)))
     Error(other) -> Error(Failed(string.inspect(other)))
   }
+}
+
+/// Says that the registry committed the session as imported, with the copy's
+/// size when it could be read. The origin is named as this daemon's own
+/// configuration names it, and no path is written.
+fn told_imported(
+  context: Context(instance),
+  activation: Activation,
+  from: String,
+  size: Option(Int),
+) -> Nil {
+  // The size is a member of the line only when the copy could be examined.
+  let sized = case size {
+    Some(bytes) -> [field.count("bytes", bytes)]
+    None -> []
+  }
+
+  log.info(context.logger, "daemon.move_imported", [
+    field.ident("session", activation.session),
+    field.ident("op", activation.op),
+    field.text("from", from),
+    ..sized
+  ])
 }
 
 // --- shared -----------------------------------------------------------------
@@ -743,6 +776,7 @@ fn record(
   context: Context(instance),
   activation: Activation,
   verdict: Verdict,
+  started: Int,
 ) -> Nil {
   let fields = [
     field.ident("session", activation.session),
@@ -751,7 +785,11 @@ fn record(
 
   // Decide how to handle verdict {.
   case verdict {
-    Accepted -> log.info(context.logger, "daemon.move_activated", fields)
+    Accepted ->
+      log.info(context.logger, "daemon.move_activated", [
+        field.count("elapsed_ms", bootstrap.monotonic_time_ms() - started),
+        ..fields
+      ])
     Refused(refusal:) ->
       log.warn(context.logger, "daemon.move_refused", [
         field.text("reason", session_move.describe(refusal)),

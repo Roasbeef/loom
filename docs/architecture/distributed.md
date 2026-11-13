@@ -1095,6 +1095,12 @@ session still being built: `manager.claim_placement` adds the claims to the
 resident counts, runs `pools.spread` and records the session's first choice in
 one registry turn, and sessions that open together therefore see one another.
 The count says nothing of what other orchestrators hold on the same machines.
+`protocol/models/placement-claims` ([its README](../../protocol/models/placement-claims/README.md))
+models the claims and states the balance the code guarantees: the executors
+differ by at most one when each session is counted once and each attach lands on
+the first candidate. It also records that the resident counts are read by the
+caller before the registry's turn, so a session that becomes resident between
+the read and the turn is not counted by that ask.
 
 The rule that matters is that a session's checkout exists only where its scope
 record says. `remote/workspace` writes the record, naming the executor, after
@@ -1383,7 +1389,11 @@ not apply this hold yet.
 
 The terminal, the owner's home and the Admin page ask for a move through the same two
 functions (`server.move_session`, `server.abandon_move`), which are the bodies of the
-control command's arms, so a page cannot be given a check the terminal lacks.
+control command's arms, so a page cannot be given a check the terminal lacks. The
+control socket words each refusal (`server.move_refusal_words`): the registry's and the
+daemon's own reasons are passed on as written, so a destination that names no
+`checkout_executor` is told which table lacks it, and no path of the daemon's machine is
+in any of them. The pages word the same refusals in their own fixed sentences.
 
 Which orchestrators to offer is a read, not a rule the daemon enforces.
 `session_view/move_candidates` judges each orchestrator the asking daemon lists: it must
@@ -1429,6 +1439,12 @@ drained workspace), and it leaves the cell the other steps already read.
    placed for this operation. The six steps then run with a copy of the registration
    that names the executor and workspace, so the manifest tells the receiver.
 
+Each stage logs one line on the source (`daemon.move_checkout_captured`, `_sent`,
+`_applied`, `_closed`) with the session, the operation, the state's short hash, its
+size and the stage's duration, and the receiver logs `daemon.move_imported` and
+`daemon.move_activated`. A move that stalls logs `daemon.move_stalled` after its first,
+second, fourth, eighth attempt and so on, so a long stall is a handful of lines.
+
 The receiver attaches at the next incarnation and its plane recreates the tree from the
 branch at the applied tip, so its first turn finds the directory's work. Nothing on the
 receiver runs before the apply is answered, because the receiver is not told of the
@@ -1445,6 +1461,17 @@ strand's remembered working directory is a path under the old workspace, so the 
 tool call that relies on one may be refused until the model sets another. Other sessions
 that work in the same directory are not quieted by the stop, which the capture's
 precondition leaves to the operator.
+
+`protocol/models/session-move/MoveCheckout.tla` ([its README](../../protocol/models/session-move/README.md#the-checkout-step-movecheckouttla))
+models this step with crashes, a lost reply to the apply, an abandon and a second
+attempt. It records that `state_apply.holds_tip` can take a tree for the state
+that was asked for when the tree's HEAD descends from the tip: on a retry after an
+abandoned attempt, where the tree is at the earlier snapshot, and on a first attempt
+when the executor's workspace is ahead of a clean directory. It also records that
+a landing that fails (a `shared` workspace, or a name the executor does not serve)
+leaves the scope bound to that workspace, so a move with the corrected
+`checkout_workspace` stalls. The README has the traces; the first is fixed on its
+own branch, and the second is not fixed.
 
 ### The executor fence
 
@@ -2168,7 +2195,15 @@ not bar a missing key to a reconciler that skips executions, are each caught.
 The input journal and progress travel over the owner port and are tested in
 Gleam instead.
 
-Neither model covers trust and transport, pools, the directory or peer mail.
+Two further TLA+ models cover parts of this design that merged without one.
+`protocol/models/session-move/MoveCheckout.tla` composes the checkout step of a
+move with `Move.tla` (the section on [moving a session that works in a
+directory](#moving-a-session-that-works-in-a-directory)). `protocol/models/placement-claims/Claims.tla`
+models the placement claims of a pool (the section on [pools and
+placement](#pools-and-placement)). Each has mutants that must be caught, and each
+README records a defect the model found in the shipped code.
+
+The models above do not cover trust and transport, the directory or peer mail.
 The directory holds no state of its own, so it has no model.
 
 ## Limits and deferred work

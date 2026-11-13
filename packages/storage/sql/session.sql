@@ -7,6 +7,7 @@ CREATE INDEX IF NOT EXISTS ix_entry_seq ON entries(seq, type);
 CREATE TABLE IF NOT EXISTS registers(
   ns TEXT NOT NULL, key TEXT NOT NULL, seq INTEGER NOT NULL,
   value BLOB NOT NULL, PRIMARY KEY(ns, key));
+CREATE INDEX IF NOT EXISTS ix_register_seq ON registers(ns, seq);
 CREATE TABLE IF NOT EXISTS usage_ledger(
   id TEXT PRIMARY KEY, seq INTEGER, entry_id TEXT, adjustment INTEGER,
   usage BLOB, details BLOB) WITHOUT ROWID;

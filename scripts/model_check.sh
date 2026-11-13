@@ -5,12 +5,16 @@
 # Usage: scripts/model_check.sh
 #   (MODEL_SCHEDULES, MODEL_PROBE_SCHEDULES, TLA2TOOLS, TLA_JAVA)
 #
-# The TLA+ models, protocol/models/session-move, run first. There are two
-# specifications: Move.tla, the move where catalogue rows decide, and
+# The TLA+ models run first. protocol/models/session-move has three
+# specifications: Move.tla, the move where catalogue rows decide,
 # KhepriMove.tla, the moves where the directory's owner record decides
-# (protocol-change/083). For each, TLC must pass the clean configuration
-# (Move.cfg, KhepriMove.cfg) and must report a violation of the property
-# each mutant configuration (Mutant*.cfg, KhepriMutant*.cfg) names on its
+# (protocol-change/083), and MoveCheckout.tla, the checkout step of a move of
+# a session that works in a directory (protocol-change/107, slice 4c).
+# protocol/models/placement-claims has Claims.tla, the placement claims of a
+# pool. For each, TLC must pass the clean configuration (Move.cfg,
+# KhepriMove.cfg, MoveCheckout.cfg, Claims.cfg) and must report a violation
+# of the property each mutant configuration (Mutant*.cfg, KhepriMutant*.cfg,
+# MoveCheckoutMutant*.cfg, ClaimsMutant*.cfg) names on its
 # `\* expect-violation:` line: an invariant, which TLC names when it fails
 # (exit 12), or the one temporal property the configuration lists, which
 # TLC reports as a temporal violation (exit 13). A mutation that no longer
@@ -101,48 +105,66 @@ tla_counts() {
 
 check_tla() {
 	local jar java name expected code out log
-	tla="$root/protocol/models/session-move"
 	jar="${TLA2TOOLS:-$HOME/tools/tla2tools.jar}"
-	echo "==> session-move (TLA+)"
 	[ -r "$jar" ] || {
+		echo "==> TLA+ models"
 		echo "SKIP tla_models: no tla2tools.jar at $jar (set TLA2TOOLS)"
 		return 0
 	}
 	java="$(find_java)" || {
+		echo "==> TLA+ models"
 		echo "SKIP tla_models: no Java 11 or later (set TLA_JAVA)"
 		return 0
 	}
 	out="$root/build/tla"
 	mkdir -p "$out"
 
-	# A specification's mutant configurations are named for it: Mutant*.cfg
-	# for Move, which came first, and KhepriMutant*.cfg for KhepriMove.
-	local spec prefix
-	for spec in Move KhepriMove; do
-		prefix="${spec%Move}"
-		log="$out/$spec.log"
-		if run_tla "$java" "$jar" "$spec" "$spec" "$out/$spec.states" "$log"; then
-			echo "   ok   $spec ($(tla_counts "$log"))"
-		else
-			echo "   FAIL $spec: see $log"
-			failed=1
-		fi
+	# Each entry is a directory under protocol/models and the specifications
+	# in it. A specification's mutant configurations are named for it:
+	# Mutant*.cfg for Move, which came first, KhepriMutant*.cfg for
+	# KhepriMove, MoveCheckoutMutant*.cfg for MoveCheckout and
+	# ClaimsMutant*.cfg for Claims.
+	local entry dir spec prefix
+	for entry in "session-move:Move KhepriMove MoveCheckout" "placement-claims:Claims"; do
+		dir="${entry%%:*}"
+		tla="$root/protocol/models/$dir"
+		echo "==> $dir (TLA+)"
+		for spec in ${entry#*:}; do
+			prefix="${spec%Move}"
 
-		for cfg in "$tla/${prefix}Mutant"*.cfg; do
-			name="$(basename "$cfg" .cfg)"
-			expected="$(sed -n 's/^\\\* expect-violation: *//p' "$cfg")"
-			log="$out/$name.log"
-			code=0
-			run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log" || code=$?
-			if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
-				echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
-			elif [ "$code" -eq 13 ] && grep -q "Temporal properties were violated" "$log" &&
-				sed -n '/^PROPERT/,$p' "$cfg" | grep -qw "$expected"; then
-				echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
-			else
-				echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
-				failed=1
-			fi
+			# The clean configuration, and any further clean ones named
+			# <spec>Also*.cfg, which cover a range the first one would make
+			# too large to check. Each must pass.
+			for cfg in "$tla/$spec.cfg" "$tla/${spec}Also"*.cfg; do
+				# An unmatched Also glob is skipped. A missing primary
+				# configuration is not: TLC fails on it, and so does the gate.
+				[ -e "$cfg" ] || [ "$cfg" = "$tla/$spec.cfg" ] || continue
+				name="$(basename "$cfg" .cfg)"
+				log="$out/$name.log"
+				if run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log"; then
+					echo "   ok   $name ($(tla_counts "$log"))"
+				else
+					echo "   FAIL $name: see $log"
+					failed=1
+				fi
+			done
+
+			for cfg in "$tla/${prefix}Mutant"*.cfg; do
+				name="$(basename "$cfg" .cfg)"
+				expected="$(sed -n 's/^\\\* expect-violation: *//p' "$cfg")"
+				log="$out/$name.log"
+				code=0
+				run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log" || code=$?
+				if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
+					echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+				elif [ "$code" -eq 13 ] && grep -q "Temporal properties were violated" "$log" &&
+					sed -n '/^PROPERT/,$p' "$cfg" | grep -qw "$expected"; then
+					echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+				else
+					echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
+					failed=1
+				fi
+			done
 		done
 	done
 }

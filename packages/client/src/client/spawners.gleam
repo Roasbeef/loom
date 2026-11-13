@@ -106,6 +106,12 @@
 //// here, so an executor or profile that was renamed fails the file and not the
 //// first create.
 ////
+//// The table's `page` key (protocol-change/108) says how the spawner's page
+//// draws a relayed session: `live`, the default, serves it the full session
+//// page through the four feed operations, and `paged` keeps the transcript page
+//// of 094. It is the box owner's word per peer, as `approval_ceiling` is, and it
+//// is read once at start with the rest of the table.
+////
 //// ## Flow
 ////
 //// `from_document` → `row` → `placement_of` → `tools_of` → `windows` →
@@ -197,6 +203,20 @@ pub type Folders {
   RecentFolders
 }
 
+/// Whether the spawner's page may open a relayed session as the live session
+/// page (protocol-change/108).
+pub type Page {
+  /// The box serves `108.attach.1` for the spawner, so its page draws the full
+  /// session page for a relayed session. This is the default: an older laptop
+  /// never asks for the revisions, and `top_level` is already the box owner's
+  /// opt-in.
+  LivePage
+
+  /// The box refuses `108.attach.1` with `NotOffered(OfferedPage, "live")`, so
+  /// the page draws the transcript page of protocol-change/094.
+  PagedPage
+}
+
 /// The `[spawners.<name>.top_level]` table: what the spawning orchestrator's
 /// page may start here (protocol-change/094).
 pub type TopLevel {
@@ -219,6 +239,9 @@ pub type TopLevel {
     /// What a decision from the page may grant (protocol-change/089's shape).
     /// `None` shows the page a session's requests and lets it decide none.
     approval_ceiling: Option(Ceiling),
+    /// Whether the page may open a relayed session as the live session page
+    /// (protocol-change/108).
+    page: Page,
   )
 }
 
@@ -703,7 +726,7 @@ fn top_level_of(
         dict.keys(table),
         [
           "executors", "pools", "folders", "profiles", "max_sessions",
-          "max_per_hour", "approval_ceiling",
+          "max_per_hour", "approval_ceiling", "page",
         ],
         "[" <> key <> "]",
       ))
@@ -741,7 +764,8 @@ fn top_level_of(
         "max_per_hour",
         default_top_level_per_hour,
       ))
-      use approval_ceiling <- result.map(ceiling_of(table, key))
+      use approval_ceiling <- result.try(ceiling_of(table, key))
+      use page <- result.map(page_of(table, key))
       Some(TopLevel(
         executors:,
         pools:,
@@ -750,6 +774,7 @@ fn top_level_of(
         max_sessions:,
         max_per_hour:,
         approval_ceiling:,
+        page:,
       ))
     }
     Ok(_) -> Error(key <> " must be a table")
@@ -826,6 +851,25 @@ fn folders_of(
     None | Some("recent") -> Ok(RecentFolders)
     Some("none") -> Ok(NoFolders)
     Some(_) -> Error(place <> ".folders must be \"none\" or \"recent\"")
+  }
+}
+
+// Whether the page may open a relayed session as the live session page. Absent
+// is live, and any word but the two is refused so that a misspelling cannot turn
+// a feed on or off by being ignored.
+
+/// Reads the table's `page` key.
+fn page_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Page, String) {
+  use word <- result.try(optional_string(fields, place, "page"))
+
+  // Absent and `live` are the same page, and nothing but the two words is read.
+  case word {
+    None | Some("live") -> Ok(LivePage)
+    Some("paged") -> Ok(PagedPage)
+    Some(_) -> Error(place <> ".page must be \"live\" or \"paged\"")
   }
 }
 

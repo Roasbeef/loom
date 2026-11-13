@@ -8,6 +8,7 @@ import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/internal/instance_owner as custody
+import client/remote_feed
 import client/workspace_policy
 import core/clock
 import core/ids
@@ -501,6 +502,27 @@ pub fn admitted_connection_count_is_bounded_and_shutdown_joins_owners_test() {
   list.each(slots, fn(slot) {
     assert wait_down(slot.2).reason == process.Killed
   })
+}
+
+// A spawner at its cap of eight live feeds must leave the daemon room to admit
+// the box owner's own control socket and a page, under the default limits. A
+// feed is charged what it can hold (`root.Feed`), so eight take about 42 percent of
+// the default budget and not all of it, as eight page operators would.
+pub fn a_spawner_at_its_feed_cap_leaves_room_for_control_and_a_page_test() {
+  let #(daemon, _) = start(directory("feed-cap"), inert())
+  let feeds =
+    list.map(list.repeat(Nil, remote_feed.max_feeds), fn(_) {
+      acquired(daemon, root.Feed)
+    })
+  assert list.length(feeds) == remote_feed.max_feeds
+  assert root.charge(root.Feed) * remote_feed.max_feeds == 224_395_264
+  assert root.charge(root.Feed) * remote_feed.max_feeds
+    < limits.defaults.reserved_message_bytes / 2
+
+  let _control = acquired(daemon, root.Control)
+  let _page = acquired(daemon, root.PageOperator)
+  let _terminal = acquired(daemon, root.Operator)
+  assert root.shutdown(daemon, within: 5000) == Ok(Nil)
 }
 
 pub fn transferred_weight_survives_http_death_and_late_release_test() {

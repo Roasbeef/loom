@@ -265,13 +265,16 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
 
 /// Requests session opening from the daemon and produces an attachable target.
 fn open_selected(host: Host, selected: protocol.Session) {
+  // A session this daemon handed away is held as a saved tombstone, so the
+  // read before this open succeeds and the redirect arrives here. The words
+  // name the session, because the launch line they print needs its identity.
   use reply <- result.try(
     daemon.request(
       host.control,
       protocol.OpenSession(selected.session_id),
       10_000,
     )
-    |> result.map_error(failure),
+    |> result.map_error(failure_for(selected.session_id, _)),
   )
 
   // Extract lifecycle status from opening reply.
@@ -391,7 +394,8 @@ pub fn create_named(
 /// ```
 pub fn delete(host: Host, session: String) -> Result(String, String) {
   delete_using(session, fn(command, within) {
-    daemon.request(host.control, command, within) |> result.map_error(failure)
+    daemon.request(host.control, command, within)
+    |> result.map_error(failure_for(session, _))
   })
 }
 
@@ -426,7 +430,8 @@ type Removal {
 /// ```
 pub fn archive(host: Host, session: String) -> Result(String, String) {
   archive_using(session, fn(command, within) {
-    daemon.request(host.control, command, within) |> result.map_error(failure)
+    daemon.request(host.control, command, within)
+    |> result.map_error(failure_for(session, _))
   })
 }
 
@@ -524,7 +529,7 @@ pub fn executor_of(
 pub fn restore(host: Host, session: String) -> Result(String, String) {
   use reply <- result.try(
     daemon.request(host.control, protocol.RestoreSession(session), 10_000)
-    |> result.map_error(failure),
+    |> result.map_error(failure_for(session, _)),
   )
 
   // Confirm session restoration reply matches target identity.
@@ -1080,7 +1085,7 @@ fn await(host: Host, session, operation) {
         )
       {
         Error(daemon.TimedOut) -> poll.Fail(startup_incomplete)
-        Error(reason) -> poll.Fail(failure(reason))
+        Error(reason) -> poll.Fail(failure_for(session, reason))
         Ok(protocol.SessionReply(row)) ->
           case row.status {
             protocol.Resident(incarnation) -> poll.Done(incarnation)
