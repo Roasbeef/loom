@@ -24,10 +24,12 @@ import client/gateway
 import client/grants
 import client/internal/ffi_os
 import client/protocol
+import client/remote/feed_directory
 import client/remote/peer_client
 import client/remote_feed
 import client/remote_top
 import client/spawners
+import client/top_host
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
@@ -41,7 +43,8 @@ import runtime/api
 import runtime/escalation as durable
 import support/addresses
 import support/feed_rig.{
-  type Rig, configuration, deciding, epoch, paged, prompts, rig, watching,
+  type Rig, configuration, context, deciding, epoch, own_node, paged, prompts,
+  rig, watching,
 }
 import weft/poll
 
@@ -956,4 +959,74 @@ pub fn the_deciding_table_has_a_ceiling_and_the_watching_one_has_none_test() {
   let assert Some(table) = spawner.top_level
   assert table.approval_ceiling == None
   assert approval_ceiling.nothing() == approval_ceiling.nothing()
+}
+
+// --- a silent directory ---------------------------------------------------------
+
+// The callbacks over a directory that has stopped, which does not answer.
+fn silent_feeds(rig: Rig) -> remote_feed.Host {
+  let assert Ok(directory) = feed_directory.start() as "the directory starts"
+  feed_directory.stop(directory)
+  top_host.serving_feeds(
+    context(
+      rig.registry,
+      rig.spawner,
+      "/nonexistent",
+      "/nonexistent",
+      rig.harness.hub,
+      remote_feed.lease_ms,
+    ),
+    directory,
+  )
+}
+
+pub fn a_directory_that_does_not_answer_is_told_to_the_laptop_as_not_yet_open_test() {
+  let rig = rig("silent", deciding, remote_feed.lease_ms)
+  let feeds = silent_feeds(rig)
+  let not_answering =
+    remote_top.NotYetOpen("the live pages of this daemon are not answering")
+  let feed = "0123456789abcdef0123456789abcdef"
+
+  // A poll or a send to a feed that may be live must not say the feed lapsed, and
+  // a detach must not say it detached when it did not.
+  assert feeds.poll(own_node(), remote_feed.Poll(feed:, after: 0, wait_ms: 0))
+    == Error(not_answering)
+  assert feeds.send(
+      own_node(),
+      remote_feed.Piece(feed:, n: 1, offset: 0, total: 2, text: "{}"),
+    )
+    == Error(not_answering)
+  assert feeds.detach(own_node(), feed) == Error(not_answering)
+
+  // An attach cannot reserve a place, so it is the same refusal.
+  assert feeds.attach(
+      own_node(),
+      remote_feed.Attach(
+        session: rig.session,
+        principal: "page-1",
+        name: "Laptop page",
+      ),
+    )
+    == Error(not_answering)
+}
+
+pub fn a_feed_that_is_gone_is_still_lapsed_and_its_detach_is_still_ok_test() {
+  let rig = rig("gone", deciding, remote_feed.lease_ms)
+  let assert Ok(directory) = feed_directory.start() as "the directory starts"
+  let feeds =
+    top_host.serving_feeds(
+      context(
+        rig.registry,
+        rig.spawner,
+        "/nonexistent",
+        "/nonexistent",
+        rig.harness.hub,
+        remote_feed.lease_ms,
+      ),
+      directory,
+    )
+  let feed = "0123456789abcdef0123456789abcdef"
+  assert feeds.poll(own_node(), remote_feed.Poll(feed:, after: 0, wait_ms: 0))
+    == Error(remote_top.FeedEnded(remote_top.FeedLapsed))
+  assert feeds.detach(own_node(), feed) == Ok(Nil)
 }

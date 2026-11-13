@@ -73,6 +73,18 @@ pub type Refused {
   Unavailable
 }
 
+/// Why no feed was found, which a laptop must be told apart: a feed that is
+/// gone has ended and starting again is right, and a directory that did not
+/// answer says nothing about the feed, so the call is asked again.
+pub type Missing {
+  /// The token was never minted, belongs to another spawner, names a place not
+  /// yet running as a feed, or its feed has exited.
+  Gone
+
+  /// The directory did not answer, so nothing is known of the token.
+  Unanswered
+}
+
 type Message {
   Reserve(
     spawner: String,
@@ -83,6 +95,7 @@ type Message {
   Register(token: String, feed: Feed)
   Release(token: String)
   Find(spawner: String, token: String, reply: Subject(Result(Feed, Nil)))
+  Stop
   Down(down: process.Down)
 }
 
@@ -165,8 +178,8 @@ pub fn release(directory: Directory, token: String) -> Nil {
 }
 
 /// Finds a feed among one spawner's feeds. A token that was never minted, that
-/// belongs to another spawner, or whose feed has exited is not found, and neither
-/// is any token while the directory does not answer.
+/// belongs to another spawner, or whose feed has exited is `Gone`, and any token
+/// is `Unanswered` while the directory does not answer.
 ///
 /// ## Examples
 ///
@@ -177,14 +190,31 @@ pub fn find(
   directory: Directory,
   spawner: String,
   token: String,
-) -> Result(Feed, Nil) {
-  call.try_call(directory.subject, waiting: 1000, sending: Find(
-    spawner,
-    token,
-    _,
-  ))
-  |> result.replace_error(Nil)
-  |> result.flatten
+) -> Result(Feed, Missing) {
+  case
+    call.try_call(directory.subject, waiting: 1000, sending: Find(
+      spawner,
+      token,
+      _,
+    ))
+  {
+    Ok(Ok(feed)) -> Ok(feed)
+    Ok(Error(Nil)) -> Error(Gone)
+    Error(_) -> Error(Unanswered)
+  }
+}
+
+/// Stops the directory, which every call after answers as unavailable. A daemon
+/// does this when it stops serving feeds, and a test does it to see what a
+/// laptop is told when the directory is silent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // feed_directory.stop(directory)
+/// ```
+pub fn stop(directory: Directory) -> Nil {
+  process.send(directory.subject, Stop)
 }
 
 /// The transition function: one arm per message.
@@ -244,6 +274,8 @@ fn handle(
       process.send(reply, found(entries, spawner, token))
       actor.continue(entries)
     }
+
+    Stop -> actor.stop()
 
     // Every entry holds one monitor, on the reserving process or on the feed,
     // so a process that went down names exactly the entries to forget.

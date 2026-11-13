@@ -1529,8 +1529,10 @@ executor's case (slice 4a): the scope's linked worktree already exists on
 and `git checkout -B` moves the branch onto the tip. `check_linked` requires the
 tree's `.git` to be a plain file and what Git finds from inside it to be the named
 repository (top, worktree Git directory, common directory, branch); a tree that
-already contains the tip is answered as applied and not touched, and any other tree
-must have no change in it. A dirty state's snapshot commit is checked out as it is.
+was last applied, or whose `HEAD` is the tip, is answered as applied and not touched
+(a tip that is only an ancestor of `HEAD` moves the tree), and any other tree must have
+no change in it. The apply keeps one ref per session, `refs/loom/applied/<session>`,
+written after the checkout and dropped before the next one. A dirty state's snapshot commit is checked out as it is.
 The checkouts (`checked_out`) empty every `filter.<name>` driver the configuration
 names for the call, since a `.gitattributes` in the bundle can attach one and a
 checkout would run its `smudge` command. The listing runs in the directory the
@@ -10740,7 +10742,7 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
   included. A feed attaches with `gateway.attach_authenticated_flushing` giving its
   own pid as the socket, so the gateway drops the attachment when the feed exits.
   The permit, of class `root.Feed` and charged `remote_feed.feed_charge_bytes`
-  (15,466,496, so eight feeds take under a quarter of the default budget), is
+  (28,049,408, so eight feeds take about 42 percent of the default budget), is
   reserved by the process that answers the attach and transferred by the feed's
   own process (`top_host.Context.admit`). A feed watches the attach's process until
   `feed_host.registered`, so a cancelled attach leaves no uncounted feed. The

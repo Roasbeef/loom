@@ -83,13 +83,14 @@ pub fn a_token_is_found_only_among_its_own_spawners_feeds_test() {
   feed_directory.register(directory, token, running)
 
   assert feed_directory.find(directory, "laptop", token) == Ok(running)
-  assert feed_directory.find(directory, "tablet", token) == Error(Nil)
+  assert feed_directory.find(directory, "tablet", token)
+    == Error(feed_directory.Gone)
   assert feed_directory.find(
       directory,
       "laptop",
       "0123456789abcdef0123456789abcdef",
     )
-    == Error(Nil)
+    == Error(feed_directory.Gone)
   feed_host.detach(running)
 }
 
@@ -162,8 +163,8 @@ pub fn a_feed_holds_its_place_until_it_exits_and_is_then_forgotten_test() {
   let assert poll.Answered(_) =
     poll.until(within: 2000, every: 10, attempt: fn() {
       case feed_directory.find(directory, "laptop", token) {
-        Error(Nil) -> poll.Done(Nil)
-        Ok(_) -> poll.Retry
+        Error(feed_directory.Gone) -> poll.Done(Nil)
+        Ok(_) | Error(feed_directory.Unanswered) -> poll.Retry
       }
     })
     as "an exited feed is forgotten"
@@ -223,4 +224,19 @@ pub fn a_registered_feed_outlives_its_owner_test() {
   }
   assert feed_directory.find(directory, "laptop", token) == Ok(running)
   feed_host.detach(running)
+}
+
+pub fn a_directory_that_does_not_answer_reserves_nothing_and_finds_nothing_test() {
+  let assert Ok(directory) = feed_directory.start() as "the directory starts"
+  feed_directory.stop(directory)
+
+  // A silent directory is not a missing feed, and it is not a full spawner.
+  assert feed_directory.reserve(directory, "laptop", process.self(), 8)
+    == Error(feed_directory.Unavailable)
+  assert feed_directory.find(
+      directory,
+      "laptop",
+      "0123456789abcdef0123456789abcdef",
+    )
+    == Error(feed_directory.Unanswered)
 }

@@ -32,7 +32,7 @@
 //// `total`, as a `Chunk` of `client/session_move` places a piece in a file. A
 //// piece is at most `piece_bytes` of text and a frame at most `frame_bytes`,
 //// the page socket's own bound, so a prompt with four pasted images reaches the
-//// box in at most 65 pieces. A piece that does not end its frame must carry at
+//// box in at most 64 pieces. A piece that does not end its frame must carry at
 //// least `min_piece_bytes`, so a peer cannot hold the box's memory in cells by
 //// sending a frame a byte at a time.
 ////
@@ -106,19 +106,26 @@ pub const frame_bytes = 12_582_912
 /// or fewer, so the box never holds millions of one-byte pieces.
 pub const min_piece_bytes = 196_608
 
-/// The most pieces one frame may arrive in: whole pieces of at least
-/// `min_piece_bytes` fill the frame bound, and one last piece ends it.
-pub const max_pieces = 65
+/// The most pieces one frame may arrive in. The codec does not count pieces, so
+/// the bound follows from the rest. The box admits only the piece that begins where
+/// the held bytes end, every piece but the last carries at least `min_piece_bytes`,
+/// and the last carries at least one byte. A frame of `frame_bytes`, which is 64
+/// times `min_piece_bytes`, therefore holds at most 63 whole pieces below the
+/// frame bound plus the last, which is 64.
+pub const max_pieces = 64
 
 /// The bytes the connection permit of one feed is charged: what the feed can hold
 /// at once, from its own bounds. A feed holds an unacknowledged queue
 /// (`queue_bytes`, 1,048,576), one partial frame (`frame_bytes`, 12,582,912), one
 /// answer being built (the exchange's envelope bound, 1,048,576) and one piece
-/// being read, which as JSON may double (twice `piece_bytes`, 786,432). The sum is
-/// 15,466,496 bytes, so the eight feeds of a spawner take 123,731,968 of the
-/// daemon's default budget of 536,870,912, a little under a quarter, where a
-/// page's 64 MiB charge would have taken all of it.
-pub const feed_charge_bytes = 15_466_496
+/// being read, which as JSON may double (twice `piece_bytes`, 786,432). When the
+/// last piece arrives `feed_pieces.extend` joins the pieces into the whole frame
+/// while the pieces are still referenced, and the command filter then parses that
+/// frame in the same process, so a second `frame_bytes` is live at the peak. The
+/// sum is 28,049,408 bytes, so the eight feeds of a spawner take 224,395,264 of the
+/// daemon's default budget of 536,870,912, about 42 percent, where a page's 64 MiB
+/// charge would have taken all of it.
+pub const feed_charge_bytes = 28_049_408
 
 /// The most bytes of one name, identity or label text the decoders accept.
 pub const max_text_bytes = 512
