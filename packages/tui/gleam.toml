@@ -9,7 +9,7 @@ argv = ">= 1.1.0 and < 2.0.0"
 core = { path = "../core" }
 machine = { path = "../machine" }
 session_view = { path = "../session_view" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "43969f88075a17044640e5e7cc43682b86a988ab" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "09e0a964d2bfc71efd10abc476937e6ab5223bfb" }
 filepath = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"
