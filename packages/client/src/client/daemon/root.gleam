@@ -73,6 +73,8 @@ import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
 import client/daemon/protocol
+import client/remote/peer_codec
+import client/remote_feed
 import client/worktrees
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -129,6 +131,13 @@ pub type ConnectionClass {
   /// page's own and its charge covers a submit's transient peak
   /// (`operator_peak`); terminal operators keep `Operator` and its charge.
   PageOperator
+
+  /// A live session feed that carries a relayed page to another orchestrator
+  /// (protocol-change/108). It holds no socket parser, only what the feed
+  /// itself can hold, and is charged that: `remote_feed.feed_charge_bytes`, a
+  /// little under a quarter of the default budget for the eight feeds of one
+  /// spawner.
+  Feed
 
   /// A `/v2/claim` socket for one claim digest (protocol-change/053). It
   /// accepts one message of at most `protocol.max_claim_bytes`, and the root
@@ -468,6 +477,7 @@ pub fn message_limit(class: ConnectionClass) -> Int {
     Control | Observer -> 65_536
     Operator -> 33_554_432
     PageOperator -> 12_582_912
+    Feed -> peer_codec.operation_bytes
     Claim(_) -> protocol.max_claim_bytes
   }
 }
@@ -487,12 +497,14 @@ pub fn message_limit(class: ConnectionClass) -> Int {
 fn connection_charge(class: ConnectionClass) -> Int {
   // Determine delivery buffer charge for connection class.
   let delivery = case class {
-    Control | Claim(_) -> 0
+    Control | Claim(_) | Feed -> 0
     Observer | Operator | PageOperator -> 8_388_608
   }
 
-  // Calculate total connection memory footprint charge.
+  // Calculate total connection memory footprint charge. A feed is charged what it
+  // can hold and no more, which the constant's doc works out.
   case class {
+    Feed -> remote_feed.feed_charge_bytes
     PageOperator -> operator_peak
     Control | Observer | Operator | Claim(_) -> message_limit(class) + delivery
   }
@@ -1198,7 +1210,7 @@ fn claim_in_flight(book: Book(instance), class: ConnectionClass) -> Bool {
     Claim(_) ->
       dict.values(book.allocations)
       |> list.any(fn(allocation) { allocation.class == class })
-    Control | Observer | Operator | PageOperator -> False
+    Control | Observer | Operator | PageOperator | Feed -> False
   }
 }
 
@@ -1426,7 +1438,8 @@ fn cancel_session_connections(book: Book(instance)) {
   dict.each(book.allocations, fn(owner, allocation) {
     case allocation.class {
       Control -> Nil
-      Observer | Operator | PageOperator | Claim(_) -> process.kill(owner)
+      Observer | Operator | PageOperator | Feed | Claim(_) ->
+        process.kill(owner)
     }
   })
 }

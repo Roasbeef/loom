@@ -1122,7 +1122,16 @@ any key it does not know.
 | `page` | string | `"live"` | `"live"` or `"paged"` | (From protocol-change 108.) How the laptop's page draws a relayed session. `"live"` serves it the full session page: this daemon attaches to the session's gateway for the page, queues the frames the gateway writes in a bounded numbered queue, and the laptop pulls them with a long poll and sends its lane's frames back. Streaming, folds, diffs, strands, "allow for the session" and steering work as on this daemon's own page, and a decision still goes through `approval_ceiling` and nothing else. `"paged"` refuses the live page with `NotOffered(page, live)`, and the laptop draws the transcript page of protocol-change 094. An older laptop never asks for the live page, so `"live"` costs it nothing. |
 
 With `page = "live"`, a spawner holds at most eight feeds at once, and each takes
-one of this daemon's connection permits, as a page socket does. A feed is a gateway
+one of this daemon's connection permits. A feed ended by a lapse keeps its place for
+one more lease (15 seconds) so a late poll learns why, so a laptop that attaches
+again at the cap is refused for up to that long. A feed's permit is charged what a
+feed can hold, which is its unacknowledged queue (1,048,576 bytes), one partly
+received frame (12,582,912), one answer being built (1,048,576) and one piece being
+read (786,432), 15,466,496 bytes in all. Eight feeds therefore take 123,731,968 of
+the default `max_reserved_message_bytes` of 536,870,912, a little under a quarter,
+and leave room for the owner's own control socket and pages. A frame from the laptop
+arrives in pieces of at least 196,608 bytes and a last piece, at most 65 pieces for
+the 12,582,912-byte frame bound. A feed is a gateway
 attachment as this machine's owner at the Operator authority, so it shows the page
 what this daemon's own operating page would show, and the commands it forwards are
 a closed list: prompts, steers and aborts to any strand of the session, the reads

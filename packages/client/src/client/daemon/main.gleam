@@ -1669,14 +1669,14 @@ pub fn start_orchestrator_port(
           epoch: ready.epoch,
           gateway: gateway_of,
           owner: ready.owner,
-          // A live feed is a connection like a page's, charged as a page
-          // operator's is. The permit is reserved here, in the process that
+          // A live feed is charged what a feed can hold (`root.Feed`), not what a
+          // page can, so eight feeds leave the control socket its room. The permit is reserved here, in the process that
           // answers the attach, and transferred by the feed's own process,
           // because a permit is released when the process holding it exits.
           admit: fn() {
             use permit <- result.map(root.acquire(
               daemon,
-              root.PageOperator,
+              root.Feed,
               within: 1000,
             ))
             fn() { root.transfer(daemon, permit, within: 1000) }

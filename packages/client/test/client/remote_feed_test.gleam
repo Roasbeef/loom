@@ -15,6 +15,7 @@ import client/remote_feed.{
 }
 import client/remote_top
 import core/json.{type JsonValue}
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -219,6 +220,93 @@ pub fn a_piece_is_at_most_393216_bytes_and_a_frame_at_most_twelve_mebibytes_test
 
   // Twelve mebibytes is thirty-two pieces of 393,216 bytes.
   assert remote_feed.frame_bytes / remote_feed.piece_bytes == 32
+}
+
+fn decode_send(
+  offset: Int,
+  total: Int,
+  text: String,
+) -> Result(remote_feed.Request, String) {
+  remote_feed.decode_request(
+    remote_feed.send_revision,
+    json.Array([
+      json.String(token),
+      json.Int(1),
+      json.Int(offset),
+      json.Int(total),
+      json.String(text),
+    ]),
+  )
+}
+
+// Cuts a frame of `total` bytes into pieces of `size` and one last piece, as a
+// sender that sends full pieces does, decodes each, and counts them.
+fn pieces_accepted(total: Int, size: Int, offset: Int, count: Int) -> Int {
+  let take = int.min(size, total - offset)
+  let assert Ok(_) = decode_send(offset, total, string.repeat("a", take))
+    as "a full piece or the last piece is accepted"
+  case offset + take >= total {
+    True -> count + 1
+    False -> pieces_accepted(total, size, offset + take, count + 1)
+  }
+}
+
+pub fn no_accepted_sequence_of_pieces_for_one_frame_passes_the_count_bound_test() {
+  qcheck.default_config()
+  |> qcheck.with_test_count(20)
+  |> qcheck.with_seed(qcheck.seed(seed))
+  |> qcheck.run(
+    qcheck.map2(
+      qcheck.bounded_int(
+        remote_feed.frame_bytes - 1_000_000,
+        remote_feed.frame_bytes,
+      ),
+      qcheck.bounded_int(remote_feed.min_piece_bytes, remote_feed.piece_bytes),
+      fn(total, size) { #(total, size) },
+    ),
+    fn(shape) {
+      let #(total, size) = shape
+      assert pieces_accepted(total, size, 0, 0) <= remote_feed.max_pieces
+    },
+  )
+}
+
+pub fn a_piece_shorter_than_the_floor_that_does_not_end_its_frame_is_refused_test() {
+  qcheck.default_config()
+  |> qcheck.with_test_count(draws)
+  |> qcheck.with_seed(qcheck.seed(seed))
+  |> qcheck.run(
+    qcheck.bounded_int(1, remote_feed.min_piece_bytes - 1),
+    fn(size) {
+      assert decode_send(0, remote_feed.frame_bytes, string.repeat("a", size))
+        == Error("a piece that does not end its frame is a full piece")
+    },
+  )
+}
+
+pub fn one_byte_pieces_of_a_large_frame_are_refused_and_a_last_byte_is_not_test() {
+  // A peer that sends a twelve mebibyte frame a byte at a time is refused at the
+  // first byte, so the box never holds millions of pieces.
+  assert decode_send(0, remote_feed.frame_bytes, "a")
+    == Error("a piece that does not end its frame is a full piece")
+  assert decode_send(5, remote_feed.frame_bytes, "a")
+    == Error("a piece that does not end its frame is a full piece")
+
+  // The last byte of a frame ends it, so it is a piece however short.
+  assert decode_send(remote_feed.frame_bytes - 1, remote_feed.frame_bytes, "a")
+    == Ok(
+      SendRequest(Piece(
+        token,
+        1,
+        remote_feed.frame_bytes - 1,
+        remote_feed.frame_bytes,
+        "a",
+      )),
+    )
+
+  // Twelve mebibytes is at most sixty-five pieces.
+  assert remote_feed.frame_bytes / remote_feed.min_piece_bytes + 1
+    == remote_feed.max_pieces
 }
 
 // --- the answers -------------------------------------------------------------------
