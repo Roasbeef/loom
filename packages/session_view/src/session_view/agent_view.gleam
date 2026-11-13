@@ -209,7 +209,10 @@ pub fn observe(
   let cells = snapshot_view.index_cells(view.cells)
   let all_entries = dict.values(entries)
   let current_strands =
-    dict.from_list(list.map(view.strands, fn(strand) { #(strand.id, strand) }))
+    dict.from_list(
+      list.reverse(view.strands)
+      |> list.map(fn(strand) { #(strand.id, strand) }),
+    )
   let previous_by_id =
     dict.from_list(
       list.reverse(previous) |> list.map(fn(row) { #(row.id, row) }),

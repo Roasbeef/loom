@@ -138,6 +138,7 @@ pub fn task_excerpt(
 /// ```gleam
 /// assert reviewer_status.task_excerpt_in(dict.new(), [], "missing") == ""
 /// ```
+@internal
 pub fn task_excerpt_in(
   cells: snapshot_view.CellIndex,
   entries: List(entry.Entry),

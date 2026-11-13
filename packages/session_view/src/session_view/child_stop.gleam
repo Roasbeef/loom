@@ -95,6 +95,7 @@ pub fn operation_reason(
 /// assert child_stop.operation_reason_in(dict.new(), "operation", "main")
 ///   == None
 /// ```
+@internal
 pub fn operation_reason_in(
   cells: snapshot_view.CellIndex,
   operation: String,
