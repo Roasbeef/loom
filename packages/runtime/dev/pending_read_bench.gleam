@@ -1,4 +1,5 @@
-//// Matched writer-path scans and point reads with varying ownership width.
+//// Matched writer-path scans, point reads and bulk reads by ownership width.
+//// Measures the read primitive and decoding, not complete admission.
 //// Run from packages/runtime: gleam run -m pending_read_bench.
 //// SQLite uses an in-memory database; durations are wall milliseconds.
 
@@ -26,7 +27,7 @@ type Backend {
   Sqlite
 }
 
-/// Compare whole-namespace loading and referenced point reads on both backends.
+/// Compare writer-path namespace scans, point reads and bounded bulk reads.
 ///
 /// ## Examples
 ///
@@ -47,8 +48,8 @@ pub fn main() {
 /// // pending_read_bench.smoke()
 /// ```
 pub fn smoke() {
-  run_case("memory-smoke", Memory, 1, 1, 1, 1)
-  run_case("sqlite-smoke", Sqlite, 1, 1, 1, 1)
+  run_case("memory-smoke", Memory, 1, 129, 1, 1)
+  run_case("sqlite-smoke", Sqlite, 1, 129, 1, 1)
 }
 
 fn run_backend(label: String, backend: Backend) {
@@ -90,9 +91,9 @@ fn run_case(
     )
   let keys = names("own-", width)
   seed(sess, list.append(keys, names("other-", backlog)))
-  list.each(["baseline", "point"], fn(mode) {
+  let expected = list.map(keys, fn(key) { #(key, payload()) }) |> dict.from_list
+  list.each(["baseline", "point", "bulk"], fn(mode) {
     let now = poll.monotonic().now
-    let expected = list.map(keys, fn(_) { payload() })
     let samples =
       list.map(list.repeat(Nil, samples), fn(_) {
         let start = now()
@@ -111,17 +112,31 @@ fn run_case(
                 |> dict.from_list
               list.map(keys, fn(key) {
                 let assert Ok(value) = dict.get(decoded, key)
-                value
+                #(key, value)
               })
+              |> dict.from_list
             }
-            _ ->
+            "point" ->
               list.map(keys, fn(key) {
                 let assert Ok(Some(storage.Register(value:, ..))) =
                   writer.get_register(name, register.PendingEntry, key)
                 let assert Ok(payload) =
                   codec.decode_pending_entry(value.payload)
-                payload
+                #(key, payload)
               })
+              |> dict.from_list
+            _ -> {
+              let assert Ok(cells) =
+                writer.get_registers_batched(name, register.PendingEntry, keys)
+              dict.to_list(cells)
+              |> list.map(fn(pair) {
+                let #(key, storage.Register(value:, ..)) = pair
+                let assert Ok(payload) =
+                  codec.decode_pending_entry(value.payload)
+                #(key, payload)
+              })
+              |> dict.from_list
+            }
           }
           assert values == expected
         })
