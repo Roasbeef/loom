@@ -3185,6 +3185,91 @@ pub fn snapshot_register_budget_decoder() -> decode.Decoder(
   decode.success(SnapshotRegisterBudget(cell_count:, total_bytes:))
 }
 
+pub type SnapshotRegisterChangedHeaders {
+  SnapshotRegisterChangedHeaders(
+    key: String,
+    seq: Int,
+    value_bytes: Option(Int),
+  )
+}
+
+pub fn snapshot_register_changed_headers(
+  namespace namespace: String,
+  after_seq after_seq: Int,
+  through_seq through_seq: Int,
+  prefix prefix: String,
+  prefix_upper prefix_upper: String,
+) {
+  let sql =
+    "SELECT key, seq, length(value) AS value_bytes
+FROM registers INDEXED BY ix_register_seq
+WHERE ns = ?1 AND seq > ?2 AND seq <= ?3
+AND key >= ?4 AND key <
+  CASE WHEN CAST(?5 AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(?5 AS TEXT) END
+ORDER BY key LIMIT 1025"
+  #(
+    sql,
+    [
+      dev.ParamString(namespace),
+      dev.ParamInt(after_seq),
+      dev.ParamInt(through_seq),
+      dev.ParamString(prefix),
+      dev.ParamString(prefix_upper),
+    ],
+    snapshot_register_changed_headers_decoder(),
+  )
+}
+
+pub fn snapshot_register_changed_headers_decoder() -> decode.Decoder(
+  SnapshotRegisterChangedHeaders,
+) {
+  use key <- decode.field(0, decode.string)
+  use seq <- decode.field(1, decode.int)
+  use value_bytes <- decode.field(2, decode.optional(decode.int))
+  decode.success(SnapshotRegisterChangedHeaders(key:, seq:, value_bytes:))
+}
+
+pub type SnapshotRegisterChangedBudget {
+  SnapshotRegisterChangedBudget(cell_count: Int, total_bytes: Int)
+}
+
+pub fn snapshot_register_changed_budget(
+  namespace namespace: String,
+  after_seq after_seq: Int,
+  through_seq through_seq: Int,
+  prefix prefix: String,
+  prefix_upper prefix_upper: String,
+) {
+  let sql =
+    "SELECT COUNT(*) AS cell_count,
+  CAST(COALESCE(SUM(length(value) + length(CAST(key AS BLOB)) + length(CAST(ns AS BLOB)) + 65), 0) AS INTEGER) AS total_bytes
+FROM registers INDEXED BY ix_register_seq
+WHERE ns = ?1 AND seq > ?2 AND seq <= ?3
+AND key >= ?4 AND key <
+  CASE WHEN CAST(?5 AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(?5 AS TEXT) END"
+  #(
+    sql,
+    [
+      dev.ParamString(namespace),
+      dev.ParamInt(after_seq),
+      dev.ParamInt(through_seq),
+      dev.ParamString(prefix),
+      dev.ParamString(prefix_upper),
+    ],
+    snapshot_register_changed_budget_decoder(),
+  )
+}
+
+pub fn snapshot_register_changed_budget_decoder() -> decode.Decoder(
+  SnapshotRegisterChangedBudget,
+) {
+  use cell_count <- decode.field(0, decode.int)
+  use total_bytes <- decode.field(1, decode.int)
+  decode.success(SnapshotRegisterChangedBudget(cell_count:, total_bytes:))
+}
+
 pub type SnapshotRegisterValue {
   SnapshotRegisterValue(value: BitArray)
 }

@@ -851,6 +851,8 @@ pub fn conversation_schema_and_generated_queries_match_sources_test() {
     sql.snapshot_usage_value().0,
     sql.snapshot_register_headers("", "", "", "", "").0,
     sql.snapshot_register_budget("", "", "", "", "").0,
+    sql.snapshot_register_changed_headers("", 0, 0, "", "").0,
+    sql.snapshot_register_changed_budget("", 0, 0, "", "").0,
     sql.snapshot_register_value("", "", 0).0,
     sql.snapshot_register_page_budget("", "", "", "", 1).0,
     sql.snapshot_register_page_headers("", "", "", "", 1).0,
@@ -911,6 +913,7 @@ fn normalized_sql(source: String) -> String {
         "key",
         "seq",
         "after_seq",
+        "through_seq",
         "before_seq",
         "page_size",
         "offset",
@@ -1485,4 +1488,73 @@ pub fn optional_prefixed_references_select_only_the_terminal_operation_test() {
     assert !list.any(cut.cells, fn(cell) { cell.key == "child-run/older" })
     assert fixture.close() == Ok(Nil)
   })
+}
+
+// A window of sequences selects exactly the cells written inside it, however
+// many cells the namespace holds, and both backends agree on the members.
+pub fn a_sequence_window_selects_only_the_cells_written_inside_it_test() {
+  list.each([Memory, Sqlite], fn(backend) {
+    let fixture = open(backend, "seq-window")
+
+    // Every write takes its own seq, counted from one, so strand-1NN sits at
+    // seq NN + 1 and the window below holds seqs 10 to 14.
+    list.each(range(0, 39), fn(index) {
+      let _committed =
+        write(fixture, [
+          tx.SetRegister(
+            register.StrandState,
+            "strand-" <> int.to_string(100 + index),
+            register.value(json.Int(index)),
+          ),
+        ])
+    })
+    let plan =
+      snapshot.Plan(
+        [
+          snapshot.Selection(
+            register.StrandState,
+            "",
+            snapshot.SeqBetween(after: 9, through: 14),
+          ),
+        ],
+        [],
+        0,
+      )
+    let assert Ok(cut) = fixture.reader.capture(plan, answer_wait_ms)
+      as "a seq window is an ordinary bounded selection"
+    assert cell_keys(cut)
+      == ["strand-109", "strand-110", "strand-111", "strand-112", "strand-113"]
+    assert fixture.close() == Ok(Nil)
+  })
+}
+
+// The window statements name the sequence index. Without it the planner may
+// prefer the primary key's range, which would walk every strand to find the
+// few that changed, and the result would still be correct.
+pub fn the_sequence_window_plan_walks_the_sequence_index_test() {
+  let assert Ok(conn) = sqlight.open(path("seq-window-plan"))
+    as "plan fixture opens"
+  assert sqlight.exec(session_schema.schema, on: conn) == Ok(Nil)
+  let statements = [
+    sql.snapshot_register_changed_budget("", 0, 0, "", "").0,
+    sql.snapshot_register_changed_headers("", 0, 0, "", "").0,
+  ]
+  list.each(statements, fn(statement) {
+    let assert Ok(plan) =
+      sqlight.query(
+        "EXPLAIN QUERY PLAN " <> statement,
+        on: conn,
+        with: [
+          sqlight.text("strand.state"),
+          sqlight.int(5),
+          sqlight.int(10),
+          sqlight.text(""),
+          sqlight.text(""),
+        ],
+        expecting: decode.at([3], decode.string),
+      )
+      as "SQLite explains the window query"
+    assert list.any(plan, string.contains(_, "ix_register_seq"))
+  })
+  assert sqlight.close(conn) == Ok(Nil)
 }
