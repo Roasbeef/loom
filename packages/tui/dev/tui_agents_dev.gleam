@@ -37,6 +37,8 @@ import session_view/session_channel
 import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/transcript_line
+import session_view/transcript_lines
 import session_view/worktree_view
 import tui
 import tui/agents
@@ -174,8 +176,8 @@ fn fixture(
 ///
 /// The agents cycle through the four kinds of work the six-agent fixture
 /// shows, so a share of them is live and a share carries an approval. The
-/// capture decoder bounds a cut at 1024 cells, so a count above about a
-/// hundred and fifty is refused by the decoder rather than measured.
+/// capture decoder bounds a cut at 1024 cells, so a count above about two
+/// hundred is refused by the decoder rather than measured.
 ///
 /// ## Examples
 ///
@@ -186,7 +188,7 @@ pub fn scale_model(count: Int) -> tui_model.Model {
   let #(_, base) = tui_perf_dev.bench_model()
   let model = fixture_of(base, "dark", scale_agents(count))
   tui_model.Model(
-    ..model,
+    shared: shared_set.tool_tails(model.shared, scale_tool_tails(count)),
     view: tui_model.View(
       ..model.view,
       overlay: tui_model.NoOverlay,
@@ -223,8 +225,8 @@ pub fn scale_decode(captured: snapshot.Captured) -> snapshot_view.View {
   view
 }
 
-/// A decoded cut applied to the model, as the lane applies each refresh of
-/// an unchanged session.
+/// A decoded cut applied to the model, as the lane applies a pushed
+/// notice, whether the cut it carries is new or a repeat.
 ///
 /// ## Examples
 ///
@@ -270,6 +272,30 @@ pub fn listed_strands(model: tui_model.Model, count: Int) -> tui_model.Model {
       list.append(model.shared.strands, listed),
     ),
   )
+}
+
+// One streaming tail for each live agent, the shape a running tool call
+// leaves on the strand until its durable result lands. The fold tests every
+// retained tail against the cut, so a roster of live agents is what makes
+// that cost visible. The presentation holds at most `max_tool_tails`.
+fn scale_tool_tails(count: Int) -> List(transcript_line.ToolTail) {
+  list.repeat(Nil, count)
+  |> list.index_map(fn(_, offset) { offset + 1 })
+  |> list.filter(fn(index) { index % 4 == 1 })
+  |> list.take(transcript_lines.max_tool_tails)
+  |> list.map(fn(index) {
+    let name = "sub:scale-" <> int.to_string(index)
+    transcript_line.ToolTail(
+      strand: name,
+      operation: "scale-op-" <> int.to_string(index),
+      step: "step-1",
+      source_index: 0,
+      call_id: "scale-call-" <> int.to_string(index),
+      stream: "stdout",
+      text: "Reading the shard.",
+      total_bytes: 18,
+    )
+  })
 }
 
 fn scale_agents(count: Int) -> List(Agent) {
