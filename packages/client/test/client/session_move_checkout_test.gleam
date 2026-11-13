@@ -74,7 +74,10 @@ import storage/exec_ledger
 import support/remote_orchestrator as host_rig
 import support/state_rig
 import support/worktree_rig.{git, write}
+import telemetry/field
+import telemetry/level
 import telemetry/log
+import telemetry/record
 
 const stage_ms = 2000
 
@@ -433,6 +436,16 @@ fn ports(
   after: fn(move_checkout.Progress) -> Nil,
   through: fn(Link) -> Link,
 ) -> move_checkout.Ports {
+  ports_logging(rig, after, through, log.discard())
+}
+
+// `ports`, with the executor's landing logging into `logger`.
+fn ports_logging(
+  rig: Rig,
+  after: fn(move_checkout.Progress) -> Nil,
+  through: fn(Link) -> Link,
+  logger: log.Logger,
+) -> move_checkout.Ports {
   let candidate =
     host_rig.candidate_over(
       "box",
@@ -457,7 +470,7 @@ fn ports(
     },
     land: move_checkout.landing(
       fn(_executor) { host_rig.placement_of([candidate], fn(_) { Nil }) },
-      log.discard(),
+      logger,
     ),
     after:,
   )
@@ -654,6 +667,72 @@ pub fn a_dirty_directory_moves_to_an_executor_and_the_receiver_finds_it_there_te
   assert git(tree, ["log", "-1", "--format=%s"]) == "Working snapshot"
   assert git(tree, ["status", "--porcelain"]) == ""
   assert git(tree, ["branch", "--show-current"]) == "loom/" <> rig.session
+  finish(rig)
+}
+
+// Every record the logger's subject holds, in the order it was written.
+fn drained(records: process.Subject(record.Record)) -> List(record.Record) {
+  case process.receive(records, 0) {
+    Ok(next) -> [next, ..drained(records)]
+    Error(Nil) -> []
+  }
+}
+
+// What the logs let an operator follow: one line for each stage of the
+// checkout, naming the session, the operation, the state's short hash and its
+// size and how long the stage took, and nothing of either machine's paths.
+pub fn each_stage_of_the_checkout_logs_one_line_with_its_sizes_test() {
+  let rig = start("stages", InWorktrees, 0)
+  let move = begin(rig)
+  let records = process.new_subject()
+  let logger = log.new(sink: log.to_subject(records), threshold: level.Info)
+  let environment =
+    session_mover.Environment(
+      ..environment(
+        rig,
+        Some(ports_logging(rig, silently, direct, logger)),
+        box_repo(),
+        fn(_) { Nil },
+      ),
+      logger:,
+    )
+  assert session_mover.drive(environment, move) == Finished
+
+  let stages =
+    drained(records)
+    |> list.filter(fn(entry) {
+      string.starts_with(entry.event, "daemon.move_checkout_")
+    })
+  assert list.map(stages, fn(entry) { entry.event })
+    == [
+      "daemon.move_checkout_captured",
+      "daemon.move_checkout_sent",
+      "daemon.move_checkout_applied",
+      "daemon.move_checkout_closed",
+    ]
+
+  // Each line names the same session, operation and state, with a size and a
+  // duration, and no value holds a path.
+  list.each(stages, fn(entry) {
+    let fields = entry.fields
+    assert list.contains(fields, field.ident("session", rig.session))
+    assert list.contains(fields, field.ident("op", op))
+    let assert Ok(field.Field(value: field.Ident(hash), ..)) =
+      list.find(fields, fn(found) { found.key == "state" })
+    assert string.length(hash) == 8
+    let assert Ok(field.Field(value: field.Count(bytes), ..)) =
+      list.find(fields, fn(found) { found.key == "bytes" })
+    assert bytes > 0
+    let assert Ok(field.Field(value: field.Count(elapsed), ..)) =
+      list.find(fields, fn(found) { found.key == "elapsed_ms" })
+    assert elapsed >= 0
+    assert !list.any(fields, fn(found) {
+      case found.value {
+        field.Text(text) | field.Ident(text) -> string.contains(text, "/")
+        field.Count(_) | field.Flag(_) | field.Redacted -> False
+      }
+    })
+  })
   finish(rig)
 }
 

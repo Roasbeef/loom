@@ -759,6 +759,7 @@ fn checked_out(
           directory: registration.workspace,
           target:,
           clock: environment.clock,
+          logger: environment.logger,
         )
       use Nil <- result.try(
         bounded(environment.budget.checkout_ms, "the checkout", fn() {
