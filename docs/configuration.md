@@ -1127,10 +1127,12 @@ one more lease (15 seconds) so a late poll learns why, so a laptop that attaches
 again at the cap is refused for up to that long. A feed's permit is charged what a
 feed can hold, which is its unacknowledged queue (1,048,576 bytes), one partly
 received frame (12,582,912), one answer being built (1,048,576) and one piece being
-read (786,432), 15,466,496 bytes in all. Eight feeds therefore take 123,731,968 of
-the default `max_reserved_message_bytes` of 536,870,912, a little under a quarter,
+read (786,432), and, when the last piece arrives, the whole frame joined from its
+pieces while the pieces are still referenced (a second 12,582,912), 28,049,408 bytes
+in all. Eight feeds therefore take 224,395,264 of the default
+`max_reserved_message_bytes` of 536,870,912, about 42 percent,
 and leave room for the owner's own control socket and pages. A frame from the laptop
-arrives in pieces of at least 196,608 bytes and a last piece, at most 65 pieces for
+arrives in pieces of at least 196,608 bytes and a last piece, at most 64 pieces for
 the 12,582,912-byte frame bound. A feed is a gateway
 attachment as this machine's owner at the Operator authority, so it shows the page
 what this daemon's own operating page would show, and the commands it forwards are
