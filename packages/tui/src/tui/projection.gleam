@@ -65,7 +65,7 @@ import tui/image_support
 import tui/layout
 import tui/live_tail
 import tui/markdown
-import tui/model.{type Model, Caches, Model, View} as tui_model
+import tui/model.{type Model, type ReadingRows, Caches, Model, ReadingRows, View} as tui_model
 import tui/render
 import tui/side_surfaces
 import tui/transcript_anchor
@@ -122,7 +122,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
           Model(..after, view: View(..after.view, reading_lines:)),
         )
         |> refresh_record_cache(width)
-      let #(rendered_rows, rendered_gutters, live_tail) =
+      let #(rendered_rows, rendered_gutters, live_tail, reading_rows) =
         rendered_layout_for(cached, width)
       let rendered_row_count = list.length(rendered_rows)
 
@@ -223,7 +223,12 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
             |> view_set.rendered_revision(cached.shared.render_revision)
             |> view_set.rendered_row_count(rendered_row_count)
             |> view_set.caches(
-              Caches(..cached.view.caches, rendered_rows:, live_tail:),
+              Caches(
+                ..cached.view.caches,
+                rendered_rows:,
+                live_tail:,
+                reading_rows:,
+              ),
             )
             |> view_set.revealed_rows(revealed_rows)
             |> view_set.scroll_offset(case side_surfaces.notes_surface(after) {
@@ -969,10 +974,13 @@ fn anchored_entry_blocks(
 }
 
 /// Renders full layout rows and gutters for transcript viewport.
+///
+/// The fourth element is the frozen reading lines' rows, kept for the next
+/// projection, and `None` whenever the reader is not above the live tail.
 fn rendered_layout_for(
   model: Model,
   width: Int,
-) -> #(List(span.Line), List(Int), live_tail.Cache) {
+) -> #(List(span.Line), List(Int), live_tail.Cache, Option(ReadingRows)) {
   // Check help or notes overlay state.
   case model.view.help_open, model.view.notes_open {
     True, _ -> {
@@ -980,27 +988,30 @@ fn rendered_layout_for(
         render.help_content().lines
         |> markdown.wrap_lines(width)
         |> list.reverse
-      #(rows, list.repeat(0, list.length(rows)), model.view.caches.live_tail)
+      #(
+        rows,
+        list.repeat(0, list.length(rows)),
+        model.view.caches.live_tail,
+        None,
+      )
     }
     False, True -> {
       // Notes render against their actual rectangle in `render_transcript`.
-      #([], [], model.view.caches.live_tail)
+      #([], [], model.view.caches.live_tail, None)
     }
     False, False -> {
       // Check if frozen reading lines are active.
-      let #(transient_rows, transient_gutters, cache) = case
+      let #(transient_rows, transient_gutters, cache, reading_rows) = case
         model.view.reading_lines
       {
         Some(lines) -> {
-          let #(rows, gutters, _) =
-            rendered_lines(
-              lines,
-              width,
-              [],
-              live_tail.begin(live_tail.new()),
-              model.shared.active_strand,
-            )
-          #(rows, gutters, model.view.caches.live_tail)
+          let frozen = frozen_rows(model, lines, width)
+          #(
+            frozen.rows,
+            frozen.gutters,
+            model.view.caches.live_tail,
+            Some(frozen),
+          )
         }
         None -> {
           let #(rows, gutters, pass) =
@@ -1011,7 +1022,7 @@ fn rendered_layout_for(
               live_tail.begin(model.view.caches.live_tail),
               model.shared.active_strand,
             )
-          #(rows, gutters, live_tail.finish(pass))
+          #(rows, gutters, live_tail.finish(pass), None)
         }
       }
 
@@ -1023,7 +1034,42 @@ fn rendered_layout_for(
           |> list.reverse
           |> list.append(model.view.record_gutters),
         cache,
+        reading_rows,
       )
+    }
+  }
+}
+
+/// The wrapped rows of the frozen reading lines, built once and reused.
+///
+/// The frozen lines never change while the reader stays above the tail, but
+/// the transcript revision moves with every token that streams in below them,
+/// so the projection arrives here once per token. The rows are a function of
+/// the lines, the width and the strand and nothing else (no live stream is
+/// consulted, and the pass is a fresh one), so a hit on all three returns the
+/// rows already built. The lines are compared as terms: they are the same list
+/// the previous projection received, which the comparison recognises without
+/// walking it, and a list that merely equals it is still cheaper to compare
+/// than to wrap.
+fn frozen_rows(model: Model, lines: List(Line), width: Int) -> ReadingRows {
+  let strand = model.shared.active_strand
+
+  // A kept entry is reused only when all three inputs are the ones it was
+  // built from; anything else wraps the lines again and replaces it.
+  case model.view.caches.reading_rows {
+    Some(kept)
+      if kept.width == width && kept.strand == strand && kept.lines == lines
+    -> kept
+    _ -> {
+      let #(rows, gutters, _) =
+        rendered_lines(
+          lines,
+          width,
+          [],
+          live_tail.begin(live_tail.new()),
+          strand,
+        )
+      ReadingRows(lines:, width:, strand:, rows:, gutters:)
     }
   }
 }

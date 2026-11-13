@@ -49,10 +49,10 @@ model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1764`
 `packages/tui/src/tui.gleam:4240` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
-(`tui/model.gleam:405` (`Model`)), whose `view` field already holds the
-terminal's etui render caches (`tui/model.gleam:345` (`Caches`)). The lane's
+(`tui/model.gleam:433` (`Model`)), whose `view` field already holds the
+terminal's etui render caches (`tui/model.gleam:369` (`Caches`)). The lane's
 outputs join the step's one outbox through `hold_channel`
-(`tui/model.gleam:1035` (`hold_channel`)), and `runtime.take` returns
+(`tui/model.gleam:1064` (`hold_channel`)), and `runtime.take` returns
 them with the model (`tui/runtime.gleam:361` (`take`)).
 
 The web view held the lane, an inbox and what it derived from the last
@@ -132,7 +132,7 @@ terminal, 4 handles, 3 split.
 | `width`, `height` | b | The terminal's size. |
 | `palette` | b | Launch-time colour capability. |
 | `input` | b | An etui `TextAreaState`; the web's editor is the browser's. |
-| `strand_workspaces` | split | The parked `scrollback` per strand is the session's history window and moves to a shared `Dict(#(session, strand), history_view.State)`; the editor, its history, the offset, anchors and height stay terminal; the record is `StrandWorkspace` (`tui/model.gleam:306`). |
+| `strand_workspaces` | split | The parked `scrollback` per strand is the session's history window and moves to a shared `Dict(#(session, strand), history_view.State)`; the editor, its history, the offset, anchors and height stay terminal; the record is `StrandWorkspace` (`tui/model.gleam:330`). |
 | `restored_workspace` | b | A viewport endpoint the next projection restores. |
 | `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`session_view/commands.gleam:788` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
 | `history`, `history_index`, `history_draft` | b | The composer's command history. |
@@ -407,7 +407,7 @@ reducers decide. Every `Channel` effect comes through `hold_channel`
 reducer queues is the channelless arrival
 (`session_view/lane_fold.gleam:1177` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
 the reducer runs
-(`tui/model.gleam:1196` (`start_step`)); the terminal's shell keeps
+(`tui/model.gleam:1226` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
 terminal maps `Recorded(recorder, message)` to
 `recording.append(recorder, recording.Arrived(message))`, which writes the

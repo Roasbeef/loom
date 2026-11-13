@@ -15,6 +15,7 @@ import tui
 import tui/buffered
 import tui/connection
 import tui/frame
+import tui/layout
 import tui/model as tui_model
 import tui/render
 import tui/view_set
@@ -57,6 +58,40 @@ pub fn scrolling_inside_a_live_answer_freezes_until_end_test() {
   assert resumed.view.reading_lines == None
   assert resumed.view.caches.rendered_rows != reading.view.caches.rendered_rows
     as "returning to the bottom reveals the accumulated output"
+}
+
+// Every token that streams in below the reader moves the transcript revision,
+// and the projection used to wrap the frozen lines again each time. The rows
+// are a function of the lines, the width and the strand, so the next
+// projection keeps the ones it has and a change of any of the three rebuilds
+// them.
+pub fn frozen_rows_are_kept_while_output_streams_in_below_test() {
+  let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
+  let assert Some(kept) = reading.view.caches.reading_rows
+    as "scrolling into a live answer wraps its frozen lines once"
+  assert Some(kept.lines) == reading.view.reading_lines
+  assert kept.width == layout.transcript_width(reading)
+
+  let arrived = deliver(reading, "\n\nNew output below.\n\nMore output.")
+  assert arrived.view.caches.reading_rows == Some(kept)
+    as "a token below the reader does not wrap the frozen lines again"
+}
+
+pub fn frozen_rows_are_wrapped_again_when_the_width_changes_test() {
+  let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
+  let assert Some(kept) = reading.view.caches.reading_rows
+  let resized = tui.update(backend.Resize(70, 24), reading)
+  let assert Some(rewrapped) = resized.view.caches.reading_rows
+  assert rewrapped.width != kept.width
+  assert rewrapped.lines == kept.lines
+  assert rewrapped.width == layout.transcript_width(resized)
+    as "the rows are keyed to the width they were wrapped for"
+}
+
+pub fn frozen_rows_are_dropped_on_returning_to_the_tail_test() {
+  let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
+  let resumed = tui.update(backend.KeyPress("end"), reading)
+  assert resumed.view.caches.reading_rows == None
 }
 
 // Etui reports a tick only when a poll times out with no input, and a wheel
