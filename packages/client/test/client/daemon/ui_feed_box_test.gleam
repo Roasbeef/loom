@@ -38,18 +38,28 @@ type LinkMessage {
   Cut
   Restore
   Ask(reply: Subject(Link))
+  Refusals(reply: Subject(Int))
 }
 
-/// A link a test cuts and restores, read by every dial.
+/// A link a test cuts and restores, read by every dial. It counts the dials it
+/// refused while cut, so a test waits for the feed to have met the cut and does
+/// not guess with a sleep.
 fn link() -> Subject(LinkMessage) {
   let assert Ok(started) =
-    actor.new(Up)
-    |> actor.on_message(fn(state: Link, message: LinkMessage) {
+    actor.new(#(Up, 0))
+    |> actor.on_message(fn(state: #(Link, Int), message: LinkMessage) {
       case message {
-        Cut -> actor.continue(Down)
-        Restore -> actor.continue(Up)
+        Cut -> actor.continue(#(Down, state.1))
+        Restore -> actor.continue(#(Up, state.1))
         Ask(reply:) -> {
-          process.send(reply, state)
+          process.send(reply, state.0)
+          case state.0 {
+            Up -> actor.continue(state)
+            Down -> actor.continue(#(Down, state.1 + 1))
+          }
+        }
+        Refusals(reply:) -> {
+          process.send(reply, state.1)
           actor.continue(state)
         }
       }
@@ -57,6 +67,22 @@ fn link() -> Subject(LinkMessage) {
     |> actor.start
     as "the link starts"
   started.data
+}
+
+/// Waits until the link has refused at least `count` dials, which is the feed
+/// having met the cut at least that many times.
+fn met_the_cut(through: Subject(LinkMessage), count: Int, tries: Int) -> Nil {
+  case process.call(through, waiting: 1000, sending: Refusals) >= count {
+    True -> Nil
+    False ->
+      case tries {
+        0 -> panic as "the feed never met the cut"
+        _ -> {
+          process.sleep(50)
+          met_the_cut(through, count, tries - 1)
+        }
+      }
+  }
 }
 
 fn relay_over(rig: Rig, through: Subject(LinkMessage)) -> top_relay.Relay {
@@ -147,6 +173,16 @@ fn until(
   }
 }
 
+/// Receives whatever the box has already pushed to the page, until the inbox has
+/// been quiet for a moment. The gateway pushes presence and the like on its own,
+/// so a test that asserts the page is quiet during a cut first lets those land.
+fn settled(page: Page) -> Nil {
+  case process.receive(page.inbox, 300) {
+    Ok(_) -> settled(page)
+    Error(Nil) -> Nil
+  }
+}
+
 // --- the page reaches the session ---------------------------------------------
 
 pub fn a_frame_the_page_sends_reaches_the_session_and_its_reply_reaches_the_page_test() {
@@ -177,8 +213,10 @@ pub fn a_drop_shorter_than_the_lease_is_invisible_to_the_page_test() {
     as "the subscribe is answered before the drop"
 
   // The link is down while polls fail and the page shows nothing at all.
+  settled(page)
   process.send(through, Cut)
-  assert process.receive(page.inbox, 600) == Error(Nil)
+  met_the_cut(through, 2, 100)
+  assert process.receive(page.inbox, 300) == Error(Nil)
   assert process.receive(page.ended, 0) == Error(Nil)
 
   // When it comes back the same feed carries the next frame, with no new attach
@@ -191,7 +229,7 @@ pub fn a_drop_shorter_than_the_lease_is_invisible_to_the_page_test() {
   assert process.receive(page.ended, 0) == Error(Nil)
 }
 
-pub fn a_drop_the_lane_gives_up_on_shows_waiting_and_a_fresh_attach_reads_the_same_session_test() {
+pub fn a_drop_the_lane_gives_up_on_ends_the_feed_and_a_fresh_attach_reads_the_same_session_test() {
   let rig = feed_rig.rig("long-drop", feed_rig.watching, remote_feed.lease_ms)
   let through = link()
   let relay = relay_over(rig, through)
@@ -204,13 +242,15 @@ pub fn a_drop_the_lane_gives_up_on_shows_waiting_and_a_fresh_attach_reads_the_sa
     as "the prompt is answered before the drop"
 
   // The link goes down and the lane gives up on a request in flight. The page
-  // shows the waiting state, never a failure.
+  // ends the feed with a retry, and the component has drawn the waiting page.
+  settled(page)
   process.send(through, Cut)
-  assert process.receive(page.inbox, 400) == Error(Nil)
+  met_the_cut(through, 1, 100)
+  assert process.receive(page.inbox, 300) == Error(Nil)
   ui_feed.shut(page.feed)
   assert process.receive(page.inbox, 3000)
-    == Ok(connection_event.Closed(ending.reason(ending.PeerUnreachable)))
-  assert process.receive(page.ended, 1000) == Ok(ending.PeerUnreachable)
+    == Ok(connection_event.Closed(ending.reason(ending.ConnectionFailed)))
+  assert process.receive(page.ended, 1000) == Ok(ending.ConnectionFailed)
 
   // While the link is down a fresh attach fails, which is the socket's
   // waiting page.
@@ -231,6 +271,43 @@ pub fn a_drop_the_lane_gives_up_on_shows_waiting_and_a_fresh_attach_reads_the_sa
   let assert Some(_) = until(again, reply_to(1), 6000)
     as "the subscribe is answered through the new feed"
   assert feed_rig.prompts(rig) == ["kept"]
+}
+
+// A frame the lane queued when its feed ended was never sent, and the next feed
+// does not send it: the outbox belongs to the feed client process, which dies
+// with the feed, and nothing resends it. The lane learns it was not sent because
+// the feed ended, and its own rule for a command with no reply applies.
+pub fn a_prompt_queued_when_the_feed_ends_is_not_sent_by_the_next_feed_test() {
+  let rig = feed_rig.rig("no-resend", feed_rig.watching, remote_feed.lease_ms)
+  let through = link()
+  let relay = relay_over(rig, through)
+  let page = open(relay, rig)
+  ui_feed.transmit(page.feed, command(1, protocol.Subscribe(rig.session, None)))
+  let assert Some(_) = until(page, reply_to(1), 6000)
+    as "the subscribe is answered before the cut"
+
+  // With the link cut the prompt cannot be sent, so it waits in this feed's
+  // outbox and its send meets the cut with the polls.
+  settled(page)
+  process.send(through, Cut)
+  met_the_cut(through, 1, 100)
+  ui_feed.transmit(page.feed, command(2, protocol.Prompt("main", "never")))
+  met_the_cut(through, 3, 100)
+  ui_feed.shut(page.feed)
+  assert process.receive(page.inbox, 3000)
+    == Ok(connection_event.Closed(ending.reason(ending.ConnectionFailed)))
+
+  // The next feed starts with an empty outbox, and the session never sees it.
+  process.send(through, Restore)
+  let again = open(relay, rig)
+  ui_feed.transmit(
+    again.feed,
+    command(1, protocol.Subscribe(rig.session, None)),
+  )
+  let assert Some(_) = until(again, reply_to(1), 6000)
+    as "the subscribe is answered through the new feed"
+  process.sleep(1500)
+  assert feed_rig.prompts(rig) == []
 }
 
 // --- the fence -----------------------------------------------------------------

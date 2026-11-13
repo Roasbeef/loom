@@ -36,14 +36,21 @@ import statem
 /// The seed of the campaign over mixed frames and links.
 const campaign_seed = 1086
 
+/// The seed of the campaign that mostly pushes, with large frames, so the outbox
+/// reaches its frame bound and its byte bound.
+const pushy_seed = 1087
+
 const runs = 120
 
 const longest = 50
 
-fn config() -> statem.Config {
-  statem.default_config(seed: campaign_seed)
+fn config(seed: Int) -> statem.Config {
+  statem.default_config(seed:)
   |> statem.with_test_count(runs)
-  |> statem.with_max_commands(longest)
+  |> statem.with_max_commands(case seed == pushy_seed {
+    True -> longest * 4
+    False -> longest
+  })
 }
 
 // --- commands ----------------------------------------------------------------
@@ -74,6 +81,12 @@ type Fate {
   Duplicated
 }
 
+/// How a campaign weights what the lane does.
+type Mix {
+  Mixed
+  Pushy
+}
+
 type Command {
   Push(size: Size)
   Send(fate: Fate)
@@ -81,8 +94,12 @@ type Command {
   Stray(n: Int, offset: Int)
 }
 
-fn command() -> qcheck.Generator(Command) {
-  qcheck.from_weighted_generators(#(25, qcheck.map(size(), Push)), [
+fn command(mix: Mix) -> qcheck.Generator(Command) {
+  let pushes = case mix {
+    Mixed -> 25
+    Pushy -> 70
+  }
+  qcheck.from_weighted_generators(#(pushes, qcheck.map(size(mix), Push)), [
     #(45, qcheck.map(fate(), Send)),
     #(15, qcheck.constant(Delayed)),
     #(
@@ -92,10 +109,14 @@ fn command() -> qcheck.Generator(Command) {
   ])
 }
 
-fn size() -> qcheck.Generator(Size) {
+fn size(mix: Mix) -> qcheck.Generator(Size) {
+  let big = case mix {
+    Mixed -> 15
+    Pushy -> 400
+  }
   qcheck.from_weighted_generators(#(45, qcheck.constant(Tiny)), [
     #(30, qcheck.constant(Text)),
-    #(15, qcheck.constant(Big)),
+    #(big, qcheck.constant(Big)),
     #(5, qcheck.constant(TooBig)),
     #(5, qcheck.constant(Nothing)),
   ])
@@ -125,6 +146,8 @@ type Sut {
     /// The last piece request the laptop sent, which the link may deliver again.
     last: option.Option(feed_outbox.Due),
     serial: Int,
+    /// Why each frame the outbox refused was refused, as a tag.
+    refused: List(String),
   )
 }
 
@@ -136,6 +159,7 @@ fn new_sut() -> Sut {
     completed: [],
     last: None,
     serial: 0,
+    refused: [],
   )
 }
 
@@ -187,12 +211,26 @@ fn pushed(sut: Sut, size: Size) -> Result(Sut, statem.Violation) {
   case feed_outbox.push(sut.outbox, text), expected {
     Ok(outbox), None ->
       Ok(Sut(..sut, outbox:, pushed: list.append(sut.pushed, [text]), serial:))
-    Error(why), Some(wanted) if why == wanted -> Ok(sut)
+    Error(why), Some(wanted) if why == wanted ->
+      Ok(Sut(..sut, refused: [refusal_tag(sut, why), ..sut.refused]))
     _, _ ->
       Error(violation(
         "bound",
         "a frame of " <> int.to_string(bytes) <> " bytes was misjudged",
       ))
+  }
+}
+
+/// A tag for a refusal, which says which bound a `Full` outbox hit.
+fn refusal_tag(sut: Sut, why: feed_outbox.Refusal) -> String {
+  case why {
+    feed_outbox.Empty -> "empty"
+    feed_outbox.TooLarge -> "too-large"
+    feed_outbox.Full ->
+      case feed_outbox.held_frames(sut.outbox) >= feed_outbox.max_frames {
+        True -> "frame-bound"
+        False -> "byte-bound"
+      }
   }
 }
 
@@ -283,12 +321,18 @@ fn shaped(piece: feed_outbox.Due) -> Result(Nil, statem.Violation) {
   }
 }
 
-/// An answer that arrives when no piece is in flight changes nothing. A piece is
-/// in flight only between `take` and its answer, and a command resolves it, so a
-/// command always begins with none in flight.
+/// An answer that names no piece in flight changes nothing. With a piece held,
+/// one is put in flight first, so the answer meets a flight it does not name, and
+/// the flight is then made due again as a lost answer would, so the campaign goes
+/// on from the same place.
 fn stray(sut: Sut, n: Int, offset: Int) -> Result(Sut, statem.Violation) {
-  case feed_outbox.admitted(sut.outbox, n, offset) == sut.outbox {
-    True -> Ok(sut)
+  let #(flying, due) = feed_outbox.take(sut.outbox)
+  let names_it = case due {
+    Some(piece) -> piece.n == n && piece.offset == offset
+    None -> False
+  }
+  case names_it || feed_outbox.admitted(flying, n, offset) == flying {
+    True -> Ok(Sut(..sut, outbox: feed_outbox.unanswered(flying).0))
     False ->
       Error(violation("stray", "an answer that named no piece in flight moved"))
   }
@@ -319,10 +363,10 @@ fn agrees(sut: Sut) -> Result(Nil, statem.Violation) {
 
 // --- the properties -----------------------------------------------------------
 
-fn spec() -> statem.Spec(Nil, Command, Sut) {
+fn spec(mix: Mix) -> statem.Spec(Nil, Command, Sut) {
   statem.Spec(
     initial: Nil,
-    command: fn(_) { command() },
+    command: fn(_) { command(mix) },
     precondition: fn(_, _) { statem.Admit },
     next_model: fn(_, _) { Nil },
     new_sut: new_sut,
@@ -361,7 +405,15 @@ fn drain(sut: Sut, steps: Int) -> Result(Sut, statem.Violation) {
 }
 
 pub fn the_outbox_hands_the_box_each_frame_once_and_whole_test() {
-  case statem.check(spec(), config()) {
+  checked(Mixed, campaign_seed)
+}
+
+pub fn a_full_outbox_refuses_and_still_hands_over_what_it_took_test() {
+  checked(Pushy, pushy_seed)
+}
+
+fn checked(mix: Mix, seed: Int) -> Nil {
+  case statem.check(spec(mix), config(seed)) {
     Ok(Nil) -> Nil
 
     // EUnit clips a long panic message, so the whole report also goes to
@@ -428,4 +480,42 @@ pub fn an_answer_for_another_piece_does_not_advance_the_one_in_flight_test() {
   assert feed_outbox.admitted(outbox, 2, 0) == outbox
   assert feed_outbox.admitted(outbox, 1, 1) == outbox
   assert feed_outbox.held_frames(feed_outbox.admitted(outbox, 1, 0)) == 0
+}
+
+// The pushy campaign has to reach both bounds, or its checks of them are empty.
+// Each command list is run through the same `execute`, and the refusals it made
+// are collected.
+pub fn the_pushy_campaign_reaches_both_bounds_and_the_other_refusals_test() {
+  let tags =
+    numbers(0, 119)
+    |> list.flat_map(fn(run) {
+      let commands = statem.commands(spec(Pushy), config(pushy_seed), run)
+      case run_all(new_sut(), commands) {
+        Ok(done) -> done.refused
+        Error(_) -> []
+      }
+    })
+  let missing =
+    list.filter(["frame-bound", "byte-bound", "too-large", "empty"], fn(tag) {
+      !list.contains(tags, tag)
+    })
+  assert missing == []
+}
+
+fn run_all(sut: Sut, commands: List(Command)) -> Result(Sut, statem.Violation) {
+  case commands {
+    [] -> Ok(sut)
+    [command, ..rest] -> {
+      use stepped <- result.try(execute(sut, command))
+      run_all(stepped, rest)
+    }
+  }
+}
+
+/// The integers from `start` to `stop`, inclusive.
+fn numbers(start: Int, stop: Int) -> List(Int) {
+  case start > stop {
+    True -> []
+    False -> [start, ..numbers(start + 1, stop)]
+  }
 }

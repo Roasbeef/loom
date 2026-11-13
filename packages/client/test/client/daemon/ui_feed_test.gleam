@@ -427,24 +427,38 @@ pub fn a_poll_answered_with_something_that_is_not_poll_json_ends_the_feed_test()
 
 // --- a link that is down -------------------------------------------------------------
 
-pub fn a_box_that_never_answers_is_asked_again_and_a_shut_page_waits_test() {
+// The page's waiting state is the component's to draw when its lane fails
+// (`component_test`), because the lane ends itself before any close arrives. What
+// the feed client owes is to stay quiet while the box is silent and to end, with
+// a retry, when the lane shuts it.
+pub fn a_silent_box_is_asked_again_and_a_shut_feed_ends_with_a_retry_test() {
   let rig = start(to(silent()), always_open)
-
-  // Nothing reaches the page while the box is silent, and the lane giving up
-  // shows the waiting state and never a failure.
   assert process.receive(rig.inbox, 500) == Error(Nil)
   ui_feed.shut(rig.feed)
-  assert closed(rig) == Some(ending.reason(ending.PeerUnreachable))
-  assert process.receive(rig.ended, 1000) == Ok(ending.PeerUnreachable)
+  assert closed(rig) == Some(ending.reason(ending.ConnectionFailed))
+  assert process.receive(rig.ended, 1000) == Ok(ending.ConnectionFailed)
 }
 
-pub fn a_shut_page_whose_box_was_heard_last_has_failed_test() {
+// A box that answers empty at once, as a broken or hostile one would, is asked
+// again after a short fixed pause and not in a tight loop. An honest box answers
+// empty only after its five second hold, so the pause costs it nothing.
+pub fn a_box_that_always_answers_empty_is_polled_at_a_bounded_rate_test() {
   let seen = process.new_subject()
-  let rig =
-    start(to(serving(host(script([answer(1, ["a"])]), seen))), always_open)
-  assert frames(rig, 1) == ["a"]
+  let box =
+    host(
+      fn(polled: remote_feed.Poll) {
+        Ok(remote_feed.Answer(first: polled.after + 1, frames: [], ended: None))
+      },
+      seen,
+    )
+  let rig = start(to(serving(box)), always_open)
+  process.sleep(1000)
+  let polls = list.length(lines(seen))
   ui_feed.shut(rig.feed)
-  assert closed(rig) == Some(ending.reason(ending.ConnectionFailed))
+
+  // About ten a second at a hundred milliseconds apiece, and never a loop.
+  assert polls >= 4
+  assert polls <= 14
 }
 
 pub fn a_link_that_drops_and_heals_loses_no_frame_and_shows_no_ending_test() {

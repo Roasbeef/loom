@@ -177,15 +177,24 @@ pub type Step {
   )
 }
 
-/// A cursor for a feed the laptop holds nothing of, with no poll in flight.
+/// A cursor for a feed the laptop holds nothing of, with no poll in flight. The
+/// first poll takes the number `first_poll`, and each takes the next. The feed
+/// client gives every feed its own range, so a reply that belongs to an earlier
+/// feed never names a poll of a later one, whatever carried it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_cursor.after(feed_cursor.new()) == 0
+/// assert feed_cursor.after(feed_cursor.new(1)) == 0
 /// ```
-pub fn new() -> Cursor {
-  Cursor(after: 0, next_poll: 1, waiting: None, silent: 0, run: Running)
+pub fn new(first_poll: Int) -> Cursor {
+  Cursor(
+    after: 0,
+    next_poll: first_poll,
+    waiting: None,
+    silent: 0,
+    run: Running,
+  )
 }
 
 /// The number of the last frame handed to the page.
@@ -193,7 +202,7 @@ pub fn new() -> Cursor {
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_cursor.after(feed_cursor.new()) == 0
+/// assert feed_cursor.after(feed_cursor.new(1)) == 0
 /// ```
 pub fn after(cursor: Cursor) -> Int {
   cursor.after
@@ -205,7 +214,7 @@ pub fn after(cursor: Cursor) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_cursor.silent_for(feed_cursor.new()) == 0
+/// assert feed_cursor.silent_for(feed_cursor.new(1)) == 0
 /// ```
 pub fn silent_for(cursor: Cursor) -> Int {
   cursor.silent
@@ -218,7 +227,7 @@ pub fn silent_for(cursor: Cursor) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_cursor.in_flight(feed_cursor.new()) == option.None
+/// assert feed_cursor.in_flight(feed_cursor.new(1)) == option.None
 /// ```
 pub fn in_flight(cursor: Cursor) -> Option(Int) {
   cursor.waiting
@@ -231,7 +240,7 @@ pub fn in_flight(cursor: Cursor) -> Option(Int) {
 /// ## Examples
 ///
 /// ```gleam
-/// let #(_, order) = feed_cursor.ask(feed_cursor.new())
+/// let #(_, order) = feed_cursor.ask(feed_cursor.new(1))
 /// assert order == feed_cursor.Order(poll: 1, after: 0)
 /// ```
 pub fn ask(cursor: Cursor) -> #(Cursor, Order) {
@@ -247,7 +256,7 @@ pub fn ask(cursor: Cursor) -> #(Cursor, Order) {
 /// ## Examples
 ///
 /// ```gleam
-/// let #(cursor, order) = feed_cursor.ask(feed_cursor.new())
+/// let #(cursor, order) = feed_cursor.ask(feed_cursor.new(1))
 /// let #(_, step) = feed_cursor.heard(cursor, order.poll, feed_cursor.Silent)
 /// assert step == feed_cursor.Retry(pause_ms: 250)
 /// ```

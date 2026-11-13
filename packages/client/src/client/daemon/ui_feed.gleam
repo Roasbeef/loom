@@ -24,9 +24,12 @@
 //// ## Calls run in tasks of their own
 ////
 //// A poll is held at the box for up to five seconds, and the lane must be able to
-//// transmit and shut meanwhile, so no call runs in this process. Each poll and
-//// each piece is one weft run that returns its reply to a sink this process
-//// selects. A run that is lost, or that outlives its deadline, is reported to
+//// transmit and shut meanwhile, so no call to the box runs in this process. Each
+//// poll and each piece is one weft run that returns its reply to a sink this
+//// process selects. One call does run here: the page's own check (`Settings.open`)
+//// before each poll is a registry call, which waits at most the registry's own
+//// five seconds, and a `Transmit` or a `Shut` that arrives meanwhile waits behind
+//// it. A run that is lost, or that outlives its deadline, is reported to
 //// the same sink as nothing heard. Each exchange has a reply subject owned by its
 //// own task, so an answer that arrives after the task is gone is delivered to a
 //// process that no longer exists, and a late answer can neither reorder frames
@@ -39,12 +42,26 @@
 //// asks again with the same `after` after a pause of 250 ms doubling to two
 //// seconds, and the first answer after the link heals carries every frame the box
 //// queued. If the lane gives up first, because a request it sent has had no reply
-//// for ten seconds, it shuts its transport. A feed that last heard nothing ends
-//// with `PeerUnreachable`, which draws a waiting page the browser reconnects, and
-//// one that last heard the box ends with `ConnectionFailed`. A box that says the
-//// feed is gone ends it with the ending it gave: a lapse is `ConnectionFailed`,
-//// since the page redraws from a fresh attach, a stopped session is
-//// `SessionStopped` and a revoked page is `AccessRevoked`.
+//// for ten seconds, it fails itself and the component draws the waiting page
+//// (`web_view/component`, `lane_failure`): the component decides that, because it
+//// ends its lane in the same update and ignores a close that arrives later. The
+//// lane then shuts its transport, and this process ends with `ConnectionFailed`,
+//// which only picks the socket's close code, a retry. A box that says the feed is
+//// gone ends it with the ending it gave, which the component draws: a lapse is
+//// `ConnectionFailed`, since the page redraws from a fresh attach, a stopped
+//// session is `SessionStopped` and a revoked page is `AccessRevoked`.
+////
+//// ## How soon the box hears the next poll
+////
+//// The box renews a feed's lease only when a poll arrives, and a feed unpolled for
+//// fifteen seconds lapses. The longest gap between two arrivals is, in a healthy
+//// link, the box's hold of five seconds, the round trip and the pause after an
+//// empty answer (100 ms), about 5.2 s. When the link fails after a poll arrived,
+//// that poll's call gives up at `top_relay.call_ms` (7 s) and the pause before the
+//// next is at most `feed_cursor.longest_pause_ms` (2 s), so the next arrival is at
+//// most 9 s after the last, with six seconds to spare. The page's own check
+//// before a poll adds at most the registry's five seconds in a pathological case,
+//// which would leave one second.
 ////
 //// ## Bounds
 ////
@@ -66,6 +83,8 @@
 //// 4. `sent` does the same for a piece task's reply and the outbox.
 //// 5. `finish` tells the component and the page's socket why the feed ended.
 
+import client/daemon/upgrade_log
+import client/internal/ffi_os
 import client/remote/feed_cursor
 import client/remote/feed_outbox
 import client/remote/top_relay
@@ -86,6 +105,12 @@ const wait_ms = 5000
 /// abandoned, in milliseconds. The call has a deadline of its own, so this only
 /// covers a task that never returns.
 const task_slack_ms = 4000
+
+/// How long the next poll waits after an answer that carried no frame, in
+/// milliseconds. An honest box answers empty only after its five second hold, so
+/// this costs nothing, and it keeps a box that answers empty at once from driving
+/// a tight loop. A tenth of a second is short enough never to be seen by a person.
+const empty_pause_ms = 100
 
 /// The timer names. Each belongs to a piece of work and not to a phase.
 const poll_timer = "poll"
@@ -177,6 +202,14 @@ type Data {
   )
 }
 
+/// The number a new feed's first poll takes. It is drawn from the VM's unique
+/// integers, which never repeat, and each feed spends fewer than a thousand million
+/// polls, so no two feeds' polls share a number and a late reply of one cannot be
+/// read as the answer to another's.
+fn poll_base() -> Int {
+  ffi_os.unique_positive_integer() * 1_000_000_000
+}
+
 /// Starts a feed client for the component's page and returns at once. The attach
 /// already happened, so `opened` is answered with the handle before any call is
 /// made, and the first poll goes out from the process's first message.
@@ -224,7 +257,7 @@ fn initialise(
   let data =
     Data(
       settings:,
-      cursor: feed_cursor.new(),
+      cursor: feed_cursor.new(poll_base()),
       outbox: feed_outbox.new(),
       polls:,
       sends:,
@@ -276,17 +309,9 @@ fn handle(
     Live, PollReported(pulled:) -> polled(data, pulled)
     Live, SendReported(pulled:) -> sent(data, pulled)
 
-    // The lane gave up. A feed whose last poll went unanswered is a link that is
-    // down, which the page draws as waiting; one that last heard the box failed.
-    Live, Shut -> {
-      // No answer to the last poll means the box was not heard from.
-      let why = case feed_cursor.silent_for(data.cursor) {
-        0 -> ending.ConnectionFailed
-        _ -> ending.PeerUnreachable
-      }
-
-      finish(data, why, Detach)
-    }
+    // The lane gave up, and the component has already drawn why. This ending only
+    // picks the socket's close code, which is a retry.
+    Live, Shut -> finish(data, ending.ConnectionFailed, Detach)
 
     // The browser went away. Nobody is left to tell, so only the box is.
     Live, ComponentDown(_) -> {
@@ -390,7 +415,7 @@ fn stepped(
     // poll goes out at once, which is how the page keeps receiving.
     feed_cursor.Deliver(frames:) -> {
       handed_on(data, frames)
-      poll(data)
+      next_poll(data, frames)
     }
 
     feed_cursor.Retry(pause_ms:) ->
@@ -403,7 +428,43 @@ fn stepped(
 
     // The box said the feed is gone, so there is nothing left to detach.
     feed_cursor.Over(why:) -> finish(data, ending_of(why), Leave)
-    feed_cursor.Broken(_) -> finish(data, ending.ConnectionFailed, Detach)
+    feed_cursor.Broken(fault:) -> {
+      upgrade_log.refused(upgrade_log.Page, "feed", fault_words(fault))
+      finish(data, ending.ConnectionFailed, Detach)
+    }
+  }
+}
+
+/// The next poll after frames were handed on. A box answers empty only after its
+/// five second hold, so a poll that came back empty at once is a box that is
+/// broken or hostile, and asking again at once would be a tight loop of a registry
+/// call and three processes for every round trip. A short fixed pause bounds it at
+/// ten polls a second and costs an honest box nothing.
+fn next_poll(
+  data: Data,
+  frames: List(String),
+) -> sm.Next(Phase, Data, Message) {
+  // Frames mean the page is being fed, and the next poll follows them at once.
+  case frames {
+    [_, ..] -> poll(data)
+    [] ->
+      sm.keep(data)
+      |> sm.with_named_timeout(
+        name: poll_timer,
+        after: empty_pause_ms,
+        sending: PollDue,
+      )
+  }
+}
+
+/// Fixed words for what a box did wrong, for the upgrade log. Nothing the box
+/// sent is in them, and neither is the feed's token.
+fn fault_words(fault: feed_cursor.Fault) -> String {
+  case fault {
+    feed_cursor.Skipped(..) -> "the box skipped a frame"
+    feed_cursor.Unwelcome(_) -> "the box refused a poll"
+    feed_cursor.Changed -> "the box was replaced under the feed"
+    feed_cursor.Unreadable -> "the box's answer did not read"
   }
 }
 

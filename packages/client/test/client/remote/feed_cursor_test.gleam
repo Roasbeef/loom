@@ -73,6 +73,10 @@ type Target {
 
   /// The poll asked before it, whether or not that one was answered.
   Older
+
+  /// The newest poll of an earlier feed, whose reply was still in flight when a
+  /// fresh attach began this one.
+  OldFeed
 }
 
 /// What the reply says.
@@ -153,7 +157,8 @@ fn count() -> qcheck.Generator(Int) {
 
 fn target() -> qcheck.Generator(Target) {
   qcheck.from_weighted_generators(#(80, qcheck.constant(Newest)), [
-    #(20, qcheck.constant(Older)),
+    #(15, qcheck.constant(Older)),
+    #(5, qcheck.constant(OldFeed)),
   ])
 }
 
@@ -222,12 +227,19 @@ type Over {
 }
 
 type Sut {
-  Sut(cursor: feed_cursor.Cursor, oracle: Oracle)
+  Sut(
+    cursor: feed_cursor.Cursor,
+    oracle: Oracle,
+    /// The polls of the feeds before this one, whose replies may still be in
+    /// flight when a fresh attach starts a new feed.
+    old_polls: List(Int),
+  )
 }
 
 fn fresh(generation: Int) -> Sut {
   Sut(
-    cursor: feed_cursor.new(),
+    cursor: feed_cursor.new(generation * 1000 + 1),
+    old_polls: [],
     oracle: Oracle(
       written: [],
       delivered: [],
@@ -277,6 +289,7 @@ fn asked(sut: Sut) -> Sut {
 
   // A cursor that finished still numbers polls, but its replies are strays.
   Sut(
+    ..sut,
     cursor:,
     oracle: Oracle(
       ..oracle,
@@ -287,11 +300,12 @@ fn asked(sut: Sut) -> Sut {
 }
 
 /// The poll a reply is addressed to, and the `after` that poll carried.
-fn addressed(oracle: Oracle, target: Target) -> Option(#(Int, Int)) {
-  case target, oracle.asked {
-    Newest, [newest, ..] -> Some(newest)
-    Older, [_, older, ..] -> Some(older)
-    Newest, [] | Older, _ -> None
+fn addressed(sut: Sut, target: Target) -> Option(#(Int, Int)) {
+  case target, sut.oracle.asked, list.last(sut.old_polls) {
+    Newest, [newest, ..], _ -> Some(newest)
+    Older, [_, older, ..], _ -> Some(older)
+    OldFeed, _, Ok(poll) -> Some(#(poll, 0))
+    Newest, [], _ | Older, _, _ | OldFeed, _, Error(Nil) -> None
   }
 }
 
@@ -300,7 +314,7 @@ fn replied(
   target: Target,
   shape: Shape,
 ) -> Result(Sut, statem.Violation) {
-  case addressed(sut.oracle, target) {
+  case addressed(sut, target) {
     // No such poll was asked: a reply to poll 999 is a stray.
     None -> stray(sut, 999, reply_for(sut.oracle, 0, shape))
     Some(#(poll, after)) -> {
@@ -367,16 +381,19 @@ fn live(
     | feed_cursor.Over(_)
     | feed_cursor.Broken(_) -> []
   }
-  Ok(Sut(
-    cursor:,
-    oracle: Oracle(
-      ..oracle,
-      delivered: list.append(oracle.delivered, handed),
-      waiting: None,
-      silent: expected.silent,
-      over: expected.over,
+  Ok(
+    Sut(
+      ..sut,
+      cursor:,
+      oracle: Oracle(
+        ..oracle,
+        delivered: list.append(oracle.delivered, handed),
+        waiting: None,
+        silent: expected.silent,
+        over: expected.over,
+      ),
     ),
-  ))
+  )
 }
 
 /// What the rules say a live reply does.
@@ -476,7 +493,14 @@ fn answer(
 /// A fresh attach: a new cursor at zero over a feed that has written nothing.
 /// Nothing of the old feed is carried over, which is the redraw.
 fn attached(sut: Sut) -> Result(Sut, statem.Violation) {
-  let next = fresh(sut.oracle.generation + 1)
+  let next =
+    Sut(
+      ..fresh(sut.oracle.generation + 1),
+      old_polls: list.append(
+        sut.old_polls,
+        list.map(sut.oracle.asked, fn(asked) { asked.0 }),
+      ),
+    )
   case feed_cursor.after(next.cursor) == 0 {
     True -> Ok(next)
     False -> Error(violation("redraw", "a fresh cursor did not start at zero"))
@@ -565,6 +589,7 @@ pub fn the_commands_reach_the_cases_the_rules_name_test() {
     fn(c) { c == Reply(Newest, Gap) },
     fn(c) { c == Reply(Newest, Overlap) },
     fn(c) { c == Reply(Older, Honest) },
+    fn(c) { c == Reply(OldFeed, Honest) },
     fn(c) { c == Reply(Newest, Quiet) },
     fn(c) { c == Reply(Newest, Garbled) },
   ]
@@ -579,7 +604,7 @@ fn answered(first: Int, frames: List(String)) -> feed_cursor.Reply {
 }
 
 pub fn a_gap_hands_on_nothing_and_ends_the_feed_test() {
-  let #(cursor, order) = feed_cursor.ask(feed_cursor.new())
+  let #(cursor, order) = feed_cursor.ask(feed_cursor.new(1))
   let #(cursor, step) =
     feed_cursor.heard(cursor, order.poll, answered(3, ["c", "d"]))
   assert step == feed_cursor.Broken(feed_cursor.Skipped(expected: 1, found: 3))
@@ -590,7 +615,7 @@ pub fn a_gap_hands_on_nothing_and_ends_the_feed_test() {
 }
 
 pub fn an_answer_that_reports_an_ending_hands_on_no_frame_test() {
-  let #(cursor, order) = feed_cursor.ask(feed_cursor.new())
+  let #(cursor, order) = feed_cursor.ask(feed_cursor.new(1))
   let reply = answer(1, ["a", "b"], Some(remote_top.FeedStopped))
   let #(cursor, step) = feed_cursor.heard(cursor, order.poll, reply)
   assert step == feed_cursor.Over(remote_top.FeedStopped)
@@ -598,7 +623,7 @@ pub fn an_answer_that_reports_an_ending_hands_on_no_frame_test() {
 }
 
 pub fn the_pause_doubles_to_two_seconds_and_a_heard_box_resets_it_test() {
-  let first = feed_cursor.new()
+  let first = feed_cursor.new(1)
   let #(c1, o1) = feed_cursor.ask(first)
   let #(c1, s1) = feed_cursor.heard(c1, o1.poll, feed_cursor.Silent)
   let #(c2, o2) = feed_cursor.ask(c1)
@@ -613,7 +638,7 @@ pub fn the_pause_doubles_to_two_seconds_and_a_heard_box_resets_it_test() {
 }
 
 pub fn a_poll_asked_again_forgets_the_one_it_replaces_test() {
-  let #(cursor, old) = feed_cursor.ask(feed_cursor.new())
+  let #(cursor, old) = feed_cursor.ask(feed_cursor.new(1))
   let #(cursor, new) = feed_cursor.ask(cursor)
   assert new.poll != old.poll
   let #(cursor, late) = feed_cursor.heard(cursor, old.poll, answered(1, ["a"]))
