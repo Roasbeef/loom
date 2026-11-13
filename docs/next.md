@@ -1,5 +1,9 @@
 # Current handoff
 
+The session hot-path section is re-baselined on November 13 against source
+`3e28c16f4` and its recorded local gates. Other sections retain their upstream
+baselines; this scoped update does not revalidate their hosted CI or live status.
+
 ## Platform-selected JSON decoding
 
 [The fixed compatibility and storage replay](review/platform-json-2026-11-09.md)
@@ -360,43 +364,41 @@ upgraded, restarted, collected or retired during this round. The historical
 sections below retain their recorded scope; unrelated CI readiness was not
 revalidated for this observation-only work.
 
-## Session hot-path measurements completed
+## Session hot-path scoped bulk reads
 
-The [November 4 measurement record](review/session-hotpaths-2026-11-04.md)
-completes all three corrected full benchmarks at source `ae8d2539f` on
-`perf/session-hot-paths`, in an isolated sibling worktree. Every invocation
-exited 0. The committed data retain pending/register samples, commit latency
-histograms, exit statuses and host-load snapshots. Load was 8.10-11.19 on
-16 CPUs, lower than the earlier 120+ observations but not idle or isolated.
+The previous edition left scoped multi-key design open after measuring the
+point-read regression. That is now settled by owner-approved
+[protocol 114](../protocol-change/114-bounded-register-reads.md). Both storage
+backends implement exact-key reads bounded to 128 raw occurrences, with an
+explicit refusal and one per-call snapshot. Runtime admission and the driver
+deduplicate and chunk their complete captured pending set; missing/corrupt
+referenced payloads still fail, and unrelated payloads are not decoded.
 
-Scoped pending reads isolate unrelated malformed payloads, but are not a
-uniform performance improvement. SQLite `:memory:` at 128 owned keys and no
-unrelated backlog took 20 ms scanning versus 86 ms using points per 50 loads.
-At 1000 unrelated and 32 owned keys it took 221 versus 20 ms. No adaptive
-threshold or new read interface is selected. The [pending-entry record](review/pending-entry-performance.md)
-retains its correctness and negative-control proof alongside this tradeoff.
+The [November 13 record](review/bulk-register-reads-2026-11-13.md) pins source
+`3e28c16f4` on `perf/session-hot-paths`, rebased onto upstream `fb6024e4b`. Two
+full scan/point/bulk invocations exited 0 and retain all 1,008 samples. At 128
+owned SQLite keys and no unrelated backlog, scan/point/bulk medians were
+25/94/30 ms in the first run and 76/158/35 ms in the independent rerun, per
+50 loads. With 1,000 unrelated keys they were 267/98/34 and 249/107/37 ms.
+Bulk reads improve on points here but do not uniformly beat scans. Fixed order,
+identical payloads, warm-cache carryover and loaded-host variation remain limits.
 
-The [register record](review/register-read-performance.md) now has full
-corrected data: 500 five-register typed loads took median 30/38 ms through
-direct storage/writer paths on SQLite `:memory:`. These are elapsed synthetic
-loads, not isolated actor CPU or whole-turn attribution. The [group-commit
-evaluation](review/group-commit-evaluation.md) measures continuous append
-chains; 128-caller file-backed SQLite commit medians were 17/19/21 ms across
-three repetitions. No batching implementation or benefit was measured, so
-production group commit remains deferred.
+Primary storage/runtime/session/conformance gates passed, reporting
+383/232/73/116 passed entries. Real-helper and LSP conformance fixtures reported
+existing nested-jail prerequisite skips, not exercised signoff. The broader
+client gate is not green; its failed receipt and fixture triage are recorded
+in the dated follow-up. Three new semantic controls rejected over-limit admission,
+truncated SQL selection and skipped chunks. Independent source/test review
+found no actionable correctness, simplification or nearby-variant finding.
 
-A fresh worktree `make check-runtime` passed all 221 tests. The earlier
-primary verification, five rejected semantic controls and independent source
-review remain in the pending-entry record, including its first timeout
-observations and unchanged clean rerun. No assertion or deadline was weakened.
-No production code, dependency, cache, interface, durability policy or running
-daemon was changed by this measurement follow-up.
-
-Issues #1150, #1151 and #1152 remain open for actual ownership/backlog and
-runtime commit prevalence, scoped grouped-read design, and batching decisions.
-The previous full-benchmark host-load block is resolved for this recorded run;
-the synthetic results do not establish an end-to-end speedup. No push or hosted
-CI readiness is established.
+Next, use the final PR's hosted full-gate and real-helper receipts as the
+acceptance evidence for lanes this jail cannot exercise. Do not infer installed
+savings or live rollout readiness from the local read benchmark. Actual runtime
+ownership/commit prevalence remains unmeasured in #1150/#1151/#1152; general
+typed control polling is unchanged, and production group commit remains
+deferred. No new cache, dependency, FFI, durability policy or daemon update
+is part of this series. The [November 4 record](review/session-hotpaths-2026-11-04.md)
+remains historical evidence for the original point-read and commit evaluations.
 
 ## Catalogue source-read performance
 
