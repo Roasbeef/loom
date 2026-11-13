@@ -141,7 +141,7 @@ MUTATIONS = {
   # end of the matter, the join settles with nothing and the commits are lost.
   "M13-return-lost-on-a-full-store": ("tcOnlyReturnOnce", 6000, r"liveness bug", [
     ("PSrc/Orch.p",
-     "        announce eStoreFull;\n        toOwner(R_PENDING, 0, 0, 0);",
+     "        announce eStoreFull;\n        cannotReturn();",
      "        announce eStoreFull;\n        announce eSettled, m.a;\n        releaseSession();\n        toOwner(R_FINISHED, 0, 0, 0);")]),
 
   # The owner makes one ref from the commits, however many replies carry them.
