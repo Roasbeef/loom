@@ -305,7 +305,7 @@ fn fixture_lasting_with_root(
               )
           }
         },
-        home: fn(request, attachment, open, seen, visit) {
+        home: fn(request, attachment, open, seen, visit, register) {
           let ceiling = seen.grant.ceiling
           case serving {
             // The home's own socket, as the daemon serves it. A request that
@@ -345,6 +345,7 @@ fn fixture_lasting_with_root(
                       top_relay.production(),
                     ),
                     visit,
+                    register,
                   )
                 }
               }

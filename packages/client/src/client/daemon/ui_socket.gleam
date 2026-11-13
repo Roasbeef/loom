@@ -71,6 +71,17 @@
 //// sessions (`home_listing`) are also what end it: a page whose UI session
 //// ended or whose credential was revoked is told so by its next read.
 ////
+//// A relayed session's page (protocol-change/094 and 108) is the third. Its route
+//// reaches `upgrade_home` with a `Visit`, and before the socket starts anything
+//// it attaches a feed on the orchestrator that runs the session (`choose`). If
+//// the box offers the live page, the socket starts the session component with
+//// `ui_feed` as its transport (`live_socket`), so the page, the strip, the
+//// approvals dock and the top bar are the ones a local session has. If the box
+//// does not answer, the same component starts and draws that the orchestrator is
+//// not answering, which the browser retries. If the box does not offer the live
+//// page, the home component starts with the 094 transcript page and a sentence
+//// that says why. No answer is kept, so each reconnect chooses again.
+////
 //// A page and the home lead to each other by tickets (the second pull
 //// request). A running session's row on the home asks `ticket_for` for a page
 //// of that session, and a session page opened from a home asks
@@ -184,6 +195,7 @@ import client/daemon/project_start
 import client/daemon/root
 import client/daemon/server
 import client/daemon/shareable
+import client/daemon/ui_feed
 import client/daemon/ui_http
 import client/daemon/ui_login
 import client/daemon/ui_peers
@@ -199,6 +211,8 @@ import client/project_repo
 import client/protocol as session_protocol
 import client/remote/top_relay
 import client/remote_escalation
+import client/remote_feed
+import client/remote_top
 import core/ids
 import core/json as wire
 import gleam/bit_array
@@ -217,6 +231,7 @@ import host/claim
 import lustre
 import lustre/server_component
 import mist
+import session_view/connection_event
 import session_view/snapshot
 import session_view/text_hygiene
 import session_view/transcript_image
@@ -831,6 +846,7 @@ pub fn upgrade_home(
   gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
   relay: top_relay.Relay,
   visit: Option(server.Visit),
+  register: fn(ui_sessions.Images) -> Nil,
 ) -> Response(mist.ResponseData) {
   let settled = process.new_subject()
   let limit = root.message_limit(root.Observer)
@@ -1101,12 +1117,24 @@ pub fn upgrade_home(
   // handed the functions that ask that orchestrator, and no other page is. The
   // server admitted the route only for the owner's operating page and a
   // configured orchestrator; every function checks the page's standing again.
+  //
+  // The choice between the live page and the transcript is made here, before the
+  // socket starts any component, and it is made again at every reconnect.
+  let chosen = option.map(visit, choose(relay, _, attachment.principal))
+
+  // Only the transcript page says why it is not the live one.
+  let fallback = case chosen {
+    Some(TranscriptPage(why:)) -> why
+    Some(LivePage(_)) | None -> relayed.Unsaid
+  }
+
   let visiting =
     option.map(visit, visiting_for(
       standing,
       open,
       relay,
       attachment.principal.display_name,
+      fallback,
       _,
     ))
 
@@ -1130,36 +1158,362 @@ pub fn upgrade_home(
         )
       },
     )
-  websocket(request, limit, settled, fn(signals) {
-    admit_home(
+
+  // A relayed route that chose the live page gets the session component. Every
+  // other page is the home component, with the transcript when there is a visit.
+  case visit, chosen {
+    Some(target), Some(LivePage(reach)) ->
+      live_socket(
+        request,
+        daemon,
+        attachment,
+        relay,
+        target,
+        reach,
+        tickets,
+        open,
+        register,
+        seen,
+        settled,
+      )
+    Some(_), Some(TranscriptPage(_)) | Some(_), None | None, _ ->
+      websocket(request, limit, settled, fn(signals) {
+        admit_home(
+          daemon,
+          attachment,
+          fn(target) { ticket_for(standing, tickets, open, target) },
+          fn(target, deliver) {
+            resume_task(standing, tickets, open, target, deliver)
+          },
+          rename,
+          managing,
+          creating,
+          profiles,
+          models,
+          executors,
+          pools,
+          placing,
+          folders,
+          elsewhere,
+          projecting,
+          signing,
+          administering,
+          visiting,
+          orchestrating,
+          admits,
+          open,
+          ceiling,
+          signals,
+          settled,
+        )
+      })
+  }
+}
+
+/// Which page a relayed session's route gets.
+type Choice {
+  /// The box offers the live session page, or a link that is down says the page
+  /// should wait for it.
+  LivePage(
+    /// Whether the box attached the feed.
+    reach: Carriage,
+  )
+
+  /// The box does not offer the live page, so the 094 transcript page is drawn.
+  TranscriptPage(
+    /// Why, which the page's heading says.
+    why: relayed.Fallback,
+  )
+}
+
+/// Whether a live page has a feed to carry its frames.
+type Carriage {
+  /// The box attached the feed.
+  Attached(
+    /// The token, epoch and incarnation the box answered.
+    attached: remote_feed.Attached,
+  )
+
+  /// The box did not answer, or has no room for another feed for now, so the
+  /// session component starts and draws that it is waiting.
+  Waiting
+}
+
+/// The longest display name an attach carries, in bytes, which the box's decoder
+/// bounds at 512 for every text.
+const attach_name_bytes = 128
+
+/// Attaches a feed on the orchestrator that runs the session, within `call_ms`,
+/// and chooses the page from the answer (protocol-change/108, "Choosing the
+/// page"). A box that does not advertise the revision or serves the paged page
+/// gets the transcript page with a sentence that says which. A box that does not
+/// answer, or has no room for the feed, gets the live page's waiting state,
+/// which the browser retries. Anything else the box refuses with its own words
+/// gets the transcript page, whose read draws them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.choose(relay, visit, principal)
+/// ```
+fn choose(
+  relay: top_relay.Relay,
+  target: server.Visit,
+  principal: access.Principal,
+) -> Choice {
+  let attach =
+    remote_feed.Attach(
+      session: target.session,
+      principal: principal.id,
+      name: string.slice(principal.display_name, 0, attach_name_bytes),
+    )
+
+  // Each way an attach can end is one page.
+  case top_relay.attach(relay, target.orchestrator, attach) {
+    Ok(attached) -> LivePage(Attached(attached))
+    Error(top_relay.Unsupported) | Error(top_relay.OlderBuild) ->
+      TranscriptPage(relayed.Absent)
+    Error(top_relay.Refused(remote_top.NotOffered(remote_top.OfferedPage, _))) ->
+      TranscriptPage(relayed.Served)
+
+    // The box holds as many feeds for this daemon as it allows, which an ended
+    // feed counts toward until the box forgets it. That is a reason to wait.
+    Error(top_relay.Refused(remote_top.CapReached(remote_top.MaxFeeds, _))) ->
+      LivePage(Waiting)
+    Error(top_relay.Unreachable)
+    | Error(top_relay.Silent)
+    | Error(top_relay.PeerChanged)
+    | Error(top_relay.InvalidPeer)
+    | Error(top_relay.RequestTooLarge)
+    | Error(top_relay.Unreadable(_)) -> LivePage(Waiting)
+    Error(top_relay.Refused(_)) | Error(top_relay.NotConfigured(_)) ->
+      TranscriptPage(relayed.Unsaid)
+  }
+}
+
+/// Upgrades the request to the socket of a relayed session's live page. The
+/// permit's custody and the socket's frame limit are an operator's: the page
+/// sends prompts and steers to the box.
+fn live_socket(
+  request: Request(mist.Connection),
+  daemon: root.Root(instance),
+  attachment: server.HomeAttachment(instance),
+  relay: top_relay.Relay,
+  target: server.Visit,
+  reach: Carriage,
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  register: fn(ui_sessions.Images) -> Nil,
+  seen: server.PageGrant,
+  settled: process.Subject(Nil),
+) -> Response(mist.ResponseData) {
+  websocket(request, operator_frame_limit, settled, fn(signals) {
+    admit_live(
       daemon,
       attachment,
-      fn(target) { ticket_for(standing, tickets, open, target) },
-      fn(target, deliver) {
-        resume_task(standing, tickets, open, target, deliver)
-      },
-      rename,
-      managing,
-      creating,
-      profiles,
-      models,
-      executors,
-      pools,
-      placing,
-      folders,
-      elsewhere,
-      projecting,
-      signing,
-      administering,
-      visiting,
-      orchestrating,
-      admits,
+      relay,
+      target,
+      reach,
+      tickets,
       open,
-      ceiling,
+      register,
+      seen,
       signals,
       settled,
     )
   })
+}
+
+/// Takes the permit's custody in the socket's first handler turn, as `admit` does,
+/// and starts the session component for a relayed session with the feed as its
+/// transport. The component's own capabilities that are the laptop's (the
+/// sidebar, switching, resuming, going home) are the ones a local page has, and
+/// the ones that are a power of the daemon that serves the session (invite,
+/// rename, shareable, worktree, manage, peers, logins) are not offered, because
+/// the box offers none of them over the feed.
+fn admit_live(
+  daemon: root.Root(instance),
+  attachment: server.HomeAttachment(instance),
+  relay: top_relay.Relay,
+  target: server.Visit,
+  reach: Carriage,
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  register: fn(ui_sessions.Images) -> Nil,
+  seen: server.PageGrant,
+  signals: process.Subject(Signal),
+  settled: process.Subject(Nil),
+) -> mist.Next(Phase, Signal) {
+  let transferred = root.transfer(daemon, attachment.permit, within: 1000)
+  process.send(settled, Nil)
+
+  // The page acts as the owner's operating page, which `admitted_visit` checked.
+  // Every function that outlives this turn checks it again.
+  let role = Operating
+  let standing = home_standing(attachment, seen)
+  let registry = attachment.registry
+  let credential = attachment.digest
+  let still_open = fn() {
+    case owner_operating(standing, open) {
+      Ok(_) -> Ok(Nil)
+      Error(Nil) -> Error(ending.PageEnded)
+    }
+  }
+  let transport =
+    component.Transport(
+      connect: fn(inbox, opened) {
+        connect_feed(relay, target, reach, still_open, inbox, opened, fn(why) {
+          process.send(signals, Ended(why))
+        })
+      },
+      transmit: ui_feed.transmit,
+      shut: ui_feed.shut,
+      now: bootstrap.monotonic_time_ms,
+      sessions: fn(deliver) {
+        listed_task(role, fn() { listed(registry, credential) }, deliver)
+      },
+      activity: session_activity_for(role, attachment.activity),
+      open: fn(session) {
+        opened_for(role, fn() { ticket_for(standing, tickets, open, session) })
+      },
+      resume: fn(session, deliver) {
+        resumed_for(role, deliver, fn() {
+          resume_task(standing, tickets, open, session, deliver)
+        })
+      },
+      invite: None,
+      home: home_capability(seen.grant.reach, fn() {
+        home_ticket_for(standing, tickets, open)
+      }),
+      rename: None,
+      shareable: None,
+      worktree: None,
+      manage: None,
+      logins: None,
+      peers: None,
+    )
+  let start = live_start(target, reach, transport)
+
+  // Start the component under the operator's admission, as `admit` does.
+  case transferred {
+    Error(reason) -> {
+      upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)
+      closing(ending.close(ending.DaemonNotReady))
+    }
+    Ok(Nil) ->
+      case start_page(role, start) {
+        Error(Nil) -> {
+          upgrade_log.closed_early(
+            upgrade_log.Page,
+            "start_page",
+            "the component did not start",
+          )
+          closing(ending.close(ending.DaemonNotReady))
+        }
+        Ok(page) -> {
+          register(page.images)
+          serving(page, signals)
+        }
+      }
+  }
+}
+
+/// Opens the component's transport: starts the feed client over the feed the
+/// socket attached, or, when there is none, says at once that the orchestrator
+/// is not answering. Either way the component's start returns at once.
+fn connect_feed(
+  relay: top_relay.Relay,
+  target: server.Visit,
+  reach: Carriage,
+  still_open: fn() -> Result(Nil, ending.Ending),
+  inbox: process.Subject(connection_event.Message),
+  opened: process.Subject(Result(ui_feed.Feed, String)),
+  ended: fn(ending.Ending) -> Nil,
+) -> Nil {
+  case reach {
+    Attached(attached:) ->
+      ui_feed.start(
+        ui_feed.Settings(
+          relay:,
+          orchestrator: target.orchestrator,
+          attached:,
+          open: still_open,
+          inbox:,
+          component: process.self(),
+          ended:,
+        ),
+        opened,
+      )
+
+    // The component draws the ending it is refused with, and the socket closes
+    // with the code a waiting page calls for, so the browser tries again.
+    Waiting -> {
+      process.send(opened, Error(ending.reason(ending.PeerUnreachable)))
+      ended(ending.PeerUnreachable)
+    }
+  }
+}
+
+/// What the session component starts with for a relayed session: the identity
+/// the box answered, the heading's words from its label, and the standing of the
+/// owner's page on a session that runs elsewhere. The page's storage identity is
+/// the digest of the orchestrator's name and the placement, so a relayed layout
+/// never collides with a local workspace's.
+fn live_start(
+  target: server.Visit,
+  reach: Carriage,
+  transport: component.Transport(ui_feed.Feed),
+) -> component.Start(ui_feed.Feed) {
+  // The heading and the identity the lane checks every cut against come from the
+  // attach's answer. A page that is waiting has no answer, and checks nothing
+  // because it never opens a lane.
+  let #(label, expected) = case reach {
+    Attached(attached:) -> #(
+      labelled(attached.label),
+      snapshot.Expected(target.session, attached.epoch, attached.incarnation),
+    )
+    Waiting -> #(
+      component.Label(name: "", workspace: "", executor: "", pool: ""),
+      snapshot.Expected(target.session, "", ""),
+    )
+  }
+
+  component.Start(
+    session_id: target.session,
+    label: Some(label),
+    workspace_digest: digest(
+      target.orchestrator
+      <> "\n"
+      <> label.executor
+      <> label.pool
+      <> label.workspace,
+    ),
+    expected:,
+    standing: component.Standing(
+      reader: component.DaemonOwner,
+      sharing: None,
+      opening: component.FromBookmark,
+      machine: target.orchestrator,
+      route: component.Relayed,
+    ),
+    completion_models: [],
+    completion_profiles: [],
+    transport:,
+  )
+}
+
+/// The heading's words from the box's label, drawn as the page draws a local
+/// session's registration: where the session runs is the executor, the pool or
+/// the folder.
+fn labelled(label: remote_feed.Label) -> component.Label {
+  case label.placement {
+    remote_top.Folder(path:) ->
+      component.Label(name: label.name, workspace: path, executor: "", pool: "")
+    remote_top.Workspace(executor:, name:) ->
+      component.Label(name: label.name, workspace: name, executor:, pool: "")
+    remote_top.Pooled(pool:, name:) ->
+      component.Label(name: label.name, workspace: name, executor: "", pool:)
+  }
 }
 
 /// The capability a page is handed to start sessions on the orchestrators its
@@ -1279,6 +1633,7 @@ fn visiting_for(
   open: fn() -> Result(Int, Nil),
   relay: top_relay.Relay,
   name: String,
+  fallback: relayed.Fallback,
   target: server.Visit,
 ) -> home.Visit {
   let orchestrator = target.orchestrator
@@ -1296,6 +1651,7 @@ fn visiting_for(
     orchestrator:,
     session:,
     refresh_ms: home.relay_refresh_ms,
+    fallback:,
     read: fn(deliver) {
       read_task(deliver, fn() {
         // This branch resolves open before the operation continues.
@@ -2192,7 +2548,13 @@ fn standing_of(
     Owning, Ok(Nil) | Observing, _ | Operating, _ -> component.FromLink
   }
 
-  component.Standing(reader:, sharing:, opening:, machine: attachment.machine)
+  component.Standing(
+    reader:,
+    sharing:,
+    opening:,
+    machine: attachment.machine,
+    route: component.Local,
+  )
 }
 
 /// Whether a page's origin may mint access: an invitation, or a session made
@@ -6960,7 +7322,7 @@ fn operator_image(
   ref: String,
   at: Int,
   reply: process.Subject(Result(transcript_image.Image, Nil)),
-) -> operator_page.Msg(ui_relay.Relay) {
+) -> operator_page.Msg(socket) {
   operator_page.Observed(component.ImageRequested(ref, at, reply))
 }
 
@@ -6978,7 +7340,7 @@ fn operator_image(
 @internal
 pub fn start_page(
   role: Role,
-  start: component.Start(ui_relay.Relay),
+  start: component.Start(socket),
 ) -> Result(Page, Nil) {
   // This branch resolves role before the operation continues.
   case role {
@@ -6994,8 +7356,8 @@ pub fn start_page(
 /// including the reader of its images: the message that asks the component for
 /// one, `ask`, is built in the application's own message type.
 fn serve(
-  app: lustre.App(component.Start(ui_relay.Relay), model, message),
-  start: component.Start(ui_relay.Relay),
+  app: lustre.App(component.Start(socket), model, message),
+  start: component.Start(socket),
   admits: fn(String) -> Bool,
   ask: fn(String, Int, process.Subject(Result(transcript_image.Image, Nil))) ->
     message,

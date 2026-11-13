@@ -217,13 +217,17 @@ pub type Ui(instance) {
     /// Upgrades a checked home request to the home component's socket
     /// (protocol-change/065). It takes the same custody of the attachment's
     /// permit, and its third and fourth arguments are the page's deadline
-    /// check and what the daemon knows of the page, as for `upgrade`.
+    /// check and what the daemon knows of the page, as for `upgrade`. The sixth
+    /// records how the page's images are read, as `upgrade`'s fourth does: a
+    /// relayed session's live page draws images (protocol-change/108), and no
+    /// other home has any.
     home: fn(
       Request(mist.Connection),
       HomeAttachment(instance),
       fn() -> Result(Int, Nil),
       PageGrant,
       Option(Visit),
+      fn(ui_sessions.Images) -> Nil,
     ) -> Response(mist.ResponseData),
     /// Upgrades a checked admin request to the admin component's socket
     /// (protocol-change/065, the fifth pull request). It takes the same custody
@@ -791,6 +795,7 @@ fn home_socket(
         ),
         ui_sessions.open_until(ui.sessions, cookie, grant),
         visit,
+        ui_sessions.register_images(ui.sessions, cookie, _),
       )
   }
 }
@@ -842,6 +847,7 @@ fn home_upgrade(
   seen: PageGrant,
   open: fn() -> Result(Int, Nil),
   visit: Option(Visit),
+  register: fn(ui_sessions.Images) -> Nil,
 ) {
   // This branch resolves the input state before the operation continues.
   let grant = seen.grant
@@ -914,6 +920,7 @@ fn home_upgrade(
           open,
           seen,
           visit,
+          register,
         )
       root.release(config.daemon, permit)
       response

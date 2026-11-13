@@ -4424,7 +4424,7 @@ fn web_view(
               seen,
             )
           },
-          home: fn(request, attachment, open, seen, visit) {
+          home: fn(request, attachment, open, seen, visit, register) {
             ui_socket.upgrade_home(
               daemon,
               request,
@@ -4435,6 +4435,7 @@ fn web_view(
               fn(resident: serve.Resident) { Ok(resident.gateway) },
               relay,
               visit,
+              register,
             )
           },
           admin: fn(request, attachment, open, ceiling) {
