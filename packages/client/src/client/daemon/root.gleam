@@ -135,7 +135,7 @@ pub type ConnectionClass {
   /// A live session feed that carries a relayed page to another orchestrator
   /// (protocol-change/108). It holds no socket parser, only what the feed
   /// itself can hold, and is charged that: `remote_feed.feed_charge_bytes`, a
-  /// little under a quarter of the default budget for the eight feeds of one
+  /// about 42 percent of the default budget for the eight feeds of one
   /// spawner.
   Feed
 

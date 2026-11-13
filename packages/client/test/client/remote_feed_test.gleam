@@ -8,6 +8,7 @@
 //// or replaced. Whatever decodes is checked to encode back to the same value,
 //// so a decoder cannot accept something it would not itself produce.
 
+import client/remote/feed_pieces
 import client/remote/peer_codec
 import client/remote_feed.{
   type Attached, Answer, Attach, AttachRequest, Attached, DetachRequest, Label,
@@ -239,21 +240,61 @@ fn decode_send(
   )
 }
 
-// Cuts a frame of `total` bytes into pieces of `size` and one last piece, as a
-// sender that sends full pieces does, decodes each, and counts them.
-fn pieces_accepted(total: Int, size: Int, offset: Int, count: Int) -> Int {
-  let take = int.min(size, total - offset)
-  let assert Ok(_) = decode_send(offset, total, string.repeat("a", take))
-    as "a full piece or the last piece is accepted"
-  case offset + take >= total {
-    True -> count + 1
-    False -> pieces_accepted(total, size, offset + take, count + 1)
+// One step of an adversary: how it places the next piece and how long the piece
+// is. The adversary sees the bytes the box holds and chooses to continue them,
+// to repeat or overlap them, or to skip past them, and it prefers the shortest
+// piece the codec accepts.
+type Step =
+  #(Int, Int, Int)
+
+// Drives `feed_pieces` with the adversary's steps for one frame and returns how
+// many pieces the box admitted into the frame. Every piece goes through the
+// codec first, as a request does, so only a piece the codec accepts is admitted.
+fn admitted_pieces(
+  pieces: feed_pieces.Pieces,
+  steps: List(Step),
+  total: Int,
+  admitted: Int,
+) -> Int {
+  case steps {
+    [] -> admitted
+    [#(kind, sel, extra), ..rest] -> {
+      let held = feed_pieces.held_bytes(pieces)
+      let offset = case kind {
+        0 | 1 -> held
+        2 -> int.max(0, held - 1 - extra)
+        _ -> held + 1 + extra
+      }
+      let size = case sel {
+        7 -> 1 + extra
+        8 -> remote_feed.piece_bytes
+        9 -> int.max(1, int.min(remote_feed.piece_bytes, total - offset))
+        _ -> remote_feed.min_piece_bytes + extra
+      }
+      case decode_send(offset, total, string.repeat("a", size)) {
+        Ok(SendRequest(piece)) ->
+          case feed_pieces.admit(pieces, piece) {
+            feed_pieces.Held(pieces) ->
+              admitted_pieces(pieces, rest, total, admitted + 1)
+            feed_pieces.Completed(..) -> admitted + 1
+            feed_pieces.Repeated | feed_pieces.Refused(_) ->
+              admitted_pieces(pieces, rest, total, admitted)
+          }
+        _ -> admitted_pieces(pieces, rest, total, admitted)
+      }
+    }
   }
 }
 
 pub fn no_accepted_sequence_of_pieces_for_one_frame_passes_the_count_bound_test() {
+  let step =
+    qcheck.tuple3(
+      qcheck.bounded_int(0, 3),
+      qcheck.bounded_int(0, 9),
+      qcheck.bounded_int(0, 3),
+    )
   qcheck.default_config()
-  |> qcheck.with_test_count(20)
+  |> qcheck.with_test_count(40)
   |> qcheck.with_seed(qcheck.seed(seed))
   |> qcheck.run(
     qcheck.map2(
@@ -261,14 +302,31 @@ pub fn no_accepted_sequence_of_pieces_for_one_frame_passes_the_count_bound_test(
         remote_feed.frame_bytes - 1_000_000,
         remote_feed.frame_bytes,
       ),
-      qcheck.bounded_int(remote_feed.min_piece_bytes, remote_feed.piece_bytes),
-      fn(total, size) { #(total, size) },
+      qcheck.fixed_length_list_from(step, 120),
+      fn(total, steps) { #(total, steps) },
     ),
     fn(shape) {
-      let #(total, size) = shape
-      assert pieces_accepted(total, size, 0, 0) <= remote_feed.max_pieces
+      let #(total, steps) = shape
+      assert admitted_pieces(feed_pieces.new(), steps, total, 0)
+        <= remote_feed.max_pieces
     },
   )
+}
+
+pub fn the_shortest_pieces_the_codec_accepts_reach_the_count_bound_and_no_more_test() {
+  // Pieces of exactly the floor are the adversary's best: a frame of the frame
+  // bound is sixty-four of them, the last of which ends it, so the bound is met
+  // and not passed.
+  let floor = #(0, 0, 0)
+  assert admitted_pieces(
+      feed_pieces.new(),
+      list.repeat(floor, 200),
+      remote_feed.frame_bytes,
+      0,
+    )
+    == remote_feed.max_pieces
+  assert remote_feed.frame_bytes / remote_feed.min_piece_bytes
+    == remote_feed.max_pieces
 }
 
 pub fn a_piece_shorter_than_the_floor_that_does_not_end_its_frame_is_refused_test() {
@@ -303,10 +361,6 @@ pub fn one_byte_pieces_of_a_large_frame_are_refused_and_a_last_byte_is_not_test(
         "a",
       )),
     )
-
-  // Twelve mebibytes is at most sixty-five pieces.
-  assert remote_feed.frame_bytes / remote_feed.min_piece_bytes + 1
-    == remote_feed.max_pieces
 }
 
 // --- the answers -------------------------------------------------------------------
