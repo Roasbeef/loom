@@ -56,6 +56,10 @@
 //// - `valid_host`, `encode_allow`, `decode_allow` and `effective_allow` keep
 ////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
 ////   `--provision` does.
+//// - `guest_name_for` names the guest of a workspace, `ensure_step` decides what
+////   `ensure` does from the facts about it (`guest_state`, `manifest_action`),
+////   `restart_refusal` says when a daemon must restart, and `effective_github`
+////   keeps the guest's GitHub access across resumes.
 //// - `printable`, `decode_checkouts`, `only_workspace`, `fetch_arguments`,
 ////   `bundle_arguments` and `check_git_version` serve the commands that read a
 ////   guest's root and sync it; `read_enrolment` and `plan_teardown` decide what
@@ -258,6 +262,13 @@ pub type Command {
   /// Provision, stage and boot the guest.
   Up(UpOptions)
 
+  /// Make the guest that serves one workspace ready and say which executor and
+  /// workspace name to use it by. Its options are `up`'s subset that
+  /// `only_ensure_flags` admits; the guest's name is derived from the
+  /// workspace, so `name` is a placeholder until `vm_cli` knows the canonical
+  /// path.
+  Ensure(UpOptions)
+
   /// Stop the guest named.
   Down(name: String)
 
@@ -327,6 +338,10 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
       use Nil <- result.try(valid_name(options.name))
       Ok(Up(options))
     }
+    ["ensure", ..flags] -> {
+      use Nil <- result.try(only_ensure_flags(flags))
+      up_flags(flags, default_up()) |> result.map(Ensure)
+    }
     ["down", ..flags] -> name_flag(flags) |> result.map(Down)
     ["status", ..flags] -> name_flag(flags) |> result.map(Status)
     ["logs", ..flags] -> logs_flags(flags, default_name, default_log_lines)
@@ -339,9 +354,40 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
       |> result.map(Sync)
     [] ->
       Error(
-        "loom vm needs a command: setup, up, down, status, logs, list, rm or sync",
+        "loom vm needs a command: setup, up, ensure, down, status, logs, list, rm or sync",
       )
     [word, ..] -> Error("unknown loom vm command " <> word)
+  }
+}
+
+/// Refuses every option `ensure` does not take. `ensure` is `up` for a guest
+/// that is named after its workspace, so the guest's name, size and root
+/// freshness are not the caller's to choose: `--name` would break the
+/// workspace-to-guest correspondence, and `--fresh` and `--provision` replace
+/// state a command that runs on every `loom --vm` must never replace. A flag
+/// the word list does not name falls through to `up_flags`, which reports it.
+fn only_ensure_flags(arguments: List(String)) -> Result(Nil, String) {
+  case arguments {
+    [] -> Ok(Nil)
+    [flag, _, ..rest]
+      if flag == "--workspace"
+      || flag == "--config"
+      || flag == "--github"
+      || flag == "--allow"
+    -> only_ensure_flags(rest)
+    [flag, ..]
+      if flag == "--name"
+      || flag == "--mem"
+      || flag == "--cpus"
+      || flag == "--fresh"
+      || flag == "--provision"
+    ->
+      Error(
+        flag
+        <> " is not an ensure option: ensure names the guest after its "
+        <> "workspace and keeps its root; use `loom vm up` for that",
+      )
+    [_, ..rest] -> only_ensure_flags(rest)
   }
 }
 
@@ -3031,6 +3077,224 @@ fn plural(count: Int) -> String {
   case count {
     1 -> ""
     _ -> "s"
+  }
+}
+
+// --- ensure: one guest per workspace, made ready --------------------------------
+
+/// The exit status `ensure` ends with when the only thing missing is a running
+/// daemon. It is not otherwise used by `loomd vm`, whose failures all exit 1.
+pub const daemon_required_status = 75
+
+/// The last line of standard output that goes with `daemon_required_status`.
+pub const daemon_required_line = "daemon=required"
+
+/// What the host says about a guest's process and its executor node.
+pub type GuestState {
+  /// No process the pid record names is there.
+  GuestStopped
+
+  /// The process is there, but its node is not in the host's epmd yet, so the
+  /// guest is booting or its executor failed.
+  GuestStarting(pid: Int)
+
+  /// The process is there and its node is in epmd: the executor serves.
+  GuestServing(pid: Int)
+}
+
+/// Whether the host epmd lists the guest's executor node.
+pub type Registration {
+  Registered
+  Unregistered
+}
+
+/// The guest's state from the pid record's process, when it is still there,
+/// and the epmd listing. A node listed with no process is a stranded runner,
+/// which `up` refuses on its own account, so it reads as stopped here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.guest_state(Some(7), vm_spec.Registered)
+///   == vm_spec.GuestServing(7)
+/// assert vm_spec.guest_state(None, vm_spec.Registered) == vm_spec.GuestStopped
+/// ```
+pub fn guest_state(pid: Option(Int), registration: Registration) -> GuestState {
+  case pid, registration {
+    None, _ -> GuestStopped
+    Some(pid), Registered -> GuestServing(pid)
+    Some(pid), Unregistered -> GuestStarting(pid)
+  }
+}
+
+/// Whether bringing the guest up would enrol it in a ledger deployment that
+/// already exists, which only a running daemon can do.
+pub type EnrolmentNeed {
+  /// The guest has its bundles, or the configuration holds no ledger
+  /// deployment to join, so enrolment needs no daemon.
+  NeedsNoDaemon
+
+  /// The guest has no bundles and the default configuration holds a ledger
+  /// deployment: the second and later guests of a machine.
+  JoinsLedger
+}
+
+/// Whether the daemon of the default configuration is running.
+pub type DaemonFact {
+  DaemonRunning
+  DaemonStopped
+}
+
+/// Everything `ensure` looks at before it changes anything.
+pub type EnsureFacts {
+  EnsureFacts(
+    /// The guest's name, for the words of a refusal.
+    name: String,
+    /// What the process table and epmd say.
+    state: GuestState,
+    /// The manifest decision, or why the manifest could not be read.
+    manifest: Result(ManifestAction, String),
+    /// Whether enrolment will need the daemon.
+    enrolment: EnrolmentNeed,
+    /// Whether the daemon runs.
+    daemon: DaemonFact,
+  )
+}
+
+/// What `ensure` does next.
+pub type EnsureStep {
+  /// The guest serves already: print the line and stop, touching nothing.
+  AlreadyServing
+
+  /// Enrolment needs the daemon and none runs. Nothing was written. The caller
+  /// is a launcher that starts daemons, and answers with
+  /// `daemon_required_status`.
+  NeedsDaemon
+
+  /// Install this build's release, then decide again.
+  NeedsSetup
+
+  /// Run `up` for the guest, fresh or resumed.
+  Boot
+
+  /// Do nothing and say why.
+  Refuse(reason: String)
+}
+
+/// Decides `ensure`'s next step from the facts.
+///
+/// The order is the point. A serving guest answers first, before the manifest
+/// is looked at, so the common case reads nothing else and a damaged manifest
+/// cannot break a guest that already runs. A guest that is running but not
+/// registered is refused, since `up` refuses a running guest and a second
+/// process on its root would corrupt it. Then a manifest that must be refused
+/// is, then a missing daemon is reported, before any setup, so that answer
+/// leaves the disk as it was. Only then does a missing or stale manifest
+/// start setup, and only a usable one boots.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.ensure_step(facts_with(vm_spec.GuestServing(7)))
+///   == vm_spec.AlreadyServing
+/// ```
+pub fn ensure_step(facts: EnsureFacts) -> EnsureStep {
+  case facts.state {
+    GuestServing(_) -> AlreadyServing
+    GuestStarting(pid) -> Refuse(starting_refusal(facts.name, pid))
+    GuestStopped ->
+      case facts.manifest {
+        Error(reason) -> Refuse(reason)
+        Ok(RefuseManifest(reason)) -> Refuse(reason)
+        Ok(action) ->
+          case facts.enrolment, facts.daemon {
+            JoinsLedger, DaemonStopped -> NeedsDaemon
+            _, _ ->
+              case action {
+                InstallRelease(_) -> NeedsSetup
+                _ -> Boot
+              }
+          }
+      }
+  }
+}
+
+/// Why `ensure` will not start a guest whose process is there and whose node is
+/// not in epmd.
+fn starting_refusal(name: String, pid: Int) -> String {
+  "the guest "
+  <> name
+  <> " runs as process "
+  <> int.to_string(pid)
+  <> " but its executor is not registered yet, so it is still booting or it "
+  <> "failed. Wait and run this again, or stop it with `loom vm down --name "
+  <> name
+  <> "` and read `loom vm logs --name "
+  <> name
+  <> "`."
+}
+
+/// The line `ensure` ends its standard output with: the executor and the
+/// registered workspace name that `loom --executor E --workspace W` takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.ensure_line("proj-1a2b3c", "proj")
+///   == "executor=proj-1a2b3c workspace=proj"
+/// ```
+pub fn ensure_line(executor: String, workspace: String) -> String {
+  "executor=" <> executor <> " workspace=" <> workspace
+}
+
+/// The refusal `ensure` ends with when `up` left the user's daemon running with
+/// the guest's `[distribution]` table unread, or none when the daemon is
+/// stopped or was never running. One sentence, naming how many sessions hold
+/// the daemon and the exact command that restarts it; the guest stays up, so
+/// the next `loom --vm` after the restart finds it serving.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.restart_refusal(vm_spec.NoDaemon) == Ok(Nil)
+/// assert result.is_error(vm_spec.restart_refusal(vm_spec.Holding(7, 2)))
+/// ```
+pub fn restart_refusal(outcome: DaemonOutcome) -> Result(Nil, String) {
+  // One sentence each, ending with the command, so a script that shows the
+  // error shows what to run.
+  let then = fn(pid) {
+    "; the guest stays up, so after the restart the next `loom --vm` uses it "
+    <> "at once. Restart it with `"
+    <> stop_command(pid)
+    <> "`"
+  }
+  case outcome {
+    NoDaemon | Stopped -> Ok(Nil)
+    Holding(pid, sessions) ->
+      Error(
+        "your daemon holds "
+        <> int.to_string(sessions)
+        <> " session"
+        <> plural(sessions)
+        <> " and must restart once to enable microVMs"
+        <> then(pid)
+        <> " when they are finished.",
+      )
+    NotStopped(pid, why) ->
+      Error(
+        "your daemon did not stop ("
+        <> why
+        <> ") and must restart once to enable microVMs"
+        <> then(pid)
+        <> ".",
+      )
+    Unasked(pid) ->
+      Error(
+        "your daemon did not say whether it holds sessions and must restart "
+        <> "once to enable microVMs"
+        <> then(pid)
+        <> " when it holds none.",
+      )
   }
 }
 

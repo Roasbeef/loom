@@ -84,7 +84,7 @@ pub fn down_and_status_take_only_a_name_test() {
 pub fn a_bad_command_line_is_refused_with_its_reason_test() {
   assert vm_spec.parse([])
     == Error(
-      "loom vm needs a command: setup, up, down, status, logs, list, rm or sync",
+      "loom vm needs a command: setup, up, ensure, down, status, logs, list, rm or sync",
     )
   assert vm_spec.parse(["shell"]) == Error("unknown loom vm command shell")
   assert vm_spec.parse(["up", "--bogus", "1"])

@@ -24,6 +24,12 @@
 ////   ledger deployment the configuration holds, or refuse a static one),
 ////   installs the orchestrator of a minted one (`enroll`), stages the guest
 ////   root (`stage`) and boots it (`boot`).
+//// - `ensure` makes the guest of one workspace ready for `loom --vm`: it names
+////   the guest after the workspace (`vm_spec.guest_name_for`), reads the
+////   facts (`ensure_facts`), lets `vm_spec.ensure_step` decide, and boots
+////   through `bring_up`, the same code `up` runs. Its last line of standard
+////   output names the executor and workspace, and status 75 with
+////   `daemon=required` says only a running daemon is missing (`ensure`).
 //// - `down` signals the recorded process and waits for it (`down`).
 //// - `status` reports what the pid file, the process table and the host epmd
 ////   say (`status`).
@@ -123,7 +129,7 @@ import client/membership_ledger
 import client/membership_provision
 import client/vm_spec.{
   type Command, type Manifest, type PidRecord, type SyncOptions, type UpOptions,
-  Down, Guests, Launch, Logs, PidRecord, Remove, Setup, Status, Sync, Up,
+  Down, Ensure, Guests, Launch, Logs, PidRecord, Remove, Setup, Status, Sync, Up,
   UpOptions,
 }
 import core/json as core_json
@@ -150,6 +156,8 @@ pub const usage =
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
                   [--allow HOST]... [--provision SCRIPT]
+       loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
+                      [--config PATH]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -197,7 +205,8 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             injects: gh (the default) runs `gh auth token`, env reads
             LOOM_VM_GITHUB_TOKEN, and off gives the guest no network beyond
             the --allow hosts. The guest holds only a placeholder, never the
-            token.
+            token. The choice is recorded and a later up with no --github
+            keeps it; --fresh returns to gh.
             --allow HOST adds a host to the guest's egress allowlist, on top
             of the GitHub hosts, so a build can reach a package registry. HOST
             is a hostname or *.domain.tld; repeat the flag for more. The list
@@ -210,6 +219,22 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             in loom-vm.log. A failing script fails up, and the next up runs it
             again. A resume skips a script that succeeded, and refuses a new
             one: add --fresh. Use --allow for the hosts it needs.
+  ensure    Make the guest of one workspace ready, which is what `loom --vm`
+            runs. The guest is named after DIR (default: the current
+            directory): its last segment and six digits of its path, so every
+            workspace has a guest of its own. A guest that already serves is
+            left alone and the command ends at once. Otherwise it installs the
+            microVM artifacts when they are missing or from another release,
+            then boots the guest as up does, resuming one that ran before.
+            --github, --allow and --config mean what they mean for up, and a
+            resume keeps the access and hosts the guest was started with.
+            Progress goes to standard error. The last line of standard output
+            is `executor=NAME workspace=NAME`, the words `loom --executor E
+            --workspace W` takes. Exit status 75 with the line `daemon=required`
+            means the only thing missing is a running daemon, which ensure
+            never starts: start one and run it again. It fails, leaving the
+            guest up, when a daemon that holds sessions must restart to read the
+            deployment this call installed.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
   status    Say whether the guest runs, where it is registered and what it
             holds.
@@ -260,14 +285,34 @@ Example:
 /// ```
 pub fn main(arguments: List(String)) -> Nil {
   // A refusal goes to standard error with the exit status every `loomd`
-  // command uses, so a script can tell a refused `up` from a started one.
-  case run(arguments) {
-    Ok(text) -> io.println(text)
-    Error(reason) -> {
+  // command uses, so a script can tell a refused `up` from a started one. The
+  // one other ending is `ensure` finding only a daemon missing: its reason is
+  // on standard error, and standard output holds the line a launcher matches.
+  case finish(arguments) {
+    Printed(text) -> io.println(text)
+    Failed(reason) -> {
       io.println_error("loomd: " <> reason)
       ffi_os.halt(1)
     }
+    NeedsLaunchedDaemon(reason) -> {
+      io.println_error("loomd: " <> reason)
+      io.println(vm_spec.daemon_required_line)
+      ffi_os.halt(vm_spec.daemon_required_status)
+    }
   }
+}
+
+/// How a command ended.
+type Finish {
+  // It ran, and this is what it prints on standard output.
+  Printed(String)
+
+  // It refused or failed, for this reason, with status 1.
+  Failed(String)
+
+  // `ensure` stopped before writing anything because only a running daemon is
+  // missing; the status is `vm_spec.daemon_required_status`.
+  NeedsLaunchedDaemon(String)
 }
 
 /// Runs one command and returns what it prints. A refused command has started
@@ -279,25 +324,46 @@ pub fn main(arguments: List(String)) -> Nil {
 /// assert result.is_error(vm_cli.run([]))
 /// ```
 pub fn run(arguments: List(String)) -> Result(String, String) {
-  use command <- result.try(
-    vm_spec.parse(arguments)
-    |> result.map_error(fn(reason) { reason <> "\n\n" <> usage }),
-  )
-  dispatch(command)
+  case finish(arguments) {
+    Printed(text) -> Ok(text)
+    Failed(reason) | NeedsLaunchedDaemon(reason) -> Error(reason)
+  }
 }
 
-/// Runs the command `run` parsed, each in its own section below.
-fn dispatch(command: Command) -> Result(String, String) {
+/// Parses and runs one command, and says how it ended.
+fn finish(arguments: List(String)) -> Finish {
+  case vm_spec.parse(arguments) {
+    Ok(command) -> dispatch(command)
+    Error(reason) -> Failed(reason <> "\n\n" <> usage)
+  }
+}
+
+/// Runs the command `finish` parsed, each in its own section below.
+fn dispatch(command: Command) -> Finish {
   // The commands share nothing but where a guest's files are.
   case command {
-    Setup(source) -> setup(source)
-    Up(options) -> up(options)
-    Down(name) -> down(name)
-    Status(name) -> status(name)
-    Logs(name, lines) -> logs(name, lines)
-    Guests -> guests()
-    Remove(name, config, consent) -> remove(name, config, consent)
-    Sync(options) -> sync(options)
+    Ensure(options) ->
+      case ensure(options) {
+        Ok(line) -> Printed(line)
+        Error(Refused(reason)) -> Failed(reason)
+        Error(DaemonRequired(reason)) -> NeedsLaunchedDaemon(reason)
+      }
+    Setup(source) -> ended(setup(source))
+    Up(options) -> ended(up(options))
+    Down(name) -> ended(down(name))
+    Status(name) -> ended(status(name))
+    Logs(name, lines) -> ended(logs(name, lines))
+    Guests -> ended(guests())
+    Remove(name, config, consent) -> ended(remove(name, config, consent))
+    Sync(options) -> ended(sync(options))
+  }
+}
+
+/// The ending of a command that either prints or refuses.
+fn ended(outcome: Result(String, String)) -> Finish {
+  case outcome {
+    Ok(text) -> Printed(text)
+    Error(reason) -> Failed(reason)
   }
 }
 
@@ -602,8 +668,22 @@ fn use_decision(
 
 // --- up ----------------------------------------------------------------------
 
-/// Provisions, enrolls, stages and boots one guest.
+// What a finished `up` knows: the options it settled, the workspace copy, the
+// host port and how the daemon learns of the guest.
+type Upped {
+  Upped(options: UpOptions, workspace: Workspace, port: Int, enrolled: Enrolled)
+}
+
+/// Boots one guest and tells the user how to use it and what to do about the
+/// daemon.
 fn up(options: UpOptions) -> Result(String, String) {
+  use upped <- result.try(bring_up(options))
+  Ok(report(upped, restart_after(upped.enrolled)))
+}
+
+/// Provisions, enrolls, stages and boots one guest. `ensure` calls this too, so
+/// the boot path exists once.
+fn bring_up(options: UpOptions) -> Result(Upped, String) {
   use vm_home <- result.try(vm_home())
   use manifest <- result.try(installed_manifest(vm_home))
   use Nil <- result.try(vm_spec.check_revision(
@@ -650,7 +730,170 @@ fn up(options: UpOptions) -> Result(String, String) {
     step,
   ))
   use port <- result.try(boot(manifest, guest, names, options, github, plan))
-  report(options, workspace, port, enrolled)
+  Ok(Upped(options:, workspace:, port:, enrolled:))
+}
+
+// --- ensure ------------------------------------------------------------------
+
+// How `ensure` failed: a refusal, or the one case a launcher can repair.
+type EnsureFailure {
+  // The command cannot make the guest ready, for the reason given.
+  Refused(String)
+
+  // Only a running daemon is missing, which `up` never starts and a launcher
+  // does. Nothing was written.
+  DaemonRequired(String)
+}
+
+/// Makes the guest that serves one workspace ready and answers the line that
+/// names it: `executor=<guest> workspace=<registered name>`.
+///
+/// The guest's name is derived from the workspace's canonical path, so the same
+/// directory finds the same guest on every call. What happens next is decided
+/// by `vm_spec.ensure_step` from what the host shows, and each step prints one
+/// line on standard error saying which ran, so a developer can see whether a
+/// call was the fast path, a setup, or a boot. The boot is `bring_up`, the code
+/// `up` runs, so a guest `ensure` starts is one `up` could have started.
+fn ensure(options: UpOptions) -> Result(String, EnsureFailure) {
+  use vm_home <- result.try(vm_home() |> result.map_error(Refused))
+  use workspace <- result.try(
+    workspace_of(options) |> result.map_error(Refused),
+  )
+  let name = vm_spec.guest_name_for(workspace.path)
+  use Nil <- result.try(vm_spec.valid_name(name) |> result.map_error(Refused))
+  let options = UpOptions(..options, name:, workspace: Some(workspace.path))
+  let line = vm_spec.ensure_line(name, workspace.name)
+  use facts <- result.try(ensure_facts(vm_home, options))
+
+  case vm_spec.ensure_step(facts) {
+    vm_spec.AlreadyServing -> {
+      progress(name, "already serving, nothing to do")
+      Ok(line)
+    }
+    vm_spec.NeedsDaemon ->
+      Error(DaemonRequired(
+        "the guest "
+        <> name
+        <> " would join the ledger deployment of your configuration, which "
+        <> "needs its daemon running; `ensure` starts none",
+      ))
+    vm_spec.NeedsSetup -> {
+      progress(name, "installing the microVM artifacts for this build")
+      use _ <- result.try(
+        install_artifacts(vm_home, vm_spec.OwnRelease)
+        |> result.map_error(Refused),
+      )
+      boot_ensured(options, name, line)
+    }
+    vm_spec.Boot -> boot_ensured(options, name, line)
+    vm_spec.Refuse(reason) -> Error(Refused(reason))
+  }
+}
+
+/// Boots the guest through `up`'s own path, then refuses when the user's daemon
+/// was left running without the table the guest needs. The guest stays up in
+/// that case, so the next `ensure` after the restart is the fast path.
+fn boot_ensured(
+  options: UpOptions,
+  name: String,
+  line: String,
+) -> Result(String, EnsureFailure) {
+  progress(name, "booting the guest")
+  use upped <- result.try(bring_up(options) |> result.map_error(Refused))
+  progress(name, "the guest serves port " <> int.to_string(upped.port))
+
+  // Only a daemon this call missed is asked to restart; `ensure_restart`
+  // answers none for a guest that was resumed or joined.
+  use Nil <- result.try(
+    ensure_restart(upped.enrolled)
+    |> restart_outcome
+    |> vm_spec.restart_refusal
+    |> result.map_error(Refused),
+  )
+  Ok(line)
+}
+
+/// The daemon outcome a restart decision carries, or none for the cases that
+/// need no restart.
+fn restart_outcome(restart: Restart) -> vm_spec.DaemonOutcome {
+  case restart {
+    Daemon(outcome) -> outcome
+    NoRestart | OtherDaemon -> vm_spec.NoDaemon
+  }
+}
+
+/// One progress line on standard error, named for the guest and prefixed so a
+/// reader can tell `ensure` from the steps it runs.
+fn progress(name: String, text: String) -> Nil {
+  io.println_error("loom vm ensure: " <> name <> ": " <> text <> ".")
+}
+
+/// Observes what `ensure_step` decides on. The guest's process and epmd
+/// registration come first and are all the fast path needs, but the manifest
+/// and the daemon are read too: they are small reads, and reading them here
+/// keeps the decision a function of facts and not of order.
+fn ensure_facts(
+  vm_home: String,
+  options: UpOptions,
+) -> Result(vm_spec.EnsureFacts, EnsureFailure) {
+  let name = options.name
+  let names = vm_spec.names(name)
+  let guest = instance(vm_home, name)
+  use state <- result.try(process_state(guest) |> result.map_error(Refused))
+  let pid = case state {
+    Alive(record) -> Some(record.pid)
+    NotRunning -> None
+  }
+  let registration = case tool("epmd", ["-names"], within: quick_ms) {
+    Ok(listing) ->
+      case vm_spec.registered_port(listing, names.executor_short) {
+        Some(_) -> vm_spec.Registered
+        None -> vm_spec.Unregistered
+      }
+    Error(_) -> vm_spec.Unregistered
+  }
+
+  Ok(
+    vm_spec.EnsureFacts(
+      name:,
+      state: vm_spec.guest_state(pid, registration),
+      manifest: manifest_decision(vm_home),
+      enrolment: enrolment_need(guest, names, options),
+      daemon: case running_fence() {
+        Some(_) -> vm_spec.DaemonRunning
+        None -> vm_spec.DaemonStopped
+      },
+    ),
+  )
+}
+
+/// Whether bringing this guest up would join an existing ledger deployment.
+/// That is the case for a guest with no executor bundle, in the default
+/// configuration, when it holds a ledger deployment: `join` needs the daemon.
+/// A configuration that cannot be read counts as no join, because `up` reports
+/// its own reason for it.
+fn enrolment_need(
+  guest: Instance,
+  names: vm_spec.Names,
+  options: UpOptions,
+) -> vm_spec.EnrolmentNeed {
+  let bundled = bootstrap.path_exists(bundle_file(guest, names.name))
+  let joins = {
+    use #(config, file) <- result.try(config_of(options))
+    let text = case simplifile.read(config) {
+      Ok(text) -> text
+      Error(_) -> ""
+    }
+    case file, vm_spec.deployment_state(text) {
+      DefaultConfigFile, Ok(vm_spec.LedgerDeployment(..)) -> Ok(Nil)
+      _, _ -> Error("no join")
+    }
+  }
+
+  case bundled, joins {
+    False, Ok(Nil) -> vm_spec.JoinsLedger
+    _, _ -> vm_spec.NeedsNoDaemon
+  }
 }
 
 // --- the allowlist and the provisioning script --------------------------------
@@ -1422,6 +1665,11 @@ type Row {
   // The orchestrator's bundle wrote it, and a daemon reads it at start.
   Written
 
+  // An earlier `up` wrote it and this one found it still there. A daemon that
+  // started since has read it; `ensure` therefore never asks such a daemon to
+  // restart, though `up` still reports on it as it always did.
+  Resumed
+
   // The ledger gives the daemon the row when the guest is a member, and the
   // file was not touched.
   Derived
@@ -1505,7 +1753,7 @@ fn still_enrolled(
   // only the row it needs is checked, and a missing one is the operator's to
   // restore, since reinstalling would be refused as an existing deployment.
   case string.contains(text, row) {
-    True -> Ok(Enrolled(config:, file:, row: Written))
+    True -> Ok(Enrolled(config:, file:, row: Resumed))
     False ->
       Error(
         config
@@ -2642,16 +2890,48 @@ fn stop_after_failure(
   Error(reason)
 }
 
+// What `up` leaves the user's daemon needing, after doing what it can about it.
+type Restart {
+  // The daemon derives the guest from a ledger it already holds.
+  NoRestart
+
+  // The guest is in a configuration other than the default, whose daemon `up`
+  // cannot find.
+  OtherDaemon
+
+  // The default daemon read its configuration before `[distribution]` existed,
+  // and this is what `up` did about it.
+  Daemon(vm_spec.DaemonOutcome)
+}
+
+/// Does what `up` does about the daemon, which can stop an idle one, and
+/// answers the outcome. It runs after the guest booted, since a failed `up`
+/// must not have stopped a daemon.
+fn restart_after(enrolled: Enrolled) -> Restart {
+  case enrolled.row, enrolled.file {
+    Derived, _ -> NoRestart
+    Written, OtherConfigFile | Resumed, OtherConfigFile -> OtherDaemon
+    Written, DefaultConfigFile | Resumed, DefaultConfigFile ->
+      Daemon(daemon_outcome())
+  }
+}
+
+/// What `ensure` does about the daemon: only a deployment this call installed
+/// can have been missed by a running daemon, so a resumed row asks for no
+/// restart. Otherwise it is `restart_after`, which stops an idle daemon.
+fn ensure_restart(enrolled: Enrolled) -> Restart {
+  case enrolled.row {
+    Resumed -> NoRestart
+    Written | Derived -> restart_after(enrolled)
+  }
+}
+
 /// What `up` tells the user: how to use the guest, and what to do about the
 /// daemon.
-fn report(
-  options: UpOptions,
-  workspace: Workspace,
-  port: Int,
-  enrolled: Enrolled,
-) -> Result(String, String) {
+fn report(upped: Upped, restart: Restart) -> String {
+  let Upped(options:, workspace:, port:, enrolled:) = upped
   let names = vm_spec.names(options.name)
-  Ok(string.join(
+  string.join(
     list.flatten([
       [
         "The guest "
@@ -2670,20 +2950,17 @@ fn report(
           <> workspace.name,
         "",
       ],
-      case enrolled.row {
-        Written -> daemon_lines(enrolled.file)
-        Derived -> []
-      },
+      daemon_lines(restart),
       ["Stop it with: loom vm down --name " <> options.name],
     ]),
     "\n",
-  ))
+  )
 }
 
 /// The line that says how the daemon comes to know the guest.
 fn enrolled_line(options: UpOptions, enrolled: Enrolled) -> String {
   case enrolled.row {
-    Written ->
+    Written | Resumed ->
       "Enrolled it as [executors."
       <> options.name
       <> "] in "
@@ -2699,18 +2976,19 @@ fn enrolled_line(options: UpOptions, enrolled: Enrolled) -> String {
 }
 
 /// The lines about daemons, after doing what this `up` calls for.
-fn daemon_lines(file: ConfigFile) -> List(String) {
+fn daemon_lines(restart: Restart) -> List(String) {
   // Only the default daemon is ever observed or stopped.
-  case file {
-    DefaultConfigFile -> daemon_note()
-    OtherConfigFile -> [
+  case restart {
+    NoRestart -> []
+    Daemon(outcome) -> vm_spec.daemon_note(outcome)
+    OtherDaemon -> [
       "A daemon already running with that file must restart to use the guest.",
       "",
     ]
   }
 }
 
-/// What `up` does about the user's daemon, and the lines that say so.
+/// What `up` does about the user's daemon.
 ///
 /// A running daemon read its configuration before the `[distribution]` table
 /// existed, so only a restart reaches the guest. A daemon that holds no session
@@ -2718,11 +2996,11 @@ fn daemon_lines(file: ConfigFile) -> List(String) {
 /// in effect: the `loom` client renders the TLS options file whenever it starts
 /// a daemon whose configuration has `[distribution]` (protocol-change/106). A
 /// daemon that holds any session is never stopped; the note names the command.
-fn daemon_note() -> List(String) {
+fn daemon_outcome() -> vm_spec.DaemonOutcome {
   // No daemon needs no action. A running one is decided on what it said about
   // its sessions, in `vm_spec.daemon_step`, which is the only place that
   // chooses to stop it.
-  let outcome = case observe_daemon() {
+  case observe_daemon() {
     None -> vm_spec.NoDaemon
     Some(#(fence, sessions)) ->
       case vm_spec.daemon_step(fence.pid, sessions) {
@@ -2730,8 +3008,6 @@ fn daemon_note() -> List(String) {
         vm_spec.LeaveAlone(outcome) -> outcome
       }
   }
-
-  vm_spec.daemon_note(outcome)
 }
 
 /// The daemon the default state directory's endpoint record names, if its
