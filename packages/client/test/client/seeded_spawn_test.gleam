@@ -18,6 +18,7 @@ import client/remote/address.{Address}
 import client/remote/orchestrator_port
 import client/remote/remote_spawner
 import client/remote_spawn
+import client/session_states
 import client/spawn_return
 import client/spawn_seed
 import client/spawners.{type Spawner}
@@ -136,7 +137,7 @@ fn request(state: option.Option(State)) -> remote_spawn.Request {
 // What the delegate session's Agency was asked to start.
 fn recording(heard: Subject(remote_spawn.Request)) -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
-    fresh: fn() { True },
+    fresh: fn() { session_states.Fresh },
     states: None,
     spawn: fn(_delegation, _site, request) {
       process.send(heard, request)

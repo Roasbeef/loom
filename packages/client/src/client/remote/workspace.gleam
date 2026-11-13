@@ -720,19 +720,58 @@ pub fn states_over(
 }
 
 /// Reads an executor's answer to a state request: the answer itself, silence as
-/// a reason to ask again, and a refusal, which the executor means, as final.
+/// a reason to ask again, and a refusal as final only when it is about the
+/// content or the workspace. A refusal that is about the session's fence or the
+/// scope's condition (a token or incarnation that has moved on, a scope that is
+/// closing or being built, a plane to attach again) is not about the state, and
+/// asking again after the session is attached anew can succeed.
 fn answered(
   heard: Result(Result(answer, protocol.Refusal), Nil),
   executor: String,
 ) -> Result(answer, session_states.Failure) {
   case heard {
     Ok(Ok(answer)) -> Ok(answer)
-    Ok(Error(refusal)) ->
-      Error(session_states.Final(protocol.describe(refusal)))
+    Ok(Error(refusal)) -> Error(failed_by(refusal))
     Error(Nil) ->
       Error(session_states.Later(
         "the executor `" <> executor <> "` did not answer in time",
       ))
+  }
+}
+
+/// Whether an executor's refusal is the workspace saying no to the state, which
+/// asking again does not change, or the scope not being in a condition to say.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.failed_by(protocol.StaleToken)
+///   == session_states.Later("the executor holds a newer attachment for this session")
+/// ```
+pub fn failed_by(refusal: protocol.Refusal) -> session_states.Failure {
+  let said = protocol.describe(refusal)
+  case refusal {
+    protocol.ExecutorFault(..)
+    | protocol.NoStates(..)
+    | protocol.Invalid(..)
+    | protocol.WorkspaceMismatch(..) -> session_states.Final(said)
+    protocol.StaleToken
+    | protocol.StaleIncarnation(..)
+    | protocol.ScopeNotOpen
+    | protocol.ScopeClosing
+    | protocol.UncleanClose(..)
+    | protocol.CapacityExhausted(..)
+    | protocol.BudgetExhausted(..)
+    | protocol.VersionMismatch(..)
+    | protocol.NoSuchScope
+    | protocol.NoPlane(..)
+    | protocol.PlaneBuilding
+    | protocol.WorktreeFailed(..)
+    | protocol.UnknownHandle
+    | protocol.AlreadyPublished
+    | protocol.StaleGeneration(..)
+    | protocol.NoEvolution(..)
+    | protocol.Unreachable(..) -> session_states.Later(said)
   }
 }
 

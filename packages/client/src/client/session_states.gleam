@@ -39,11 +39,31 @@ pub type Failure {
   Final(reason: String)
 }
 
+/// Whether a session has started a child, as far as its orchestrator can tell.
+pub type Freshness {
+  /// No child was ever started in the session, so a state may be put into its
+  /// workspace.
+  Fresh
+
+  /// A child was started. The workspace holds work a state would replace.
+  Begun
+
+  /// The orchestrator could not read the session's record, because its holder is
+  /// not up or the read failed. It does not know, and a state is neither put in
+  /// nor skipped on a guess: the caller asks again.
+  Unreadable
+}
+
 /// The reason an apply is refused once the session has begun.
 pub const already_begun =
   "the session has already begun, and a state is put into a workspace only before its first turn"
 
-/// The same states, with `apply` refused once the session has begun.
+/// The reason an apply waits when the session's record cannot be read.
+pub const unreadable =
+  "the session's record could not be read to tell whether it has begun; ask again"
+
+/// The same states, with `apply` refused once the session has begun, and put off
+/// when it cannot be told whether it has.
 ///
 /// The executor cannot tell a tree the session has worked in from a fresh one
 /// beyond a few checks, so the orchestrator, which knows whether it has started
@@ -54,17 +74,18 @@ pub const already_begun =
 /// ## Examples
 ///
 /// ```gleam
-/// // session_states.before_first_turn(states, fn() { False }).apply(state)
+/// // session_states.before_first_turn(states, fn() { session_states.Begun }).apply(state)
 /// // == Error(session_states.Final(session_states.already_begun))
 /// ```
 pub fn before_first_turn(
   states: SessionStates,
-  fresh: fn() -> Bool,
+  fresh: fn() -> Freshness,
 ) -> SessionStates {
   SessionStates(..states, apply: fn(state) {
     case fresh() {
-      True -> states.apply(state)
-      False -> Error(Final(already_begun))
+      Fresh -> states.apply(state)
+      Begun -> Error(Final(already_begun))
+      Unreadable -> Error(Later(unreadable))
     }
   })
 }

@@ -13,6 +13,7 @@ import client/daemon/main
 import client/peer_mail
 import client/remote/remote_spawner
 import client/remote_spawn.{Attached, CallSite, Origin, Parent, Request}
+import client/session_states
 import client/spawners.{type Spawner}
 import core/clock
 import core/ids
@@ -99,7 +100,7 @@ type Heard {
 
 fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
-    fresh: fn() { True },
+    fresh: fn() { session_states.Fresh },
     states: None,
     spawn: fn(delegation, _site, _request) {
       process.send(heard, Spawn(delegation))

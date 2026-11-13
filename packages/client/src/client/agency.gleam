@@ -5450,9 +5450,10 @@ pub type DelegateEndpoint {
     ) -> Result(remote_escalation.Answer, remote_spawn.SpawnRefusal),
     /// Whether no child of the session has ever been started in it, which is
     /// the only time a state may be put into its workspace
-    /// (protocol-change/107, slice 4b). It fails closed: a ledger that cannot be
-    /// read, or one that holds any child, answers `False`.
-    fresh: fn() -> Bool,
+    /// (protocol-change/107, slice 4b). A session that holds any child is
+    /// `Begun`, and one whose record cannot be read is `Unreadable`, which is not
+    /// `Begun`: the caller asks again and neither applies nor skips on a guess.
+    fresh: fn() -> session_states.Freshness,
     /// How the session moves states in and out of its workspace when the
     /// workspace is on an executor, or `None` for a workspace on this machine.
     /// The host that builds the session fills this in, as it does `resolve`;
@@ -5522,21 +5523,23 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
 /// is written before its strand runs (`delegate_spawn`), so a session with no
 /// such cell has run nothing. The read is of the facts under the lineage prefix
 /// and not of the decoded ledger: a cell that will not decode still means a child
-/// was started, so it counts, and a read that fails answers `False`, which keeps
-/// the fill away from a session it cannot vouch for.
+/// was started, so it counts. A read that fails is `Unreadable`, not `Begun`: a
+/// caller that skips the fill for a session that has begun must not skip it for
+/// one it could not look at, so it asks again.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // agency.delegate_fresh(config) == True
+/// // agency.delegate_fresh(config) == session_states.Fresh
 /// ```
-pub fn delegate_fresh(config: Config) -> Bool {
+pub fn delegate_fresh(config: Config) -> session_states.Freshness {
   case borrow(config) {
-    Error(_refusal) -> False
+    Error(_refusal) -> session_states.Unreadable
     Ok(runtime) ->
       case api.reserved_facts(runtime, prefix: lineage.key_prefix) {
-        Ok([]) -> True
-        Ok([_, ..]) | Error(_) -> False
+        Ok([]) -> session_states.Fresh
+        Ok([_, ..]) -> session_states.Begun
+        Error(_) -> session_states.Unreadable
       }
   }
 }

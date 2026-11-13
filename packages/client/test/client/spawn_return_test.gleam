@@ -22,6 +22,7 @@ import client/remote/state_link
 import client/remote_child
 import client/remote_spawn
 import client/return_apply
+import client/session_states
 import client/spawn_return
 import client/spawn_seed
 import client/spawners.{type Spawner}
@@ -132,7 +133,7 @@ seed = \"workspace\"
 // finished with a report of its own.
 fn finishing() -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
-    fresh: fn() { True },
+    fresh: fn() { session_states.Fresh },
     states: None,
     spawn: fn(_delegation, _site, _request) {
       Ok(remote_spawn.Spawned(

@@ -22,6 +22,7 @@ import client/remote_escalation
 import client/remote_reach
 import client/remote_release
 import client/remote_spawn.{Parent}
+import client/session_states
 import client/spawners
 import core/clock
 import core/ids
@@ -99,7 +100,7 @@ fn tagged_with(
   occupancy: agency.Occupancy,
 ) -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
-    fresh: fn() { True },
+    fresh: fn() { session_states.Fresh },
     states: None,
     spawn: fn(_delegation, _site, _request) {
       Error(remote_spawn.StoreFailure(reason: "tag " <> int.to_string(tag)))

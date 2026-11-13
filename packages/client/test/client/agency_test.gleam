@@ -43,6 +43,7 @@ import client/remote_reach
 import client/remote_send
 import client/remote_spawn
 import client/serve
+import client/session_states
 import client/spawners
 import client/state_object
 import client/workflow_ledger
@@ -5363,14 +5364,16 @@ pub fn a_delegate_session_is_fresh_until_its_first_child_is_started_test() {
 
   // A session that has started nothing may have a state put into its workspace,
   // and the endpoint it projects asks the same question.
-  assert agency.delegate_fresh(harness.config)
+  assert agency.delegate_fresh(harness.config) == session_states.Fresh
   assert agency.delegate_endpoint(harness.config).fresh()
+    == session_states.Fresh
 
   // The first child's lineage cell is written before its strand runs, so from the
   // spawn on the session has begun, and a resend of the spawn changes nothing.
   let _first = remote_spawned(harness, "turn-1:tools", "review auth")
-  assert !agency.delegate_fresh(harness.config)
-  assert !agency.delegate_endpoint(harness.config).fresh()
+  assert agency.delegate_fresh(harness.config) == session_states.Begun
+  assert agency.delegate_endpoint(harness.config).fresh()
+    == session_states.Begun
   close(harness)
 }
 

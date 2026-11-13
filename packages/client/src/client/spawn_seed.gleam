@@ -77,6 +77,9 @@ import client/remote_spawn.{
   type CallSite, type Parent, type Request, type SpawnRefusal, NotYetOpen,
   StateMissing, StateRefused, StoreFailure,
 }
+import client/seed_landing.{
+  type Placed, type Unplaced, AlreadyBegun, Applied, Refuse, Retry,
+}
 import client/session_states.{type SessionStates}
 import client/spawners.{type Spawner, InDirectory, NoSeed, WorkspaceSeed}
 import client/state_apply
@@ -960,7 +963,17 @@ fn landed(
       session: Some(endpoint),
     )
   }
-  use Nil <- result.try(refused_before(node, name))
+
+  // A verdict is written before the session is ended, so a daemon that stopped
+  // between the two left a refused child with a session. The ask that finds the
+  // verdict ends it, which does nothing when it is already gone.
+  use Nil <- result.try(
+    refused_before(node, name)
+    |> result.map_error(fn(refusal) {
+      let _released = children.release(spawner, parent, name)
+      refusal
+    }),
+  )
   use begun <- result.try(children.open(spawner, parent, name))
 
   // A child that has begun is a resend of a spawn that went through.
@@ -998,11 +1011,13 @@ fn placed_or_begun(
   endpoint: DelegateEndpoint,
   wait_ms: Int,
 ) -> Result(DelegateEndpoint, SpawnRefusal) {
-  // A session whose child began has its workspace already, and one that has not
-  // gets it now.
-  case endpoint.fresh() {
-    False -> Ok(endpoint)
-    True -> {
+  // A session whose child began has its workspace already, one that has not gets
+  // it now, and one that cannot be read is asked about again: skipping the work
+  // for it would start the child on a checkout nothing was put in.
+  case seed_landing.gate(endpoint.fresh()) {
+    seed_landing.LeaveAlone -> Ok(endpoint)
+    seed_landing.AskAgain -> Error(NotYetOpen(session_states.unreadable))
+    seed_landing.PutIn -> {
       use held <- result.try(held(node, state))
       placed_in(node, children, spawner, parent, name, held, endpoint, wait_ms)
       |> result.map(fn(_placed) { endpoint })
@@ -1103,13 +1118,23 @@ fn placed(
 const still_placing =
   "the workspace is still being put in place on the executor; ask again"
 
+/// The refusal a caller of `land` is told for an unplaced state.
+fn refusal_of(unplaced: Unplaced) -> SpawnRefusal {
+  case unplaced {
+    Retry(reason:) -> NotYetOpen(worktree_git.printable(reason, 300))
+    Refuse(reason:) -> StateRefused(worktree_git.printable(reason, 512))
+  }
+}
+
 /// The work of one placement under a deadline of its own.
 ///
-/// Whatever the end, the claim is released, and a refusal is kept as the
-/// attempt's verdict before that, so an ask that arrives after the asker has gone
-/// is answered with it and starts nothing. A refusal also ends the child's
-/// session, since no child will run in it; a request to ask again leaves the
-/// session for the next ask.
+/// Whatever the end, the claim is released. Only a refusal the same inputs would
+/// get again is kept as the attempt's verdict, before the claim is let go, so an
+/// ask that arrives after the asker has gone is answered with it and starts
+/// nothing, and such a refusal ends the child's session, since no child will run
+/// in it. A failure that asking again can cure (no answer, no room, a fence that
+/// moved, the deadline) keeps no verdict and leaves the session, so the next ask
+/// resumes the transfer at the executor's offset.
 fn placing(
   node: StateNode,
   states: SessionStates,
@@ -1126,9 +1151,10 @@ fn placing(
     |> weft.deadline(apply_ms)
     |> weft.start
 
-  // A task that finished has its own answer; every other end is the deadline.
+  // A task that finished has its own answer; every other end is the deadline,
+  // which says nothing about the inputs and so is a reason to ask again.
   let answer = case outcomes {
-    [weft.Completed(..)] -> Ok(Nil)
+    [weft.Completed(value:, ..)] -> Ok(value)
     [weft.Failed(error:, ..)] -> Error(error)
     [weft.Crashed(..)]
     | [weft.Abandoned(..)]
@@ -1137,19 +1163,27 @@ fn placing(
     | [weft.CancellationUnconfirmed(..)]
     | []
     | [_, _, ..] ->
-      Error(StateRefused(
-        "putting the workspace in place did not finish in time",
-      ))
+      Error(Retry("putting the workspace in place did not finish in time"))
   }
+  let refused = result.map(answer, fn(_placed) { Nil })
+  let told = result.map_error(refused, refusal_of)
 
   // The verdict is kept before the claim is let go, so no ask finds the claim
-  // free and the verdict missing.
-  record_refusal(parent, name, answer)
+  // free and the verdict missing. A request to ask again is not a verdict.
+  record_refusal(parent, name, case answer {
+    Error(unplaced) ->
+      case seed_landing.keeps_verdict(unplaced) {
+        True -> told
+        False -> Ok(Nil)
+      }
+    Ok(_placed) -> Ok(Nil)
+  })
   let _claim_released = simplifile.delete(parent <> "/" <> name <> ".claim")
 
-  // The end of the child's session, or the record that the workspace is in place.
+  // The record that the workspace is in place, or the end of the child's session.
+  // A resend that found the session begun put nothing anywhere and says nothing.
   case answer {
-    Ok(Nil) ->
+    Ok(Applied) ->
       told_applied(
         node.logger,
         held.state,
@@ -1157,11 +1191,11 @@ fn placing(
         states.executor,
         started,
       )
-    Error(StateRefused(..)) -> release()
-    Error(_) -> Nil
+    Ok(AlreadyBegun) | Error(Retry(..)) -> Nil
+    Error(Refuse(..)) -> release()
   }
 
-  answer
+  told
 }
 
 /// Sends the bundle to the executor's store and has the executor apply it.
@@ -1170,41 +1204,37 @@ fn moved(
   states: SessionStates,
   endpoint: DelegateEndpoint,
   held: state_store.Held,
-) -> Result(Nil, SpawnRefusal) {
+) -> Result(Placed, Unplaced) {
   use Nil <- result.try(delivered(node, states, held.state))
   applied_on(states, endpoint, held.state)
 }
 
 /// Relays the bundle from this machine's store to the executor's, resuming at the
-/// offset the executor already holds. A transfer that did not finish is the next
-/// ask's to continue; a refusal or a store that lost the bundle is final.
+/// offset the executor already holds. A transfer that did not finish, an executor
+/// with no room yet and a store that could not say are the next ask's to try
+/// again; a description or a piece the executor judges malformed is refused for
+/// good.
 fn delivered(
   node: StateNode,
   states: SessionStates,
   state: State,
-) -> Result(Nil, SpawnRefusal) {
+) -> Result(Nil, Unplaced) {
   case node.store {
-    None -> Error(StateRefused("this machine keeps no state store"))
+    None -> Error(Refuse("this machine keeps no state store"))
     Some(store) ->
       case state_transfer.send(store, state.hash, states.link) {
         state_transfer.Delivered -> Ok(Nil)
         state_transfer.Declined(refusal:) ->
-          Error(
-            StateRefused(worktree_git.printable(
-              "sending the workspace to the executor failed: the executor declined it: "
-                <> state_transfer.describe(refusal),
-              512,
-            )),
-          )
+          Error(seed_landing.of_declined(refusal))
+
+        // A fault is a node that could not decide or read, which may pass; a
+        // bundle this machine lost is found missing by the next ask's check.
         state_transfer.Faulted(reason:) ->
-          Error(
-            StateRefused(worktree_git.printable(
-              "sending the workspace to the executor failed: " <> reason,
-              512,
-            )),
-          )
+          Error(Retry(
+            "sending the workspace to the executor failed: " <> reason,
+          ))
         state_transfer.Silent | state_transfer.Stalled ->
-          Error(NotYetOpen(still_placing))
+          Error(Retry(still_placing))
       }
   }
 }
@@ -1215,32 +1245,33 @@ fn delivered(
 /// The session is asked once more whether it has begun, at the moment before the
 /// request, because the executor cannot tell: a session that began while the
 /// bundle was crossing is a resend of a spawn that went through, and gets no
-/// apply. The session's own `apply` refuses once the session has begun as well,
-/// so the line is held where the request is made and not only here.
+/// apply. A session that cannot be read is asked about again, and is never taken
+/// for one that has begun. The session's own `apply` refuses once the session has
+/// begun as well, so the line is held where the request is made and not only
+/// here.
 fn applied_on(
   states: SessionStates,
   endpoint: DelegateEndpoint,
   state: State,
-) -> Result(Nil, SpawnRefusal) {
-  use <- bool.guard(when: !endpoint.fresh(), return: Ok(Nil))
+) -> Result(Placed, Unplaced) {
+  case seed_landing.gate(endpoint.fresh()) {
+    seed_landing.LeaveAlone -> Ok(AlreadyBegun)
+    seed_landing.AskAgain -> Error(Retry(session_states.unreadable))
+    seed_landing.PutIn -> apply_once(states, state)
+  }
+}
 
-  // The executor's answer is the tip it checked out, a request to ask again, or
-  // a refusal that asking again does not change.
+/// Sends the apply and reads the executor's answer: the tip it checked out, a
+/// request to ask again, or a refusal of the content that asking again does not
+/// change.
+fn apply_once(states: SessionStates, state: State) -> Result(Placed, Unplaced) {
   case states.apply(state) {
-    Ok(tip) if tip == state.tip -> Ok(Nil)
+    Ok(tip) if tip == state.tip -> Ok(Applied)
     Ok(_other) ->
-      Error(StateRefused(
+      Error(Refuse(
         "applying the workspace on the executor checked out another commit than the one sent",
       ))
-    Error(session_states.Later(reason:)) ->
-      Error(NotYetOpen(worktree_git.printable(reason, 300)))
-    Error(session_states.Final(reason:)) ->
-      Error(
-        StateRefused(worktree_git.printable(
-          "applying the workspace on the executor failed: " <> reason,
-          512,
-        )),
-      )
+    Error(failure) -> Error(seed_landing.of_failure(failure))
   }
 }
 

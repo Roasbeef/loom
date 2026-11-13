@@ -24,8 +24,10 @@ import client/delegate_host
 import client/internal/ffi_os
 import client/remote/address.{Address}
 import client/remote/orchestrator_port
+import client/remote/protocol
 import client/remote/remote_spawner
 import client/remote/state_link
+import client/remote/workspace as remote_workspace
 import client/remote_spawn
 import client/return_apply
 import client/session_states.{type SessionStates, SessionStates}
@@ -99,6 +101,7 @@ type World {
     began: Cell(Bool),
     finished: Cell(Bool),
     refuse_spawn: Cell(Bool),
+    unreadable: Cell(Bool),
     child: String,
     handle: agent.Handle,
   )
@@ -263,7 +266,13 @@ fn child_endpoint(
   tree: String,
   tip: String,
 ) -> agency.DelegateEndpoint {
-  let fresh = fn() { !cell.get(world.began) }
+  let fresh = fn() {
+    case cell.get(world.unreadable), cell.get(world.began) {
+      True, _ -> session_states.Unreadable
+      False, True -> session_states.Begun
+      False, False -> session_states.Fresh
+    }
+  }
   agency.DelegateEndpoint(
     fresh:,
     states: Some(session_states.before_first_turn(world.states, fresh)),
@@ -328,7 +337,7 @@ fn child_endpoint(
 // else, and a message that reached it would be a message to the wrong session.
 fn pair_endpoint() -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
-    fresh: fn() { True },
+    fresh: fn() { session_states.Fresh },
     states: None,
     spawn: fn(_delegation, _site, _request) { Error(unused()) },
     join: fn(_parent, _handles, _within_ms) { Ok([]) },
@@ -369,6 +378,7 @@ type Pieces {
     began: Cell(Bool),
     finished: Cell(Bool),
     refuse_spawn: Cell(Bool),
+    unreadable: Cell(Bool),
   )
 }
 
@@ -388,6 +398,12 @@ fn children(
       Ok(endpoint)
     },
     open: fn(_spawner, _parent, _name) {
+      case cell.get(made) {
+        True -> Ok(Some(endpoint))
+        False -> Ok(None)
+      }
+    },
+    resident: fn(_spawner, _parent, _name) {
       case cell.get(made) {
         True -> Ok(Some(endpoint))
         False -> Ok(None)
@@ -439,6 +455,17 @@ type Link {
   // The executor does not answer the request for the child's commits the first
   // `until` times it is asked, counted in `asks`.
   SilentCapture(asks: Cell(Int), until: Int)
+
+  // The executor's store has no room for the first piece it is sent, as a store at
+  // its total cap does, and has room for every later one.
+  NoRoomOnce(sends: Cell(Int))
+
+  // The first apply is answered from a fence that has moved on, which is not
+  // about the state, and every later apply goes through.
+  StaleFenceOnce(asks: Cell(Int))
+
+  // Every apply is refused by the workspace, which the same state always is.
+  ApplyRefused
 }
 
 // Builds every machine and answers the world, before any spawn is asked.
@@ -468,6 +495,41 @@ fn world(name: String, ballast: Ballast, link: Link, shared: Bool) -> World {
           False -> counting.capture(basis, content)
         }
       })
+    NoRoomOnce(sends:) ->
+      SessionStates(
+        ..counting,
+        link: state_transfer.Link(
+          ..counting.link,
+          piece: fn(piece: state_transfer.Piece) {
+            let before = cell.get(sends)
+            cell.update(sends, fn(held) { held + 1 })
+            case before == 0 {
+              True ->
+                Ok(
+                  state_transfer.Refused(state_transfer.NoRoom(
+                    "the store is at its total cap",
+                  )),
+                )
+              False -> counting.link.piece(piece)
+            }
+          },
+        ),
+      )
+    StaleFenceOnce(asks:) ->
+      SessionStates(..counting, apply: fn(state) {
+        let before = cell.get(asks)
+        cell.update(asks, fn(held) { held + 1 })
+        case before == 0 {
+          True ->
+            Error(session_states.Later("the executor's fence has moved on"))
+          False -> counting.apply(state)
+        }
+      })
+    ApplyRefused ->
+      SessionStates(..counting, apply: fn(_state) {
+        cell.update(applies, fn(held) { held + 1 })
+        Error(session_states.Final("the workspace does not take this state"))
+      })
     DropsOnce(offsets:) ->
       SessionStates(
         ..counting,
@@ -488,7 +550,9 @@ fn world(name: String, ballast: Ballast, link: Link, shared: Bool) -> World {
   let began = cell.new(False)
   let finished = cell.new(False)
   let refuse_spawn = cell.new(False)
-  let pieces = Pieces(states:, journal:, began:, finished:, refuse_spawn:)
+  let unreadable = cell.new(False)
+  let pieces =
+    Pieces(states:, journal:, began:, finished:, refuse_spawn:, unreadable:)
   let child = spawn_seed.name_of(site(0), parent.sent)
   let sessions =
     children(
@@ -540,6 +604,7 @@ fn world(name: String, ballast: Ballast, link: Link, shared: Bool) -> World {
     began:,
     finished:,
     refuse_spawn:,
+    unreadable:,
     child:,
     handle: handle(),
   )
@@ -709,14 +774,19 @@ pub fn an_apply_is_refused_once_the_childs_session_has_begun_test() {
 
   // The session's record, with the fence the assembly puts on it, takes a state
   // while the session is fresh and refuses it after the first turn, without
-  // asking the executor.
-  let fresh = cell.new(False)
-  let fenced =
+  // asking the executor. A session that cannot be read is put off, not refused.
+  let begun =
     session_states.before_first_turn(world.attached.states, fn() {
-      cell.get(fresh)
+      session_states.Begun
     })
-  assert fenced.apply(world.parent.sent)
+  assert begun.apply(world.parent.sent)
     == Error(session_states.Final(session_states.already_begun))
+  let unreadable =
+    session_states.before_first_turn(world.attached.states, fn() {
+      session_states.Unreadable
+    })
+  assert unreadable.apply(world.parent.sent)
+    == Error(session_states.Later(session_states.unreadable))
   assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == head
   stop(world)
 }
@@ -855,4 +925,96 @@ pub fn an_executor_that_never_answers_gives_the_commits_up_and_says_where_they_a
     Released(world.child),
   ])
   stop(world)
+}
+
+pub fn a_session_that_cannot_be_read_is_asked_again_and_never_started_unseeded_test() {
+  let world = world("seed-exec-unreadable", Small, Steady, False)
+  let tree = executor_rig.tree_of(world.plane, 1)
+  let head = worktree_rig.git(tree, ["rev-parse", "HEAD"])
+  cell.update(world.unreadable, fn(_) { True })
+
+  // The session's record cannot be read, so it is not known whether it has
+  // begun. Nothing is applied, the child is not started, and the sender is told
+  // to ask again.
+  let assert Ok(Error(remote_spawn.NotYetOpen(_))) = ask_spawn(world)
+  assert cell.get(world.applies) == 0
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == head
+  assert journal_is(world, [Resolved(world.child)])
+
+  // Once it can be read, the resend puts the workspace in and starts the child.
+  cell.update(world.unreadable, fn(_) { False })
+  let assert Ok(Ok(_spawned)) = ask_spawn(world)
+  assert cell.get(world.applies) == 1
+  assert journal_is(world, [Resolved(world.child), Spawned(True)])
+  stop(world)
+}
+
+pub fn an_executor_with_no_room_is_asked_again_and_keeps_no_verdict_test() {
+  let sends = cell.new(0)
+  let world = world("seed-exec-noroom", Small, NoRoomOnce(sends), False)
+
+  // The executor's store has no room for the first piece. That is not about the
+  // state: the session stays, no verdict is kept, and the resend succeeds.
+  let assert Ok(Error(remote_spawn.NotYetOpen(_))) = ask_spawn(world)
+  assert journal_is(world, [Resolved(world.child)])
+  let assert Ok(Ok(_spawned)) = ask_spawn(world)
+  assert journal_is(world, [Resolved(world.child), Spawned(True)])
+  stop(world)
+}
+
+pub fn a_fence_that_moved_is_asked_again_and_keeps_no_verdict_test() {
+  let asks = cell.new(0)
+  let world = world("seed-exec-stale", Small, StaleFenceOnce(asks), False)
+  let assert Ok(Error(remote_spawn.NotYetOpen(_))) = ask_spawn(world)
+  assert journal_is(world, [Resolved(world.child)])
+  let assert Ok(Ok(_spawned)) = ask_spawn(world)
+  assert cell.get(asks) == 2
+  assert journal_is(world, [Resolved(world.child), Spawned(True)])
+  stop(world)
+}
+
+pub fn a_refusal_of_the_content_is_kept_and_ends_the_session_test() {
+  let world = world("seed-exec-sticks", Small, ApplyRefused, False)
+
+  // The workspace says no to the state. The refusal is kept, so the resend is
+  // answered with it and no second apply is sent, and the session is ended.
+  let assert Ok(Error(remote_spawn.StateRefused(reason))) = ask_spawn(world)
+  assert string.contains(reason, "does not take this state")
+  assert journal_is(world, [Resolved(world.child), Released(world.child)])
+
+  // The resend that finds the verdict ends the session again. A daemon that
+  // stopped between writing the verdict and ending the session left one, and
+  // the registry takes the repeat as nothing to do when the session is gone.
+  let assert Ok(Error(remote_spawn.StateRefused(again))) = ask_spawn(world)
+  assert again == reason
+  assert cell.get(world.applies) == 1
+  assert journal_is(world, [
+    Resolved(world.child),
+    Released(world.child),
+    Released(world.child),
+  ])
+  stop(world)
+}
+
+pub fn only_a_refusal_about_the_state_is_final_test() {
+  // The workspace's own refusals are about the content, and asking again gets the
+  // same.
+  assert is_final(protocol.ExecutorFault("a refusal"))
+  assert is_final(protocol.NoStates("no Git"))
+
+  // A fence that moved, a scope that is closing or being built, and a plane to
+  // attach again are about the session, and asking again after it attaches can
+  // succeed.
+  assert !is_final(protocol.StaleToken)
+  assert !is_final(protocol.StaleIncarnation(stored: 3))
+  assert !is_final(protocol.ScopeNotOpen)
+  assert !is_final(protocol.PlaneBuilding)
+  assert !is_final(protocol.NoPlane("restarted"))
+}
+
+fn is_final(refusal: protocol.Refusal) -> Bool {
+  case remote_workspace.failed_by(refusal) {
+    session_states.Final(..) -> True
+    session_states.Later(..) -> False
+  }
 }

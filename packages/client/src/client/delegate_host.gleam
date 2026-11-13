@@ -95,6 +95,7 @@
 
 import client/agency
 import client/daemon/manager
+import client/delegate_key
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/spawners.{type Spawner, InDirectory, InPool, OnExecutor}
 import core/ids
@@ -205,7 +206,11 @@ pub fn creation_for(
   }
 
   manager.Creation(
-    request_key: "delegate:" <> spawner.name <> ":" <> parent.session <> suffix,
+    request_key: delegate_key.key(delegate_key.Key(
+      spawner: spawner.name,
+      parent: parent.session,
+      child:,
+    )),
     workspace:,
     name: "delegate "
       <> spawner.name
@@ -511,6 +516,14 @@ pub type ChildSessions {
     /// one.
     open: fn(Spawner, Parent, String) ->
       Result(Option(agency.DelegateEndpoint), SpawnRefusal),
+    /// The session of a child that is open and resident, and `None` for a child
+    /// whose session is closed, being released or gone. It opens and creates
+    /// nothing, as a read or a message about a child must not: a closed session
+    /// holds no running child, and a stale card answered after the session was
+    /// released must not attach an executor and make a worktree only to be
+    /// refused. A row that is releasing reads as no session.
+    resident: fn(Spawner, Parent, String) ->
+      Result(Option(agency.DelegateEndpoint), SpawnRefusal),
     /// The resident sessions of a parent's seeded children, for the end of a
     /// run. A session that is not resident holds no running child.
     live: fn(Spawner, Parent) ->
@@ -532,6 +545,7 @@ pub fn children(context: Context(instance)) -> ChildSessions {
   ChildSessions(
     resolve: child_resolver(context),
     open: child_opener(context),
+    resident: child_resident(context),
     live: live_children(context),
     release: child_releaser(context),
   )
@@ -553,6 +567,7 @@ pub fn no_children() -> ChildSessions {
   ChildSessions(
     resolve: fn(_spawner, _parent, _child) { Error(unused) },
     open: fn(_spawner, _parent, _child) { Ok(None) },
+    resident: fn(_spawner, _parent, _child) { Ok(None) },
     live: fn(_spawner, _parent) { Ok([]) },
     release: fn(_spawner, _parent, _child) { Ok(0) },
   )
@@ -575,6 +590,27 @@ fn child_opener(
     case existing {
       NoSession -> Ok(None)
       Existing(..) -> resolve(spawner, parent, child) |> result.map(Some)
+    }
+  }
+}
+
+/// The Agency of a child whose session is open and resident, and nothing for any
+/// other row. It looks and does not open: a session that is not resident holds no
+/// running child.
+fn child_resident(
+  context: Context(instance),
+) -> fn(Spawner, Parent, String) ->
+  Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
+  let find = resolve_existing_child(context)
+  fn(spawner, parent, child) {
+    use existing <- result.map(find(spawner, parent, child))
+
+    // Only an open row has a session that can hold a running child.
+    case existing {
+      Existing(state: catalogue.Open, endpoint:, ..) -> endpoint
+      Existing(state: catalogue.Releasing, ..)
+      | Existing(state: catalogue.Released, ..)
+      | NoSession -> None
     }
   }
 }

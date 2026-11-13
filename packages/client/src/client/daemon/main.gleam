@@ -2158,7 +2158,7 @@ pub fn spawn_host_seeding(
   // holds on to the whole record it came from.
   let session_of = returning.session_of
   let remember_child = returning.remember
-  let open_child = children.open
+  let resident_child = children.resident
   let live_children = children.live
   let release_child = children.release
   let spawner_of = fn(origin: remote_spawn.Origin) {
@@ -2199,7 +2199,7 @@ pub fn spawn_host_seeding(
     // The child's own session when it has one, and the pair's when it has not.
     case session_of(spawner, origin.parent, child) {
       Some(name) -> {
-        use opened <- result.try(open_child(spawner, origin.parent, name))
+        use opened <- result.try(resident_child(spawner, origin.parent, name))
         option.to_result(
           opened,
           remote_spawn.InvalidArgument(
@@ -2365,7 +2365,7 @@ pub fn spawn_host_seeding(
       // The child's own session when it has one, and the pair's session when it
       // is open, answer the read; a closed pair's session holds no child to read.
       use found <- result.try(case session_of(spawner, origin.parent, child) {
-        Some(name) -> open_child(spawner, origin.parent, name)
+        Some(name) -> resident_child(spawner, origin.parent, name)
         None -> existing(spawner, origin.parent)
       })
 

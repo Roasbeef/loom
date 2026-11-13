@@ -108,7 +108,7 @@ fn session(
   meeting: Int,
 ) -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
-    fresh: fn() { True },
+    fresh: fn() { session_states.Fresh },
     states: Some(
       session_states.SessionStates(
         executor: "runner",
@@ -196,6 +196,9 @@ fn children(
   delegate_host.ChildSessions(
     resolve: fn(_spawner, _parent, _name) { Error(unused()) },
     open: fn(_spawner, _parent, name) {
+      Ok(option.from_result(dict.get(held, name)))
+    },
+    resident: fn(_spawner, _parent, name) {
       Ok(option.from_result(dict.get(held, name)))
     },
     live: fn(_spawner, _parent) { Ok([]) },
