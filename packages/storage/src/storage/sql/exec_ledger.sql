@@ -17,6 +17,9 @@ VALUES (?, ?, ?, 'open', NULL, ?);
 -- name: RebindLedgerScope :exec
 UPDATE scope SET attach_token = ? WHERE session = ? AND workspace = ?;
 
+-- name: RebindLedgerScopeWorkspace :exec
+UPDATE scope SET workspace = ? WHERE session = ?;
+
 -- name: ReopenLedgerScope :exec
 UPDATE scope
 SET incarnation = ?, state = 'open', close_outcome = NULL, attach_token = ?
