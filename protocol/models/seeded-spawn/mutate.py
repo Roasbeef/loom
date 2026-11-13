@@ -44,6 +44,15 @@ MUTATIONS = {
      "    if (!session) {\n      session = true;",
      "    if (!resident) {\n      session = true;")]),
 
+  # A tree that already holds the parent's commit is not moved. The executor's
+  # workspace can be ahead of a clean parent, so a tree that is only a descendant of
+  # the commit is not the parent's tree, and a child started on it is not started on
+  # the seed.
+  "M3a-tree-ahead-of-the-seed-is-not-moved": ("tcOnlyBehindSeed", 4000, r"before the seed was applied", [
+    ("PSrc/Exec.p",
+     "    if (lastApplied == applyTip) {",
+     "    if (tip != 0 && tip >= applyTip) {")]),
+
   # The executor records the tip it applied last and answers a repeat without
   # touching the tree. Without that, a request that arrives late, after the child
   # began to work, applies the seed over the child's commits.

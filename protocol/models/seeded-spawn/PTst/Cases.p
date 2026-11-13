@@ -8,7 +8,14 @@
 // the child's work, and a bundle that is late.
 
 fun planOf(place: tPlace, breaks1: int, breaks2: int, crashOrch: int, crashExec: int, crashOwner: int, unreadable: int, noRoom: int, partial: int, giveUps: int, works: int, holdLate: bool, storeFull: int, runEnds: int, pairFull: bool, agencyFails: int): tPlan {
-  return (place = place, shared = false, badState = false, refuseApply = false, holdLate = holdLate, breaks1 = breaks1, breaks2 = breaks2, crashOrch = crashOrch, crashExec = crashExec, crashOwner = crashOwner, unreadable = unreadable, noRoom = noRoom, partial = partial, giveUps = giveUps, works = works, storeFull = storeFull, runEnds = runEnds, pairFull = pairFull, agencyFails = agencyFails);
+  return (place = place, shared = false, badState = false, refuseApply = false, holdLate = holdLate, breaks1 = breaks1, breaks2 = breaks2, crashOrch = crashOrch, crashExec = crashExec, crashOwner = crashOwner, unreadable = unreadable, noRoom = noRoom, partial = partial, giveUps = giveUps, works = works, storeFull = storeFull, runEnds = runEnds, pairFull = pairFull, agencyFails = agencyFails, behind = false);
+}
+
+fun behindBase(p: tPlan): tPlan {
+  var q: tPlan;
+  q = p;
+  q.behind = true;
+  return q;
 }
 
 fun shared(p: tPlan): tPlan {
@@ -135,6 +142,16 @@ machine TestAgencyFails {
   }
 }
 
+// The executor's workspace is ahead of the parent's commit, so the scope's tree
+// starts on a commit that is not the parent's and the apply must move it.
+machine TestBehind {
+  start state Init {
+    entry {
+      new Harness(behindBase(planOf(PL_EXEC, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, false, 0, 0, false, 0)));
+    }
+  }
+}
+
 machine TestAllExec {
   start state Init {
     entry {
@@ -192,6 +209,13 @@ test tcReturn [main = TestReturn]:
 test tcRunEnd [main = TestRunEnd]:
   assert FirstTurnAfterSeed, AtMostOneSession, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, RunEndStopsTheChildren in
   (union System, { TestRunEnd });
+
+test tcBehind [main = TestBehind]:
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, NoReleaseWhileRunning, OneApplyAtATime in
+  (union System, { TestBehind });
+
+test tcOnlyBehindSeed [main = TestBehind]:
+  assert FirstTurnAfterSeed in (union System, { TestBehind });
 
 test tcQuietExec [main = TestQuietExec]:
   assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren, GivesUpOnlyAfterTheWindow in

@@ -93,7 +93,7 @@ repaired, which is how a second request reaches a checkout that is still going.
 
 | Spec | Rule |
 |---|---|
-| `FirstTurnAfterSeed` | The child's first turn never runs before the seed is applied, in either placement. |
+| `FirstTurnAfterSeed` | The child's first turn never runs before the seed is applied, in either placement, and the tree the seed is applied to is then on the parent's commit, even when the executor's workspace is ahead of it (`TestBehind`). |
 | `AtMostOneSession` | At most one delegate session exists for the child, however asks, restarts and retries interleave. |
 | `AppliedAtMostOnce` | The seed is applied to a scope at most once, however many apply requests are sent. |
 | `NoOlderOverNewer` | A retry, or a request that arrives late, never applies an older tip over a newer one. This rests on the executor answering a tip it applied before without touching the tree. |
@@ -159,6 +159,7 @@ a record that cannot be read answered as a session that has begun.
 | The Agency's spawn is made before the apply is sent | `FirstTurnAfterSeed` |
 | The session is created when it is not resident, not when it has no record | `AtMostOneSession` |
 | The executor does not answer a tip it applied before without touching the tree | `NoOlderOverNewer` |
+| A tree that is only a descendant of the parent's commit is taken for the parent's tree and not moved | `FirstTurnAfterSeed` |
 | The executor counts a repeated apply as applying the seed again | `AppliedAtMostOnce` |
 | Neither the join nor the owner compares a bundle's size with its description | `RefNamesOnlyDescribedCommits` |
 | An executor with no room is kept as a verdict | `NoPermanentVerdictFromTransient` |

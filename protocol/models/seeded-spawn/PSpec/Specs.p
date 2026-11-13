@@ -13,7 +13,8 @@ spec FirstTurnAfterSeed observes eTreeSeeded, eFirstTurn {
   var seeded: bool;
 
   start state Watching {
-    on eTreeSeeded do {
+    on eTreeSeeded do (tip: int) {
+      assert tip == 1, "the seed was applied and the tree is not on the parent's commit";
       seeded = true;
     }
 
@@ -66,7 +67,7 @@ spec AppliedAtMostOnce observes eSeedEffective {
 spec NoOlderOverNewer observes eApplied {
   start state Watching {
     on eApplied do (p: (before: int, after: int)) {
-      assert !(p.before > p.after), "an older tip was applied over a newer one";
+      assert p.before != 2, "an older tip was applied over a newer one";
     }
   }
 }

@@ -68,7 +68,8 @@ type tPlan = (
   storeFull: int,
   runEnds: int,
   pairFull: bool,
-  agencyFails: int
+  agencyFails: int,
+  behind: bool
 );
 
 // --- the wire ---
@@ -110,7 +111,7 @@ event eOutcomeSpawned;
 event eOutcomeRefused;
 event eSessionMade;
 event eSessionReleased;
-event eTreeSeeded;
+event eTreeSeeded: int;
 event eSeedEffective;
 event eFirstTurn;
 event eApplied: (before: int, after: int);

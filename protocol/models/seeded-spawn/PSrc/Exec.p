@@ -33,6 +33,12 @@ machine Exec {
       w2 = p.w2;
       plan = p.plan;
       noRoomLeft = p.plan.noRoom;
+
+      // A workspace whose base is ahead of the parent's commit starts the scope's
+      // tree on that base, which is not the parent's.
+      if (p.plan.behind) {
+        tip = 9;
+      }
       partialLeft = p.plan.partial;
     }
 
@@ -107,10 +113,12 @@ machine Exec {
       announce eApplyRepeated;
     } else {
       announce eApplied, (before = tip, after = applyTip);
-      if (tip == 0) {
+
+      // The first apply of a state moves the tree onto it, whatever the tree held.
+      if (lastApplied == 0) {
         announce eSeedEffective;
-        announce eTreeSeeded;
       }
+      announce eTreeSeeded, applyTip;
       tip = applyTip;
       lastApplied = applyTip;
     }

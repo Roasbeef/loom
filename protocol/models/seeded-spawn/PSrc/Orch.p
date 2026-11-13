@@ -311,7 +311,7 @@ machine Orch {
     if (localTip == 0) {
       localTip = 1;
       announce eSeedEffective;
-      announce eTreeSeeded;
+      announce eTreeSeeded, 1;
     }
     finishPass();
   }
