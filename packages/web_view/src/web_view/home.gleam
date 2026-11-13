@@ -663,6 +663,9 @@ pub type Visit {
     /// The interval between reads of the orchestrator, in milliseconds.
     /// Production passes `relay_refresh_ms`; a test passes a short one.
     refresh_ms: Int,
+    /// Why this page is the transcript and not the live session page, which
+    /// its heading says (protocol-change/108).
+    fallback: relayed.Fallback,
     /// Starts the read of the session's row and its newest transcript page and
     /// hands the function it is given what it found, once.
     read: fn(fn(relayed.Read) -> Nil) -> Nil,
@@ -1389,7 +1392,10 @@ pub fn new(start: Start) -> Model {
     named: 0,
     pane: case start.visiting, start.create {
       Some(visit), _ ->
-        Relayed(relayed_session.open(visit.orchestrator, visit.session))
+        Relayed(
+          relayed_session.open(visit.orchestrator, visit.session)
+          |> relayed_session.falling_back(visit.fallback),
+        )
       None, Some(_) -> NewSession
       None, None -> SessionList
     },

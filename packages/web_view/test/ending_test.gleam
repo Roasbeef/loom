@@ -24,7 +24,8 @@ pub fn every_ending_survives_its_reason_string_test() {
       | ending.SessionStopped
       | ending.NotOpen
       | ending.DaemonNotReady
-      | ending.LinkExpired -> ending.ConnectionFailed
+      | ending.LinkExpired
+      | ending.PeerUnreachable -> ending.ConnectionFailed
     }
     assert ending.from_reason(ending.reason(reason), otherwise: other) == reason
   })
@@ -89,6 +90,10 @@ pub fn the_advice_names_the_command_for_the_session_test() {
         assert string.contains(advice, "Reconnecting automatically")
         assert !string.contains(advice, "loom ui")
         assert string.contains(advice, "will not be sent again")
+      }
+      ending.PeerUnreachable -> {
+        assert string.contains(advice, "will reconnect")
+        assert !string.contains(advice, "loom ui")
       }
       ending.PageEnded
       | ending.AccessRevoked
@@ -177,4 +182,15 @@ pub fn the_admin_pages_endings_name_its_own_lifetime_test() {
     == ending.home_headline(ending.AccessRevoked)
   assert ending.admin_headline(ending.NotOpen)
     == "The connection to the daemon failed."
+}
+
+// A link that is only down is a waiting page and never a failure: the ending
+// is one the browser reconnects from, and it says so in words that name the
+// orchestrator and not the session (protocol-change/108).
+pub fn an_orchestrator_that_is_not_answering_is_a_waiting_page_the_browser_retries_test() {
+  assert ending.close(ending.PeerUnreachable) == ending.Retry
+  assert ending.headline(ending.PeerUnreachable)
+    == "The orchestrator that runs this session is not answering."
+  assert ending.advice(ending.PeerUnreachable, "S")
+    == "This page will reconnect."
 }

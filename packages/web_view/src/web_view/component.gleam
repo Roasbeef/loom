@@ -559,7 +559,25 @@ pub type Standing {
     /// runs on it. It is text the operator wrote, drawn as a text node and never
     /// an attribute, a class or a key.
     machine: String,
+    /// Where the session the page shows runs. A page of a session on another
+    /// orchestrator draws no control for a command that orchestrator refuses
+    /// (protocol-change/108, "The laptop's socket adapter").
+    route: Route,
   )
+}
+
+/// Where the session a page shows runs, which decides what the page offers.
+pub type Route {
+  /// On the daemon that serves the page. Every control the page's role allows is
+  /// drawn.
+  Local
+
+  /// On another orchestrator, which serves the session through a live feed. The
+  /// other orchestrator refuses the owner's controls (a model or profile change,
+  /// Compact, the goal's mutations, a fork, proposals, memory, evolution and
+  /// schedules), so the page does not draw them and does not ask for them. That
+  /// orchestrator's refusal is the authority, and this is only the offer.
+  Relayed
 }
 
 /// How the page was opened, for an owner's page that would otherwise draw the
@@ -587,7 +605,13 @@ pub type Reader {
 /// A standing that says nothing: a member, and a session whose sharing was not
 /// read. Fixtures and hosts with no catalogue start from it.
 pub const unplaced =
-  Standing(reader: Participant, sharing: None, opening: FromLink, machine: "")
+  Standing(
+    reader: Participant,
+    sharing: None,
+    opening: FromLink,
+    machine: "",
+    route: Local,
+  )
 
 /// What the daemon's catalogue says about a session, for the page's
 /// heading. Neither field comes from the session's transcript: the name is
@@ -1009,6 +1033,8 @@ type View(socket) {
     reader: Reader,
     /// The serving daemon's name (`Standing.machine`).
     machine: String,
+    /// Where the session runs (`Standing.route`).
+    route: Route,
     transport: Transport(socket),
     completion_models: List(String),
     completion_profiles: List(String),
@@ -1432,6 +1458,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       expected: start.expected,
       reader: start.standing.reader,
       machine: start.standing.machine,
+      route: start.standing.route,
       transport: start.transport,
       completion_models: start.completion_models,
       completion_profiles: start.completion_profiles,
@@ -4692,10 +4719,23 @@ pub fn confirm_forget(
 /// // component.may_review_proposals(model)
 /// ```
 pub fn may_review_proposals(model: Model(socket)) -> Bool {
-  case model.view.reader {
-    DaemonOwner -> True
-    Participant -> False
+  case model.view.route, model.view.reader {
+    // Proposals and memory are the box owner's, at the box.
+    Relayed, _ | Local, Participant -> False
+    Local, DaemonOwner -> True
   }
+}
+
+/// Where the page's session runs, for the views that draw only what that place
+/// offers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.route(model) == component.Local
+/// ```
+pub fn route(model: Model(socket)) -> Route {
+  model.view.route
 }
 
 /// Marks the memory overview as wanted and watched on the owner's page.
@@ -4996,6 +5036,15 @@ pub fn evolution_reach(model: Model(socket)) -> evolving.Reach {
 /// // component.want_evolution(model)
 /// ```
 pub fn want_evolution(model: Model(socket)) -> Model(socket) {
+  case model.view.route {
+    // The other orchestrator refuses evolution, so the page never asks.
+    Relayed -> model
+    Local -> wanting_evolution(model)
+  }
+}
+
+/// Marks the evolution board as wanted on a page whose session runs here.
+fn wanting_evolution(model: Model(socket)) -> Model(socket) {
   let watching =
     shared_set.evolution_watch(model.shared, session_model.WatchingEvolution)
 
@@ -5239,9 +5288,10 @@ pub fn read_evolution(
 pub fn read_core_status(
   model: Model(socket),
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  case model.view.reader {
-    DaemonOwner -> commanded(model, msg.Evolve(request: evolution.CoreStatus))
-    Participant -> #(model, effect.none())
+  case model.view.route, model.view.reader {
+    Local, DaemonOwner ->
+      commanded(model, msg.Evolve(request: evolution.CoreStatus))
+    Local, Participant | Relayed, _ -> #(model, effect.none())
   }
 }
 

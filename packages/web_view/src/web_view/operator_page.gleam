@@ -405,7 +405,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       Observed(component.GoingHome),
       context_breakdown.Actions(
         refresh: Observed(component.ContextRefreshRequested),
-        compact: Some(Controlled(component.CompactStrand)),
+        compact: case component.route(model) {
+          component.Local -> Some(Controlled(component.CompactStrand))
+          component.Relayed -> None
+        },
       ),
     ),
     sidebar_place(model),
@@ -438,7 +441,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       side_panel(model),
       html.footer([attribute.class("dock")], [
         component.plan(model),
-        controls.dock(bar(model)),
+        case component.route(model) {
+          component.Local -> controls.dock(bar(model))
+          component.Relayed -> element.none()
+        },
         approvals(
           component.pending(model),
           component.raised_on(model),
@@ -479,7 +485,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           cancel: CancellingShareable,
         ),
       ),
-      controls.session(bar(model)),
+      case component.route(model) {
+        component.Local -> controls.session(bar(model))
+        component.Relayed -> element.none()
+      },
       component.rename_form(model, form_submit_text(Renaming)),
       case component.may_remember(model) {
         True ->
@@ -487,6 +496,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
             component.permissions_kept(model),
             component.permissions_state(model),
             remembered_view.Presses(
+              offer: case component.route(model) {
+                component.Local -> remembered_view.Everything
+                component.Relayed -> remembered_view.SpawnerRows
+              },
               ask: AskingForget,
               confirm: ConfirmingForget,
               cancel: CancellingForget,

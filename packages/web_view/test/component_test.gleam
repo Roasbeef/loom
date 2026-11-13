@@ -449,6 +449,7 @@ pub fn the_owner_on_a_read_only_link_is_not_told_to_ask_the_owner_test() {
         sharing: None,
         opening: component.FromLink,
         machine: "laptop",
+        route: component.Local,
       ),
     )
     |> component.new

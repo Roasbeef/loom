@@ -66,6 +66,12 @@ pub type Ending {
 
   /// The connection failed for a reason the page does not name.
   ConnectionFailed
+
+  /// The orchestrator that runs the session is not answering: the link to it is
+  /// down, so the page waits and the browser reconnects. It is a state of the
+  /// link and never a failure of the session (protocol-change/108, "When the
+  /// link drops, and what the page shows").
+  PeerUnreachable
 }
 
 /// How the page's WebSocket should end, for the client runtime that reads
@@ -96,6 +102,7 @@ pub fn all() -> List(Ending) {
     DaemonNotReady,
     LinkExpired,
     ConnectionFailed,
+    PeerUnreachable,
   ]
 }
 
@@ -118,6 +125,7 @@ pub fn reason(ending: Ending) -> String {
     DaemonNotReady -> "the daemon was not ready"
     LinkExpired -> "the link expired"
     ConnectionFailed -> "the connection failed"
+    PeerUnreachable -> "the orchestrator is not answering"
   }
 }
 
@@ -155,7 +163,7 @@ pub fn from_reason(given: String, otherwise otherwise: Ending) -> Ending {
 /// ```
 pub fn close(ending: Ending) -> Close {
   case ending {
-    NotOpen | DaemonNotReady | ConnectionFailed -> Retry
+    NotOpen | DaemonNotReady | ConnectionFailed | PeerUnreachable -> Retry
     PageEnded | AccessRevoked | SessionStopped | LinkExpired -> Final
   }
 }
@@ -176,6 +184,8 @@ pub fn headline(ending: Ending) -> String {
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
     ConnectionFailed -> "The connection to the session failed."
+    PeerUnreachable ->
+      "The orchestrator that runs this session is not answering."
   }
 }
 
@@ -247,6 +257,7 @@ pub fn advised(ending: Ending, session_id: String) -> Advice {
           <> "will not be sent again.",
         None,
       )
+    PeerUnreachable -> Advice("This page will reconnect.", None)
   }
 }
 
@@ -290,7 +301,7 @@ pub fn home_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
-    SessionStopped | NotOpen | ConnectionFailed ->
+    SessionStopped | NotOpen | ConnectionFailed | PeerUnreachable ->
       "The connection to the daemon failed."
   }
 }
@@ -324,7 +335,7 @@ pub fn home_advised(ending: Ending) -> Advice {
         command,
       )
     LinkExpired -> Advice("A link works once, within 60 seconds.", command)
-    SessionStopped | NotOpen | ConnectionFailed ->
+    SessionStopped | NotOpen | ConnectionFailed | PeerUnreachable ->
       Advice(
         "Reload this page. If it fails again, it needs a new link.",
         command,
@@ -347,7 +358,7 @@ pub fn admin_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
-    SessionStopped | NotOpen | ConnectionFailed ->
+    SessionStopped | NotOpen | ConnectionFailed | PeerUnreachable ->
       "The connection to the daemon failed."
   }
 }
@@ -385,7 +396,7 @@ pub fn admin_advised(ending: Ending) -> Advice {
       )
     LinkExpired ->
       Advice("A link works once, within 60 seconds." <> fresh, command)
-    SessionStopped | NotOpen | ConnectionFailed ->
+    SessionStopped | NotOpen | ConnectionFailed | PeerUnreachable ->
       Advice(
         "Reload this page. If it fails again, it needs a new link." <> fresh,
         command,
