@@ -750,6 +750,9 @@ fn answered(
 /// ```
 pub fn failed_by(refusal: protocol.Refusal) -> session_states.Failure {
   let said = protocol.describe(refusal)
+
+  // The workspace's refusal of the content is final, and a refusal about the
+  // session's fence or the scope's condition is not about the state.
   case refusal {
     protocol.ExecutorFault(..)
     | protocol.NoStates(..)

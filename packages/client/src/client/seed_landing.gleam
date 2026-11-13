@@ -98,6 +98,8 @@ pub fn of_declined(refusal: state_transfer.Refusal) -> Unplaced {
   let said =
     "sending the workspace to the executor failed: the executor declined it: "
     <> state_transfer.describe(refusal)
+
+  // The executor's own states change, and a malformed or oversized input does not.
   case refusal {
     state_transfer.NoRoom(..)
     | state_transfer.OutOfOrder(..)

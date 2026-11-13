@@ -1165,6 +1165,7 @@ fn placing(
     | [_, _, ..] ->
       Error(Retry("putting the workspace in place did not finish in time"))
   }
+
   let refused = result.map(answer, fn(_placed) { Nil })
   let told = result.map_error(refused, refusal_of)
 

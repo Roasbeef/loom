@@ -68,6 +68,8 @@ pub fn is_part(text: String) -> Bool {
 /// ```
 pub fn key(parts: Key) -> String {
   let base = "delegate:" <> parts.spawner <> ":" <> parts.parent
+
+  // The pair's own session has no child, and a child's key follows the pair's.
   case parts.child {
     "" -> base
     named -> base <> ":" <> named
@@ -88,7 +90,7 @@ pub fn parse(text: String) -> Result(Key, Damage) {
   }
 }
 
-// Builds the key from the fields after the prefix, refusing empty ones.
+/// Builds the key from the fields after the prefix, refusing an empty one.
 fn fields_of(fields: List(String)) -> Result(Key, Damage) {
   case list.all(fields, is_part) {
     False ->
