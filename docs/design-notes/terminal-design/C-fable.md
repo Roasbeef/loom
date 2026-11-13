@@ -171,7 +171,7 @@ heading.
 
 **Data.** The row comes from `Row` (`session_view/agent_view.gleam:79`),
 whose `Status` (`session_view/agent_view.gleam:52`) carries the glyph and
-`label` (`session_view/agent_view.gleam:607`) the word, and from `Line`
+`label` (`session_view/agent_view.gleam:625`) the word, and from `Line`
 (`session_view/agent_roster.gleam:84`), which adds elapsed time and context
 size; `lines` (`session_view/agent_roster.gleam:571`) is the order. The task,
 activity, latest update, pending input, recent tools and approvals are the

@@ -123,7 +123,12 @@ for a host with no surfaces.
   cut still being received.
 - `snapshot_view.View`: the presentation decoded from a cut's metadata
   (`snapshot_view.decode`), and `snapshot_view.Branch`, one strand's
-  records.
+  records. `snapshot_view.CellIndex` (`index_cells`, `cell_at`) keys a
+  cut's cells by namespace and key. A cut holds up to 1024 cells and a
+  strand owns about five, so a projection that describes every strand
+  indexes once and reads from the table; a scan of `View.cells` per strand
+  made a fold quadratic in the strands (`tui/test/capture_scale_test`
+  holds the bound, `scripts/tui_perf.sh scale` measures it).
 - `history_view.State`: the bounded, pageable window of a strand's
   ancestry; `capture` folds a cut in and `branch` gives its records.
   `older`, `range`, `sent`, `accept`, `cancel`, `freeze` and `resume` page
