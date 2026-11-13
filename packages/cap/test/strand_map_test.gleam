@@ -283,7 +283,7 @@ pub fn invalid_map_options_and_empty_work_do_not_call_the_host_test() {
   dispatch.install(
     channel.Channel(call: fn(_, _, _) { panic as "no host calls expected" }),
   )
-  list.each([#(0, 1), #(33, 1), #(1, -1)], fn(options) {
+  list.each([#(0, 1), #(257, 1), #(1, -1)], fn(options) {
     let assert Error(strand.InvalidArgument(_)) =
       strand.map(
         assignments(1),
