@@ -126,7 +126,13 @@ fn ballast_loop(previous: String, left: Int, text: String) -> String {
   }
 }
 
-fn parent_side(name: String, ballast: Ballast) -> Parent {
+// Whether the parent's edits are left in its checkout or committed.
+type Tidy {
+  Edited
+  Committed
+}
+
+fn parent_side(name: String, ballast: Ballast, tidy: Tidy) -> Parent {
   let rig = state_rig.rig(name)
   let assert Ok(store) =
     state_store.open(
@@ -155,6 +161,22 @@ fn parent_side(name: String, ballast: Ballast) -> Parent {
   // The edit to a tracked file and the new file are left uncommitted.
   worktree_rig.write(rig.root <> "/README", "edited by the parent\n")
   worktree_rig.write(rig.root <> "/notes.txt", "not committed anywhere\n")
+
+  // A parent that committed them is clean when it asks.
+  case tidy {
+    Committed -> {
+      let _ = worktree_rig.git(rig.root, ["add", "-A"])
+      let _ =
+        worktree_rig.git(rig.root, [
+          "commit",
+          "--quiet",
+          "-m",
+          "the parent's own edits",
+        ])
+      Nil
+    }
+    Edited -> Nil
+  }
   let endpoint = state_service.endpoint(service)
   let capturer = state_capture.new(rig.git, rig.state, [], endpoint, store)
   let assert Ok(sent) =
@@ -483,12 +505,27 @@ type Link {
 
 // Builds every machine and answers the world, before any spawn is asked.
 fn world(name: String, ballast: Ballast, link: Link, shared: Bool) -> World {
-  let parent = parent_side(name, ballast)
+  world_with(name, ballast, link, shared, Edited, fn(_plane, _parent) { Nil })
+}
+
+// A world whose executor's repository is prepared after the parent exists and
+// before the scope is attached, so that the scope's tree starts where `prepare`
+// left the workspace.
+fn world_with(
+  name: String,
+  ballast: Ballast,
+  link: Link,
+  shared: Bool,
+  tidy: Tidy,
+  prepare: fn(Plane, Parent) -> Nil,
+) -> World {
+  let parent = parent_side(name, ballast, tidy)
   let receiver = receiver_at(parent.rig)
   let plane = case shared {
     True -> executor_rig.serve_shared(name <> "-exec")
     False -> executor_rig.serve(name <> "-exec")
   }
+  prepare(plane, parent)
   let attached = executor_rig.attach(plane, 1, "runner")
   let applies = cell.new(0)
   let counting =
@@ -1230,5 +1267,70 @@ pub fn a_failure_after_the_child_began_does_not_end_the_session_of_a_running_chi
   })
   let assert Ok(Error(remote_spawn.NotYetOpen(..))) = ask_spawn(world)
   assert !list.contains(cell.get(world.journal), Released(world.child))
+  stop(world)
+}
+
+pub fn a_clean_parent_behind_the_executors_workspace_starts_the_child_on_its_commit_test() {
+  // The parent committed its edits, so it is clean, at a commit the executor's
+  // workspace has since moved past: the workspace holds the parent's commit and one
+  // more, and the scope's tree is made from that base.
+  let world =
+    world_with(
+      "seed-exec-behind",
+      Small,
+      Steady,
+      False,
+      Committed,
+      fn(plane, parent) {
+        let root = plane.rig.root
+        let _ =
+          worktree_rig.git(root, ["fetch", "--quiet", parent.rig.root, "HEAD"])
+        let _ =
+          worktree_rig.git(root, ["reset", "--quiet", "--hard", "FETCH_HEAD"])
+        let _ =
+          state_rig.commit_file(
+            root,
+            "ahead.txt",
+            "the executor's own\n",
+            "ahead",
+          )
+        Nil
+      },
+    )
+  let tree = executor_rig.tree_of(world.plane, 1)
+  assert world.parent.sent.dirty == state_object.Clean
+
+  // The scope's tree starts one commit past the parent's.
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD^"]) == world.parent.sent.tip
+
+  // The spawn moves the clean tree onto the parent's commit before the child's
+  // first turn, which the stub checks inside the Agency's `spawn`.
+  let assert Ok(Ok(_spawned)) = ask_spawn(world)
+  assert journal_is(world, [Resolved(world.child), Spawned(True)])
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == world.parent.sent.tip
+  assert simplifile.is_file(tree <> "/ahead.txt") == Ok(False)
+
+  // The child commits once, and what comes back is that commit and not the
+  // executor's own.
+  let tip = state_rig.commit_file(tree, "child.txt", "mine\n", "child work")
+  cell.update(world.finished, fn(_) { True })
+  let assert remote_spawn.Ready(state: Some(returned), ..) =
+    finished_entry(world)
+  assert returned.tip == tip
+  assert returned.base == Some(world.parent.sent.tip)
+  let apply =
+    return_apply.from_store(
+      world.parent.store,
+      world.parent.rig.git,
+      log.discard(),
+    )
+  let assert Ok(#(_ref, commits)) =
+    apply(
+      world.parent.rig.root,
+      world.parent.sent,
+      returned,
+      world.handle.strand,
+    )
+  assert commits == 1
   stop(world)
 }
