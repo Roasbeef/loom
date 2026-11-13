@@ -37,6 +37,7 @@ import tools/agent
 /// // joined_record.encode(entry) |> result.try(joined_record.decode) == Ok(entry)
 /// ```
 pub fn encode(entry: Joined) -> Result(String, Nil) {
+  // Only a settled entry is an answer worth keeping.
   case entry {
     remote_spawn.Pending(..) -> Error(Nil)
     remote_spawn.Ready(
@@ -112,6 +113,7 @@ fn outcome_of(kind: String, reason: String) -> Result(agent.Outcome, Nil) {
 
 /// The structured result as its kind, schema and value, each as text.
 fn result_json(result: agent.TerminalResult) -> json.Json {
+  // Each kind keeps the pieces it has, and the others are empty text.
   let #(kind, schema, value) = case result {
     agent.NoResultAsked -> #("none", "", "")
     agent.ResultGiven(value:) -> #("given", "", core_json.to_string(value))
@@ -126,6 +128,7 @@ fn result_json(result: agent.TerminalResult) -> json.Json {
       core_json.to_string(received),
     )
   }
+
   json.object([
     #("kind", json.string(kind)),
     #("schema", json.string(schema)),
@@ -179,6 +182,9 @@ pub fn decode(text: String) -> Result(Joined, Nil) {
       state,
     ))
   }
+
+  // The text must parse as the shape above, and each piece must then be one this
+  // module wrote: a handle, an outcome word, a result, notes and a state.
   use #(handle, kind, reason, report, kept, notes, usage, owed, state) <- result.try(
     result.replace_error(json.parse(text, decoder), Nil),
   )
@@ -192,11 +198,14 @@ pub fn decode(text: String) -> Result(Joined, Nil) {
       |> result.replace_error(Nil)
     }),
   )
+
+  // A state, when the record has one, is read with the total state decoder.
   use held <- result.map(case state {
     Some(text) ->
       state_object.decode(text) |> result.map(Some) |> result.replace_error(Nil)
     None -> Ok(None)
   })
+
   remote_spawn.Ready(
     handle:,
     outcome:,
@@ -223,6 +232,8 @@ fn terminal_of(
   schema: String,
   value: String,
 ) -> Result(agent.TerminalResult, Nil) {
+  // The kind says which of the two pieces are meant, and an unknown kind is no
+  // result at all.
   case kind {
     "none" -> Ok(agent.NoResultAsked)
     "given" ->
@@ -236,6 +247,8 @@ fn terminal_of(
         core_json.parse(value),
         Nil,
       ))
+
+      // The mismatch is derived again, and a value that matches is not unusable.
       case agent.validate_result(schema, received) {
         Error(mismatch) ->
           Ok(agent.ResultUnusable(schema:, received:, mismatch:))

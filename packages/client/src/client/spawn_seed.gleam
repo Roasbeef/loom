@@ -984,6 +984,8 @@ fn landed(
       use endpoint <- result.try(
         children.resolve(spawner, parent, name)
         |> result.map_error(fn(refusal) {
+          // The ask that comes again uses the session, and any other refusal
+          // leaves it with no use.
           case seed_landing.asks_again(refusal) {
             True -> Nil
             False -> {
@@ -991,6 +993,7 @@ fn landed(
               Nil
             }
           }
+
           refusal
         }),
       )

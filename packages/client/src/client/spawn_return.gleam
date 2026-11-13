@@ -890,6 +890,9 @@ fn pulled(
       log.warn(reach.logger, "spawn_return.pull_declined", [
         field.text("detail", clipped(state_transfer.describe(refusal))),
       ])
+
+      // A refusal the same bytes get again ends the matter, and one that passes
+      // is tried again.
       case declined_for_good(refusal) {
         True -> Verdict(outcome: Refused(pull_failed), tree:, attempts:)
         False -> unfinished(Session, state, tree, attempts + 1)
@@ -968,6 +971,7 @@ fn keep(
   parent: Parent,
   entry: Joined,
 ) -> Nil {
+  // Both an answer to keep and a directory to keep it in are needed.
   case entry, joined_record.encode(entry), returns_directory(node) {
     remote_spawn.Ready(handle:, ..), Ok(text), Ok(directory) -> {
       let path =

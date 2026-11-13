@@ -997,6 +997,8 @@ fn apply_state(
       // a tree the first is rewriting would fail on a lock or a dirty tree that
       // the first made, and be reported as the workspace refusing the state.
       let key = session <> "\n" <> wanted.hash
+
+      // A run for this state and scope is going, or this request starts it.
       case dict.get(state.applying, key) {
         Ok(waiting) ->
           State(

@@ -313,14 +313,20 @@ fn asked(
   name: String,
   within_ms: Int,
 ) -> Result(List(Joined), SpawnRefusal) {
+  let kept = joining.returning.kept
+  let spawner = joining.spawner
+  let parent = joining.parent
   let gone = fn(refusal) {
     // A child with no session was settled and released, or never started. A
     // settled one left its answer.
-    case joining.returning.kept(joining.spawner, joining.parent, handle) {
+    case kept(spawner, parent, handle) {
       Some(entry) -> Ok([entry])
       None -> Error(refusal)
     }
   }
+
+  // An open session answers, and one that is gone or being released answers from
+  // the kept entry when there is one.
   case joining.children.open(joining.spawner, joining.parent, name) {
     Ok(Some(endpoint)) -> asked_in(joining, endpoint, handle, name, within_ms)
     Ok(None) ->
