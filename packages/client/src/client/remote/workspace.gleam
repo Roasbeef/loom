@@ -35,10 +35,12 @@
 //// 4. The owner port starts over the same `OwnerServices` a local session
 ////    builds, because the executor's workspace calls back through it.
 //// 5. The surface attaches with a fresh token. Every strand and every runtime
-////    restart inside this open shares that one surface and token. A second
-////    attach would rotate the token and make the executor refuse another
-////    strand's live `Run`, so nothing below this module attaches again;
-////    orphaned calls are settled through the executor's per-key fence.
+////    restart inside this open shares that one surface and token. An attach
+////    with a new token would rotate it and make the executor refuse another
+////    strand's live `Run`, so nothing below this module attaches with another;
+////    orphaned calls are settled through the executor's per-key fence. The one
+////    repeat is the surface's own, under the same token, when a restarted
+////    executor has lost the scope's plane (`client/remote/surface`).
 //// 6. The census the attach returned is compared with what the operator
 ////    declared for the executor. A contradiction closes the scope, which frees
 ////    its slot, and fails the open naming both values.

@@ -1009,16 +1009,32 @@ restart would leave their helper pools and jobs actors running beside the
 second set the next attach builds. Ending the VM retires them.
 
 On the next boot, `exec_ledger.open` turns every `admitted` row into `unknown`;
-nothing is relaunched. The new host holds no plane for any scope. A `Run` for a
-key the ledger holds a row for is answered from that row first: a stored outcome
-is returned and an unknown row gets `RunLost`. Only a key with no row is refused
-with `NoPlane`, whose text says nothing started. A session that stays open
-across the restart therefore keeps failing new calls until it is closed and
-reopened. Its close finds no plane, so no witness, and records
-`UnknownCleanup(0)`. The reopen is then refused as an unclean close until the
-operator runs `loomd executor release`. That is the routine way out of an
-executor restart, and the setup guide's troubleshooting section walks through
-it.
+nothing is relaunched. The new host holds no plane for any scope, but the ledger
+still holds each scope's row, incarnation and attach token. A `Run` for a key
+the ledger holds a row for is answered from that row first: a stored outcome is
+returned and an unknown row gets `RunLost`. A key with no row is refused with
+`NoPlane` (or `PlaneBuilding`, while another request is building the plane),
+after the scope's fence has been judged, so a dead runtime hears `StaleToken`
+and never `NoPlane`. The refusal is given before anything is admitted, so it
+proves the call did not start.
+
+The surface answers that refusal itself (`surface.with_plane`). It sends the
+same `Attach` again, with the same incarnation and the same token, which the
+ledger treats as a rebind: no row changes and the token does not rotate, so no
+other strand's live `Run` is refused. The host builds the plane because it has
+none, and the surface sends the `Run` once more. Each request makes one repair
+attempt. A repair the executor refuses is the call's answer, with the
+executor's reason, and a second `NoPlane` is the answer as it stands. The same
+repair serves `StartExecution`. A session that stays open across an executor
+restart therefore continues without the operator doing anything, and its next
+close finds a plane and a witness, so the scope closes cleanly.
+
+Two paths still end in `UnknownCleanup(0)` and in `loomd executor release`. A
+session that is closed before it makes any call after the restart closes a scope
+with no plane, so there is no witness. A session whose repair fails (the
+executor cannot build the plane) fails every call with the builder's reason
+until the cause is fixed. The setup guide's troubleshooting section walks
+through the release.
 
 ## Worktree workspaces
 
@@ -2041,7 +2057,7 @@ the model sees. "Unknown" below always means the model reads
 |---|---|---|
 | Orchestrator VM crashes during a call | The host receives a `noconnection` `DOWN`, so the run continues and its outcome waits in the ledger. On reopen the orchestrator attaches at the same incarnation, which rebinds the scope with a new token, and recovery reads each orphaned call's row. | After the dead daemon's writer lease lapses (up to 60 s), the model gets the stored outcome. The tool ran once. |
 | Strand driver or runtime restarts inside one open | Effect processes die with a reason other than `noconnection`, so their runs are cancelled once no waiter is left and the rows become `unknown`. Recovery fences `ReplayNever` keys; the token stays the same. | Cancelled calls stage as unknown. A finished call stages its outcome. |
-| Executor VM restarts, or the host dies | The daemon halts on the host's death. On boot every `admitted` row becomes `unknown`. Re-sent `Run`s for known keys are answered from the ledger. | In-flight calls stage as unknown. New calls fail with "no workspace for this session ... attach first" until the session is closed and reopened, and the reopen needs `loomd executor release` (refusal: `could not prove 0 children of the closed scope are gone`). |
+| Executor VM restarts, or the host dies | The daemon halts on the host's death. On boot every `admitted` row becomes `unknown`. Re-sent `Run`s for known keys are answered from the ledger. A `Run` for a key with no row is refused `NoPlane`, and the surface attaches again under its own token and sends it once more. | In-flight calls stage as unknown. The next new call of an open session runs. If the executor cannot build the plane, calls fail with the builder's reason. A session closed before its next call records unknown cleanup, and its reopen needs `loomd executor release` (refusal: `could not prove 0 children of the closed scope are gone`). |
 | Partition during a call | The surface reconnects with a doubling pause and re-sends the same `Run`. The run continues on the executor. | The session waits. The call completes once, and its outcome arrives after the link returns. |
 | Abort while partitioned | The kill reaches the host only as `noconnection`, so the run continues. | Cancellation is unconfirmed. The run finishes once, and its outcome stays in the ledger until it is acknowledged. |
 | Partition during attach | `surface.attach` re-sends the same attach and token for up to 30 s. A repeat finds the scope rebound or still building. | Within the window, the open succeeds. After it, `operations.get` reports `start_failed` with `executor_unavailable:`; the scope record names the executor, so the next open retries the same machine and converges. |

@@ -1939,8 +1939,11 @@ certificate must carry its own node name as a DNS name. Check the name with
 
 **After an executor restart, a remote session will not open: `could not prove N
 children of the closed scope are gone`** (**Pending**). The executor daemon
-restarted while the session was open. The new daemon has no workspace for the
-session's scope, so when the session closed, the executor could not prove the
+restarted while the session was open. A session that makes a tool call after the
+restart is not affected: the orchestrator sees that the executor has no workspace
+for the scope, attaches again under the same token, and runs the call. This
+refusal is for a session that closed before it made another call. The new daemon
+has no workspace for the session's scope, so when the session closed, the executor could not prove the
 scope's processes were gone and recorded unknown cleanup. It refuses every open of
 that session after that, and a scope that was left closing by a daemon that ended
 in the middle of a close is refused the same way (`... is closing`). The open does

@@ -7962,7 +7962,10 @@ below.
   and for the evolution messages `ask`, `ask_within`, `incarnation` and `token`. A lost connection is repaired with `weft/poll.fold_until` on a
   doubling interval and the same `Run` is sent again. `recover` sends
   `QueryOrFence` for a call whose `run.replay` is `ReplayNever` and plain
-  `Query` for a `ReplaySafe` one.
+  `Query` for a `ReplaySafe` one. `run` and `start_execution` go through
+  `with_plane`: a refusal of `NoPlane` or `PlaneBuilding` (the executor restarted
+  and holds no plane for the scope, or another request is building it) sends the
+  same attach again, with the surface's own token, and then the request once.
 
 Invariants that break things when violated:
 
@@ -7970,9 +7973,19 @@ Invariants that break things when violated:
   `recover`, and shares that one surface across every strand and every strand
   or runtime restart inside the open. The fresh token is the only fence against
   a dead open's in-flight `Run`; Erlang orders messages per sender pair only. A
-  second attach inside one open rotates the token and gets another strand's
-  live `Run` refused as `StaleToken`. `recover` assumes the attach ran, because
-  "no row" means "never started" only after it.
+  second attach with a new token inside one open rotates the token and gets
+  another strand's live `Run` refused as `StaleToken`. The one repeat that is
+  allowed is `surface.reattach`, which sends the held token again: the ledger
+  rebinds without changing a row, and it builds the plane an executor restart
+  lost. `recover` assumes the attach ran, because "no row" means "never started"
+  only after it.
+- `NoPlane` may only be told to the scope's current runtime. `host.unplaced`
+  judges the fence (`exec_ledger.current`) before it answers `NoPlane` for a
+  key with no row, so a dead runtime hears `StaleToken` and does not attach
+  again, which would take the token from the live one. The repair is tried once
+  for each request: a refused repair is the answer, and a second `NoPlane` is
+  not repaired again. Not repaired: `ask` and `ask_within` (evolution and state
+  messages) and `query`, which return the refusal to their caller.
 - A `Run` is idempotent by call key and the host never starts a second run for a
   key. The surface relies on this to re-send after a reconnect; do not re-send
   `Run` anywhere else.
@@ -7989,11 +8002,13 @@ Invariants that break things when violated:
 - A `Run` for a scope with no plane in this VM (after an executor restart,
   before the next attach) is answered from the ledger first: a key with a stored
   outcome gets it, a key with an unknown or orphaned-admitted row gets `RunLost`,
-  and only a key with no row is refused with `NoPlane` or `PlaneBuilding`. The
-  refusal says nothing started, which is false for a call the restart cut off
-  (`answer_without_plane`; model: `RefusalMeansUntouched`).
+  and only a key with no row is refused with `NoPlane` or `PlaneBuilding`, after
+  the scope's fence. The refusal says nothing started, which is false for a call
+  the restart cut off (`answer_without_plane`; model: `RefusalMeansUntouched`).
 - A scope with no plane in this VM closes as `UnknownCleanup(0)`: without a
-  plane there is no retirement witness. A failed plane build leaves the scope
+  plane there is no retirement witness. A session that calls after an executor
+  restart has its plane rebuilt by the surface's repair first, so only a session
+  closed before its next call reaches this. A failed plane build leaves the scope
   open for a retry attach at the same incarnation.
 - The plane build, a tool run and a close are each a weft run, so none blocks
   the host or another session. While a scope is `Building`, a second `Attach`,
