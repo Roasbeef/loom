@@ -152,6 +152,16 @@ machine TestBehind {
   }
 }
 
+// A store with no room for the child's commits, often, so that the return fails
+// while the window has not passed.
+machine TestWindow {
+  start state Init {
+    entry {
+      new Harness(planOf(PL_EXEC, 0, 0, 0, 0, 0, 0, 0, 0, 3, 1, false, 4, 0, false, 0));
+    }
+  }
+}
+
 machine TestAllExec {
   start state Init {
     entry {
@@ -299,8 +309,8 @@ test tcOnlyUnreadable [main = TestTransient]:
 test tcOnlyBegunResend [main = TestAgencyFails]:
   assert NoReleaseWhileRunning in (union System, { TestAgencyFails });
 
-test tcOnlyWindow [main = TestReturn]:
-  assert GivesUpOnlyAfterTheWindow in (union System, { TestReturn });
+test tcOnlyWindow [main = TestWindow]:
+  assert GivesUpOnlyAfterTheWindow in (union System, { TestWindow });
 
 test tcOnlyJoinRepeat [main = TestReturn]:
   assert JoinIsRepeatable in (union System, { TestReturn });
