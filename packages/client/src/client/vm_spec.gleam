@@ -81,6 +81,7 @@ import client/membership_signing
 import core/json as core_json
 import gleam/bit_array
 import gleam/bool
+import gleam/crypto
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
@@ -1394,6 +1395,62 @@ pub fn valid_name(name: String) -> Result(Nil, String) {
       )
   }
 }
+
+/// The name of the guest that serves one workspace, from the workspace's
+/// canonical path: the directory's last segment, then six hexadecimal digits of
+/// the path's SHA-256.
+///
+/// One guest serves one workspace, because `up` refuses a guest that runs and a
+/// second workspace cannot join it without a restart, and because separate
+/// guests keep one project's agent away from another project's copy. The name
+/// must therefore be the same every time for one path (`loom --vm` finds its
+/// guest again by it) and different for two directories that share a last
+/// segment, which the digest provides. The slug keeps the lowercase letters,
+/// digits, `_` and `-` of the segment, is prefixed with `w` when what remains
+/// is empty or does not start with a letter, and is cut so the whole name is
+/// at most `name_limit` bytes, so the result always passes `valid_name`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.starts_with(vm_spec.guest_name_for("/src/Loom"), "loom-")
+/// assert vm_spec.guest_name_for("/src/a") != vm_spec.guest_name_for("/dst/a")
+/// assert vm_spec.valid_name(vm_spec.guest_name_for("/")) == Ok(Nil)
+/// ```
+pub fn guest_name_for(workspace: String) -> String {
+  let digest =
+    crypto.hash(crypto.Sha256, bit_array.from_string(workspace))
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> string.slice(0, digest_digits)
+
+  // The slug budget is what the digest and its separator leave.
+  let budget = name_limit - digest_digits - 1
+  let segment =
+    string.split(workspace, "/")
+    |> list.last
+    |> result.unwrap("")
+  let kept =
+    string.lowercase(segment)
+    |> string.to_graphemes
+    |> list.filter(string.contains("abcdefghijklmnopqrstuvwxyz0123456789_-", _))
+    |> string.concat
+
+  // A name must start with a letter, so a segment that does not gets one.
+  let slug = case string.first(kept) {
+    Ok(first) ->
+      case string.contains("abcdefghijklmnopqrstuvwxyz", first) {
+        True -> kept
+        False -> "w" <> kept
+      }
+    Error(Nil) -> "w"
+  }
+
+  string.slice(slug, 0, budget) <> "-" <> digest
+}
+
+// How many hexadecimal digits of the path's digest end a guest's name.
+const digest_digits = 6
 
 /// Whether a directory's last segment can name its copy in the guest and its
 /// `[workspaces.<name>]` row: one segment of letters, digits, `.`, `_` and
