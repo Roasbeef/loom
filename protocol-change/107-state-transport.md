@@ -1257,3 +1257,55 @@ corrects the name, the scope is open and bound to the old one. The move is refus
 workspace, which the refusal names, and the scope stays open. `loomd executor release`
 refuses an open scope, so nothing frees it yet. Letting `release` take an open scope is a
 few lines of the ledger and a state word in the release table, and is not built.
+
+## Addendum: corrections to the workspace rebind, and the apply record as shipped (2026-11-14)
+
+Review of the workspace rebind found five points in the previous addendum that are wrong or
+incomplete, and the apply record of an earlier addendum is now in the code. Nothing above is
+edited.
+
+- *The unserved attach closes a scope only when it opened it.* The host closes the scope
+  that an attach for a workspace the executor does not serve leaves, but only for a scope
+  that the attach created or reopened. A rebound scope is a session's own, with a tree and
+  earlier calls, and an executor restarted with the workspace dropped from its
+  configuration must not close it as retired. The source closes it only when its record
+  shows the same: no record, or a record whose close was written.
+- *A close that names the corrected workspace ends the move.* If the source's record names
+  an incarnation with no close written (it died between the attach and the record, or the
+  reply was lost) and the executor's scope is closed at that incarnation and bound to the
+  old name, the attach under the new name is answered that the scope is at that
+  incarnation, and the question about the close names the new workspace, which the scope is
+  not bound to. That refusal is final and the move is abandoned. It used to read as a lost
+  connection, and the move stalled and retried every five seconds with the session
+  `moving`.
+- *A full store on the executor is final.* The earlier addendum said it is unfinished. It is
+  the store's total byte cap, room returns only when held states expire, which takes days,
+  a daemon that decides by catalogue rows has no abandon on request, and each retry sends
+  the bundle again from the start. The move is abandoned with the reason.
+- *The case the rules leave is the `shared` one.* It was described as a source that dies
+  after an attach for an unserved name. The host closes that scope. What leaves an open scope
+  is a source that dies in the landing for a `shared` workspace, after the attach and before
+  the close, followed by a corrected name: the move is refused for the open scope's
+  workspace and the scope stays open. `loomd executor release` refuses an open scope, so the
+  recovery is the one the refusal gives. Set `checkout_workspace` back to the name the scope
+  is bound to, move again so that the move ends and closes the scope, then correct the name
+  and move. No release of an open scope is added, and the earlier addendum's statement that
+  nothing frees the scope is corrected by this recovery.
+- *Still open.* A `WorktreeFailed` attach and a `NoPlane` for a root that is not a directory
+  leave an open scope, and a failed `git worktree add` leaves a `Removed` tree row, which
+  counts as a tree record and keeps the scope from being rebound.
+
+**The apply record, as shipped.** The record of the last apply decides whether an apply is a
+resend. `state_apply.into_existing` answers a request as applied when
+`refs/loom/applied/<session>` names the tip, and when the tree's `HEAD` is the tip, in which
+case it writes the record. Anything else moves a clean tree with `checkout -B`. A tip that is
+only an ancestor of the tree's `HEAD` is not a resend, which is what ancestry took it for.
+The record is deleted before the checkout and written after it, so that a crash at any point
+leaves either no record, which the tree's own `HEAD` answers, or a record that names what the
+tree holds. Left in place across the checkout, a crash would leave it naming the older tip
+while the tree held the new one, and a later request for the older tip would be answered as
+applied. The record trusts that `loom/<session>` is moved only by an apply or by the session.
+A branch deleted out of band is made again from the base, and a request for the recorded tip
+would then be answered as applied. The model checks the rule and separates it from ancestry,
+and has no step that commits on the branch, so the resend after the session committed on top
+is covered by `applying_into_the_same_tree_twice_changes_nothing_test`.

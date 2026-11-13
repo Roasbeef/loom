@@ -1473,8 +1473,10 @@ left the scope bound to that workspace, so a move with the corrected
 own branch. The second is fixed too: the executor's ledger rebinds a closed scope
 that holds nothing, a failed attach leaves a closed scope, and a refusal that will not
 change abandons the move. A scope left open by a source that died in the landing is
-refused with the workspace named and stays open, because `loomd executor release`
-refuses an open scope.
+refused with the workspace named and stays open. `loomd executor release` refuses an
+open scope, so the way out is the one the refusal gives: set `checkout_workspace` back
+to the bound name, move again so that the move ends and closes the scope, then correct
+the name and move.
 
 ### The executor fence
 
