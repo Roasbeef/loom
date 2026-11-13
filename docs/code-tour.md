@@ -332,7 +332,7 @@ those large payloads again. A changed frontier, a doorbell, an effect event or
 a restart takes the full load. The remembered frontier contains only identities
 and sequences, and every restart reconstructs it from durable state.
 
-`plan` (`runtime/strand_runtime.gleam:1314`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:1322`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -501,7 +501,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:2037`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:2071`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -732,10 +732,10 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:2095`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:2129`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1769`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1794`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 

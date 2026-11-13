@@ -147,7 +147,7 @@ The rule is enforced in four places, from the tool outward:
 4. **The runtime turns a dead worker into a result.** Each call runs in
    its own effect process. If that process exits without reporting, the
    strand driver settles the call as `ToolFailed`, and
-   `tool_observation` (`runtime/strand_runtime.gleam:1066`) converts that
+   `tool_observation` (`runtime/strand_runtime.gleam:1083`) converts that
    into a synthetic error result for the same call. Only
    provider effects halt the driver on an unreported exit; a tool never
    does.
@@ -351,7 +351,7 @@ shows where the tool layer enters it.
    which the intent commit persists. Clearance is not an execution
    grant: sandbox policy is composed later, inside the tool.
 3. **Scheduling.** The driver's check
-   `tool_may_start` (`runtime/strand_runtime.gleam:3328`) starts a
+   `tool_may_start` (`runtime/strand_runtime.gleam:3398`) starts a
    call only if no `Exclusive` tool is running, and starts an
    `Exclusive` tool only when nothing else is running. The default
    `tool_execution` setting is `parallel`, so calls to `Concurrent`
