@@ -103,15 +103,36 @@ pub fn recent(
   strand: String,
   current: Option(String),
 ) -> List(String) {
+  recent_in(
+    snapshot_view.index_cells(view.cells),
+    view,
+    window,
+    strand,
+    current,
+  )
+}
+
+/// `recent` with the view's cells already indexed, for a reader that
+/// projects every strand of one cut.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_activity.recent_in(cells, view, window, "main", operation)
+/// ```
+@internal
+pub fn recent_in(
+  cells: snapshot_view.CellIndex,
+  view: snapshot_view.View,
+  window: snapshot.Window,
+  strand: String,
+  current: Option(String),
+) -> List(String) {
   let branch = snapshot_view.branch(view, window, strand)
   let entries = list.map(branch.records, fn(row) { row.entry })
   let start = {
     use id <- result.try(option.to_result(current, Nil))
-    use cell <- result.try(
-      list.find(view.cells, fn(cell) {
-        cell.namespace == register.OpMeta && cell.key == id
-      }),
-    )
+    use cell <- result.try(snapshot_view.cell_at(cells, register.OpMeta, id))
     use meta <- result.try(
       codec.decode_operation(cell.value) |> result.replace_error(Nil),
     )

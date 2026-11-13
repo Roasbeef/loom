@@ -221,11 +221,27 @@ pub fn running(
   entries: List(entry.Entry),
   current: String,
 ) -> List(message.ToolCall) {
+  running_in(snapshot_view.index_cells(cells), entries, current)
+}
+
+/// `running` over cells already indexed.
+///
+/// A reader describing every strand of a cut indexes the cells once and asks
+/// this per strand, so the cost of one strand does not grow with the number
+/// of cells the cut holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool_activity.running_in(dict.new(), [], "absent") == []
+/// ```
+pub fn running_in(
+  cells: snapshot_view.CellIndex,
+  entries: List(entry.Entry),
+  current: String,
+) -> List(message.ToolCall) {
   let state =
-    cells
-    |> list.find(fn(cell) {
-      cell.namespace == register.OpState && cell.key == current
-    })
+    snapshot_view.cell_at(cells, register.OpState, current)
     |> result.try(fn(cell) {
       codec.decode_state(cell.value) |> result.replace_error(Nil)
     })

@@ -178,8 +178,11 @@ pub fn for_strand(items: List(Item), selected: String) -> List(Item) {
 
 /// Collects and deduplicates recent message send items across strands.
 fn project(view: snapshot_view.View, window: snapshot.Window) -> List(Item) {
+  // The cells are indexed once; each strand reads its own operation's
+  // metadata, and a scan of the cut per strand made a capture quadratic.
+  let cells = snapshot_view.index_cells(view.cells)
   view.strands
-  |> list.flat_map(fn(strand) { current(view, window, strand.id) })
+  |> list.flat_map(fn(strand) { current(cells, view, window, strand.id) })
   |> deduplicate_candidates([])
   |> list.sort(fn(a, b) { int.compare(b.seq, a.seq) })
   |> list.take(20)
@@ -188,25 +191,27 @@ fn project(view: snapshot_view.View, window: snapshot.Window) -> List(Item) {
 
 /// Extracts message candidates from the active operation on a strand.
 fn current(
+  cells: snapshot_view.CellIndex,
   view: snapshot_view.View,
   window: snapshot.Window,
   strand: String,
 ) -> List(Candidate) {
-  result.unwrap(current_result(view, window, strand), [])
+  result.unwrap(current_result(cells, view, window, strand), [])
 }
 
 /// Decodes the active operation on a strand and extracts its send calls.
 fn current_result(
+  cells: snapshot_view.CellIndex,
   view: snapshot_view.View,
   window: snapshot.Window,
   strand: String,
 ) -> Result(List(Candidate), Nil) {
   use operation_id <- result.try(dict.get(view.operations, strand))
-  use meta_cell <- result.try(
-    list.find(view.cells, fn(cell) {
-      cell.namespace == register.OpMeta && cell.key == operation_id
-    }),
-  )
+  use meta_cell <- result.try(snapshot_view.cell_at(
+    cells,
+    register.OpMeta,
+    operation_id,
+  ))
   use meta <- result.try(
     codec.decode_operation(meta_cell.value) |> result.replace_error(Nil),
   )

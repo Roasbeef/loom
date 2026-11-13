@@ -105,6 +105,107 @@ run("render", [WidthS, HeightS], Label) ->
     tprof:stop(),
     ok;
 
+%% How the cost of one refresh of an unchanged capture, one paint, one key
+%% and one idle tick grow with the number of strands the capture holds. The
+%% decoder bounds a cut at 1024 cells, so the largest count is about 150.
+%% A refresh is the cut applied to the model, which is what the lane does on
+%% every pushed notice; the decode is timed apart because it is the other
+%% half of the per-notice cost.
+run("scale", Counts, Label) ->
+    [scale_one(list_to_integer(C), Label) || C <- Counts],
+    ok;
+
+%% How one key, one idle tick and one paint grow with a strand listing far
+%% beyond what a capture can carry, six captured strands among N listed.
+run("listed", Counts, Label) ->
+    [begin
+         Count = list_to_integer(C),
+         M0 = tui:update({resize, 133, 40}, tui_agents_dev:scale_model(6)),
+         M = tui_agents_dev:listed_strands(M0, Count),
+         Screen = 'etui@geometry':rect_new(0, 0, 133, 40),
+         Nothing = fun() -> ok end,
+         Name = fun(E) -> io_lib:format("~s_listed~p", [E, Count]) end,
+         [begin
+              _ = samples(2, Nothing, F),
+              report(Label, Name(E), samples(10, Nothing, F))
+          end || {E, F} <- [{"key", fun() -> tui:update({key_press, <<"j">>}, M) end},
+                            {"tick", fun() -> tui:update(tick, M) end},
+                            {"paint", fun() -> 'tui@render':render_frame(M, Screen) end}]]
+     end || C <- Counts],
+    ok;
+
+%% Where one tick's calls go by function, with N strands listed.
+run("listed_profile", [CountS], Label) ->
+    Count = list_to_integer(CountS),
+    M0 = tui:update({resize, 133, 40}, tui_agents_dev:scale_model(6)),
+    M = tui_agents_dev:listed_strands(M0, Count),
+    Type = list_to_atom(os:getenv("TUI_PERF_TYPE", "call_count")),
+    {ok, _} = tprof:start(#{type => Type}),
+    _ = tprof:set_pattern('_', '_', '_'),
+    tprof:restart(),
+    tprof:enable_trace(self()),
+    _ = tui:update(tick, M),
+    tprof:disable_trace(self()),
+    {Type, Rows} = tprof:collect(),
+    Flat = lists:reverse(lists:keysort(3,
+        [{io_lib:format("~s:~s/~p", [Mo, Fu, Ar]), C, V}
+         || {Mo, Fu, Ar, PerPid} <- Rows, {_, C, V} <- PerPid])),
+    io:format("PROFILE ~s ~s listed=~p~n", [Label, Type, Count]),
+    [io:format("  ~10w ~8w calls  ~s~n", [V, C, N])
+     || {N, C, V} <- lists:sublist(Flat, 14)],
+    ok;
+
+%% Where one refresh's calls go by function, at a strand count.
+run("scale_profile", [CountS], Label) ->
+    Count = list_to_integer(CountS),
+    M = tui:update({resize, 133, 40}, tui_agents_dev:scale_model(Count)),
+    Captured = tui_agents_dev:scale_capture(Count, 1),
+    View = tui_agents_dev:scale_decode(Captured),
+    Type = list_to_atom(os:getenv("TUI_PERF_TYPE", "call_time")),
+    {ok, _} = tprof:start(#{type => Type}),
+    _ = tprof:set_pattern('_', '_', '_'),
+    tprof:restart(),
+    tprof:enable_trace(self()),
+    R = tui_agents_dev:scale_apply(M, Captured, View),
+    case os:getenv("TUI_PERF_PAINT") of
+        false -> ok;
+        _ -> 'tui@render':render_frame(tui:update(tick, R),
+                                       'etui@geometry':rect_new(0, 0, 133, 40))
+    end,
+    tprof:disable_trace(self()),
+    {Type, Rows} = tprof:collect(),
+    Flat = lists:reverse(lists:keysort(3,
+        [{io_lib:format("~s:~s/~p", [Mo, Fu, Ar]), C, V}
+         || {Mo, Fu, Ar, PerPid} <- Rows, {_, C, V} <- PerPid])),
+    io:format("PROFILE ~s ~s strands=~p~n", [Label, Type, Count]),
+    Top = list_to_integer(os:getenv("TUI_PERF_TOP", "30")),
+    [io:format("  ~10w ~8w calls  ~s~n", [V, C, N])
+     || {N, C, V} <- lists:sublist(Flat, Top)],
+    ok;
+
+%% Where one paint's calls go by function, at a strand count.
+run("scale_paint_profile", [CountS], Label) ->
+    Count = list_to_integer(CountS),
+    M = tui:update({resize, 133, 40}, tui_agents_dev:scale_model(Count)),
+    Screen = 'etui@geometry':rect_new(0, 0, 133, 40),
+    _ = 'tui@render':render_frame(M, Screen),
+    Type = list_to_atom(os:getenv("TUI_PERF_TYPE", "call_time")),
+    {ok, _} = tprof:start(#{type => Type}),
+    _ = tprof:set_pattern('_', '_', '_'),
+    tprof:restart(),
+    tprof:enable_trace(self()),
+    _ = 'tui@render':render_frame(M, Screen),
+    tprof:disable_trace(self()),
+    {Type, Rows} = tprof:collect(),
+    Flat = lists:reverse(lists:keysort(3,
+        [{io_lib:format("~s:~s/~p", [Mo, Fu, Ar]), C, V}
+         || {Mo, Fu, Ar, PerPid} <- Rows, {_, C, V} <- PerPid])),
+    io:format("PROFILE ~s ~s paint strands=~p~n", [Label, Type, Count]),
+    Top = list_to_integer(os:getenv("TUI_PERF_TOP", "30")),
+    [io:format("  ~10w ~8w calls  ~s~n", [V, C, N])
+     || {N, C, V} <- lists:sublist(Flat, Top)],
+    ok;
+
 %% One keypress, one idle tick, and a tick and a keypress with 64 frames
 %% waiting, each applied to the same ready model, so every sample of one
 %% event does the same work.
@@ -322,6 +423,29 @@ run("profile", [Kind], Label) ->
     ok.
 
 %% --- the model --------------------------------------------------------------
+
+scale_one(Count, Label) ->
+    M = tui:update({resize, 133, 40}, tui_agents_dev:scale_model(Count)),
+    Captured = tui_agents_dev:scale_capture(Count, 1),
+    View = tui_agents_dev:scale_decode(Captured),
+    Screen = 'etui@geometry':rect_new(0, 0, 133, 40),
+    Nothing = fun() -> ok end,
+    Name = fun(Event) -> io_lib:format("~s_strands~p", [Event, Count]) end,
+    Cases = [{"decode", fun() -> tui_agents_dev:scale_decode(Captured) end},
+             {"refresh", fun() -> tui_agents_dev:scale_apply(M, Captured, View) end},
+             {"paint", fun() -> 'tui@render':render_frame(M, Screen) end},
+             {"revise_paint", fun() ->
+                  R = tui_agents_dev:scale_apply(M, Captured, View),
+                  R2 = tui:update(tick, R),
+                  'tui@render':render_frame(R2, Screen)
+              end},
+             {"key", fun() -> tui:update({key_press, <<"j">>}, M) end},
+             {"tick", fun() -> tui:update(tick, M) end}],
+    [begin
+         _ = samples(3, Nothing, F),
+         report(Label, Name(Event), samples(20, Nothing, F))
+     end || {Event, F} <- Cases],
+    ok.
 
 %% Both directions participate, so the burst does not just hit one clamp.
 scroll_burst(M, 0) -> M;
