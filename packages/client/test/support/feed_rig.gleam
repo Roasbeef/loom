@@ -34,7 +34,7 @@ import storage/catalogue
 import storage/storage
 import support/addresses
 
-const configuration =
+pub const configuration =
   "
 [distribution]
 node = \"box@100.64.0.9\"
@@ -73,7 +73,20 @@ directory = \"/srv/loom/scratch\"
 profile = \"alt\"
 "
 
-/// A table with no ceiling: its page can watch and decides nothing.
+// A table whose ceiling admits the environment variable `TOKEN` and nothing else.
+pub const deciding =
+  "
+[spawners.laptop.top_level]
+executors = [\"exec\"]
+profiles = [\"alt\"]
+max_sessions = 3
+
+[spawners.laptop.top_level.approval_ceiling]
+env = [\"TOKEN\"]
+network = \"any\"
+"
+
+// The same table with no ceiling: its page can watch and decides nothing.
 pub const watching =
   "
 [spawners.laptop.top_level]
@@ -82,8 +95,20 @@ profiles = [\"alt\"]
 max_sessions = 3
 "
 
-/// The daemon epoch the box serves.
+// The same table that serves the transcript page of 094 only.
+pub const paged =
+  "
+[spawners.laptop.top_level]
+executors = [\"exec\"]
+profiles = [\"alt\"]
+max_sessions = 3
+page = \"paged\"
+"
+
+// The daemon epoch the box serves and its feeds are bound under.
 pub const epoch = "feed-host-test"
+
+// --- the rig ------------------------------------------------------------------
 
 pub type Rig {
   Rig(
