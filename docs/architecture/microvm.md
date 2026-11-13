@@ -772,8 +772,9 @@ recorded birth marker, and waits for it to exit. It leaves the root and the
 deployment, so the guest's checkout can be read afterwards. `status` reports
 the process, the host port the host epmd lists for the executor's node name,
 the manifest's revision, the root and the guest's workspaces. A daemon that
-was running before `up` must be restarted to read the new `[distribution]`
-table. When the guest's deployment is in the exact default `loom.toml` (a first
+was running before an `up` that installed the `[distribution]` table must be
+restarted to read it. A resume installs nothing, so its note says the daemon
+needs no restart on its account and does not offer the command that stops it. When the guest's deployment is in the exact default `loom.toml` (a first
 `up` or a resume: a first `up` that failed at boot leaves the daemon unread), `up` asks that daemon, through the owner control connection
 (`host/access`, command `status`), how many sessions it holds (`occupied`:
 resident, opening, stopping and blocked). With none, it sends `daemon.shutdown`,

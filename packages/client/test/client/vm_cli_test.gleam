@@ -976,7 +976,8 @@ pub fn a_daemon_that_said_nothing_is_never_stopped_test() {
 }
 
 pub fn a_stopped_daemon_is_said_to_restart_with_the_next_loom_test() {
-  let text = string.join(vm_spec.daemon_note(vm_spec.Stopped), "\n")
+  let text =
+    string.join(vm_spec.daemon_note(vm_spec.Stopped, vm_spec.Installed), "\n")
   assert string.contains(text, "was stopped")
   assert string.contains(text, "next `loom` command starts it")
   assert !string.contains(text, "kill")
@@ -984,7 +985,10 @@ pub fn a_stopped_daemon_is_said_to_restart_with_the_next_loom_test() {
 
 pub fn an_idle_daemon_that_would_not_stop_gets_the_command_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.NotStopped(7, "still running"))
+    vm_spec.daemon_note(
+      vm_spec.NotStopped(7, "still running"),
+      vm_spec.Installed,
+    )
     |> string.join("\n")
   assert string.contains(text, "still running")
   assert string.contains(text, "kill -TERM 7")
@@ -992,20 +996,23 @@ pub fn an_idle_daemon_that_would_not_stop_gets_the_command_test() {
 
 pub fn a_daemon_with_sessions_gets_the_command_and_a_count_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.Holding(7, 2))
+    vm_spec.daemon_note(vm_spec.Holding(7, 2), vm_spec.Installed)
     |> string.join("\n")
   assert string.contains(text, "holds 2 sessions")
   assert string.contains(text, "left running")
   assert string.contains(text, "kill -TERM 7")
   assert string.contains(
-    string.join(vm_spec.daemon_note(vm_spec.Holding(7, 1)), ""),
+    string.join(
+      vm_spec.daemon_note(vm_spec.Holding(7, 1), vm_spec.Installed),
+      "",
+    ),
     "holds 1 session,",
   )
 }
 
 pub fn a_daemon_that_said_nothing_is_left_running_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.Unasked(9))
+    vm_spec.daemon_note(vm_spec.Unasked(9), vm_spec.Installed)
     |> string.join("\n")
   assert string.contains(text, "left running")
   assert string.contains(text, "kill -TERM 9")
@@ -1013,10 +1020,49 @@ pub fn a_daemon_that_said_nothing_is_left_running_test() {
 
 pub fn no_daemon_means_the_next_loom_starts_one_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.NoDaemon)
+    vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.Installed)
     |> string.join("\n")
   assert string.contains(text, "next `loom` command starts the daemon")
   assert !string.contains(text, "kill")
+}
+
+pub fn a_resumed_up_does_not_tell_a_holding_daemon_to_restart_test() {
+  // The table was installed by an earlier `up`, so this one changed nothing the
+  // daemon reads. It must not say the daemon read its configuration before the
+  // table existed, and it must not offer the command that stops it.
+  let text =
+    vm_spec.daemon_note(vm_spec.Holding(7, 1), vm_spec.AlreadyThere)
+    |> string.join("\n")
+  assert string.contains(text, "holds 1 session, so it was left running")
+  assert string.contains(text, "needs no restart")
+  assert !string.contains(text, "must restart")
+  assert !string.contains(text, "read its configuration")
+  assert !string.contains(text, "kill")
+}
+
+pub fn a_resumed_up_says_the_same_of_a_daemon_that_would_not_stop_or_answer_test() {
+  let stuck =
+    vm_spec.daemon_note(
+      vm_spec.NotStopped(7, "still running"),
+      vm_spec.AlreadyThere,
+    )
+    |> string.join("\n")
+  let silent =
+    vm_spec.daemon_note(vm_spec.Unasked(9), vm_spec.AlreadyThere)
+    |> string.join("\n")
+
+  assert string.contains(stuck, "still running")
+  assert string.contains(stuck, "needs no restart")
+  assert string.contains(silent, "needs no restart")
+  assert !string.contains(stuck <> silent, "kill")
+}
+
+pub fn an_installing_up_still_tells_a_holding_daemon_to_restart_test() {
+  let text =
+    vm_spec.daemon_note(vm_spec.Holding(7, 1), vm_spec.Installed)
+    |> string.join("\n")
+  assert string.contains(text, "must restart to use the guest")
+  assert string.contains(text, "kill -TERM 7")
 }
 
 // --- links in the guest root ---------------------------------------------------

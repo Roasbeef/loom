@@ -2773,25 +2773,37 @@ pub fn stop_command(pid: Int) -> String {
   "kill -TERM " <> int.to_string(pid)
 }
 
+/// Whether this `up` put the `[distribution]` table into the user's
+/// configuration. The daemon's note depends on it, because only a table that
+/// is new to a running daemon obliges the daemon to restart.
+pub type Table {
+  /// This `up` installed the table, so a daemon that was already running read
+  /// its configuration without it.
+  Installed
+
+  /// A resume: the guest's deployment was installed by an earlier `up` and this
+  /// one changed nothing in the configuration.
+  AlreadyThere
+}
+
 /// The lines `up` ends with about the daemon.
 ///
-/// A daemon that holds any session is never stopped for the user: the note
-/// names the exact command instead. A stopped daemon is started again by the
-/// next `loom` command, which renders the TLS options file the new
-/// `[distribution]` table needs (protocol-change/106).
+/// A daemon that holds any session is never stopped for the user. After an
+/// install the note names the exact command that stops it, because the daemon
+/// must restart to read the new table. After a resume the note says the daemon
+/// needs no restart on this `up`'s account, because this `up` changed nothing
+/// the daemon reads. A stopped daemon is started again by the next `loom`
+/// command, which renders the TLS options file the table needs
+/// (protocol-change/106).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.daemon_note(vm_spec.NoDaemon) != []
+/// assert vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.Installed) != []
 /// ```
-pub fn daemon_note(outcome: DaemonOutcome) -> List(String) {
-  let reason =
-    "It read its configuration before the [distribution] table was installed, "
-    <> "so it must restart to use the guest."
-
+pub fn daemon_note(outcome: DaemonOutcome, table: Table) -> List(String) {
   // Each outcome is one thing said, and only a daemon that is still running
-  // gets the command that stops it.
+  // gets the command that stops it, and only after an install.
   case outcome {
     NoDaemon -> [
       "The next `loom` command starts the daemon with the table in effect.",
@@ -2802,31 +2814,62 @@ pub fn daemon_note(outcome: DaemonOutcome) -> List(String) {
         <> "command starts it with the table in effect.",
       "",
     ]
-    NotStopped(pid, why) -> [
-      "Your daemon holds no sessions but did not stop ("
-        <> why
-        <> "). "
-        <> reason,
-      "Stop it with: " <> stop_command(pid),
-      "",
-    ]
-    Holding(pid, sessions) -> [
-      "Your daemon holds "
-        <> int.to_string(sessions)
-        <> " session"
-        <> plural(sessions)
-        <> ", so it was left running. "
-        <> reason,
-      "When they are finished, stop it with: " <> stop_command(pid),
-      "",
-    ]
-    Unasked(pid) -> [
-      "Your daemon is running and did not say whether it holds sessions, so "
-        <> "it was left running. "
-        <> reason,
-      "When it holds none, stop it with: " <> stop_command(pid),
-      "",
-    ]
+    NotStopped(pid, why) ->
+      list.flatten([
+        [
+          "Your daemon holds no sessions but did not stop ("
+          <> why
+          <> "). "
+          <> restart_reason(table),
+        ],
+        stop_lines(table, pid, "Stop it"),
+        [""],
+      ])
+    Holding(pid, sessions) ->
+      list.flatten([
+        [
+          "Your daemon holds "
+          <> int.to_string(sessions)
+          <> " session"
+          <> plural(sessions)
+          <> ", so it was left running. "
+          <> restart_reason(table),
+        ],
+        stop_lines(table, pid, "When they are finished, stop it"),
+        [""],
+      ])
+    Unasked(pid) ->
+      list.flatten([
+        [
+          "Your daemon is running and did not say whether it holds sessions, "
+          <> "so it was left running. "
+          <> restart_reason(table),
+        ],
+        stop_lines(table, pid, "When it holds none, stop it"),
+        [""],
+      ])
+  }
+}
+
+/// Why a running daemon does or does not have to restart: it read its
+/// configuration before an install, and a resume installed nothing.
+fn restart_reason(table: Table) -> String {
+  case table {
+    Installed ->
+      "It read its configuration before the [distribution] table was "
+      <> "installed, so it must restart to use the guest."
+    AlreadyThere ->
+      "This `up` resumed the guest and installed nothing, so the daemon "
+      <> "needs no restart on its account."
+  }
+}
+
+/// The line that gives the command that stops the daemon, only for an install,
+/// the one case that needs the daemon to restart.
+fn stop_lines(table: Table, pid: Int, lead: String) -> List(String) {
+  case table {
+    Installed -> [lead <> " with: " <> stop_command(pid)]
+    AlreadyThere -> []
   }
 }
 

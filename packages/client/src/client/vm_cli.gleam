@@ -1353,8 +1353,13 @@ type Enrolled {
 
 // Whether the guest's `[executors.<name>]` row is in the file or derived.
 type Row {
-  // The orchestrator's bundle wrote it, and a daemon reads it at start.
+  // The orchestrator's bundle wrote it in this `up`, and a daemon reads it at
+  // start.
   Written
+
+  // A resume: an earlier `up` wrote it and it is still in the file. This `up`
+  // changed nothing the daemon reads.
+  Retained
 
   // The ledger gives the daemon the row when the guest is a member, and the
   // file was not touched.
@@ -1439,7 +1444,7 @@ fn still_enrolled(
   // only the row it needs is checked, and a missing one is the operator's to
   // restore, since reinstalling would be refused as an existing deployment.
   case string.contains(text, row) {
-    True -> Ok(Enrolled(config:, file:, row: Written))
+    True -> Ok(Enrolled(config:, file:, row: Retained))
     False ->
       Error(
         config
@@ -2602,7 +2607,8 @@ fn report(
         "",
       ],
       case enrolled.row {
-        Written -> daemon_lines(enrolled.file)
+        Written -> daemon_lines(enrolled.file, vm_spec.Installed)
+        Retained -> daemon_lines(enrolled.file, vm_spec.AlreadyThere)
         Derived -> []
       },
       ["Stop it with: loom vm down --name " <> options.name],
@@ -2614,7 +2620,7 @@ fn report(
 /// The line that says how the daemon comes to know the guest.
 fn enrolled_line(options: UpOptions, enrolled: Enrolled) -> String {
   case enrolled.row {
-    Written ->
+    Written | Retained ->
       "Enrolled it as [executors."
       <> options.name
       <> "] in "
@@ -2630,12 +2636,17 @@ fn enrolled_line(options: UpOptions, enrolled: Enrolled) -> String {
 }
 
 /// The lines about daemons, after doing what this `up` calls for.
-fn daemon_lines(file: ConfigFile) -> List(String) {
+fn daemon_lines(file: ConfigFile, table: vm_spec.Table) -> List(String) {
   // Only the default daemon is ever observed or stopped.
-  case file {
-    DefaultConfigFile -> daemon_note()
-    OtherConfigFile -> [
+  case file, table {
+    DefaultConfigFile, _ -> daemon_note(table)
+    OtherConfigFile, vm_spec.Installed -> [
       "A daemon already running with that file must restart to use the guest.",
+      "",
+    ]
+    OtherConfigFile, vm_spec.AlreadyThere -> [
+      "This `up` resumed the guest and installed nothing, so a daemon already "
+        <> "running with that file needs no restart on its account.",
       "",
     ]
   }
@@ -2649,7 +2660,7 @@ fn daemon_lines(file: ConfigFile) -> List(String) {
 /// in effect: the `loom` client renders the TLS options file whenever it starts
 /// a daemon whose configuration has `[distribution]` (protocol-change/106). A
 /// daemon that holds any session is never stopped; the note names the command.
-fn daemon_note() -> List(String) {
+fn daemon_note(table: vm_spec.Table) -> List(String) {
   // No daemon needs no action. A running one is decided on what it said about
   // its sessions, in `vm_spec.daemon_step`, which is the only place that
   // chooses to stop it.
@@ -2662,7 +2673,7 @@ fn daemon_note() -> List(String) {
       }
   }
 
-  vm_spec.daemon_note(outcome)
+  vm_spec.daemon_note(outcome, table)
 }
 
 /// The daemon the default state directory's endpoint record names, if its
