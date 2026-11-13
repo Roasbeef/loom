@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:533-187`).
+Source: `handle` (`client/daemon/server.gleam:526-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:2601`).
+`hello_view` (`client/daemon/server.gleam:2591`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -450,7 +450,11 @@ A successful reply's `event` name is the command name. A failure is an
 Source: (`client/daemon/server.gleam:426-458`).
 
 Dispatcher refusals carry `request refused`, except an authorized exact
-`operations.get` startup failure (protocol 055). Its `start_failed` code
+`operations.get` startup failure (protocol 055), the refusals that
+`sessions.move` and its abandon decide themselves, which carry their cause
+(section 3.27), and the `moving` and `busy` refusals of `sessions.archive`,
+`sessions.restore` and `sessions.delete`, which carry words. The
+`operations.get` `start_failed` code
 remains machine-readable and its message preserves one line of at most 2048
 UTF-8 bytes, including the configuration path and available parser context.
 The recorded failure precedes live `stopping` status while cleanup retains
@@ -565,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4549`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4568`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1077,7 +1081,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2973-1130`).
+`control_use` (`client/daemon/server.gleam:2963-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1533,6 +1537,17 @@ session is in a pool and has no executor yet; it is archived; has not finished b
 another destination is in flight), and `not_owner` (the session already moved).
 `moving` is not a refusal of this command: asking again is how a client learns
 the stored `op`.
+
+Every refusal that the move itself decides carries its cause in `message`, in
+words an owner can act on: the destination's table that lacks `checkout_executor`
+and `checkout_workspace`, the executor this daemon does not list, a directory that
+is not the top of a primary checkout, a move already in flight toward another
+destination, and so on. A refusal before the command is dispatched (`unavailable`,
+`unauthorized`) stays bare for every command. `sessions.archive`,
+`sessions.restore` and `sessions.delete` of a session that is moving answer
+`moving` with `orchestrator` and `op` beside the words. The words name configuration keys and orchestrators and
+never a path of the daemon's machine. A client prints the code and the message
+together and does not match on the message.
 
 On a session directory member
 ([protocol-change/083](../protocol-change/083-khepri-session-ownership.md)) the
@@ -4346,7 +4361,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
 | `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
 | `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does; or `sessions.open`, `sessions.archive`, `sessions.restore`, `sessions.delete` or `sessions.move` named a session this daemon handed to another orchestrator. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |
-| `moving` | `sessions.open`, `sessions.archive` or `sessions.delete` named a session that is being handed to another orchestrator (section 3.27). The body also carries `orchestrator`, the destination, and `op`. | Wait and ask again: the move ends in `not_owner` for this daemon or, if it is abandoned, in an ordinary session. |
+| `moving` | `sessions.open`, `sessions.archive`, `sessions.restore` or `sessions.delete` named a session that is being handed to another orchestrator (section 3.27). The body also carries `orchestrator`, the destination, and `op`. | Wait and ask again: the move ends in `not_owner` for this daemon or, if it is abandoned, in an ordinary session. |
 | `orchestrator_unknown` | `sessions.move` named a destination that is not a key of the daemon's `[orchestrators.<name>]` tables. | Fix the name, or have the owner add the orchestrator and restart the daemon. |
 | `not_movable` | `sessions.move` named a session that has no executor (a local session, or a pooled one that never opened), is archived, or has not finished being created. It is also the answer for a session this daemon imported when the orchestrator it came from did not answer that it has handed the session on: that orchestrator may still be finishing its move, or is down, or is no longer in this daemon's `[orchestrators.<name>]` tables. | Move a session that lives on an executor, restoring it first if it is archived. For an imported session, ask again after the source's move has finished (`sessions.get` there reports `moved`), or when the source is reachable again. |
 | `owner_unreachable` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, no orchestrator said it holds it, and some could not be asked. The body also carries `orchestrators`, the names that did not answer. | Retry later, or connect to one of the named orchestrators directly. |

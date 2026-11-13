@@ -325,6 +325,19 @@ environment or file.
    the same words. Responsible:
    `packages/client/src/client/daemon/server.gleam:5628` and `:3758` (code
    without a message).
+
+   *Half fixed in the move-legibility PR.* (a) Fixed: a refusal of `sessions.move`
+   and of its abandon now carries the cause in `message` (`move_refusal_words`,
+   `move_command` and `abandon_command` in `server.gleam`), asserted by cause in
+   `daemon_move_test`. A live remote child stub is not a refusal: the mover finds it
+   in the closed file after the session has stopped, so it ends the move as an
+   abort. (b) Not done: how a move ended is still only in the daemon log. A reason
+   that survives the move needs either a durable row in the catalogue (a storage
+   schema change) or an in-memory last-outcome on the movers, which a restart
+   loses. Either is read by `deployment.status` or `loom sessions move <id>` through
+   a new optional member, and the `moves` rows of the node report cannot carry it
+   because an older peer rejects an unknown `phase`. The owner's call is which of the
+   two to build, and whether a daemon restart may forget an outcome.
 6. **LOW. The executor's `git worktree add` at the attach runs the workspace
    repository's hooks.** A failing `reference-transaction` hook in the executor
    repository made the attach fail and stall the move (it recovered by itself
@@ -342,23 +355,61 @@ environment or file.
    are committed in `Working snapshot`. The real model, asked to commit, said
    `extra.txt` remains untracked, which was false (`logs/real-step5.log`). It had
    named the snapshot commit one turn earlier.
+
+   *Not done in the move-legibility PR; options.* No existing mechanism delivers a
+   one-time harness note to a model. Protocol-change/025 (worktree observation) is a
+   human's transient request that makes no model turn, 068 is a per-strand
+   working-directory fact, and the context transform the checkpoint reminder uses
+   (`client/checkpoint`) is stateless, so it would repeat on every request. The
+   facts for the note are all on the receiver: the executor and workspace in the
+   registration, the branch `loom/<session>`, and the snapshot hash in the reserved
+   cell `client/move/checkout`. (A) A context transform that reads that cell and
+   appends one short note on each request until the strand's next compaction: no
+   new record kind, but it repeats and costs prompt tokens. (B) A durable one-shot
+   entry the receiver writes at its first open of an imported session, delivered
+   once and replayed with the history: exact, but a new entry kind, so a
+   protocol-change. (C) The receiver appends an ordinary harness-authored user
+   message at the first open: no new kind, but it writes into a transcript the
+   sender's digest covered, and the wording is then indistinguishable from a
+   person's. The owner's call is which; (B) is the one that says exactly once what
+   happened.
 9. **LOW. The refusal on the source has literal placeholders.** `session/load`
    of a moved session on alpha returns `session <session-id> is owned by
    orchestrator bravo ... loom --addr <its control address> --session
    <session-id> --token-file ...`, with no real id.
+
+   *Fixed in the move-legibility PR*: `selection.open_selected` and
+   `selection.await` word their failures with the session
+   (`tui_daemon_test`, `tui_daemon_open_of_a_moved_session_names_the_session_in_its_redirect`).
 10. **LOW. Little to read in the logs.** A clean move is one line on each
     orchestrator and two executor lines unrelated to the apply; there is no line
     for capture, send, landing or a resumed send (so 6c cannot be shown to
     resume at an offset), and a stalled move logs a warning every few seconds
     (30 lines in about two and a half minutes).
+
+    *Fixed in the move-legibility PR*: one line per stage of the checkout on the
+    source and `daemon.move_imported` on the receiver, and a stall is logged after
+    its first, second, fourth, eighth attempt and so on (`session_mover.note_stall`).
 11. **LOW. The help and message for local sessions are stale.** `loom sessions
     move --help` says it "hands a session on an executor", and `loom sessions
     move ID` with no `--to` prints "Only a session on an executor can move." for
     a local session that can move. Responsible:
     `packages/session_view/src/session_view/move_candidates.gleam:191`.
+
+    *Fixed in the move-legibility PR*: the help and the answer for a local session
+    name `checkout_executor` and `checkout_workspace`
+    (`move_candidates.local_session_words`). The home page keeps its own sentence,
+    because it offers Move for a session on an executor only.
 12. **LOW. The tombstone is not shown as a local row.** The documentation says
     the source lists a moved session as saved; `loom sessions list --all` lists
-    it only under the other orchestrator.
+    it only under the other orchestrator. *Corrected in the documentation, not
+    the code.* The behaviour is the documented one in protocol-change/085 and
+    `docs/client-protocol.md` (3.5): a record that carries `moved` is the
+    tombstone, and the terminal's page decoder (`tui/daemon/protocol.listed`) and
+    the web home leave it out, with tests
+    (`daemon_move_test`, `the_web_listing_and_the_admin_drawer_...`). The stale
+    sentence was in `docs/distributed-setup.md`, which now says what the wire
+    carries and what the clients draw.
 13. **LOW. Retention.** The source keeps the 200 MiB bundle after a successful
     move, and the executor repository keeps a `refs/loom/in/<hash8>` ref for every
     state, including a superseded snapshot. The seven-day sweep covers the bundle
