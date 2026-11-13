@@ -88,8 +88,9 @@ fn headers(
     dict.fold(cells, Ok([]), fn(acc, key, value) {
       use acc <- result.try(acc)
 
-      // Filter keys matching the namespace prefix before evaluating budget and predicate.
-      case string.starts_with(key, prefix) {
+      // Filter keys matching the namespace prefix, and cells outside a
+      // `SeqBetween` window, before evaluating budget and predicate.
+      case string.starts_with(key, prefix) && newer_than(predicate, value) {
         False -> Ok(acc)
         True -> {
           let header = make_header(namespace, key, value)
@@ -134,6 +135,9 @@ fn page_headers(
   let cells =
     dict.get(view.registers, register.ns_to_string(namespace))
     |> result.lazy_unwrap(dict.new)
+
+  // The qualifying keys are sorted once, after the walk. Sorting inside the
+  // fold made one page cost the square of the namespace's size.
   let keys =
     dict.fold(cells, [], fn(acc, key, _) {
       case
@@ -141,10 +145,22 @@ fn page_headers(
         && string.compare(key, after) == order.Gt
       {
         False -> acc
-        True -> [key, ..acc] |> list.sort(string.compare) |> list.take(limit)
+        True -> [key, ..acc]
       }
     })
+    |> list.sort(string.compare)
+    |> list.take(limit)
   list.try_map(keys, fn(key) { header(view, namespace, key) })
+}
+
+/// Whether a cell is inside the window a `SeqBetween` predicate names. Every
+/// other predicate admits any sequence.
+fn newer_than(predicate: snapshot.Predicate, value: Register) -> Bool {
+  case predicate {
+    snapshot.SeqBetween(after:, through:) ->
+      value.seq > after && value.seq <= through
+    snapshot.All | snapshot.StringFieldEquals(..) -> True
+  }
 }
 
 /// Constructs a snapshot header from a register key and cell value.
