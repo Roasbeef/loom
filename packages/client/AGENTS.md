@@ -1529,8 +1529,10 @@ executor's case (slice 4a): the scope's linked worktree already exists on
 and `git checkout -B` moves the branch onto the tip. `check_linked` requires the
 tree's `.git` to be a plain file and what Git finds from inside it to be the named
 repository (top, worktree Git directory, common directory, branch); a tree that
-already contains the tip is answered as applied and not touched, and any other tree
-must have no change in it. A dirty state's snapshot commit is checked out as it is.
+was last applied, or whose `HEAD` is the tip, is answered as applied and not touched
+(a tip that is only an ancestor of `HEAD` moves the tree), and any other tree must have
+no change in it. The apply keeps one ref per session, `refs/loom/applied/<session>`,
+written after the checkout and dropped before the next one. A dirty state's snapshot commit is checked out as it is.
 The checkouts (`checked_out`) empty every `filter.<name>` driver the configuration
 names for the call, since a `.gitattributes` in the bundle can attach one and a
 checkout would run its `smudge` command. The listing runs in the directory the
