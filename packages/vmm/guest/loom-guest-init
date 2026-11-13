@@ -9,6 +9,7 @@
 # It does four things before the command starts, and two optional ones. They run in this order
 # because each later step depends on the earlier one.
 #
+#   0. Settle which ids the loom user has (`--identity` does only this).
 #   1. Configure the network. go-microvm v0.0.43 serves no DHCP lease, so
 #      the address, route and resolver that the host-side stack expects are
 #      set statically (guest 192.168.127.2/24, gateway and DNS
@@ -31,6 +32,38 @@ GATEWAY=192.168.127.1
 CGROOT=/sys/fs/cgroup
 LOOM_UID=10000
 LOOM_GID=10000
+
+# --- 0. Which ids the loom user has ----------------------------------------
+#
+# The root filesystem is a virtio-fs share, and what a guest user can own on it
+# depends on what the host's libkrun process may do. On macOS the share
+# emulates ownership, so root in the guest can hand a directory to uid 10000.
+# On Linux the share shows the files as the host user owns them, and a libkrun
+# process without CAP_CHOWN and CAP_SETUID (an ordinary user's) refuses a
+# chown and refuses writes by any uid but root's and its own. The one
+# unprivileged identity that can write the share there is the host user's, so
+# the loom user takes that id and nothing needs handing over. The way to know
+# which case this is, is to try a hand-over once: a chown that fails means the
+# share's owner is the loom user. The passwd and group entries are rewritten at
+# every boot, so a root kept across a change of host user follows it.
+
+ensure_identity() {
+	if chown "$LOOM_UID:$LOOM_GID" /work 2>/dev/null; then
+		return 0
+	fi
+
+	LOOM_UID=$(stat -c %u /work)
+	LOOM_GID=$(stat -c %g /work)
+	sed -i -E "s/^loom:([^:]*):[0-9]+:[0-9]+:/loom:\1:$LOOM_UID:$LOOM_GID:/" /etc/passwd
+	sed -i -E "s/^loom:([^:]*):[0-9]+:/loom:\1:$LOOM_GID:/" /etc/group
+}
+
+# loom-guest-executor asks for the identity before it hands the executor's
+# directories to the loom user by name.
+if [ "${1:-}" = --identity ]; then
+	ensure_identity
+	exit 0
+fi
 
 # --- 1. Network -----------------------------------------------------------
 
@@ -98,6 +131,7 @@ fi
 # guest can chown on the share, so the directories the loom user writes to
 # are handed over here, before anything runs as loom.
 
+ensure_identity
 chown -R "$LOOM_UID:$LOOM_GID" /home/loom /var/lib/loom /work
 
 # --- 3. Delegated cgroup v2 subtree ---------------------------------------

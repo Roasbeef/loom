@@ -148,6 +148,13 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 		zlib1g \
 	&& rm -rf /var/lib/apt/lists/*
 
+# No setuid or setgid file stays in the guest root. The root is a share of a
+# host directory whose files belong to the host user, so on Linux a setuid-root
+# `mount` runs as that user and refuses to mount for the init, and nothing in a
+# guest that has no login needs one: the init is root already and the loom
+# user is meant to stay unprivileged.
+RUN find / -xdev -type f -perm /6000 -exec chmod a-s {} +
+
 # The same non-root user the root Dockerfile creates. The init drops to it
 # before running the workload; running as root would leave loom-exec's inner
 # drop as the only boundary between a hostile program and the guest's root.
