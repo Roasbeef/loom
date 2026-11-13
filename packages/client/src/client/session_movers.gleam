@@ -381,7 +381,7 @@ fn handle(
           actor.continue(start_giving_up(state, entry))
 
         // A run in progress is not interrupted. The request is kept, and the
-        // run's end gives the move up in its place (`after_run`), through the
+        // run's end gives the move up in its place (`stalled`), through the
         // same compare-and-set, so a receiver that already activated still
         // finishes the move.
         Ok(Entry(phase: Running, ..) as entry) ->
@@ -453,11 +453,15 @@ fn handle(
 }
 
 // A run that stalled: it counts the attempt, writes the warning when the count
-// says one is due, and goes on as `after_run` does. The count survives the retry
-// on the entry, so a move stalled for an hour logs a few lines and not one for
-// every five seconds.
+// says one is due, and goes on to wait for the next tick. The count survives the
+// retry on the entry, so a move stalled for an hour logs a few lines and not one
+// for every five seconds. If the owner asked to give the move up while the run
+// went on, the give-up starts now in place of waiting for the next tick. It goes
+// through `session_mover.give_up`, which expects the moving record, so it fails
+// if the receiver already took the session and the move finishes instead. The
+// request is spent by that run.
 
-/// Records a stalled run and logs it at a decreasing rate.
+/// Records a stalled run, logs it at a decreasing rate and waits or gives up.
 fn stalled(
   state: State(instance),
   move: catalogue.Pending,
@@ -470,46 +474,34 @@ fn stalled(
     Error(Nil) -> 1
   }
 
+  // The reason can carry the receiver's own words, so it is bounded once and
+  // the log, the report and the entry all hold the same text.
+  let reason = node_report.cut_reason(reason)
   let now = bootstrap.monotonic_time_ms()
   session_mover.note_stall(
     state.environment.logger,
     move,
     reason,
     attempt,
-    option.map(since, fn(began) { now - began }) |> option.unwrap(0),
+    option.map(since, fn(began) { now - began }),
   )
-  after_run(state, move, since, Some(reason), attempt)
-}
+  let kept = waiting(state, move, since, reason, attempt)
 
-// A run that did not end the move. If the owner asked to give the move up while
-// it ran, the give-up starts now in place of waiting for the next tick. It goes
-// through `session_mover.give_up`, which expects the moving record, so it fails
-// if the receiver already took the session and the move finishes instead. The
-// request is spent by that run. Otherwise the move waits to run again.
-
-/// Establishes after run for the caller, keeping its validation and result policy at this boundary.
-fn after_run(
-  state: State(instance),
-  move: catalogue.Pending,
-  since: Option(Int),
-  reason: Option(String),
-  stalls: Int,
-) -> State(instance) {
+  // A request to give the move up is honoured as this run ends.
   case dict.get(state.entries, move.session) {
     Ok(Entry(abandon: Asked, ..)) ->
       start_giving_up(
-        waiting(state, move, since, reason, stalls),
+        kept,
         Entry(
           move:,
           phase: Waiting,
           stalled_since: since,
-          reason: option.map(reason, node_report.cut_reason),
+          reason: Some(reason),
           abandon: Unasked,
-          stalls:,
+          stalls: attempt,
         ),
       )
-    Ok(Entry(abandon: Unasked, ..)) | Error(Nil) ->
-      waiting(state, move, since, reason, stalls)
+    Ok(Entry(abandon: Unasked, ..)) | Error(Nil) -> kept
   }
 }
 
@@ -518,7 +510,7 @@ fn waiting(
   state: State(instance),
   move: catalogue.Pending,
   since: Option(Int),
-  reason: Option(String),
+  reason: String,
   stalls: Int,
 ) -> State(instance) {
   State(
@@ -530,7 +522,7 @@ fn waiting(
         move:,
         phase: Waiting,
         stalled_since: since,
-        reason: option.map(reason, node_report.cut_reason),
+        reason: Some(reason),
         abandon: Unasked,
         stalls:,
       ),

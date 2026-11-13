@@ -1644,7 +1644,14 @@ pub fn a_stalled_move_logs_at_a_decreasing_rate_test() {
       receiver_knows_box(),
       0,
     )
-  let wire = Wire(..rig.wire, stage: fn(_session, _op) { Error(Nil) })
+  let fail = times(16)
+  let wire =
+    Wire(..rig.wire, stage: fn(session, op) {
+      case fail() {
+        True -> Error(Nil)
+        False -> rig.wire.stage(session, op)
+      }
+    })
   let records = process.new_subject()
   let logger = log.new(sink: log.to_subject(records), threshold: level.Info)
   let assert Ok(control) =
@@ -1658,6 +1665,10 @@ pub fn a_stalled_move_logs_at_a_decreasing_rate_test() {
     )
   control.begin(begin(rig))
   assert await_stalls(records, 4) == [1, 2, 4, 8]
+
+  // The ninth run is answered, so the move ends and nothing retries after the
+  // rig is torn down.
+  await_custody(rig, catalogue.Moved(op:, to: "bravo"))
   finish(rig)
 }
 

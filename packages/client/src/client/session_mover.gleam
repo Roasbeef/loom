@@ -1521,19 +1521,21 @@ pub fn stall_is_logged(attempt: Int) -> Bool {
 /// due. The line names the move, the attempt, how long the move has been
 /// stalled and the reason, which says what it is waiting on: the executor, the
 /// receiver, a lease or a step that ran out of time. The reason is the mover's
-/// own fixed words, never text of the other machine.
+/// own words, and can carry the receiver's reason for a failed activation, so
+/// the caller bounds it (`node_report.cut_reason`). The duration is absent for a
+/// stall that is not counted as a stall of the receiver (`Deferred`).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_mover.note_stall(logger, move, "the receiver did not answer", 4, 15_000)
+/// // session_mover.note_stall(logger, move, "the receiver did not answer", 4, Some(15_000))
 /// ```
 pub fn note_stall(
   logger: Logger,
   move: catalogue.Pending,
   reason: String,
   attempt: Int,
-  stalled_ms: Int,
+  stalled_ms: Option(Int),
 ) -> Nil {
   case stall_is_logged(attempt) {
     True ->
@@ -1543,7 +1545,10 @@ pub fn note_stall(
         field.text("to", move.to),
         field.text("reason", reason),
         field.count("attempt", attempt),
-        field.count("stalled_ms", stalled_ms),
+        ..case stalled_ms {
+          Some(ms) -> [field.count("stalled_ms", ms)]
+          None -> []
+        }
       ])
     False -> Nil
   }
