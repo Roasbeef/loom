@@ -1639,8 +1639,7 @@ fn upgrade_stopped_after(count: Int) -> #(Bool, Bool, vm_spec.RootStep) {
     simplifile.create_directory_all(root <> "/srv/workspaces/real")
   let assert Ok(Nil) =
     simplifile.create_directory_all(building <> "/srv/workspaces/shipped")
-  let steps =
-    vm_cli.upgrade_steps(Some(root <> "/srv/workspaces"), building, next)
+  let steps = vm_cli.upgrade_steps(root <> "/srv/workspaces", building, next)
   list.take(steps, count)
   |> list.each(fn(step) {
     assert step() == Ok(Nil)
@@ -1652,9 +1651,9 @@ fn upgrade_stopped_after(count: Int) -> #(Bool, Bool, vm_spec.RootStep) {
     simplifile.is_directory(next <> "/srv/workspaces/real") == Ok(True)
 
   // What `up` reads: the layout is the evidence that the workspaces moved.
-  let moved = case simplifile.is_directory(next <> "/srv/workspaces") {
-    Ok(True) -> vm_spec.Present
-    _ -> vm_spec.Absent
+  let moved = case simplifile.link_info(next <> "/srv/workspaces") {
+    Ok(_) -> vm_spec.Present
+    Error(_) -> vm_spec.Absent
   }
   let step =
     vm_spec.root_step(
@@ -1727,25 +1726,38 @@ pub fn recorded_workspaces_that_are_gone_refuse_the_upgrade_test() {
     == vm_spec.RefuseCarry("x is a link")
 }
 
-pub fn an_upgrade_with_nothing_to_carry_never_reads_as_a_finished_move_test() {
-  // The clone ships an `srv/workspaces` of its own. With no workspaces to
-  // move there is no last rename, so the new root must end with none, or the
-  // next `up` would read it as a finished move.
-  let #(scratch, _, _) = scratch_root()
-  let building = scratch <> "/root.building"
-  let next = scratch <> "/root.next"
+pub fn the_old_roots_workspaces_are_read_without_following_a_link_test() {
+  let #(scratch, root, outside) = scratch_root()
+
+  // No `srv` at all, and an `srv` with nothing in it: both are a root the
+  // host never copied a workspace into.
+  assert vm_cli.old_workspaces(root) == vm_spec.Missing
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/srv")
+  assert vm_cli.old_workspaces(root) == vm_spec.Missing
+
+  // A file where the directory belongs is not a missing directory.
+  let assert Ok(Nil) = simplifile.write(root <> "/srv/workspaces", "x")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is not a directory")
+  let assert Ok(Nil) = simplifile.delete(root <> "/srv/workspaces")
+
+  // A real directory moves.
   let assert Ok(Nil) =
-    simplifile.create_directory_all(building <> "/srv/workspaces/shipped")
+    simplifile.create_directory_all(root <> "/srv/workspaces")
+  assert vm_cli.old_workspaces(root) == vm_spec.Movable
 
-  let steps = vm_cli.upgrade_steps(None, building, next)
-  assert list.length(steps) == 3
-  list.each(steps, fn(step) {
-    assert step() == Ok(Nil)
-  })
-
-  assert simplifile.is_directory(next <> "/srv") == Ok(True)
-  assert simplifile.is_directory(next <> "/srv/workspaces") != Ok(True)
-  assert simplifile.is_directory(building) != Ok(True)
+  // A link there is refused, whatever it points at, and so is a link at
+  // `srv` even when its target holds a real `workspaces`.
+  let assert Ok(Nil) = simplifile.delete_all([root <> "/srv/workspaces"])
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside, root <> "/srv/workspaces")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is a link")
+  let assert Ok(Nil) = simplifile.delete_all([root <> "/srv"])
+  let assert Ok(Nil) = simplifile.create_directory_all(outside <> "/workspaces")
+  let assert Ok(Nil) = simplifile.create_symlink(outside, root <> "/srv")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is a link")
   let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
 

@@ -1554,7 +1554,7 @@ fn stage(
       record_root_revision(guest, manifest)
   })
 
-  use copy <- result.try(copy_workspace(guest.root, workspace, platform))
+  use copy <- result.try(copy_workspace(guest, workspace, platform))
   record_checkout(guest, workspace, copy)
 }
 
@@ -1654,18 +1654,23 @@ fn prepare_root(
       // The line comes after every refusal of `up` and before the first
       // change. A root that never received a workspace copy is an unfinished
       // first `up`, and calling that an upgrade would mislead.
-      io.println_error(case workspaces {
-        Some(_) ->
-          vm_spec.upgrade_line(options.name, recorded, manifest.revision)
-        None -> vm_spec.unfinished_line(options.name)
-      })
-      use Nil <- result.try(build_next_root(
-        manifest,
-        guest,
-        platform,
-        workspaces,
-      ))
-      swap_roots(guest)
+      case workspaces {
+        Some(old) -> {
+          io.println_error(vm_spec.upgrade_line(
+            options.name,
+            recorded,
+            manifest.revision,
+          ))
+          use Nil <- result.try(build_next_root(manifest, guest, platform, old))
+          swap_roots(guest)
+        }
+
+        // Nothing to move, so this is the first clone done again.
+        None -> {
+          io.println_error(vm_spec.unfinished_line(options.name))
+          replace_root(manifest, guest, platform)
+        }
+      }
     }
 
     vm_spec.FinishUpgrade -> swap_roots(guest)
@@ -1792,13 +1797,12 @@ fn record_provision_copy(
 /// beside a root with no workspaces (`vm_spec.root_step`, `FinishUpgrade`). The
 /// directory moves as one `rename`, so a link inside it stays a link and nothing
 /// is followed. `workspaces` is what `carried_workspaces` found: the old root's
-/// `srv/workspaces`, checked to be a real directory under real directories, or
-/// `None` for a root that never received a workspace copy.
+/// `srv/workspaces`, checked to be a real directory under real directories.
 fn build_next_root(
   manifest: Manifest,
   guest: Instance,
   platform: vm_spec.Platform,
-  workspaces: option.Option(String),
+  workspaces: String,
 ) -> Result(Nil, String) {
   use export <- result.try(
     bootstrap.canonical_directory(manifest.guest_root)
@@ -1824,12 +1828,18 @@ fn build_next_root(
 fn carried_workspaces(
   guest: Instance,
 ) -> Result(option.Option(String), String) {
-  use recorded <- result.try(read_checkouts(guest))
-  let names = list.map(recorded, fn(entry) { entry.0 })
+  let found = old_workspaces(guest.root)
 
-  // The record is the host's, so a guest cannot make its workspaces look
-  // absent by editing it.
-  case vm_spec.carry_over(names, old_workspaces(guest.root)) {
+  // The record matters only when the directory is missing, so a damaged
+  // record never blocks the move of workspaces that are there. The record is
+  // the host's, so a guest cannot make its workspaces look absent with it.
+  use recorded <- result.try(case found {
+    vm_spec.Missing -> read_checkouts(guest)
+    vm_spec.Movable | vm_spec.Unsafe(_) -> Ok([])
+  })
+
+  // The decision is the pure table's; this only names the directory to move.
+  case vm_spec.carry_over(recorded, found) {
     vm_spec.CarryWorkspaces -> Ok(Some(guest.root <> vm_spec.workspaces_dir))
     vm_spec.CarryNothing -> Ok(None)
     vm_spec.RefuseCarry(reason) -> Error(vm_spec.upgrade_refusal(reason))
@@ -1837,52 +1847,36 @@ fn carried_workspaces(
 }
 
 /// What `root/srv/workspaces` is, entry by entry and never through a link.
-fn old_workspaces(root: String) -> vm_spec.OldWorkspaces {
-  // `srv` is read first, because nothing below a missing directory exists.
-  case entry_kind(root <> "/srv"), entry_kind(root <> vm_spec.workspaces_dir) {
-    PlainDirectory, PlainDirectory -> vm_spec.Movable
-    NoEntry, _ | PlainDirectory, NoEntry -> vm_spec.Missing
-    Unusable(reason), _ | PlainDirectory, Unusable(reason) ->
-      vm_spec.Unsafe(reason)
-  }
-}
+/// `srv` is read first, because nothing below a missing directory exists and
+/// a link there must not be looked through.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.old_workspaces("/vm/dev/root")
+/// ```
+@internal
+pub fn old_workspaces(root: String) -> vm_spec.OldWorkspaces {
+  let srv = root <> "/srv"
 
-/// One directory entry as `lstat` sees it.
-type EntryKind {
-  /// A real directory.
-  PlainDirectory
-
-  /// Nothing is there.
-  NoEntry
-
-  /// A link, a file, or an entry that cannot be read. The reason names it.
-  Unusable(reason: String)
-}
-
-/// Reads one entry without following it, so a link is reported as a link.
-fn entry_kind(path: String) -> EntryKind {
-  // `link_info` describes the entry itself, never what a link points at.
-  case simplifile.link_info(path) {
-    Error(simplifile.Enoent) -> NoEntry
-    Error(error) ->
-      Unusable(
-        vm_spec.printable(path)
-        <> " is unreadable: "
-        <> simplifile.describe_error(error),
-      )
-    Ok(info) ->
-      case simplifile.file_info_type(info) {
-        simplifile.Directory -> PlainDirectory
-        simplifile.Symlink ->
-          Unusable(
-            vm_spec.printable(path)
-            <> " is a link, so something in the guest left it there. "
-            <> "Replace the guest with --fresh.",
-          )
-        simplifile.File | simplifile.Other ->
-          Unusable(vm_spec.printable(path) <> " is not a directory")
+  // Only a missing entry is `Missing`; anything else is judged by the walk
+  // that refuses a link or a file.
+  case
+    no_entry(srv)
+    || { is_plain_directory(srv) && no_entry(srv <> "/workspaces") }
+  {
+    True -> vm_spec.Missing
+    False ->
+      case plain_chain(root, ["srv", "workspaces"]) {
+        Ok(_) -> vm_spec.Movable
+        Error(reason) -> vm_spec.Unsafe(reason)
       }
   }
+}
+
+/// Whether nothing is at `path`, a link counting as something.
+fn no_entry(path: String) -> Bool {
+  simplifile.link_info(path) == Error(simplifile.Enoent)
 }
 
 /// The steps that put an upgrade's new root in place, in order. The clone of
@@ -1893,23 +1887,20 @@ fn entry_kind(path: String) -> EntryKind {
 /// it. After every step the workspaces are in exactly one place, and the layout
 /// says they have moved only once they are in `root.next`: a stop before the
 /// last rename leaves a `root.next` without them, which `up` deletes and
-/// redoes from the old root, and a stop after it is a finished move. An old
-/// root with no workspace copy (`workspaces` is `None`) has no last rename:
-/// its `root.next` never reads as a finished move, and the swap that follows
-/// in the same `up` replaces the root.
+/// redoes from the old root, and a stop after it is a finished move.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // vm_cli.upgrade_steps(Some("/vm/dev/root/srv/workspaces"), "/vm/dev/root.building", "/vm/dev/root.next")
+/// // vm_cli.upgrade_steps("/vm/dev/root/srv/workspaces", "/vm/dev/root.building", "/vm/dev/root.next")
 /// ```
 @internal
 pub fn upgrade_steps(
-  workspaces: option.Option(String),
+  workspaces: String,
   building: String,
   next_root: String,
 ) -> List(fn() -> Result(Nil, String)) {
-  let place = [
+  [
     fn() { make_inside(building, "/srv") },
     fn() { clear_workspaces_slot(building) },
     fn() {
@@ -1921,29 +1912,21 @@ pub fn upgrade_steps(
         )
       })
     },
+    fn() {
+      simplifile.rename(workspaces, next_root <> vm_spec.workspaces_dir)
+      |> result.map_error(fn(error) {
+        vm_spec.upgrade_refusal(
+          "the workspaces cannot be moved into the new root: "
+          <> simplifile.describe_error(error),
+        )
+      })
+    },
   ]
-
-  // The move is the last step and exists only when there is something to move.
-  case workspaces {
-    None -> place
-    Some(old) ->
-      list.append(place, [
-        fn() {
-          simplifile.rename(old, next_root <> vm_spec.workspaces_dir)
-          |> result.map_error(fn(error) {
-            vm_spec.upgrade_refusal(
-              "the workspaces cannot be moved into the new root: "
-              <> simplifile.describe_error(error),
-            )
-          })
-        },
-      ])
-  }
 }
 
 /// Runs `upgrade_steps` in order.
 fn move_into_place(
-  workspaces: option.Option(String),
+  workspaces: String,
   building: String,
   next_root: String,
 ) -> Result(Nil, String) {
@@ -2062,9 +2045,13 @@ fn replace_root(
       manifest.guest_root <> " is not a directory: " <> reason
     }),
   )
-  use Nil <- result.try(remove_root(guest))
   use Nil <- result.try(remove_tree_if_present(guest.next_root))
   use Nil <- result.try(remove_tree_if_present(guest.building_root))
+
+  // The old root is renamed away before it is deleted. A delete in place can
+  // be stopped partway, and what is left would still be called `root`, which
+  // the next `up` keeps and boots when its revision record matches.
+  use Nil <- result.try(remove_root(guest))
 
   // A record names a copy in this root, and the new root has none.
   use Nil <- result.try(remove_checkouts(guest))
@@ -2086,23 +2073,24 @@ fn replace_root(
   })
 }
 
-/// Removes this guest's old root, when it has one.
+/// Removes this guest's old root, when it has one. The root is first renamed
+/// to `root.building`, which the caller has just cleared, so the name `root`
+/// is gone in one step and a stop during the delete leaves only a directory
+/// every later `up` removes.
 fn remove_root(guest: Instance) -> Result(Nil, String) {
   // A first `up` has no root to remove.
-  case bootstrap.path_exists(guest.root) {
-    False -> Ok(Nil)
-    True -> {
-      use _ <- result.try(tool(
-        "chmod",
-        ["-R", "u+w", guest.root],
-        within: copy_budget_ms,
-      ))
-      simplifile.delete_all([guest.root])
-      |> result.map_error(fn(error) {
-        guest.root
-        <> " cannot be replaced: "
-        <> simplifile.describe_error(error)
-      })
+  case presence_of(guest.root) {
+    vm_spec.Absent -> Ok(Nil)
+    vm_spec.Present -> {
+      use Nil <- result.try(
+        simplifile.rename(guest.root, guest.building_root)
+        |> result.map_error(fn(error) {
+          guest.root
+          <> " cannot be replaced: "
+          <> simplifile.describe_error(error)
+        }),
+      )
+      remove_tree(guest.building_root)
     }
   }
 }
@@ -2252,39 +2240,49 @@ fn write_private(path: String, contents: String) -> Result(Nil, String) {
 /// fails on a file the host user cannot write. Making the copy owner-writable
 /// first is what lets the init finish.
 fn copy_workspace(
-  root: String,
+  guest: Instance,
   workspace: Workspace,
   platform: vm_spec.Platform,
 ) -> Result(Copy, String) {
-  let parent = root <> vm_spec.workspaces_dir
-  let copy = parent <> "/" <> workspace.name
+  let root = guest.root
+  let copy = root <> vm_spec.workspaces_dir <> "/" <> workspace.name
   use Nil <- result.try(make_inside(root, vm_spec.workspaces_dir))
 
   // A resumed guest's copy is the one the agent has been editing; copying
   // the host's checkout over it would discard that work.
   use <- bool.guard(bootstrap.path_exists(copy), Ok(Kept))
-  let copied = {
+
+  // A later `up` keeps a copy that exists, so the copy is made beside the
+  // root and takes its name only once it is whole, owns its repository and
+  // has lost its credentials. Made in place, a stop of `up` left a copy
+  // that was half written, or whose `.git/config` still held the host's
+  // credentials where model code reads them, and the next `up` kept it.
+  let building = guest.directory <> "/" <> vm_spec.building_workspace_dir
+  use Nil <- result.try(remove_tree_if_present(building))
+  let made = {
     use _ <- result.try(tool(
       "cp",
-      vm_spec.copy_arguments(platform, workspace.path, copy),
+      vm_spec.copy_arguments(platform, workspace.path, building),
       within: copy_budget_ms,
     ))
     use _ <- result.try(tool(
       "chmod",
-      ["-R", "u+w", copy],
+      ["-R", "u+w", building],
       within: copy_budget_ms,
     ))
-    use Nil <- result.try(own_repository(root, workspace, copy))
-    scrub_config(copy <> "/.git/config")
+    use Nil <- result.try(own_repository(root, workspace, building))
+    use Nil <- result.try(scrub_config(building <> "/.git/config"))
+    simplifile.rename(building, copy)
+    |> result.map_error(fn(error) {
+      copy <> " cannot be put in place: " <> simplifile.describe_error(error)
+    })
   }
 
-  // A later `up` keeps a copy that exists, so a copy that a step failed on
-  // (half copied, with a `.git` that still points at the host, or with the
-  // credentials unscrubbed) is removed and the next `up` makes it again.
-  case copied {
+  // A step that failed leaves nothing at either name.
+  case made {
     Ok(Nil) -> Ok(Copied)
     Error(reason) -> {
-      let _ = remove_tree(copy)
+      let _ = remove_tree_if_present(building)
       Error(reason)
     }
   }

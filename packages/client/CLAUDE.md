@@ -248,12 +248,15 @@ before `build_next_root`. `state.img` is kept. The host keeps the `--provision` 
 clears it) and a new root is provisioned from it (`vm_spec.new_root_provision`),
 never from the root; an unfinished script is retried from it too
 (`provision_plan`'s `kept`), and the copy is written by temporary file and rename.
-A first clone (`replace_root`) is made as `root.building` and renamed to
-`root`, so a `root` that exists is whole. `vm_spec.carry_over` decides what an
-upgrade moves from the host's `checkouts` record and what `old_workspaces` finds:
-real `srv/workspaces` moves, a root with none and no recorded copy carries
-nothing (an interrupted first `up`, announced by `unfinished_line`), anything
-else is refused. `protocol/models/vm-root-upgrade` is the TLA+ model of both.
+A clone (`replace_root`) is made as `root.building` and renamed to `root`, an
+old root is renamed to `root.building` before it is deleted (`remove_root`),
+and a workspace copy is made as `<vm home>/<name>/workspace.building`, given
+its repository and scrubbed there, and renamed into the root (`copy_workspace`),
+so a `root` or a copy that exists is whole. `vm_spec.carry_over` decides what an
+upgrade moves from what `old_workspaces` finds and, only when the directory is
+missing, the host's `checkouts` record: real `srv/workspaces` moves, a root with
+none and no recorded copy is cloned again (an interrupted first `up`, announced
+by `unfinished_line`), anything else is refused. `protocol/models/vm-root-upgrade` is the TLA+ model of both.
 `stranded_in` lists processes; `refuse_stranded` refuses `up` and `rm`, `down`'s
 not-running arm fails and `status` adds a `runner:` line when a runner survives
 whose command starts with the manifest's runner path (`Some`; without a readable
@@ -284,7 +287,8 @@ proves the idle stop on its isolated home.
 Invariants that break things when violated:
 
 - A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `root.next/` (only during an upgrade), `state.img`, `allow`, `checkouts`,
+  `root/`, `root.next/` (only during an upgrade), `root.building/` and
+  `workspace.building/` (only while `up` makes a clone or a copy), `state.img`, `allow`, `checkouts`,
   `root-revision`, `provision`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
   `~/.loom/vm`.
 - `up` reads the bundles in `deploy/` again instead of minting new ones, so the

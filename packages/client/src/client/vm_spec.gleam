@@ -896,6 +896,10 @@ pub const next_root_dir = "root.next"
 /// the rename to `root.next` is the last step of the build.
 pub const building_root_dir = "root.building"
 
+/// The directory, beside the root, in which `up` makes a workspace copy before
+/// it moves the finished copy into the root. Only the host writes it.
+pub const building_workspace_dir = "workspace.building"
+
 /// The revision a manifest has when it describes a build tree.
 const dev_revision = "dev"
 
@@ -1117,7 +1121,7 @@ pub type Carry {
 
 /// Decides what an upgrade carries over from the old root.
 ///
-/// `recorded` is the workspace names in the host's own `checkouts` record,
+/// `recorded` is the entries of the host's own `checkouts` record,
 /// which `up` writes only after it copied a workspace into this root and
 /// removes when it replaces the root. A root with no `srv/workspaces` and an
 /// empty record is one whose first `up` stopped between the clone and the
@@ -1133,7 +1137,7 @@ pub type Carry {
 /// assert vm_spec.carry_over([], vm_spec.Missing) == vm_spec.CarryNothing
 /// assert vm_spec.carry_over(["app"], vm_spec.Movable) == vm_spec.CarryWorkspaces
 /// ```
-pub fn carry_over(recorded: List(String), found: OldWorkspaces) -> Carry {
+pub fn carry_over(recorded: List(a), found: OldWorkspaces) -> Carry {
   // The directory decides first: workspaces that are there always move.
   case found, recorded {
     Movable, _ -> CarryWorkspaces
