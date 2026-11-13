@@ -202,24 +202,47 @@ pub fn observe(
       }
     })
     |> dict.from_list
-  let old_ids = list.map(previous, fn(row) { row.id })
+
+  // Every lookup below is by strand identity, so each is a dictionary read
+  // over a table built once. A scan of the roster or of the cut per strand
+  // made one capture cost quadratic in the strands it listed.
+  let cells = snapshot_view.index_cells(view.cells)
+  let all_entries = dict.values(entries)
+  let current_strands =
+    dict.from_list(list.map(view.strands, fn(strand) { #(strand.id, strand) }))
+  let previous_by_id =
+    dict.from_list(
+      list.reverse(previous) |> list.map(fn(row) { #(row.id, row) }),
+    )
+  let reviewer_by_strand =
+    dict.from_list(
+      list.reverse(reviewers) |> list.map(fn(row) { #(row.strand, row) }),
+    )
   let retained =
-    list.filter_map(previous, fn(row) {
-      list.find(view.strands, fn(strand) { strand.id == row.id })
-    })
+    list.filter_map(previous, fn(row) { dict.get(current_strands, row.id) })
   let added =
-    list.filter(view.strands, fn(strand) { !list.contains(old_ids, strand.id) })
+    list.filter(view.strands, fn(strand) {
+      !dict.has_key(previous_by_id, strand.id)
+    })
 
   let reviews = approval.records(view.cells) |> result.unwrap([])
   list.map(list.append(retained, added), fn(strand) {
-    let #(current, status, activity, latest) = evidence(view, strand.id)
+    let #(current, status, activity, latest) = evidence(view, cells, strand.id)
     let earlier =
-      list.find(previous, fn(row) {
-        row.id == strand.id && row.operation == current && current != None
+      dict.get(previous_by_id, strand.id)
+      |> result.try(fn(row) {
+        case row.operation == current && current != None {
+          True -> Ok(row)
+          False -> Error(Nil)
+        }
       })
     let reviewer =
-      list.find(reviewers, fn(row) {
-        row.strand == strand.id && Some(row.operation) == current
+      dict.get(reviewer_by_strand, strand.id)
+      |> result.try(fn(row) {
+        case Some(row.operation) == current {
+          True -> Ok(row)
+          False -> Error(Nil)
+        }
       })
 
     // Handle the `observe` branch dispatch.
@@ -229,8 +252,7 @@ pub fn observe(
         // Handle the `observe` branch dispatch.
         let captured = case current {
           None -> ""
-          Some(id) ->
-            reviewer_status.task_excerpt(view.cells, dict.values(entries), id)
+          Some(id) -> reviewer_status.task_excerpt_in(cells, all_entries, id)
         }
 
         // Handle the `observe` branch dispatch.
@@ -267,8 +289,7 @@ pub fn observe(
     // The journal can retain an unanswered escalation after its operation
     // aborts or times out. Only a live operation can still need that answer.
     let approvals = case status {
-      Working | Waiting ->
-        pending_approvals(view.cells, reviews, strand.id, current)
+      Working | Waiting -> pending_approvals(cells, reviews, strand.id, current)
       NeedsInput | Finished | Failed | Halted | Idle | Unavailable -> []
     }
 
@@ -290,7 +311,7 @@ pub fn observe(
 
     // Extract running tool calls for the current operation.
     let calls = case current {
-      Some(id) -> tool_activity.running(view.cells, dict.values(entries), id)
+      Some(id) -> tool_activity.running_in(cells, all_entries, id)
       None -> []
     }
 
@@ -340,7 +361,7 @@ pub fn observe(
         |> result.map(fn(config) { config.configuration.model.model_id })
         |> result.unwrap(model_unavailable)
         |> text_hygiene.single_line,
-      agent_activity.recent(view, window, strand.id, current),
+      agent_activity.recent_in(cells, view, window, strand.id, current),
       decision,
       None,
     )
@@ -350,13 +371,14 @@ pub fn observe(
 /// Renders evidence items for agent review.
 fn evidence(
   view: snapshot_view.View,
+  cells: snapshot_view.CellIndex,
   strand: String,
 ) -> #(Option(String), Status, String, Option(ids.EntryId)) {
   // Handle the `evidence` branch dispatch.
   case dict.get(view.operations, strand) {
     Ok(current) -> {
       let state =
-        cell(view.cells, register.OpState, current)
+        cell(cells, register.OpState, current)
         |> result.try(fn(value) {
           codec.decode_state(value) |> result.replace_error(Nil)
         })
@@ -375,7 +397,7 @@ fn evidence(
         )
       }
     }
-    Error(Nil) -> idle_state(view, strand)
+    Error(Nil) -> idle_state(view, cells, strand)
   }
 }
 
@@ -412,10 +434,11 @@ fn live_state(
 /// Computes the idle status for the agent view.
 fn idle_state(
   view: snapshot_view.View,
+  cells: snapshot_view.CellIndex,
   strand: String,
 ) -> #(Option(String), Status, String, Option(ids.EntryId)) {
   let latest =
-    cell(view.cells, register.StrandLastResult, strand)
+    cell(cells, register.StrandLastResult, strand)
     |> result.try(fn(value) {
       codec.decode_last_result(value) |> result.replace_error(Nil)
     })
@@ -423,7 +446,7 @@ fn idle_state(
   // Handle the `idle_state` branch dispatch.
   let result = case latest {
     Error(Nil) ->
-      case cell(view.cells, register.StrandLastResult, strand) {
+      case cell(cells, register.StrandLastResult, strand) {
         Ok(_) -> #(None, Unavailable, "Terminal result unavailable", None)
         Error(Nil) -> #(None, Idle, "No current operation", None)
       }
@@ -433,11 +456,7 @@ fn idle_state(
       // Handle the `idle_state` branch dispatch.
       let reason = case outcome {
         operation.RunAborted ->
-          child_stop.operation_reason(
-            view.cells,
-            ids.op_id_to_string(id),
-            strand,
-          )
+          child_stop.operation_reason_in(cells, ids.op_id_to_string(id), strand)
           |> option.unwrap(fallback)
         operation.RunCompleted(_) | operation.RunFailed(_) -> fallback
       }
@@ -482,12 +501,11 @@ fn structural_outcome(
 
 /// Helper `cell` for cell.
 fn cell(
-  cells: List(snapshot_view.Cell),
+  cells: snapshot_view.CellIndex,
   namespace: register.RegisterNs,
   key: String,
 ) -> Result(json.JsonValue, Nil) {
-  cells
-  |> list.find(fn(cell) { cell.namespace == namespace && cell.key == key })
+  snapshot_view.cell_at(cells, namespace, key)
   |> result.map(fn(cell) { cell.value })
 }
 
@@ -520,7 +538,7 @@ fn assistant_text(value: entry.Entry) -> Result(String, Nil) {
 
 /// Collects pending approval requests.
 fn pending_approvals(
-  cells: List(snapshot_view.Cell),
+  cells: snapshot_view.CellIndex,
   records: List(approval.Review),
   strand: String,
   current: Option(String),

@@ -1,4 +1,4 @@
-//// What decoding a capture costs as the session's strand count grows.
+//// What one capture costs as the session's strand count grows.
 ////
 //// A pushed notice makes the lane read a fresh cut and fold it, so the cost
 //// of one cut is paid on every commit while a session streams. Decoding the
@@ -20,6 +20,7 @@
 //// at 1024 cells, so the larger size stays beneath that.
 
 import gleam/erlang/process
+import tui/model as tui_model
 import tui_agents_dev
 
 // Scheduler accounting has no pure Gleam equivalent; the shared test probe
@@ -51,4 +52,22 @@ fn decode_reductions(strands: Int) -> Int {
 pub fn decoding_a_cut_grows_linearly_with_its_strands_test() {
   assert within_linear(decode_reductions(small), decode_reductions(large))
     as "decoding a cut must not scan every cell for each strand"
+}
+
+// Reductions the lane fold spends adopting a changed cut over a model that
+// already holds the previous one, as it does on each pushed notice.
+fn fold_reductions(strands: Int) -> Int {
+  let model: tui_model.Model = tui_agents_dev.scale_model(strands)
+  let captured = tui_agents_dev.scale_capture(strands, 1)
+  let view = tui_agents_dev.scale_decode(captured)
+  let before = reductions(process.self())
+  let folded = tui_agents_dev.scale_apply(model, captured, view)
+  let used = reductions(process.self()) - before
+  assert folded.shared.agent_rows != []
+  used
+}
+
+pub fn folding_a_cut_grows_linearly_with_its_strands_test() {
+  assert within_linear(fold_reductions(small), fold_reductions(large))
+    as "the roster projection must not scan the cut for each strand"
 }
