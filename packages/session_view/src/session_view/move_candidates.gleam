@@ -3,7 +3,10 @@
 ////
 //// A move hands a session on an executor to another orchestrator, which must
 //// reach that executor after the move because the session's workspace stays
-//// where it is. The daemon refuses a destination it does not list, but a
+//// where it is. A session that works in a directory on the asking machine moves
+//// too, when the destination's table names a place for its checkout; the
+//// daemon decides that from its configuration, so the candidates here are
+//// judged for a session on an executor only. The daemon refuses a destination it does not list, but a
 //// person choosing one needs to be told which listed orchestrators would work
 //// before choosing. The terminal prints the answer and the web home draws it,
 //// and both must give the same one, so the rule and its words live here, below
@@ -26,8 +29,8 @@
 //// ## Flow
 ////
 //// `choose` judges each offer in turn, `eligible` lists the destinations that
-//// can be asked for, and `reason_words`, `no_executor_words` and `none_words`
-//// are the fixed words.
+//// can be asked for, and `reason_words`, `no_executor_words`,
+//// `local_session_words` and `none_words` are the fixed words.
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -177,9 +180,11 @@ pub fn reason_words(reason: Reason) -> String {
   }
 }
 
-/// The words for a session that has no Move: why the row offers none. Only a
-/// session on an executor can move, because a local session's checkout is a
-/// directory on this machine, which does not travel.
+/// The words for a session that has no Move on the home page: why the row
+/// offers none. The page offers Move only for a session on an executor, because
+/// which destinations can carry a directory of this machine depends on the
+/// daemon's configuration, which only the command line asks about
+/// (`local_session_words`).
 ///
 /// ## Examples
 ///
@@ -202,4 +207,22 @@ pub fn no_executor_words() -> String {
 /// ```
 pub fn none_words() -> String {
   "No orchestrator can take this session now."
+}
+
+/// The words for a session that works in a directory on this machine, when it
+/// is asked where it can move. Such a session moves when the destination's
+/// `[orchestrators.<name>]` table names `checkout_executor` and
+/// `checkout_workspace`: the directory is captured, checked out on that
+/// executor, and the receiving orchestrator continues there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert move_candidates.local_session_words()
+///   == "This session works in a directory on this machine. It moves to an orchestrator whose [orchestrators.<name>] table names checkout_executor and checkout_workspace; name it with --to."
+/// ```
+pub fn local_session_words() -> String {
+  "This session works in a directory on this machine. It moves to an "
+  <> "orchestrator whose [orchestrators.<name>] table names checkout_executor "
+  <> "and checkout_workspace; name it with --to."
 }

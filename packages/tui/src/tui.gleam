@@ -1666,14 +1666,18 @@ fn sessions_usage() -> String {
   <> "  behind it; retry the create or remove it\n"
   <> "  rm asks for confirmation unless --yes is given, and refuses a\n"
   <> "  session the daemon still holds open; stop it first\n"
-  <> "  move hands a session on an executor to the orchestrator the daemon's\n"
-  <> "  [orchestrators.<name>] table calls <orchestrator>. It returns once the\n"
-  <> "  daemon has accepted the move, which it then carries out; the session\n"
-  <> "  cannot be opened here until the move ends, and afterward it is opened on\n"
-  <> "  the other orchestrator. Without --to it moves nothing and lists which\n"
-  <> "  orchestrators could take the session and why the others cannot, and exits\n"
-  <> "  nonzero. --abandon gives up a move in flight, on a directory member only;\n"
-  <> "  if the receiver has already taken the session the move finishes instead"
+  <> "  move hands a session to the orchestrator the daemon's\n"
+  <> "  [orchestrators.<name>] table calls <orchestrator>. A session on an\n"
+  <> "  executor keeps its checkout there. A session that works in a directory on\n"
+  <> "  this machine moves when that table also names checkout_executor and\n"
+  <> "  checkout_workspace, and is checked out on that executor.\n"
+  <> "  It returns once the daemon has accepted the move, which it then carries\n"
+  <> "  out; the session cannot be opened here until the move ends, and\n"
+  <> "  afterward it is opened on the other orchestrator. Without --to it moves\n"
+  <> "  nothing and lists which orchestrators could take the session and why the\n"
+  <> "  others cannot, and exits nonzero. --abandon gives up a move in flight, on\n"
+  <> "  a directory member only; if the receiver has already taken the session\n"
+  <> "  the move finishes instead"
 }
 
 /// Establishes and coordinates parse deployment operations for the TUI runtime.
@@ -3108,7 +3112,7 @@ fn list_destinations(
 
   // Handle list destinations branch dispatch.
   case executor {
-    None -> Error(session_id <> ": " <> move_candidates.no_executor_words())
+    None -> Error(session_id <> ": " <> move_candidates.local_session_words())
     Some(_) ->
       Error(
         "choose a destination with --to\n"
