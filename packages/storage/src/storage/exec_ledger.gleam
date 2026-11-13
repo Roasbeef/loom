@@ -1914,6 +1914,8 @@ fn workspace_for_attach(
   scope: Scope,
   workspace: String,
 ) -> Result(Scope, Error) {
+  // The bound workspace is always allowed, and another only by a scope that is
+  // closed cleanly and has no tree record.
   case scope.workspace == workspace, scope.state {
     True, _ -> Ok(scope)
     False, Closed(AllRetired) -> {
@@ -1921,6 +1923,8 @@ fn workspace_for_attach(
         connection,
         sql.ledger_worktree(scope.session),
       ))
+
+      // A tree record means a worktree lives in the old workspace.
       case trees {
         [] -> {
           use Nil <- result.map(statement(

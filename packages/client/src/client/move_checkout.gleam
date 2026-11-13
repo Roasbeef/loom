@@ -706,6 +706,8 @@ fn landed(
 /// has to be classified here.
 fn declined(refusal: state_transfer.Refusal) -> Result(Nil, Failure) {
   let words = state_transfer.describe(refusal)
+
+  // A full store may have room later; every other refusal is final.
   case refusal {
     state_transfer.NoRoom(..) -> Error(Unfinished(Sending, words))
     state_transfer.BadState(..)
