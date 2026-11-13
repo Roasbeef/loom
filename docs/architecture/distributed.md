@@ -1015,7 +1015,7 @@ the ledger holds a row for is answered from that row first: a stored outcome is
 returned and an unknown row gets `RunLost`. A key with no row is refused with
 `NoPlane` (or `PlaneBuilding`, while another request is building the plane),
 after the scope's fence has been judged, so a dead runtime hears `StaleToken`
-and never `NoPlane`. The refusal is given before anything is admitted, so it
+and never `NoPlane` or `PlaneBuilding`. The refusal is given before anything is admitted, so it
 proves the call did not start.
 
 The surface answers that refusal itself (`surface.with_plane`). It sends the
@@ -1028,6 +1028,20 @@ executor's reason, and a second `NoPlane` is the answer as it stands. The same
 repair serves `StartExecution`. A session that stays open across an executor
 restart therefore continues without the operator doing anything, and its next
 close finds a plane and a witness, so the scope closes cleanly.
+
+The repair covers what the session's tool calls and background executions need.
+The orchestrator's non-tool callers (imported hooks, goal checks, the worktree
+observations and an operator's abort) send to the executor's broker through a
+subject the owner port holds, and the attach that answers the repair points it at
+the new plane's broker (`Config.attached`, `owner_port.retarget`), so they reach
+the new plane and not the dead one. A close that arrives while the plane is being
+rebuilt is asked again until the build lands (`workspace.request_close`).
+
+Not repaired: evolution and state messages (`ask`, `ask_within`) return the
+refusal, and the generations the old plane built are gone with it. The session's
+clock offset and its executor census are read at open and not again. A job that
+was running on the old plane is gone, and the orchestrator's record of it is not
+reconciled by the repair.
 
 Two paths still end in `UnknownCleanup(0)` and in `loomd executor release`. A
 session that is closed before it makes any call after the restart closes a scope

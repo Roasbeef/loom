@@ -147,6 +147,7 @@ pub fn config(rig: Rig, token_n: Int) -> surface.Config(String) {
     mint_token: fn() {
       bit_array.from_string("token-" <> int.to_string(token_n))
     },
+    attached: fn(_attached) { Nil },
   )
 }
 

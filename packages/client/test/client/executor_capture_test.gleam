@@ -191,6 +191,7 @@ fn attached(plane: Plane) -> surface.Attachment(RemoteCensus) {
         remote_tools: ["fs_write", "fs_read", "bash"],
         attach_within_ms: 120_000,
         mint_token: fn() { token },
+        attached: fn(_attached) { Nil },
       ),
     )
     as "the attach succeeds"

@@ -6,6 +6,7 @@
 //// when the owner port dies. The two-node tests, which lose a real
 //// connection, are in `remote_nodes_test`.
 
+import broker/broker
 import client/escalate
 import client/owner_services
 import client/remote/address
@@ -19,6 +20,7 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam/string
 import machine/operation
 import runtime/effects.{type ToolRun}
@@ -526,7 +528,74 @@ pub fn a_call_in_flight_at_the_restart_is_lost_and_never_run_again_test() {
   let restarted = restart(rig, restart_rig.healthy(rig))
   assert process.receive(outcome, 5000)
     == Ok(effects.ToolFailed(reason: protocol.unknown_outcome_text))
+
+  // That answer came from a host with no plane, where nothing could have run
+  // the call. A fresh call forces the rebuild, and the lost call sent again
+  // with a plane in place is still lost and still ran once.
+  fixtures.release(rig.probe)
+  let fresh = fixtures.tool_run("call_2", 1)
+  assert surface.run(remote, fresh) == fixtures.expected_outcome(fresh)
+  assert surface.run(remote, lost)
+    == effects.ToolFailed(reason: protocol.unknown_outcome_text)
   assert fixtures.run_count(rig.probe, "call_1") == 1
+  stop(restarted)
+}
+
+pub fn a_background_execution_starts_after_the_executor_restarts_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let restarted = restart(rig, restart_rig.healthy(rig))
+  let terms = fixtures.execution_terms()
+  let key = fixtures.execution_key("s1", "first")
+
+  // The execution's key has no row, so the new host refuses it for the missing
+  // plane. The surface builds the plane and starts it once.
+  let answer = surface.start_execution(remote, key, terms, 5000)
+  assert answer
+    == protocol.ExecutionFinished(fixtures.expected_value(key.step, 5000))
+  assert fixtures.run_count(rig.probe, key.step) == 1
+  assert list.length(fixtures.builds(rig.probe)) == 2
+  stop(restarted)
+}
+
+pub fn the_broker_subject_follows_the_executor_to_its_new_plane_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+
+  // The first attach names one broker and the repair names another. The
+  // counter holds a token once the first attach has been answered.
+  let first = process.new_subject()
+  let second = process.new_subject()
+  let counter = process.new_subject()
+  let named =
+    surface.Config(..config(rig, 1), attached: fn(_attached) {
+      case process.receive(counter, 0) {
+        Error(Nil) -> {
+          process.send(counter, Nil)
+          owner_port.retarget(rig.port, first)
+        }
+        Ok(Nil) -> owner_port.retarget(rig.port, second)
+      }
+    })
+  let assert Ok(surface.Attachment(surface: remote, ..)) = surface.attach(named)
+    as "the attach succeeds"
+  let abort = fn() {
+    let handle = broker.over(owner_port.broker(rig.port), clock.fixed(at: 0))
+    broker.abort(handle, fixtures.execution_terms().op_id)
+  }
+
+  // A message to the port's subject reaches the first broker.
+  abort()
+  assert result.is_ok(process.receive(first, 1000))
+
+  // After a restart, the call that repairs the scope attaches again, and the
+  // same subject then reaches the second broker, which the repair named, and
+  // not the first, which belonged to the plane that is gone.
+  let restarted = restart(rig, restart_rig.healthy(rig))
+  let call = fixtures.tool_run("call_1", 0)
+  assert surface.run(remote, call) == fixtures.expected_outcome(call)
+  abort()
+  assert result.is_ok(process.receive(second, 1000))
+  assert process.receive(first, 100) == Error(Nil)
   stop(restarted)
 }
 

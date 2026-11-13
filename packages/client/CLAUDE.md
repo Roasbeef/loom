@@ -7979,13 +7979,19 @@ Invariants that break things when violated:
   rebinds without changing a row, and it builds the plane an executor restart
   lost. `recover` assumes the attach ran, because "no row" means "never started"
   only after it.
-- `NoPlane` may only be told to the scope's current runtime. `host.unplaced`
-  judges the fence (`exec_ledger.current`) before it answers `NoPlane` for a
-  key with no row, so a dead runtime hears `StaleToken` and does not attach
+- `NoPlane` and `PlaneBuilding` may only be told to the scope's current runtime.
+  `host.unplaced` judges the fence (`exec_ledger.current`) before it answers
+  either for a key with no row, so a dead runtime hears `StaleToken` and does not attach
   again, which would take the token from the live one. The repair is tried once
   for each request: a refused repair is the answer, and a second `NoPlane` is
   not repaired again. Not repaired: `ask` and `ask_within` (evolution and state
   messages) and `query`, which return the refusal to their caller.
+- The session's broker handle is `broker.over(owner_port.broker(port), clock)`,
+  not the census's subject. The port forwards to the broker the latest attach
+  named (`surface.Config.attached` calls `owner_port.retarget`, which returns
+  once the port holds it), so after a repair the hooks, goal checks, worktree
+  observations and an operator's abort reach the new plane. Capture no
+  `RemoteCensus.broker` for non-tool callers.
 - A `Run` is idempotent by call key and the host never starts a second run for a
   key. The surface relies on this to re-send after a reconnect; do not re-send
   `Run` anywhere else.

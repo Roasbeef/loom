@@ -8,14 +8,15 @@
 //// it adds over a local call is a story for every way the network can fail
 //// between the send and the answer.
 ////
-//// ## Attach first, once per session open
+//// ## Attach first, with one token per session open
 ////
 //// `attach` mints a fresh random token and sends it with the incarnation. The
-//// host makes that token the scope's only valid one. A session open attaches
-//// once, before its first call, and every strand and every runtime restart
+//// host makes that token the scope's only valid one. A session open mints one
+//// token, before its first call, and every strand and every runtime restart
 //// inside that open shares the one surface and its token (see
-//// `client/remote/workspace`). Attaching again would rotate the token and make
-//// the host refuse another strand's live `Run`.
+//// `client/remote/workspace`). Attaching with a new token would rotate it and
+//// make the host refuse another strand's live `Run`. The only later attach is
+//// the repair below, which repeats the token.
 ////
 //// The token fences an earlier open. An orchestrator that crashed, or an open
 //// that was closed, may leave `Run` messages in flight, and Erlang orders
@@ -28,9 +29,10 @@
 //// building the scope's workspace, uses a new reply subject for each send. A
 //// reply to an earlier send that arrives later, such as the `Attached` of the
 //// build the first send started, stays unread in the mailbox of the process
-//// that called `attach`. There is at most one per send that went unanswered, and
-//// the process is the session open, which ends soon after, so the surface does
-//// not collect them.
+//// that sent the attach: the session open, or for a repair the effect process
+//// of the call that needed it. There is at most one per send that went
+//// unanswered, and either process ends soon after, so the surface does not
+//// collect them.
 ////
 //// ## A restarted executor is attached again, under the same token
 ////
@@ -46,6 +48,12 @@
 //// repair is tried once for each request. A request whose repair is refused
 //// answers with that refusal, and one that meets `NoPlane` a second time answers
 //// with it.
+////
+//// The new plane has a new broker, and `Config.attached` is told each
+//// attach's answer so the session can point its broker subject at it
+//// (`owner_port.retarget`). The repair does not bind the owner port again: the
+//// port's link to the host is made of the host's address and this surface, and
+//// neither changed, so the port's periodic reconciliation reaches the new host.
 ////
 //// Concurrent calls after a restart each repair. The first attach starts the
 //// build. A `Run` that arrives while it is under way is refused `PlaneBuilding`,
@@ -136,6 +144,11 @@ pub type Config(census) {
     /// Mints an attach token: thirty-two bytes from a strong source in
     /// production (`strong_token`), a fixed value in a test.
     mint_token: fn() -> BitArray,
+    /// Told what each successful attach answered, the repair's included, before
+    /// the attach returns. A restarted executor answers with the census of the
+    /// plane it built, so this is how the session learns the executor's new
+    /// broker.
+    attached: fn(Attached(census)) -> Nil,
   )
 }
 
@@ -285,7 +298,11 @@ fn send_attach(
   // This match resolves sent before the surrounding protocol step continues.
   // This match resolves sent before the enclosing validation continues.
   case sent {
-    poll.Answer(value:) -> value
+    poll.Answer(value: Ok(attached)) -> {
+      config.attached(attached)
+      Ok(attached)
+    }
+    poll.Answer(value: Error(refusal)) -> Error(refusal)
 
     // The exchange itself ran out of patience before any answer came.
     poll.Failure(error: Nil) ->
@@ -310,13 +327,9 @@ fn send_attach(
 /// The host builds the plane because it has none, and answers when the build
 /// lands. An executor that did not restart already holds the plane and answers
 /// at once, so the repair is idempotent.
-///
-/// The owner port is bound again, because the executor's old link to it died
-/// with the old VM and the reconciler must list what the new one holds.
 fn reattach(surface: Surface(census)) -> Result(Nil, Refusal) {
-  let config = surface.config
-  use attached <- result.map(send_attach(config, surface.token))
-  owner_port.bind(config.port, host_link(surface), attached.unacked)
+  send_attach(surface.config, surface.token)
+  |> result.replace(Nil)
 }
 
 /// The `run` and `recover` functions to compose into a `ToolSurface`.
@@ -459,18 +472,22 @@ pub fn start_execution(
     })
   }
   let sent =
-    with_plane(surface, send, fn(answer) {
-      case answer {
-        protocol.ExecutionRefused(refusal:) -> lacks_plane(refusal)
-        _ -> False
-      }
-    })
+    with_plane(
+      surface,
+      send,
+      fn(answer) {
+        case answer {
+          protocol.ExecutionRefused(refusal:) -> plane_missing(refusal)
+          _ -> False
+        }
+      },
+      protocol.ExecutionRefused,
+    )
 
   // This match resolves sent before the surrounding protocol step continues.
   // This match resolves sent before the enclosing validation continues.
   case sent {
-    Ok(Planted(answer:)) -> answer
-    Ok(Unplantable(refusal:)) -> protocol.ExecutionRefused(refusal)
+    Ok(answer) -> answer
     Error(Nil) ->
       protocol.ExecutionRefused(protocol.Unreachable(
         "the executor could not be reached",
@@ -652,33 +669,23 @@ fn sent_run(
     })
   }
 
-  with_plane(surface, send, fn(answer) {
-    case answer {
-      protocol.RunRefused(refusal:) -> lacks_plane(refusal)
-      _ -> False
-    }
-  })
-  |> result.map(fn(sent) {
-    case sent {
-      Planted(answer:) -> answer
-      Unplantable(refusal:) -> protocol.RunRefused(refusal:)
-    }
-  })
-}
-
-// What a request that may meet a missing plane came to.
-type Planted(answer) {
-  // The executor's answer, from the first send or the one after the repair.
-  Planted(answer: answer)
-
-  // The repair itself was refused, so the request was never sent again.
-  Unplantable(refusal: Refusal)
+  with_plane(
+    surface,
+    send,
+    fn(answer) {
+      case answer {
+        protocol.RunRefused(refusal:) -> plane_missing(refusal)
+        _ -> False
+      }
+    },
+    protocol.RunRefused,
+  )
 }
 
 /// Whether a refusal says the scope has no usable plane yet: it has none
 /// (`NoPlane`) or another request is building it (`PlaneBuilding`). The host
 /// gives either before it admits anything, so neither means a call started.
-fn lacks_plane(refusal: Refusal) -> Bool {
+fn plane_missing(refusal: Refusal) -> Bool {
   case refusal {
     protocol.NoPlane(..) | protocol.PlaneBuilding -> True
     _ -> False
@@ -694,22 +701,25 @@ fn lacks_plane(refusal: Refusal) -> Bool {
 /// is attempted once. A second `NoPlane` is returned as the answer, because a
 /// plane that vanished again between the repair and the send is a different
 /// fault, and the next call attempts its own repair. The request must be one
-/// the host answers the same way twice, as for `ask`.
+/// the host answers the same way twice, as for `ask`. `lacks_plane` says
+/// whether an answer is the missing-plane refusal, and `refuse` makes the answer
+/// for a repair the executor refused.
 fn with_plane(
   surface: Surface(census),
   send: fn() -> Result(answer, Nil),
   lacks_plane: fn(answer) -> Bool,
-) -> Result(Planted(answer), Nil) {
+  refuse: fn(Refusal) -> answer,
+) -> Result(answer, Nil) {
   use first <- result.try(send())
 
   // This match resolves lacks_plane(first) before the surrounding protocol step continues.
   case lacks_plane(first) {
-    False -> Ok(Planted(first))
+    False -> Ok(first)
     True ->
       // This match resolves reattach(surface) before the surrounding protocol step continues.
       case reattach(surface) {
-        Ok(Nil) -> result.map(send(), Planted)
-        Error(refusal) -> Ok(Unplantable(refusal:))
+        Ok(Nil) -> send()
+        Error(refusal) -> Ok(refuse(refusal))
       }
   }
 }
