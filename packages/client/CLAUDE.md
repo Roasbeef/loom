@@ -3574,7 +3574,7 @@ cannot read `states/`.
   that fell behind how much it missed rather than handing it a
   plausible-looking window, and binary output goes out rather than being
   held back forever waiting for a character boundary.
-- `client/retryconf.{default_policy, unbounded_attempts, parse_policy}` —
+- `client/retryconf.{default_policy, default_request_timeout_ms, unbounded_attempts, parse_policy, parse_request_timeout}` —
   the optional `[retry]` table from the same `loom.toml`, parsed by the
   same strict, total discipline as `[schedules]` and `[jobs]`: unknown
   keys refused, `attempts = 0` refused, a negative delay refused, each
@@ -3588,7 +3588,7 @@ cannot read `states/`.
   place those three numbers live, so the parser cannot drift from the
   runtime default. That default never gives up, so the table is mostly
   for the operator who wants a bounded ladder that fails the run instead
-  of long-polling a provider that is refusing.
+  of long-polling a provider that is refusing. `request_timeout_ms` is a positive integer in milliseconds (default `600_000`, 10 minutes); `serve` applies it to both `http.httpc_transport_with_timeout(request_timeout_ms + 30_000)` and `provider_gateway.with_attempt_timeout`, and sets `wiring.Config.provider_timeout_ms` to `attempt_ms * max_routes + 60_000` so an attempt timeout settles as a retryable `TransportFailed` instead of racing into `runtime`'s `RequestDeadline`.
 - `client/notice.{Work, Delivered, Activity, Due, IdleClock, key_prefix,
   heartbeat_tick_ms, default_heartbeat_ms, key, deliver,
   deliver_to_remote_child, activity, beat,
