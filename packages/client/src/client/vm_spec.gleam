@@ -57,7 +57,7 @@
 ////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
 ////   `--provision` does.
 //// - `guest_name_for` names the guest of a workspace, `ensure_step` decides what
-////   `ensure` does from the facts about it (`guest_state`, `manifest_action`),
+////   the ensure command does from the facts about it (`guest_state`, `manifest_action`),
 ////   `restart_refusal` says when a daemon must restart, and `effective_github`
 ////   keeps the guest's GitHub access across resumes.
 //// - `printable`, `decode_checkouts`, `only_workspace`, `fetch_arguments`,
@@ -3199,23 +3199,40 @@ pub type EnsureStep {
 ///   == vm_spec.AlreadyServing
 /// ```
 pub fn ensure_step(facts: EnsureFacts) -> EnsureStep {
+  // The guest's own state decides first; the rest matters only for a guest
+  // that is not running.
   case facts.state {
     GuestServing(_) -> AlreadyServing
     GuestStarting(pid) -> Refuse(starting_refusal(facts.name, pid))
-    GuestStopped ->
-      case facts.manifest {
-        Error(reason) -> Refuse(reason)
-        Ok(RefuseManifest(reason)) -> Refuse(reason)
-        Ok(action) ->
-          case facts.enrolment, facts.daemon {
-            JoinsLedger, DaemonStopped -> NeedsDaemon
-            _, _ ->
-              case action {
-                InstallRelease(_) -> NeedsSetup
-                _ -> Boot
-              }
-          }
-      }
+    GuestStopped -> stopped_step(facts)
+  }
+}
+
+/// The step for a guest that is not running: a manifest that cannot be used
+/// refuses, a join with no daemon waits for one, and only then does setup or
+/// the boot follow.
+fn stopped_step(facts: EnsureFacts) -> EnsureStep {
+  // A manifest that must be refused ends it before anything else is asked.
+  case facts.manifest {
+    Error(reason) -> Refuse(reason)
+    Ok(RefuseManifest(reason)) -> Refuse(reason)
+    Ok(action) -> usable_step(action, facts.enrolment, facts.daemon)
+  }
+}
+
+/// The step once the manifest is usable or installable: the daemon question
+/// comes before setup so that its answer leaves the disk unchanged.
+fn usable_step(
+  action: ManifestAction,
+  enrolment: EnrolmentNeed,
+  daemon: DaemonFact,
+) -> EnsureStep {
+  // A join with the daemon down is reported first. Otherwise a manifest that
+  // still has to be installed starts setup, and a usable one boots.
+  case enrolment, daemon, action {
+    JoinsLedger, DaemonStopped, _ -> NeedsDaemon
+    _, _, InstallRelease(_) -> NeedsSetup
+    _, _, _ -> Boot
   }
 }
 
@@ -3268,6 +3285,9 @@ pub fn restart_refusal(outcome: DaemonOutcome) -> Result(Nil, String) {
     <> stop_command(pid)
     <> "`"
   }
+
+  // Each outcome that left a daemon running is a sentence of its own; the two
+  // that left none need no restart.
   case outcome {
     NoDaemon | Stopped -> Ok(Nil)
     Holding(pid, sessions) ->

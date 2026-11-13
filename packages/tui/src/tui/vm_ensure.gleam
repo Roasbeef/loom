@@ -100,14 +100,19 @@ pub type Runner =
 ///   == ["vm", "ensure", "--workspace", ".", "--config", "/c/loom.toml"]
 /// ```
 pub fn arguments(options: bootstrap.Options) -> List(String) {
+  // An empty option is the launcher's default, which the server resolves the
+  // same way, so it is passed as the current directory or not at all.
   let directory = case options.workspace {
     "" -> "."
     path -> path
   }
+
+  // The configuration is passed only when the launch named one.
   let config = case options.config {
     "" -> []
     path -> ["--config", path]
   }
+
   list.flatten([["vm", "ensure", "--workspace", directory], config])
 }
 
@@ -155,23 +160,37 @@ pub fn answer(status: Int, output: String) -> Answer {
     |> list.map(string.trim_end)
     |> list.reverse
     |> list.drop_while(fn(line) { line == "" })
+
+  // The last non-blank line is the answer and what precedes it is progress.
   let #(last, before) = case lines {
     [last, ..rest] -> #(last, string.join(list.reverse(rest), "\n"))
     [] -> #("", "")
   }
 
+  // Only the two statuses `ensure` documents have an answer line to read.
   case status {
-    0 ->
-      case parse_line(last) {
-        Ok(guest) -> Ready(guest, before)
-        Error(reason) -> Failed(1, string.trim(output) <> "\n" <> reason)
-      }
-    s if s == daemon_required_status ->
-      case last == daemon_required_line {
-        True -> NeedsDaemon(before)
-        False -> Failed(status, string.trim(output))
-      }
+    0 -> succeeded(last, before, output)
+    s if s == daemon_required_status -> daemon_asked(last, before, output)
     _ -> Failed(status, string.trim(output))
+  }
+}
+
+/// Status zero must end with a guest line the launcher can place a session on.
+fn succeeded(last: String, progress: String, output: String) -> Answer {
+  // A line that is not a guest is the server's fault, and the whole output
+  // goes with the reason.
+  case parse_line(last) {
+    Ok(guest) -> Ready(guest, progress)
+    Error(reason) -> Failed(1, string.trim(output) <> "\n" <> reason)
+  }
+}
+
+/// Status 75 means a missing daemon only when its line says so.
+fn daemon_asked(last: String, progress: String, output: String) -> Answer {
+  // The status alone could be any other failure that happened to exit 75.
+  case last == daemon_required_line {
+    True -> NeedsDaemon(progress)
+    False -> Failed(daemon_required_status, string.trim(output))
   }
 }
 
@@ -202,24 +221,7 @@ pub fn ensure(
   // A missing daemon is the one answer the launcher can repair, once.
   use guest <- result.try(case first {
     Ready(guest, _) -> Ok(guest)
-    NeedsDaemon(_) -> {
-      use Nil <- result.try(
-        start_daemon()
-        |> result.map_error(fn(reason) {
-          Failure(1, "could not start the daemon: " <> reason)
-        }),
-      )
-      use second <- result.try(attempt(options, run, report))
-      case second {
-        Ready(guest, _) -> Ok(guest)
-        NeedsDaemon(_) ->
-          Error(Failure(
-            daemon_required_status,
-            "vm ensure still needs a running daemon after one was started",
-          ))
-        Failed(status, output) -> Error(Failure(status, output))
-      }
-    }
+    NeedsDaemon(_) -> after_daemon(options, run, start_daemon, report)
     Failed(status, output) -> Error(Failure(status, output))
   })
 
@@ -230,8 +232,37 @@ pub fn ensure(
   bootstrap.Options(..options, workspace: "", placement: chosen)
 }
 
-// One run of `ensure`, with its progress shown. A failure to run it at all is a
-// failure with status 1.
+/// Starts the daemon and runs `ensure` once more. The second answer is final:
+/// a second request for a daemon is an error and not a second retry.
+fn after_daemon(
+  options: bootstrap.Options,
+  run: Runner,
+  start_daemon: fn() -> Result(Nil, String),
+  report: fn(String) -> Nil,
+) -> Result(Guest, Failure) {
+  use Nil <- result.try(
+    start_daemon()
+    |> result.map_error(fn(reason) {
+      Failure(1, "could not start the daemon: " <> reason)
+    }),
+  )
+  use second <- result.try(attempt(options, run, report))
+
+  // Only a guest ends it well; the daemon is up now, so asking for it again
+  // would mean it did not take.
+  case second {
+    Ready(guest, _) -> Ok(guest)
+    NeedsDaemon(_) ->
+      Error(Failure(
+        daemon_required_status,
+        "vm ensure still needs a running daemon after one was started",
+      ))
+    Failed(status, output) -> Error(Failure(status, output))
+  }
+}
+
+/// One run of `ensure`, with its progress shown. A failure to run it at all is
+/// a failure with status 1.
 fn attempt(
   options: bootstrap.Options,
   run: Runner,
@@ -245,17 +276,22 @@ fn attempt(
   )
   let read = answer(status, output)
 
-  // Only a run that ends in a guest or the daemon line has progress apart from
-  // its answer; a failure's output is its reason and is reported by the caller.
-  case read {
-    Ready(progress:, ..) | NeedsDaemon(progress:) ->
-      case progress {
-        "" -> Nil
-        text -> report(text)
-      }
-    Failed(..) -> Nil
+  // Nothing to show is not reported as an empty line.
+  case progress_of(read) {
+    "" -> Nil
+    text -> report(text)
   }
+
   read
+}
+
+/// What `ensure` said before its answer. A failure's output is its reason,
+/// which the caller reports, so a failure has no progress of its own.
+fn progress_of(read: Answer) -> String {
+  case read {
+    Ready(progress:, ..) | NeedsDaemon(progress:) -> progress
+    Failed(..) -> ""
+  }
 }
 
 /// Makes the guest ready with the real server, the real daemon resolution and

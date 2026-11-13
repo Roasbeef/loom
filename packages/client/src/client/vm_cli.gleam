@@ -656,6 +656,8 @@ fn use_decision(
   vm_home: String,
   decision: vm_spec.ManifestAction,
 ) -> Result(Manifest, String) {
+  // A usable manifest is used as it is; an installable one is installed and
+  // the installation says why first.
   case decision {
     vm_spec.UseManifest(manifest) -> Ok(manifest)
     vm_spec.RefuseManifest(reason) -> Error(reason)
@@ -765,6 +767,8 @@ fn ensure(options: UpOptions) -> Result(String, EnsureFailure) {
   let line = vm_spec.ensure_line(name, workspace.name)
   use facts <- result.try(ensure_facts(vm_home, options))
 
+  // `ensure_step` is the whole decision; each arm only carries it out and
+  // says which step ran.
   case vm_spec.ensure_step(facts) {
     vm_spec.AlreadyServing -> {
       progress(name, "already serving, nothing to do")
@@ -840,11 +844,31 @@ fn ensure_facts(
   let names = vm_spec.names(name)
   let guest = instance(vm_home, name)
   use state <- result.try(process_state(guest) |> result.map_error(Refused))
+
+  // The record's process is read through its birth marker, so a stale record
+  // is no process, and the node's epmd registration is read beside it.
   let pid = case state {
     Alive(record) -> Some(record.pid)
     NotRunning -> None
   }
-  let registration = case tool("epmd", ["-names"], within: quick_ms) {
+
+  Ok(vm_spec.EnsureFacts(
+    name:,
+    state: vm_spec.guest_state(pid, registration_of(names)),
+    manifest: manifest_decision(vm_home),
+    enrolment: enrolment_need(guest, names, options),
+    daemon: daemon_fact(),
+  ))
+}
+
+/// Whether the host epmd lists the guest's executor node. An epmd that cannot
+/// be run lists nothing, which reads as not registered: a guest that cannot be
+/// confirmed is not claimed to serve.
+fn registration_of(names: vm_spec.Names) -> vm_spec.Registration {
+  let listing = tool("epmd", ["-names"], within: quick_ms)
+
+  // Only a listing that names the node counts.
+  case listing {
     Ok(listing) ->
       case vm_spec.registered_port(listing, names.executor_short) {
         Some(_) -> vm_spec.Registered
@@ -852,19 +876,15 @@ fn ensure_facts(
       }
     Error(_) -> vm_spec.Unregistered
   }
+}
 
-  Ok(
-    vm_spec.EnsureFacts(
-      name:,
-      state: vm_spec.guest_state(pid, registration),
-      manifest: manifest_decision(vm_home),
-      enrolment: enrolment_need(guest, names, options),
-      daemon: case running_fence() {
-        Some(_) -> vm_spec.DaemonRunning
-        None -> vm_spec.DaemonStopped
-      },
-    ),
-  )
+/// Whether the daemon of the default state directory runs.
+fn daemon_fact() -> vm_spec.DaemonFact {
+  // The same observation `join` makes before it enrols a guest.
+  case running_fence() {
+    Some(_) -> vm_spec.DaemonRunning
+    None -> vm_spec.DaemonStopped
+  }
 }
 
 /// Whether bringing this guest up would join an existing ledger deployment.
@@ -878,21 +898,32 @@ fn enrolment_need(
   options: UpOptions,
 ) -> vm_spec.EnrolmentNeed {
   let bundled = bootstrap.path_exists(bundle_file(guest, names.name))
-  let joins = {
+
+  // A guest with bundles resumes, and a guest without them joins only a ledger
+  // deployment in the default file, whose daemon `up` can find.
+  case bundled, holds_ledger_deployment(options) {
+    False, True -> vm_spec.JoinsLedger
+    _, _ -> vm_spec.NeedsNoDaemon
+  }
+}
+
+/// Whether the default configuration holds a ledger deployment. Any other file,
+/// a file that is absent and one that cannot be read or parsed say no: `up`
+/// reports its own reason for the last.
+fn holds_ledger_deployment(options: UpOptions) -> Bool {
+  let state = {
     use #(config, file) <- result.try(config_of(options))
-    let text = case simplifile.read(config) {
-      Ok(text) -> text
-      Error(_) -> ""
-    }
-    case file, vm_spec.deployment_state(text) {
-      DefaultConfigFile, Ok(vm_spec.LedgerDeployment(..)) -> Ok(Nil)
-      _, _ -> Error("no join")
-    }
+    let text = result.unwrap(simplifile.read(config), "")
+    use state <- result.map(
+      vm_spec.deployment_state(text) |> result.replace_error("not parsed"),
+    )
+    #(file, state)
   }
 
-  case bundled, joins {
-    False, Ok(Nil) -> vm_spec.JoinsLedger
-    _, _ -> vm_spec.NeedsNoDaemon
+  // Only the default file is the daemon's, so only it can need the daemon.
+  case state {
+    Ok(#(DefaultConfigFile, vm_spec.LedgerDeployment(..))) -> True
+    _ -> False
   }
 }
 

@@ -520,10 +520,10 @@ pub fn main() {
   }
 }
 
-// `loom --vm`: the guest is made ready before the daemon is resolved and
-// before the alternate screen, so a failure prints on the ordinary terminal and
-// ends with the status `ensure` gave. A launch with no terminal is refused
-// first, so a script never boots a guest for a screen it cannot draw.
+/// Runs `loom --vm`: the guest is made ready before the daemon is resolved and
+/// before the alternate screen, so a failure prints on the ordinary terminal and
+/// ends with the status `ensure` gave. A launch with no terminal is refused
+/// first, so a script never boots a guest for a screen it cannot draw.
 fn interactive_vm(options: bootstrap.Options, record: String) -> Nil {
   case ffi_terminal.require_terminal() {
     Error(reason) -> rejected_launch(reason)
@@ -1479,9 +1479,9 @@ fn parse_terminal_launch(arguments: List(String)) -> Launch {
   }
 }
 
-// What `--vm` cannot be combined with, each with the one line that says why.
-// Each of these chooses where the session lives, and `--vm` chooses it itself:
-// the guest of this workspace.
+/// What `--vm` cannot be combined with, each with the one line that says why.
+/// Each of these chooses where the session lives, and `--vm` chooses it itself:
+/// the guest of this workspace.
 fn vm_refusals() -> List(#(String, String)) {
   [
     #(
@@ -1503,9 +1503,9 @@ fn vm_refusals() -> List(#(String, String)) {
   ]
 }
 
-// The words of a `--vm` launch, with the switch already taken out. `--workspace`
-// stays the directory it is for a plain launch: it is the workspace the guest
-// serves, not a registered name.
+/// The words of a `--vm` launch, with the switch already taken out.
+/// `--workspace` stays the directory it is for a plain launch: it is the
+/// workspace the guest serves, not a registered name.
 fn parse_vm_launch(arguments: List(String)) -> Launch {
   let refused =
     list.find(vm_refusals(), fn(refusal) { list.contains(arguments, refusal.0) })
