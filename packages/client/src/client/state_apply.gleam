@@ -874,6 +874,8 @@ fn create_ref(
       state.tip,
       string.repeat("0", string.length(state.tip)),
     ])
+
+  // The ref was made, or another apply made it, or it is a refusal to report.
   case made {
     Ok(_) -> Ok(ref)
     Error(reason) ->

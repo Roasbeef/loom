@@ -1026,6 +1026,7 @@ fn ended_unless_asks_again(
   parent: Parent,
   name: String,
 ) -> SpawnRefusal {
+  // A refusal that asks the sender to come again leaves the session for that ask.
   case seed_landing.asks_again(refusal) {
     True -> refusal
     False -> {

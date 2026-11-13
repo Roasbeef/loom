@@ -275,6 +275,8 @@ fn aged(path: String, retain_s: Int, now_s: Int) -> Bool {
     string.ends_with(path, ".copy")
     || string.ends_with(path, ".verdict")
     || string.ends_with(path, ".joined")
+
+  // Only a file of those kinds, whose age can be read, is old.
   case kept_kind, simplifile.file_info(path) {
     True, Ok(info) -> now_s - info.mtime_seconds > retain_s
     _, _ -> False
@@ -746,6 +748,7 @@ fn working(
     | []
     | [_, _, ..] -> unanswered(copy.home, known)
   }
+
   let verdict = bounded(verdict, known, copy.home, states)
 
   // The verdict is kept before the claim is let go, so no join finds the claim
@@ -778,6 +781,8 @@ fn bounded(
   states: Option(SessionStates),
 ) -> Verdict {
   let now = ffi_os.system_time_ms() / 1000
+
+  // The wait began at the first verdict that was not final, or begins now.
   let began = case known {
     Some(Verdict(outcome: Waiting(since:), ..))
       | Some(Verdict(outcome: Captured(since:, ..), ..))
@@ -785,6 +790,7 @@ fn bounded(
     -> since
     _ -> now
   }
+
   let expired = home == Session && now - began >= give_up_s
 
   // The waiting began at the first verdict, and a wait that has run its course ends
@@ -801,6 +807,7 @@ fn bounded(
 
 /// The sentence for commits given up on after `give_up_s`, with where they are.
 fn gave_up(states: Option(SessionStates)) -> String {
+  // The executor and the branch are named when the session's record is in hand.
   let where = case states {
     Some(held) ->
       " on the executor `"
@@ -810,6 +817,7 @@ fn gave_up(states: Option(SessionStates)) -> String {
       <> "`"
     None -> " on the executor"
   }
+
   "the machine the child ran on could not return its commits within "
   <> int.to_string(give_up_s / 60)
   <> " minutes. They are still in the child's workspace"

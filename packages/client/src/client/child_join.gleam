@@ -265,6 +265,7 @@ fn refused(
   refusal: SpawnRefusal,
   within_ms: Int,
 ) -> List(Joined) {
+  // Whether the refusal asks to come again decides between waiting and failing.
   case seed_landing.asks_again(refusal) {
     True -> {
       log.warn(logger, "child_join.refused_for_now", [

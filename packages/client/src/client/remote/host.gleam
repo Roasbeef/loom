@@ -1034,6 +1034,7 @@ fn reported(
 ) -> Nil {
   let _worker =
     process.spawn_unlinked(fn() {
+      // Every way the run can end is an answer to the requests waiting for it.
       let answer = case weft.new([compute]) |> weft.start {
         [weft.Completed(value:, ..)] -> Ok(value)
         [weft.Failed(error:, ..)] -> Error(error)
@@ -1046,6 +1047,7 @@ fn reported(
         | [_, _, ..] ->
           Error(protocol.ExecutorFault("the apply run ended without an answer"))
       }
+
       process.send(inbox, ApplyFinished(key:, answer:))
     })
   Nil
