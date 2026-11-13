@@ -3756,13 +3756,13 @@ fn visited(
   case visit {
     None -> held
     Some(server.Visit(session:, ..)) -> fn(ref, position) {
-      case held(ref, position) {
-        Ok(transcript_image.Image("image/png", _)) ->
+      case held(ref, position), ref, position {
+        Ok(transcript_image.Image("image/png", _)), "1.0", 0 ->
           Ok(transcript_image.Image(
             "image/png",
             bit_array.base64_encode(<<png_bytes:bits, session:utf8>>, True),
           ))
-        other -> other
+        other, _, _ -> other
       }
     }
   }
