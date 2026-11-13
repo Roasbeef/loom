@@ -48,6 +48,9 @@
 //// 4. `recents`, `folders_offered`, `sentence` and the label functions are the
 ////    pure parts the view draws from.
 
+import core/agency_limits.{
+  type AgencyLimits, AgencyLimits, BoundedDepth, UnlimitedDepth,
+}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -214,6 +217,31 @@ pub type Typed {
   )
 }
 
+/// Whether the optional subagent limits disclosure is open in the composer.
+pub type LimitsDisclosure {
+  LimitsClosed
+  LimitsOpen
+}
+
+/// Raw text fields submitted by the optional subagent limits disclosure.
+pub type LimitsInput {
+  LimitsInput(
+    fan_out: String,
+    session_strands: String,
+    depth_mode: String,
+    depth_cap: String,
+  )
+}
+
+/// Empty limits input inheriting every daemon/Agency default.
+pub const default_limits_input =
+  LimitsInput(
+    fan_out: "",
+    session_strands: "",
+    depth_mode: "default",
+    depth_cap: "",
+  )
+
 /// The composer's state.
 pub type State {
   State(
@@ -236,6 +264,8 @@ pub type State {
     /// its first message, until the person opens it. It is the daemon's text and
     /// is never drawn.
     unsent: Option(String),
+    /// Whether the optional subagent limits disclosure is expanded.
+    limits: LimitsDisclosure,
   )
 }
 
@@ -270,6 +300,12 @@ pub type Msg {
   /// session by its first line and, when it is not empty, is sent to the new
   /// session as its first user message. It is bounded here and never drawn.
   Started(prompt: String, typed: Typed)
+
+  /// Toggle the optional subagent limits disclosure on the local machine.
+  ToggledLimits
+
+  /// Submit the composer carrying optional subagent limits fields.
+  StartedWithLimits(prompt: String, typed: Typed, limits: LimitsInput)
 
   /// The "Open the session" button, drawn after a creation whose first message
   /// was not sent: depart for the session the daemon kept.
@@ -307,6 +343,8 @@ pub type Intent {
     prompt: String,
     /// The profile and model.
     roles: creations.Roles,
+    /// Optional per-session subagent limits (`protocol-change/112`).
+    agency: AgencyLimits,
   )
 
   /// Ask the daemon to start a session on another orchestrator and send it its
@@ -398,6 +436,7 @@ pub fn new() -> State {
     sending: Ready,
     refusal: None,
     unsent: None,
+    limits: LimitsClosed,
   )
 }
 
@@ -429,7 +468,11 @@ pub fn update(
     ChoseProfile(profile:) -> #(chose_profile(state, offers, profile), Stay)
     ChoseModel(model:) -> #(chose_model(state, offers, model), Stay)
     Searched(text:) -> #(searched(state, text), Stay)
-    Started(prompt:, typed:) -> started(state, offers, recent, prompt, typed)
+    ToggledLimits -> #(toggled_limits(state), Stay)
+    Started(prompt:, typed:) ->
+      started(state, offers, recent, prompt, typed, default_limits_input)
+    StartedWithLimits(prompt:, typed:, limits:) ->
+      started(state, offers, recent, prompt, typed, limits)
     OpenedUnsent ->
       case state.unsent {
         Some(path) -> #(state, Depart(path))
@@ -845,8 +888,17 @@ fn toggled(state: State, chip: Chip) -> #(State, Intent) {
 /// the lists it is judged against are the new machine's, which the caller builds
 /// once the agent has changed (`kept`).
 fn chose_agent(state: State, offers: Offers, agent: Agent) -> State {
+  // Refuse an agent row that was not offered.
   case choosable(offers, agent) {
-    True -> State(..state, agent:, open: Shut, search: "", refusal: None)
+    True -> {
+      // Collapse the local-only limits disclosure when leaving the local daemon.
+      let limits = case agent {
+        Here -> state.limits
+        Orchestrator(_) -> LimitsClosed
+      }
+
+      State(..state, agent:, open: Shut, search: "", refusal: None, limits:)
+    }
     False -> state
   }
 }
@@ -981,7 +1033,9 @@ fn started(
   recent: List(Recent),
   prompt: String,
   typed: Typed,
+  limits: LimitsInput,
 ) -> #(State, Intent) {
+  // Validate target, roles, prompt size, typed place, and optional limits.
   case
     state.sending,
     chosen(state, offers, recent),
@@ -994,19 +1048,84 @@ fn started(
         in_list(offers.profiles, state.roles.profile)
         && in_list(offers.models, state.roles.model),
         string.byte_size(prompt) > prompt_limit,
-        place(target, typed)
+        place(target, typed),
+        parse_limits(limits)
       {
-        False, _, _ -> #(State(..state, refusal: Some(roles_gone)), Stay)
-        True, True, _ -> #(State(..state, refusal: Some(too_long)), Stay)
-        True, False, Error(words) -> #(
+        False, _, _, _ -> #(State(..state, refusal: Some(roles_gone)), Stay)
+        True, True, _, _ -> #(State(..state, refusal: Some(too_long)), Stay)
+        True, False, Error(words), _ -> #(
           State(..state, refusal: Some(words)),
           Stay,
         )
-        True, False, Ok(place) -> #(
+        True, False, Ok(_), Error(_) -> #(
+          State(
+            ..state,
+            refusal: Some(creations.reason_words(creations.InvalidLimits)),
+          ),
+          Stay,
+        )
+        True, False, Ok(place), Ok(agency) -> #(
           State(..state, sending: Out, refusal: None, unsent: None),
-          to_create(state.agent, place, prompt, state.roles),
+          to_create(state.agent, place, prompt, state.roles, agency),
         )
       }
+  }
+}
+
+/// Toggle the subagent limits disclosure when targeting the local machine.
+fn toggled_limits(state: State) -> State {
+  // Only local sessions expose configurable agency limits.
+  case state.agent, state.limits {
+    Here, LimitsClosed -> State(..state, limits: LimitsOpen, open: Shut)
+    Here, LimitsOpen -> State(..state, limits: LimitsClosed)
+    Orchestrator(_), _ -> state
+  }
+}
+
+/// Parses and validates optional subagent limit fields from the composer form.
+pub fn parse_limits(input: LimitsInput) -> Result(AgencyLimits, String) {
+  use fan_out <- result.try(parse_optional_limit_int(input.fan_out))
+  use session_strands <- result.try(parse_optional_limit_int(
+    input.session_strands,
+  ))
+  use depth_cap <- result.try(parse_depth_input(
+    input.depth_mode,
+    input.depth_cap,
+  ))
+  agency_limits.validate(AgencyLimits(fan_out:, session_strands:, depth_cap:))
+}
+
+/// Parses an optional positive integer field from trimmed form text.
+fn parse_optional_limit_int(raw: String) -> Result(Option(Int), String) {
+  case string.trim(raw) {
+    "" -> Ok(None)
+    text ->
+      result.map(int.parse(text), Some)
+      |> result.replace_error("expected integer")
+  }
+}
+
+/// Parses depth mode and optional numeric cap into DepthCap override.
+fn parse_depth_input(
+  mode: String,
+  cap_raw: String,
+) -> Result(Option(agency_limits.DepthCap), String) {
+  let cap_text = string.trim(cap_raw)
+
+  // Dispatch on the selected depth mode.
+  case string.trim(mode) {
+    "" | "default" ->
+      case cap_text {
+        "" -> Ok(None)
+        other ->
+          result.map(int.parse(other), fn(n) { Some(BoundedDepth(n)) })
+          |> result.replace_error("expected integer depth")
+      }
+    "bounded" ->
+      result.map(int.parse(cap_text), fn(n) { Some(BoundedDepth(n)) })
+      |> result.replace_error("expected integer depth")
+    "unlimited" -> Ok(Some(UnlimitedDepth))
+    _ -> Error("invalid depth mode")
   }
 }
 
@@ -1017,7 +1136,9 @@ fn to_create(
   place: creations.Place,
   prompt: String,
   roles: creations.Roles,
+  agency: AgencyLimits,
 ) -> Intent {
+  // Dispatch between local and relayed session creation.
   case agent {
     Here ->
       Create(
@@ -1025,6 +1146,7 @@ fn to_create(
         name: session_name(prompt),
         prompt: string.trim(prompt),
         roles:,
+        agency:,
       )
     Orchestrator(name:) ->
       CreateOn(orchestrator: name, place:, prompt: string.trim(prompt), roles:)
