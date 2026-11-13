@@ -83,6 +83,8 @@ import tui/daemon/protocol
 import tui/daemon/selection
 import tui/internal/ffi_terminal
 import tui/placement
+import tui/vm_ensure
+import tui/workspace as session_workspace
 import weft/poll
 
 /// Exit status when arguments were refused before any work began.
@@ -113,6 +115,17 @@ pub type Retention {
   KeepSession
 }
 
+/// Where the session's tools run.
+pub type Tools {
+  /// On the daemon's own host, in the workspace directory.
+  OnThisMachine
+
+  /// In the workspace's microVM guest (`--vm`). `execute` makes the guest ready
+  /// (`tui/vm_ensure`) and creates the session with the executor placement
+  /// that answer names, as `--executor E --workspace W` would.
+  InTheGuest
+}
+
 /// What the command line asked for.
 pub type Request {
   Request(
@@ -129,6 +142,8 @@ pub type Request {
     model: Option(String),
     /// Whether the session is stopped at exit.
     retention: Retention,
+    /// Where the session's tools run.
+    tools: Tools,
   )
 }
 
@@ -250,6 +265,7 @@ pub fn parse(arguments: List(String)) -> Result(Request, String) {
       timeout_ms: default_timeout_seconds * 1000,
       model: None,
       retention: StopAtExit,
+      tools: OnThisMachine,
     )
   use request <- result.try(parse_words(arguments, start))
 
@@ -272,6 +288,7 @@ fn parse_words(
     ["--keep", ..rest] ->
       parse_words(rest, Request(..request, retention: KeepSession))
     ["--json", ..rest] -> parse_words(rest, request)
+    ["--vm", ..rest] -> parse_words(rest, Request(..request, tools: InTheGuest))
     [flag] -> Error("missing value for " <> flag)
     [flag, value, ..rest] -> {
       use request <- result.try(apply_flag(request, flag, value))
@@ -562,6 +579,32 @@ fn render_model(model: Option(strand.ModelIdentity)) -> json.JsonValue {
 /// // let status = run.execute(request)
 /// ```
 pub fn execute(request: Request) -> Int {
+  // A guest is made ready before the daemon is reached, as `loom --vm` does it
+  // (`tui/vm_ensure` says why that order). A guest that cannot be made ready
+  // means no session could be made, which is status 1, the same as a refused
+  // creation, whatever status `ensure` itself ended with.
+  case ready(request) {
+    Ok(request) -> finish(request)
+    Error(reason) -> {
+      io.println_error("loom run: " <> reason)
+      1
+    }
+  }
+}
+
+/// The request with the guest made ready when `--vm` asked for one.
+fn ready(request: Request) -> Result(Request, String) {
+  case request.tools {
+    OnThisMachine -> Ok(request)
+    InTheGuest ->
+      vm_ensure.launch(request.options, io.println_error)
+      |> result.map(fn(options) { Request(..request, options:) })
+      |> result.map_error(fn(failure) { failure.reason })
+  }
+}
+
+/// Runs the request and prints what it produced.
+fn finish(request: Request) -> Int {
   // The conducted outcome decides what is printed and which status is returned.
   case conduct(request) {
     NoDaemon(reason:) -> {
@@ -665,13 +708,6 @@ fn create_target(
   host: selection.Host,
 ) -> Result(selection.Target, String) {
   let options = request.options
-  use workspace <- result.try(
-    host_bootstrap.canonical_directory(case options.workspace {
-      "" -> "."
-      path -> path
-    })
-    |> result.map_error(fn(reason) { "resolve workspace: " <> reason }),
-  )
   use configuration <- result.try(bootstrap.session_configuration(options))
   let key =
     "loom-run-"
@@ -679,15 +715,51 @@ fn create_target(
     <> "-"
     <> int.to_string(host_bootstrap.system_time_ms())
 
+  // The workspace is a directory here unless the request is placed on an
+  // executor, whose registered name goes to the daemon as it is, never
+  // resolved on this machine, with the name the terminal gives such a session.
+  use #(workspace, name, executor, pool) <- result.try(case options.placement {
+    placement.OnExecutor(executor:, workspace: registered) ->
+      Ok(#(
+        registered,
+        session_workspace.session_name(session_workspace.Context(
+          registered,
+          None,
+        )),
+        executor,
+        "",
+      ))
+    placement.InPool(pool:, workspace: registered) ->
+      Ok(#(
+        registered,
+        session_workspace.session_name(session_workspace.Context(
+          registered,
+          None,
+        )),
+        "",
+        pool,
+      ))
+    placement.OnThisHost -> {
+      use directory <- result.map(
+        host_bootstrap.canonical_directory(case options.workspace {
+          "" -> "."
+          path -> path
+        })
+        |> result.map_error(fn(reason) { "resolve workspace: " <> reason }),
+      )
+      #(directory, bootstrap.workspace_name(directory), "", "")
+    }
+  })
+
   selection.create_named(
     host,
     key,
     workspace,
-    bootstrap.workspace_name(workspace),
+    name,
     configuration,
     options.profile,
-    "",
-    "",
+    executor,
+    pool,
   )
 }
 

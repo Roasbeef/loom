@@ -14,6 +14,7 @@ import qcheck
 import tui
 import tui/bootstrap
 import tui/placement
+import tui/run
 import tui/vm_ensure
 
 const seed = 1114
@@ -62,6 +63,33 @@ pub fn each_conflicting_flag_is_refused_with_its_reason_test() {
 pub fn a_plain_launch_is_not_a_vm_launch_test() {
   let assert Error(_) = tui.launch_vm([])
   let assert Error(_) = tui.launch_vm(["--executor", "box", "--workspace", "a"])
+}
+
+// --- loom run -p --vm ------------------------------------------------------------
+
+pub fn run_runs_on_this_machine_without_the_switch_test() {
+  let assert Ok(request) = tui.launch_run(["run", "-p", "hi"])
+  assert request.tools == run.OnThisMachine
+}
+
+pub fn run_takes_vm_anywhere_among_its_flags_test() {
+  let assert Ok(request) =
+    tui.launch_run([
+      "run", "--vm", "-p", "hi", "--workspace", "/src/proj", "--timeout", "30",
+    ])
+  assert request.tools == run.InTheGuest
+  assert request.options.workspace == "/src/proj"
+  assert request.prompt == "hi"
+
+  let assert Ok(last) = tui.launch_run(["run", "-p", "hi", "--vm"])
+  assert last.tools == run.InTheGuest
+}
+
+pub fn run_still_refuses_what_it_never_took_test() {
+  // `run` has no way to name an executor, so `--vm` is the only route to one.
+  let assert Error(reason) =
+    tui.launch_run(["run", "-p", "hi", "--executor", "box"])
+  assert string.contains(reason, "unknown run option --executor")
 }
 
 // --- what the server is asked ------------------------------------------------------
