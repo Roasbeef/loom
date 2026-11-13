@@ -4080,18 +4080,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
 // for the next pull, which its own hint has already queued. Reading it now
 // could advance the high-water past a strand this roster left out.
 type Roster {
-  Roster(
-    inspect: List(String),
-    fallback: String,
-    horizon: Option(Int),
-    remainder: Remainder,
-  )
-}
-
-// Whether history above a roster's horizon is still waiting for a pull.
-type Remainder {
-  Caught
-  More
+  Roster(inspect: List(String), fallback: String, horizon: Option(Int))
 }
 
 // The last seq a roster owns, for the scans of its pull.
@@ -4101,12 +4090,7 @@ fn through_of(roster: Roster) -> Option(Int) {
 
 /// Every strand of the session, owning every seq.
 fn full_roster(strands: List(String)) -> Roster {
-  Roster(
-    inspect: strands,
-    fallback: first_or_main(strands),
-    horizon: None,
-    remainder: Caught,
-  )
+  Roster(inspect: strands, fallback: first_or_main(strands), horizon: None)
 }
 
 fn first_or_main(strands: List(String)) -> String {
@@ -4134,10 +4118,12 @@ fn below(horizon: Option(Int), seq: Int) -> Bool {
 ///
 /// The capture covers a window of `pull_window` seqs. Every write has its own
 /// seq, so a window holds at most that many cells and the metadata cell limit
-/// cannot refuse it however fast the writers ran; history beyond the window
-/// is `More`, and the pull that read the window queues the next. A failed
-/// capture inspects every strand with no horizon, which is the pull as it was
-/// and costs what the session's strand count costs, once.
+/// cannot refuse it however fast the writers ran. A backlog past the window
+/// is not paged: a capped entry scan cannot see the current leaf of a strand
+/// that kept appending beyond it, so the pull would misattribute that
+/// strand's entries for good. It inspects every strand with no horizon
+/// instead, which is the pull as it was and costs what the session's strand
+/// count costs, once per backlog that long. A failed capture does the same.
 fn pull_roster(state: State, hw: Int) -> Roster {
   // The first strand's configuration rides along because the roster has to
   // name the fallback strand, which is the least name in the session and
@@ -4190,14 +4176,14 @@ fn changed_roster(state: State, cut: snapshot.Cut, through: Int) -> Roster {
     |> list.sort(string.compare)
     |> first_or_main
 
-  // A cut that ends past the window leaves history for another pull. The
-  // roster then owns only the window, so nothing beyond it is emitted early.
-  let #(horizon, remainder) = case through < cut.next_seq - 1 {
-    True -> #(through + 1, More)
-    False -> #(cut.next_seq, Caught)
+  // A cut that ends past the window abandons windowing. Branch claims read
+  // each strand's current leaf, and a strand still appending beyond `through`
+  // has a leaf the capped scan never reaches, so its entries inside the window
+  // would fall to their parents and keep that attribution forever.
+  case through < cut.next_seq - 1 {
+    True -> full_roster(strand_names(state))
+    False -> Roster(inspect: names, fallback:, horizon: Some(cut.next_seq))
   }
-
-  Roster(inspect: names, fallback:, horizon: Some(horizon), remainder:)
 }
 
 // The registers a strand's events are read from.
@@ -4284,12 +4270,7 @@ fn pull(state: State) -> #(State, List(Emit)) {
   let state =
     State(..state, high_water:, live:, entry_strand:, register_cursor:)
 
-  // History past the roster's window is read by a pull queued behind the
-  // mailbox, so a long backlog never holds the hub in one pull.
-  case roster.remainder {
-    Caught -> #(state, emits)
-    More -> #(hinted(state), emits)
-  }
+  #(state, emits)
 }
 
 /// Opens a session's gateway at the end of its history: the same `high_water`,
