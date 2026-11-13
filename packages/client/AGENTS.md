@@ -1641,8 +1641,9 @@ gitconfig, and shows that `amend` and `rebase` keep an existing author while the
 pinned name becomes the committer. `protocol/models/state-transfer` is the P model
 of the drop and restart cases, and `protocol/models/seeded-spawn` is the P model of a
 seeded spawn from the ask to the pull of the commits, with its mutants.
-`seed_landing_model_test` is the `statem` model of the order `spawn_seed.land` takes
-its steps in, with qcheck properties for `delegate_key`.
+`seed_landing_model_test` is the `statem` model of the decisions `seed_landing` takes in the
+order `spawn_seed.land` takes its steps (it does not call `spawn_seed`), with a qcheck
+property for `delegate_key`.
 
 `git_identity.resolve` reads the source's effective name/email, while `publish`
 projects only those two values through the existing descriptor-confined helper.
@@ -1756,8 +1757,12 @@ only its commits.
   tip, a refusal when `HEAD` does not descend from it or the directory is not a primary
   checkout at its own path). `sent` pushes the bundle with `state_transfer.send` over
   `state_link.via_port` to the spawner's node; `Silent` and `Stalled` keep the captured
-  state in the verdict (`Captured`) for the next join, `max_attempts` (5) of them make a
-  final refusal, and a decline or a lost state is final at once. A verdict carries the
+  state in the verdict (`Captured`) for the next join. A decline that the same bytes get
+  again is final at once; one that passes (no room, a piece out of place), a fault that
+  may pass and the deadline are tried again (`seed_landing.of_declined`). `max_attempts`
+  (5) tries make a final refusal for a child in a directory only: a child in a session of
+  its own is never given up on, because giving up ends its session and the commits still
+  on the executor, and stays unfinished until its run ends or its parent is deleted. A verdict carries the
   outcome, whether the copy had uncommitted changes (`status --porcelain` in the jail),
   and the attempts. `amend` sets `Joined.state` on a return and appends fixed sentences
   to the report for no commits, a refusal and uncommitted work. A return never fails
@@ -1800,8 +1805,8 @@ such child runs in a delegate session of its own, and its workspace is its workt
   spawn), `open` (an existing session or `None`, never creates), `resident` (the session
   of a child only when it is open and resident, for a read or a message, so a closed
   session is not reopened), `live` (a parent's resident children, for the end of a run)
-  and `release`. The request key of a session is `delegate_key.key`, which `parse` reads
-  back and refuses when damaged. `releaser` walks the pair and
+  and `release`. The request key of a session is `delegate_key.key`, which names the pair's
+  session and each child's without collision. `releaser` walks the pair and
   every child. The child's name is `spawn_seed.name_of(site, state)`.
 - *Session record.* `session_states.SessionStates` (link to the executor's store, `fit`
   from the attach census, `apply`, `capture`) is built by `remote/workspace.states_over`
@@ -1827,18 +1832,28 @@ such child runs in a delegate session of its own, and its workspace is its workt
   Agency's `spawn` only after `land` returned `Ok`, in the session `Landed.session` names,
   and releases that session (`unstarted_ended`) when the Agency refuses for good.
 - *Join and return.* `spawn_return.Returning.session_of` reads the record (`Copy.home`,
-  `Directory` or `Session`; absent is `Directory`) to say which session holds a handle.
+  `Directory` or `Session`) and answers `Whereabouts`: `Unseeded` (no record), `OwnSession`
+  or `Unreadable` (a record that is there and does not read, which leaves the child
+  `Pending` and its session kept and is never taken for unseeded).
   `child_join.join` asks the pair's session once for its handles and each child's own
   session in a task of its own (`weft`, one deadline), settles each entry with the
-  session's `SessionStates`, and releases a child's session when its entry is `Ready` and
-  `owed` is zero. For a `Session` home `found_in_session` calls `states.capture(Thin(sent
+  session's `SessionStates`, keeps the settled `Ready` entry (`Returning.keep`, in
+  `seed-returns/<key>.joined` as `joined_record` text) and releases a child's session when
+  the entry is `Ready` and `owed` is zero. A join that finds the session gone, or being
+  released, answers from the kept entry (`Returning.kept`), so a join asked again gets the
+  same answer; one group's refusal is that group's (`InvalidArgument` and `ParentRunEnded`
+  answer the child as failed with the reason, any other leaves it `Pending`). The work that
+  outlives its asker (`placed`, `applied`, `attempt`) is started by `outliving.wait_for`.
+  The executor's `host.apply_state` joins a second `StateApply` for a state being applied
+  to a scope to the run in progress. For a `Session` home `found_in_session` calls `states.capture(Thin(sent
   tip), CommittedOnly)` (`committed`: `Waiting` verdict on `Later`, a fixed refusal on
   `Final`), then `pulled` (`state_transfer.pull` into the node's endpoint, then the usual
   `sent`). `main.spawn_host_seeding` routes `send`, `resolve` and `history` by
   `session_of` and adds the live children to `run_ended`.
-- *Limits.* Uncommitted changes in an executor child's tree are not reported; a join after
-  the child's session was released is refused; a spawn delayed past its run's end is not
-  fenced for a child's session.
+- *Limits.* Uncommitted changes in an executor child's tree are not reported, and the
+  report says so (`session_tree_note`); a spawn delayed past its run's end is not fenced for
+  a child's session; a child stopped at its run's end keeps its session, because a join can
+  still return its commits.
 
 Tests: `workspace_gate_test` (overlap, concurrent file writes, drain refusal, stuck
 capture released and refused, dead holders), `state_return_apply_test` (the apply and its
