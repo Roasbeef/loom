@@ -107,7 +107,9 @@ func installHint(goos string) string {
 			"`brew tap libkrun/krun`), or pass --lib-dir"
 	}
 
-	return "install your distribution's libkrun package, or pass --lib-dir"
+	return "build libkrun with `make vmm-libkrun` (Ubuntu ships none) and pass " +
+		"--lib-dir packages/vmm/build/libkrun/lib64, or pass --lib-dir for " +
+		"another libkrun"
 }
 
 // selfPath is the absolute, symlink-resolved path of the running binary,

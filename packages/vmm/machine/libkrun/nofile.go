@@ -24,12 +24,32 @@ const minNofile = 65536
 func nofileSoft(hard uint64) (uint64, error) {
 	if hard < minNofile {
 		return 0, fmt.Errorf("the open-file hard limit is %d and a guest needs "+
-			"%d: libkrun keeps a descriptor open per guest inode; raise it "+
-			"(ulimit -Hn, or LimitNOFILE= under systemd) and start again",
-			hard, minNofile)
+			"%d: libkrun keeps a descriptor open per guest inode. A hard "+
+			"limit needs privilege to raise: run `sudo prlimit --pid $$ "+
+			"--nofile=%d:%d` in this shell, add a `hard nofile` line to "+
+			"/etc/security/limits.conf and log in again, or set "+
+			"LimitNOFILE= for a systemd unit",
+			hard, minNofile, minNofile, minNofile)
 	}
 
 	return hard, nil
+}
+
+// checkNofile reads this process's open-file limit and returns it with the
+// soft limit nofileSoft chooses, or the refusal. Probe asks it too, so that
+// `loom-vm probe` and `doctor` do not call usable a host where Start refuses.
+func checkNofile() (syscall.Rlimit, uint64, error) {
+	var lim syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
+		return lim, 0, fmt.Errorf("libkrun: read the open-file limit: %w", err)
+	}
+
+	soft, err := nofileSoft(lim.Max)
+	if err != nil {
+		return lim, 0, fmt.Errorf("libkrun: %w", err)
+	}
+
+	return lim, soft, nil
 }
 
 // raiseNofile applies nofileSoft to this process, which the runner inherits.
@@ -44,14 +64,9 @@ func raiseNofile() error {
 		return nil
 	}
 
-	var lim syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
-		return fmt.Errorf("libkrun: read the open-file limit: %w", err)
-	}
-
-	soft, err := nofileSoft(lim.Max)
+	lim, soft, err := checkNofile()
 	if err != nil {
-		return fmt.Errorf("libkrun: %w", err)
+		return err
 	}
 
 	lim.Cur = soft

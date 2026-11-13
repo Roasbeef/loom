@@ -89,6 +89,12 @@ func (b *Backend) Probe(_ context.Context) machine.Probe {
 		return machine.Probe{Available: machine.Unusable, Reason: reason}
 	}
 
+	if runtime.GOOS == "linux" {
+		if _, _, err := checkNofile(); err != nil {
+			return machine.Probe{Available: machine.Unusable, Reason: err.Error()}
+		}
+	}
+
 	if b.cfg.RunnerPath == "" {
 		return machine.Probe{
 			Available: machine.Unusable,

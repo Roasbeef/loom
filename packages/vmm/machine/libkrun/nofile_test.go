@@ -11,7 +11,11 @@ import (
 // runner never starts below what the hard limit allows. The seed is fixed so
 // that a failure reproduces.
 func TestNofileSoftProperty(t *testing.T) {
-	prop := func(hard uint64) bool {
+	// The hard limit is drawn from twice the floor, so that about half the
+	// draws are refused and half are accepted. A uniform uint64 would never
+	// fall below it.
+	prop := func(draw uint64) bool {
+		hard := draw % (2 * minNofile)
 		soft, err := nofileSoft(hard)
 		if hard < minNofile {
 			return err != nil

@@ -100,7 +100,8 @@ func FromBuild(ctx context.Context, opts BuildOptions) (Manifest, error) {
 	firmware := filepath.Join(dir, "firmware")
 	if _, err := os.Stat(filepath.Join(firmware, firmwareName(o.GOOS))); err != nil {
 		fmt.Fprintf(o.Log, "no Landlock firmware in %s (make vmm-firmware); "+
-			"the guest will boot on the stock libkrunfw\n", firmware)
+			"the guest will use the stock libkrunfw without Landlock, which "+
+			"a Linux host that has installed none does not have\n", firmware)
 		firmware = ""
 	}
 
