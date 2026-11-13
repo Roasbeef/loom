@@ -249,8 +249,11 @@ pub fn a_run_before_any_attach_is_refused_test() {
   let rig = rig(fixtures.Open)
   let run = fixtures.tool_run("call_1", 0)
 
-  let assert protocol.RunRefused(protocol.NoPlane(..)) =
-    heard(send_run(rig, run, 0, token(1)))
+  // No scope at all is not a missing plane: only a scope the ledger holds can
+  // be attached again, so the refusal is the fence's, and a surface that hears
+  // it does not attach.
+  assert heard(send_run(rig, run, 0, token(1)))
+    == protocol.RunRefused(protocol.NoSuchScope)
   assert query(rig, run) == Ok(protocol.Missing)
   stop(rig)
 }
@@ -885,6 +888,34 @@ pub fn a_restarted_host_answers_a_key_it_holds_a_row_for_before_it_refuses_the_p
     heard(send_run(restarted, fresh, 0, token(1)))
   assert fixtures.run_count(probe, "call_1") == 0
   assert fixtures.run_count(probe, "call_2") == 0
+  stop(restarted)
+}
+
+pub fn a_restarted_host_judges_the_fence_before_it_refuses_the_plane_test() {
+  // `NoPlane` tells a surface to attach again under its own token, so only the
+  // scope's current runtime may hear it. A dead runtime hears the fence's
+  // verdict instead.
+  let rig = rig(fixtures.Open)
+  let assert Ok(_first) = attach(rig, 0, token(1))
+  let assert Ok(_second) = attach(rig, 0, token(2))
+  stop(rig)
+  process.sleep(50)
+  let probe = fixtures.probe(fixtures.Open)
+  let restarted =
+    start_at(
+      rig.path,
+      probe,
+      fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired),
+    )
+  let call = fixtures.tool_run("call_1", 0)
+
+  let assert protocol.RunRefused(protocol.StaleToken) =
+    heard(send_run(restarted, call, 0, token(1)))
+  let assert protocol.RunRefused(protocol.StaleIncarnation(_)) =
+    heard(send_run(restarted, call, 3, token(2)))
+  let assert protocol.RunRefused(protocol.NoPlane(_)) =
+    heard(send_run(restarted, call, 0, token(2)))
+  assert fixtures.run_count(probe, "call_1") == 0
   stop(restarted)
 }
 

@@ -1546,7 +1546,8 @@ fn admit_call(
   // This match resolves dict.get(state.placements, key.session), reply_owner(reply) before the surrounding protocol step continues.
   // This match resolves dict.get(state.placements, key.session), reply_owner(reply) before the enclosing validation continues.
   case dict.get(state.placements, key.session), reply_owner(reply) {
-    Error(Nil), _ -> answer_without_plane(state, key, reply, no_plane())
+    Error(Nil), _ ->
+      answer_without_plane(state, key, reply, unplaced(state, admission))
     Ok(Building(..)), _ ->
       answer_without_plane(state, key, reply, protocol.PlaneBuilding)
     _, Error(Nil) -> {
@@ -1643,6 +1644,28 @@ fn answer_without_plane(
       deliver(reply, SettledRefused(refusal_of(error)))
       state
     }
+  }
+}
+
+/// The refusal for a key with no row, in a scope this VM holds no plane for.
+///
+/// The scope's fence comes first, as it does for every other request:
+/// `NoPlane` tells a surface to attach again under the token it holds
+/// (`client/remote/surface`), so only the scope's current runtime may be told
+/// it. A request from a dead runtime, from a closed scope or from a scope the
+/// ledger does not hold learns that instead, and does not attach.
+fn unplaced(state: State(census), admission: Admission) -> Refusal {
+  let judged =
+    fenced(
+      state,
+      admission.key.session,
+      Writer(incarnation: admission.incarnation, token: admission.token),
+    )
+
+  // This match resolves judged before the enclosing validation continues.
+  case judged {
+    Ok(Nil) -> no_plane()
+    Error(refusal) -> refusal
   }
 }
 
