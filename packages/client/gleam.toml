@@ -48,7 +48,7 @@ cap = { path = "../cap" }
 gleamy_bench = ">= 0.6.0 and < 1.0.0"
 sqlight_loom = "== 1.2.1"
 tui = { path = "../tui" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "43969f88075a17044640e5e7cc43682b86a988ab" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "09e0a964d2bfc71efd10abc476937e6ab5223bfb" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_httpc = ">= 5.0.0 and < 6.0.0"
 qcheck = ">= 1.0.5 and < 2.0.0"
