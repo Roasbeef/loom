@@ -1298,9 +1298,15 @@ built on it. Nothing above is edited, and no wire constructor changed.
   A child in a session of its own is never given up on after a number of tries, because
   giving up ends its session and the commits still on the executor with it, and what
   costs the tries is often an answer that is not about the commits. It stays unfinished
-  until its run ends or its parent is deleted. A record that cannot be read leaves the
+  until the time bound below. A record that cannot be read leaves the
   child unfinished and its session kept, and the report for such a child says that only
-  committed work is returned, because its tree is not looked at.
+  committed work is returned, because its tree is not looked at. Waiting for ever withholds
+  the child's report, so the wait is bounded by time and not by count: the first verdict that
+  is not final carries the second it was made (`since`), and once it is older than
+  `spawn_return.give_up_s`, ten minutes, the join gives up, returns the report with a
+  sentence naming the executor and the branch `loom/<session>` where the commits still are,
+  and ends the session. Ten minutes is longer than an executor takes to restart and than the
+  surface takes to repair a link, which it bounds at a minute.
 
 **Not changed.** A census with no branch is read as `mode = "shared"` and refused for
 good. The executor reports a branch exactly when it built a worktree for the scope
@@ -1341,7 +1347,41 @@ case. It does not cover a failure of the release itself.
   four functions of `seed_landing` classify the generated faults as its table says. It
   does not call `spawn_seed` and has no concurrency, claims, restarts or real join.
 
+**Also fixed in the second round.**
+
+- *Every join about a seeded child was told whatever its refusal.* The refusal of a seeded
+  child's group is now that child's: one that asks the sender to come again
+  (`seed_landing.asks_again`) leaves the child unfinished and is logged with its reason, and
+  every other is the child's failure with its reason. The pair's group keeps its refusal as the
+  join's, because one refusal there speaks for handles it does not name.
+- *An entry that could not be kept did not stop the release.* The session is ended only when the
+  entry was kept, and a kept entry that is there and cannot be read leaves the child unfinished
+  and is not taken for none.
+- *A resend whose child had begun was released on a failure of the Agency's answer.* The sender
+  is asked to come again and is answered by the child it already has. A final refusal from
+  `children.open` ends the session too.
+- *An apply that raised left its key.* The apply is a run whose every outcome is reported, so the
+  key that joins requests to it is always cleared.
+- *Two children seeded from one parent raced to make the ref that names their state.* An apply
+  whose ref could not be made re-reads it and accepts it when it names the tip.
+- *The files of a child were never removed.* A sweep at start removes the record, verdict and
+  kept answer of a child older than the longest `retain_s` of the configured spawners, which is how
+  long its delegate session is kept with no message from the spawner. There is no hook at the parent's
+  deletion that knows a child's files, which are named by a digest of the strand.
+- `outliving.wait_for` stays a spawn that no process is linked to: weft's detached, witnessed and
+  relayed starts link the run's scope to the process that starts it, so a starter that is killed takes
+  the run with it, and weft has no unlinked start.
+
+`spawn_return.kept` looks a child up by the spawner, the parent session and the child's strand. It does
+not compare the kept entry's handle with the operation of the asked handle, and it does not repeat the
+Agency's descent check. The spawner and the parent session are checked, and the strand comes from the
+call site, so a handle that is not the parent's child still finds nothing.
+
 **Open.**
+
+- A session whose capture is refused as stale after an executor restart is not attached again before
+  the capture. The return waits for the window and gives up. A re-attach before the capture is not
+  built here.
 
 - A seeded spawn placed on an executor reached over the untrusted link of
   protocol-change 109 and 110 is not designed here. `untrusted_bridge.state_outbound`

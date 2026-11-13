@@ -1762,7 +1762,7 @@ only its commits.
   may pass and the deadline are tried again (`seed_landing.of_declined`). `max_attempts`
   (5) tries make a final refusal for a child in a directory only: a child in a session of
   its own is never given up on, because giving up ends its session and the commits still
-  on the executor, and stays unfinished until its run ends or its parent is deleted. A verdict carries the
+  on the executor, and stays unfinished until `give_up_s` has passed since its first verdict that was not final. A verdict carries the
   outcome, whether the copy had uncommitted changes (`status --porcelain` in the jail),
   and the attempts. `amend` sets `Joined.state` on a return and appends fixed sentences
   to the report for no commits, a refusal and uncommitted work. A return never fails
@@ -1851,7 +1851,10 @@ such child runs in a delegate session of its own, and its workspace is its workt
   `sent`). `main.spawn_host_seeding` routes `send`, `resolve` and `history` by
   `session_of` and adds the live children to `run_ended`.
 - *Limits.* Uncommitted changes in an executor child's tree are not reported, and the
-  report says so (`session_tree_note`); a spawn delayed past its run's end is not fenced for
+  report says so (`session_tree_note`); a child in a session of its own is given up on by time, not count: a
+  verdict that is not final carries `since`, and after `give_up_s` (ten minutes) the join returns the
+  report with the executor's name and the branch `loom/<session>` and ends the session, with no re-attach
+  before a capture; a spawn delayed past its run's end is not fenced for
   a child's session; a child stopped at its run's end keeps its session, because a join can
   still return its commits.
 
