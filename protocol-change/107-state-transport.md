@@ -1183,7 +1183,9 @@ that committed on top). The first is what the apply needs to know. The rule the 
 checks as correct is that the tree is left alone when its `HEAD` is the tip, or when the
 last apply for the session was of this tip; the second condition covers a resend after
 the session has committed on top, and the first covers a crash between the checkout and
-the record. The record is one ref per session on the executor, for example
+the record. The model separates this rule from the ancestry rule, but it has no step that
+commits on the executor's branch, so the resend after a commit on top is covered by the
+code test `applying_into_the_same_tree_twice_changes_nothing_test`, not by the model. The record is one ref per session on the executor, for example
 `refs/loom/applied/<session>`, written after the `checkout -B`. The shipped rule is the
 mutants `MoveCheckoutMutantHoldsTipAncestry` and `MoveCheckoutMutantHoldsTipAhead`, which
 TLC reports as the violations they are, and the clean configuration is the proposed rule.

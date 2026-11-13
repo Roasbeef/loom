@@ -136,7 +136,9 @@ check_tla() {
 			# <spec>Also*.cfg, which cover a range the first one would make
 			# too large to check. Each must pass.
 			for cfg in "$tla/$spec.cfg" "$tla/${spec}Also"*.cfg; do
-				[ -e "$cfg" ] || continue
+				# An unmatched Also glob is skipped. A missing primary
+				# configuration is not: TLC fails on it, and so does the gate.
+				[ -e "$cfg" ] || [ "$cfg" = "$tla/$spec.cfg" ] || continue
 				name="$(basename "$cfg" .cfg)"
 				log="$out/$name.log"
 				if run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log"; then
