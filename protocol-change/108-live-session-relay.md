@@ -836,3 +836,27 @@ slice 2 builds neither.
 - A feed blocks on a gateway call for at most the gateway's six seconds, as
   `ui_relay` does, so a laptop that sends faster than the gateway answers waits behind
   its own frame. The send's answer is written before the frame reaches the gateway.
+
+### Follow-up to the slice 2 addendum (2026-11-13)
+
+The re-check of the box half corrected three figures and one lookup, and this
+section is the record of them. The text above stays as it was written.
+
+- The feed's permit charge is 28,049,408 bytes, not 15,466,496. When the last
+  piece of a frame arrives, `feed_pieces.extend` joins the pieces into the whole
+  frame while the pieces are still referenced, and the command filter then parses
+  that frame in the same process, so a second `frame_bytes` (12,582,912) is live at
+  the peak. Eight feeds take 224,395,264 bytes of the default 536,870,912, about 42
+  percent and not a little under a quarter, and still leave room for the owner's
+  control socket, a page and a terminal.
+- A frame arrives in at most 64 pieces, not 65. Every piece but the last carries at
+  least `min_piece_bytes` (196,608), the last carries at least one byte, and
+  `frame_bytes` is 64 times the floor, so the box holds at most 63 whole pieces
+  below the frame bound and the last. `remote_feed.max_pieces` is 64 and a test
+  drives `feed_pieces` with adversarial sequences of pieces that the codec accepts.
+- The directory's lookup tells a token that is gone from a directory that did not
+  answer. A poll or a send to a token that is gone is told `lapsed`, as before. When
+  the directory does not answer, a poll, a send, a detach and an attach are told
+  `not_yet_open`, as a feed that does not answer is, and the laptop asks again. A
+  detach is no longer answered `null` when the directory was silent and the feed
+  was never detached.
