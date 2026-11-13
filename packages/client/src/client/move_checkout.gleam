@@ -89,10 +89,12 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap
 import session/session
 import storage/catalogue
 import storage/sqlite
 import storage/storage
+import telemetry/field
 import telemetry/log.{type Logger}
 
 /// The reserved cell the step remembers itself in. The `client/` prefix keeps it
@@ -194,6 +196,9 @@ pub type Request {
     target: CheckoutTarget,
     /// The clock the file accesses read.
     clock: Clock,
+    /// Where each stage that finishes says so, by the session, the operation,
+    /// the state's short hash and size, and how long the stage took.
+    logger: Logger,
   )
 }
 
@@ -329,19 +334,42 @@ fn delivered(
 /// Captures the directory into this node's store and writes down the state, so
 /// that a rerun sends the bundle it has.
 fn captured(ports: Ports, request: Request) -> Result(State, Failure) {
+  let started = bootstrap.monotonic_time_ms()
   use state <- result.try(
     ports.capture(request.directory)
     |> result.map_error(fn(reason) { Refused(Capturing, reason) }),
   )
   use Nil <- result.try(record(request, Marker(request.op, Taken, state)))
+  told(request.logger, "captured", request.session, request.op, state, started)
   ports.after(Captured)
   Ok(state)
+}
+
+/// Says that a stage of the checkout finished, in one line a reader can follow
+/// across the source and the executor. The state is named by its short hash and
+/// its size, and nothing of either machine's paths is written.
+fn told(
+  logger: Logger,
+  stage: String,
+  session: String,
+  op: String,
+  state: State,
+  started: Int,
+) -> Nil {
+  log.info(logger, "daemon.move_checkout_" <> stage, [
+    field.ident("session", session),
+    field.ident("op", op),
+    field.ident("state", state_object.short(state.hash)),
+    field.count("bytes", state.size),
+    field.count("elapsed_ms", bootstrap.monotonic_time_ms() - started),
+  ])
 }
 
 /// Pushes the bundle to the executor's store. The link asks how far the executor
 /// has got, so a transfer that was interrupted resumes at its offset and one that
 /// finished sends nothing.
 fn sent(ports: Ports, request: Request, state: State) -> Result(Nil, Failure) {
+  let started = bootstrap.monotonic_time_ms()
   use link <- result.try(
     ports.link(request.target.executor)
     |> result.map_error(fn(reason) { Unfinished(Sending, reason) }),
@@ -350,7 +378,10 @@ fn sent(ports: Ports, request: Request, state: State) -> Result(Nil, Failure) {
   // Only a refusal from the executor's store is final. Silence and a fault are
   // what a dropped link looks like, and the next run resumes where this stopped.
   case state_transfer.send(ports.store, state.hash, link) {
-    state_transfer.Delivered -> Ok(Nil)
+    state_transfer.Delivered -> {
+      told(request.logger, "sent", request.session, request.op, state, started)
+      Ok(Nil)
+    }
     state_transfer.Declined(refusal:) ->
       Error(Refused(Sending, state_transfer.describe(refusal)))
     state_transfer.Silent ->
@@ -625,13 +656,34 @@ fn attach_and_apply(
   case attached {
     Error(reason) -> Ok(Error(LandUnfinished(reason)))
     Ok(hands) -> {
+      let applying = bootstrap.monotonic_time_ms()
       let applied = hands.apply_state(arrival.state)
+      told_landed(logger, "applied", arrival, applying, applied)
 
       // The scope is closed on every path, so that the executor's slot is
       // returned and the file's cell records the close.
+      let closing = bootstrap.monotonic_time_ms()
       hands.plane.close()
+      told_landed(logger, "closed", arrival, closing, applied)
       Ok(landed(applied))
     }
+  }
+}
+
+/// Says that the apply was accepted, or that the scope was closed after one that
+/// was. A refused apply is told by the abort or the stall that carries its
+/// reason, so it adds no line here.
+fn told_landed(
+  logger: Logger,
+  stage: String,
+  arrival: Arrival,
+  started: Int,
+  applied: Result(String, workspace.ApplyFailure),
+) -> Nil {
+  case applied {
+    Ok(_tip) ->
+      told(logger, stage, arrival.session, arrival.op, arrival.state, started)
+    Error(_) -> Nil
   }
 }
 

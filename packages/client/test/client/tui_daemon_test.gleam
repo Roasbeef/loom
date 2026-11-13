@@ -14,6 +14,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/system
+import gleam/string
 import host/bootstrap as native
 import host/endpoint
 import mist
@@ -806,6 +807,108 @@ fn session_row(id: String, status: json.JsonValue) -> json.JsonValue {
     #("created_at", json.Int(0)),
     #("status", status),
   ])
+}
+
+/// The tombstone of a moved session reads as saved, so the open is sent and the
+/// daemon answers it with `not_owner`. The words printed for that refusal must
+/// carry the session's own identity in the launch line, and never the
+/// placeholder the session-less wording uses.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match tui_daemon_open_of_a_moved_session`.
+pub fn tui_daemon_open_of_a_moved_session_names_the_session_in_its_redirect_test() {
+  let #(id, _) = ids.mint_session(ids.generator(clock.fixed(0), 2))
+  let id = ids.session_id_to_string(id)
+  controlled_peer(fn(control, peer, incoming) {
+    let assert Ok(host) = selection.host(control, address(1), "test-token")
+      as "the controlled control has a selection host"
+    let outcomes = process.new_subject()
+    let _worker =
+      process.spawn(fn() { process.send(outcomes, selection.open(host, id)) })
+
+    // The source's record of a session it handed away is saved, with `moved`.
+    let read = received(incoming)
+    assert read.command == server_protocol.GetSession(id)
+    process.send(
+      peer,
+      Send(reply(
+        read.id,
+        "sessions.get",
+        json.Object([
+          #("session_id", json.String(id)),
+          #("workspace", json.String("/work")),
+          #("name", json.String("opened")),
+          #("created_at", json.Int(0)),
+          #("status", json.Object([#("state", json.String("saved"))])),
+          #("moved", json.Object([#("to", json.String("bravo"))])),
+        ]),
+      )),
+    )
+
+    // The open is refused with the redirect, naming an owner with no address.
+    let open = received(incoming)
+    assert open.command == server_protocol.OpenSession(id, "controlled")
+    process.send(
+      peer,
+      Send(reply(
+        open.id,
+        "error",
+        json.Object([
+          #("code", json.String("not_owner")),
+          #(
+            "message",
+            json.String("this session is owned by another orchestrator"),
+          ),
+          #("orchestrator", json.String("bravo")),
+        ]),
+      )),
+    )
+    let assert Ok(Error(words)) = process.receive(outcomes, 2000)
+      as "the open is refused with the redirect"
+    assert string.contains(words, "session " <> id <> " is owned by")
+    assert string.contains(words, "--session " <> id)
+    assert !string.contains(words, "<session-id>")
+  })
+}
+
+/// `loom sessions rm` of a session this daemon moved away stops it first, and
+/// the daemon answers the stop with the redirect. Its words name the session.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match tui_daemon_rm_of_a_moved_session`.
+pub fn tui_daemon_rm_of_a_moved_session_names_the_session_in_its_redirect_test() {
+  let #(id, _) = ids.mint_session(ids.generator(clock.fixed(0), 3))
+  let id = ids.session_id_to_string(id)
+  controlled_peer(fn(control, peer, incoming) {
+    let assert Ok(host) = selection.host(control, address(1), "test-token")
+      as "the controlled control has a selection host"
+    let outcomes = process.new_subject()
+    let _worker =
+      process.spawn(fn() { process.send(outcomes, selection.delete(host, id)) })
+    let stop = received(incoming)
+    assert stop.command == server_protocol.StopSession(id, "controlled")
+    process.send(
+      peer,
+      Send(reply(
+        stop.id,
+        "error",
+        json.Object([
+          #("code", json.String("not_owner")),
+          #(
+            "message",
+            json.String("this session is owned by another orchestrator"),
+          ),
+          #("orchestrator", json.String("bravo")),
+        ]),
+      )),
+    )
+    let assert Ok(Error(words)) = process.receive(outcomes, 2000)
+      as "the stop is refused with the redirect"
+    assert string.contains(words, "--session " <> id)
+    assert !string.contains(words, "<session-id>")
+  })
 }
 
 /// An open's startup wait gives each `GetOperation` read what is left of the

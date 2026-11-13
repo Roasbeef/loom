@@ -759,6 +759,7 @@ fn checked_out(
           directory: registration.workspace,
           target:,
           clock: environment.clock,
+          logger: environment.logger,
         )
       use Nil <- result.try(
         bounded(environment.budget.checkout_ms, "the checkout", fn() {
@@ -1492,10 +1493,63 @@ fn note(
         field.text("reason", reason),
         ..fields
       ])
-    Stalled(reason:) | Deferred(reason:) ->
-      log.warn(environment.logger, "daemon.move_stalled", [
+
+    // A stall repeats on every retry, so the movers log it with the attempt
+    // count (`note_stall`) and not here, where no run knows how many came before.
+    Stalled(..) | Deferred(..) -> Nil
+  }
+}
+
+/// Whether the stall that ends the `attempt`th consecutive run of a move is
+/// written to the log. The first is, then the second, fourth, eighth and so on,
+/// so a move that retries every five seconds logs after 5, 10, 20 and 40
+/// seconds and then ever more rarely, and a long stall costs a handful of lines
+/// instead of one every few seconds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_mover.stall_is_logged(1)
+/// assert session_mover.stall_is_logged(8)
+/// assert !session_mover.stall_is_logged(6)
+/// ```
+pub fn stall_is_logged(attempt: Int) -> Bool {
+  attempt > 0 && int.bitwise_and(attempt, attempt - 1) == 0
+}
+
+/// Writes the warning for a stalled run when `stall_is_logged` says this one is
+/// due. The line names the move, the attempt, how long the move has been
+/// stalled and the reason, which says what it is waiting on: the executor, the
+/// receiver, a lease or a step that ran out of time. The reason is the mover's
+/// own words, and can carry the receiver's reason for a failed activation, so
+/// the caller bounds it (`node_report.cut_reason`). The duration is absent for a
+/// stall that is not counted as a stall of the receiver (`Deferred`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_mover.note_stall(logger, move, "the receiver did not answer", 4, Some(15_000))
+/// ```
+pub fn note_stall(
+  logger: Logger,
+  move: catalogue.Pending,
+  reason: String,
+  attempt: Int,
+  stalled_ms: Option(Int),
+) -> Nil {
+  case stall_is_logged(attempt) {
+    True ->
+      log.warn(logger, "daemon.move_stalled", [
+        field.ident("session", move.session),
+        field.ident("op", move.op),
+        field.text("to", move.to),
         field.text("reason", reason),
-        ..fields
+        field.count("attempt", attempt),
+        ..case stalled_ms {
+          Some(ms) -> [field.count("stalled_ms", ms)]
+          None -> []
+        }
       ])
+    False -> Nil
   }
 }

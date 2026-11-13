@@ -1382,7 +1382,11 @@ not apply this hold yet.
 
 The terminal, the owner's home and the Admin page ask for a move through the same two
 functions (`server.move_session`, `server.abandon_move`), which are the bodies of the
-control command's arms, so a page cannot be given a check the terminal lacks.
+control command's arms, so a page cannot be given a check the terminal lacks. The
+control socket words each refusal (`server.move_refusal_words`): the registry's and the
+daemon's own reasons are passed on as written, so a destination that names no
+`checkout_executor` is told which table lacks it, and no path of the daemon's machine is
+in any of them. The pages word the same refusals in their own fixed sentences.
 
 Which orchestrators to offer is a read, not a rule the daemon enforces.
 `session_view/move_candidates` judges each orchestrator the asking daemon lists: it must
@@ -1427,6 +1431,12 @@ drained workspace), and it leaves the cell the other steps already read.
 4. **Record.** The file's reserved cell `client/move/checkout` says the checkout was
    placed for this operation. The six steps then run with a copy of the registration
    that names the executor and workspace, so the manifest tells the receiver.
+
+Each stage logs one line on the source (`daemon.move_checkout_captured`, `_sent`,
+`_applied`, `_closed`) with the session, the operation, the state's short hash, its
+size and the stage's duration, and the receiver logs `daemon.move_imported` and
+`daemon.move_activated`. A move that stalls logs `daemon.move_stalled` after its first,
+second, fourth, eighth attempt and so on, so a long stall is a handful of lines.
 
 The receiver attaches at the next incarnation and its plane recreates the tree from the
 branch at the applied tip, so its first turn finds the directory's work. Nothing on the
