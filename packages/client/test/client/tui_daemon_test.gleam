@@ -872,8 +872,9 @@ pub fn tui_daemon_open_of_a_moved_session_names_the_session_in_its_redirect_test
   })
 }
 
-/// `loom sessions rm` of a session this daemon moved away stops it first, and
-/// the daemon answers the stop with the redirect. Its words name the session.
+/// `loom sessions rm` of a session this daemon moved away stops it first. The
+/// registry answers a tombstone's stop with its saved status, and the redirect
+/// comes on the delete that follows. Its words name the session.
 ///
 /// ## Examples
 ///
@@ -893,6 +894,16 @@ pub fn tui_daemon_rm_of_a_moved_session_names_the_session_in_its_redirect_test()
       peer,
       Send(reply(
         stop.id,
+        "sessions.stop",
+        json.Object([#("state", json.String("saved"))]),
+      )),
+    )
+    let delete = received(incoming)
+    assert delete.command == server_protocol.DeleteSession(id, "controlled")
+    process.send(
+      peer,
+      Send(reply(
+        delete.id,
         "error",
         json.Object([
           #("code", json.String("not_owner")),
@@ -905,7 +916,7 @@ pub fn tui_daemon_rm_of_a_moved_session_names_the_session_in_its_redirect_test()
       )),
     )
     let assert Ok(Error(words)) = process.receive(outcomes, 2000)
-      as "the stop is refused with the redirect"
+      as "the delete is refused with the redirect"
     assert string.contains(words, "--session " <> id)
     assert !string.contains(words, "<session-id>")
   })
