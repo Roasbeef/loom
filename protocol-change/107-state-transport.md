@@ -1439,6 +1439,14 @@ case. It does not cover a failure of the release itself.
 
 **Also fixed in the second round.**
 
+- *A clean parent behind the executor's workspace started the child on the executor's commit.*
+  The scope's tree is made from the workspace's base, and an apply that took a tree holding a
+  descendant of the parent's commit for the parent's tree did not move it, so the child began on
+  the executor's commit and the thin return carried the executor's commits as its own. The rule
+  merged in #1231 (a state is applied when the session's last-applied ref names its tip or the tree's
+  `HEAD` is it, and otherwise the clean tree is moved) is right for every apply this change makes.
+  `seed_on_executor_test` has the case, with a parent that committed its edits and a workspace one
+  commit past it, and the model has `TestBehind` and a mutant for the old rule.
 - *Every join about a seeded child was told whatever its refusal.* The refusal of a seeded
   child's group is now that child's: one that asks the sender to come again
   (`seed_landing.asks_again`) leaves the child unfinished and is logged with its reason, and
