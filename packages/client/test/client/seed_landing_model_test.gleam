@@ -1,31 +1,34 @@
-//// The landing of a seeded spawn against a model, and the delegate key as a
-//// codec (protocol-change/107, slice 4b).
+//// The decisions of a seeded spawn's landing against a model, and the delegate key
+//// as an injective name (protocol-change/107, slice 4b).
 ////
 //// `seed_on_executor_test` runs the real executor, a real repository and the
-//// sandboxed Git through the cases the design names. This module asks a
-//// different question: whatever order asks, failures, retries and joins arrive
-//// in, do the promises of the landing hold? `statem` draws sequences of those
-//// events for two children of one parent, runs each against a small simulation
-//// of the landing's order, and compares the outcome with a pure model after every
-//// command.
+//// sandboxed Git through the cases the design names. This module asks a smaller
+//// question about the decisions the landing takes: whatever order asks, failures,
+//// retries and joins arrive in, does each failure get the treatment the design
+//// gives it? `statem` draws sequences of those events for two children of one
+//// parent, runs each against a simulation of the steps in the order
+//// `spawn_seed.land` takes them, and compares the outcome with a pure model after
+//// every command.
 ////
-//// The simulation takes the steps in the order `spawn_seed.land` takes them (a
-//// recorded verdict, the session, the bundle, the session's census, the send, the
-//// apply behind the begun check, the Agency's spawn) and takes every decision
-//// about a failure from `client/seed_landing`, the same functions the daemon
-//// calls. It does not run the processes. The wiring of each step is covered
-//// against the real executor in `seed_on_executor_test`, and the interleavings of
-//// two machines are covered by the P model in `protocol/models/seeded-spawn`.
+//// ## What it proves
 ////
-//// The promises it checks:
+//// The four functions of `client/seed_landing` (`gate`, `of_declined`,
+//// `of_failure`, `keeps_verdict`) classify the generated faults as the table in
+//// `expected` says: a failure that passes is retried and keeps no verdict, a
+//// refusal of the content keeps one and ends the session, a record that cannot be
+//// read is asked about again, and a fault-free ask after any of them converges.
+//// Around that, the simulation checks at most one session for a child, a first
+//// turn only on a seeded workspace, one effective apply however many were sent,
+//// and a settled child holding no session. A census that refuses keeps no
+//// verdict, and a child asked for again after its join starts afresh, as the code
+//// does (the addendum lists that as open).
 ////
-//// - at most one session exists for a child, however many asks and failures;
-//// - the child's first turn runs only on a workspace that holds the seed;
-//// - a state is applied at most once, however many apply requests were sent;
-//// - a verdict exists exactly for a child refused for a deterministic reason, so
-////   a transient failure never leaves one;
-//// - a fault-free ask after any failure converges on a started child;
-//// - a joined child's session is released, and so is a refused one's.
+//// ## What it does not prove
+////
+//// It does not call `spawn_seed`. The simulation restates the order of the steps,
+//// and a change to that order in the code is not seen here. It has no concurrency,
+//// no claim, no restart and no real join; those are the P model's
+//// (`protocol/models/seeded-spawn`) and `seed_on_executor_test`'s.
 ////
 //// The seed and the sizes are constants, so the gate is deterministic.
 
@@ -52,7 +55,7 @@ const property_seed = 10_702
 
 const property_count = 300
 
-// --- the delegate key as a codec ---------------------------------------------------
+// --- the delegate key ----------------------------------------------------------------
 
 fn part() -> qcheck.Generator(String) {
   qcheck.string_from(qcheck.alphanumeric_ascii_codepoint())
@@ -77,46 +80,12 @@ fn properties() -> qcheck.Config {
   |> qcheck.with_seed(qcheck.seed(property_seed))
 }
 
-pub fn a_delegate_key_reads_back_into_the_parts_that_made_it_test() {
-  qcheck.run(properties(), keys(), fn(parts) {
-    assert delegate_key.parse(delegate_key.key(parts)) == Ok(parts)
-  })
-}
-
 pub fn the_key_of_a_child_is_never_the_key_of_the_pair_or_another_child_test() {
   qcheck.run(properties(), qcheck.tuple2(keys(), keys()), fn(drawn) {
     let #(one, other) = drawn
     assert { delegate_key.key(one) == delegate_key.key(other) }
       == { one == other }
   })
-}
-
-pub fn text_that_is_not_a_key_is_refused_and_any_that_is_read_is_one_test() {
-  qcheck.run(properties(), qcheck.string(), fn(text) {
-    case delegate_key.parse(text) {
-      Ok(parts) -> {
-        assert delegate_key.key(parts) == text
-      }
-      Error(_damage) -> Nil
-    }
-  })
-}
-
-pub fn damaged_keys_are_refused_by_the_decoder_test() {
-  // A child that is empty after a trailing colon, and the other empty fields.
-  assert delegate_key.parse("delegate:laptop:0198:")
-    == Error(delegate_key.EmptyField)
-  assert delegate_key.parse("delegate::0198") == Error(delegate_key.EmptyField)
-  assert delegate_key.parse("delegate:laptop:")
-    == Error(delegate_key.EmptyField)
-
-  // The wrong number of fields, and a prefix that is not ours.
-  assert delegate_key.parse("delegate:laptop")
-    == Error(delegate_key.WrongFields)
-  assert delegate_key.parse("delegate:a:b:c:d")
-    == Error(delegate_key.WrongFields)
-  assert delegate_key.parse("deleg:a:b") == Error(delegate_key.NotDelegate)
-  assert delegate_key.parse("") == Error(delegate_key.NotDelegate)
 }
 
 // --- what a failure means ----------------------------------------------------------
@@ -231,9 +200,9 @@ fn expected(held: Phase, fault: Fault) -> Answer {
     Begun, Unreadable -> AskAgain
     Begun, _ -> Started
 
-    // A child's own session is never made twice, and a joined child is not asked
-    // for again.
-    Joined, _ -> Declined
+    // A child whose session was ended at its join has no record of having begun,
+    // so an ask for it again is an ask for a fresh child.
+    Joined, found -> expected(NotStarted, found)
 
     // A child with a session already is not asked to find or make one, and its
     // census was read when the session was first made.
@@ -262,15 +231,30 @@ fn expected(held: Phase, fault: Fault) -> Answer {
   }
 }
 
+// A joined child is asked about as a fresh one.
+fn fresh_of(held: Phase) -> Phase {
+  case held {
+    Joined -> NotStarted
+    NotStarted | Pending | Begun | Refused -> held
+  }
+}
+
 fn step(model: Model, command: Command) -> Model {
   case command {
     Join(child) -> dict.insert(model, child, Joined)
     Land(child, fault) ->
       case expected(phase(model, child), fault) {
         Started -> dict.insert(model, child, Begun)
-        Declined -> dict.insert(model, child, Refused)
+
+        // A census that refuses keeps no verdict, and the same ask is refused
+        // again; any other refusal is kept.
+        Declined ->
+          case fault {
+            CensusShared -> model
+            _ -> dict.insert(model, child, Refused)
+          }
         AskAgain ->
-          case phase(model, child), fault {
+          case fresh_of(phase(model, child)), fault {
             // The session is made before these steps and left by their failure.
             NotStarted, Unreadable
             | NotStarted, NoRoom
@@ -292,11 +276,7 @@ fn admitted(model: Model, command: Command) -> statem.Admission {
         Begun -> statem.Admit
         NotStarted | Pending | Refused | Joined -> statem.Reject
       }
-    Land(child, _) ->
-      case phase(model, child) {
-        Joined -> statem.Reject
-        NotStarted | Pending | Begun | Refused -> statem.Admit
-      }
+    Land(_, _) -> statem.Admit
   }
 }
 
@@ -454,9 +434,12 @@ fn ask(held: Child, fault: Fault) -> #(Child, Answer) {
     None, NoSession ->
       case fault {
         HoldMissing | SessionFails -> #(held, AskAgain)
+
+        // The census refuses before the claim, and the session just made is ended
+        // with no verdict kept.
         CensusShared -> {
           let made = Child(..held, session: Session, makes: held.makes + 1)
-          unplaced(made, seed_landing.Refuse("the workspace takes no state"))
+          #(release(made), Declined)
         }
         _ ->
           place(Child(..held, session: Session, makes: held.makes + 1), fault)
@@ -503,8 +486,17 @@ fn execute(
 ) -> Result(World, statem.Violation) {
   case command {
     Join(child) -> {
-      let held = child_of(world, child)
-      let next = dict.insert(world, child, release(held))
+      // The session is ended, and with it the record of having begun and the
+      // workspace: a session made for the child afterwards is fresh.
+      let held =
+        Child(
+          ..release(child_of(world, child)),
+          workspace: Empty,
+          turn: Waiting,
+          first_turn_on: None,
+          effective: 0,
+        )
+      let next = dict.insert(world, child, held)
       use Nil <- result.map(check(next, step(model, command)))
       next
     }
@@ -646,7 +638,7 @@ fn landing() -> statem.Spec(Model, Command, World) {
       // child, which is the retry after any failure point.
       list.try_each([0, 1], fn(child) {
         case phase(model, child) {
-          NotStarted | Pending -> {
+          NotStarted | Pending | Joined -> {
             let #(after, answer) = land(child_of(world, child), NoFault)
             case answer, after.effective {
               Started, 1 -> Ok(Nil)
@@ -660,7 +652,7 @@ fn landing() -> statem.Spec(Model, Command, World) {
                 )
             }
           }
-          Begun | Refused | Joined -> Ok(Nil)
+          Begun | Refused -> Ok(Nil)
         }
       })
     },
