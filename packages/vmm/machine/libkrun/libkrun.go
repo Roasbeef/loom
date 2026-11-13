@@ -288,7 +288,9 @@ func (b *Backend) hypervisor() *mvlibkrun.Backend {
 		return nil
 	}
 
-	opts := []mvlibkrun.Option{mvlibkrun.WithRunnerPath(b.cfg.RunnerPath)}
+	opts := []mvlibkrun.Option{
+		mvlibkrun.WithRunnerPath(resolveRunner(b.cfg.RunnerPath)),
+	}
 
 	libDir := libraryPath(b.cfg)
 	if libDir != "" {
@@ -296,6 +298,21 @@ func (b *Backend) hypervisor() *mvlibkrun.Backend {
 	}
 
 	return mvlibkrun.NewBackend(opts...)
+}
+
+// resolveRunner returns the runner's path with symlinks resolved. go-microvm
+// decides whether a pid is still its runner by comparing /proc/PID/exe, which
+// the kernel resolves, with the path it was given. A path through a symlink
+// never matches, so on Linux a guest's Stop saw no runner, sent no signal and
+// left the runner holding the root and the state disk. A path that cannot be
+// resolved is passed on unchanged, and the boot reports that the runner is
+// missing.
+func resolveRunner(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+
+	return path
 }
 
 // libraryPath joins the firmware and library directories in the order the
