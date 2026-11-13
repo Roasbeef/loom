@@ -1325,7 +1325,11 @@ release.
   that stops the children whatever becomes of the pair's session, with liveness for the
   spawn and for the release of every settled child. Eighteen mutants, three of them
   review findings as they stood, are each caught by the spec that names them. No
-  counterexample was found on the code as it now stands.
+  counterexample was found on the code as it now stands. The model did show where a
+  property rests: a `StateApply` that arrives late, after the child began to work, is
+  kept from clobbering the child's commits by the executor answering a tip it applied
+  before without touching the tree (`state_apply`), and not by the orchestrator's begun
+  check, which only keeps most such requests from being sent.
 - `seed_landing_model_test` is a `statem` model of the decisions in the order
   `spawn_seed.land` takes its steps, with a fault injected at each. It proves that the
   four functions of `seed_landing` classify the generated faults as its table says. It

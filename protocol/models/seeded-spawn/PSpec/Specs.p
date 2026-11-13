@@ -57,10 +57,12 @@ spec AppliedAtMostOnce observes eSeedEffective {
   }
 }
 
-// A retry never applies an older tip over a newer one. The executor takes an apply
-// over a tree the child has worked in, because it cannot tell one from a fresh
-// tree, so the rule rests on the orchestrator's check that the session has not
-// begun, made at the moment before the request.
+// A retry never applies an older tip over a newer one. A request that arrives late,
+// after the child began to work in the tree, is the case: the executor answers a tip
+// it applied before and touches nothing, so the rule rests on the executor's record of
+// the tip it applied last (`state_apply`). The orchestrator's check that the session has
+// not begun, made at the moment before each request it sends, keeps most of such
+// requests from being sent and is not what the rule rests on.
 spec NoOlderOverNewer observes eApplied {
   start state Watching {
     on eApplied do (p: (before: int, after: int)) {

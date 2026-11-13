@@ -121,7 +121,7 @@ machine TestRunEnd {
 machine TestApplyOverlap {
   start state Init {
     entry {
-      new Harness(planOf(PL_EXEC, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, 0, false));
+      new Harness(planOf(PL_EXEC, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1, false, 0, 0, false));
     }
   }
 }
@@ -245,8 +245,8 @@ test tcRetryAfterWork [main = TestRetryAfterWork]:
 test tcOnlyAppliedOnce [main = TestAllExec]:
   assert AppliedAtMostOnce, NoOlderOverNewer in (union System, { TestAllExec });
 
-test tcOnlyNoOlderOverNewer [main = TestRetryAfterWork]:
-  assert NoOlderOverNewer in (union System, { TestRetryAfterWork });
+test tcOnlyNoOlderOverNewer [main = TestApplyOverlap]:
+  assert NoOlderOverNewer in (union System, { TestApplyOverlap });
 
 test tcOnlyRefDescribed [main = TestTransient]:
   assert RefNamesOnlyDescribedCommits in (union System, { TestTransient });

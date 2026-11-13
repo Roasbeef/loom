@@ -44,20 +44,20 @@ MUTATIONS = {
      "    if (!session) {\n      session = true;",
      "    if (!resident) {\n      session = true;")]),
 
-  # The session is asked whether it has begun at the moment before the apply.
-  # Without that check a retried land after a restart sends the seed over the
-  # child's work.
-  "M3-apply-without-begun-check": ("tcOnlyNoOlderOverNewer", 6000, r"older tip", [
-    ("PSrc/Orch.p",
-     "    if (fr == FR_BEGUN) {\n      announce eGate, begun;\n      finishPass();",
-     "    if (false) {\n      announce eGate, begun;\n      finishPass();")]),
-
-  # An apply of the tip the tree already has touches nothing. A tree that seeds
-  # again on a repeated request applies the state twice.
-  "M4-apply-twice": ("tcOnlyAppliedOnce", 4000, r"applied to the same scope twice", [
+  # The executor records the tip it applied last and answers a repeat without
+  # touching the tree. Without that, a request that arrives late, after the child
+  # began to work, applies the seed over the child's commits.
+  "M3-executor-reapplies-its-tip": ("tcOnlyNoOlderOverNewer", 8000, r"older tip", [
     ("PSrc/Exec.p",
-     "        if (tip == 0) {\n          announce eSeedEffective;",
-     "        if (tip == 0 || tip == m.a) {\n          announce eSeedEffective;")]),
+     "    if (lastApplied == applyTip) {",
+     "    if (false) {")]),
+
+  # An apply of a tip the executor applied before touches nothing. A tree that
+  # seeds again on a repeated request applies the state twice.
+  "M4-apply-twice": ("tcOnlyAppliedOnce", 8000, r"applied to the same scope twice", [
+    ("PSrc/Exec.p",
+     "      announce eApplyRepeated;\n    } else {",
+     "      announce eApplyRepeated;\n      announce eSeedEffective;\n    } else {")]),
 
   # The join answers only a bundle whose size is the one its description names, and
   # the owner makes its ref only from such a bundle. With neither check a short

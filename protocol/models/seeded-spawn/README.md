@@ -28,7 +28,9 @@ or a landing; adding them would have changed every one of its cases.
 | `Chaos`, `Harness` (`PTst/Tests.p`) | The environment: dropped links, a restart of any of the three machines, an asker that gives up, a late bundle, and the child's work. When the faults are spent it pokes the owner on a quiet network until the owner is done. |
 
 A state is a tip, an integer. The seed's tip is 1 and the child's work moves the
-tree to 2, so an apply of 1 over a tree at 2 is an older tip over a newer one. A
+tree to 2, so an apply of 1 over a tree at 2 is an older tip over a newer one. The
+executor records the tip it applied last and answers a request for it without
+touching the tree. A
 capture carries the size its description names and the size that arrived.
 
 Both placements are modelled. `PL_EXEC` is a child on an executor or a pool, with
@@ -82,7 +84,7 @@ repaired, which is how a second request reaches a checkout that is still going.
 | `FirstTurnAfterSeed` | The child's first turn never runs before the seed is applied, in either placement. |
 | `AtMostOneSession` | At most one delegate session exists for the child, however asks, restarts and retries interleave. |
 | `AppliedAtMostOnce` | The seed is applied to a scope at most once, however many apply requests are sent. |
-| `NoOlderOverNewer` | A retry never applies an older tip over a newer one. The executor takes any tip, so this rests on the orchestrator's check that the session has not begun. |
+| `NoOlderOverNewer` | A retry, or a request that arrives late, never applies an older tip over a newer one. This rests on the executor answering a tip it applied before without touching the tree. |
 | `RefNamesOnlyDescribedCommits` | The owner's ref names only a bundle whose arrived size is the one its description names. |
 | `NoPermanentVerdictFromTransient` | A verdict is kept only for a deterministic refusal. |
 | `UnreadableIsNotBegun` | A session whose record could not be read is never taken for one that has begun. |
@@ -134,7 +136,7 @@ a record that cannot be read answered as a session that has begun.
 |---|---|
 | The Agency's spawn is made before the apply is sent | `FirstTurnAfterSeed` |
 | The session is created when it is not resident, not when it has no record | `AtMostOneSession` |
-| The session's begun check before the apply is removed | `NoOlderOverNewer` |
+| The executor does not answer a tip it applied before without touching the tree | `NoOlderOverNewer` |
 | The executor counts a repeated apply as applying the seed again | `AppliedAtMostOnce` |
 | Neither the join nor the owner compares a bundle's size with its description | `RefNamesOnlyDescribedCommits` |
 | An executor with no room is kept as a verdict | `NoPermanentVerdictFromTransient` |

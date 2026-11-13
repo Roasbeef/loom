@@ -6,12 +6,12 @@
 // A restart bumps the incarnation and loses the attach, so every request that
 // carries the old fence is refused as stale, and the orchestrator attaches anew.
 //
-// The apply is fenced by the incarnation and the token and is idempotent: a tip
-// the tree already has is answered and touches nothing. It takes any tip over a
-// tree at another one, because the executor cannot tell a tree the child has worked
-// in from a fresh one beyond a few checks. What keeps the child's work is the
-// orchestrator, which asks the session whether it has begun before it sends the
-// request, and `NoOlderOverNewer` is the rule that holds the orchestrator to it.
+// The apply is fenced by the incarnation and the token and is idempotent: the
+// executor records the tip it applied last, and a request for that tip is answered
+// and touches nothing (`state_apply`). A request for another tip is checked out in
+// the tree whatever the tree holds, because the executor cannot tell a tree the
+// child has worked in from a fresh one beyond a few checks. Only one checkout runs
+// at a time for a scope: a request that arrives while one is running joins it.
 machine Exec {
   var w2: machine;
   var plan: tPlan;
@@ -25,6 +25,7 @@ machine Exec {
   var applying: bool;
   var waiters: seq[int];
   var applyTip: int;
+  var lastApplied: int;
   var partialLeft: int;
 
   start state Serving {
@@ -98,18 +99,24 @@ machine Exec {
   fun finishApply() {
     var i: int;
     announce eApplyEnded;
-    announce eApplied, (before = tip, after = applyTip);
-    if (tip == applyTip) {
+
+    // A tip the executor applied before is answered and the tree is not touched,
+    // so a request that arrives late, after the child began to work, changes
+    // nothing.
+    if (lastApplied == applyTip) {
       announce eApplyRepeated;
+    } else {
+      announce eApplied, (before = tip, after = applyTip);
+      if (tip == 0) {
+        announce eSeedEffective;
+        announce eTreeSeeded;
+      }
+      tip = applyTip;
+      lastApplied = applyTip;
     }
-    if (tip == 0) {
-      announce eSeedEffective;
-      announce eTreeSeeded;
-    }
-    tip = applyTip;
     i = 0;
     while (i < sizeof(waiters)) {
-      send w2, eR2L, (kind = Y_APPLIED, pass = waiters[i], a = tip, b = 0, c = 0);
+      send w2, eR2L, (kind = Y_APPLIED, pass = waiters[i], a = applyTip, b = 0, c = 0);
       i = i + 1;
     }
     waiters = default(seq[int]);
