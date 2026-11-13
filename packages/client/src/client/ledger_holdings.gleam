@@ -320,6 +320,14 @@ pub fn placements(
   listed: Roster(Executor),
 ) -> Result(List(Placement), Nil) {
   use tally <- result.try(count(registry, "", Tally(0, dict.new()), max_pages))
+  placed_report(tally, listed)
+}
+
+/// The placements a tally of owned sessions makes, by executor node.
+fn placed_report(
+  tally: Tally,
+  listed: Roster(Executor),
+) -> Result(List(Placement), Nil) {
   use nodes <- result.map(placed_on(tally.by_executor, roster.rows(listed)))
   list.map(nodes, fn(entry) {
     let counts = entry.1
@@ -353,7 +361,48 @@ pub fn resident_by_name(
   registry: Manager(instance),
   listed: Roster(Executor),
 ) -> Dict(String, Int) {
-  case placements(registry, listed) {
+  names_of(placements(registry, listed), listed)
+}
+
+/// The same counts as `resident_by_name`, from rows the registry read in its own
+/// turn (`manager.claim_placement` gives them), so the count and the claims of a
+/// placement are one turn. The rows are each registration's view and move row.
+/// It makes no call, because it runs inside the registry. `Error(Nil)`, a
+/// catalogue that could not be read, is no information, as it is there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ledger_holdings.resident_in(Ok([]), executors) == dict.new()
+/// ```
+pub fn resident_in(
+  rows: Result(List(#(manager.View, catalogue.Custody)), Nil),
+  listed: Roster(Executor),
+) -> Dict(String, Int) {
+  case rows {
+    Error(Nil) -> dict.new()
+    Ok(found) -> {
+      // Sessions handed to another orchestrator are not this one's.
+      let owned =
+        list.filter_map(found, fn(row) {
+          case row.1 {
+            catalogue.Moved(..) -> Error(Nil)
+            catalogue.Resident
+            | catalogue.Moving(..)
+            | catalogue.Imported(..) -> Ok(row.0)
+          }
+        })
+      names_of(placed_report(add(Tally(0, dict.new()), owned), listed), listed)
+    }
+  }
+}
+
+/// The resident count of each listed executor, by name, from placements.
+fn names_of(
+  found: Result(List(Placement), Nil),
+  listed: Roster(Executor),
+) -> Dict(String, Int) {
+  case found {
     Error(Nil) -> dict.new()
     Ok(held) ->
       roster.rows(listed)

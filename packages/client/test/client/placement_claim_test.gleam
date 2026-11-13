@@ -9,11 +9,14 @@
 import client/daemon/domain as domain_service
 import client/daemon/manager
 import client/executors
+import client/ledger_holdings
 import client/pools
+import client/roster
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 import host/bootstrap
 import simplifile
@@ -94,6 +97,21 @@ fn building(
   ids
 }
 
+// A session placed on the executor `e0` and one placed nowhere, both opened, so
+// that the first one's row names the executor the way a session that attached
+// there does.
+fn building_first_on_e0(
+  registry: manager.Manager(String),
+  store: catalogue.Catalogue,
+  directory: String,
+) -> #(String, String) {
+  let assert [first] = held_catalogue.registered_n(store, directory, "e0", 1)
+  let assert [second] = held_catalogue.registered_n(store, directory, "", 1)
+  let assert Ok(manager.Opening(_)) = manager.open(registry, first)
+  let assert Ok(manager.Opening(_)) = manager.open(registry, second)
+  #(first, second)
+}
+
 fn release(directory: String, id: String) -> Nil {
   let assert Ok(Nil) = simplifile.write(directory <> "/" <> id <> ".go", "")
   Nil
@@ -154,7 +172,12 @@ fn claim(
   pool: List(executors.Executor),
   seen: Subject(Dict(String, Int)),
 ) -> List(String) {
-  manager.claim_placement(registry, id, dict.new(), spread_and_tell(pool, seen))
+  manager.claim_placement(
+    registry,
+    id,
+    ledger_holdings.resident_in(_, roster.fixed(pool)),
+    spread_and_tell(pool, seen),
+  )
 }
 
 fn held_when_asked(seen: Subject(Dict(String, Int))) -> Dict(String, Int) {
@@ -254,5 +277,59 @@ pub fn the_executor_that_took_the_scope_replaces_the_claim_test() {
   let _ = claim(registry, second, boxes(2), seen)
   assert held_when_asked(seen) == dict.from_list([#("e1", 1)])
   release(directory, first)
+  release(directory, second)
+}
+
+// The window the old order had. The caller read the resident counts, then asked
+// the registry. A session that became resident in between had left the claims,
+// because its slot was no longer building, and was not in the counts that were
+// read, so the ask counted it not at all and put a second session on the same
+// executor. The registry now reads the rows in the turn that holds the claims,
+// so the session is counted once, by its row.
+pub fn a_session_that_became_resident_is_counted_once_in_the_turn_test() {
+  let #(registry, store, directory) = start()
+  let #(first, second) = building_first_on_e0(registry, store, directory)
+  let seen = process.new_subject()
+  assert claim(registry, first, boxes(2), seen) == ["e0", "e1"]
+  let _ = held_when_asked(seen)
+  release(directory, first)
+  resident(registry, first)
+
+  // The first session left the claims, and its row says e0.
+  assert claim(registry, second, boxes(2), seen) == ["e1", "e0"]
+  assert held_when_asked(seen) == dict.from_list([#("e0", 1)])
+  release(directory, second)
+}
+
+// The same sequence with the counts read before the turn, which is the old
+// order: a read taken while the first session was still building is empty, and
+// the second session is sent to the executor the first already holds.
+pub fn counts_read_before_the_turn_miss_a_session_that_became_resident_test() {
+  let #(registry, store, directory) = start()
+  let #(first, second) = building_first_on_e0(registry, store, directory)
+  let seen = process.new_subject()
+  let _ = claim(registry, first, boxes(2), seen)
+  let _ = held_when_asked(seen)
+
+  // The caller's read, before the first session is resident.
+  let read_early =
+    ledger_holdings.resident_in(
+      manager.page(registry, after: "")
+        |> result.map(fn(page) {
+          list.map(page.1, fn(view) { #(view, catalogue.Resident) })
+        })
+        |> result.replace_error(Nil),
+      roster.fixed(boxes(2)),
+    )
+  release(directory, first)
+  resident(registry, first)
+  let ordered =
+    manager.claim_placement(
+      registry,
+      second,
+      fn(_rows) { read_early },
+      spread_and_tell(boxes(2), seen),
+    )
+  assert ordered == ["e0", "e1"]
   release(directory, second)
 }
