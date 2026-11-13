@@ -1639,7 +1639,10 @@ answer and the host handing it to the factory. `workspace_plane_test` runs real
 commits in the jail under a hostile `.git/config` and an overwritten tool-home
 gitconfig, and shows that `amend` and `rebase` keep an existing author while the
 pinned name becomes the committer. `protocol/models/state-transfer` is the P model
-of the drop and restart cases.
+of the drop and restart cases, and `protocol/models/seeded-spawn` is the P model of a
+seeded spawn from the ask to the pull of the commits, with its mutants.
+`seed_landing_model_test` is the `statem` model of the order `spawn_seed.land` takes
+its steps in, with qcheck properties for `delegate_key`.
 
 `git_identity.resolve` reads the source's effective name/email, while `publish`
 projects only those two values through the existing descriptor-confined helper.
@@ -1794,15 +1797,20 @@ such child runs in a delegate session of its own, and its workspace is its workt
   old functions are the empty child. `manager.DelegateRequest.child`, `delegate_child`,
   `delegate_family` and `release_delegate_child` carry it through the registry's turn.
   `delegate_host.children(context)` is `ChildSessions`: `resolve` (create or open, for a
-  spawn), `open` (an existing session or `None`, never creates), `live` (a parent's
-  resident children, for the end of a run) and `release`. `releaser` walks the pair and
+  spawn), `open` (an existing session or `None`, never creates), `resident` (the session
+  of a child only when it is open and resident, for a read or a message, so a closed
+  session is not reopened), `live` (a parent's resident children, for the end of a run)
+  and `release`. The request key of a session is `delegate_key.key`, which `parse` reads
+  back and refuses when damaged. `releaser` walks the pair and
   every child. The child's name is `spawn_seed.name_of(site, state)`.
 - *Session record.* `session_states.SessionStates` (link to the executor's store, `fit`
   from the attach census, `apply`, `capture`) is built by `remote/workspace.states_over`
   over the surface and carried on `Hands.states`, `serve.Half.states` and
   `agency.DelegateEndpoint.states`. `serve` wraps `apply` in
   `session_states.before_first_turn`, which asks `DelegateEndpoint.fresh`
-  (`agency.delegate_fresh`: no lineage fact under the prefix, failing closed) at each
+  (`agency.delegate_fresh`: `session_states.Freshness`, which is `Fresh` for no lineage
+  fact under the prefix, `Begun` for any, and `Unreadable` when the read failed; an
+  unreadable record is asked about again and never taken for a begun one) at each
   request.
 - *Order.* `spawn_seed.land` (via `landed`): the refusal an earlier attempt kept, a session
   that already began (a resend: nothing is put anywhere), the whole bundle in this node's
@@ -1810,8 +1818,12 @@ such child runs in a delegate session of its own, and its workspace is its workt
   `shared` workspace is refused naming the mode and the session is released), then `placed`
   runs `placing` in an unlinked process under a claim and `apply_ms`: `delivered`
   (`state_transfer.send` over `state_link.via_host`) and `applied_on` (asks `fresh` once
-  more, then `states.apply`). A `Later` failure is `NotYetOpen`, a `Final` one
-  `StateRefused` and is kept as a verdict and releases the session. The host calls the
+  more, then `states.apply`). `seed_landing` decides what a failure means: `Retry` (no room, a fence that
+  moved, no answer, the deadline, an unreadable record) is `NotYetOpen`, keeps no verdict
+  and leaves the session, and `Refuse` (a malformed description or piece, a workspace
+  that refuses the state) is `StateRefused`, kept as a verdict, and releases the session.
+  An ask that finds a verdict releases the session too, for a daemon that stopped between
+  the two. `workspace.failed_by` reads an executor's refusal of an apply the same way. The host calls the
   Agency's `spawn` only after `land` returned `Ok`, in the session `Landed.session` names,
   and releases that session (`unstarted_ended`) when the Agency refuses for good.
 - *Join and return.* `spawn_return.Returning.session_of` reads the record (`Copy.home`,

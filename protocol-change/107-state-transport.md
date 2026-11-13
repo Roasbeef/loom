@@ -1230,3 +1230,79 @@ transcript and the end of a run reach the session the child runs in.
   (`manager.claim_placement` and `pools.spread`) asked from eight concurrent builds, and the
   executor leg is tested against one real in-process executor. Nothing here was run over a
   real TLS distribution link, under bubblewrap and Landlock, on three machines or by a model.
+
+## Addendum: slice 4b reviewed and checked against models (2026-11-13)
+
+An independent review of the slice 4b change found four faults, and the owner asked
+that the landing of a seed be checked with the repository's model tools before
+anything is built on it. Nothing above is edited, and no wire constructor changed.
+
+**What was fixed.**
+
+- *A record that cannot be read was taken for a session that has begun.*
+  `DelegateEndpoint.fresh` returned a boolean that failed closed, so an unreadable
+  lineage record skipped the apply and the child started on a checkout nothing was put
+  in. It returns `session_states.Freshness`, which is `Fresh`, `Begun` or `Unreadable`,
+  and `seed_landing.gate` says what the caller does: an unreadable record is asked
+  about again. This replaces "a read that fails answers not fresh" in slice 4b.
+- *A failure that asking again can cure was kept as a permanent verdict.* An executor
+  with no room, a fence that has moved, an unanswered request and the deadline left a
+  `.refused` file that answered every later ask. `seed_landing` separates `Retry`, which
+  keeps nothing and leaves the session, from `Refuse`, which is a malformed description
+  or piece, a node with no store, or a workspace that refuses the state, and keeps the
+  verdict. `workspace.failed_by` reads an executor's refusal of an apply the same way: a
+  stale token or incarnation, a scope that is closing or being built and a plane to
+  attach again are `Later`, and only a refusal about the content or the workspace is
+  `Final`.
+- *A history read or a message reopened a closed child session.* `ChildSessions.resident`
+  finds a child's session only when it is open and resident, and the spawn host uses it
+  for those paths. `open` still serves the landing.
+- *`seed_applied` was logged for a resend that applied nothing.* It is logged when an
+  apply happened.
+
+**What the model found.** The P model `protocol/models/seeded-spawn` failed
+`EverySettledChildIsReleased` on the code as it stood. `placing` writes a refusal's
+verdict, lets go of the claim and only then ends the child's session. A daemon that
+stopped between the first and the last left a refused child with a session, and every
+later ask answered the verdict without ending it. The session was bounded by the
+parent's release, which walks every session the pair holds, so the cost was a session
+held until the run ended. An ask that finds a verdict now ends the session, which does
+nothing when it is already gone.
+
+**What checks the landing.**
+
+- `protocol/models/seeded-spawn` models both placements and the whole round trip: the
+  bundle held, the session found or made, the attach census, the send, the fenced
+  `StateApply`, the Agency's spawn, the child's work, the thin capture, the join and the
+  owner's single ref, with dropped links, restarts of either orchestrator and of the
+  executor, an asker that gives up, a late bundle and a stale fence. It checks that the
+  first turn never runs before the seed is applied, that at most one session exists for
+  the child, that the seed is applied once and never over a newer tip, that the owner's
+  ref names only a bundle its description names, that a transient failure never leaves a
+  verdict, that an unreadable record is never taken for a begun session, that every asked
+  spawn ends and that every settled child's session is released. Ten mutants, two of them
+  the review findings as they stood, are each caught by the spec that names them.
+- `seed_landing_model_test` is a `statem` model of the order `spawn_seed.land` takes its
+  steps in, with a fault injected at each step, taking every decision about a failure
+  from `seed_landing`. It checks one session, apply before the first turn, one apply,
+  a verdict only for a deterministic refusal, convergence of a fault-free ask after any
+  failure, and release at the join. Its qcheck properties cover the delegate key
+  (`delegate_key`): it reads back, two keys are equal only for equal parts, and damaged
+  keys such as an empty child are refused.
+
+**What is not checked.**
+
+- The model has one child. What `land` does with a spawn asked for again after its
+  child was joined and its session ended was not examined: `land` checks the verdict
+  file and the session, and neither says the child settled. The sender does not ask
+  after the answer that carries the result, and neither the model nor a test covers a
+  late duplicate.
+- The model joins the attach to the claim. In the code the attach runs before the claim,
+  so two asks may attach at once. An attach is idempotent on the executor and the claim
+  still admits one apply.
+- The model clears a claim at a restart. The code takes a claim left by a dead process as
+  stale after fifteen minutes, so an ask in that window is told to ask again.
+- The bundle's pieces are the state transfer model's, and the thin capture's content and
+  the owner's ref are tested against real repositories.
+- A seeded spawn over the untrusted executor link of protocol-change 109 and 110 is not
+  designed here.
