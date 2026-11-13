@@ -205,3 +205,39 @@ pub fn a_permissions_snapshot_decodes_as_an_event_test() {
     protocol.decode_v2_presentation(frame)
   assert remembered.count(decoded) == 1
 }
+
+fn by_spawner(name: json.JsonValue) -> json.JsonValue {
+  json.Object([
+    #("spawner", name),
+    #("by", json.Object([#("principal", json.String("page-owner"))])),
+    #("at_ms", json.Int(1_790_000_000_500)),
+  ])
+}
+
+// A grant a spawner's operator approved carries the spawner's name where a
+// sign-in's provenance carries a credential, and the board names it as that
+// spawner's rather than leaving it unattributed (protocol-change/108).
+pub fn a_grant_a_spawner_approved_decodes_with_the_spawners_name_test() {
+  let assert Ok(decoded) =
+    remembered.decode(
+      board([
+        row(path("readable_root", "/repo"), by_spawner(json.String("laptop"))),
+        row(path("writable_root", "/repo"), by_spawner(json.Int(3))),
+      ]),
+    )
+  let assert [first, second] = decoded.grants
+  assert first.provenance
+    == remembered.Spawner(
+      spawner: "laptop",
+      principal: Some("page-owner"),
+      at_ms: 1_790_000_000_500,
+    )
+  assert remembered.who(first.provenance)
+    == "Approved from the page of the orchestrator laptop"
+  assert remembered.when(first.provenance) == Some(1_790_000_000_500)
+  assert remembered.login(first.provenance) == None
+
+  // A spawner that is not text is not a spawner's record, and never hides the
+  // permission it came with.
+  assert second.provenance == remembered.Unknown
+}
