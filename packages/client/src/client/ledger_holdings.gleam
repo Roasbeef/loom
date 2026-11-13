@@ -379,6 +379,7 @@ pub fn resident_in(
   rows: Result(List(#(manager.View, catalogue.Custody)), Nil),
   listed: Roster(Executor),
 ) -> Dict(String, Int) {
+  // An unreadable catalogue is no information, and readable rows are counted.
   case rows {
     Error(Nil) -> dict.new()
     Ok(found) -> {
