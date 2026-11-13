@@ -1534,6 +1534,14 @@ another destination is in flight), and `not_owner` (the session already moved).
 `moving` is not a refusal of this command: asking again is how a client learns
 the stored `op`.
 
+Every refusal of this command carries its cause in `message`, in words an owner
+can act on: the destination's table that lacks `checkout_executor` and
+`checkout_workspace`, the executor this daemon does not list, a directory that is
+not the top of a primary checkout, the other destination a move is already
+heading to, and so on. The words name configuration keys and orchestrators and
+never a path of the daemon's machine. A client prints the code and the message
+together and does not match on the message.
+
 On a session directory member
 ([protocol-change/083](../protocol-change/083-khepri-session-ownership.md)) the
 owner record decides the move. Three things differ for a client:

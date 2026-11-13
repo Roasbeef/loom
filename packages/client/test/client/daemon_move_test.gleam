@@ -744,6 +744,91 @@ pub fn a_local_session_is_refused_for_a_place_or_a_directory_that_cannot_carry_i
   )
 }
 
+// The words of a refused request: the `message` of its error frame.
+fn words(frame) -> String {
+  assert field(frame, "event") == json.String("error")
+  let assert json.String(text) = field(field(frame, "body"), "message")
+    as "the refusal carries words"
+  text
+}
+
+fn abandon(socket, id, session, epoch) {
+  wire.send(
+    socket,
+    id,
+    "sessions.move",
+    json.Object([
+      #("session_id", json.String(session)),
+      #("abandon", json.Bool(True)),
+      #("epoch", json.String(epoch)),
+    ]),
+    within_ms: 1000,
+  )
+}
+
+pub fn a_refused_move_says_why_in_words_for_each_cause_test() {
+  moving_listing(
+    origin(),
+    [
+      laptop(),
+      laptop_carrying("build-box") |> rename("carrier"),
+      laptop_carrying("nowhere") |> rename("unlisted"),
+      laptop_carrying("build-box") |> rename("second"),
+    ],
+    fn(ready, port, credential, recorder) {
+      let linked = checkout_directory(ready, "linked", "linked")
+      let primary = checkout_directory(ready, "primary", "primary")
+      let in_linked = working_in(ready, "words-linked", linked)
+      let in_primary = working_in(ready, "words-primary", primary)
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+
+      // A destination this daemon does not list.
+      assert words(move(socket, 1, in_primary, "elsewhere", ready.epoch))
+        == "no orchestrator with that name is configured on this daemon; "
+        <> "name one of its [orchestrators.<name>] tables"
+
+      // A local session whose destination names no place for its checkout is
+      // told which keys to set, and in which table.
+      assert words(move(socket, 2, in_primary, "laptop", ready.epoch))
+        == "this session works in a directory on this machine; to move it, "
+        <> "[orchestrators.laptop] needs checkout_executor and "
+        <> "checkout_workspace"
+
+      // A place on an executor this daemon does not list.
+      assert words(move(socket, 3, in_primary, "unlisted", ready.epoch))
+        == "[orchestrators.unlisted] names the checkout executor `nowhere`, "
+        <> "which this daemon does not list"
+
+      // A directory that is not the top of a primary checkout.
+      assert string.contains(
+        words(move(socket, 4, in_linked, "carrier", ready.epoch)),
+        "not the top of a primary checkout",
+      )
+
+      // A move toward another destination while one is in flight.
+      let _ = move(socket, 5, in_primary, "carrier", ready.epoch)
+      assert words(move(socket, 6, in_primary, "second", ready.epoch))
+        == "a move of this session toward another orchestrator is already in "
+        <> "flight; wait for it to end"
+
+      // A daemon with no directory cannot abandon, and says so.
+      assert words(abandon(socket, 7, in_primary, ready.epoch))
+        == "only a directory member can abandon a move, and this daemon is "
+        <> "not one"
+
+      // A stale epoch keeps its code and says what to do.
+      assert string.contains(
+        words(move(socket, 8, in_primary, "carrier", "an-epoch-before")),
+        "reconnect",
+      )
+      assert list.length(told(recorder)) == 1
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+}
+
 fn rename(
   row: orchestrators.Orchestrator,
   name: String,
