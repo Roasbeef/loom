@@ -36,6 +36,13 @@
 //// frame, answers every later poll with its ending, and exits one lease after it
 //// ended, which is long enough for a late poll to learn why.
 ////
+//// This module owns the lease. It is one weft named timeout that every poll
+//// re-arms, so a fire means no poll arrived for the lease and the timer book has
+//// already dropped any fire that a later poll superseded. `feed_queue` knows what
+//// a poll acknowledged and reads no clock, so the lease is not written twice.
+//// A held poll is answered on a timer of its own, and the poll that arrives
+//// after it is what renews the lease, so releasing a held poll does not.
+////
 //// A gateway call made for the lane (`gateway.connection_request`, a decision)
 //// blocks this process, as `ui_relay`'s does, for at most the gateway's own six
 //// seconds. A laptop that sends faster than the gateway answers waits behind its
@@ -85,7 +92,6 @@ import gleam/erlang/process.{type Pid, type Subject}
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor as otp
 import gleam/result
-import host/bootstrap
 import storage/access
 import weft/state_machine as sm
 
@@ -135,9 +141,11 @@ pub type Settings {
     /// process. It runs in the feed's own process, so the permit is released
     /// when the feed exits.
     admit: fn() -> Result(Nil, String),
-    /// Called once when the feed ends, so the directory stops counting it
-    /// toward its spawner's cap while it is kept for a late poll.
-    ended: fn() -> Nil,
+    /// The process that answers the attach. The feed watches it and exits with
+    /// it until `registered` says the directory holds the feed, so a feed whose
+    /// attach was cancelled between its start and its registration never runs
+    /// uncounted.
+    owner: Pid,
     /// How long a feed lives with no poll, and how long an ended feed is kept,
     /// in milliseconds. `remote_feed.lease_ms` in the daemon.
     lease_ms: Int,
@@ -201,12 +209,19 @@ type Message {
 
   /// The first message a feed handles, which arms its lease.
   Begun
+
+  /// The directory holds the feed, so it no longer needs its owner.
+  Registered
+
+  /// The process that answered the attach went down.
+  OwnerDown(down: process.Down)
 }
 
 type Data {
   Data(
     settings: Settings,
-    self: Subject(Message),
+    /// The monitor on `Settings.owner`, until the feed is registered.
+    owner: Option(process.Monitor),
     connection: Option(gateway.ConnectionHandle),
     queue: feed_queue.Queue,
     pieces: feed_pieces.Pieces,
@@ -259,16 +274,18 @@ fn initialise(
     process.self(),
   ))
   let watch = process.monitor(gateway.connection_pid(connection))
+  let owner = process.monitor(settings.owner)
   let selector =
     process.new_selector()
     |> process.select(self)
     |> process.select_specific_monitor(watch, GatewayDown)
+    |> process.select_specific_monitor(owner, OwnerDown)
   let data =
     Data(
       settings:,
-      self:,
+      owner: Some(owner),
       connection: Some(connection),
-      queue: feed_queue.new(bootstrap.monotonic_time_ms()),
+      queue: feed_queue.new(),
       pieces: feed_pieces.new(),
       held: None,
     )
@@ -293,6 +310,18 @@ fn initialise(
 /// ```
 pub fn pid(feed: Feed) -> Pid {
   feed.pid
+}
+
+/// Tells the feed that the directory holds it, so it stops watching the process
+/// that answered the attach.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // feed_host.registered(feed)
+/// ```
+pub fn registered(feed: Feed) -> Nil {
+  process.send(feed.subject, Registered)
 }
 
 /// Answers a poll, waiting at most the poll's own wait and a little more. A feed
@@ -362,6 +391,17 @@ fn handle(
     Live, Begun -> sm.keep(data) |> with_lease(data)
     Ended(_), Begun -> sm.keep(data)
 
+    // Registration ends the feed's dependence on the process that answered the
+    // attach. The monitor is dropped with a flush, so no late `OwnerDown` follows.
+    Live, Registered | Ended(_), Registered -> sm.keep(unwatched(data))
+
+    // A feed whose owner went down before registration was never counted, and
+    // exits with the attach that would have registered it.
+    Live, OwnerDown(_) | Ended(_), OwnerDown(_) -> {
+      detached(data)
+      sm.stop()
+    }
+
     Live, Poll(poll:, reply:) -> poll_live(data, poll, reply)
     Ended(why), Poll(reply:, ..) -> {
       process.send(reply, Ok(ending_answer(data, why)))
@@ -398,7 +438,7 @@ fn handle(
     Ended(_), Closed | Ended(_), GatewayDown(_) -> sm.keep(data)
 
     Live, PollWaited -> released(data)
-    Live, LeaseElapsed -> lapsed_unless_renewed(data)
+    Live, LeaseElapsed -> finish(data, remote_top.FeedLapsed)
 
     // The timers of a live feed are cancelled on the way into `Ended`, and a
     // fire already in flight is dropped by the timer book, so these two are
@@ -424,7 +464,7 @@ fn poll_live(
 
   // A cursor the queue cannot honour is refused and changes nothing. Otherwise
   // the poll is answered with what the queue holds beyond `after`.
-  case feed_queue.read(data.queue, poll.after, bootstrap.monotonic_time_ms()) {
+  case feed_queue.read(data.queue, poll.after) {
     Error(cursor) -> {
       process.send(reply, Error(cursor_refusal(cursor)))
       sm.keep(data) |> sm.cancel_timeout(name: poll_timer)
@@ -475,13 +515,13 @@ fn supersede(data: Data) -> Data {
 }
 
 /// Answers the held poll with the frames that arrived, or with none when its
-/// wait has passed. Acknowledgement and renewal happen again here, because the
-/// laptop is still polling while it waits.
+/// wait has passed. The poll's cursor was acknowledged when it arrived, so this
+/// read acknowledges nothing new, and only a poll's arrival renews the lease.
 fn released(data: Data) -> sm.Next(Phase, Data, Message) {
   case data.held {
     None -> sm.keep(data)
     Some(Held(reply:, after:)) ->
-      case feed_queue.read(data.queue, after, bootstrap.monotonic_time_ms()) {
+      case feed_queue.read(data.queue, after) {
         Ok(reading) -> {
           process.send(
             reply,
@@ -492,9 +532,7 @@ fn released(data: Data) -> sm.Next(Phase, Data, Message) {
             )),
           )
           let data = Data(..data, queue: reading.queue, held: None)
-          sm.keep(data)
-          |> sm.cancel_timeout(name: poll_timer)
-          |> with_lease(data)
+          sm.keep(data) |> sm.cancel_timeout(name: poll_timer)
         }
 
         // The cursor was checked when the poll was held and nothing moves the
@@ -541,30 +579,12 @@ fn with_lease(
   )
 }
 
-/// The lease timer fired. The queue decides whether the lease has really run
-/// out, so the rule lives in one place; a fire that came a moment early re-arms.
-fn lapsed_unless_renewed(data: Data) -> sm.Next(Phase, Data, Message) {
-  let queue =
-    feed_queue.expire(
-      data.queue,
-      bootstrap.monotonic_time_ms(),
-      data.settings.lease_ms,
-    )
-
-  // A queue that lapsed ends the feed. One that did not, because the timer fired
-  // a moment early, waits out the rest of the lease.
-  case feed_queue.ending(queue) {
-    Some(why) -> finish(Data(..data, queue:), why)
-    None -> sm.keep(Data(..data, queue:)) |> with_lease(data)
-  }
-}
-
 // --- frames from the gateway -----------------------------------------------------
 
 /// Queues one frame the gateway wrote. A frame that passes the queue's bound ends
 /// the feed, and a frame that a held poll was waiting for releases it.
 fn queued(data: Data, frame: String) -> sm.Next(Phase, Data, Message) {
-  let queue = feed_queue.push(data.queue, frame, bootstrap.monotonic_time_ms())
+  let queue = feed_queue.push(data.queue, frame)
   let data = Data(..data, queue:)
 
   // A frame that ended the feed is the end of it. A frame a held poll was waiting
@@ -753,6 +773,18 @@ fn closing_reason(data: Data) -> FeedEnd {
   }
 }
 
+/// Stops watching the process that answered the attach.
+fn unwatched(data: Data) -> Data {
+  // The monitor is dropped with a flush, so no late `OwnerDown` follows it.
+  case data.owner {
+    Some(watch) -> {
+      process.demonitor_process(watch)
+      Data(..data, owner: None)
+    }
+    None -> data
+  }
+}
+
 /// Detaches from the gateway, if still attached.
 fn detached(data: Data) -> Nil {
   case data.connection {
@@ -765,7 +797,7 @@ fn detached(data: Data) -> Nil {
 /// answers a held poll with the ending, and keeps the token for one more lease.
 fn finish(data: Data, why: FeedEnd) -> sm.Next(Phase, Data, Message) {
   detached(data)
-  let queue = feed_queue.end(data.queue, why, bootstrap.monotonic_time_ms())
+  let queue = feed_queue.end(data.queue, why)
 
   // A poll held for a frame learns why none will come.
   case data.held {
@@ -789,8 +821,6 @@ fn finish(data: Data, why: FeedEnd) -> sm.Next(Phase, Data, Message) {
       pieces: feed_pieces.drop(data.pieces),
       held: None,
     )
-
-  data.settings.ended()
 
   sm.transition(to: Ended(why), data:)
   |> sm.cancel_timeout(name: poll_timer)

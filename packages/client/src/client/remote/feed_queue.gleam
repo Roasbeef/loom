@@ -20,39 +20,39 @@
 //// ## When a feed ends
 ////
 //// The queue holds at most `remote_feed.queue_frames` frames and
-//// `remote_feed.queue_bytes` bytes that the laptop has not acknowledged, and an
-//// empty queue admits any frame one answer can carry, so a frame's size alone
-//// never ends a feed. Passing either bound, or going a whole
-//// `remote_feed.lease_ms` without a poll, **lapses** the feed:
-//// the queue drops every frame and answers `lapsed` from then on. It drops the
-//// whole queue and never one frame, because a stream delta carries no offset, so
-//// dropping one from the middle of an answer would draw a garbled preview until
-//// the entry lands. A feed also ends `stopped`, when the session's run ended,
-//// and `revoked`, when the box's owner took the page's access away. The first
-//// ending is the one a feed keeps, and an ended queue is forgotten one lease
-//// after it ended, which is long enough for a late poll to learn why.
+//// `remote_feed.queue_bytes` bytes that the laptop has not acknowledged, and it
+//// admits a frame that one answer can carry. Passing either bound **lapses**
+//// the feed: the queue drops every frame and answers `lapsed` from then on. It
+//// drops the whole queue and never one frame, because a stream delta carries no
+//// offset, so dropping one from the middle of an answer would draw a garbled
+//// preview until the entry lands. A feed also ends `stopped`, when the
+//// session's run ended, and `revoked`, when the box's owner took the page's
+//// access away. The first ending is the one a feed keeps.
+////
+//// The lease, the third way a feed lapses, is not here. It is a weft named
+//// timeout in `feed_host`, re-armed by every poll, because the house rule gives
+//// every timer to weft and a queue that also read a clock would own the lease
+//// twice. The queue knows what a poll acknowledged and nothing about when.
 ////
 //// A frame that cannot fit alone in an answer under the stable exchange's
-//// envelope is the one case where a size ends a feed. No gateway push reaches
-//// that size (protocol-change/108, the addendum on the push-size question: a
-//// daemon's gateway pushes a notice and never an entry, and every other push is
-//// under 150 KiB), so the case is unreachable, and this module still refuses the
-//// frame rather than build an answer the exchange would replace with
-//// `oversized`.
+//// envelope ends the feed too. That case is reachable, though rare. The
+//// gateway's `held_input_returned` push carries the whole text of a queued
+//// prompt with no bound, so a relayed page that queued a prompt of more than
+//// about half a mebibyte, when the box drains, is a push no answer can carry
+//// (see the addendum of protocol-change/108). Piece answers for polls, which
+//// would carry such a frame, belong to slice 4, and until then the feed lapses
+//// and the page reconnects.
 ////
 //// ## Flow
 ////
-//// `new` → `push` → `read` → `expire` → `end` → `forgettable`
+//// `new` → `push` → `read` → `end`
 ////
-//// 1. `new` starts a live, empty queue whose lease begins at the time it is
-////    given.
+//// 1. `new` starts a live, empty queue.
 //// 2. `push` numbers and holds one frame, or lapses the feed when it will not
 ////    fit.
-//// 3. `read` is a poll: it checks the cursor, drops what was acknowledged,
-////    renews the lease and answers the frames that fit one answer.
-//// 4. `expire` lapses a feed whose lease has run out, and `end` records the
-////    other two endings.
-//// 5. `forgettable` says when an ended feed's token may be forgotten.
+//// 3. `read` is a poll: it checks the cursor, drops what was acknowledged and
+////    answers the frames that fit one answer.
+//// 4. `end` records a stop or a revocation.
 
 import client/remote_feed
 import client/remote_top.{type FeedEnd}
@@ -82,11 +82,6 @@ type Held {
   )
 }
 
-/// How a feed ended and when, on the clock the feed host reads.
-type Ending {
-  Ending(why: FeedEnd, at_ms: Int)
-}
-
 /// One feed's queue. It is opaque so that every change goes through a rule
 /// of this module.
 pub opaque type Queue {
@@ -99,10 +94,8 @@ pub opaque type Queue {
     last: Int,
     /// The bytes of `held`.
     bytes: Int,
-    /// When a poll last renewed the lease.
-    leased_ms: Int,
     /// Why the feed ended, once it has.
-    ended: Option(Ending),
+    ended: Option(FeedEnd),
   )
 }
 
@@ -119,7 +112,7 @@ pub type Cursor {
 /// What a poll is answered.
 pub type Reading {
   Reading(
-    /// The queue after the poll acknowledged and renewed.
+    /// The queue after the poll acknowledged.
     queue: Queue,
     /// The number of the first frame in `frames`, or of the next frame when
     /// there are none.
@@ -131,15 +124,15 @@ pub type Reading {
   )
 }
 
-/// A live, empty queue whose lease begins at `now_ms`.
+/// A live, empty queue.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_queue.last(feed_queue.new(0)) == 0
+/// assert feed_queue.last(feed_queue.new()) == 0
 /// ```
-pub fn new(now_ms: Int) -> Queue {
-  Queue(held: [], floor: 0, last: 0, bytes: 0, leased_ms: now_ms, ended: None)
+pub fn new() -> Queue {
+  Queue(held: [], floor: 0, last: 0, bytes: 0, ended: None)
 }
 
 /// Numbers and holds one frame. The queue lapses instead when the frame would
@@ -149,10 +142,10 @@ pub fn new(now_ms: Int) -> Queue {
 /// ## Examples
 ///
 /// ```gleam
-/// let queue = feed_queue.push(feed_queue.new(0), "{}", 1)
+/// let queue = feed_queue.push(feed_queue.new(), "{}")
 /// assert feed_queue.last(queue) == 1
 /// ```
-pub fn push(queue: Queue, frame: String, now_ms: Int) -> Queue {
+pub fn push(queue: Queue, frame: String) -> Queue {
   // Nothing reads the frames of an ended feed, so a push to one is dropped.
   case queue.ended {
     Some(_) -> queue
@@ -160,8 +153,8 @@ pub fn push(queue: Queue, frame: String, now_ms: Int) -> Queue {
       let size = string.byte_size(frame)
       let wire = string.byte_size(json.to_string(json.String(frame)))
 
-      // A frame that fits is numbered and held. One that does not ends the feed, and
-      // never leaves a gap in the numbers the laptop was promised.
+      // A frame that fits is numbered and held. One that does not ends the feed,
+      // and never leaves a gap in the numbers the laptop was promised.
       case fits(queue, size, wire) {
         True -> {
           let n = queue.last + 1
@@ -172,41 +165,37 @@ pub fn push(queue: Queue, frame: String, now_ms: Int) -> Queue {
             bytes: queue.bytes + size,
           )
         }
-        False -> lapse(queue, now_ms)
+        False -> end(queue, remote_top.FeedLapsed)
       }
     }
   }
 }
 
 /// Whether a frame of `size` bytes, `wire` once it is a JSON string, can join
-/// the queue. An empty queue admits any frame an answer can carry alone. Such a
-/// frame is always inside the byte bound, because one answer carries less than the
-/// bound, so the proposal's exception for a frame larger than the bound never
-/// applies and is not written.
+/// the queue. It must fit one answer alone, which is under the byte bound, and
+/// leave the frame and byte bounds unpassed.
 fn fits(queue: Queue, size: Int, wire: Int) -> Bool {
-  let alone = wire <= answer_bytes
-  let room =
-    list.length(queue.held) < remote_feed.queue_frames
-    && queue.bytes + size <= remote_feed.queue_bytes
-  alone && { queue.held == [] || room }
+  wire <= answer_bytes
+  && list.length(queue.held) < remote_feed.queue_frames
+  && queue.bytes + size <= remote_feed.queue_bytes
 }
 
 /// Answers a poll: checks that `after` is a cursor the queue can honour, drops
-/// every frame numbered `after` or less, renews the lease at `now_ms` and
-/// returns the frames beyond `after` that fit `answer_bytes`, at least one when
-/// there is one. The frames stay queued until a later poll acknowledges them.
-/// An ended queue answers its ending and no frames, whatever the cursor.
+/// every frame numbered `after` or less and returns the frames beyond `after`
+/// that fit `answer_bytes`. The frames stay queued until a later poll
+/// acknowledges them. An ended queue answers its ending and no frames, whatever
+/// the cursor.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let queue = feed_queue.push(feed_queue.new(0), "{}", 1)
-/// let assert Ok(reading) = feed_queue.read(queue, 0, 2)
+/// let queue = feed_queue.push(feed_queue.new(), "{}")
+/// let assert Ok(reading) = feed_queue.read(queue, 0)
 /// assert reading.frames == ["{}"]
 /// ```
-pub fn read(queue: Queue, after: Int, now_ms: Int) -> Result(Reading, Cursor) {
+pub fn read(queue: Queue, after: Int) -> Result(Reading, Cursor) {
   case queue.ended {
-    Some(Ending(why:, ..)) ->
+    Some(why) ->
       Ok(Reading(queue:, first: queue.last + 1, frames: [], ended: Some(why)))
     None ->
       case after > queue.last, after < queue.floor {
@@ -214,11 +203,10 @@ pub fn read(queue: Queue, after: Int, now_ms: Int) -> Result(Reading, Cursor) {
         _, True -> Error(BehindFloor)
         False, False -> {
           let acknowledged = acknowledge(queue, after)
-          let renewed = Queue(..acknowledged, leased_ms: now_ms)
           Ok(Reading(
-            queue: renewed,
+            queue: acknowledged,
             first: after + 1,
-            frames: carried(renewed.held),
+            frames: carried(acknowledged.held),
             ended: None,
           ))
         }
@@ -257,64 +245,19 @@ fn carried_within(
   }
 }
 
-/// Lapses a feed whose lease has run out: no poll has renewed it for `lease_ms`
-/// (`remote_feed.lease_ms` in the daemon). An ended queue and a queue still
-/// inside its lease are returned unchanged.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let queue = feed_queue.expire(feed_queue.new(0), 15_000, 15_000)
-/// assert feed_queue.ending(queue) == option.Some(remote_top.FeedLapsed)
-/// ```
-pub fn expire(queue: Queue, now_ms: Int, lease_ms: Int) -> Queue {
-  case queue.ended, now_ms - queue.leased_ms >= lease_ms {
-    None, True -> lapse(queue, now_ms)
-    Some(_), _ | None, False -> queue
-  }
-}
-
 /// Ends a live feed with `why`, dropping every frame. The first ending a feed
 /// has is the one it keeps.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let queue = feed_queue.end(feed_queue.new(0), remote_top.FeedStopped, 5)
+/// let queue = feed_queue.end(feed_queue.new(), remote_top.FeedStopped)
 /// assert feed_queue.ending(queue) == option.Some(remote_top.FeedStopped)
 /// ```
-pub fn end(queue: Queue, why: FeedEnd, now_ms: Int) -> Queue {
+pub fn end(queue: Queue, why: FeedEnd) -> Queue {
   case queue.ended {
     Some(_) -> queue
-    None ->
-      Queue(
-        ..queue,
-        held: [],
-        bytes: 0,
-        ended: Some(Ending(why:, at_ms: now_ms)),
-      )
-  }
-}
-
-fn lapse(queue: Queue, now_ms: Int) -> Queue {
-  end(queue, remote_top.FeedLapsed, now_ms)
-}
-
-/// Whether an ended feed's token may be forgotten: a whole lease has passed
-/// since it ended, so a late poll has had its chance to learn why. A live feed
-/// is never forgettable.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let queue = feed_queue.end(feed_queue.new(0), remote_top.FeedStopped, 0)
-/// assert !feed_queue.forgettable(queue, 14_999, 15_000)
-/// assert feed_queue.forgettable(queue, 15_000, 15_000)
-/// ```
-pub fn forgettable(queue: Queue, now_ms: Int, lease_ms: Int) -> Bool {
-  case queue.ended {
-    Some(Ending(at_ms:, ..)) -> now_ms - at_ms >= lease_ms
-    None -> False
+    None -> Queue(..queue, held: [], bytes: 0, ended: Some(why))
   }
 }
 
@@ -324,7 +267,7 @@ pub fn forgettable(queue: Queue, now_ms: Int, lease_ms: Int) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// assert !feed_queue.has_after(feed_queue.new(0), 0)
+/// assert !feed_queue.has_after(feed_queue.new(), 0)
 /// ```
 pub fn has_after(queue: Queue, after: Int) -> Bool {
   queue.ended == None && queue.last > after
@@ -335,10 +278,10 @@ pub fn has_after(queue: Queue, after: Int) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_queue.ending(feed_queue.new(0)) == option.None
+/// assert feed_queue.ending(feed_queue.new()) == option.None
 /// ```
 pub fn ending(queue: Queue) -> Option(FeedEnd) {
-  option.map(queue.ended, fn(ending) { ending.why })
+  queue.ended
 }
 
 /// The highest number assigned to a frame, or zero.
@@ -346,7 +289,7 @@ pub fn ending(queue: Queue) -> Option(FeedEnd) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_queue.last(feed_queue.new(0)) == 0
+/// assert feed_queue.last(feed_queue.new()) == 0
 /// ```
 pub fn last(queue: Queue) -> Int {
   queue.last
@@ -357,7 +300,7 @@ pub fn last(queue: Queue) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_queue.floor(feed_queue.new(0)) == 0
+/// assert feed_queue.floor(feed_queue.new()) == 0
 /// ```
 pub fn floor(queue: Queue) -> Int {
   queue.floor
@@ -368,7 +311,7 @@ pub fn floor(queue: Queue) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_queue.held_frames(feed_queue.new(0)) == 0
+/// assert feed_queue.held_frames(feed_queue.new()) == 0
 /// ```
 pub fn held_frames(queue: Queue) -> Int {
   list.length(queue.held)
@@ -379,7 +322,7 @@ pub fn held_frames(queue: Queue) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert feed_queue.held_bytes(feed_queue.new(0)) == 0
+/// assert feed_queue.held_bytes(feed_queue.new()) == 0
 /// ```
 pub fn held_bytes(queue: Queue) -> Int {
   queue.bytes

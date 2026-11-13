@@ -82,7 +82,15 @@ machine UiFeed {
       } else if (m.kind == AN_SEND) {
         onSend(m);
       } else if (m.kind == AN_REFUSED) {
-        finish(m.ended);
+        // A refusal that names an ending ends the adapter. A refusal of a poll
+        // that is no longer in flight is a delayed copy of an old poll, whose
+        // cursor the box has since passed, and is dropped. Any other refusal, of
+        // the poll in flight or of a piece, ends the adapter.
+        if (m.ended != EN_NONE) {
+          finish(m.ended);
+        } else if (m.pollId == 0 || (m.pollId == pollId && pollOut == 1)) {
+          finish(EN_NONE);
+        }
       }
     }
 

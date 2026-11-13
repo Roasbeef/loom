@@ -32,7 +32,9 @@
 //// `total`, as a `Chunk` of `client/session_move` places a piece in a file. A
 //// piece is at most `piece_bytes` of text and a frame at most `frame_bytes`,
 //// the page socket's own bound, so a prompt with four pasted images reaches the
-//// box in at most 32 pieces.
+//// box in at most 65 pieces. A piece that does not end its frame must carry at
+//// least `min_piece_bytes`, so a peer cannot hold the box's memory in cells by
+//// sending a frame a byte at a time.
 ////
 //// ## Flow
 ////
@@ -97,6 +99,26 @@ pub const piece_bytes = 393_216
 /// The most bytes one frame the lane transmits may have, which is the page
 /// socket's own operator bound.
 pub const frame_bytes = 12_582_912
+
+/// The fewest bytes a piece carries unless it ends its frame. A sender sends full
+/// pieces and a last piece, so a piece shorter than half the bound that does not
+/// end its frame is refused. That keeps the pieces of one frame at `max_pieces`
+/// or fewer, so the box never holds millions of one-byte pieces.
+pub const min_piece_bytes = 196_608
+
+/// The most pieces one frame may arrive in: whole pieces of at least
+/// `min_piece_bytes` fill the frame bound, and one last piece ends it.
+pub const max_pieces = 65
+
+/// The bytes the connection permit of one feed is charged: what the feed can hold
+/// at once, from its own bounds. A feed holds an unacknowledged queue
+/// (`queue_bytes`, 1,048,576), one partial frame (`frame_bytes`, 12,582,912), one
+/// answer being built (the exchange's envelope bound, 1,048,576) and one piece
+/// being read, which as JSON may double (twice `piece_bytes`, 786,432). The sum is
+/// 15,466,496 bytes, so the eight feeds of a spawner take 123,731,968 of the
+/// daemon's default budget of 536,870,912, a little under a quarter, where a
+/// page's 64 MiB charge would have taken all of it.
+pub const feed_charge_bytes = 15_466_496
 
 /// The most bytes of one name, identity or label text the decoders accept.
 pub const max_text_bytes = 512
@@ -382,10 +404,15 @@ fn decode_piece(
   use text <- result.try(bounded(piece, "piece", 1, piece_bytes))
   let size = string.byte_size(text)
 
-  // A piece stays inside its frame and inside the bound a piece may have.
-  case size <= piece_bytes && offset + size <= total {
-    True -> Ok(SendRequest(Piece(feed:, n:, offset:, total:, text:)))
+  // A piece stays inside its frame, and either ends it or is a full piece, so a
+  // frame arrives in at most `max_pieces` pieces.
+  case offset + size <= total {
     False -> Error("the piece does not lie inside its frame")
+    True ->
+      case offset + size == total || size >= min_piece_bytes {
+        True -> Ok(SendRequest(Piece(feed:, n:, offset:, total:, text:)))
+        False -> Error("a piece that does not end its frame is a full piece")
+      }
   }
 }
 

@@ -70,6 +70,25 @@ MUTATIONS = {
   # The lease is longer than any partition the lane survives. Here it is shorter
   # than the partition of the liveness case, so the feed lapses while the link
   # is cut for less than the real lease.
+  # Every ending detaches the gateway door once. Here a lapse ends the feed and
+  # leaves the gateway's attachment, and its presence, behind.
+  "M6-a-lapse-leaves-the-gateway-attached": ("tcOnlyDetachOnce", 1000, r"(liveness|hot state|Owing)", [
+    ("PSrc/FeedHost.p",
+     "    send gateway, eGwDetach;\n    ended = kind;\n",
+     "    if (kind != EN_LAPSED) {\n      send gateway, eGwDetach;\n    }\n    ended = kind;\n")]),
+
+  # An ended feed keeps its process and its permit until it is forgotten, so it
+  # holds its place until then. Here the place is freed when the feed ends, and a
+  # feed that attaches while the ended ones are kept makes more feeds alive than
+  # the cap allows.
+  "M7-an-ended-feed-frees-its-place-at-once": ("tcOnlyCap", 1000, r"more feeds are alive", [
+    ("PSrc/FeedHost.p",
+     "    if (directory != null) {\n      send directory, eFeedGone;\n    }\n    announce eFeedExited;\n",
+     "    announce eFeedExited;\n"),
+    ("PSrc/FeedHost.p",
+     "    announce eFeedEnded, kind;\n",
+     "    announce eFeedEnded, kind;\n    if (directory != null) {\n      send directory, eFeedGone;\n    }\n")]),
+
   "M5-lease-lapses-in-a-short-partition": ("tcOnlyShortPartition", 4000, r"(ended during a partition|hot state)", [
     ("PSrc/Types.p",
      "fun Lease(): int { return 10; }",
@@ -79,14 +98,14 @@ MUTATIONS = {
   # honest and answers its ending with the frames it had; the adapter that
   # delivers them breaks the rule, and only the laptop's side can be at fault
   # because the box's own check is blind in this case.
-  "M6-delivers-the-frames-of-an-ended-answer": ("tcOnlyHostileEnd", 4000, r"reports the feed ended", [
+  "M8-delivers-the-frames-of-an-ended-answer": ("tcOnlyHostileEnd", 4000, r"reports the feed ended", [
     ("PSrc/UiFeed.p",
      "    if (end == 0) {\n      foreach",
      "    if (true) {\n      foreach")]),
 
   # A link that is only down shows waiting. Here the adapter always shows a
   # failure when the lane closes the page.
-  "M7-shows-a-failure-for-a-link-that-is-down": ("tcOnlyDownWaiting", 4000, r"failure for a link that was only down", [
+  "M9-shows-a-failure-for-a-link-that-is-down": ("tcOnlyDownWaiting", 4000, r"failure for a link that was only down", [
     ("PSrc/UiFeed.p",
      "    if (down == 1) {\n      return SH_WAITING;\n    }\n",
      "")]),

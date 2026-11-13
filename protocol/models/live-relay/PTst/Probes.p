@@ -139,6 +139,15 @@ spec ProbeShownWaiting observes eShown {
   }
 }
 
+// A poll's cursor was ahead of the queue and was refused.
+spec ProbeCursorAhead observes eCursorRefused {
+  start state Watching {
+    on eCursorRefused do (k: int) {
+      assert k != 0, "witness: a poll ahead of the queue was refused";
+    }
+  }
+}
+
 // The adapter closed the page and showed a failure.
 spec ProbeShownFailed observes eShown {
   start state Watching {
@@ -148,11 +157,74 @@ spec ProbeShownFailed observes eShown {
   }
 }
 
+// A poll's cursor was behind what was acknowledged, a delayed copy of an old poll,
+// and was refused.
+spec ProbeCursorBehind observes eCursorRefused {
+  start state Watching {
+    on eCursorRefused do (k: int) {
+      assert k != 1, "witness: a poll behind the acknowledged point was refused";
+    }
+  }
+}
+
 // The adapter dropped the frames of an answer that reported the feed ended.
 spec ProbeDroppedEnded observes eDroppedEnded {
   start state Watching {
     on eDroppedEnded do {
       assert false, "witness: the frames of an ended answer were dropped";
+    }
+  }
+}
+
+// A feed was refused a place because its spawner held the cap.
+spec ProbeCapRefused observes eAttachRefused {
+  start state Watching {
+    on eAttachRefused do {
+      assert false, "witness: a feed was refused a place at the cap";
+    }
+  }
+}
+
+// A feed was refused a place while another feed had ended and was kept, which is
+// the case the rule is about.
+spec ProbeCapRefusedWhileKept observes eFeedEnded, eFeedExited, eAttachRefused {
+  var kept: int;
+
+  start state Watching {
+    on eFeedEnded do (k: tEnded) {
+      kept = kept + 1;
+    }
+
+    on eFeedExited do {
+      kept = kept - 1;
+    }
+
+    on eAttachRefused do {
+      assert kept == 0, "witness: a feed was refused a place while an ended feed was kept";
+    }
+  }
+}
+
+// A place was reused: a feed started after another was forgotten.
+spec ProbeCapReused observes eFeedExited, eFeedStarted {
+  var gone: int;
+
+  start state Watching {
+    on eFeedExited do {
+      gone = gone + 1;
+    }
+
+    on eFeedStarted do (h: machine) {
+      assert gone == 0, "witness: a feed started after another was forgotten";
+    }
+  }
+}
+
+// The gateway door was detached.
+spec ProbeGatewayDetached observes eGwDetached {
+  start state Watching {
+    on eGwDetached do {
+      assert false, "witness: the gateway door was detached";
     }
   }
 }
