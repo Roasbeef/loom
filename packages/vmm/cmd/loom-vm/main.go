@@ -341,57 +341,85 @@ func parseForward(v string) (machine.Forward, error) {
 	return machine.Forward{Host: uint16(h), Guest: uint16(g)}, nil
 }
 
+// errNoConsole is follow's answer for a guest that exited before its runner
+// created the console file: the VMM died before the kernel printed anything,
+// which is what a firmware the host cannot boot looks like.
+var errNoConsole = errors.New("the guest exited before it wrote a console; " +
+	"its runner failed to boot the kernel")
+
 // follow copies the console file to w until the guest exits or ctx ends.
 // The runner creates the file after boot begins, so a missing file is
-// retried rather than reported.
+// retried rather than reported, but only while the guest is still running.
 func follow(ctx context.Context, m machine.Machine, w io.Writer) error {
-	var console *os.File
-	for console == nil {
-		f, err := os.Open(m.ConsolePath())
-		switch {
-		case err == nil:
-			console = f
+	// The wait starts before the console is opened. A runner that dies
+	// before it creates the file never will, and a loop that only watched
+	// for the file would then run until the caller's own deadline. The
+	// channel is closed, not sent on, so both loops below can observe the
+	// one exit.
+	var waitErr error
+	exited := make(chan struct{})
+	go func() {
+		waitErr = m.Wait(ctx)
+		close(exited)
+	}()
 
-		case !errors.Is(err, os.ErrNotExist):
-			return err
-
-		default:
-			if err := sleep(ctx, 50*time.Millisecond); err != nil {
-				return err
-			}
-		}
+	console, err := openConsole(ctx, m.ConsolePath(), exited)
+	if errors.Is(err, errNoConsole) {
+		return errors.Join(err, waitErr)
+	}
+	if err != nil {
+		return err
 	}
 	defer console.Close()
 
 	// A guest that exited has written its last line, so one final copy
 	// after Wait returns drains what arrived between the last read and the
 	// exit.
-	done := make(chan error, 1)
-	go func() { done <- m.Wait(ctx) }()
-
 	for {
 		if _, err := io.Copy(w, console); err != nil {
 			return err
 		}
 
 		select {
-		case err := <-done:
+		case <-exited:
 			_, cerr := io.Copy(w, console)
-			return errors.Join(err, cerr)
+			return errors.Join(waitErr, cerr)
 
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
 
-// sleep waits d or until ctx ends.
-func sleep(ctx context.Context, d time.Duration) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
+// openConsole opens the console file at path, retrying while it does not
+// exist. Once exited is closed it looks one last time, because the exit and
+// the file's creation are not ordered, and then answers errNoConsole.
+func openConsole(ctx context.Context, path string,
+	exited <-chan struct{}) (*os.File, error) {
 
-	case <-time.After(d):
-		return nil
+	for {
+		f, err := os.Open(path)
+		switch {
+		case err == nil:
+			return f, nil
+
+		case !errors.Is(err, os.ErrNotExist):
+			return nil, err
+		}
+
+		select {
+		case <-exited:
+			f, err := os.Open(path)
+			if err != nil {
+				return nil, errNoConsole
+			}
+
+			return f, nil
+
+		case <-ctx.Done():
+			return nil, ctx.Err()
+
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 

@@ -73,7 +73,9 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   forwards the port and registers NAME at HOST in the host's epmd (starting
   one with `epmd -daemon` when none answers) for the guest's life. An
   interrupt or SIGTERM stops the guest and exits 0; a timeout exits 1, and
-  `--timeout 0` runs until stopped, as a standing guest does.
+  `--timeout 0` runs until stopped, as a standing guest does. A runner that
+  exits before it creates the console file exits `run` 1 with `errNoConsole`
+  (`follow` waits on the guest while it retries the missing file).
   `run` validates the spec after the credential proxy adds its host service.
   `--state-disk PATH` attaches a raw image as `/dev/vda` (`Spec.Disks`),
   creating a sparse one of `--state-disk-size` MiB on first use and reusing

@@ -521,6 +521,14 @@ Four rules follow from that table:
 - **Readiness is read from the console, never from the port.** A forward
   accepts a connection on the host side even when nothing listens in the
   guest; the hosted provider then closes it.
+- **A guest that dies before it has a console ends the run.** The runner
+  creates `console.log` only once the kernel starts, so a firmware the host
+  cannot boot (an x86_64 kernel in an arm64 library exits the runner with
+  status 2) leaves no file. `follow` starts `Wait` before it opens the
+  console and stops retrying the missing file when the runner is gone:
+  `loom-vm` exits 1 with "the guest exited before it wrote a console", and
+  `loom vm up` reports that line with the launcher's log in about four
+  seconds instead of waiting out its boot budget.
 - **The test stops the guest from outside its deadline.**
   `daemon_shipped_microvm_test` boots its guest with `loom vm up` inside a
   deadline-bounded body, and runs `loom vm down` after that body, whether it
