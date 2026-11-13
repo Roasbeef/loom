@@ -312,7 +312,7 @@ pub type Command {
     /// workspace name and the scope is session-only (protocol-change/078).
     pool: Option(String),
     domain_scope: domain.Scope,
-    /// Optional per-session subagent limits (protocol-change/112).
+    /// Optional per-session subagent limits (protocol-change/113).
     agency: AgencyLimits,
   )
 

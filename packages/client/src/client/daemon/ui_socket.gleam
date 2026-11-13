@@ -3293,7 +3293,7 @@ pub fn create_with(
   )
 }
 
-/// `create_with`, carrying optional per-session subagent limits (`protocol-change/112`).
+/// `create_with`, carrying optional per-session subagent limits (`protocol-change/113`).
 ///
 /// ## Examples
 ///
@@ -3721,7 +3721,7 @@ pub fn create_task(
   )
 }
 
-/// `create_task`, carrying optional per-session subagent limits (`protocol-change/112`).
+/// `create_task`, carrying optional per-session subagent limits (`protocol-change/113`).
 ///
 /// ## Examples
 ///

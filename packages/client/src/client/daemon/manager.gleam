@@ -226,7 +226,7 @@ pub type Creation {
     /// empty string. A creation names an executor or a pool and never both:
     /// the pool picks the executor when the session first opens.
     pool: String,
-    /// Optional per-session subagent limits (`protocol-change/112`).
+    /// Optional per-session subagent limits (`protocol-change/113`).
     agency: AgencyLimits,
   )
 }

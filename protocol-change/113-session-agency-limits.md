@@ -1,4 +1,4 @@
-# protocol-change/112: per-session subagent limits and higher defaults
+# protocol-change/113: per-session subagent limits and higher defaults
 
 **Status**: PROPOSED 2026-11-12. **Affects**: the control command
 `sessions.create` (one optional `"agency"` object), the catalogue schema

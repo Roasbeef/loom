@@ -516,7 +516,7 @@ pub type Settings {
     /// to a spawner that may never return (protocol-change/084).
     deadline_tick_ms: Option(Int),
     /// Per-session subagent limits (`fan_out`, `session_strands`, `depth_cap`)
-    /// from the catalogue or delegate spawner policy (`protocol-change/112`).
+    /// from the catalogue or delegate spawner policy (`protocol-change/113`).
     agency_limits: agency_limits.AgencyLimits,
     /// What a delegate session reports about its children's spend and the
     /// budget it enforces on one child (protocol-change/084, phase 2). `None`

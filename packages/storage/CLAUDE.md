@@ -257,7 +257,7 @@ independent test oracle, including Unicode rejection and length boundaries.
   `relayed_page_limit` (64) with the name and placement, skipping archived sessions so the listing is bounded by the cap, and `delete`
   removes the row before the registration, which frees the place. The table is
   defined in `sql/catalogue_relayed.sql`.
-- `catalogue_session_agency(session_id, fan_out, session_strands, depth_mode, depth_cap)` (version 21, `protocol-change/112`, `sql/catalogue_agency.sql`) stores optional per-session `AgencyLimits` overrides without changing `catalogue_sessions`. `domain.reserve_session_with_agency` writes the row atomically on non-default creations, `catalogue.agency_limits` returns `agency_limits.empty` when absent, and `catalogue.delete` deletes any row before deleting the session.
+- `catalogue_session_agency(session_id, fan_out, session_strands, depth_mode, depth_cap)` (version 21, `protocol-change/113`, `sql/catalogue_agency.sql`) stores optional per-session `AgencyLimits` overrides without changing `catalogue_sessions`. `domain.reserve_session_with_agency` writes the row atomically on non-default creations, `catalogue.agency_limits` returns `agency_limits.empty` when absent, and `catalogue.delete` deletes any row before deleting the session.
 - `catalogue.StartFailure(reason, at)` is why a reservation's start failed
   (protocol-change/093, catalogue version 18). `catalogue_start_failures(session_id,
   reason, failed_at)` holds at most one row per registration, separate from the

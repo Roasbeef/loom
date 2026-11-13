@@ -234,7 +234,7 @@ pub type Command {
     /// (protocol-change/078). Exclusive with `executor`: the daemon picks the
     /// executor when the session first opens.
     pool: String,
-    /// Optional per-session subagent limits (`protocol-change/112`).
+    /// Optional per-session subagent limits (`protocol-change/113`).
     agency: AgencyLimits,
   )
 

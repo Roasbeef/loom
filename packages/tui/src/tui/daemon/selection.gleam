@@ -345,7 +345,7 @@ pub fn create_named(
   )
 }
 
-/// `create_named`, carrying optional per-session subagent limits (`protocol-change/112`).
+/// `create_named`, carrying optional per-session subagent limits (`protocol-change/113`).
 ///
 /// ## Examples
 ///

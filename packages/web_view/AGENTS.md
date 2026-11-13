@@ -1661,7 +1661,7 @@ and `create.Offered`'s submits all take it, and `home.offered_roles` checks both
 fields against the page's lists. Only the key string reaches the page; no URL,
 key variable, upstream identifier or pricing does. A key removed since the page
 opened is `creations.UnknownModel`, whose fixed words say to reload the page.
-- **Subagent limits disclosure (`protocol-change/112`).** When targeting the local daemon (`composer.Here`), `new_session.form` renders a collapsed-by-default `"Subagent limits"` toggle (`composer.LimitsDisclosure`, `ToggledLimits`) expanding `.limits-grid` inputs for `fan_out`, `session_strands`, `depth_mode` (`default` / `bounded` / `unlimited`), and `depth_cap`. `composer.parse_limits` validates via `core/agency_limits.validate`, refusing malformed or inconsistent inputs with `creations.InvalidLimits` before `Start.create` runs.
+- **Subagent limits disclosure (`protocol-change/113`).** When targeting the local daemon (`composer.Here`), `new_session.form` renders a collapsed-by-default `"Subagent limits"` toggle (`composer.LimitsDisclosure`, `ToggledLimits`) expanding `.limits-grid` inputs for `fan_out`, `session_strands`, `depth_mode` (`default` / `bounded` / `unlimited`), and `depth_cap`. `composer.parse_limits` validates via `core/agency_limits.validate`, refusing malformed or inconsistent inputs with `creations.InvalidLimits` before `Start.create` runs.
 
 ## Sessions on an executor (protocol 078)
 

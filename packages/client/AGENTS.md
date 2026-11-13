@@ -11039,7 +11039,7 @@ The executor's `backgrounded` wrapper forwards `Run` to the existing dispatcher
 and sends `Launch` to the owner without retaining another base configuration.
 The capture-multiplicity regression lives in `client/codemode_test`.
 
-## Per-session agency limits and shared effects (`protocol-change/112`)
+## Per-session agency limits and shared effects (`protocol-change/113`)
 
 - **Shared per-session provider and hooks holders.** `client/wiring.hold_provider` and `client/wiring.hold_hooks` park the session-invariant provider closure and runtime hook closures in two per-session actors alongside `client/tool_holder`, publishing them under `custody.ToolConfig` in `client/serve`. Steady-state strands no longer retain or copy ~158 KiB of shared `Effects` closures per process.
 - **Per-session `AgencyLimits` and raised defaults.** `client/agency.Config` uses `core/agency_limits.DepthCap` (`BoundedDepth` | `UnlimitedDepth`) with shipped defaults `default_fan_out = 100`, `default_session_strands = 256`, `default_depth_cap = 1`, and `max_ancestor_walk = 256`. `client/daemon/protocol`, `client/daemon/domain`, `client/daemon/manager`, `client/daemon/server`, `client/daemon/ui_socket`, and `client/serve.Settings` thread optional `AgencyLimits` through session creation and recovery (persisted in catalogue v21 `catalogue_session_agency`).

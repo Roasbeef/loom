@@ -343,7 +343,7 @@ pub type Intent {
     prompt: String,
     /// The profile and model.
     roles: creations.Roles,
-    /// Optional per-session subagent limits (`protocol-change/112`).
+    /// Optional per-session subagent limits (`protocol-change/113`).
     agency: AgencyLimits,
   )
 

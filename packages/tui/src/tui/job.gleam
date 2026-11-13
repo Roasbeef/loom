@@ -444,7 +444,7 @@ pub type AttachRoute {
     /// The pool of executors `workspace` is registered on, or empty
     /// (protocol-change/078).
     pool: String,
-    /// Optional per-session subagent limits (`protocol-change/112`).
+    /// Optional per-session subagent limits (`protocol-change/113`).
     agency: agency_limits.AgencyLimits,
   )
 }
