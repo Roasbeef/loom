@@ -1907,9 +1907,24 @@ fn stranded_in(
   let listing =
     tool("ps", ["-axww", "-o", "pid=,ppid=,command="], within: quick_ms)
     |> result.unwrap("")
-  let started_as = option.map(runner, running_as)
+  // A runner's command line begins with the path it was started under. That is
+  // the manifest's text for a runner an older `loom-vm` started, and the
+  // resolved path for one the current `loom-vm` started. `realpath` also
+  // rewrites a path's letter case on macOS, which Go's resolution does not, so
+  // neither spelling is always the other's equal; a runner under either counts.
+  let as_written =
+    vm_spec.stranded_runners(listing, guest.root, guest.state_disk, runner)
+  let as_resolved =
+    vm_spec.stranded_runners(
+      listing,
+      guest.root,
+      guest.state_disk,
+      option.map(runner, running_as),
+    )
   let pids =
-    vm_spec.stranded_runners(listing, guest.root, guest.state_disk, started_as)
+    list.append(as_written, as_resolved)
+    |> list.unique
+    |> list.sort(int.compare)
   #(pids, vm_spec.certainty_of(runner))
 }
 
