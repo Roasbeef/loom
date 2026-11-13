@@ -675,6 +675,9 @@ fn forget_applied(
   session: String,
 ) -> Result(String, String) {
   use found <- result.try(current_value(git, repository, applied_ref(session)))
+
+  // Only a ref that exists is deleted; `update-ref -d` of a missing one is a no-op
+  // in Git but names a ref the call never needed to touch.
   case found {
     None -> Ok("")
     Some(_) ->
