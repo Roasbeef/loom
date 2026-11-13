@@ -56,6 +56,7 @@ machine Gateway {
 
     // The feed host lapsed or the page detached, so the attachment is dropped.
     on eGwDetach do {
+      announce eGwDetached;
       attached = 0;
     }
 

@@ -30,6 +30,24 @@ answer was lost, fails a property here, and a rule the code adds must be added h
 before the code relies on it. The tests that restate the box's rules over the real
 modules are `feed_queue_test` and `feed_pieces_test`, with fixed seeds.
 
+Four rules of the box are stated here as the code has them, and the model and the
+code agree on each.
+
+- **The lease is renewed by a poll's arrival and by nothing else.** Releasing a
+  held poll, by a frame or by its wait, does not renew it. A poll that is refused
+  does not renew it either.
+- **A cursor the queue cannot honour is refused.** A poll whose `after` is ahead of
+  the last number the box assigned, or behind what a poll already acknowledged, is
+  answered `invalid_argument` and changes nothing. A poll that arrives while one is
+  held first releases the held one, and then has its cursor judged. A delayed copy
+  of an old poll is the behind case, and the adapter drops the refusal of a poll that
+  is no longer in flight.
+- **A detach exits the feed.** The token is forgotten at once, and a later poll is
+  refused. An ended feed that is not detached keeps its process for one more lease.
+- **A feed holds its place until its process exits.** The directory counts a place
+  from the reservation until the feed is forgotten, so an ended feed still counts.
+  Every ending detaches the gateway door once.
+
 One difference is deliberate. The proposal admits a single frame larger than the byte
 bound to an empty queue, and `tcOversize` models it. The code carries a frame only if
 one answer can (1,044,480 bytes, which is below the 1,048,576-byte bound), so no frame
@@ -69,6 +87,8 @@ safety properties under adversarial timing.
 | `LaneFrameOnceWhole` | Every frame the lane transmitted reaches the gateway at most once and whole, with every piece admitted. |
 | `NothingAfterEnd` | After a feed ends no frame of it reaches a lane. This is checked at the two places the end is visible: the feed host sends no frame once it has ended, and `ui_feed` delivers no frame from an answer that reports the feed ended. |
 | `RelayedDoorOnly` | A decision reaches the hub only through the relayed door, and the feed host never calls the local door. A command outside the forwarding rows never reaches the gateway as a frame. The box owner's own approve uses the local door and is allowed. |
+| `EveryEndingDetachesOnce` | Every ending of a feed, a lapse by the bound or the lease, the page's detach, a stop and a revocation, detaches the gateway door exactly once. A detach with no ending owed is a violation, and an ending whose detach never comes leaves the spec in its hot state. |
+| `CapNeverExceeded` | The feeds of one spawner that are alive, from the moment each runs until its process exits, never outnumber the cap. An ended feed is alive until it is forgotten, so a feed that attaches while one is kept is refused. |
 | `ShortPartitionLosesNothing` | Liveness. A case that announces a partition shorter than the lease, with the lane deadline above the longest recovery, must end with every written frame delivered. The monitor is hot while a written frame is undelivered, so a run that ends there fails. A lapse or a lane failure in such a run is reported, not excused. |
 
 Frames of an answer the box sent before the feed ended may still arrive at the
@@ -93,7 +113,8 @@ bounded.
 | `tcLeaseLapse` | A partition longer than the lease and the ended token's second lease, so the poll that gets through is refused. |
 | `tcStop`, `tcRevoke`, `tcDetach` | The session stops, access is revoked, and the page detaches twice, each with traffic in flight. |
 | `tcApprovals`, `tcPieces` | Approvals and two-piece frames through a link that loses, duplicates and delays. |
-| `tcOnly*` | One spec each, for `mutate.py`. |
+| `tcCap` | Three feeds of one spawner share a directory with a cap of one. The first lapses by the lease and is kept, the second attaches while it is kept and is refused, and the third attaches after it was forgotten and runs. |
+| `tcOnly*` | One spec each, for `mutate.py`. `tcOnlyDetachOnce*` runs the detach spec over a lapse by the bound, by the lease, a stop, a revocation and a detach. |
 | `tcProbe*` | Reachability probes. Each must fail. |
 
 ## Probes
@@ -103,7 +124,10 @@ only meaningful if the model reaches. They cover a lapse by the bound, by bytes
 and by the lease, an oversized frame admitted to an empty queue, a superseded poll,
 a repeated piece answered again, a forgotten token refused, a stopped, revoked and
 detached feed, a decision through the relayed door, a two-piece frame reaching the
-gateway, a lane that failed at its deadline, and a message lost to a partition.
+gateway, a lane that failed at its deadline, and a message lost to a partition. A poll ahead of the queue and one behind the
+acknowledged point, each refused, are probes too, as are a feed refused a place at
+the cap, a feed refused a place while an ended feed was kept, a place reused after
+a feed was forgotten, and a gateway door detached.
 
 ## Mutants
 
@@ -117,14 +141,17 @@ that names the rule, and requires the case to fail on that rule.
 | A lapse keeps the queue and the poll that learns of it is answered with the frames | `NothingAfterEnd` |
 | The feed host sends an `approve` to the hub's local door | `RelayedDoorOnly` |
 | The lease is shorter than a partition the lane survives | `ShortPartitionLosesNothing` |
+| A lapse ends the feed and leaves the gateway door attached | `EveryEndingDetachesOnce` |
+| An ended feed frees its place at once and not when it is forgotten | `CapNeverExceeded` |
 
 ## What is not modelled
 
 - The 105 envelope, discovery, the epoch and the revision checks. The fences that
   answer `stale` or `feed_ended` before the session is touched are one rule in the
   model: a request after the end is refused.
-- The feed cap, the spawner, the table, `page` and the relayed row. One feed is
-  attached for the whole run.
+- The spawner, the table, `page` and the relayed row. The cap is modelled for one
+  spawner with a cap of one in place of eight, in `tcCap` only. Every other case
+  runs one feed.
 - A new attach after a feed ended. A lapsed page reconnects through 097 and starts
   from a fresh subscribe, which is always correct and is a new feed.
 - The numbers in the proposal. The lease, wait, timeouts and bounds are scaled down,

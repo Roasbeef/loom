@@ -10,7 +10,7 @@
 // Every plan runs the Clock with `settle` of 10, so a tick never overtakes a
 // message in flight, except TestRacing, which ticks with no settling.
 
-module System = { Gateway, FeedHost, Link, UiFeed, Lane, Clock, Harness };
+module System = { Gateway, FeedHost, Link, UiFeed, Lane, Clock, Harness, CapHarness, Directory };
 
 fun emit(at: int, size: int): tEmit {
   return (at = at, size = size);
@@ -24,7 +24,7 @@ fun cmdAt(at: int, cmd: tCmd, pieces: int): tCmdAt {
 fun quietPlan(): tPlan {
   var e: seq[tEmit];
   var c: seq[tCmdAt];
-  return (ticks = 10, settle = 10, emits = e, cmds = c, breakAt = -1, healAt = -1, closeAt = -1, stopAt = -1, revokeAt = -1, ownerAt = -1, laneDeadline = 8, loses = 0, dups = 0, delays = 0, short = 0);
+  return (ticks = 10, settle = 10, emits = e, cmds = c, breakAt = -1, healAt = -1, closeAt = -1, stopAt = -1, revokeAt = -1, ownerAt = -1, aheadAt = -1, behindAt = -1, laneDeadline = 8, loses = 0, dups = 0, delays = 0, short = 0);
 }
 
 // Pushes of two sizes and one command of each kind, a command of two pieces, the
@@ -42,6 +42,8 @@ fun trafficPlan(): tPlan {
   p.cmds += (2, cmdAt(3, CMD_FORBID, 1));
   p.cmds += (3, cmdAt(4, CMD_FORWARD, 1));
   p.ownerAt = 6;
+  p.aheadAt = 7;
+  p.behindAt = 9;
   p.closeAt = 12;
   return p;
 }
@@ -270,9 +272,36 @@ machine TestPieces {
   }
 }
 
+// Three feeds of one spawner share a directory whose cap is one. The first
+// attaches at once and the link is cut at tick 2, so no poll reaches it and it
+// lapses by the lease and is then kept for one more lease. The second attaches
+// while it is kept, and must be refused. The third attaches after it was
+// forgotten and must be granted.
+machine TestCap {
+  start state Init {
+    entry {
+      var p: tPlan;
+      var attach: seq[int];
+      p = quietPlan();
+      p.ticks = 38;
+      p.settle = 3;
+      p.breakAt = 2;
+      p.laneDeadline = 60;
+      attach += (0, 0);
+      attach += (1, 16);
+      attach += (2, 34);
+      new CapHarness((plan = p, attach = attach));
+    }
+  }
+}
+
 // Every safety spec together.
+test tcCap [main = TestCap]:
+  assert CapNeverExceeded, EveryEndingDetachesOnce, NothingAfterEnd in
+  (union System, { TestCap });
+
 test tcNormal [main = TestNormal]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EveryEndingDetachesOnce in
   (union System, { TestNormal });
 
 test tcLossy [main = TestLossy]:
@@ -339,6 +368,26 @@ test tcOnlyRelayedDoor [main = TestApprovals]:
 test tcOnlyShortPartition [main = TestShortPartition]:
   assert ShortPartitionLosesNothing in (union System, { TestShortPartition });
 
+test tcOnlyCap [main = TestCap]:
+  assert CapNeverExceeded in (union System, { TestCap });
+
+// A lapse by the bound, a lapse by the lease, a stop, a revocation and a detach
+// each end a feed, and each must detach the gateway door once.
+test tcOnlyDetachOnce [main = TestBoundLapse]:
+  assert EveryEndingDetachesOnce in (union System, { TestBoundLapse });
+
+test tcOnlyDetachOnceLease [main = TestLeaseLapse]:
+  assert EveryEndingDetachesOnce in (union System, { TestLeaseLapse });
+
+test tcOnlyDetachOnceStop [main = TestStop]:
+  assert EveryEndingDetachesOnce in (union System, { TestStop });
+
+test tcOnlyDetachOnceRevoke [main = TestRevoke]:
+  assert EveryEndingDetachesOnce in (union System, { TestRevoke });
+
+test tcOnlyDetachOnceDetach [main = TestDetach]:
+  assert EveryEndingDetachesOnce in (union System, { TestDetach });
+
 // Each of these must report a bug.
 test tcProbeLapseBound [main = TestBoundLapse]:
   assert ProbeLapseBound in (union System, { TestBoundLapse });
@@ -384,3 +433,21 @@ test tcProbeLaneFailed [main = TestLossy]:
 
 test tcProbePartitionDropped [main = TestShortPartition]:
   assert ProbePartitionDropped in (union System, { TestShortPartition });
+
+test tcProbeCursorAhead [main = TestNormal]:
+  assert ProbeCursorAhead in (union System, { TestNormal });
+
+test tcProbeCursorBehind [main = TestNormal]:
+  assert ProbeCursorBehind in (union System, { TestNormal });
+
+test tcProbeCapRefused [main = TestCap]:
+  assert ProbeCapRefused in (union System, { TestCap });
+
+test tcProbeCapRefusedWhileKept [main = TestCap]:
+  assert ProbeCapRefusedWhileKept in (union System, { TestCap });
+
+test tcProbeCapReused [main = TestCap]:
+  assert ProbeCapReused in (union System, { TestCap });
+
+test tcProbeGatewayDetached [main = TestNormal]:
+  assert ProbeGatewayDetached in (union System, { TestNormal });

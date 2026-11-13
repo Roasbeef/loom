@@ -183,3 +183,57 @@ spec ShortPartitionLosesNothing observes eShortPartition, eWritten, eDelivered, 
     return n;
   }
 }
+
+// Every ending of a feed detaches the gateway door exactly once: a lapse by the
+// bound or the lease, the page's detach, a stop and a revocation. The feed
+// announces its ending before it sends the detach, so a detach with no ending
+// owed, which is a second detach for one ending, is a violation, and an ending
+// whose detach never arrives leaves the spec in its hot state.
+spec EveryEndingDetachesOnce observes eFeedEnded, eGwDetached {
+  var endings: int;
+  var detaches: int;
+
+  start state Even {
+    on eFeedEnded do (k: tEnded) {
+      endings = endings + 1;
+      goto Owing;
+    }
+
+    on eGwDetached do {
+      assert false, "the gateway door was detached with no ending owed, or twice for one ending";
+    }
+  }
+
+  hot state Owing {
+    on eFeedEnded do (k: tEnded) {
+      endings = endings + 1;
+    }
+
+    on eGwDetached do {
+      detaches = detaches + 1;
+      if (detaches == endings) {
+        goto Even;
+      }
+    }
+  }
+}
+
+// The feeds of one spawner never outnumber the cap. A feed is alive from the
+// moment it runs until its process exits, which is when it is forgotten or when
+// the page detaches, and an ended feed is alive until then. The directory counts
+// a place for exactly that long, so a feed that ends and is kept still holds its
+// place and a new feed is refused.
+spec CapNeverExceeded observes eFeedStarted, eFeedExited {
+  var alive: int;
+
+  start state Watching {
+    on eFeedStarted do (h: machine) {
+      alive = alive + 1;
+      assert alive <= Cap(), "more feeds are alive than the cap allows";
+    }
+
+    on eFeedExited do {
+      alive = alive - 1;
+    }
+  }
+}

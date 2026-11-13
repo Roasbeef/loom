@@ -58,6 +58,21 @@ fun SendTimeout(): int { return 3; }
 fun MaxFrames(): int { return 3; }
 fun MaxBytes(): int { return 4; }
 
+// The most feeds one spawner holds, scaled down from the proposal's eight to one,
+// which is enough to show the rule and keeps the state space small. A feed
+// holds a place from its reservation until its process exits, which is when an
+// ended feed is forgotten one lease after it ended, or when the page detaches.
+fun Cap(): int { return 1; }
+
+// The directory that counts places: a feed asks it for one, and says when it is
+// gone.
+event eReserve: machine;
+event eReserved;
+event eCapRefused;
+event eFeedGone;
+// The feed process exited, announced for the specs.
+event eFeedExited;
+
 // Wiring.
 event eGwWire: machine;
 event eLinkWire: (host: machine, ui: machine);
@@ -117,3 +132,7 @@ event eRepeatPiece;
 event eForgotten;
 event eRefusedForgotten;
 event eLinkDropped;
+event eGwDetached;
+event eAttachRefused;
+// A poll whose `after` is ahead of the queue (0) or behind what was acknowledged (1).
+event eCursorRefused: int;
