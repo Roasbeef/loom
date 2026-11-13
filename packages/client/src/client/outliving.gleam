@@ -16,6 +16,16 @@
 //// `weft.start`), because only it knows what a deadline means for what it holds.
 //// An answer that does not come in time is `Error(Nil)`, which the caller turns
 //// into a request to ask again.
+////
+//// ## Why this is not a weft run
+////
+//// The work must survive its asker, including an asker that is killed when its own
+//// deadline ends. `weft.start_detached`, `start_witnessed` and `start_relayed` each
+//// spawn the run's scope linked to the process that starts it (`process.spawn` in
+//// `run_scope`'s caller), so a killed starter takes the run with it, and weft has no
+//// unlinked start. This helper therefore starts its worker with `process.spawn_unlinked`.
+//// The bodies it runs bound themselves with `weft.deadline` and `weft.start` and
+//// report every outcome, so the machinery weft owns is still weft's.
 
 import gleam/erlang/process
 

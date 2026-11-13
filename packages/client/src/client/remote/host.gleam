@@ -1006,12 +1006,9 @@ fn apply_state(
             applying: dict.insert(state.applying, key, [reply, ..waiting]),
           )
         Error(Nil) -> {
-          to_completion(state.inbox, fn() {
-            ApplyFinished(
-              key:,
-              answer: capturing.apply(wanted)
-                |> result.map_error(protocol.ExecutorFault),
-            )
+          reported(state.inbox, key, fn() {
+            capturing.apply(wanted)
+            |> result.map_error(protocol.ExecutorFault)
           })
           State(..state, applying: dict.insert(state.applying, key, [reply]))
         }
@@ -1022,6 +1019,36 @@ fn apply_state(
       state
     }
   }
+}
+
+/// Runs one apply to its end and reports every way it can end to the host as an
+/// `ApplyFinished`, so the key that joins requests to it is always cleared. The work
+/// is a weft run: an answer is reported as it is, and a run that raised or was
+/// abandoned is reported as the executor's fault with no answer, as `spawn_seed`'s
+/// placement run does. The worker is not linked to the host, so a request that is
+/// gone changes nothing, and the run goes to its end.
+fn reported(
+  inbox: Subject(Event(census)),
+  key: String,
+  compute: fn() -> Result(String, Refusal),
+) -> Nil {
+  let _worker =
+    process.spawn_unlinked(fn() {
+      let answer = case weft.new([compute]) |> weft.start {
+        [weft.Completed(value:, ..)] -> Ok(value)
+        [weft.Failed(error:, ..)] -> Error(error)
+        [weft.Crashed(..)]
+        | [weft.Abandoned(..)]
+        | [weft.NeverStarted(..)]
+        | [weft.DrainProofLost(..)]
+        | [weft.CancellationUnconfirmed(..)]
+        | []
+        | [_, _, ..] ->
+          Error(protocol.ExecutorFault("the apply run ended without an answer"))
+      }
+      process.send(inbox, ApplyFinished(key:, answer:))
+    })
+  Nil
 }
 
 /// An apply that was running has its answer: every request that waited for it gets
@@ -1079,22 +1106,6 @@ fn apart(reply: Subject(answer), compute: fn() -> answer) -> Nil {
     }
     Error(Nil) -> Nil
   }
-}
-
-/// Computes one answer in a run of its own that runs to its end whether or not
-/// the requester is still there, and sends it to `reply`. A send to a requester
-/// that has gone is harmless. This is for work that must not stop half done, such
-/// as a checkout that rewrites a tree.
-fn to_completion(reply: Subject(answer), compute: fn() -> answer) -> Nil {
-  let _witness =
-    weft.new([
-      fn() {
-        process.send(reply, compute())
-        Ok(Nil)
-      },
-    ])
-    |> weft.start_witnessed
-  Nil
 }
 
 // --- evolution ----------------------------------------------------------------

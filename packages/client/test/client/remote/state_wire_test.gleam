@@ -586,3 +586,38 @@ pub fn two_applies_of_one_state_to_a_scope_share_one_checkout_test() {
   assert apply(at, 0, <<1>>, wanted) == Ok(wanted.tip)
   assert cell.get(calls) == 2
 }
+
+pub fn an_apply_that_crashes_clears_its_key_and_the_next_apply_runs_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let base = fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired)
+  let calls = cell.new(0)
+
+  // The plane's checkout raises the first time and works the second.
+  let capturing =
+    host.Capturing(capture: fn(_basis, _content) { Ok(None) }, apply: fn(state) {
+      let before = cell.get(calls)
+      cell.update(calls, fn(held) { held + 1 })
+      case before {
+        0 -> panic as "the checkout raised"
+        _ -> Ok(state.tip)
+      }
+    })
+  let factory = fn(spec) {
+    case base(spec) {
+      Ok(plane) -> Ok(host.Plane(..plane, state: Some(capturing)))
+      Error(failure) -> Error(failure)
+    }
+  }
+  let at = started(state_transfer.declining(), factory)
+  let wanted = a_state()
+  let assert Ok(_attached) = attach(at, protocol.version, <<1>>)
+
+  // The run ended without an answer, and says so, whatever way it ended.
+  assert apply(at, 0, <<1>>, wanted)
+    == Error(protocol.ExecutorFault("the apply run ended without an answer"))
+
+  // The key that joins requests to a run was cleared, so the next request runs
+  // again and is answered, and does not join a run that is gone.
+  assert apply(at, 0, <<1>>, wanted) == Ok(wanted.tip)
+  assert cell.get(calls) == 2
+}
