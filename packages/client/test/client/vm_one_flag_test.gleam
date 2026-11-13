@@ -10,6 +10,7 @@ import client/vm_spec
 import gleam/bit_array
 import gleam/crypto
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import qcheck
@@ -18,6 +19,49 @@ import qcheck
 const seed = 1113
 
 const cases = 300
+
+// --- the GitHub access a resume keeps -----------------------------------------
+
+fn accesses() -> List(vm_spec.GitHubAccess) {
+  [vm_spec.GitHubFromGh, vm_spec.GitHubFromEnv, vm_spec.GitHubOff]
+}
+
+pub fn github_record_round_trips_test() {
+  assert list.all(accesses(), fn(access) {
+    vm_spec.decode_github(vm_spec.encode_github(access)) == Ok(access)
+  })
+}
+
+pub fn github_record_is_read_strictly_test() {
+  assert vm_spec.decode_github("  off \n") == Ok(vm_spec.GitHubOff)
+  assert result.is_error(vm_spec.decode_github(""))
+  assert result.is_error(vm_spec.decode_github("on\n"))
+  assert result.is_error(vm_spec.decode_github("gh\nenv\n"))
+  assert result.is_error(vm_spec.decode_github("GH\n"))
+}
+
+// Every combination of given, recorded and freshness, as a table.
+pub fn effective_github_table_test() {
+  let none = None
+  let off = Some(vm_spec.GitHubOff)
+  let env = Some(vm_spec.GitHubFromEnv)
+
+  // A flag given wins over the record, whatever the freshness.
+  assert vm_spec.effective_github(env, off, vm_spec.Resume)
+    == vm_spec.GitHubFromEnv
+  assert vm_spec.effective_github(env, off, vm_spec.Fresh)
+    == vm_spec.GitHubFromEnv
+
+  // With no flag a resume keeps the record, and a guest with none gets gh.
+  assert vm_spec.effective_github(none, off, vm_spec.Resume)
+    == vm_spec.GitHubOff
+  assert vm_spec.effective_github(none, none, vm_spec.Resume)
+    == vm_spec.GitHubFromGh
+
+  // `--fresh` forgets the record.
+  assert vm_spec.effective_github(none, off, vm_spec.Fresh)
+    == vm_spec.GitHubFromGh
+}
 
 // --- naming a guest after its workspace ---------------------------------------
 

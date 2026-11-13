@@ -41,7 +41,7 @@ pub fn up_takes_its_defaults_test() {
   assert options.memory_mib == 2048
   assert options.cpus == 4
   assert options.config == None
-  assert options.github == vm_spec.GitHubFromGh
+  assert options.github == None
   assert options.freshness == vm_spec.Resume
   assert options.allow == []
   assert options.provision == None
@@ -50,12 +50,12 @@ pub fn up_takes_its_defaults_test() {
 pub fn up_reads_github_access_and_fresh_test() {
   let assert Ok(vm_spec.Up(options)) =
     vm_spec.parse(["up", "--github", "off", "--fresh", "--name", "dev"])
-  assert options.github == vm_spec.GitHubOff
+  assert options.github == Some(vm_spec.GitHubOff)
   assert options.freshness == vm_spec.Fresh
   assert options.name == "dev"
 
   let assert Ok(vm_spec.Up(options)) = vm_spec.parse(["up", "--github", "env"])
-  assert options.github == vm_spec.GitHubFromEnv
+  assert options.github == Some(vm_spec.GitHubFromEnv)
 
   let assert Error(reason) = vm_spec.parse(["up", "--github", "ssh"])
   assert string.contains(reason, "gh, env or off")
@@ -478,7 +478,7 @@ pub fn up_reads_each_allowed_host_in_order_without_repeats_test() {
       "deb.debian.org", "--github", "off",
     ])
   assert options.allow == ["deb.debian.org", "*.golang.org"]
-  assert options.github == vm_spec.GitHubOff
+  assert options.github == Some(vm_spec.GitHubOff)
 }
 
 pub fn an_allowed_host_follows_the_rule_machine_spec_applies_test() {

@@ -314,6 +314,7 @@ type Instance {
     pid_file: String,
     log: String,
     allow_file: String,
+    github_file: String,
     checkouts_file: String,
     root_revision_file: String,
     provision_file: String,
@@ -350,6 +351,7 @@ fn instance(vm_home: String, name: String) -> Instance {
     pid_file: directory <> "/loom-vm.pid",
     log: directory <> "/loom-vm.log",
     allow_file: directory <> "/" <> vm_spec.allow_file,
+    github_file: directory <> "/" <> vm_spec.github_file,
     checkouts_file: directory <> "/" <> vm_spec.checkouts_file,
     root_revision_file: directory <> "/" <> vm_spec.root_revision_file,
     provision_file: directory <> "/" <> vm_spec.provision_copy_file,
@@ -614,6 +616,7 @@ fn up(options: UpOptions) -> Result(String, String) {
   // written, so a refused `--provision` or a bad allow file changes nothing.
   use plan <- result.try(provisioning(guest, options, step))
   use allow <- result.try(allowed_hosts(guest, options))
+  use github <- result.try(github_access(guest, options))
   let options = UpOptions(..options, allow:)
 
   // The deployment and the enrollment come before the guest root, so a
@@ -629,10 +632,11 @@ fn up(options: UpOptions) -> Result(String, String) {
     installed_ledger(config),
     workspace,
     options,
+    github,
     plan,
     step,
   ))
-  use port <- result.try(boot(manifest, guest, names, options, plan))
+  use port <- result.try(boot(manifest, guest, names, options, github, plan))
   report(options, workspace, port, enrolled)
 }
 
@@ -692,6 +696,55 @@ fn record_allow(guest: Instance, hosts: List(String)) -> Result(Nil, String) {
       }
     _ -> write_private(guest.allow_file, vm_spec.encode_allow(hosts))
   }
+}
+
+/// The GitHub access this `up` launches the guest with: the flag, or the one an
+/// earlier `up` recorded, or the default for `--fresh`. It is read before
+/// anything is written, so a damaged record refuses `up` and changes nothing.
+fn github_access(
+  guest: Instance,
+  options: UpOptions,
+) -> Result(vm_spec.GitHubAccess, String) {
+  // The record is read only when it decides the answer, so a damaged one is
+  // replaced by `--github` and ignored by `--fresh`.
+  use recorded <- result.try(case options.github, options.freshness {
+    None, vm_spec.Resume -> recorded_github(guest)
+    _, _ -> Ok(None)
+  })
+
+  Ok(vm_spec.effective_github(options.github, recorded, options.freshness))
+}
+
+/// The access the guest's github file records, or `None` when it has no file.
+fn recorded_github(
+  guest: Instance,
+) -> Result(option.Option(vm_spec.GitHubAccess), String) {
+  case simplifile.read(guest.github_file) {
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) ->
+      Error(
+        guest.github_file
+        <> " is unreadable: "
+        <> simplifile.describe_error(error),
+      )
+    Ok(text) ->
+      vm_spec.decode_github(text)
+      |> result.map(Some)
+      |> result.map_error(fn(reason) {
+        guest.github_file
+        <> ", "
+        <> reason
+        <> ". Fix or remove the file, or give --github to replace it."
+      })
+  }
+}
+
+/// Records the access the guest launches with, so `down` and `up` keep it.
+fn record_github(
+  guest: Instance,
+  access: vm_spec.GitHubAccess,
+) -> Result(Nil, String) {
+  write_private(guest.github_file, vm_spec.encode_github(access))
 }
 
 /// What `--provision` and the guest root's history decide. The script must be
@@ -1525,6 +1578,7 @@ fn stage(
   installed: option.Option(String),
   workspace: Workspace,
   options: UpOptions,
+  github: vm_spec.GitHubAccess,
   plan: vm_spec.ProvisionPlan,
   step: vm_spec.RootStep,
 ) -> Result(Nil, String) {
@@ -1533,13 +1587,14 @@ fn stage(
   use Nil <- result.try(record_provision_copy(guest, options))
   use Nil <- result.try(prepare_root(manifest, guest, platform, options, step))
   use Nil <- result.try(record_allow(guest, options.allow))
+  use Nil <- result.try(record_github(guest, github))
   let registered = registered_workspaces(guest, workspace)
   use Nil <- result.try(stage_node(
     guest.root,
     executor,
     installed,
     registered,
-    options.github,
+    github,
     options.allow,
   ))
   use Nil <- result.try(stage_script(guest.root, plan))
@@ -2398,6 +2453,7 @@ fn boot(
   guest: Instance,
   names: vm_spec.Names,
   options: UpOptions,
+  github: vm_spec.GitHubAccess,
   plan: vm_spec.ProvisionPlan,
 ) -> Result(Int, String) {
   use port <- result.try(bootstrap.reserve_loopback_port())
@@ -2410,7 +2466,7 @@ fn boot(
       cpus: options.cpus,
       host_port: port,
       state_disk: guest.state_disk,
-      github: options.github,
+      github:,
       allow: options.allow,
     )
 
@@ -2963,6 +3019,7 @@ fn status(name: String) -> Result(String, String) {
         "root from:  " <> root_origin_line(guest),
         "workspaces: " <> workspace_line(guest),
         "allowed:    " <> allow_line(guest),
+        "github:     " <> github_line(guest),
         "provision:  " <> provision_line(guest),
       ],
       stranded_line(guest, state, vm_home),
@@ -3060,6 +3117,15 @@ fn allow_line(guest: Instance) -> String {
   case recorded_allow(guest) {
     Ok([]) -> "none"
     Ok(hosts) -> string.join(hosts, ", ")
+    Error(reason) -> "unknown (" <> reason <> ")"
+  }
+}
+
+/// The GitHub access the guest's record names, or the default when it has none.
+fn github_line(guest: Instance) -> String {
+  case recorded_github(guest) {
+    Ok(Some(access)) -> string.trim(vm_spec.encode_github(access))
+    Ok(None) -> "not recorded (the default, gh, applies)"
     Error(reason) -> "unknown (" <> reason <> ")"
   }
 }

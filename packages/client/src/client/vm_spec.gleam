@@ -195,8 +195,11 @@ pub type UpOptions {
     /// The `loom.toml` the orchestrator is installed into, or `None` for
     /// `$HOME/.loom/loom.toml`.
     config: Option(String),
-    /// Where the guest's GitHub token comes from, or that it has none.
-    github: GitHubAccess,
+    /// Where the guest's GitHub token comes from, or that it has none, when
+    /// `--github` said. `None` means the flag was not given, which is not the
+    /// same as `gh`: a resume keeps what the guest was started with
+    /// (`effective_github`).
+    github: Option(GitHubAccess),
     /// Whether `up` keeps the guest's root and state disk or starts both
     /// again.
     freshness: Freshness,
@@ -551,7 +554,7 @@ fn default_up() -> UpOptions {
     memory_mib: 2048,
     cpus: 4,
     config: None,
-    github: GitHubFromGh,
+    github: None,
     freshness: Resume,
     allow: [],
     provision: None,
@@ -597,7 +600,7 @@ fn up_flags(
       }
     ["--github", value, ..rest] -> {
       use github <- result.try(github_access(value))
-      up_flags(rest, UpOptions(..options, github:))
+      up_flags(rest, UpOptions(..options, github: Some(github)))
     }
 
     // The one flag with no value: starting again is a choice, not a setting.
@@ -633,6 +636,79 @@ fn github_access(value: String) -> Result(GitHubAccess, String) {
     "env" -> Ok(GitHubFromEnv)
     "off" -> Ok(GitHubOff)
     _ -> Error("--github must be gh, env or off, got " <> value)
+  }
+}
+
+// --- the GitHub access a guest keeps -----------------------------------------
+
+/// The name of the file in a guest's directory that records its GitHub access:
+/// the word `gh`, `env` or `off`, then a newline.
+pub const github_file = "github"
+
+/// The access a guest has when nothing was ever chosen.
+pub const default_github = GitHubFromGh
+
+/// The text of a guest's github file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.encode_github(vm_spec.GitHubOff) == "off\n"
+/// ```
+pub fn encode_github(access: GitHubAccess) -> String {
+  case access {
+    GitHubFromGh -> "gh\n"
+    GitHubFromEnv -> "env\n"
+    GitHubOff -> "off\n"
+  }
+}
+
+/// Reads a github file. Only one of the three words, with whitespace around it
+/// ignored, is a record; anything else is refused whole, so a hand-edited file
+/// is never half-read into a different egress posture.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.decode_github("env\n") == Ok(vm_spec.GitHubFromEnv)
+/// assert result.is_error(vm_spec.decode_github("on\n"))
+/// ```
+pub fn decode_github(text: String) -> Result(GitHubAccess, String) {
+  case string.trim(text) {
+    "gh" -> Ok(GitHubFromGh)
+    "env" -> Ok(GitHubFromEnv)
+    "off" -> Ok(GitHubOff)
+    _ -> Error("it must hold one word, gh, env or off")
+  }
+}
+
+/// The GitHub access a guest is launched with. A flag given replaces whatever
+/// was recorded. With none given, a resume keeps the recorded access and
+/// `--fresh` starts from the default, as they do for the allowlist and the
+/// root.
+///
+/// The record exists because the access is the guest's egress posture: a guest
+/// first started with `--github off` and resumed with no flag must not come
+/// back with the default `gh` and a credential proxy it never had. A guest with
+/// no record (one started before the record existed) takes the default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.effective_github(None, Some(vm_spec.GitHubOff), vm_spec.Resume)
+///   == vm_spec.GitHubOff
+/// assert vm_spec.effective_github(None, Some(vm_spec.GitHubOff), vm_spec.Fresh)
+///   == vm_spec.GitHubFromGh
+/// ```
+pub fn effective_github(
+  given: Option(GitHubAccess),
+  recorded: Option(GitHubAccess),
+  freshness: Freshness,
+) -> GitHubAccess {
+  case given, freshness {
+    Some(access), _ -> access
+    None, Resume -> option.unwrap(recorded, default_github)
+    None, Fresh -> default_github
   }
 }
 
