@@ -721,3 +721,80 @@ The owner settled these on 2026-11-04, after the first draft.
 7. **Deferred: a credit window for transfers**, if slice 4's measurement shows the
    page's open is too slow over the tailnet. It is a client protocol change and would
    help a terminal on a slow link as well.
+
+## Addendum: slice 2, the box half (2026-11-13)
+
+Slice 2 built the four revisions, the feed host and its queue, the door and the
+`page` key, and checked them with the P model `protocol/models/live-relay` and the
+tests named in `packages/client/CLAUDE.md`. Building them settled the questions the
+proposal left open, and corrected four places where the code is not as the text
+above says.
+
+**The push-size question is settled: no push needs pieces.** The proposal says some
+pushes are not checked against the 65,536-byte reply figure, so "a large tool
+result's `entry` can be bigger". A daemon's gateway runs `Network` delivery
+(`client/gateway.gleam:1417`), and under it a durable emit is pushed as a
+`committed` notice that carries no record (`pull_and_broadcast`,
+`client/gateway.gleam:3986`). The record travels the credited transfer path, in
+chunks of 24 KiB, each a reply that `bounded_response` holds to 65,536 bytes
+(`client/gateway.gleam:4947`). The entry push of `HostOnly` delivery
+(`client/gateway.gleam:3979`) is a mode of the host fixtures, and no feed attaches
+to a fixture. What a feed's sink receives is therefore this closed set:
+
+| Push | Bound |
+|---|---|
+| `committed` notice, `presence`, `attachment`, `input_queue_changed` | a few hundred bytes each; presence is bounded by the daemon's connection ceiling |
+| `usage_observation` | at most 65,536 bytes, or it is omitted (`bounded_usage_observation`, `client/gateway.gleam:4049`) |
+| `stream_delta` | at most 24,576 bytes of text before encoding (`broadcast_delta`, `client/gateway.gleam:5009`); at most six times that after JSON escaping |
+| `tool_output` | the collector's tail, a sixth of the 24 KiB figure (`broadcast_tool_output`, `client/gateway.gleam:5073`) |
+| `remote_children` | at most 60,000 bytes (`remote_agent.list_bytes_limit`) |
+
+The largest is under 150 KiB, so every push crosses in one answer, and no
+`108.feed.1` piece answer exists. The queue still refuses a frame that cannot fit one
+answer, by lapsing the feed, as a defence that no push reaches. The exception for "a
+single frame larger than the byte bound" is never needed either: one answer carries at
+most 1,044,480 bytes, which is below the 1,048,576-byte bound, so any frame an answer
+can carry is inside the bound. The test plan's "tool result over 512 KiB arrives in an
+answer of its own" is true of the credited transfer's chunks only in the sense that
+each is small, and it should be read as the queue test that admits a frame of up to
+one answer alone (`feed_queue_test`).
+
+**Corrections.**
+
+- The gateway does not write replies and pushes to a sink from one process. The
+  remote-children pushes run in weft runs of their own (`broadcast_remote_children`,
+  `client/gateway.gleam:5331`). Pushes from different processes carry no order
+  between them, and the protocol never relied on one (`docs/client-protocol.md`
+  §6.2). A reply and a push are ordered as `ui_relay` orders them: the feed host
+  blocks in `gateway.connection_request`, queues the reply when the call returns,
+  and then handles the pushes that arrived meanwhile.
+- An archive is seen as `stopped` and not `revoked`. `archive` stops the session
+  before the registry archives it (`client/top_host.gleam`), so the gateway goes
+  down first. A feed is `revoked` when its check fails with the gateway still up: the
+  relayed row is gone, or the session runs as another incarnation.
+- A feed forgotten by the directory is answered `feed_ended` with `lapsed`, as is a
+  token of another spawner, a token never minted and a detach race. The laptop's
+  action for all of them is a fresh attach.
+- An `after` that is ahead of what the queue numbered, or behind what a poll already
+  acknowledged, is refused with `invalid_argument` and changes nothing. The proposal
+  lists the case and gives no answer.
+
+**Settled in the build.**
+
+- `TopHost` gains one field, `feeds`, a `remote_feed.Host` of four closures, and the
+  vocabulary lives in `client/remote_feed` as 094's lives in `client/remote_top`.
+  `peer_codec.revisions` advertises the four and `peer_top.dispatch` decodes and routes
+  them. The process is `client/remote/feed_host`; the pure queue, the pieces and the
+  command table are `feed_queue`, `feed_pieces` and `feed_filter`; the token directory
+  and the cap are `feed_directory`.
+- The lease is passed at a silence of the lease or more, not more than the lease, so
+  a timer armed for the lease and fired on time lapses the feed.
+- A feed that has ended stops counting toward the cap of eight while the box keeps its
+  token for the late poll, so a laptop that reconnects at once is not refused by its
+  own ended feed.
+- A feed takes a `PageOperator` connection permit. The process that answers the attach
+  reserves it and the feed's own process transfers it, because the root releases a permit
+  when the process that holds it exits.
+- A feed blocks on a gateway call for at most the gateway's six seconds, as
+  `ui_relay` does, so a laptop that sends faster than the gateway answers waits behind
+  its own frame. The send's answer is written before the frame reaches the gateway.
