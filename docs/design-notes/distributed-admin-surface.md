@@ -181,7 +181,7 @@ with the port, so a read never keeps an `Owns` question waiting. The port does n
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
 record, and `start_orchestrator_port` (`client/daemon/main.gleam:1577`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:1670`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:1689`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.

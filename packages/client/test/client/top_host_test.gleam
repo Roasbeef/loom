@@ -15,6 +15,7 @@ import client/daemon/manager
 import client/daemon/ui_top
 import client/deployment
 import client/executors
+import client/gateway
 import client/internal/ffi_os
 import client/internal/instance_owner
 import client/peer_mail
@@ -26,6 +27,7 @@ import client/remote/peer_client
 import client/remote/peer_service
 import client/remote/top_relay
 import client/remote_escalation
+import client/remote_feed
 import client/remote_top
 import client/spawners
 import client/top_host
@@ -42,8 +44,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/string
 import simplifile
+import storage/access
 import storage/catalogue
 import storage/domain
+import support/addresses
 import web_view/relayed
 import weft/actor
 import weft/poll
@@ -390,6 +394,19 @@ fn context_at(
       Ok(Nil)
     },
     covered: fn() { process.send(rig.world, Note("covered")) },
+    epoch: "top-host-test",
+    gateway: fn(_) { gateway.Gateway(name: addresses.new()) },
+    owner: box_owner(),
+    admit: fn() { Error("this rig serves no feeds") },
+    feed_lease_ms: remote_feed.lease_ms,
+  )
+}
+
+fn box_owner() -> access.Principal {
+  access.Principal(
+    id: "owner-1",
+    display_name: "Owner",
+    kind: access.OwnerPrincipal,
   )
 }
 
@@ -499,23 +516,26 @@ fn rows(rig: Rig, after: String, limit: Int) -> List(remote_top.Row) {
 pub fn a_node_no_spawner_names_is_refused_everything_naming_the_node_test() {
   let rig = rig("unknown")
   let elsewhere =
-    top_host.host(
-      top_host.Context(
-        spawners: [spawners.Spawner(..rig.spawner, node: "someone@else")],
-        registry: rig.registry,
-        endpoint: fn(endpoint) { endpoint },
-        sessions_directory: rig.directory,
-        domain_configuration: rig.configuration_path,
-        generator: fn() { ids.generator(clock.fixed(at: 1), 1) },
-        now_ms: fn() { 1 },
-        has_executor: fn(_) { True },
-        has_pool: fn(_) { True },
-        survey: fn() { deployment.Placements([], []) },
-        check_folder: fn(path) { Ok(path) },
-        record: fn(_) { Ok(Nil) },
-        covered: fn() { Nil },
-      ),
-    )
+    top_host.host(top_host.Context(
+      spawners: [spawners.Spawner(..rig.spawner, node: "someone@else")],
+      registry: rig.registry,
+      endpoint: fn(endpoint) { endpoint },
+      sessions_directory: rig.directory,
+      domain_configuration: rig.configuration_path,
+      generator: fn() { ids.generator(clock.fixed(at: 1), 1) },
+      now_ms: fn() { 1 },
+      has_executor: fn(_) { True },
+      has_pool: fn(_) { True },
+      survey: fn() { deployment.Placements([], []) },
+      check_folder: fn(path) { Ok(path) },
+      record: fn(_) { Ok(Nil) },
+      covered: fn() { Nil },
+      epoch: "top-host-test",
+      gateway: fn(_) { gateway.Gateway(name: addresses.new()) },
+      owner: box_owner(),
+      admit: fn() { Error("this rig serves no feeds") },
+      feed_lease_ms: remote_feed.lease_ms,
+    ))
   assert elsewhere.placements(own_node()) == unknown()
   assert elsewhere.stop(own_node(), "s") == unknown()
   assert elsewhere.archive(own_node(), "s") == unknown()

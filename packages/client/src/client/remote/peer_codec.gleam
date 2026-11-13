@@ -23,10 +23,13 @@ pub const operation_bytes = 1_048_576
 /// The maximum number of advertised operation revisions.
 pub const max_revisions = 64
 
-/// The operation revisions implemented by this endpoint.
+/// The operation revisions implemented by this endpoint: protocol 094's eight
+/// and the four of the live session page (protocol-change/108), whose
+/// vocabulary `client/remote_feed` holds.
 pub const revisions = [
   "094.placements.1", "094.create.1", "094.sessions.1", "094.history.1",
-  "094.send.1", "094.stop.1", "094.archive.1", "094.resolve.1",
+  "094.send.1", "094.stop.1", "094.archive.1", "094.resolve.1", "108.attach.1",
+  "108.feed.1", "108.send.1", "108.detach.1",
 ]
 
 /// One read-only observation of the peer's current incarnation.
@@ -527,6 +530,7 @@ fn decode_refusal(value: JsonValue) -> Result(remote_top.Refusal, String) {
   }
 }
 
+/// The word a cap takes on the wire: the three the receiving host enforces.
 fn cap_word(cap: remote_top.Cap) -> String {
   case cap {
     remote_top.MaxSessions -> "sessions"

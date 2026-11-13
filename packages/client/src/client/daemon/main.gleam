@@ -87,6 +87,7 @@ import client/distribution
 import client/distribution_plan
 import client/executor_plane
 import client/executors
+import client/gateway
 import client/git_identity
 import client/host
 import client/install
@@ -124,6 +125,7 @@ import client/remote/top_relay
 import client/remote/untrusted_gateway
 import client/remote/untrusted_link
 import client/remote/workspace
+import client/remote_feed
 import client/remote_mail
 import client/remote_reach
 import client/remote_release
@@ -1585,6 +1587,7 @@ pub fn start_orchestrator_port(
   delegate_endpoint: fn(instance) -> agency.DelegateEndpoint,
   child_inbox: fn(instance) -> agency.ChildInbox,
   relay_endpoint: fn(instance) -> relayed_session.Endpoint,
+  gateway_of: fn(instance) -> gateway.Gateway,
   movers: session_movers.Control,
   reads: orchestrator_port.Reads,
   states: state_transfer.Endpoint,
@@ -1663,6 +1666,22 @@ pub fn start_orchestrator_port(
             }
           },
           covered: movers.cover,
+          epoch: ready.epoch,
+          gateway: gateway_of,
+          owner: ready.owner,
+          // A live feed is a connection like a page's, charged as a page
+          // operator's is. The permit is reserved here, in the process that
+          // answers the attach, and transferred by the feed's own process,
+          // because a permit is released when the process holding it exits.
+          admit: fn() {
+            use permit <- result.map(root.acquire(
+              daemon,
+              root.PageOperator,
+              within: 1000,
+            ))
+            fn() { root.transfer(daemon, permit, within: 1000) }
+          },
+          feed_lease_ms: remote_feed.lease_ms,
         ))
       use _started <- result.try(
         orchestrator_port.start_with_states(
@@ -4274,6 +4293,7 @@ fn run(
         fn(resident: serve.Resident) { resident.spawns },
         fn(resident: serve.Resident) { resident.inbox },
         fn(resident: serve.Resident) { resident.relay },
+        fn(resident: serve.Resident) { resident.gateway },
         movers,
         reads,
         states,
