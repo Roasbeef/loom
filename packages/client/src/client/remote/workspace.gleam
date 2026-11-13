@@ -689,6 +689,7 @@ pub fn states_over(
 ) -> SessionStates {
   SessionStates(
     executor:,
+    branch: "loom/" <> session,
     link: state_link.via_host(at, state_question_ms),
     fit: state_fitness(executor, remote),
     apply: fn(state) {

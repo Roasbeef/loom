@@ -565,14 +565,39 @@ pub fn a_restart_clears_the_claims_and_keeps_the_verdicts_test() {
   let assert Ok(Nil) = simplifile.create_directory(directory <> "/a.claim")
   let assert Ok(Nil) = simplifile.write(directory <> "/a.verdict", "{}")
   let assert Ok(Nil) = simplifile.write(directory <> "/a.copy", "{}")
+  let assert Ok(Nil) = simplifile.write(directory <> "/a.joined", "{}")
 
-  spawn_return.sweep(rig.state)
+  // Within the retention only the claim goes: the files are what a restarted
+  // daemon answers from.
+  let now = ffi_os.system_time_ms() / 1000
+  spawn_return.sweep(rig.state, 604_800, now)
   assert simplifile.is_directory(directory <> "/a.claim") == Ok(False)
   assert simplifile.is_file(directory <> "/a.verdict") == Ok(True)
   assert simplifile.is_file(directory <> "/a.copy") == Ok(True)
+  assert simplifile.is_file(directory <> "/a.joined") == Ok(True)
 
   // A state root with no such directory has nothing to sweep.
-  spawn_return.sweep(rig.scratch <> "/nowhere")
+  spawn_return.sweep(rig.scratch <> "/nowhere", 604_800, now)
+  state_rig.stop(rig)
+}
+
+pub fn the_files_of_a_child_older_than_the_retention_are_removed_test() {
+  let rig = state_rig.rig("return-sweep-aged")
+  let directory = rig.state <> "/" <> spawn_return.directory_name
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let assert Ok(Nil) = simplifile.write(directory <> "/a.verdict", "{}")
+  let assert Ok(Nil) = simplifile.write(directory <> "/a.copy", "{}")
+  let assert Ok(Nil) = simplifile.write(directory <> "/a.joined", "{}")
+  let assert Ok(Nil) = simplifile.write(directory <> "/notes.txt", "{}")
+
+  // The kept answer holds the child's whole report and nothing else removes it, so
+  // a sweep that comes a retention later does, and leaves what is not a child's.
+  let later = ffi_os.system_time_ms() / 1000 + 604_801
+  spawn_return.sweep(rig.state, 604_800, later)
+  assert simplifile.is_file(directory <> "/a.verdict") == Ok(False)
+  assert simplifile.is_file(directory <> "/a.copy") == Ok(False)
+  assert simplifile.is_file(directory <> "/a.joined") == Ok(False)
+  assert simplifile.is_file(directory <> "/notes.txt") == Ok(True)
   state_rig.stop(rig)
 }
 

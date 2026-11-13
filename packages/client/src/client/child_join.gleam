@@ -56,12 +56,15 @@
 import client/agency.{type DelegateEndpoint}
 import client/delegate_host.{type ChildSessions}
 import client/remote_spawn.{type Joined, type Parent, type SpawnRefusal}
+import client/seed_landing
 import client/spawn_return.{type Returning}
 import client/spawners.{type Spawner}
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import telemetry/field
+import telemetry/log.{type Logger}
 import tools/agent.{type Handle}
 import weft
 
@@ -78,6 +81,8 @@ pub type Joining {
     children: ChildSessions,
     /// What becomes of a finished child's commits.
     returning: Returning,
+    /// Where a refusal that is told to the parent as nothing is recorded.
+    logger: Logger,
   )
 }
 
@@ -137,9 +142,23 @@ pub fn join(
   }
 }
 
+/// Whose handles a group has.
+type Scope {
+  /// The pair's session, which answers every handle that is not a seeded child's.
+  /// A refusal about one of them is the join's, as it always was.
+  PairScope
+
+  /// One seeded child's own session. A refusal about it is about that child.
+  ChildScope
+}
+
 /// One group's handles and the work that answers them.
 type Group {
-  Group(handles: List(Handle), work: fn() -> Result(List(Joined), SpawnRefusal))
+  Group(
+    scope: Scope,
+    handles: List(Handle),
+    work: fn() -> Result(List(Joined), SpawnRefusal),
+  )
 }
 
 /// Runs the pair's group, when it has handles, and each seeded child's group, all
@@ -155,7 +174,7 @@ fn grouped(
   let pair = case shared {
     [] -> []
     [_, ..] -> [
-      Group(handles: shared, work: fn() {
+      Group(scope: PairScope, handles: shared, work: fn() {
         pair_group(joining, shared, within_ms)
       }),
     ]
@@ -164,7 +183,7 @@ fn grouped(
   // Every seeded child's own session is asked about that child alone.
   let children =
     list.map(own, fn(each) {
-      Group(handles: [each.0], work: fn() {
+      Group(scope: ChildScope, handles: [each.0], work: fn() {
         asked(joining, each.0, each.1, within_ms)
       })
     })
@@ -173,12 +192,13 @@ fn grouped(
   // A join in which no handle could be placed has nothing to ask.
   case groups {
     [] -> Ok(reassembled([], handles, within_ms))
-    [_, ..] -> asked_together(groups, handles, within_ms)
+    [_, ..] -> asked_together(joining, groups, handles, within_ms)
   }
 }
 
 /// Runs the groups all at once under one deadline and reads what each answered.
 fn asked_together(
+  joining: Joining,
   groups: List(Group),
   handles: List(Handle),
   within_ms: Int,
@@ -190,23 +210,32 @@ fn asked_together(
     |> weft.start
 
   // Each group is read for what it answered, or for the children it left waiting.
-  let entries =
+  use entries <- result.map(
     list.zip(groups, outcomes)
-    |> list.map(fn(each) { answered(each.0, each.1, within_ms) })
-    |> list.flatten
-  Ok(reassembled(entries, handles, within_ms))
+    |> list.try_map(fn(each) {
+      answered(joining.logger, each.0, each.1, within_ms)
+    }),
+  )
+  reassembled(list.flatten(entries), handles, within_ms)
 }
 
-/// What one group's task came to, as the entries for its handles. A group's refusal
-/// is about its own children and not about the others in the same join.
+/// What one group's task came to, as the entries for its handles. The refusal of a
+/// seeded child's group is about that child and not about the others in the same
+/// join, and the pair's group keeps its refusal as the join's, since one refusal
+/// there speaks for handles it does not name.
 fn answered(
+  logger: Logger,
   group: Group,
   outcome: weft.Outcome(List(Joined), SpawnRefusal),
   within_ms: Int,
-) -> List(Joined) {
+) -> Result(List(Joined), SpawnRefusal) {
   case outcome {
-    weft.Completed(value:, ..) -> value
-    weft.Failed(error:, ..) -> refused(group, error, within_ms)
+    weft.Completed(value:, ..) -> Ok(value)
+    weft.Failed(error:, ..) ->
+      case group.scope {
+        PairScope -> Error(error)
+        ChildScope -> Ok(refused(logger, group, error, within_ms))
+      }
 
     // A group the deadline cut off, or that crashed, has told the parent nothing,
     // so its children are still finishing as far as the parent can know.
@@ -214,7 +243,7 @@ fn answered(
     | weft.Abandoned(..)
     | weft.NeverStarted(..)
     | weft.DrainProofLost(..)
-    | weft.CancellationUnconfirmed(..) -> pending(group, within_ms)
+    | weft.CancellationUnconfirmed(..) -> Ok(pending(group, within_ms))
   }
 }
 
@@ -225,20 +254,25 @@ fn pending(group: Group, within_ms: Int) -> List(Joined) {
   })
 }
 
-/// What a group's refusal means for its own handles. An orchestrator that holds
-/// no such child, or whose run has ended, is a definite answer about that child, and
-/// it is told as the child's failure with the reason. Any other refusal may pass,
-/// and the child is still finishing as far as the parent can know.
+/// What a seeded child's refusal means for that child. A refusal that asks the
+/// sender to come again (`seed_landing.asks_again`) may pass, so the child is still
+/// finishing as far as the parent can know, and the reason is logged because the
+/// parent is told nothing. Every other refusal is a definite answer about the
+/// child, which never clears, so it is told as the child's failure with the reason.
 fn refused(
+  logger: Logger,
   group: Group,
   refusal: SpawnRefusal,
   within_ms: Int,
 ) -> List(Joined) {
-  case refusal {
-    remote_spawn.InvalidArgument(reason:) -> failed(group, reason)
-    remote_spawn.ParentRunEnded ->
-      failed(group, remote_spawn.describe_refusal(refusal))
-    _ -> pending(group, within_ms)
+  case seed_landing.asks_again(refusal) {
+    True -> {
+      log.warn(logger, "child_join.refused_for_now", [
+        field.text("reason", remote_spawn.describe_refusal(refusal)),
+      ])
+      pending(group, within_ms)
+    }
+    False -> failed(group, remote_spawn.describe_refusal(refusal))
   }
 }
 
@@ -320,8 +354,13 @@ fn asked(
     // A child with no session was settled and released, or never started. A
     // settled one left its answer.
     case kept(spawner, parent, handle) {
-      Some(entry) -> Ok([entry])
-      None -> Error(refusal)
+      spawn_return.AnswerKept(entry:) -> Ok([entry])
+      spawn_return.NothingKept -> Error(refusal)
+
+      // An answer that is there and cannot be read is not the same as none: the
+      // child settled, and the join is asked again.
+      spawn_return.KeptUnreadable ->
+        Ok([remote_spawn.Pending(handle:, waited_ms: within_ms)])
     }
   }
 
@@ -386,11 +425,25 @@ fn ended_when_done(
   // the join's to report.
   case done {
     True -> {
-      list.each(settled, fn(entry) {
-        joining.returning.keep(joining.spawner, joining.parent, entry)
-      })
-      let _ = joining.children.release(joining.spawner, joining.parent, name)
-      Nil
+      let kept =
+        list.try_each(settled, fn(entry) {
+          case entry {
+            remote_spawn.Ready(..) ->
+              joining.returning.keep(joining.spawner, joining.parent, entry)
+            remote_spawn.Pending(..) -> Ok(Nil)
+          }
+        })
+
+      // An entry that could not be kept leaves the session where it is, because a
+      // repeat of the join would then be refused with nothing to answer from.
+      case kept {
+        Ok(Nil) -> {
+          let _ =
+            joining.children.release(joining.spawner, joining.parent, name)
+          Nil
+        }
+        Error(Nil) -> Nil
+      }
     }
     False -> Nil
   }

@@ -134,10 +134,23 @@ pub type Returning {
     session_of: fn(Spawner, Parent, Handle) -> Whereabouts,
     /// Keeps a settled entry, so that the join can be answered again after the
     /// child's session has been ended. It is called before the session is ended.
-    keep: fn(Spawner, Parent, Joined) -> Nil,
-    /// The entry `keep` kept for a child, if one reads.
-    kept: fn(Spawner, Parent, Handle) -> Option(Joined),
+    keep: fn(Spawner, Parent, Joined) -> Result(Nil, Nil),
+    /// The entry `keep` kept for a child: none, the entry, or a file that is there
+    /// and does not read.
+    kept: fn(Spawner, Parent, Handle) -> Kept,
   )
+}
+
+/// What `kept` found for a child.
+pub type Kept {
+  /// Nothing was kept: the child never settled, or this node keeps no records.
+  NothingKept
+
+  /// The settled entry.
+  AnswerKept(entry: Joined)
+
+  /// A file that is there and cannot be read, which is not the same as none.
+  KeptUnreadable
 }
 
 /// Where a join about a child is answered.
@@ -167,8 +180,8 @@ pub fn none() -> Returning {
     remember: fn(_, _, _, _, _) { Nil },
     settle: fn(_, _, entry, _) { entry },
     session_of: fn(_, _, _) { Unseeded },
-    keep: fn(_, _, _) { Nil },
-    kept: fn(_, _, _) { None },
+    keep: fn(_, _, _) { Ok(Nil) },
+    kept: fn(_, _, _) { NothingKept },
   )
 }
 
@@ -217,33 +230,54 @@ pub fn over(
   )
 }
 
-/// Removes the claims a daemon that died left behind, when the next one starts.
-/// A claim names work in a process that no longer exists, and would otherwise make
-/// every join answer `Pending` until it aged out. Records and verdicts are kept:
-/// they are what a restarted daemon answers from.
+/// Removes the claims a daemon that died left behind, when the next one starts, and
+/// the files of children older than `retain_s`. A claim names work in a process that
+/// no longer exists, and would otherwise make every join answer `Pending` until it
+/// aged out. A record, a verdict and a kept answer are what a restarted daemon answers
+/// from, so they are kept for as long as anything can still ask about the child: the
+/// delegate session of a child is kept for the spawner's `retain_s` with no message,
+/// and the files are kept for the longest of them. The kept answer holds the child's
+/// whole report, and nothing else removes it, not even the deletion of the parent.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // spawn_return.sweep("/var/lib/loom")
+/// // spawn_return.sweep("/var/lib/loom", 604_800, 1_700_000_000)
 /// ```
-pub fn sweep(state_root: String) -> Nil {
+pub fn sweep(state_root: String, retain_s: Int, now_s: Int) -> Nil {
   let directory = state_root <> "/" <> directory_name
 
   // A directory that is not there has no claims.
   case simplifile.read_directory(directory) {
     Ok(names) ->
       list.each(names, fn(name) {
-        // Only a claim is removed; a record or a verdict is kept.
-        case string.ends_with(name, ".claim") {
-          True -> {
+        // A claim is removed, and a record, a verdict or a kept answer is removed
+        // when it is older than the retention.
+        case
+          string.ends_with(name, ".claim"),
+          aged(directory <> "/" <> name, retain_s, now_s)
+        {
+          True, _ | False, True -> {
             let _removed = simplifile.delete(directory <> "/" <> name)
             Nil
           }
-          False -> Nil
+          False, False -> Nil
         }
       })
     Error(_) -> Nil
+  }
+}
+
+/// Whether a file of the three kinds a child keeps is older than the retention. Any
+/// other file, and a file whose age cannot be read, is not.
+fn aged(path: String, retain_s: Int, now_s: Int) -> Bool {
+  let kept_kind =
+    string.ends_with(path, ".copy")
+    || string.ends_with(path, ".verdict")
+    || string.ends_with(path, ".joined")
+  case kept_kind, simplifile.file_info(path) {
+    True, Ok(info) -> now_s - info.mtime_seconds > retain_s
+    _, _ -> False
   }
 }
 
@@ -390,11 +424,18 @@ type Outcome {
 
   /// The executor the child worked on did not answer the request for its commits.
   /// Nothing was captured, and the request is made again at the next join.
-  Waiting
+  Waiting(
+    /// The second the executor was first not heard from, which bounds the waiting.
+    since: Int,
+  )
 
   /// The commits are captured into this node's store and are not yet in the
   /// parent's. The transfer resumes from here.
-  Captured(state: State)
+  Captured(
+    state: State,
+    /// The second the commits were first captured and not yet delivered.
+    since: Int,
+  )
 
   /// The commits are in the parent's store.
   Returned(state: State)
@@ -424,7 +465,7 @@ type Verdict {
 fn is_final(verdict: Verdict) -> Bool {
   case verdict.outcome {
     NoCommits | Returned(..) | Refused(..) -> True
-    Waiting | Captured(..) -> False
+    Waiting(..) | Captured(..) -> False
   }
 }
 
@@ -433,8 +474,8 @@ fn encode_verdict(verdict: Verdict) -> String {
   // Each outcome is a kind word, the state it carries and its reason.
   let #(kind, state, reason) = case verdict.outcome {
     NoCommits -> #("none", None, "")
-    Waiting -> #("waiting", None, "")
-    Captured(state:) -> #("captured", Some(state), "")
+    Waiting(..) -> #("waiting", None, "")
+    Captured(state:, ..) -> #("captured", Some(state), "")
     Returned(state:) -> #("returned", Some(state), "")
     Refused(reason:) -> #("refused", None, reason)
   }
@@ -448,8 +489,18 @@ fn encode_verdict(verdict: Verdict) -> String {
     #("reason", json.string(reason)),
     #("uncommitted", json.string(tree_word(verdict.tree))),
     #("attempts", json.int(verdict.attempts)),
+    #("since", json.int(since_of_outcome(verdict.outcome))),
   ])
   |> json.to_string
+}
+
+/// The second a verdict that is not final was first made, or zero for one that is
+/// final or was not stamped.
+fn since_of_outcome(outcome: Outcome) -> Int {
+  case outcome {
+    Waiting(since:) | Captured(since:, ..) -> since
+    NoCommits | Returned(..) | Refused(..) -> 0
+  }
 }
 
 /// The word a tree is kept as in the verdict file.
@@ -470,12 +521,14 @@ fn decode_verdict(text: String) -> Result(Verdict, Nil) {
     use reason <- decode.field("reason", decode.string)
     use tree <- decode.field("uncommitted", decode.string)
     use attempts <- decode.field("attempts", decode.int)
-    decode.success(#(kind, state, reason, tree, attempts))
+
+    // A verdict written before the waiting was bounded has no second.
+    use since <- decode.optional_field("since", 0, decode.int)
+    decode.success(#(kind, state, reason, tree, attempts, since))
   }
-  use #(kind, state, reason, tree, attempts) <- result.try(result.replace_error(
-    json.parse(text, decoder),
-    Nil,
-  ))
+  use #(kind, state, reason, tree, attempts, since) <- result.try(
+    result.replace_error(json.parse(text, decoder), Nil),
+  )
 
   // A state, when the file has one, is read with the total state decoder.
   use held <- result.try(case state {
@@ -487,8 +540,8 @@ fn decode_verdict(text: String) -> Result(Verdict, Nil) {
   // The outcome and the state it carries must agree.
   use outcome <- result.map(case kind, held {
     "none", None -> Ok(NoCommits)
-    "waiting", None -> Ok(Waiting)
-    "captured", Some(state) -> Ok(Captured(state:))
+    "waiting", None -> Ok(Waiting(since:))
+    "captured", Some(state) -> Ok(Captured(state:, since:))
     "returned", Some(state) -> Ok(Returned(state:))
     "refused", None -> Ok(Refused(reason:))
     _, _ -> Error(Nil)
@@ -693,6 +746,7 @@ fn working(
     | []
     | [_, _, ..] -> unanswered(copy.home, known)
   }
+  let verdict = bounded(verdict, known, copy.home, states)
 
   // The verdict is kept before the claim is let go, so no join finds the claim
   // free and the verdict missing.
@@ -702,12 +756,72 @@ fn working(
   verdict
 }
 
+/// How long a child in a session of its own may go unreturned, in seconds, before
+/// the join gives up on its commits and returns its report. It must be longer than
+/// an executor takes to restart and than a repaired link takes to be used again,
+/// which the surface bounds at a minute (`workspace.state_repair_ms`) and an
+/// executor's restart does in a few seconds, and short enough that a parent
+/// waiting on a child whose executor is gone for good is told within a coffee
+/// break and not left with a `Pending` every window. Ten minutes.
+pub const give_up_s = 600
+
+/// Stamps a verdict that is not final with the second the waiting began, which is
+/// the first verdict's, and turns it into a final refusal once the waiting is older
+/// than `give_up_s` for a child in a session of its own. Such a child is not given
+/// up on by count, because what costs the tries is often an answer that is not about
+/// the commits, but waiting for ever withholds its report, so it is bounded by time.
+/// The refusal says where the commits still are.
+fn bounded(
+  verdict: Verdict,
+  known: Option(Verdict),
+  home: Home,
+  states: Option(SessionStates),
+) -> Verdict {
+  let now = ffi_os.system_time_ms() / 1000
+  let began = case known {
+    Some(Verdict(outcome: Waiting(since:), ..))
+      | Some(Verdict(outcome: Captured(since:, ..), ..))
+      if since > 0
+    -> since
+    _ -> now
+  }
+  let expired = home == Session && now - began >= give_up_s
+
+  // The waiting began at the first verdict, and a wait that has run its course ends
+  // with the report and a notice of where the commits are.
+  case verdict.outcome, expired {
+    Waiting(..), False -> Verdict(..verdict, outcome: Waiting(since: began))
+    Captured(state:, ..), False ->
+      Verdict(..verdict, outcome: Captured(state:, since: began))
+    Waiting(..), True | Captured(..), True ->
+      Verdict(..verdict, outcome: Refused(gave_up(states)))
+    NoCommits, _ | Returned(..), _ | Refused(..), _ -> verdict
+  }
+}
+
+/// The sentence for commits given up on after `give_up_s`, with where they are.
+fn gave_up(states: Option(SessionStates)) -> String {
+  let where = case states {
+    Some(held) ->
+      " on the executor `"
+      <> held.executor
+      <> "`, on the branch `"
+      <> held.branch
+      <> "`"
+    None -> " on the executor"
+  }
+  "the machine the child ran on could not return its commits within "
+  <> int.to_string(give_up_s / 60)
+  <> " minutes. They are still in the child's workspace"
+  <> where
+}
+
 /// The verdict for a run that did not finish in time. The deadline says nothing
 /// about the commits, so it is a reason to ask again that keeps whatever an earlier
 /// attempt captured.
 fn unanswered(home: Home, known: Option(Verdict)) -> Verdict {
   case known {
-    Some(Verdict(outcome: Captured(state:), tree:, attempts:)) ->
+    Some(Verdict(outcome: Captured(state:, ..), tree:, attempts:)) ->
       unfinished(home, state, tree, attempts + 1)
     Some(Verdict(attempts:, ..)) -> waiting(home, attempts + 1)
     None -> waiting(home, 1)
@@ -757,7 +871,7 @@ fn found_in_directory(
         tree: Tidy,
         attempts: 0,
       )
-    Ok(_), Some(Verdict(outcome: Captured(state:), tree:, attempts:)) ->
+    Ok(_), Some(Verdict(outcome: Captured(state:, ..), tree:, attempts:)) ->
       sent(node, reach, spawner, Directory, state, tree, attempts)
     Ok(path), Some(_) | Ok(path), None ->
       captured(node, reach, spawner, copy, path)
@@ -788,8 +902,8 @@ fn found_in_session(
         tree: Tidy,
         attempts: 0,
       )
-    Some(states), Some(Verdict(outcome: Captured(state:), tree:, attempts:)) ->
-      pulled(node, reach, spawner, states, state, tree, attempts)
+    Some(states), Some(Verdict(outcome: Captured(state:, ..), tree:, attempts:))
+    -> pulled(node, reach, spawner, states, state, tree, attempts)
     Some(states), Some(Verdict(attempts:, ..)) ->
       committed(node, reach, spawner, copy, states, attempts)
     Some(states), None -> committed(node, reach, spawner, copy, states, 0)
@@ -864,7 +978,8 @@ fn waiting(home: Home, attempts: Int) -> Verdict {
         tree: tree_for(home),
         attempts:,
       )
-    False -> Verdict(outcome: Waiting, tree: tree_for(home), attempts:)
+    False ->
+      Verdict(outcome: Waiting(since: 0), tree: tree_for(home), attempts:)
   }
 }
 
@@ -963,47 +1078,57 @@ fn session_of(
 }
 
 /// Keeps a settled entry beside the child's verdict, whole, so that a join asked
-/// again after the session is gone is answered as the first was. Failing to keep it
-/// costs only that the repeat is refused, which is what it was before.
+/// again after the session is gone is answered as the first was. A failure is
+/// reported, because the session must not be ended without the entry kept.
 fn keep(
   node: StateNode,
   spawner: Spawner,
   parent: Parent,
   entry: Joined,
-) -> Nil {
-  // Both an answer to keep and a directory to keep it in are needed.
+) -> Result(Nil, Nil) {
+  // Both an answer to keep and a directory to keep it in are needed, and the
+  // caller ends the session only when the entry was kept.
   case entry, joined_record.encode(entry), returns_directory(node) {
     remote_spawn.Ready(handle:, ..), Ok(text), Ok(directory) -> {
       let path =
         directory <> "/" <> key_of(spawner, parent, handle) <> ".joined"
-      let _written = write_whole(path, text)
-      Nil
+      write_whole(path, text)
     }
-    _, _, _ -> Nil
+    _, _, _ -> Error(Nil)
   }
 }
 
-/// The entry `keep` kept for a child, when one reads.
+/// The entry `keep` kept for a child. A file that is not there is nothing kept, and
+/// any other failure to read it is not the same answer: the child settled, and the
+/// join is asked again.
 fn kept(
   node: StateNode,
   spawner: Spawner,
   parent: Parent,
   handle: Handle,
-) -> Option(Joined) {
-  let found = {
-    use directory <- result.try(result.replace_error(
-      returns_directory(node),
-      Nil,
-    ))
-    use text <- result.try(
-      simplifile.read(
-        directory <> "/" <> key_of(spawner, parent, handle) <> ".joined",
-      )
-      |> result.replace_error(Nil),
-    )
-    joined_record.decode(text)
+) -> Kept {
+  case node.state_root {
+    "" -> NothingKept
+    root ->
+      case
+        simplifile.read(
+          root
+          <> "/"
+          <> directory_name
+          <> "/"
+          <> key_of(spawner, parent, handle)
+          <> ".joined",
+        )
+      {
+        Ok(text) ->
+          case joined_record.decode(text) {
+            Ok(entry) -> AnswerKept(entry:)
+            Error(Nil) -> KeptUnreadable
+          }
+        Error(simplifile.Enoent) -> NothingKept
+        Error(_) -> KeptUnreadable
+      }
   }
-  option.from_result(found)
 }
 
 /// Looks at the child's tree, captures its commits, and sends them.
@@ -1109,7 +1234,7 @@ fn unfinished(home: Home, state: State, tree: Tree, attempts: Int) -> Verdict {
         tree:,
         attempts:,
       )
-    False -> Verdict(outcome: Captured(state:), tree:, attempts:)
+    False -> Verdict(outcome: Captured(state:, since: 0), tree:, attempts:)
   }
 }
 
@@ -1196,7 +1321,7 @@ fn amend(entry: Joined, verdict: Verdict) -> Joined {
           <> reason
           <> ".",
         ]
-        Waiting | Captured(..) | Returned(..) -> []
+        Waiting(..) | Captured(..) | Returned(..) -> []
       }
 
       // Whether it left work behind that does not come back.
@@ -1217,7 +1342,7 @@ fn amend(entry: Joined, verdict: Verdict) -> Joined {
       case verdict.outcome {
         Returned(state:) ->
           remote_spawn.Ready(..entry, report:, state: Some(state))
-        NoCommits | Refused(..) | Waiting | Captured(..) ->
+        NoCommits | Refused(..) | Waiting(..) | Captured(..) ->
           remote_spawn.Ready(..entry, report:)
       }
     }

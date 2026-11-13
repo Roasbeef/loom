@@ -23,6 +23,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import support/cell.{type Cell}
+import telemetry/log
 import tools/agent.{type Handle}
 import weft/poll
 
@@ -94,6 +95,9 @@ type Rig {
     kept: Cell(dict.Dict(String, Joined)),
     // The sessions that exist. A release removes one.
     held: Cell(dict.Dict(String, agency.DelegateEndpoint)),
+    // Whether keeping an entry fails, and whether a kept entry cannot be read.
+    keep_fails: Cell(Bool),
+    kept_unreadable: Cell(Bool),
   )
 }
 
@@ -103,6 +107,8 @@ fn rig() -> Rig {
     together: cell.new(0),
     kept: cell.new(dict.new()),
     held: cell.new(dict.new()),
+    keep_fails: cell.new(False),
+    kept_unreadable: cell.new(False),
   )
 }
 
@@ -134,6 +140,7 @@ fn session(
     states: Some(
       session_states.SessionStates(
         executor: "runner",
+        branch: "loom/session",
         link: unreachable_link(),
         fit: Ok(Nil),
         apply: fn(_state) { Error(session_states.Final("not under test")) },
@@ -226,12 +233,25 @@ fn returning(
       }
     },
     keep: fn(_spawner, _parent, entry) {
-      cell.update(rig.kept, fn(held) {
-        dict.insert(held, strand_of(entry), entry)
-      })
+      case cell.get(rig.keep_fails) {
+        True -> Error(Nil)
+        False -> {
+          cell.update(rig.kept, fn(held) {
+            dict.insert(held, strand_of(entry), entry)
+          })
+          Ok(Nil)
+        }
+      }
     },
     kept: fn(_spawner, _parent, found) {
-      option.from_result(dict.get(cell.get(rig.kept), found.strand))
+      case
+        cell.get(rig.kept_unreadable),
+        dict.get(cell.get(rig.kept), found.strand)
+      {
+        True, _ -> spawn_return.KeptUnreadable
+        False, Ok(entry) -> spawn_return.AnswerKept(entry:)
+        False, Error(Nil) -> spawn_return.NothingKept
+      }
     },
   )
 }
@@ -284,6 +304,7 @@ fn joining(
     pair: fn() { Ok(pair) },
     children: children(rig, sessions, Gone),
     returning: returning(rig, own, []),
+    logger: log.discard(),
   )
 }
 
@@ -421,7 +442,7 @@ pub fn a_child_with_no_session_and_no_kept_answer_is_told_it_is_unknown_test() {
   assert events(rig) == []
 }
 
-pub fn a_refusal_from_one_group_is_that_groups_and_not_the_joins_test() {
+pub fn the_pairs_refusal_is_the_joins_and_a_seeded_childs_is_the_childs_test() {
   let rig = rig()
   let a = handle("a")
   let b = handle("b")
@@ -433,11 +454,106 @@ pub fn a_refusal_from_one_group_is_that_groups_and_not_the_joins_test() {
   let sessions = [#("seed-a", session(rig, "seed-a", ready(_, 0), 1))]
   let found = Joining(..found, children: children(rig, sessions, Gone))
 
-  // The pair's group could not be asked, so b is still finishing as far as the
-  // parent can know. The seeded child a is answered whatever became of b.
-  let assert Ok(entries) = child_join.join(found, [a, b], 1000)
-  assert list.map(entries, strand_of) == [a.strand, b.strand]
-  assert list.map(entries, ready_of) == [True, False]
+  // The pair's group answers for handles it does not name, so its refusal is the
+  // whole join's, as it always was.
+  assert child_join.join(found, [a, b], 1000)
+    == Error(remote_spawn.CapReached(remote_spawn.MaxSessions, 4))
+}
+
+pub fn one_bad_handle_in_the_pairs_group_does_not_settle_the_others_test() {
+  let rig = rig()
+  let a = handle("a")
+  let b = handle("b")
+  let c = handle("c")
+  let refusing =
+    agency.DelegateEndpoint(
+      ..session(rig, "pair", ready(_, 0), 1),
+      join: fn(_parent, _handles, _within_ms) {
+        Error(remote_spawn.InvalidArgument(reason: "b is not a descendant"))
+      },
+    )
+  let sessions = [#("seed-a", session(rig, "seed-a", ready(_, 0), 1))]
+  let found =
+    Joining(
+      ..joining(rig, refusing, sessions, [#(a.strand, "seed-a")]),
+      children: children(rig, sessions, Gone),
+    )
+
+  // The pair's group names b and c and refuses for b. Marking both failed would
+  // settle c's stub on b's account, so the refusal is the join's.
+  assert child_join.join(found, [a, b, c], 1000)
+    == Error(remote_spawn.InvalidArgument(reason: "b is not a descendant"))
+}
+
+pub fn a_seeded_childs_refusal_is_that_childs_by_whether_it_clears_test() {
+  let rig = rig()
+  let a = handle("a")
+  let b = handle("b")
+  let pair = session(rig, "pair", ready(_, 0), 1)
+  let refusing = fn(refusal) {
+    agency.DelegateEndpoint(
+      ..session(rig, "seed-a", ready(_, 0), 1),
+      join: fn(_parent, _handles, _within_ms) { Error(refusal) },
+    )
+  }
+  let one = fn(refusal) {
+    let sessions = [
+      #("seed-a", refusing(refusal)),
+      #("seed-b", session(rig, "seed-b", ready(_, 0), 1)),
+    ]
+    let found =
+      Joining(
+        ..joining(rig, pair, sessions, [
+          #(a.strand, "seed-a"),
+          #(b.strand, "seed-b"),
+        ]),
+        children: children(rig, sessions, Gone),
+      )
+    let assert Ok([first, second]) = child_join.join(found, [a, b], 1000)
+    assert ready_of(second)
+    first
+  }
+
+  // A refusal that never clears is the child's failure with its reason.
+  let assert remote_spawn.Ready(outcome: agent.Failed(reason:), ..) =
+    one(remote_spawn.StoreFailure(reason: "the session cannot recover"))
+  assert reason != ""
+  let assert remote_spawn.Ready(outcome: agent.Failed(..), ..) =
+    one(remote_spawn.CapReached(remote_spawn.MaxSessions, 4))
+
+  // One that asks to come again leaves the child unfinished.
+  let assert remote_spawn.Pending(..) =
+    one(remote_spawn.NotYetOpen(reason: "the session is opening"))
+}
+
+pub fn an_entry_that_could_not_be_kept_leaves_its_session_where_it_is_test() {
+  let rig = rig()
+  let a = handle("a")
+  let pair = session(rig, "pair", ready(_, 0), 1)
+  let sessions = [#("seed-a", session(rig, "seed-a", ready(_, 0), 1))]
+  let found = joining(rig, pair, sessions, [#(a.strand, "seed-a")])
+  cell.update(rig.keep_fails, fn(_) { True })
+
+  // The join is answered, and the session stays, so that a repeat reaches it and
+  // is answered from it and not refused with nothing to answer from.
+  let assert Ok([first]) = child_join.join(found, [a], 1000)
+  assert first == ready(a, 0)
+  assert dict.size(cell.get(rig.held)) == 1
+  let assert Ok([again]) = child_join.join(found, [a], 1000)
+  assert again == first
+}
+
+pub fn a_kept_entry_that_cannot_be_read_is_not_a_refusal_test() {
+  let rig = rig()
+  let a = handle("a")
+  let pair = session(rig, "pair", ready(_, 0), 1)
+  let found = joining(rig, pair, [], [#(a.strand, "seed-a")])
+  cell.update(rig.kept_unreadable, fn(_) { True })
+
+  // The child settled and its answer is there and does not read: the join says it
+  // is still finishing, and does not say the orchestrator holds no such child.
+  let assert Ok([entry]) = child_join.join(found, [a], 1000)
+  let assert remote_spawn.Pending(..) = entry
 }
 
 pub fn a_join_asked_again_after_its_session_was_released_gets_the_same_answer_test() {

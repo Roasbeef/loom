@@ -95,6 +95,10 @@ pub type SessionStates {
   SessionStates(
     /// The `[executors.<name>]` that holds the session, for a log line.
     executor: String,
+    /// The Git branch the session's worktree has on that executor,
+    /// `loom/<session id>`, which is where an operator finds commits the return
+    /// gave up on.
+    branch: String,
     /// The link to the executor's state store. A state sent over it lands in the
     /// store, and an apply names it there.
     link: Link,
