@@ -108,8 +108,7 @@ TypeOK2 ==
     /\ head \in 0..NC /\ wt \in 0..(10 + MaxEdits)
     /\ att \in 0..MaxAtt
     /\ pc \in {"idle", "start", "captured", "recorded", "sent", "attached",
-               "asked", "applied", "rejected", "closed", "refused", "marked",
-               "failed"}
+               "asked", "applied", "rejected", "closed", "refused", "marked"}
     /\ cell.ph \in {"none", "taken", "done"}
     /\ exBranch \in -1..NC
 
@@ -282,8 +281,10 @@ CkSend ==
 (*   record made by the first successful attach of a `worktree` workspace). *)
 (*   An open scope keeps its binding.                                      *)
 (*                                                                         *)
-(*   CloseFailedAttach: an attach that cannot build its plane closes the    *)
-(*   scope it opened, so the next attach meets a closed scope.             *)
+(*   CloseFailedAttach: an attach for a name the executor does not serve    *)
+(*   that created or reopened the scope has the host close it as retired,  *)
+(*   in the same turn, so the next attach meets a closed scope. A rebound  *)
+(*   scope is a session's own and is left as it was (`close_unserved`).    *)
 (*                                                                         *)
 (*   MismatchRefused: an attach that the ledger refuses for its workspace, *)
 (*   or for a name the executor does not serve, is a final refusal and the *)
@@ -319,9 +320,11 @@ CkAttach ==
                    applied, net, answers, aliveX, lastLand, mtip, mtipAtt, mreq>>
 
 (* The attach for a name the executor does not serve: the ledger binds a     *)
-(* scope and the plane cannot be built. With CloseFailedAttach the source    *)
-(* then closes the scope (CkCloseFailed) and the move is refused; without it *)
-(* the scope stays open and the mover stalls.                                *)
+(* scope and the plane cannot be built. With CloseFailedAttach the host      *)
+(* closes a scope this attach created or reopened (here, a closed one), in   *)
+(* the same turn, and the source learns the refusal. A scope that was open   *)
+(* is rebound and left open. Without it the scope stays open and the mover   *)
+(* stalls.                                                                   *)
 CkAttachUnknown ==
     /\ CkOn /\ pc = "sent" /\ aliveX /\ tok < MaxTok
     /\ cfgWs = "unknown" /\ bound # "unknown"   \* A repeat changes nothing the mover holds.
@@ -329,24 +332,15 @@ CkAttachUnknown ==
     /\ \/ /\ exec.holder # "none"
           /\ exec' = [exec EXCEPT !.holder = "A"]
        \/ /\ exec.holder = "none" /\ exec.inc < MaxInc
-          /\ exec' = [inc |-> exec.inc + 1, holder |-> "A"]
+          /\ exec' = [inc |-> exec.inc + 1,
+                      holder |-> IF CloseFailedAttach THEN "none" ELSE "A"]
     /\ tok' = tok + 1 /\ tokAtt' = att
     /\ bound' = "unknown"
     /\ reb' = (reb \/ Rebinds)
-    /\ pc' = IF CloseFailedAttach THEN "failed" ELSE "sent"
+    /\ pc' = IF CloseFailedAttach THEN "refused" ELSE "sent"
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
                    replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
                    exBranch, applied, net, answers, aliveX, lastLand, mtip,
-                   mtipAtt, mreq, minc, mtok>>
-
-(* The source closes the scope the failed attach opened, and the move ends. *)
-CkCloseFailed ==
-    /\ CkOn /\ pc = "failed" /\ aliveX
-    /\ exec' = [exec EXCEPT !.holder = "none"]
-    /\ pc' = "refused"
-    /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
-                   replied, everMoved, crashes, L, H, srcStore, store, exBranch,
-                   applied, tok, tokAtt, net, answers, aliveX, lastLand, mtip,
                    mtipAtt, mreq, minc, mtok>>
 
 (* The operator corrects the configuration and restarts the daemon: the    *)
@@ -355,7 +349,7 @@ FixConfig ==
     /\ cfgWs # "good" /\ cfgWs' = "good"
     \* The operator fixes it once the move has settled or is stalled at the
     \* attach, not while a landing is under way. A daemon that dies in a landing
-    \* is the case MoveCheckoutMutantCrashAfterFailedAttach records.
+    \* is the case MoveCheckoutMutantCrashInLanding records.
     /\ pc \in {"idle", "sent"}
     /\ MReset
     /\ UNCHANGED <<vars, L, X1, H0, bound, reb>>
@@ -487,13 +481,13 @@ CkMark ==
 (* A request it sent runs on. A daemon that dies in a landing closes       *)
 (* nothing, which is CrashA2.                                              *)
 (***************************************************************************)
-InLanding == pc \in {"attached", "asked", "applied", "rejected", "failed"}
+InLanding == pc \in {"attached", "asked", "applied", "rejected"}
 
 CkRerun ==
     /\ CkOn /\ pc \notin {"idle", "marked"} /\ reruns < MaxReruns
     /\ InLanding => aliveX
     /\ exec' = IF InLanding /\ exec.holder = "A"
-                     /\ (pc = "failed" \/ (exec.inc = minc /\ tok = mtok))
+                     /\ exec.inc = minc /\ tok = mtok
                   THEN [exec EXCEPT !.holder = "none"]
                   ELSE exec
     /\ MReset
@@ -597,7 +591,7 @@ Next2 ==
     \/ Intend2 \/ StopA2 \/ Cut2 \/ Send2 \/ Activate2 \/ LoseReply2
     \/ Retire2 \/ AbortEarly2 \/ RefuseActivate2 \/ AttachB2 \/ OpenB2
     \/ CrashA2 \/ CrashB2 \/ Restart2 \/ CrashX \/ RestartX
-    \/ CkRead \/ CkCapture \/ CkRecord \/ CkSend \/ CkAttach \/ CkAttachUnknown \/ CkCloseFailed
+    \/ CkRead \/ CkCapture \/ CkRecord \/ CkSend \/ CkAttach \/ CkAttachUnknown
     \/ FixConfig \/ CkAsk
     \/ CkResend \/ ExApply \/ ExRefuse \/ LoseAnswer \/ CkReceive \/ CkClose
     \/ CkMark \/ CkRerun
@@ -620,7 +614,7 @@ Spec2 ==
     /\ WF_allv(CkResend) /\ WF_allv(ExApply) /\ WF_allv(CkReceive)
     /\ WF_allv(CkClose) /\ WF_allv(CkMark)
     /\ WF_allv(AbandonLanded) /\ WF_allv(FixConfig)
-    /\ WF_allv(AbandonMismatch) /\ WF_allv(CkCloseFailed)
+    /\ WF_allv(AbandonMismatch)
 
 (***************************************************************************)
 (* Properties.                                                             *)
