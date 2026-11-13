@@ -202,7 +202,9 @@ its single-spec case `tcDroppedClosedQuitEarly` were added. All ten cases
 were rerun at 30,000 schedules each with no bugs, and the mutation table
 below was rerun in full.
 
-All ten probes find a witness within 230 schedules: a lost reply reported
+All ten probes find a witness, eight within 230 schedules and the others
+(`tcProbeLateOldFrame` and `tcProbeRetired`) within about 600 in four runs of
+the gate's measurement: a lost reply reported
 `UnknownOutcome`, a retained command sent, a retained command reported not
 sent, a second adoption, a retirement producing `UnknownOutcome`, a frame
 from a replaced socket arriving after adoption, a candidate failing while a
