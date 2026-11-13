@@ -519,9 +519,7 @@ run(<<"start_launches_epmd">>, Root) ->
 %% and must not hang on the silent listener.
 run(<<"epmd_unavailable">>, Root) ->
     {A, Config} = lone_node(Root, none),
-    %% A wildcard listener, so that epmd cannot bind the port beside it.
-    {ok, Squatter} = gen_tcp:listen(0, []),
-    {ok, Port} = inet:port(Squatter),
+    {Squatter, Port} = silent_listener(),
     try
         write_options(A, Config),
         Aux = #{epmd_port => Port,
@@ -820,6 +818,27 @@ lone_node(Root, Listen) ->
     A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
     B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
     {A, config(A, B, cert_of(B), Listen)}.
+
+%% A wildcard listener that is not epmd: it accepts every connection and then
+%% says nothing and never closes, so epmd cannot bind the port beside it and a
+%% question put to it is never answered. The listener has to be accepted from.
+%% Once the backlog of a listener nobody accepts from is full, the kernel closes
+%% each new connection, and `erl_epmd:names/1` reads a closed connection as an
+%% epmd that knows no nodes. Start's probe then sees an epmd answer after a few
+%% polls, and whether that lands inside its wait depends on timing alone.
+%% Closing the returned listener ends the acceptor, which releases the
+%% connections it held.
+silent_listener() ->
+    {ok, Listener} = gen_tcp:listen(0, []),
+    {ok, Port} = inet:port(Listener),
+    _ = spawn(fun() -> hold_connections(Listener, []) end),
+    {Listener, Port}.
+
+hold_connections(Listener, Held) ->
+    case gen_tcp:accept(Listener) of
+        {ok, Socket} -> hold_connections(Listener, [Socket | Held]);
+        {error, _} -> ok
+    end.
 
 %% Runs `Fun` with a loopback port on which no epmd answers, then stops the
 %% epmd that `Fun` caused to start there. Only that port is touched, never the
