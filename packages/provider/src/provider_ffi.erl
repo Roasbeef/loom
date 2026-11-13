@@ -3,11 +3,9 @@
 %% between Erlang conventions (charlists, raw httpc messages) and the
 %% Gleam callback signatures at the boundary, per the house FFI rules.
 -module(provider_ffi).
--export([prepare_stream_request/4, begin_stream_request/5,
+-export([prepare_stream_request/4, begin_stream_request/6,
          cancel_stream_request/1, get_env/1]).
 
-%% Total receive-loop timeout for one streamed response, in milliseconds.
--define(RESPONSE_TIMEOUT, 300000).
 -define(RECOVERY_PROBE_TIMEOUT, 25).
 -define(RECOVERY_RETRY, 10).
 
@@ -34,8 +32,8 @@ prepare_stream_request(OnStatus, OnChunk, OnEnd, OnFailure) ->
 %% queue behind the small synchronous startup section without losing the pid
 %% which must remain alive until that startup either fails or becomes
 %% cancellable.
-begin_stream_request(Owner, Method, Url, Headers, Body) ->
-    Owner ! {begin_request, Method, Url, Headers, Body},
+begin_stream_request(Owner, Method, Url, Headers, Body, TimeoutMs) ->
+    Owner ! {begin_request, Method, Url, Headers, Body, TimeoutMs},
     nil.
 
 %% Requests cancellation without confusing that request with its drain
@@ -48,21 +46,22 @@ cancel_stream_request(Owner) ->
 native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure) ->
     ParentMonitor = erlang:monitor(process, Parent),
     receive
-        {begin_request, Method, Url, Headers, Body} ->
-            start_native_request(Method, Url, Headers, Body, ParentMonitor,
-                                 OnStatus, OnChunk, OnEnd, OnFailure);
+        {begin_request, Method, Url, Headers, Body, TimeoutMs} ->
+            start_native_request(Method, Url, Headers, Body, TimeoutMs,
+                                 ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure);
         cancel ->
             ok;
         {'DOWN', ParentMonitor, process, Parent, _Reason} ->
             ok
     end.
 
-start_native_request(Method, Url, Headers, Body, ParentMonitor,
+start_native_request(Method, Url, Headers, Body, TimeoutMs, ParentMonitor,
                      OnStatus, OnChunk, OnEnd, OnFailure) ->
-    Deadline = request_deadline(),
+    BoundedTimeout = max(TimeoutMs, 1),
+    Deadline = request_deadline(BoundedTimeout),
     case prepare_native_request(Method, Url, Headers, Body) of
         {ok, Manager, HandlerSupervisor, Request, Options} ->
-            case admit_native_request(Method, Request, Options) of
+            case admit_native_request(Method, Request, Options, BoundedTimeout) of
                 {ok, RequestId} ->
                     enter_native_loop(RequestId, ParentMonitor, OnStatus,
                                       OnChunk, OnEnd, OnFailure, none, false,
@@ -113,9 +112,9 @@ prepare_native_request(Method, Url, Headers, Body) ->
         _:_ -> error
     end.
 
-admit_native_request(Method, Request, Options) ->
+admit_native_request(Method, Request, Options, TimeoutMs) ->
     try httpc:request(method_atom(Method), Request,
-                      migration_safe_http_options(), Options)
+                      migration_safe_http_options(TimeoutMs), Options)
     catch
         _:_ -> interrupted
     end.
@@ -534,8 +533,8 @@ safe_status_callback(Function, Status, Headers) ->
         _:_ -> error
     end.
 
-request_deadline() ->
-    erlang:monotonic_time(millisecond) + ?RESPONSE_TIMEOUT.
+request_deadline(TimeoutMs) ->
+    erlang:monotonic_time(millisecond) + TimeoutMs.
 
 remaining_ms(Deadline) ->
     max(Deadline - erlang:monotonic_time(millisecond), 0).
@@ -544,9 +543,9 @@ remaining_ms(Deadline) ->
 %% work to a different handler. Disable both migrations so the captured handler
 %% remains authoritative. OTP 29's inets accepts autoretry directly; keeping
 %% the fixed option list makes the lifecycle policy visible at the call site.
-migration_safe_http_options() ->
+migration_safe_http_options(TimeoutMs) ->
     [{autoretry, 0},
-     {timeout, ?RESPONSE_TIMEOUT},
+     {timeout, TimeoutMs},
      {connect_timeout, 30000},
      {autoredirect, false}].
 

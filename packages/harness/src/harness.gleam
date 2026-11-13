@@ -201,7 +201,7 @@ pub fn settings(
     role: model.Main,
     lookup: model_facts.no_facts(),
     fallback:,
-    provider_timeout_ms: 600_000,
+    provider_timeout_ms: 660_000,
   )
 }
 
