@@ -143,7 +143,10 @@ The steps that need root run before the drop, in this order:
 The orchestrator dials the executor by its unchanged node name,
 `<name>@127.0.0.1`, exactly as it dials an executor on the same host. The
 launcher makes that name resolve to a forwarded port, and every check of the
-distributed runtime runs unchanged.
+distributed runtime runs unchanged. This is the link of `--link distribution`,
+the default. `loom vm up --link untrusted` reaches the guest over a pinned TLS
+link that is not distribution instead; see "Reaching a guest over the untrusted
+link (opt-in)".
 
 ```mermaid
 flowchart LR
@@ -218,7 +221,7 @@ filesystem layout is not.
    and `workspace_policy.protecting_node_credentials`
    (`packages/client/src/client/executor_plane.gleam:606`). The node's TLS key
    and cookie come from the executor's own `[distribution]` table, read by
-   `node_credentials` (`packages/client/src/client/executor_plane.gleam:310`).
+   `node_credentials` (`packages/client/src/client/executor_plane.gleam:323`).
    Under the default `host` read scope the jail sees the whole guest, `/srv`
    included, so this mask is what keeps model code from printing either file.
    An absent path is skipped, as for every conditional mask
@@ -1016,6 +1019,109 @@ one), the JSON alone matches and the text says the process "may be" a runner.
 The GitHub token is read once, when `loom-vm run` starts (`readGitHubToken` in
 `packages/vmm/cmd/loom-vm/github.go`) and held by the proxy for the guest's life,
 and no refresh is attempted. After a token rotates, run `loom vm down` and `loom vm up`.
+
+### Reaching a guest over the untrusted link (opt-in)
+
+The link above makes the guest a trusted Erlang distribution peer of the host
+daemon. Whoever takes over the guest's `loom` user holds the executor's cookie
+and key, and a distribution connection is symmetric once it is up, so that
+user can run code in the host daemon as the developer. Verified against a
+nightly: a plain Erlang node holding only the three files `up` stages into the
+guest root connected to the host daemon and ran a shell command there.
+Protocol-change/109 describes an executor that is never a distribution peer,
+and `loom vm up --link untrusted` reaches a guest that way. It is opt-in: the
+default is still `--link distribution`, and nothing about a distribution guest
+changed. The proposal is `docs/design-notes/microvm-untrusted-link.md`, which
+also says what remains before this can become the default.
+
+```sh
+loom vm up --link untrusted --workspace ~/src/proj
+loom vm ensure --link untrusted --workspace ~/src/proj
+```
+
+#### What `up` does
+
+- It mints one private authority and one orchestrator leaf per vm home under
+  `<vm home>/link/`, and one leaf per guest under
+  `<vm home>/<name>/link-credentials/`, with the helpers `loom distribution
+  provision` uses. Each file is mode 0600 in a 0700 directory. A directory is
+  built beside its name as `<directory>.minting` and renamed into place, so a
+  later `up` reads a directory that is whole or finds none.
+- It writes `[executor_link]` (the authority, the orchestrator's leaf and its
+  key, once) and `[executors.<name>]` (`trust = "untrusted"`, the loopback
+  address, and the pin of the guest's leaf) into the configuration, beside
+  whatever the file holds. A table that already exists with other values is
+  refused, as `loom distribution install` refuses one. The one exception is the
+  guest's own row at another port, which its pin identifies. A `[distribution]`
+  table, a ledger deployment and every trusted row are left exactly as they are,
+  and the daemon's row reader passes written rows through beside a ledger's, so
+  the owner's ledger `loom.toml` takes the rows as written. No deployment,
+  ledger, cookie, authority key or running daemon is involved.
+- It reserves a loopback port once per guest and records it in
+  `<vm home>/<name>/link-port`, reusing it on every boot. If something listens
+  on the recorded port at boot (`nc -z`), it reserves another and rewrites the
+  row. The pin means a stranger on the old port is never trusted, but the
+  launcher cannot bind a taken port.
+- It records the guest's link in `<vm home>/<name>/link` (`untrusted`). A guest
+  with no record is a distribution guest, so existing guests are unchanged. A
+  later `up` needs no `--link`, and asking for the other link is refused: a
+  guest keeps its link for life, even under `--fresh`.
+- It stages a root whose `loom.toml` has `[executor_listener]` (it listens on
+  guest port 4370 on every interface, admits the orchestrator's pin, and
+  presents the guest's leaf) and no `[distribution]` table. The root holds the
+  authority's certificate, the guest's leaf and its key, and no cookie and no
+  ledger. The key is the only secret in the guest.
+- It boots with `loom-vm run --forward <host port>:4370` and no `--publish`, so
+  the host's epmd lists no node for the guest. The guest script reports ready
+  when the daemon has logged `daemon.executor_serving` and
+  `daemon.untrusted_listener`, instead of waiting on epmd.
+
+`status` shows the link, the address and the pin in place of the node and epmd
+lines. `down`, `logs`, `list` and `sync` work as they do for any guest, and
+`ensure` reads the console's ready line in place of epmd to tell that the guest
+serves. `rm` removes the guest's row, and `[executor_link]` with
+`<vm home>/link/` when no other untrusted guest remains; there is no ledger
+entry or cookie to revoke.
+
+The executor's jails mask the key of `[executor_listener]` the way they mask a
+distribution key. Before this change `executor_plane.machine` built its list
+from `[distribution]` alone, so an untrusted executor masked nothing and model
+code, which runs as the same user, could read the key
+(`executor_plane.masked_files`).
+
+#### A new guest needs a daemon restart
+
+The daemon reads `[executors.*]` and `[executor_link]` at its start and has no
+command that rereads them. `up` applies the rule it has for a newly installed
+deployment: with the default configuration, an idle default daemon is stopped
+and the next `loom` command starts it, and a daemon that holds sessions is left
+running with a note, or with `ensure`'s refusal, that names the restart. A
+resumed guest whose row did not change touches no daemon. With `--config` the
+daemon cannot be found, and the output says it must restart. An owner-only
+`executors.reload` command is the planned fix and is not built.
+
+#### What the link lacks today
+
+The link carries tool calls, foreground and background code mode, state
+transport, placed blobs and every owner callback. It does not carry the
+commands that non-tool callers run through the executor's broker, so these are
+refused for a session placed on such a guest:
+
+- project hooks;
+- goal checks;
+- the Changes tab and the session's Git baseline, which is probed once at the
+  first open and then stored as unavailable for the session's life;
+- the peer view of the worktree in multiplayer;
+- remote evolution, because the link sets the executor's evolution census to
+  `Uncompiled`.
+
+The guest is also not a member of any deployment, so the ledger cannot move
+its sessions between orchestrators. These gaps are why the default has not
+changed. `daemon_shipped_microvm_test` boots such a guest and runs a jailed
+call that settles on the guest's kernel, with these checks: the guest root has
+no `.erlang.cookie` and its `loom.toml` no `[distribution]` table, the host's
+epmd lists no node for it, a jailed read of the executor's key returns nothing
+while the certificate beside it is readable, and `status` names the link.
 
 ## Package registries and toolchains: `--allow` and `--provision`
 

@@ -201,7 +201,39 @@ recorded and in a `--checkout` scratch one), a hostile `.git/config` and hook
 planted by a jailed call whose marker never appears on the host after `vm sync`
 (with a control repository showing the marker would be writable), `vm sync
 --to-guest` read back by a jailed `git fetch`, a refused second guest, and `vm rm`
-of the idle and failing guests under the isolated home.
+of the idle and failing guests under the isolated home. Its last step boots a guest
+with `--link untrusted` (below), starts an orchestrator on the file `up` wrote,
+and checks that a jailed call settles on the guest's kernel, the root holds no
+cookie and no `[distribution]` table, the host's epmd lists no node for it, a
+jailed read of the executor's key returns nothing, and `status` names the link.
+
+`up --link untrusted` (`UpOptions.link`, `vm_spec.LinkKind`) reaches a guest over
+protocol-change/109's untrusted link instead of distribution; the default is
+still `distribution` and its code is unchanged. `bring_up` settles the kind first
+(`vm_cli.link_of` over `vm_link.settle`: the host-owned record
+`<vm home>/<name>/link`, bundles, and the flag; absent record and bundles mean
+distribution, and a guest never changes its link) and branches once, in
+`vm_cli.on_link`, to `bring_up_linked`. `client/vm_link` is the pure part: the
+`link` and `link-port` record codecs (total), `port_step`, `install` and
+`uninstall` of `[executor_link]` and the guest's row (a table that differs is
+refused; only the guest's own row at another port, identified by its pin, is
+replaced; nothing else in the file changes), the guest's `[executor_listener]`
+configuration and `staging` (no cookie, no ledger), and the daemon and status
+wording. `client/vm_link_pki` mints the authority and leaves under
+`<vm home>/link/` and `<vm home>/<name>/link-credentials/` with `ffi_pki`, each
+directory built as `<dir>.minting` and renamed whole. `bring_up_linked` chooses
+the port without recording it, works out the merge (a refusal leaves no guest),
+records the kind and port, writes the file, then runs `stage_with` and
+`launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd entry), which are
+the shared halves of `stage` and `boot`. A changed row is applied by the
+daemon only at its next start (`daemon/main.start_untrusted`), so `restart_of`
+reuses `restart_after`: an idle default daemon is stopped, a busy one is
+left and named. `rm` plans through `linked_removal_plan`; `ensure` reads the
+console's ready line in place of epmd (`vm_link.registration`). The executor's
+jails mask the listener's key and the link's key (`executor_plane.masked_files`).
+Tests: `vm_link_test` (codecs, merge properties against the daemon's own readers,
+a pinned handshake with the minted credentials), `vm_link_model_test` (a `statem`
+model of one home with guests of both kinds), and `executor_mask_test`.
 
 `ensure` is what `loom --vm` runs (`tui/vm_ensure`). `vm_spec.guest_name_for`
 names the guest of a workspace from its canonical path (slug, then six hex
@@ -351,7 +383,11 @@ See `docs/architecture/microvm.md`, "A standing guest".
 ## Node credential masks on an executor
 
 `executor_plane.machine` parses its own `[distribution]` table and keeps the
-node's TLS key and cookie in `Machine.credentials`. The executor's base policy
+node's TLS key and cookie in `Machine.credentials`, and with the untrusted
+link's tables the private keys of `[executor_listener]` and `[executor_link]`
+too (`executor_plane.masked_files`; before it, a daemon with no `[distribution]`
+masked nothing, and a microVM guest on the untrusted link held its key where
+model code could read it). The executor's base policy
 adds them through `workspace_policy.protecting_node_credentials`, beside the
 state-root and blob masks, so a jailed child cannot print them into a tool
 result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and

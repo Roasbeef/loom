@@ -120,7 +120,13 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   distribution options inside the guest, starts `loomd`, and prints
   `LOOM-EXECUTOR-READY <name>` once the node is registered with the guest's
   epmd and the daemon has logged `daemon.executor_serving` (or
-  `LOOM-EXECUTOR-FAILED` and the daemon log).
+  `LOOM-EXECUTOR-FAILED` and the daemon log). When the staged `loom.toml` has an
+  `[executor_listener]` table (the untrusted link, `loom vm up --link
+  untrusted`), the daemon is no distribution peer: the script renders no
+  options file, needs no cookie (it chmods one only if present), and prints
+  `LOOM-EXECUTOR-READY untrusted` once the log holds both
+  `daemon.executor_serving` and `daemon.untrusted_listener`. The launcher is run
+  with `--forward` and not `--publish` for such a guest.
 
 ## Relationships
 
