@@ -27,7 +27,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import host/bootstrap
 import simplifile
+import support/cell
 import support/remote_fixtures as fixtures
+import weft/poll
 
 const chunk = 262_144
 
@@ -502,4 +504,85 @@ pub fn a_hash_that_is_not_one_is_refused_by_both_carriers_test() {
   // and not an absence, which the link reports as silence.
   assert port.stage("../escape") == Error(Nil)
   assert host_link.stage("../escape") == Error(Nil)
+}
+
+pub fn two_applies_of_one_state_to_a_scope_share_one_checkout_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let base = fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired)
+  let calls = cell.new(0)
+  let released = cell.new(False)
+
+  // The plane's checkout takes as long as the test lets it, and counts how many
+  // times it is run.
+  let capturing =
+    host.Capturing(capture: fn(_basis, _content) { Ok(None) }, apply: fn(state) {
+      cell.update(calls, fn(held) { held + 1 })
+      let _ =
+        poll.until(within: 10_000, every: 5, attempt: fn() {
+          case cell.get(released) {
+            True -> poll.Done(Nil)
+            False -> poll.Retry
+          }
+        })
+      Ok(state.tip)
+    })
+  let factory = fn(spec) {
+    case base(spec) {
+      Ok(plane) -> Ok(host.Plane(..plane, state: Some(capturing)))
+      Error(failure) -> Error(failure)
+    }
+  }
+  let at = started(state_transfer.declining(), factory)
+  let wanted = a_state()
+  let assert Ok(_attached) = attach(at, protocol.version, <<1>>)
+
+  // The first request starts the checkout.
+  let first = process.new_subject()
+  address.deliver(
+    at,
+    protocol.StateApply(
+      session: "s1",
+      incarnation: 0,
+      token: <<1>>,
+      state: wanted,
+      reply: first,
+    ),
+  )
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 5, attempt: fn() {
+      case cell.get(calls) {
+        1 -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+
+  // The second asks for the same state while it is going, as a sender does whose
+  // connection was repaired. A request from the same sender after it is answered
+  // only once the host has taken the second, which is what the test waits for.
+  let second = process.new_subject()
+  address.deliver(
+    at,
+    protocol.StateApply(
+      session: "s1",
+      incarnation: 0,
+      token: <<1>>,
+      state: wanted,
+      reply: second,
+    ),
+  )
+  let barrier = process.new_subject()
+  address.deliver(at, protocol.StateStatus(hash: wanted.hash, reply: barrier))
+  let assert Ok(_status) = process.receive(barrier, 5000)
+
+  // One checkout answers both, with the same answer.
+  cell.update(released, fn(_) { True })
+  let assert Ok(one) = process.receive(first, 5000)
+  let assert Ok(two) = process.receive(second, 5000)
+  assert one == Ok(wanted.tip)
+  assert two == one
+  assert cell.get(calls) == 1
+
+  // The next request for the state is a run of its own.
+  assert apply(at, 0, <<1>>, wanted) == Ok(wanted.tip)
+  assert cell.get(calls) == 2
 }

@@ -384,6 +384,10 @@ type Event(census) {
   JobFinished(job: Int, pulled: weft.Pulled(JobResult(census), Nil))
   CallerDown(down: Down)
   Summarize(reply: Subject(Result(Snapshot(census), Nil)))
+
+  /// An apply that was running for a scope has an answer, for every request that
+  /// asked for the same state in the meantime.
+  ApplyFinished(key: String, answer: Result(String, Refusal))
 }
 
 // What a job's task returns when it completes.
@@ -512,6 +516,10 @@ type State(census) {
     ledger: exec_ledger.Ledger,
     placements: Dict(String, Slot(census)),
     live: Dict(Key, Live),
+    /// The applies of a state to a scope that are running, with the requests
+    /// waiting for each: one request starts the checkout and every other for the
+    /// same state and scope joins it.
+    applying: Dict(String, List(Subject(Result(String, Refusal)))),
     watches: Dict(Monitor, Key),
     jobs: Dict(Int, Tracked(census)),
     next_job: Int,
@@ -631,6 +639,7 @@ fn initialise(
       watches: dict.new(),
       jobs: dict.new(),
       next_job: 0,
+      applying: dict.new(),
       inbox:,
       census: None,
     )
@@ -655,6 +664,7 @@ fn handle_event(
     JobFinished(job:, pulled:) -> job_finished(state, job, pulled)
     CallerDown(down:) -> caller_down(state, down)
     Summarize(reply:) -> summarized(state, reply)
+    ApplyFinished(key:, answer:) -> apply_finished(state, key, answer)
   }
 
   actor.continue(state) |> actor.with_selector(selector_for(state))
@@ -980,15 +990,48 @@ fn apply_state(
   // A refusal is the plane's absence or the fence's verdict. What the workspace
   // decides about the state is a finding about the workspace, answered by the run.
   case ready {
-    Ok(capturing) ->
-      to_completion(reply, fn() {
-        capturing.apply(wanted)
-        |> result.map_error(protocol.ExecutorFault)
-      })
-    Error(refusal) -> process.send(reply, Error(refusal))
+    Ok(capturing) -> {
+      // A request for a state that is already being applied to the scope joins
+      // that run and gets its answer. A sender whose connection was repaired asks
+      // again while the first checkout is still going, and a second checkout over
+      // a tree the first is rewriting would fail on a lock or a dirty tree that
+      // the first made, and be reported as the workspace refusing the state.
+      let key = session <> "\n" <> wanted.hash
+      case dict.get(state.applying, key) {
+        Ok(waiting) ->
+          State(
+            ..state,
+            applying: dict.insert(state.applying, key, [reply, ..waiting]),
+          )
+        Error(Nil) -> {
+          to_completion(state.inbox, fn() {
+            ApplyFinished(
+              key:,
+              answer: capturing.apply(wanted)
+                |> result.map_error(protocol.ExecutorFault),
+            )
+          })
+          State(..state, applying: dict.insert(state.applying, key, [reply]))
+        }
+      }
+    }
+    Error(refusal) -> {
+      process.send(reply, Error(refusal))
+      state
+    }
   }
+}
 
-  state
+/// An apply that was running has its answer: every request that waited for it gets
+/// the same one, and the next request for the state starts a run of its own.
+fn apply_finished(
+  state: State(census),
+  key: String,
+  answer: Result(String, Refusal),
+) -> State(census) {
+  let waiting = result.unwrap(dict.get(state.applying, key), [])
+  list.each(waiting, fn(reply) { process.send(reply, answer) })
+  State(..state, applying: dict.delete(state.applying, key))
 }
 
 // The scope's capture, for a request that passed the fence. A scope with no
