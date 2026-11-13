@@ -267,10 +267,15 @@ credential.
   `loom-guest-init` therefore tries to hand `/work` to uid 10000 and, when that
   fails, makes the loom user the share's owner by rewriting its passwd and
   group ids, every boot. Two consequences follow. Every file in the guest root,
-  system files included, belongs to the loom user, so the guest's root is not
-  protected from a jail escape on that host; the jail (landlock, bubblewrap,
+  system files included, belongs to the loom user (that covers
+  `loom-guest-init`, `loom-guest-executor`, `/opt/loom` and `/etc/loom-vm`, which
+  root runs at each boot), so a jail escape becomes guest root at the next boot
+  and lasts until the root is replaced; the jail (landlock, bubblewrap,
   no-new-privs) is the boundary, and a runner with the capabilities, or a
-  root-run one, keeps uid 10000. And a provisioning script that installs
+  root-run one, keeps uid 10000. The init refuses a share owned by root, and
+  rewrites passwd and group on every boot, in both directions. A single-id user
+  namespace (`WithUserNamespaceUID`) was tried instead and gives the same
+  ownership, with root chowns failing. And a provisioning script that installs
   packages as root cannot work there, because dpkg's chown to root is refused.
   The image has no setuid files: a setuid-root `mount` on the share runs as the
   host user and fails for root.

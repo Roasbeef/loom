@@ -530,8 +530,19 @@ What differs from macOS, each of which was found by booting:
   mode, which `loom-guest-executor` also calls before it chowns by name). A
   consequence: on such a host every file in the guest root belongs to the loom
   user, system files included, so uid separation inside the guest is gone and
-  the jail is the only boundary between model code and the guest's own files. A
-  runner with the capabilities, or one run as root, keeps uid 10000.
+  the jail is the only boundary between model code and the guest's own files.
+  That includes `loom-guest-init` and `loom-guest-executor`, which run as root
+  at every boot, `/opt/loom` and `/etc/loom-vm`: a jail escape becomes guest
+  root at the next boot and lasts until the root is replaced (`--fresh`). A
+  runner with the capabilities, or one run as root, keeps uid 10000. The init
+  settles the ids before anything else, and stops with one sentence when the
+  share belongs to root, because the loom user would then be root.
+  go-microvm's `WithUserNamespaceUID` was tried in place of this and refuted:
+  in a single-id user namespace every file on the share still shows as the one
+  mapped id, so the loom user owns everything exactly as here, and a chown to
+  root fails with EINVAL. It also needs unprivileged user namespaces with
+  capabilities, which Ubuntu's AppArmor restriction can withhold, and the test
+  box's kernel has no such setting to check that against.
 - **Setuid files.** On the share a setuid-root binary runs as the host user, so
   `mount` refused to mount for the init. The image strips setuid and setgid
   bits.
@@ -539,9 +550,11 @@ What differs from macOS, each of which was found by booting:
   guest inode. A root of 17,700 files held 4,261 after the executor was ready,
   over the 1,024 soft limit of a login and the 4,096 hard limit of the test
   box. `Start` raises the soft limit to the hard one and refuses a hard limit
-  under 65,536, naming `ulimit -Hn` and `LimitNOFILE=`
-  (`packages/vmm/machine/libkrun/nofile.go`). Raising a hard limit takes
-  privilege, so the test box ran the launcher after `prlimit` on its own shell.
+  under 65,536, in `Start` and in `probe` and `doctor`, naming the routes that
+  work: `sudo prlimit --pid $$ --nofile=65536:65536`, a `hard nofile` line in
+  `/etc/security/limits.conf` with a new login, or `LimitNOFILE=` for a systemd
+  unit (`packages/vmm/machine/libkrun/nofile.go`). The test box ran the
+  launcher after `prlimit` on its own shell.
 - **A symlinked runner.** go-microvm compares `/proc/PID/exe`, which the kernel
   resolves, with the runner path before it signals a pid. A runner reached through
   a symlink was never found, and `down` left it holding the root. The backend
