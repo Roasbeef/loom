@@ -108,9 +108,16 @@ machine Orch {
       }
     }
 
+    // The end of a refused child's session, and then the answer to the asker that
+    // is still waiting. `placing` ends the session before it returns the refusal,
+    // so the asker hears nothing from a daemon that stopped before the end.
     on eReleaseDue do (e: int) {
       if (e == epoch) {
         releaseSession();
+        if (askerWaiting) {
+          askerWaiting = false;
+          toOwner(R_REFUSED, 0, 0, 0);
+        }
       }
     }
 
@@ -353,16 +360,13 @@ machine Orch {
   }
 
   // A refusal the same inputs get again: the verdict is kept before the claim is
-  // let go, and the session is ended in a step of its own.
+  // let go, and the session is ended and the asker answered in a step of their
+  // own, which a restart can come before.
   fun refuse(why: tWhy) {
     verdict = true;
     announce eVerdict, why;
     claim = false;
     phase = PH_IDLE;
-    if (askerWaiting) {
-      askerWaiting = false;
-      toOwner(R_REFUSED, 0, 0, 0);
-    }
     send this, eReleaseDue, epoch;
   }
 

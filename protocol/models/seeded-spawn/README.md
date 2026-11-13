@@ -76,9 +76,11 @@ hot state, so each liveness spec holds only because every fault is bounded.
 ## What the model found
 
 `EverySettledChildIsReleased` failed on the code as it stood. `placing` writes the
-verdict, lets go of the claim and only then ends the child's session, and a
-restart between the first and the last left a refused child with a session. A
-later ask found the verdict and answered it without ending the session. The
+verdict, lets go of the claim, ends the child's session and only then returns the
+refusal to the asker. A restart between the verdict and the end of the session
+left a refused child with a session, and the asker, who had heard nothing, asked
+again. The later ask found the verdict and answered it without ending the
+session. The
 session was bounded by the parent's release, which walks every session the pair
 holds. The code now ends the session when an ask finds a verdict
 (`spawn_seed.landed`), and the model does the same on the verdict branch of
