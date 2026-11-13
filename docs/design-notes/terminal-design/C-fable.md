@@ -735,7 +735,7 @@ No single key sends a decision.
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
-| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:441`), today in `cache_outlook` (`tui/model.gleam:485`) |
+| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:441`), today in `cache_outlook` (`tui/model.gleam:513`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:308`) |
 | Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
 | Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3916`), `execution_value` (`tools/codemode.gleam:1732`) |
@@ -749,7 +749,7 @@ No single key sends a decision.
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
 | Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:426`), `render` (`tui/approval_panel.gleam:305`) |
 | Todo line | the strand's board | yes | `height` (`tui/todo_panel.gleam:50`), `todo_boards` (`session_view/model.gleam:381`) |
-| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1346`), `viewport_backlog` (`tui/model.gleam:762`) |
+| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1371`), `viewport_backlog` (`tui/model.gleam:792`) |
 | Images | bytes, type, pixel size | partly | `Image` (`session_view/transcript_image.gleam:29`) holds the bytes and type; the pixel size is decoded client-side from the PNG, JPEG, GIF or WebP header, no wire change; drawing needs etui |
 | Layout memory | the three preferences | new | section 10 |
 

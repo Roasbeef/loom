@@ -89,6 +89,22 @@ text and a no-break-space prefix followed by text. The
 [October 22 resource report](../../docs/review/loom-resource-profile-2026-10-22.md)
 separates live attribution, fixture savings and unmeasured installed RSS.
 
+## Frozen reading rows
+
+While the reader is above the live tail, `View.reading_lines` holds the
+transient lines frozen. A token that streams in below them still moves the
+transcript revision, so the projection reaches them once per token. Their
+wrapped rows are a function of the lines, the transcript width and the strand,
+so `Caches.reading_rows` keeps the last result with those three inputs and
+`projection.rendered_layout_for` reuses it while they match. Leaving reading
+mode, a width change or a strand change rebuilds it. Before this, a long reply
+read from above was wrapped again on every token; `scripts/tui_perf.erl`
+`mixed_reading` measures it, with the glyph shape that mixes ASCII and
+non-ASCII text, and `live_scrollback_test` pins the reuse and the three
+invalidations. The frame is still painted for each token, since the revision it
+is compared with moved; painting a frame that came out cell for cell the same
+is not avoided here.
+
 ## Sparse frame canvas
 
 `render.repaint_canvas` starts every frame with the buffer's sparse empty-cell
