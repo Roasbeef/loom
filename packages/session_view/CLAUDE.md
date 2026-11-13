@@ -1102,7 +1102,7 @@ it gave a report (`Unreported` is not), it accepts moved sessions (`Receiving`),
 the executors it serves include the session's. Each offer comes back as a
 `Candidate(name, Eligible | Ineligible(Reason))`, with the first reason that applies
 (`Unreachable | NoReport | NotAccepting | NotServing`) and fixed words for it
-(`reason_words`, `no_executor_words`, `none_words`). `eligible` lists the names that can
+(`reason_words`, `no_executor_words`, `local_session_words`, `none_words`). `eligible` lists the names that can
 be asked for. The module is pure, and `client/deployment.candidates`, the terminal's
 `tui/deployment_view.candidates` and the web home's chooser all use it, so the three say
 one thing. The caller gives `serves` and `executor` in one vocabulary, keys or node
