@@ -4,7 +4,10 @@
 //// Every session is a stub that records what it was asked, and the return is a
 //// stub that records which entries it settled and whether it was given the
 //// session's record of its workspace. What the tests look at is routing, order,
-//// concurrency and when a child's session is ended.
+//// concurrency, when a child's session is ended, and that a join asked again after
+//// the session is gone gets the answer the first one did. The registry's release
+//// really removes the session here, so a repeated question reaches no session and
+//// is answered from what the return kept.
 
 import client/agency
 import client/child_join.{Joining}
@@ -84,11 +87,30 @@ type Event {
 }
 
 type Rig {
-  Rig(journal: Cell(List(Event)), together: Cell(Int))
+  Rig(
+    journal: Cell(List(Event)),
+    together: Cell(Int),
+    // The entries the return kept, by strand.
+    kept: Cell(dict.Dict(String, Joined)),
+    // The sessions that exist. A release removes one.
+    held: Cell(dict.Dict(String, agency.DelegateEndpoint)),
+  )
 }
 
 fn rig() -> Rig {
-  Rig(journal: cell.new([]), together: cell.new(0))
+  Rig(
+    journal: cell.new([]),
+    together: cell.new(0),
+    kept: cell.new(dict.new()),
+    held: cell.new(dict.new()),
+  )
+}
+
+// What the registry says of a session that has been released: it is gone, or it is
+// being released and refuses as its run having ended.
+type Departure {
+  Gone
+  Releasing
 }
 
 fn record(rig: Rig, event: Event) -> Nil {
@@ -125,12 +147,16 @@ fn session(
       record(rig, Asked(name))
 
       // Sessions that are asked together wait for each other here, so a join
-      // that asked them in turn would find the second never came.
-      case meeting > 1 {
+      // that asked them in turn would find the second never came, and its
+      // question fails.
+      let met = case meeting > 1 {
         True -> meet(rig, meeting)
-        False -> Nil
+        False -> True
       }
-      Ok(list.map(handles, answer))
+      case met {
+        True -> Ok(list.map(handles, answer))
+        False -> Error(remote_spawn.StoreFailure(reason: "never met"))
+      }
     },
     run_ended: fn(_operation) { Ok(0) },
     release: fn() { Ok(0) },
@@ -143,16 +169,19 @@ fn session(
   )
 }
 
-fn meet(rig: Rig, others: Int) -> Nil {
+fn meet(rig: Rig, others: Int) -> Bool {
   cell.update(rig.together, fn(held) { held + 1 })
-  let _ =
-    poll.until(within: 5000, every: 5, attempt: fn() {
+  case
+    poll.until(within: 1500, every: 5, attempt: fn() {
       case cell.get(rig.together) >= others {
         True -> poll.Done(Nil)
         False -> poll.Retry
       }
     })
-  Nil
+  {
+    poll.Answered(Nil) -> True
+    poll.Failed(_) | poll.Expired -> False
+  }
 }
 
 // A link no one answers, which a join never uses.
@@ -170,7 +199,11 @@ fn unused() -> remote_spawn.SpawnRefusal {
 
 // The return: children named in `own` have a session of their own; every entry it
 // settles is recorded with whether it was given a workspace record.
-fn returning(rig: Rig, own: List(#(String, String))) -> spawn_return.Returning {
+fn returning(
+  rig: Rig,
+  own: List(#(String, String)),
+  unreadable: List(String),
+) -> spawn_return.Returning {
   let names = dict.from_list(own)
   spawn_return.Returning(
     remember: fn(_spawner, _parent, _site, _state, _handle) { Nil },
@@ -183,7 +216,22 @@ fn returning(rig: Rig, own: List(#(String, String))) -> spawn_return.Returning {
       entry
     },
     session_of: fn(_spawner, _parent, found) {
-      option.from_result(dict.get(names, found.strand))
+      case
+        list.contains(unreadable, found.strand),
+        dict.get(names, found.strand)
+      {
+        True, _ -> spawn_return.Unreadable
+        False, Ok(name) -> spawn_return.OwnSession(name:)
+        False, Error(Nil) -> spawn_return.Unseeded
+      }
+    },
+    keep: fn(_spawner, _parent, entry) {
+      cell.update(rig.kept, fn(held) {
+        dict.insert(held, strand_of(entry), entry)
+      })
+    },
+    kept: fn(_spawner, _parent, found) {
+      option.from_result(dict.get(cell.get(rig.kept), found.strand))
     },
   )
 }
@@ -191,19 +239,34 @@ fn returning(rig: Rig, own: List(#(String, String))) -> spawn_return.Returning {
 fn children(
   rig: Rig,
   sessions: List(#(String, agency.DelegateEndpoint)),
+  after: Departure,
 ) -> delegate_host.ChildSessions {
-  let held = dict.from_list(sessions)
+  cell.update(rig.held, fn(_held) { dict.from_list(sessions) })
+  let departed = cell.new([])
   delegate_host.ChildSessions(
     resolve: fn(_spawner, _parent, _name) { Error(unused()) },
     open: fn(_spawner, _parent, name) {
-      Ok(option.from_result(dict.get(held, name)))
+      case
+        dict.get(cell.get(rig.held), name),
+        list.contains(cell.get(departed), name),
+        after
+      {
+        Ok(found), _, _ -> Ok(Some(found))
+
+        // The registry refuses a session that is being released as its run having
+        // ended, and has none for one that is gone.
+        Error(Nil), True, Releasing -> Error(remote_spawn.ParentRunEnded)
+        Error(Nil), _, _ -> Ok(None)
+      }
     },
     resident: fn(_spawner, _parent, name) {
-      Ok(option.from_result(dict.get(held, name)))
+      Ok(option.from_result(dict.get(cell.get(rig.held), name)))
     },
     live: fn(_spawner, _parent) { Ok([]) },
     release: fn(_spawner, _parent, name) {
       record(rig, Released(name))
+      cell.update(rig.held, fn(held) { dict.delete(held, name) })
+      cell.update(departed, fn(names) { [name, ..names] })
       Ok(0)
     },
   )
@@ -219,8 +282,8 @@ fn joining(
     spawner: spawner(),
     parent: parent(),
     pair: fn() { Ok(pair) },
-    children: children(rig, sessions),
-    returning: returning(rig, own),
+    children: children(rig, sessions, Gone),
+    returning: returning(rig, own, []),
   )
 }
 
@@ -338,19 +401,27 @@ pub fn a_session_is_ended_when_its_child_is_finished_and_owes_nothing_test() {
   assert eventually_events(rig, events(rig))
 }
 
-pub fn a_child_with_no_session_makes_the_join_refuse_and_makes_none_test() {
+fn ready_of(entry: Joined) -> Bool {
+  case entry {
+    remote_spawn.Ready(..) -> True
+    remote_spawn.Pending(..) -> False
+  }
+}
+
+pub fn a_child_with_no_session_and_no_kept_answer_is_told_it_is_unknown_test() {
   let rig = rig()
   let a = handle("a")
   let pair = session(rig, "pair", ready(_, 0), 1)
   let found = joining(rig, pair, [], [#(a.strand, "seed-a")])
-  assert child_join.join(found, [a], 1000)
-    == Error(remote_spawn.InvalidArgument(
-      reason: "this orchestrator holds no such child for that parent",
-    ))
+
+  // The child's own answer says why, and no session is made for it.
+  let assert Ok([entry]) = child_join.join(found, [a], 1000)
+  let assert remote_spawn.Ready(outcome: agent.Failed(reason:), ..) = entry
+  assert reason == "this orchestrator holds no such child for that parent"
   assert events(rig) == []
 }
 
-pub fn a_refusal_from_any_group_is_the_joins_refusal_test() {
+pub fn a_refusal_from_one_group_is_that_groups_and_not_the_joins_test() {
   let rig = rig()
   let a = handle("a")
   let b = handle("b")
@@ -360,7 +431,110 @@ pub fn a_refusal_from_any_group_is_the_joins_refusal_test() {
       Error(remote_spawn.CapReached(remote_spawn.MaxSessions, 4))
     })
   let sessions = [#("seed-a", session(rig, "seed-a", ready(_, 0), 1))]
-  let found = Joining(..found, children: children(rig, sessions))
-  assert child_join.join(found, [a, b], 1000)
-    == Error(remote_spawn.CapReached(remote_spawn.MaxSessions, 4))
+  let found = Joining(..found, children: children(rig, sessions, Gone))
+
+  // The pair's group could not be asked, so b is still finishing as far as the
+  // parent can know. The seeded child a is answered whatever became of b.
+  let assert Ok(entries) = child_join.join(found, [a, b], 1000)
+  assert list.map(entries, strand_of) == [a.strand, b.strand]
+  assert list.map(entries, ready_of) == [True, False]
+}
+
+pub fn a_join_asked_again_after_its_session_was_released_gets_the_same_answer_test() {
+  let rig = rig()
+  let a = handle("a")
+  let pair = session(rig, "pair", ready(_, 0), 1)
+  let sessions = [#("seed-a", session(rig, "seed-a", ready(_, 0), 1))]
+  let found = joining(rig, pair, sessions, [#(a.strand, "seed-a")])
+
+  // The first join answers from the session and ends it, which really removes it.
+  let assert Ok([first]) = child_join.join(found, [a], 1000)
+  assert first == ready(a, 0)
+  assert dict.size(cell.get(rig.held)) == 0
+
+  // Asked again, and as often as it is asked, the join reaches no session and
+  // answers what it did, and ends nothing a second time.
+  let assert Ok([again]) = child_join.join(found, [a], 1000)
+  let assert Ok([third]) = child_join.join(found, [a], 1000)
+  assert again == first
+  assert third == first
+  assert list.length(
+      list.filter(events(rig), fn(event) {
+        case event {
+          Released(..) -> True
+          _ -> False
+        }
+      }),
+    )
+    == 1
+}
+
+pub fn a_session_being_released_answers_from_the_kept_entry_too_test() {
+  let rig = rig()
+  let a = handle("a")
+  let pair = session(rig, "pair", ready(_, 0), 1)
+  let sessions = [#("seed-a", session(rig, "seed-a", ready(_, 0), 1))]
+  let found =
+    Joining(
+      ..joining(rig, pair, sessions, [#(a.strand, "seed-a")]),
+      children: children(rig, sessions, Releasing),
+    )
+
+  // After the release the registry refuses the session as its run having ended,
+  // and the join still answers what the first did.
+  let assert Ok([first]) = child_join.join(found, [a], 1000)
+  let assert Ok([again]) = child_join.join(found, [a], 1000)
+  assert again == first
+}
+
+pub fn a_second_wait_for_eight_children_is_answered_whichever_settled_first_test() {
+  let rig = rig()
+  let strands = ["h1", "h2", "h3", "h4", "h5", "h6", "h7", "h8"]
+  let handles = list.map(strands, handle)
+  let pair = session(rig, "pair", ready(_, 0), 1)
+
+  // h1 has finished and owes nothing; the other seven are still running. Each
+  // child has a session of its own.
+  let sessions =
+    list.map(handles, fn(each) {
+      let name = "seed-" <> each.strand
+      let answer = case each.strand == handle("h1").strand {
+        True -> ready(_, 0)
+        False -> fn(found) { remote_spawn.Pending(found, 5) }
+      }
+      #(name, session(rig, name, answer, 1))
+    })
+  let own =
+    list.map(handles, fn(each) { #(each.strand, "seed-" <> each.strand) })
+  let found = joining(rig, pair, sessions, own)
+
+  // The first wait settles h1 and ends its session.
+  let assert Ok(first) = child_join.join(found, handles, 1000)
+  assert list.map(first, ready_of)
+    == [True, False, False, False, False, False, False, False]
+
+  // The second wait names all eight again. h1 has no session now, and it must
+  // not fail the wait for the seven that are still running.
+  let assert Ok(second) = child_join.join(found, handles, 1000)
+  assert list.map(second, strand_of)
+    == list.map(handles, fn(each) { each.strand })
+  assert list.map(second, ready_of)
+    == [True, False, False, False, False, False, False, False]
+  assert list.first(second) == list.first(first)
+}
+
+pub fn a_child_whose_record_cannot_be_read_is_not_finished_and_not_refused_test() {
+  let rig = rig()
+  let a = handle("a")
+  let b = handle("b")
+  let pair = session(rig, "pair", ready(_, 0), 1)
+  let found =
+    Joining(
+      ..joining(rig, pair, [], []),
+      returning: returning(rig, [], [a.strand]),
+    )
+
+  // a is left out of every group and answered Pending, and b is answered.
+  let assert Ok(entries) = child_join.join(found, [a, b], 1000)
+  assert list.map(entries, ready_of) == [False, True]
 }

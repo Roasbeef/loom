@@ -19,6 +19,16 @@
 ////    executor, and the commits no longer need either: they are in this machine's
 ////    store, or have gone to the parent's.
 ////
+//// ## A join can be asked again
+////
+//// A parent asks again by design: a wait made from a program is deferred and
+//// retried, a second wait names handles that settled in the first, and a reply may
+//// be lost. The session is gone after the first answer, so before it is ended the
+//// settled entry is kept (`Returning.keep`, beside the child's verdict), and a join
+//// that finds no session, or one being released, answers from it. A repeated join
+//// therefore gets the answer the first one did however often it is asked. A child
+//// whose record cannot be read is not placed at all and answers `Pending`.
+////
 //// ## Why a session is not ended earlier
 ////
 //// The commits may reach the parent over several joins, because a transfer that
@@ -31,7 +41,7 @@
 ////
 //// ## Flow
 ////
-//// `join` → `grouped` → `asked` → `reassembled`
+//// `join` → `grouped` → `asked` → `asked_in` → `reassembled`
 ////
 //// 1. `join` splits the handles into those the pair's session serves and those that
 ////    have a session of their own, and answers a join with no seeded child exactly
@@ -105,22 +115,25 @@ pub fn join(
   let shared =
     list.filter_map(named, fn(each) {
       case each.1 {
-        None -> Ok(each.0)
-        Some(_) -> Error(Nil)
+        spawn_return.Unseeded -> Ok(each.0)
+        spawn_return.OwnSession(..) | spawn_return.Unreadable -> Error(Nil)
       }
     })
   let own =
     list.filter_map(named, fn(each) {
       case each.1 {
-        Some(name) -> Ok(#(each.0, name))
-        None -> Error(Nil)
+        spawn_return.OwnSession(name:) -> Ok(#(each.0, name))
+        spawn_return.Unseeded | spawn_return.Unreadable -> Error(Nil)
       }
     })
+  let unplaced = list.any(named, fn(each) { each.1 == spawn_return.Unreadable })
 
-  // No seeded child is the join it always was, in this process.
-  case own {
-    [] -> pair_group(joining, shared, within_ms)
-    [_, ..] -> grouped(joining, handles, shared, own, within_ms)
+  // No seeded child, and every record readable, is the join it always was, in
+  // this process. Otherwise a handle whose record cannot be read is left out of
+  // every group and answered `Pending` with the rest.
+  case own, unplaced {
+    [], False -> pair_group(joining, shared, within_ms)
+    _, _ -> grouped(joining, handles, shared, own, within_ms)
   }
 }
 
@@ -156,6 +169,20 @@ fn grouped(
       })
     })
   let groups = list.append(pair, children)
+
+  // A join in which no handle could be placed has nothing to ask.
+  case groups {
+    [] -> Ok(reassembled([], handles, within_ms))
+    [_, ..] -> asked_together(groups, handles, within_ms)
+  }
+}
+
+/// Runs the groups all at once under one deadline and reads what each answered.
+fn asked_together(
+  groups: List(Group),
+  handles: List(Handle),
+  within_ms: Int,
+) -> Result(List(Joined), SpawnRefusal) {
   let outcomes =
     weft.new(list.map(groups, fn(group) { group.work }))
     |> weft.limit(list.length(groups))
@@ -163,20 +190,23 @@ fn grouped(
     |> weft.start
 
   // Each group is read for what it answered, or for the children it left waiting.
-  list.zip(groups, outcomes)
-  |> list.try_map(fn(each) { answered(each.0, each.1, within_ms) })
-  |> reassembled(handles, within_ms)
+  let entries =
+    list.zip(groups, outcomes)
+    |> list.map(fn(each) { answered(each.0, each.1, within_ms) })
+    |> list.flatten
+  Ok(reassembled(entries, handles, within_ms))
 }
 
-/// What one group's task came to.
+/// What one group's task came to, as the entries for its handles. A group's refusal
+/// is about its own children and not about the others in the same join.
 fn answered(
   group: Group,
   outcome: weft.Outcome(List(Joined), SpawnRefusal),
   within_ms: Int,
-) -> Result(List(Joined), SpawnRefusal) {
+) -> List(Joined) {
   case outcome {
-    weft.Completed(value:, ..) -> Ok(value)
-    weft.Failed(error:, ..) -> Error(error)
+    weft.Completed(value:, ..) -> value
+    weft.Failed(error:, ..) -> refused(group, error, within_ms)
 
     // A group the deadline cut off, or that crashed, has told the parent nothing,
     // so its children are still finishing as far as the parent can know.
@@ -184,24 +214,64 @@ fn answered(
     | weft.Abandoned(..)
     | weft.NeverStarted(..)
     | weft.DrainProofLost(..)
-    | weft.CancellationUnconfirmed(..) ->
-      Ok(
-        list.map(group.handles, fn(handle) {
-          remote_spawn.Pending(handle:, waited_ms: within_ms)
-        }),
-      )
+    | weft.CancellationUnconfirmed(..) -> pending(group, within_ms)
   }
+}
+
+/// A group's handles as children still finishing.
+fn pending(group: Group, within_ms: Int) -> List(Joined) {
+  list.map(group.handles, fn(handle) {
+    remote_spawn.Pending(handle:, waited_ms: within_ms)
+  })
+}
+
+/// What a group's refusal means for its own handles. An orchestrator that holds
+/// no such child, or whose run has ended, is a definite answer about that child, and
+/// it is told as the child's failure with the reason. Any other refusal may pass,
+/// and the child is still finishing as far as the parent can know.
+fn refused(
+  group: Group,
+  refusal: SpawnRefusal,
+  within_ms: Int,
+) -> List(Joined) {
+  case refusal {
+    remote_spawn.InvalidArgument(reason:) -> failed(group, reason)
+    remote_spawn.ParentRunEnded ->
+      failed(group, remote_spawn.describe_refusal(refusal))
+    _ -> pending(group, within_ms)
+  }
+}
+
+/// A group's handles as children that ended in failure for a stated reason.
+fn failed(group: Group, reason: String) -> List(Joined) {
+  list.map(group.handles, fn(handle) {
+    remote_spawn.Ready(
+      handle:,
+      outcome: agent.Failed(reason:),
+      report: "",
+      result: agent.NoResultAsked,
+      notes: [],
+      usage: remote_spawn.ChildUsage(
+        input: 0,
+        output: 0,
+        cache_read: 0,
+        cache_write: 0,
+        cost: 0.0,
+      ),
+      owed: 0,
+      state: None,
+    )
+  })
 }
 
 /// Puts the groups' entries in the order the handles came in.
 fn reassembled(
-  groups: Result(List(List(Joined)), SpawnRefusal),
+  entries: List(Joined),
   handles: List(Handle),
   within_ms: Int,
-) -> Result(List(Joined), SpawnRefusal) {
-  use groups <- result.map(groups)
+) -> List(Joined) {
   let by_strand =
-    list.flatten(groups)
+    entries
     |> list.map(fn(entry) { #(entry_handle(entry).strand, entry) })
     |> dict.from_list
   list.map(handles, fn(handle) {
@@ -243,19 +313,37 @@ fn asked(
   name: String,
   within_ms: Int,
 ) -> Result(List(Joined), SpawnRefusal) {
-  use opened <- result.try(joining.children.open(
-    joining.spawner,
-    joining.parent,
-    name,
-  ))
+  let gone = fn(refusal) {
+    // A child with no session was settled and released, or never started. A
+    // settled one left its answer.
+    case joining.returning.kept(joining.spawner, joining.parent, handle) {
+      Some(entry) -> Ok([entry])
+      None -> Error(refusal)
+    }
+  }
+  case joining.children.open(joining.spawner, joining.parent, name) {
+    Ok(Some(endpoint)) -> asked_in(joining, endpoint, handle, name, within_ms)
+    Ok(None) ->
+      gone(remote_spawn.InvalidArgument(
+        reason: "this orchestrator holds no such child for that parent",
+      ))
 
-  // A child with no session was settled and released, or never started.
-  use endpoint <- result.try(option.to_result(
-    opened,
-    remote_spawn.InvalidArgument(
-      reason: "this orchestrator holds no such child for that parent",
-    ),
-  ))
+    // A session being released refuses as its run having ended, which is the
+    // state a settled child's session is in for a moment.
+    Error(remote_spawn.ParentRunEnded) -> gone(remote_spawn.ParentRunEnded)
+    Error(refusal) -> Error(refusal)
+  }
+}
+
+/// A seeded child's open session asked, its entry settled and kept, and the
+/// session ended once the child is done.
+fn asked_in(
+  joining: Joining,
+  endpoint: DelegateEndpoint,
+  handle: Handle,
+  name: String,
+  within_ms: Int,
+) -> Result(List(Joined), SpawnRefusal) {
   use entries <- result.map(endpoint.join(joining.parent, [handle], within_ms))
   let settled =
     list.map(entries, fn(entry) {
@@ -286,10 +374,15 @@ fn ended_when_done(
       }
     })
 
-  // A failure to end it costs a slot until the parent's release or the sweep,
-  // and the entry has been answered, so it is not the join's to report.
+  // The entry is kept before the session goes, so a join that comes after it is
+  // answered the same. A failure to end the session costs a slot until the
+  // parent's release or the sweep, and the entry has been answered, so it is not
+  // the join's to report.
   case done {
     True -> {
+      list.each(settled, fn(entry) {
+        joining.returning.keep(joining.spawner, joining.parent, entry)
+      })
       let _ = joining.children.release(joining.spawner, joining.parent, name)
       Nil
     }
