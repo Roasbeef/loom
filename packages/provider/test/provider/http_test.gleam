@@ -410,3 +410,7 @@ pub fn httpc_transport_with_timeout_enforces_configured_response_timeout_test() 
   let assert Ok(Nil) = process.receive(closed, within: 2000)
   stop_servers([server])
 }
+
+pub fn default_response_timeout_exceeds_gateway_attempt_timeout_test() {
+  assert http.default_response_timeout_ms == 630_000
+}

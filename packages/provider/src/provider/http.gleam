@@ -151,8 +151,9 @@ pub type Transport {
   )
 }
 
-/// Default whole-attempt transport response timeout, in milliseconds (10 minutes).
-pub const default_response_timeout_ms = 600_000
+/// Default whole-attempt transport response timeout, in milliseconds (10 minutes + 30 seconds).
+/// Kept 30 seconds above `gateway.default_attempt_timeout_ms` so Gleam's attempt timer fires first.
+pub const default_response_timeout_ms = 630_000
 
 /// The production transport: Erlang `httpc` in asynchronous streaming
 /// mode, wrapped so chunks arrive as `HttpEvent` messages on the subject.
