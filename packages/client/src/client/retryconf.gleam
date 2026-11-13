@@ -48,6 +48,9 @@ pub const default_policy = api.default_retry_policy
 /// one.
 pub const unbounded_attempts = "unbounded"
 
+/// Default per-attempt provider HTTP request timeout in milliseconds (10 minutes).
+pub const default_request_timeout_ms = 600_000
+
 /// Reads the `[retry]` table out of a configuration document, or returns
 /// the runtime default when the document has none.
 ///
@@ -110,12 +113,57 @@ pub fn policy_from_document(
   }
 }
 
+/// Reads the optional `request_timeout_ms` setting from `[retry]`, returning
+/// `default_request_timeout_ms` when omitted or when `[retry]` is absent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert retryconf.parse_request_timeout("") == Ok(retryconf.default_request_timeout_ms)
+/// ```
+///
+pub fn parse_request_timeout(text: String) -> Result(Int, String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(fn(error) {
+      "the configuration is not valid TOML: " <> string.inspect(error)
+    }),
+  )
+  request_timeout_from_document(document)
+}
+
+/// Reads per-attempt provider request timeout from an already-parsed configuration document.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert retryconf.request_timeout_from_document(dict.new())
+///   == Ok(retryconf.default_request_timeout_ms)
+/// ```
+///
+@internal
+pub fn request_timeout_from_document(
+  document: Dict(String, tom.Toml),
+) -> Result(Int, String) {
+  // Resolve [retry] table or return default request timeout.
+  case dict.get(document, "retry") {
+    Error(Nil) -> Ok(default_request_timeout_ms)
+    Ok(tom.Table(fields)) -> {
+      use _policy <- result.try(policy_table(fields))
+      request_timeout_key(fields)
+    }
+    Ok(_other) -> Error("[retry] must be a table")
+  }
+}
+
 /// Policy table keeps this client operation’s decoding or state decision in one place.
 fn policy_table(
   fields: Dict(String, tom.Toml),
 ) -> Result(NormalizedRetryPolicy, String) {
   use Nil <- result.try(
-    known_keys(dict.keys(fields), ["attempts", "base_delay_ms", "max_delay_ms"]),
+    known_keys(dict.keys(fields), [
+      "attempts", "base_delay_ms", "max_delay_ms", "request_timeout_ms",
+    ]),
   )
   use attempts <- result.try(attempts_key(fields))
   use base_delay_ms <- result.try(delay_key(
@@ -178,6 +226,21 @@ fn delay_key(
         <> " must be a whole number of milliseconds, zero or more (the "
         <> "default is "
         <> int.to_string(fallback)
+        <> ")",
+      )
+  }
+}
+
+/// Validates and extracts `retry.request_timeout_ms` from `[retry]` fields.
+fn request_timeout_key(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
+  // Resolve request_timeout_ms key or return default when omitted.
+  case dict.get(fields, "request_timeout_ms") {
+    Error(Nil) -> Ok(default_request_timeout_ms)
+    Ok(tom.Int(milliseconds)) if milliseconds > 0 -> Ok(milliseconds)
+    Ok(_other) ->
+      Error(
+        "retry.request_timeout_ms must be a positive integer number of milliseconds (the default is "
+        <> int.to_string(default_request_timeout_ms)
         <> ")",
       )
   }

@@ -144,3 +144,23 @@ max_delay_ms = 40
   let assert Error(reason) = retryconf.parse_policy(bad)
   assert string.contains(reason, "unknown key `attemps`")
 }
+
+pub fn request_timeout_ms_defaults_to_ten_minutes_and_parses_overrides_test() {
+  assert retryconf.parse_request_timeout("")
+    == Ok(retryconf.default_request_timeout_ms)
+  assert retryconf.default_request_timeout_ms == 600_000
+  assert retryconf.parse_request_timeout(
+      "[retry]\nrequest_timeout_ms = 900000\n",
+    )
+    == Ok(900_000)
+  assert retryconf.parse_policy("[retry]\nrequest_timeout_ms = 900000\n")
+    == Ok(api.default_retry_policy)
+
+  let assert Error(zero_reason) =
+    retryconf.parse_request_timeout("[retry]\nrequest_timeout_ms = 0\n")
+  assert string.contains(zero_reason, "retry.request_timeout_ms")
+
+  let assert Error(type_reason) =
+    retryconf.parse_request_timeout("[retry]\nrequest_timeout_ms = \"10m\"\n")
+  assert string.contains(type_reason, "retry.request_timeout_ms")
+}

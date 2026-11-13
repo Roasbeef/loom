@@ -1546,7 +1546,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       schedule_list,
       schedule_policy,
       jobs_policy,
-      retry_policy,
+      #(retry_policy, request_timeout_ms),
       memory,
       tools,
       secret_entries,
@@ -1593,11 +1593,12 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
   let gateway =
     catalog.gateway(
       catalogue,
-      transport: http.httpc_transport(),
+      transport: http.httpc_transport_with_timeout(request_timeout_ms + 30_000),
       secrets: secret_store,
       clock:,
     )
     |> provider_gateway.with_codex_transport(codex_transport.transport())
+    |> provider_gateway.with_attempt_timeout(request_timeout_ms)
 
   Ok(
     Settings(
@@ -1879,7 +1880,7 @@ type Loaded =
     List(schedule.Schedule),
     schedule.Policy,
     jobs.JobsPolicy,
-    operation.NormalizedRetryPolicy,
+    #(operation.NormalizedRetryPolicy, Int),
     memory_config.Options,
     catalog.ToolsConfig,
     List(secrets.Entry),
@@ -1938,7 +1939,7 @@ fn load_config(
         [],
         schedule.default_policy,
         jobs.default_policy,
-        retryconf.default_policy,
+        #(retryconf.default_policy, retryconf.default_request_timeout_ms),
         memory_config.default_options(),
         catalog.default_tools(),
         [],
@@ -2019,6 +2020,9 @@ fn parse_config(
   use retry_policy <- result.try(
     retryconf.policy_from_document(document) |> result.map_error(named),
   )
+  use request_timeout_ms <- result.try(
+    retryconf.request_timeout_from_document(document) |> result.map_error(named),
+  )
   use memory <- result.try(
     memory_config.from_document(document) |> result.map_error(named),
   )
@@ -2040,7 +2044,7 @@ fn parse_config(
     schedule_list,
     schedule_policy,
     jobs_policy,
-    retry_policy,
+    #(retry_policy, request_timeout_ms),
     memory,
     tools,
     secret_entries,
@@ -4768,6 +4772,9 @@ fn assemble_in(
       )
   })
 
+  let attempt_ms = provider_gateway.attempt_timeout_ms(gateway)
+  let max_routes = int.max(1, provider_gateway.max_route_count(gateway))
+  let provider_timeout_ms = attempt_ms * max_routes + 60_000
   let wiring_config =
     wiring.Config(
       observe_output: owner_api.output,
@@ -4778,7 +4785,7 @@ fn assemble_in(
       api: settings.api,
       fallback_context_window: settings.context_window,
       fallback_max_output_tokens: settings.max_output_tokens,
-      provider_timeout_ms: 300_000,
+      provider_timeout_ms:,
       session: opened,
       compaction: settings.compaction,
       broker: broker_actor,
