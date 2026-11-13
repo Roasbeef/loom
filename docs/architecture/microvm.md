@@ -113,28 +113,28 @@ The steps that need root run before the drop, in this order:
 
 1. **State root.** `loom-guest-executor` mounts the state device on
    `NODE_DIR/state` as ext4, formatting it on the first boot
-   (`packages/vmm/guest/loom-guest-executor:104`). `vm_spec.launch_arguments`
+   (`packages/vmm/guest/loom-guest-executor:108`). `vm_spec.launch_arguments`
    passes `--state-device /dev/vda`, the `state.img` that `loom vm up` keeps, so
    the state survives `down` and `up`. Only with no device does the script mount
-   a 512 MiB tmpfs (`:107`) that starts empty on every boot. The guest root is a
+   a 512 MiB tmpfs (`:111`) that starts empty on every boot. The guest root is a
    virtio-fs share, and the executor's SQLite ledger and code mode's AF_UNIX
    socket need a local filesystem.
 2. **Ownership.** It gives `NODE_DIR` and every `/srv/workspaces/*` to `loom`
-   (`packages/vmm/guest/loom-guest-executor:92`). Staged files arrive owned by
+   (`packages/vmm/guest/loom-guest-executor:115`). Staged files arrive owned by
    root, and the daemon's credential checks require a 0600 file it can read.
 3. **Network.** `loom-guest-init` sets `192.168.127.2/24` with a default route
-   via `192.168.127.1` (`packages/vmm/guest/loom-guest-init:26`). go-microvm
+   via `192.168.127.1` (`packages/vmm/guest/loom-guest-init:70`). go-microvm
    v0.0.43 serves no DHCP lease, so the address is static.
 4. **Cgroups.** It builds `/sys/fs/cgroup/loom/{init,work,exec}`, enables
    `+pids +memory` from the top down
-   (`packages/vmm/guest/loom-guest-init:91`), and hands the subtree to `loom`.
+   (`packages/vmm/guest/loom-guest-init:160`), and hands the subtree to `loom`.
    The workload runs in `loom/work` and `LOOM_CGROUP_BASE` names `loom/exec`,
    which holds no process.
 5. **Drop.** `setpriv` runs the second phase as uid 10000
-   (`packages/vmm/guest/loom-guest-init:122`).
+   (`packages/vmm/guest/loom-guest-init:191`).
 6. **Options.** The second phase renders the TLS options file with the guest's
    own `loomd distribution options`
-   (`packages/vmm/guest/loom-guest-executor:47`). `distribution.start` compares
+   (`packages/vmm/guest/loom-guest-executor:49`). `distribution.start` compares
    that file with what the configuration renders, paths included, so a file
    rendered on the host would refuse the boot.
 
@@ -173,7 +173,7 @@ and the last three are the ordinary distributed path.
    the entry while the registering connection stays open, so the entry lives
    exactly as long as `loom-vm`.
 2. **Forward.** `Spec.Forwards` becomes `microvm.WithPorts`
-   (`packages/vmm/machine/libkrun/libkrun.go:255`). The hosted provider listens
+   (`packages/vmm/machine/libkrun/libkrun.go:273`). The hosted provider listens
    on host `127.0.0.1:HOST` only and opens a connection to the guest port,
    admitting it through the guest firewall's ingress rules.
 3. **Listen.** The guest daemon's listener binds every interface, because the
@@ -235,9 +235,9 @@ filesystem layout is not.
    builds.
 4. **Network.** The guest's only interface is a virtio-net device whose other
    end is the hosted provider in `loom-vm`. `libkrun.Backend.Start` always
-   creates that provider (`packages/vmm/machine/libkrun/libkrun.go:156`) and
+   creates that provider (`packages/vmm/machine/libkrun/libkrun.go:161`) and
    always passes a non-nil egress policy
-   (`packages/vmm/machine/libkrun/libkrun.go:239`), which makes the firewall
+   (`packages/vmm/machine/libkrun/libkrun.go:244`), which makes the firewall
    deny by default. A virtio-net device also turns off libkrun's TSI mode,
    under which guest sockets run on the host and reach host loopback.
 
@@ -276,7 +276,7 @@ flowchart LR
 **How the guest reaches it.** `ghproxy.Proxy` is an `http.Handler`.
 `machine.Spec.HostServices` carries it to the libkrun backend, which registers it
 with `hosted.Provider.AddService` before the provider starts
-(`packages/vmm/machine/libkrun/libkrun.go:156`). go-microvm serves a hosted
+(`packages/vmm/machine/libkrun/libkrun.go:161`). go-microvm serves a hosted
 service with an `http.Server` listening on the gateway, 192.168.127.1, inside
 the launcher's own gVisor stack, and it adds a firewall rule that admits the
 guest's egress to that port. No host socket is bound, so nothing but this guest
@@ -417,14 +417,14 @@ stateDiagram-v2
     Stopped --> [*]
 ```
 
-`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:420`) is the one exit
+`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:497`) is the one exit
 and it is idempotent. It stops the hosted provider first, so no packet leaves
 the guest while the VMM shuts down, then branches on who owns the root. An
 `extractedRoot`, which go-microvm unpacked from an image for this guest, goes
 through `VM.Remove`. A `callerRoot`, given as `Spec.Root.Dir`, goes through
 `VM.Stop` only, because `VM.Remove` deletes any rootfs outside go-microvm's
 image cache and would delete the caller's directory
-(`packages/vmm/machine/libkrun/libkrun.go:359`). Teardown runs under its own
+(`packages/vmm/machine/libkrun/libkrun.go:514`). Teardown runs under its own
 30 s context, so a cancelled caller still releases the VMM.
 
 The launcher defers its teardown (`packages/vmm/cmd/loom-vm/main.go:220`), and
@@ -435,24 +435,31 @@ SIGTERM is a clean exit; a timeout (default 10 minutes) exits 1.
 
 ## The guest image and firmware
 
-The guest needs three artifacts besides `loom-vm` itself. A developer builds
-them with make targets; a release publishes them, and `loom-vm setup` installs
-either kind (see "Installing the artifacts" below).
+The guest needs three artifacts besides `loom-vm` itself, and a Linux host
+needs a fourth, libkrun. A developer builds them with make targets; a release
+publishes them, and `loom-vm setup` installs either kind (see "Installing the
+artifacts" below).
 
 | Make target | Produces | Built where | Why it is separate |
 | --- | --- | --- | --- |
+| `vmm-libkrun` | `packages/vmm/build/libkrun` (`lib64/libkrun.so.1`, header, `libkrun.pc`) | Linux only, from libkrun v1.19.7 source with cargo | Homebrew has libkrun for macOS and Ubuntu has none; the runner links it through pkg-config. |
 | `vmm-runner` | `packages/vmm/build/go-microvm-runner`, codesigned with `packages/vmm/runner.entitlements` on macOS | the host, with cgo against libkrun | The runner and the go-microvm library are version-locked; Hypervisor.framework refuses an unsigned runner. |
-| `vmm-firmware` | `packages/vmm/build/firmware/libkrunfw.5.dylib` | the kernel in an arm64 podman machine, the dylib on the host | Adds `CONFIG_SECURITY_LANDLOCK` and `CONFIG_SECURITYFS` to libkrunfw v5.5.0 (Linux 6.12.91). macOS only. |
-| `vmm-guest-root` | `packages/vmm/build/guest-root` | natively in the arm64 podman machine `loom-build` | `make release` cannot cross-compile. The image builds from `erlang:29.0.5` and runs on `debian:trixie-slim`. |
+| `vmm-firmware` | `packages/vmm/build/firmware/libkrunfw.5.dylib` on macOS, `libkrunfw.so.5` on Linux | macOS: the kernel in an arm64 podman machine, the dylib on the host. Linux: both natively, for the machine's architecture | Adds `CONFIG_SECURITY_LANDLOCK` and `CONFIG_SECURITYFS` to libkrunfw v5.5.0 (Linux 6.12.91). |
+| `vmm-guest-root` | `packages/vmm/build/guest-root` | natively: in the arm64 podman machine `loom-build` on macOS, with the local podman as linux/amd64 or linux/arm64 on Linux | `make release` cannot cross-compile. The image builds from `erlang:29.0.5` and runs on `debian:trixie-slim`. |
 
 `--firmware-dir` puts the custom libkrunfw ahead of the stock one on the
 runner's library path (`libraryPath`,
-`packages/vmm/machine/libkrun/libkrun.go:285`). The firmware script pins the
+`packages/vmm/machine/libkrun/libkrun.go:320`). The firmware script pins the
 libkrunfw tag to a commit and the kernel tarball to a SHA-256
-(`packages/vmm/guest/build-libkrunfw.sh:37`). It has a mode for each half of
+(`packages/vmm/guest/build-libkrunfw.sh:57`). It has a mode for each half of
 the build, so that the release workflow can run the kernel on a Linux runner
 (`--kernel`) and the link on a macOS one (`--link`); with neither flag it runs
-both through podman, as `make vmm-firmware` does.
+both, through podman on macOS and natively on Linux, as `make vmm-firmware`
+does. The link reads the kernel's architecture from the load-address footer
+of `kernel.c` and refuses a kernel built for another architecture than the
+library serves (aarch64 for the macOS dylib, the host's own on Linux), because
+an x86_64 kernel inside the arm64 dylib links without complaint and fails only
+when a guest boots.
 
 ### Installing the artifacts
 
@@ -490,6 +497,71 @@ guest the paths are these:
 | `/srv/loom-node/state` | the state disk (`state.img`, ext4): the state root, `dist.options`, `loomd.log`; a tmpfs only when no device is given | kept across `down` and `up`, replaced by `--fresh` |
 | `/srv/workspaces/<name>` | the checkout the executor serves | staged per boot, owned by `loom` |
 | `/sys/fs/cgroup/loom/{init,work,exec}` | the delegated cgroup subtree | built by `loom-guest-init` each boot |
+
+### A Linux host
+
+A Linux x86_64 host boots a guest. It was brought up on an Ubuntu 24.04 box with
+two cores, 4 GB of RAM and `/dev/kvm`, and `daemon_shipped_microvm_test` passes
+there (207 s; the live GitHub steps, `LOOM_VM_GITHUB_LIVE`, were not run). The
+steps, from a checkout:
+
+```sh
+sudo usermod -aG kvm "$USER"                 # once, then log in again
+make vmm-libkrun vmm vmm-runner vmm-firmware # libkrun, loom-vm, runner, kernel
+make vmm-guest-root VMM_PODMAN_FLAGS='--runtime crun'
+make vmm-install-dev                         # writes the manifest
+```
+
+`vmm-libkrun` takes about four minutes including rustup, `vmm-firmware` about
+ten (a native kernel build), and `vmm-guest-root` about twenty on two cores,
+because the image builds Gleam from source and then the server release. The
+build host needs `pkg-config` and podman; `vmm-libkrun` and `vmm-firmware`
+install their other dependencies with `apt-get`. `loom-vm probe` needs only
+`/dev/kvm` to exist, and it does not open it, so a user outside the `kvm` group
+passes the probe and fails at the first boot.
+
+What differs from macOS, each of which was found by booting:
+
+- **The share's ownership.** libkrun's virtio-fs passthrough emulates ownership
+  with extended attributes only on macOS. On Linux a runner without CAP_CHOWN
+  and CAP_SETUID shows every file as owned by its own user, refuses a chown, and
+  refuses a write by any uid but root's and its own. `loom-guest-init` tries to
+  hand `/work` to uid 10000 and, when that fails, makes the loom user the host
+  user's uid and gid by rewriting its passwd and group entries (the `--identity`
+  mode, which `loom-guest-executor` also calls before it chowns by name). A
+  consequence: on such a host every file in the guest root belongs to the loom
+  user, system files included, so uid separation inside the guest is gone and
+  the jail is the only boundary between model code and the guest's own files. A
+  runner with the capabilities, or one run as root, keeps uid 10000.
+- **Setuid files.** On the share a setuid-root binary runs as the host user, so
+  `mount` refused to mount for the init. The image strips setuid and setgid
+  bits.
+- **Open files.** The passthrough keeps one descriptor open in the runner per
+  guest inode. A root of 17,700 files held 4,261 after the executor was ready,
+  over the 1,024 soft limit of a login and the 4,096 hard limit of the test
+  box. `Start` raises the soft limit to the hard one and refuses a hard limit
+  under 65,536, naming `ulimit -Hn` and `LimitNOFILE=`
+  (`packages/vmm/machine/libkrun/nofile.go`). Raising a hard limit takes
+  privilege, so the test box ran the launcher after `prlimit` on its own shell.
+- **A symlinked runner.** go-microvm compares `/proc/PID/exe`, which the kernel
+  resolves, with the runner path before it signals a pid. A runner reached through
+  a symlink was never found, and `down` left it holding the root. The backend
+  resolves the path first.
+- **Podman.** Ubuntu 24.04's podman 4.9 with runc 1.3 rejects the Dockerfile's
+  cache mounts; crun accepts them (`VMM_PODMAN_FLAGS`). The build stage removes
+  its checkout so that its layer does not fill a 25 GB disk.
+- **Reflinks.** `cp -a --reflink=auto` on ext4 is a full copy, so each guest
+  root costs 387 MB of disk and a clone takes a few seconds.
+- **A host Erlang release is not the guest's.** The server release in the guest
+  root was built on Debian trixie and its crypto NIF needs OpenSSL 3.4, which
+  Ubuntu 24.04 lacks, so the orchestrator on the host must be a shipment built
+  on the host (`make server-shipment`), not the guest's `/opt/loom`. The
+  executor protocol is exact-revision, so build it with `BUILD_COMMIT` set to the
+  revision the guest image carries.
+- **`vm sync` needs git 2.45.1, or a patched point release.** Ubuntu 24.04's
+  `2.43.0` is refused by the version check although the distribution backports
+  the fixes it is guarding against; the test box built git 2.47.3 into a private
+  prefix.
 
 ## Concurrency
 
@@ -1138,9 +1210,14 @@ the host are not in it.
 - There is no `loom vm shell`. A guest has no exec channel: its executor serves
   the orchestrator over the distribution link and nothing else, so a command in
   the guest runs only through a session's tools.
-- Only macOS with Hypervisor.framework has booted a guest. The Linux/KVM path
-  compiles and is untested, and `build-libkrunfw.sh` links only the macOS
-  dylib.
+- macOS with Hypervisor.framework and Linux x86_64 with KVM have booted a
+  guest. Linux arm64 has not, and the Linux x86_64 runs were rootless on one
+  two-core box with a hard open-file limit raised by `prlimit` (see "A Linux
+  host"). On Linux without privilege the guest's system files are owned by the
+  loom user, and a `--provision` script that installs packages as root is not
+  expected to work, because dpkg's chown to root is refused; neither a
+  privileged runner nor that script has been run. Nothing checks for a host
+  user who is not in the `kvm` group before the boot.
 - `loom-vm setup --release` has never run against a published release: none
   exists yet. Its download, checksum, signing and extraction steps are covered
   by tests against a local HTTP server and registry, and the extraction was
@@ -1150,8 +1227,9 @@ the host are not in it.
   `release.yml`'s `gh release create`, and the permissions the called jobs
   receive are checked by `actionlint` and by reading only. A nightly whose
   `vmm-release.yml` run failed is published without artifacts and stays
-  without them. A Linux host has no download, because Ubuntu
-  ships no libkrun for the runner to link; it uses `--from-build`.
+  without them. A Linux host has no download: a release publishes no Linux
+  runner, no `libkrunfw.so.5`, and no libkrun, which Ubuntu does not ship and
+  the runner links; it uses `--from-build`.
 - Sessions local to an orchestrator do not yet mask the node's key and cookie.
 - The behaviour on the stock kernel is inferred: a turn does not complete,
   which matches the broker's `landlock` demand, but the exact refusal was not

@@ -85,19 +85,35 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   `--allow` hosts.
 - `guest/build-libkrunfw.sh` and `guest/libkrunfw-landlock.config` — build a
   libkrunfw v5.5.0 whose guest kernel has Landlock and securityfs (ADR-022,
-  D3), which the stock Homebrew libkrunfw lacks. `make vmm-firmware` runs the
-  kernel build in a podman container and writes
-  `build/firmware/libkrunfw.5.dylib`, which `--firmware-dir` selects. The
-  script has a mode per half: `--kernel OUTPUT_DIR` runs the Linux half
-  natively (CI's `firmware-kernel` job, on an arm64 runner; the mode refuses
-  any machine but aarch64, since the kernel is built for the host's
-  architecture) and leaves `kernel.c`, and `--link
-  KERNEL_C OUTPUT_DIR` links the dylib on macOS (CI's `macos-assets` job).
-- `guest/Dockerfile` and `guest/loom-guest-init` — the linux/arm64 guest root.
-  `make vmm-guest-root` builds the image natively in the arm64 podman machine
-  named by `VMM_BUILD_CONNECTION` (default `loom-build`), because `make release`
-  cannot cross-compile, and exports its runtime stage to
-  `packages/vmm/build/guest-root`. The root holds the installed server release
+  D3), which the stock Homebrew libkrunfw lacks. `make vmm-firmware` writes
+  `build/firmware/libkrunfw.5.dylib` on macOS, with the kernel built in a
+  podman container, and `libkrunfw.so.5` on Linux, with the kernel built
+  natively for the machine's architecture (about 10 minutes on two x86_64
+  cores); `--firmware-dir` selects it. The script has a mode per half:
+  `--kernel OUTPUT_DIR` runs the Linux half natively and leaves `kernel.c`
+  (CI's `firmware-kernel` job, on an arm64 runner), and `--link KERNEL_C
+  OUTPUT_DIR` links the library (CI's `macos-assets` job). The link reads the
+  kernel's architecture from the load-address footer of `kernel.c` and refuses
+  one that does not match the library: aarch64 for the macOS dylib, the host's
+  own on Linux. `guest/build-libkrunfw-test.sh` tests that refusal with stub
+  kernels, and `make vmm-test` runs it.
+- `guest/build-libkrun.sh` — Linux only. Builds libkrun v1.19.7 (the tag
+  go-microvm v0.0.43 pins, checked against its commit) with `BLK=1 NET=1` into
+  `build/libkrun` (`lib64/libkrun.so.1`, `include`, `lib64/pkgconfig/libkrun.pc`),
+  because Ubuntu ships no libkrun and the runner links it through pkg-config.
+  It uses the cargo on `PATH` or a minimal rustup kept in its work directory.
+  `make vmm-libkrun` runs it; `KRUN_PREFIX` and `KRUN_LIBDIR` locate the result
+  for `vmm-runner` and `vmm-install-dev`.
+- `guest/Dockerfile` and `guest/loom-guest-init` — the guest root, for the
+  host's architecture. `make vmm-guest-root` builds the image natively, because
+  `make release` cannot cross-compile: in the arm64 podman machine named by
+  `VMM_BUILD_CONNECTION` (default `loom-build`) on macOS, and with the local
+  podman as linux/amd64 or linux/arm64 on Linux (`VMM_PODMAN_FLAGS='--runtime
+  crun'` on Ubuntu 24.04, whose runc 1.3 refuses the cache mounts). It exports
+  its runtime stage to `packages/vmm/build/guest-root`. The build stage removes
+  its checkout in the step that installs the release, so that its layer does
+  not hold gigabytes of build output, and the runtime stage strips setuid and
+  setgid bits (see "A Linux share" below). The root holds the installed server release
   (`loomd`, bundled ERTS, `loom-exec` inside the release tree), bubblewrap,
   git, ripgrep, sqlite3, iproute2, and the `loom` user (uid 10000). The
   image carries `org.opencontainers.image.revision` and `.version` labels
@@ -110,12 +126,14 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   exports `/etc/loom-vm/github.env` when the CA file exists, runs
   `/etc/loom-vm/provision` as root once when it exists and
   `/etc/loom-vm/provisioned` does not (printing `LOOM-PROVISION-FAILED
-  status=N` and exiting 1 on failure, which `loom vm up` reports), chowns the loom
+  status=N` and exiting 1 on failure, which `loom vm up` reports), settles the
+  loom user's ids (`--identity` does only that), chowns the loom
   user's directories, builds the delegated
   cgroup v2 subtree under `/sys/fs/cgroup/loom`, and runs its arguments as
   `loom` with `LOOM_CGROUP_BASE` set.
 - `guest/loom-guest-executor NODE_DIR` — the guest side of an executor. As
-  root it mounts a tmpfs on `NODE_DIR/state` and gives `NODE_DIR` and
+  root it settles the loom user's ids, mounts the state disk or a tmpfs on
+  `NODE_DIR/state` and gives `NODE_DIR` and
   `/srv/workspaces/*` to loom; then, through `loom-guest-init`, it renders the
   distribution options inside the guest, starts `loomd`, and prints
   `LOOM-EXECUTOR-READY <name>` once the node is registered with the guest's
@@ -241,6 +259,21 @@ credential.
   jail sees the whole guest, `/srv` included, and only the daemon's
   `protecting_node_credentials` mask keeps the key and cookie from model code.
   Do not stage another secret there expecting the location to protect it.
+- **A Linux share shows the host user's ids, and only root and that user can
+  write it.** libkrun's virtio-fs passthrough has no ownership emulation
+  outside macOS. A runner without CAP_CHOWN and CAP_SETUID presents every file
+  as owned by its own user, refuses a chown, and refuses a write by any uid but
+  0 and its own (`set_creds`, libkrun's `fs/linux/passthrough.rs`).
+  `loom-guest-init` therefore tries to hand `/work` to uid 10000 and, when that
+  fails, makes the loom user the share's owner by rewriting its passwd and
+  group ids, every boot. Two consequences follow. Every file in the guest root,
+  system files included, belongs to the loom user, so the guest's root is not
+  protected from a jail escape on that host; the jail (landlock, bubblewrap,
+  no-new-privs) is the boundary, and a runner with the capabilities, or a
+  root-run one, keeps uid 10000. And a provisioning script that installs
+  packages as root cannot work there, because dpkg's chown to root is refused.
+  The image has no setuid files: a setuid-root `mount` on the share runs as the
+  host user and fails for root.
 - **Boot a clone of the guest root, never the export.** The root is a
   virtio-fs share the guest writes into. Clone it with `cp -cRp`: without `-p`
   macOS `cp` applies the umask to directory modes and `/tmp` loses its
