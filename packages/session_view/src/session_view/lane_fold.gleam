@@ -875,16 +875,7 @@ fn render_cut(
   // call can retire without removing its still-running peers. The operation's
   // last-result register remains the fallback when the bounded history window
   // no longer retains that entry.
-  let live_tails =
-    list.filter(shared.tool_tails, fn(tail) {
-      !snapshot_view.has_tool_result(
-        view,
-        cut.window,
-        tail.strand,
-        tail.call_id,
-      )
-      && !snapshot_view.has_result(view, tail.strand, tail.operation)
-    })
+  let live_tails = retain_live_tails(shared.tool_tails, view, cut.window)
 
   // A cut that brought new records may bring long blocks this attachment
   // holds no label for. They are marked wanted here and read by exact key
@@ -1013,6 +1004,29 @@ fn retire_nudges_delivered_in_cut(
         snapshot_view.branch(view, cut.window, advisor_pending.primary_strand).records,
       )
   }
+}
+
+/// The tails whose call this cut has not yet retired.
+///
+/// Each tail asks about its own strand, so the window's entries and the cut's
+/// cells are indexed once for the whole list. Rebuilding them for every tail
+/// made a capture quadratic in the live tails it carried. A session with no
+/// tail, the common case, pays for neither index.
+fn retain_live_tails(
+  tails: List(transcript_line.ToolTail),
+  view: snapshot_view.View,
+  window: snapshot.Window,
+) -> List(transcript_line.ToolTail) {
+  use <- bool.guard(tails == [], return: [])
+  let entries = snapshot_view.window_entries(window)
+  let cells = snapshot_view.index_cells(view.cells)
+
+  // A durable tool-result names the exact call; the strand's last-result
+  // register is the fallback for a call whose entry left the window.
+  list.filter(tails, fn(tail) {
+    !snapshot_view.has_tool_result_in(entries, view, tail.strand, tail.call_id)
+    && !snapshot_view.has_result_in(cells, tail.strand, tail.operation)
+  })
 }
 
 // The shared run settings, as the head's attachment row carries them.

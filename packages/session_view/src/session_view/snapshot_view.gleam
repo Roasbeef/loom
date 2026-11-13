@@ -680,16 +680,43 @@ fn optional_text(fields, name, fallback) {
 /// // snapshot_view.branch(view, captured.window, "main")
 /// ```
 pub fn branch(view: View, window: snapshot.Window, strand: String) -> Branch {
-  let entries =
-    dict.from_list(
-      list.filter_map(window.items, fn(item) {
-        case item {
-          snapshot.Loaded(entry, _) -> Ok(#(entry.id, entry))
-          snapshot.Unloaded(..) -> Error(Nil)
-        }
-      }),
-    )
+  branch_in(window_entries(window), view, strand)
+}
 
+/// The window's loaded entries keyed by identity.
+///
+/// The table does not depend on the strand, so a reader that projects the
+/// branch of every strand builds it once and calls `branch_in`, rather than
+/// rebuilding it for each strand it describes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let entries = snapshot_view.window_entries(captured.window)
+/// ```
+pub fn window_entries(window: snapshot.Window) -> Dict(ids.EntryId, Entry) {
+  dict.from_list(
+    list.filter_map(window.items, fn(item) {
+      case item {
+        snapshot.Loaded(entry, _) -> Ok(#(entry.id, entry))
+        snapshot.Unloaded(..) -> Error(Nil)
+      }
+    }),
+  )
+}
+
+/// `branch` over a window whose entries are already indexed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let branch = snapshot_view.branch_in(entries, view, "main")
+/// ```
+pub fn branch_in(
+  entries: Dict(ids.EntryId, Entry),
+  view: View,
+  strand: String,
+) -> Branch {
   // Look up the strand's current leaf entry to begin the ancestor walk.
   case dict.get(view.leaves, strand) {
     Error(Nil) -> Branch([], Some("strand is not present in the captured cut"))
@@ -840,11 +867,24 @@ fn array(fields, name) {
 /// assert snapshot_view.has_result(view, "main", "unobserved") == False
 /// ```
 pub fn has_result(view: View, strand: String, current: String) -> Bool {
+  has_result_in(index_cells(view.cells), strand, current)
+}
+
+/// `has_result` over cells already indexed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert snapshot_view.has_result_in(dict.new(), "main", "unobserved")
+///   == False
+/// ```
+pub fn has_result_in(
+  cells: CellIndex,
+  strand: String,
+  current: String,
+) -> Bool {
   let result =
-    view.cells
-    |> list.find(fn(cell) {
-      cell.namespace == register.StrandLastResult && cell.key == strand
-    })
+    cell_at(cells, register.StrandLastResult, strand)
     |> result.try(fn(cell) {
       machine_codec.decode_last_result(cell.value) |> result.replace_error(Nil)
     })
@@ -873,7 +913,23 @@ pub fn has_tool_result(
   strand: String,
   call_id: String,
 ) -> Bool {
-  let Branch(records:, ..) = branch(view, window, strand)
+  has_tool_result_in(window_entries(window), view, strand, call_id)
+}
+
+/// `has_tool_result` over a window whose entries are already indexed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot_view.has_tool_result_in(entries, view, "main", "call-1")
+/// ```
+pub fn has_tool_result_in(
+  entries: Dict(ids.EntryId, Entry),
+  view: View,
+  strand: String,
+  call_id: String,
+) -> Bool {
+  let Branch(records:, ..) = branch_in(entries, view, strand)
   list.any(records, fn(record) {
     let protocol.EntryRecord(entry:, ..) = record
 
