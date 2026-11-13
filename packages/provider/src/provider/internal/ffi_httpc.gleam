@@ -65,6 +65,7 @@ pub fn prepare_stream_request(
 ///   "https://api.example.test/v1/responses",
 ///   headers,
 ///   body,
+///   600_000,
 /// )
 /// ```
 ///
@@ -75,6 +76,7 @@ pub fn begin_stream_request(
   url: String,
   headers: List(#(String, String)),
   body: String,
+  timeout_ms: Int,
 ) -> Nil
 
 /// Requests cancellation of the native owner.

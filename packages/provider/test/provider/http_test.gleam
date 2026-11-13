@@ -381,3 +381,32 @@ pub fn production_cancel_never_follows_a_redirect_to_hanging_peer_test() {
     |> process.selector_receive(2000)
   stop_servers(servers)
 }
+
+pub fn httpc_transport_with_timeout_enforces_configured_response_timeout_test() {
+  let accepted = process.new_subject()
+  let closed = process.new_subject()
+  let events = process.new_subject()
+  let #(port, server) =
+    start_hanging_server(fn() { process.send(accepted, Nil) }, fn() {
+      process.send(closed, Nil)
+    })
+  let http.Transport(prepare_streaming:) =
+    http.httpc_transport_with_timeout(150)
+  let assert Ok(http.PreparedRequest(running: _, begin:)) =
+    prepare_streaming(
+      http.HttpRequest(
+        method: "GET",
+        url: "http://127.0.0.1:" <> int.to_string(port) <> "/",
+        headers: [],
+        body: "",
+      ),
+      events,
+    )
+  begin()
+  let assert Ok(Nil) = process.receive(accepted, within: 2000)
+  let assert Ok(http.RequestFailed(reason:)) =
+    process.receive(events, within: 2000)
+  assert string.contains(reason, "timed out")
+  let assert Ok(Nil) = process.receive(closed, within: 2000)
+  stop_servers([server])
+}
