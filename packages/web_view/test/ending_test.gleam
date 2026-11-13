@@ -215,3 +215,13 @@ pub fn a_box_that_has_no_room_is_a_wait_with_its_own_words_test() {
   assert ending.relayed_advice(ending.PeerCrowded)
     == ending.advice(ending.PeerCrowded, "S")
 }
+
+// A failed connection on a relayed page is reached by a lapse after the laptop
+// slept, a box that restarted or a broken answer, and the browser reconnects from
+// each, so its words say reconnecting and name no session.
+pub fn a_failed_connection_on_a_relayed_page_reads_as_reconnecting_test() {
+  let advice = ending.relayed_advice(ending.ConnectionFailed)
+  assert string.contains(advice, "Reconnecting automatically")
+  assert !string.contains(advice, "Reload this page")
+  assert !string.contains(advice, "loom ui")
+}

@@ -274,7 +274,7 @@ pub fn advised(ending: Ending, session_id: String) -> Advice {
     PeerUnreachable -> Advice("This page will reconnect.", None)
     PeerCrowded ->
       Advice(
-        "This machine has the most live pages of this session that it allows. One frees within a few seconds of closing, and this page keeps trying.",
+        "This machine has the most live pages that the orchestrator running this session allows it, across all its sessions. One frees within a few seconds of closing, and this page keeps trying.",
         None,
       )
   }
@@ -371,8 +371,10 @@ pub fn home_advised(ending: Ending) -> Advice {
 
 /// The advice for a page of a session on another orchestrator. Its session
 /// identity is not one this daemon holds, so a command naming it would mint
-/// nothing: it is the home's advice, except for a link that is only down, which
-/// says the page will reconnect.
+/// nothing: it is the home's advice, except for the endings the browser retries by
+/// itself, which say so. A failed connection on a relayed page is reached by a lapse
+/// after the laptop slept, a box that restarted or a broken answer, and the page
+/// reconnects from each, so its words are not "reload this page".
 ///
 /// ## Examples
 ///
@@ -382,14 +384,13 @@ pub fn home_advised(ending: Ending) -> Advice {
 pub fn relayed_advice(ending: Ending) -> String {
   case ending {
     PeerUnreachable -> "This page will reconnect."
-    PeerCrowded -> sentence(advised(ending, ""))
+    PeerCrowded | ConnectionFailed -> sentence(advised(ending, ""))
     PageEnded
     | AccessRevoked
     | SessionStopped
     | NotOpen
     | DaemonNotReady
-    | LinkExpired
-    | ConnectionFailed -> home_advice(ending)
+    | LinkExpired -> home_advice(ending)
   }
 }
 

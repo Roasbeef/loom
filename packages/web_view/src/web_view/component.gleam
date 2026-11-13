@@ -4265,16 +4265,20 @@ fn chips(strip: strip.Strip) -> List(strip.Chip) {
 }
 
 /// What a lane that failed with a reason that names no ending stands for. On a
-/// local page it is a failure of the connection. On a relayed page the lane
-/// failed because a reply did not come in time, and the only link in the way is
-/// the one to the other orchestrator, which the page cannot tell down from slow,
-/// so it says it is waiting and the browser reconnects (protocol-change/108,
-/// "When the link drops, and what the page shows"). A reason that does name an
-/// ending, such as the feed's own, is drawn as that ending on either route.
-fn lane_failure(model: Model(socket)) -> Ending {
-  case model.view.route {
-    Local -> ending.ConnectionFailed
-    Relayed(..) -> ending.PeerUnreachable
+/// relayed page a lane that failed because a reply did not come in time
+/// (`session_channel.timed_out`) has only the link to the other orchestrator in the
+/// way, which the page cannot tell down from slow, so it says it is waiting and the
+/// browser reconnects (protocol-change/108, "When the link drops, and what the page
+/// shows"). Any other failure is a failed connection on either route. A reason that
+/// does name an ending, such as the feed's own, is drawn as that ending.
+fn lane_failure(model: Model(socket), reason: String) -> Ending {
+  case model.view.route, reason == session_channel.timed_out {
+    Relayed(..), True -> ending.PeerUnreachable
+
+    // A frame that does not decode, a cut that names another incarnation and a
+    // server error are not a wait. They end the page as a failed connection,
+    // which on a relayed page is worded as reconnecting.
+    Relayed(..), False | Local, _ -> ending.ConnectionFailed
   }
 }
 
@@ -4290,7 +4294,7 @@ fn statused(model: Model(socket)) -> Model(socket) {
   {
     Ended(_), _, _ -> model.view.status
     _, Some(reason), _ ->
-      Ended(ending.from_reason(reason, otherwise: lane_failure(model)))
+      Ended(ending.from_reason(reason, otherwise: lane_failure(model, reason)))
     Connecting, None, Some(_) -> Connected
     Connecting, None, None | Connected, None, _ -> model.view.status
   }
