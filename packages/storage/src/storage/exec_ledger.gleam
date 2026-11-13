@@ -1738,7 +1738,7 @@ fn attach_existing(
   token: BitArray,
   limits: Limits,
 ) -> Result(Attachment, Error) {
-  use Nil <- result.try(same_workspace(scope, workspace))
+  use scope <- result.try(workspace_for_attach(connection, scope, workspace))
 
   // Determine attachment handling from current scope state.
   case scope.state {
@@ -1898,6 +1898,45 @@ fn scope_at(
   case incarnation == scope.incarnation {
     True -> Ok(scope)
     False -> Error(StaleIncarnation(scope.incarnation))
+  }
+}
+
+// The workspace an attach may name. The one the scope is bound to always may.
+// Another is taken only by a scope that is closed cleanly and has no tree record:
+// it holds nothing of the session in the workspace it was bound to, which is
+// what a scope left by a failed attempt looks like, so rebinding it loses
+// nothing. An open scope keeps its workspace, because a live session may be
+// working in it, and a scope with a tree record keeps it, because the tree is
+// there. The rebind is made before the reopen and in the same transaction.
+/// Judges an attach's workspace and rebinds a closed scope that holds nothing.
+fn workspace_for_attach(
+  connection: sqlight.Connection,
+  scope: Scope,
+  workspace: String,
+) -> Result(Scope, Error) {
+  case scope.workspace == workspace, scope.state {
+    True, _ -> Ok(scope)
+    False, Closed(AllRetired) -> {
+      use trees <- result.try(rows(
+        connection,
+        sql.ledger_worktree(scope.session),
+      ))
+      case trees {
+        [] -> {
+          use Nil <- result.map(statement(
+            connection,
+            sql.rebind_ledger_scope_workspace(
+              workspace:,
+              session: scope.session,
+            ),
+          ))
+          Scope(..scope, workspace:)
+        }
+        [_, ..] -> Error(WorkspaceMismatch(scope.workspace))
+      }
+    }
+    False, Open | False, Closing | False, Closed(UnknownCleanup(_)) ->
+      Error(WorkspaceMismatch(scope.workspace))
   }
 }
 
