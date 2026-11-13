@@ -1529,8 +1529,10 @@ executor's case (slice 4a): the scope's linked worktree already exists on
 and `git checkout -B` moves the branch onto the tip. `check_linked` requires the
 tree's `.git` to be a plain file and what Git finds from inside it to be the named
 repository (top, worktree Git directory, common directory, branch); a tree that
-already contains the tip is answered as applied and not touched, and any other tree
-must have no change in it. A dirty state's snapshot commit is checked out as it is.
+was last applied, or whose `HEAD` is the tip, is answered as applied and not touched
+(a tip that is only an ancestor of `HEAD` moves the tree), and any other tree must have
+no change in it. The apply keeps one ref per session, `refs/loom/applied/<session>`,
+written after the checkout and dropped before the next one. A dirty state's snapshot commit is checked out as it is.
 The checkouts (`checked_out`) empty every `filter.<name>` driver the configuration
 names for the call, since a `.gitattributes` in the bundle can attach one and a
 checkout would run its `smudge` command. The listing runs in the directory the
@@ -10704,6 +10706,59 @@ and `gateway_test`, and `orchestrator_port_test`.
   `TopResolve` open a saved relayed session; `TopStop` does not. The box never
   dials the laptop for this. The page's browser never reaches the box.
 
+
+## The live session feed, the box half (protocol-change/108, slice 2)
+
+A relayed session's page on another orchestrator can be the full session page.
+The box attaches to the session's gateway the way a page socket does, queues the
+frames the gateway writes, and the laptop pulls them with a long poll through the
+stable peer exchange and sends its lane's frames back in pieces. The box sends
+nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
+`feed_pieces_test` (fixed-seed `statem` properties), `feed_directory_test`,
+`feed_host_test` (one VM: real gateway, real `TopHost`, real stable endpoint) and
+`gateway_peer_door_test`. The model is `protocol/models/live-relay`.
+
+- **The vocabulary** is `client/remote_feed`, with no process in it, as
+  `remote_top` has none: the bodies of `108.attach.1`, `108.feed.1`, `108.send.1`
+  and `108.detach.1`, the answers, the bounds both ends hold and a total decoder
+  for each. `peer_codec.revisions` advertises the four and `peer_top.dispatch`
+  decodes a body with `remote_feed.decode_request` and calls
+  `TopHost.feeds`, a `remote_feed.Host` of four closures. `remote_top` gained
+  `FeedEnded(lapsed | stopped | revoked)`, `CapReached(MaxFeeds, _)` and
+  `NotOffered(OfferedPage, "live")`.
+- **The pure parts** are `remote/feed_queue` (the numbered queue: unacknowledged
+  frames bounded at 512 and 1,048,576 bytes, a poll's `after` acknowledges, a
+  bound passed lapses the whole feed and never one frame; the lease is not here,
+  it is `feed_host`'s timer), `remote/feed_pieces` (the lane's frames put back together: pieces in
+  order, a piece admitted before is answered again and changes nothing, so the
+  gateway receives each frame once and whole) and `remote/feed_filter` (the closed
+  command table: forward, `forbidden`, a decision through the relayed door, a
+  forget of one grant, or a refusal). None holds a process or reads a clock.
+- **The processes** are `remote/feed_host`, one `weft/state_machine` per feed
+  (`Live` and `Ended`) whose timers (the held poll, the lease, the forget) are named
+  timeouts, and `remote/feed_directory`, the one place a token is found among the
+  feeds of the sender's spawner and the one place the cap of eight per spawner is
+  counted, from reservation until the feed's process exits, an ended feed
+  included. A feed attaches with `gateway.attach_authenticated_flushing` giving its
+  own pid as the socket, so the gateway drops the attachment when the feed exits.
+  The permit, of class `root.Feed` and charged `remote_feed.feed_charge_bytes`
+  (28,049,408, so eight feeds take about 42 percent of the default budget), is
+  reserved by the process that answers the attach and transferred by the feed's
+  own process (`top_host.Context.admit`). A feed watches the attach's process until
+  `feed_host.registered`, so a cancelled attach leaves no uncounted feed. The
+  feed's gateway connection id is its own random id, never its token. A piece that
+  does not end its frame carries at least `remote_feed.min_piece_bytes`.
+- **The door** is `gateway.PeerDoor(spawner, Decides | Watches)`. `gateway.attached`
+  does not count a feed that `Watches`, so a refused call in a session whose
+  spawner has no `approval_ceiling` settles in band, and one whose spawner has a
+  ceiling parks, as under a local page.
+- **Invariants.** A decision never reaches the gateway's own `approve`: the feed
+  turns `approve`, `approve_for_session`, `deny` and a forget of one grant into
+  `gateway.decide_relayed` with the spawner's name and ceiling, so the hub's
+  `admit_relayed` judges it. The queue's bound ends a feed and never drops a
+  frame. A poll that supersedes a held poll releases it at once. A token is looked
+  up only among the sender's spawner's feeds. The feed host blocks on a gateway
+  call, for at most the gateway's six seconds, and never on the laptop.
 
 ## The relayed session page's daemon side (protocol-change/094, slice S2b)
 

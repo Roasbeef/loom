@@ -17,6 +17,7 @@ import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
 import client/remote/remote_spawner
 import client/remote_escalation
+import client/remote_feed
 import client/remote_mail
 import client/remote_spawn.{
   Attached, CallSite, ChildUsage, Parent, Ready, Request, Spawned,
@@ -1554,6 +1555,7 @@ pub fn each_of_the_eight_messages_reaches_its_function_with_the_senders_node_tes
   let seen = process.new_subject()
   let top =
     orchestrator_port.TopHost(
+      feeds: remote_feed.declining(),
       placements: fn(node) {
         process.send(seen, "placements " <> node)
         Ok(json.Null)
