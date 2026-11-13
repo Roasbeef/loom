@@ -40,7 +40,7 @@
 EXTENDS Move, Integers
 
 CONSTANTS
-    HoldsRule,           \* "ancestry" (shipped) or "applied" (the fix).
+    HoldsRule,           \* "ancestry" (the earlier code) or "applied" (the fix in state_apply).
     BaseAhead,           \* The executor workspace's base is ahead of the laptop's HEAD.
     CellChecksOp,        \* A cell is believed only for the move that wrote it.
     FenceApply,          \* The executor judges the fence before it applies.
@@ -51,9 +51,12 @@ CONSTANTS
     MaxAtt,              \* Bound on move attempts.
     MaxTok,              \* Bound on attach tokens.
     MaxReruns,           \* Bound on re-entries of the step without a crash.
-    MaxLost              \* Bound on lost replies to StateApply.
+    MaxLost,             \* Bound on lost replies to StateApply.
+    InitWs,              \* The configured checkout_workspace may start as any of these.
+    RebindUnused         \* The ledger lets an attach rebind a scope that has no tree.
 
 VARIABLES
+    cfgWs, bound,        \* The configured workspace; the workspace the scope is bound to.
     par, cnt, nc,        \* The commit store: parent, content and the next id.
     head, wt, nw,        \* The laptop's HEAD, its working tree's content, the next edit.
     edits, opView,       \* Operator changes so far; what the operator last left.
@@ -70,7 +73,8 @@ VARIABLES
 
 L == <<par, cnt, nc, head, wt, nw, edits, opView>>
 X == <<srcStore, store, exBranch, applied, tok, tokAtt, net, answers, aliveX, lastLand>>
-H == <<att, stopWt, cell, reruns, lost>>
+H0 == <<att, stopWt, cell, reruns, lost>>
+H == <<H0, cfgWs, bound>>
 M == <<pc, mtip, mtipAtt, mreq, minc, mtok>>
 X1 == <<srcStore, store, exBranch, applied, tok, tokAtt, net, aliveX, lastLand>>
 M2 == <<mtip, mtipAtt, mreq, minc, mtok>>
@@ -118,6 +122,7 @@ Init2 ==
     /\ tok = 0 /\ tokAtt = 0 /\ net = {} /\ answers = {}
     /\ aliveX = TRUE /\ lastLand = [fenced |-> TRUE, own |-> TRUE]
     /\ reruns = 0 /\ lost = 0
+    /\ cfgWs \in InitWs /\ bound = "none"
     /\ pc = "idle" /\ mtip = -1 /\ mtipAtt = 0 /\ mreq = NoReq
     /\ minc = 0 /\ mtok = 0
 
@@ -182,7 +187,8 @@ Intend2 ==
     /\ Intend
     /\ att' = att + 1 /\ stopWt' = wt
     /\ UNCHANGED <<L, srcStore, store, exBranch, applied, tok, tokAtt, net,
-                   aliveX, lastLand, cell, reruns, lost, M, answers>>
+                   aliveX, lastLand, cell, reruns, lost, cfgWs, bound, M,
+                   answers>>
 
 StopA2 ==
     /\ servingA
@@ -237,8 +243,8 @@ CkRecord ==
     /\ CkOn /\ pc = "captured"
     /\ cell' = [op |-> att, ph |-> "taken", tip |-> mtip]
     /\ pc' = "recorded"
-    /\ UNCHANGED <<vars, L, X, att, stopWt, reruns, lost, mtip, mtipAtt, mreq,
-                   minc, mtok>>
+    /\ UNCHANGED <<vars, L, X, att, stopWt, reruns, lost, cfgWs, bound, mtip,
+                   mtipAtt, mreq, minc, mtok>>
 
 (* The state is sent whole to the executor's store, `state_transfer.send`. *)
 CkSend ==
@@ -256,19 +262,62 @@ CkSend ==
 (* workspace's base, a reopen of a closed scope recreates the tree from    *)
 (* the session's branch, and an open scope's tree is adopted.              *)
 (***************************************************************************)
+(***************************************************************************)
+(* The ledger binds a scope to the first workspace an attach names, whether *)
+(* or not that attach succeeds (`exec_ledger.same_workspace`), and refuses a *)
+(* later attach that names another. The configured workspace is cfgWs: the *)
+(* executor serves it ("good"), serves it in `shared` mode ("shared"), or   *)
+(* does not serve the name ("unknown"). An attach that the ledger refuses   *)
+(* for its workspace is reported as a string the mover cannot tell from a   *)
+(* lost connection, so the move stalls: no action is enabled.              *)
+(*                                                                         *)
+(* RebindUnused is the rule the recovery needs: an attach that names       *)
+(* another workspace rebinds a scope that has no tree record, which is     *)
+(* every scope a failed landing leaves. The tree record is exBranch # -1,  *)
+(* made by the first attach of a `worktree` workspace.                     *)
+(***************************************************************************)
+AttachAllowed == bound \in {"none", cfgWs} \/ (RebindUnused /\ exBranch = -1)
+
 CkAttach ==
     /\ CkOn /\ pc = "sent" /\ aliveX /\ tok < MaxTok
+    /\ cfgWs # "unknown"
+    /\ AttachAllowed
     /\ \/ /\ exec.holder # "none"
           /\ exec' = [exec EXCEPT !.holder = "A"]
        \/ /\ exec.holder = "none" /\ exec.inc < MaxInc
           /\ exec' = [inc |-> exec.inc + 1, holder |-> "A"]
     /\ tok' = tok + 1 /\ tokAtt' = att
-    /\ exBranch' = IF exBranch = -1 THEN Base ELSE exBranch
+    /\ exBranch' = IF exBranch = -1 /\ cfgWs = "good" THEN Base ELSE exBranch
+    /\ bound' = cfgWs
     /\ minc' = exec'.inc /\ mtok' = tok + 1
     /\ pc' = "attached"
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
-                   replied, everMoved, crashes, L, H, srcStore, store, applied,
-                   net, answers, aliveX, lastLand, mtip, mtipAtt, mreq>>
+                   replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
+                   applied, net, answers, aliveX, lastLand, mtip, mtipAtt, mreq>>
+
+(* The attach for a name the executor does not serve: the ledger has bound a *)
+(* scope, and the plane cannot be built, so the attach fails and the mover   *)
+(* stalls with the scope open.                                               *)
+CkAttachUnknown ==
+    /\ CkOn /\ pc = "sent" /\ aliveX /\ tok < MaxTok
+    /\ cfgWs = "unknown" /\ bound # "unknown"   \* A repeat changes nothing the mover holds.
+    /\ AttachAllowed
+    /\ \/ /\ exec.holder # "none"
+          /\ exec' = [exec EXCEPT !.holder = "A"]
+       \/ /\ exec.holder = "none" /\ exec.inc < MaxInc
+          /\ exec' = [inc |-> exec.inc + 1, holder |-> "A"]
+    /\ tok' = tok + 1 /\ tokAtt' = att
+    /\ bound' = "unknown"
+    /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
+                   replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
+                   exBranch, applied, net, answers, aliveX, lastLand, M>>
+
+(* The operator corrects the configuration and restarts the daemon: the    *)
+(* mover's memory is lost and the file is read again at the next run.      *)
+FixConfig ==
+    /\ cfgWs # "good" /\ cfgWs' = "good"
+    /\ MReset
+    /\ UNCHANGED <<vars, L, X1, H0, bound>>
 
 (***************************************************************************)
 (* One StateApply, under the scope's incarnation and token. The request    *)
@@ -313,11 +362,17 @@ ExApply ==
         /\ aliveX
         /\ net' = net \ {r}
         /\ IF Admit(r)
-              THEN /\ exBranch' = IF Held(r.tip) THEN exBranch ELSE r.tip
-                   /\ applied' = IF Held(r.tip) THEN applied ELSE r.tip
-                   /\ answers' = answers \cup {[req |-> r, res |-> "ok"]}
-                   /\ lastLand' = [fenced |-> Fenced(r),
-                                   own |-> r.att = att /\ tokAtt = att]
+              THEN IF bound = "shared"
+                      THEN \* A state is applied only into a worktree workspace.
+                           /\ answers' = answers \cup {[req |-> r, res |-> "refused"]}
+                           /\ UNCHANGED <<exBranch, applied, lastLand>>
+                      ELSE /\ exBranch' = IF Held(r.tip) THEN exBranch ELSE r.tip
+                           \* The record of the last apply is written whether the
+                           \* tree moved or already held the tip.
+                           /\ applied' = r.tip
+                           /\ answers' = answers \cup {[req |-> r, res |-> "ok"]}
+                           /\ lastLand' = [fenced |-> Fenced(r),
+                                           own |-> r.att = att /\ tokAtt = att]
               ELSE /\ answers' = answers \cup {[req |-> r, res |-> "stale"]}
                    /\ UNCHANGED <<exBranch, applied, lastLand>>
         /\ UNCHANGED <<vars, L, H, M, srcStore, store, tok, tokAtt, aliveX>>
@@ -337,7 +392,7 @@ LoseAnswer ==
     /\ \E e \in answers :
           /\ answers' = answers \ {e}
           /\ lost' = lost + 1
-    /\ UNCHANGED <<vars, L, X1, att, stopWt, cell, reruns, M>>
+    /\ UNCHANGED <<vars, L, X1, att, stopWt, cell, reruns, cfgWs, bound, M>>
 
 (***************************************************************************)
 (* The mover takes the reply to its request: applied, refused by the       *)
@@ -381,8 +436,8 @@ CkMark ==
     /\ CkOn /\ pc = "closed"
     /\ cell' = [op |-> att, ph |-> "done", tip |-> mtip]
     /\ pc' = "marked"
-    /\ UNCHANGED <<vars, L, X, att, stopWt, reruns, lost, mtip, mtipAtt, mreq,
-                   minc, mtok>>
+    /\ UNCHANGED <<vars, L, X, att, stopWt, reruns, lost, cfgWs, bound, mtip,
+                   mtipAtt, mreq, minc, mtok>>
 
 (***************************************************************************)
 (* A step that cannot finish stalls and is run again from what is on disk. *)
@@ -392,7 +447,7 @@ CkRerun ==
     /\ CkOn /\ pc \notin {"idle", "marked"} /\ reruns < MaxReruns
     /\ MReset
     /\ reruns' = reruns + 1
-    /\ UNCHANGED <<vars, L, X1, att, stopWt, cell, lost>>
+    /\ UNCHANGED <<vars, L, X1, att, stopWt, cell, lost, cfgWs, bound>>
 
 (***************************************************************************)
 (* Abandons. In the shipped code a local session's move is abandoned on a  *)
@@ -485,7 +540,8 @@ Next2 ==
     \/ Intend2 \/ StopA2 \/ Cut2 \/ Send2 \/ Activate2 \/ LoseReply2
     \/ Retire2 \/ AbortEarly2 \/ RefuseActivate2 \/ AttachB2 \/ OpenB2
     \/ CrashA2 \/ CrashB2 \/ Restart2 \/ CrashX \/ RestartX
-    \/ CkRead \/ CkCapture \/ CkRecord \/ CkSend \/ CkAttach \/ CkAsk
+    \/ CkRead \/ CkCapture \/ CkRecord \/ CkSend \/ CkAttach \/ CkAttachUnknown
+    \/ FixConfig \/ CkAsk
     \/ CkResend \/ ExApply \/ ExRefuse \/ LoseAnswer \/ CkReceive \/ CkClose
     \/ CkMark \/ CkRerun
     \/ AbandonCapture \/ AbandonSend \/ AbandonLanded \/ AbandonAny
@@ -505,7 +561,7 @@ Spec2 ==
     /\ WF_allv(CkSend) /\ WF_allv(CkAttach) /\ WF_allv(CkAsk)
     /\ WF_allv(CkResend) /\ WF_allv(ExApply) /\ WF_allv(CkReceive)
     /\ WF_allv(CkClose) /\ WF_allv(CkMark)
-    /\ WF_allv(AbandonLanded)
+    /\ WF_allv(AbandonLanded) /\ WF_allv(FixConfig)
 
 (***************************************************************************)
 (* Properties.                                                             *)
@@ -536,6 +592,9 @@ NoApplyOutsideFence == lastLand.fenced /\ lastLand.own
 AbandonRestores ==
     /\ a = "active" => b = "absent"
     /\ pc \notin {"idle", "start"} => mtipAtt = att
+    \* A corrected configuration is not blocked by a scope that a failed
+    \* attempt left bound to the workspace it named.
+    /\ cfgWs = "good" => AttachAllowed
 
 NoLeak ==
     /\ (a = "active" /\ mover = "idle" /\ att > 0) => exec.holder # "A"
