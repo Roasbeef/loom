@@ -1,26 +1,39 @@
 #!/usr/bin/env bash
 #
-# Build a libkrunfw.5.dylib whose guest kernel has Landlock (ADR-022, D3).
+# Build a libkrunfw whose guest kernel has Landlock (ADR-022, D3): the
+# libkrunfw.5.dylib a macOS host loads, or the libkrunfw.so.5 a Linux host
+# loads.
 #
 # Upstream builds the macOS variant by compiling the kernel in a Linux VM and
 # bundling the resulting image into a shared library on the host. This script
 # follows the same split. The Linux half produces kernel.c with upstream's own
-# Makefile (patches, config, olddefconfig and bin2cbundle.py). The host half
-# compiles kernel.c as upstream's Makefile does for Darwin:
-# cc -fPIC -DABI_VERSION=5 -shared.
+# Makefile (patches, config, olddefconfig and bin2cbundle.py). The link half
+# compiles kernel.c as upstream's Makefile does: cc -fPIC -DABI_VERSION=5
+# -shared, with a soname and a strip on Linux.
+#
+# A kernel is built for one architecture and a library serves guests of one
+# architecture: aarch64 on an Apple Silicon host, and the host's own on Linux.
+# An x86_64 kernel links into the arm64 dylib without complaint and fails only
+# when a guest boots, so the link half reads the architecture back out of
+# kernel.c and refuses a kernel that does not match the library.
 #
 # Each half is a mode of its own, so that CI can run the Linux half on a Linux
-# runner and the host half on a macOS one, and a developer can run both with
-# one command:
+# runner and the link on a macOS one, and a developer can run both with one
+# command:
 #
 #   build-libkrunfw.sh OUTPUT_DIR
-#       macOS, both halves: the Linux half in a podman container, then the link.
+#       Both halves. On macOS the kernel builds in a podman container and the
+#       dylib is linked on the host. On Linux both run natively, as --kernel
+#       and --link below.
 #   build-libkrunfw.sh --kernel OUTPUT_DIR
 #       Linux, the first half with no container: OUTPUT_DIR/kernel.c and the
-#       resolved configs. Installs its build dependencies with apt-get, through
-#       sudo when not root.
+#       resolved configs, for this machine's architecture (aarch64 or x86_64).
+#       Installs its build dependencies with apt-get, through sudo when not
+#       root.
 #   build-libkrunfw.sh --link KERNEL_C OUTPUT_DIR
-#       macOS, the second half: OUTPUT_DIR/libkrunfw.5.dylib from kernel.c.
+#       The second half: OUTPUT_DIR/libkrunfw.5.dylib on macOS or
+#       OUTPUT_DIR/libkrunfw.so.5 on Linux, from kernel.c. Refuses a kernel
+#       built for another architecture than the library's.
 #
 # Environment:
 #   PODMAN_CONNECTION  podman connection to build on (default: loom-build).
@@ -133,20 +146,88 @@ build_kernel() {
 	cp kernel.c "${out}/kernel.c"
 }
 
-# link_dylib is the host half: upstream's Darwin link line for the bundle.
-link_dylib() {
-	local kernel_c=$1 out=$2
+# kernel_arch prints the guest architecture a kernel.c holds. bin2cbundle.py
+# ends the file with the kernel's load address: the fixed 0x80000000 for an
+# arm64 Image, and the decimal address of the first PT_LOAD segment for an
+# x86_64 vmlinux. Reading it from the file, not from a sidecar, means a
+# kernel.c that crossed a CI artifact boundary still says what it is.
+kernel_arch() {
+	if grep -qF '*load_addr = 0x80000000;' "$1"; then
+		echo aarch64
+	elif grep -qE '\*load_addr = [0-9]+;' "$1"; then
+		echo x86_64
+	else
+		echo "build-libkrunfw.sh: $1 has no load address footer" >&2
+		return 1
+	fi
+}
 
-	if [ "$(uname -s)" != Darwin ]; then
-		# A Linux host loads libkrunfw.so.5 rather than a dylib, and that
-		# half is not written yet.
-		echo "build-libkrunfw.sh: only the macOS dylib is linked so far" >&2
+# library_arch prints the architecture of the guest the library built on this
+# machine serves. A macOS host is Apple Silicon and runs an aarch64 guest; a
+# Linux host runs a guest of its own architecture.
+library_arch() {
+	if [ "$(uname -s)" = Darwin ]; then
+		echo aarch64
+	else
+		case "$(uname -m)" in
+		arm64 | aarch64) echo aarch64 ;;
+		*) uname -m ;;
+		esac
+	fi
+}
+
+# library_name prints the file name the runner's loader looks for.
+library_name() {
+	if [ "$(uname -s)" = Darwin ]; then
+		echo "libkrunfw.${ABI_VERSION}.dylib"
+	else
+		echo "libkrunfw.so.${ABI_VERSION}"
+	fi
+}
+
+# link_library is the link half: upstream's link line for the bundle, which
+# adds a soname and strips on Linux. It refuses a kernel built for another
+# architecture than this machine's library serves.
+link_library() {
+	local kernel_c=$1 out=$2 want got
+
+	want=$(library_arch)
+	got=$(kernel_arch "${kernel_c}")
+	if [ "${got}" != "${want}" ]; then
+		echo "build-libkrunfw.sh: ${kernel_c} is a ${got} kernel, and this library serves ${want} guests" >&2
 		exit 1
 	fi
 
 	mkdir -p "${out}"
-	cc -fPIC -DABI_VERSION="${ABI_VERSION}" -shared \
-		-o "${out}/libkrunfw.${ABI_VERSION}.dylib" "${kernel_c}"
+	if [ "$(uname -s)" = Darwin ]; then
+		cc -fPIC -DABI_VERSION="${ABI_VERSION}" -shared \
+			-o "${out}/$(library_name)" "${kernel_c}"
+	else
+		cc -fPIC -DABI_VERSION="${ABI_VERSION}" -shared \
+			-Wl,-soname,"$(library_name)" \
+			-o "${out}/$(library_name)" "${kernel_c}"
+		strip "${out}/$(library_name)"
+	fi
+}
+
+# kernel_native is the first half run directly on this Linux machine, with no
+# container. It installs build dependencies, builds in a fresh directory under
+# WORK on the machine's own disk and leaves kernel.c and the configs in OUT.
+kernel_native() {
+	local out=$1 work=$2
+
+	fetch_sources "${work}"
+
+	SUDO=
+	[ "$(id -u)" = 0 ] || SUDO=sudo
+	export SUDO
+
+	BUILD_DIR=${work}/build
+	rm -rf "${BUILD_DIR}"
+	export SRC_DIR=${work}/libkrunfw IN_DIR=${work}/in GUEST_DIR=${here} \
+		OUT_DIR=${out} BUILD_DIR
+	JOBS=${JOBS:-$(nproc)}
+	build_kernel
 }
 
 # absolute prints the absolute form of a directory, creating it.
@@ -169,69 +250,46 @@ case "${1:-}" in
 		exit 1
 	fi
 
-	# Upstream's Makefile builds the kernel for the host's architecture, and
-	# the only dylib linked so far serves an arm64 guest. An x86_64 kernel
-	# links into it without complaint and fails only when a guest boots.
-	if [ "$(uname -m)" != aarch64 ]; then
-		echo "build-libkrunfw.sh: --kernel builds for this machine, which is $(uname -m); the guest kernel must be aarch64" >&2
-		exit 1
-	fi
-
 	out=$(absolute "${2:?usage: build-libkrunfw.sh --kernel OUTPUT_DIR}")
-	work=$(absolute "${WORK_DIR:-${out}/../firmware-work}")
-	fetch_sources "${work}"
-
-	SUDO=
-	[ "$(id -u)" = 0 ] || SUDO=sudo
-	export SUDO
-
-	# The build directory is on the runner's own disk and fresh each run.
-	BUILD_DIR=${work}/build
-	rm -rf "${BUILD_DIR}"
-	export SRC_DIR=${work}/libkrunfw IN_DIR=${work}/in GUEST_DIR=${here} \
-		OUT_DIR=${out} BUILD_DIR
-	JOBS=${JOBS:-$(nproc)}
-	build_kernel
-	echo "built ${out}/kernel.c"
+	kernel_native "${out}" "$(absolute "${WORK_DIR:-${out}/../firmware-work}")"
+	echo "built ${out}/kernel.c ($(kernel_arch "${out}/kernel.c"))"
 	exit 0
 	;;
 
 --link)
 	kernel_c=${2:?usage: build-libkrunfw.sh --link KERNEL_C OUTPUT_DIR}
 	out=$(absolute "${3:?usage: build-libkrunfw.sh --link KERNEL_C OUTPUT_DIR}")
-	link_dylib "${kernel_c}" "${out}"
-	echo "built ${out}/libkrunfw.${ABI_VERSION}.dylib"
+	link_library "${kernel_c}" "${out}"
+	echo "built ${out}/$(library_name)"
 	exit 0
 	;;
 esac
 
-# The default mode: both halves on a macOS developer machine. A Linux host is
-# refused before the container build, which takes minutes, rather than after.
-if [ "$(uname -s)" != Darwin ]; then
-	echo "build-libkrunfw.sh: only the macOS dylib is built so far" >&2
-	exit 1
-fi
-
+# The default mode: both halves. On Linux they run natively. On macOS the
+# kernel builds in a podman container and the link runs on the host.
 out=$(absolute "${1:?usage: build-libkrunfw.sh OUTPUT_DIR}")
 work=$(absolute "${WORK_DIR:-${out}/../firmware-work}")
-conn=${PODMAN_CONNECTION:-loom-build}
-jobs=${JOBS:-8}
-
 start=$(date +%s)
 
-fetch_sources "${work}"
-
-# The Linux half: patches, config, kernel, kernel.c.
 rm -rf "${work}/out"
 mkdir -p "${work}/out"
-podman --connection "${conn}" run --rm \
-	-v "${work}/libkrunfw:/src:ro" \
-	-v "${work}/in:/in:ro" \
-	-v "${here}:/guest:ro" \
-	-v "${work}/out:/out" \
-	-e JOBS="${jobs}" -e KERNEL_VERSION="${KERNEL_VERSION}" \
-	"${BUILD_IMAGE}" bash /guest/build-libkrunfw.sh --in-container
 
-link_dylib "${work}/out/kernel.c" "${out}"
+if [ "$(uname -s)" = Linux ]; then
+	kernel_native "${work}/out" "${work}"
+else
+	conn=${PODMAN_CONNECTION:-loom-build}
+	jobs=${JOBS:-8}
 
-echo "built ${out}/libkrunfw.${ABI_VERSION}.dylib in $(( $(date +%s) - start )) s"
+	fetch_sources "${work}"
+	podman --connection "${conn}" run --rm \
+		-v "${work}/libkrunfw:/src:ro" \
+		-v "${work}/in:/in:ro" \
+		-v "${here}:/guest:ro" \
+		-v "${work}/out:/out" \
+		-e JOBS="${jobs}" -e KERNEL_VERSION="${KERNEL_VERSION}" \
+		"${BUILD_IMAGE}" bash /guest/build-libkrunfw.sh --in-container
+fi
+
+link_library "${work}/out/kernel.c" "${out}"
+
+echo "built ${out}/$(library_name) in $(( $(date +%s) - start )) s"
