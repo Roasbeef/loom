@@ -10788,18 +10788,25 @@ the rules the code follows and the specs, mutants and probes that guard them.
   pauses are named timeouts. `top_relay` gained `attach`, `poll`, `send_piece` and
   `detach`, and `peer_client.call_at` dispatches against the epoch the attach observed
   with no discovery.
-- **The socket's choice** is `ui_socket.choose`, made in `upgrade_home` before any
-  component starts: an attach that succeeds starts the session component with
-  `Standing.route = Relayed` and `ui_feed`; a box that does not answer, or has no room
-  for the feed, starts the same component with a transport that answers
-  `PeerUnreachable`, which the browser retries; a box without the revisions, or whose
-  table is `page = "paged"`, starts the 094 home page with a sentence that says why
-  (`relayed.Fallback`). No answer is cached.
-- **What the page shows** when the link drops: a lane that gives up while the last
-  poll went unanswered ends with `PeerUnreachable` (a waiting page the browser
-  reconnects), and one that heard the box last ends with `ConnectionFailed`. A box that
-  says the feed is gone ends it with the ending it gave, and a lapse is
-  `ConnectionFailed`, since the page redraws from a fresh attach.
+- **The socket's choice** is `ui_socket.chosen`, made in `upgrade_home` before any
+  component starts, over the attach's outcome (`ui_choice_test` covers every arm): an
+  attach that succeeds starts the session component with `Standing.route = Relayed(page)`
+  and `ui_feed`; a box that cannot be reached, or asked for another try
+  (`remote_top.retryable`), starts the same component with a transport that answers
+  `PeerUnreachable`, which the browser retries; a box at its feed cap answers
+  `PeerCrowded`; a box without the revisions, with `page = "paged"`, or whose answer does
+  not read starts the 094 home page with a sentence that says why (`relayed.Fallback`).
+  No answer is cached. A relayed route holds a `root.PageOperator` permit. Its images are
+  served at the relayed document's `.../sessions/<id>/image/<ref>/<position>`
+  (`ui_http.RelayedImage`), and its tool-result links are not drawn (`lane.Unlinked`).
+- **What the page shows** when the link drops: the component decides it, in the same
+  update that ends its lane (`component.lane_failure`), because it ignores a close that
+  arrives after. A lane that fails on a relayed route ends as `PeerUnreachable`, a waiting
+  page the browser reconnects, and on a local route as `ConnectionFailed`. `ui_feed` ends
+  with `ConnectionFailed` on a shut, which only picks the socket's retry close code. A box
+  that says the feed is gone ends it with the ending it gave, and a lapse is
+  `ConnectionFailed`, since the page redraws from a fresh attach. A box at its feed cap is
+  `PeerCrowded`, its own waiting words.
 - **Invariants.** The feed's token is a secret of the `ui_feed` process and is never
   logged or drawn. A frame from the box is decoded by `remote_feed`'s total decoders,
   bounded by the stable exchange's envelope, and reaches the page only as a frame a

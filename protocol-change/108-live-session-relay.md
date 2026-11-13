@@ -858,12 +858,12 @@ open and changed two places in it.
 - An answer that reports the feed ended hands on no frame, whatever it carries. The
   text above allows frames written before the end to arrive in such an answer. An
   honest box never sends both, and a box that does is not believed; the model has a
-  hostile case for it (`tcHostileEnd`, mutant `M6`).
+  hostile case for it (`tcHostileEnd`, mutant `M8`).
 - What the page shows when the lane shuts the transport depends on whether the box
   was heard last. A feed whose last poll went unanswered ends with `PeerUnreachable`,
   which draws the waiting page and is `Retry`, and a feed that last heard the box
   ends with `ConnectionFailed`. The text above gives `ConnectionFailed` for both. A
-  link that is only down never shows a failure (`DownShowsWaiting`, mutant `M7`).
+  link that is only down never shows a failure (`DownShowsWaiting`, mutant `M9`).
 - A refusal of the attach at the box's feed cap (`cap_reached` with `feeds`) is the
   same waiting page as a box that does not answer, because the cap counts an ended
   feed until the box forgets it, one lease after it ended, so a reconnect right after
@@ -888,3 +888,53 @@ bytes, and one poll is in flight, so at most that much is handed to the componen
 inbox per round trip. The outbox holds at most 32 frames and 25,165,824 bytes of
 frame text, and refuses an empty frame or one over 12,582,912 bytes. A pause between
 polls or resends is 250 ms doubling to 2,000 ms. The feed's token is never logged.
+
+## Addendum: slice 3 after review (2026-11-13)
+
+Review of the first build of slice 3 found places where the page is not what the
+proposal says. This addendum corrects the first slice 3 addendum above, which stays as
+written.
+
+**Corrections to the first slice 3 addendum.**
+
+- What a dropped link shows is decided by the component and not by `ui_feed`. The
+  lane fails itself at its deadline and the component ends it in the same update, so a
+  close the feed client sends afterwards reaches a lane that has ended and is dropped.
+  A lane that fails with a reason that names no ending ends as `PeerUnreachable` on a
+  relayed route and as `ConnectionFailed` on a local one (`component.lane_failure`). The
+  feed client ends with `ConnectionFailed` on a shut, which only picks the socket's retry
+  close code. The first addendum's rule that `ui_feed` ends with `PeerUnreachable` when
+  the last poll went unanswered is withdrawn. The model's `DownShowsWaiting` is checked at
+  the adapter and at the component, by a rendered test.
+- A box at its feed cap is `PeerCrowded`, a waiting ending with its own words, and not
+  `PeerUnreachable`. `cap_reached` is retried by the choice even though
+  `remote_top.retryable` is false for it, because an ended feed counts toward the cap
+  until the box forgets it.
+- The choice maps every attach outcome (`ui_socket.chosen`). A retryable refusal is the
+  live page waiting. An answer that does not read, an oversized exchange or a box without
+  the revisions is the transcript page, so a retry does not leave a feed on the box for
+  every try.
+
+**Settled in review.**
+
+- An answer with no frame is followed by the next poll one pause later, 100 ms, and not at
+  once. An honest box answers empty only after its five second hold, so this costs
+  nothing, and a box that answers empty at once cannot drive a tight loop of a registry
+  call and three processes (`EmptyAnswerPauses`, mutant `M10`).
+- A feed's outbox ends with its process. A frame the lane queued when the feed ended is
+  not sent by it or by the next feed, and the lane learns that from the end of the feed
+  (`NothingSentAfterEnd`, mutant `M11`; `ui_feed_box_test`).
+- A feed's polls are numbered from a range of its own, so a reply that belongs to an earlier
+  feed never names a poll of a later one.
+- The longest gap between two polls arriving at the box is about 5.2 s when the link is
+  healthy and at most 9 s when it fails (a 7 s call, then a pause of at most 2 s), against
+  a lease of 15 s.
+- A relayed route holds the `PageOperator` permit, since the live page's socket has the
+  operator's frame limit. Its images are served at the relayed document's own address
+  (`ui_http.RelayedImage`), checked with the home grant and `admitted_visit`. Tool-result
+  links are not drawn on a relayed page, because result pages are not relayed yet.
+- On a relayed page, Evolution is not drawn, the ended notice gives the home's advice and
+  not `loom ui --session`, and Forget is offered only on a permission whose grant this page
+  approved, found by the principal the other orchestrator recorded with it
+  (`Standing.route = Relayed(page)`). A confirm re-checks the choice against the list as it
+  stands.
