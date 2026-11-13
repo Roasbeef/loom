@@ -60,6 +60,7 @@
 ////    and the messages that name a session start there.
 //// 6. `archive` stops the session and hides it once it has drained.
 
+import broker/token
 import client/daemon/manager
 import client/daemon/profiles
 import client/delegate_host
@@ -1157,10 +1158,19 @@ fn attach_feed(
       process.self(),
       remote_feed.max_feeds,
     )
-    |> result.replace_error(remote_top.CapReached(
-      cap: remote_top.MaxFeeds,
-      limit: remote_feed.max_feeds,
-    )),
+    |> result.map_error(fn(refused) {
+      case refused {
+        feed_directory.AtCap ->
+          remote_top.CapReached(
+            cap: remote_top.MaxFeeds,
+            limit: remote_feed.max_feeds,
+          )
+        feed_directory.Unavailable ->
+          remote_top.NotYetOpen(
+            "the live pages of this daemon are not answering",
+          )
+      }
+    }),
   )
 
   // A place was reserved, so every way out of here that does not register the
@@ -1204,6 +1214,11 @@ fn started_feed(
   }
 
   let authority = access.Participant(access.Operator)
+
+  // The connection id goes into the gateway's presence roster and to every
+  // subscribed connection, Observers included, so it is its own random id and
+  // never the token that names the feed.
+  let connection_id = "feed-" <> hex_entropy(8)
   use feed <- result.map(
     feed_host.start(feed_host.Settings(
       hub: context.gateway(instance),
@@ -1211,7 +1226,7 @@ fn started_feed(
         session_id: session,
         epoch: context.epoch,
         incarnation:,
-        connection_id: "feed-" <> token,
+        connection_id: connection_id,
         principal: context.owner,
         authority:,
         digest:,
@@ -1231,12 +1246,13 @@ fn started_feed(
         name: attach.name,
       ),
       admit: transfer,
-      ended: fn() { feed_directory.ended(directory, token) },
+      owner: process.self(),
       lease_ms: context.feed_lease_ms,
     ))
     |> result.map_error(fn(reason) { remote_top.NotYetOpen(reason:) }),
   )
   feed_directory.register(directory, token, feed)
+  feed_host.registered(feed)
   remote_feed.Attached(feed: token, epoch: context.epoch, incarnation:, label:)
 }
 
@@ -1314,7 +1330,7 @@ fn heading_of(
   let registration = view.registration
   let name = option.unwrap(registration.subtitle, registration.name)
   remote_feed.Label(
-    name: cut(name, remote_feed.max_text_bytes),
+    name: remote_top.clip(name),
     placement: placement_in(
       registration.pool,
       registration.executor,
@@ -1323,33 +1339,11 @@ fn heading_of(
   )
 }
 
-/// The text cut to at most `limit` bytes at a character boundary, so a heading is
-/// never refused by the laptop's decoder for its length.
-fn cut(text: String, limit: Int) -> String {
-  case string.byte_size(text) <= limit {
-    True -> text
-    False ->
-      string.to_graphemes(text)
-      |> list.fold_until(#("", 0), fn(kept, grapheme) {
-        fitting(limit, kept, grapheme)
-      })
-      |> fn(kept) { kept.0 }
-  }
-}
-
-/// One step of `cut`: keeps the next character while the text still fits.
-fn fitting(
-  limit: Int,
-  kept: #(String, Int),
-  grapheme: String,
-) -> list.ContinueOrStop(#(String, Int)) {
-  let size = kept.1 + string.byte_size(grapheme)
-
-  // The first character that would pass the limit ends the text.
-  case size <= limit {
-    True -> list.Continue(#(kept.0 <> grapheme, size))
-    False -> list.Stop(kept)
-  }
+/// `bytes` random bytes as lowercase hexadecimal.
+fn hex_entropy(bytes: Int) -> String {
+  token.production_entropy()(bytes)
+  |> bit_array.base16_encode
+  |> string.lowercase
 }
 
 /// The digest a feed's binding carries. It is derived from the spawner's name

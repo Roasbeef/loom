@@ -10709,9 +10709,9 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
   `FeedEnded(lapsed | stopped | revoked)`, `CapReached(MaxFeeds, _)` and
   `NotOffered(OfferedPage, "live")`.
 - **The pure parts** are `remote/feed_queue` (the numbered queue: unacknowledged
-  frames bounded at 512 and 1,048,576 bytes, a poll's `after` acknowledges and
-  renews the lease, a bound or a lease passed lapses the whole feed and never one
-  frame), `remote/feed_pieces` (the lane's frames put back together: pieces in
+  frames bounded at 512 and 1,048,576 bytes, a poll's `after` acknowledges, a
+  bound passed lapses the whole feed and never one frame; the lease is not here,
+  it is `feed_host`'s timer), `remote/feed_pieces` (the lane's frames put back together: pieces in
   order, a piece admitted before is answered again and changes nothing, so the
   gateway receives each frame once and whole) and `remote/feed_filter` (the closed
   command table: forward, `forbidden`, a decision through the relayed door, a
@@ -10720,10 +10720,16 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
   (`Live` and `Ended`) whose timers (the held poll, the lease, the forget) are named
   timeouts, and `remote/feed_directory`, the one place a token is found among the
   feeds of the sender's spawner and the one place the cap of eight per spawner is
-  counted. A feed attaches with `gateway.attach_authenticated_flushing` giving its
+  counted, from reservation until the feed's process exits, an ended feed
+  included. A feed attaches with `gateway.attach_authenticated_flushing` giving its
   own pid as the socket, so the gateway drops the attachment when the feed exits.
-  The permit is reserved by the process that answers the attach and transferred by
-  the feed's own process (`top_host.Context.admit`).
+  The permit, of class `root.Feed` and charged `remote_feed.feed_charge_bytes`
+  (15,466,496, so eight feeds take under a quarter of the default budget), is
+  reserved by the process that answers the attach and transferred by the feed's
+  own process (`top_host.Context.admit`). A feed watches the attach's process until
+  `feed_host.registered`, so a cancelled attach leaves no uncounted feed. The
+  feed's gateway connection id is its own random id, never its token. A piece that
+  does not end its frame carries at least `remote_feed.min_piece_bytes`.
 - **The door** is `gateway.PeerDoor(spawner, Decides | Watches)`. `gateway.attached`
   does not count a feed that `Watches`, so a refused call in a session whose
   spawner has no `approval_ceiling` settles in band, and one whose spawner has a

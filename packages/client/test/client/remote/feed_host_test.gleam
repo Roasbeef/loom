@@ -418,6 +418,22 @@ fn command_text(id: Int, command: protocol.Command) -> String {
   protocol.encode_command(protocol.CommandEnvelope(id:, command:))
 }
 
+/// A prompt of about 450,000 bytes, which takes two pieces because the box
+/// refuses a piece shorter than `min_piece_bytes` that does not end its frame.
+fn big_prompt(id: Int) -> String {
+  command_text(id, protocol.Prompt("main", string.repeat("x", 450_000)))
+}
+
+/// The first piece a sender sends of a frame that takes two.
+fn head_of(n: Int, text: String) -> remote_feed.Piece {
+  halves(n, text, remote_feed.min_piece_bytes).0
+}
+
+/// The last piece of a frame that takes two.
+fn tail_of(n: Int, text: String) -> remote_feed.Piece {
+  halves(n, text, remote_feed.min_piece_bytes).1
+}
+
 fn subscribe(rig: Rig) -> String {
   command_text(1, protocol.Subscribe(rig.session, None))
 }
@@ -638,23 +654,47 @@ pub fn an_attach_beyond_the_feed_cap_is_refused_and_leaves_the_others_test() {
 
 // --- the lane's frames reach the gateway -------------------------------------------
 
-pub fn a_subscribe_sent_in_two_pieces_is_answered_in_a_poll_test() {
+pub fn a_prompt_sent_in_two_pieces_is_answered_in_a_poll_test() {
   let rig = rig("pieces", deciding, remote_feed.lease_ms)
-  let attached = attach(rig)
-  let #(head, tail) = halves(1, subscribe(rig), 10)
-  let assert Ok(Nil) = send_piece(rig, attached, head)
+  let #(attached, after) = subscribed(rig)
+  let prompt = big_prompt(2)
+  let assert Ok(Nil) = send_piece(rig, attached, head_of(2, prompt))
     as "the first piece is admitted"
 
-  // Half a frame is not a frame, so the gateway has been told nothing.
-  let assert Ok(remote_feed.Answer(frames: [], ended: None, ..)) =
-    poll_feed(rig, attached, 0, 0)
-    as "nothing is queued yet"
-  let assert Ok(Nil) = send_piece(rig, attached, tail)
+  // Half a frame is not a frame, so the gateway has been told nothing of it.
+  let assert Ok(remote_feed.Answer(frames:, ended: None, ..)) =
+    poll_feed(rig, attached, after, 0)
+    as "the feed answers"
+  assert !list.any(frames, reply_to(2))
+  assert prompts(rig) == []
+  let assert Ok(Nil) = send_piece(rig, attached, tail_of(2, prompt))
     as "the last piece is admitted"
-  let #(frames, after) = until(rig, attached, 0, [], reply_to(1))
-  assert after == list.length(frames)
-  let assert Ok(_) = protocol.decode_event(answer_to(frames, 1))
+  let #(frames, _after) = until(rig, attached, after, [], reply_to(2))
+  let assert Ok(_) = protocol.decode_event(answer_to(frames, 2))
     as "the reply is the gateway's own frame"
+}
+
+pub fn a_frame_may_not_arrive_a_byte_at_a_time_test() {
+  let rig = rig("one-byte", deciding, remote_feed.lease_ms)
+  let attached = attach(rig)
+
+  // The decoder refuses the first one-byte piece, so the box holds none.
+  let tiny =
+    remote_feed.Piece(feed: "", n: 1, offset: 0, total: 450_000, text: "x")
+  let assert Error(peer_client.Unreadable) =
+    result.map(
+      call(
+        rig,
+        remote_feed.send_revision,
+        remote_feed.SendRequest(remote_feed.Piece(..tiny, feed: attached.feed)),
+      ),
+      fn(_) { Nil },
+    )
+    as "a one-byte piece that does not end its frame is malformed"
+  let assert Ok(remote_feed.Answer(ended: None, ..)) =
+    poll_feed(rig, attached, 0, 0)
+    as "the feed is untouched"
+  Nil
 }
 
 pub fn a_piece_resent_after_a_lost_answer_reaches_the_gateway_once_test() {
@@ -829,12 +869,20 @@ pub fn a_forget_of_everything_is_refused_and_a_forget_of_one_grant_redraws_the_b
 pub fn a_piece_out_of_order_or_of_another_frame_is_refused_and_changes_nothing_test() {
   let rig = rig("order", deciding, remote_feed.lease_ms)
   let attached = attach(rig)
-  let #(head, tail) = halves(1, subscribe(rig), 10)
-  let assert Ok(Nil) = send_piece(rig, attached, head) as "the head is admitted"
+  let prompt = big_prompt(1)
+  let tail = tail_of(1, prompt)
+  let assert Ok(Nil) = send_piece(rig, attached, head_of(1, prompt))
+    as "the head is admitted"
+
+  // A full piece that skips ahead of what was admitted is out of order.
   assert result.is_error(send_piece(
     rig,
     attached,
-    remote_feed.Piece(..tail, offset: 12, text: "x"),
+    remote_feed.Piece(
+      ..tail,
+      offset: tail.offset + 50_000,
+      text: string.repeat("x", remote_feed.min_piece_bytes),
+    ),
   ))
   assert result.is_error(send_piece(rig, attached, whole(3, subscribe(rig))))
 
@@ -884,7 +932,7 @@ pub fn a_second_concurrent_poll_supersedes_the_first_test() {
     })
 
   // The first poll is held, so asking again releases it at once with no frames.
-  let assert poll.Answered(_) =
+  let assert poll.Answered(released) =
     poll.until(within: 3000, every: 25, attempt: fn() {
       case process.receive(answers, 0) {
         Ok(first) -> poll.Done(first)
@@ -895,6 +943,7 @@ pub fn a_second_concurrent_poll_supersedes_the_first_test() {
       }
     })
     as "the held poll is released by a later one"
+  assert released == Ok(remote_feed.Answer(first: 1, frames: [], ended: None))
   let assert Ok(remote_feed.Answer(ended: None, ..)) =
     poll_feed(rig, attached, 0, 0)
     as "the feed is untouched"
@@ -903,17 +952,22 @@ pub fn a_second_concurrent_poll_supersedes_the_first_test() {
 
 // --- the feed ends --------------------------------------------------------------
 
+// The lease the lease tests run under, in milliseconds. It is long enough that a
+// loaded machine does not lapse a feed a test polls, and short enough to wait for.
+const short_lease_ms = 2000
+
 pub fn a_feed_nobody_polls_lapses_and_drops_a_partial_frame_test() {
-  let rig = rig("lapse", deciding, 400)
+  let rig = rig("lapse", deciding, short_lease_ms)
   let attached = attach(rig)
   let other = attach(rig)
-  let #(head, tail) = halves(1, subscribe(rig), 10)
-  let assert Ok(Nil) = send_piece(rig, attached, head) as "the head is admitted"
+  let prompt = big_prompt(1)
+  let assert Ok(Nil) = send_piece(rig, attached, head_of(1, prompt))
+    as "the head is admitted"
   assert gateway.attached(rig.harness.hub) == rig.baseline + 2
 
   // Only the other feed is polled, so only the first one lapses.
   let assert poll.Answered(_) =
-    poll.until(within: 5000, every: 50, attempt: fn() {
+    poll.until(within: 10_000, every: 100, attempt: fn() {
       let assert Ok(remote_feed.Answer(ended: None, ..)) =
         poll_feed(rig, other, 0, 0)
         as "the polled feed stays live"
@@ -927,15 +981,94 @@ pub fn a_feed_nobody_polls_lapses_and_drops_a_partial_frame_test() {
     poll_feed(rig, attached, 0, 0)
     as "a late poll learns why"
   assert why == remote_top.FeedLapsed
-  assert send_piece(rig, attached, tail)
+  assert send_piece(rig, attached, tail_of(1, prompt))
     == Error(remote_top.FeedEnded(remote_top.FeedLapsed))
+}
+
+pub fn a_polled_feed_outlives_the_lease_and_an_unpolled_one_lapses_test() {
+  let rig = rig("boundary", deciding, short_lease_ms)
+  let attached = attach(rig)
+
+  // Each poll renews the lease, so polling every half lease for one and a half
+  // leases leaves the feed live.
+  list.each(numbers(1, 6), fn(_) {
+    let assert Ok(remote_feed.Answer(ended: None, ..)) =
+      poll_feed(rig, attached, 0, 0)
+      as "a polled feed is live past its first lease"
+    process.sleep(short_lease_ms / 2)
+  })
+
+  // Nobody polls any more, so a whole lease later it lapses. The gateway's count
+  // is what shows it without a poll, which would renew the lease.
+  let assert poll.Answered(_) =
+    poll.until(within: 10_000, every: 100, attempt: fn() {
+      case gateway.attached(rig.harness.hub) == rig.baseline {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "an unpolled feed lapses and detaches"
+  let assert Ok(remote_feed.Answer(ended: Some(why), ..)) =
+    poll_feed(rig, attached, 0, 0)
+    as "a late poll learns why"
+  assert why == remote_top.FeedLapsed
+}
+
+pub fn an_ended_feed_still_counts_toward_the_cap_until_it_is_forgotten_test() {
+  let rig = rig("ended-cap", deciding, 3000)
+  let feeds = list.map(numbers(1, remote_feed.max_feeds), fn(_) { attach(rig) })
+  let assert [lapsing, ..others] = feeds
+
+  // Only the others are polled, so the first lapses, and then holds its place
+  // while the box keeps it for a late poll.
+  let assert poll.Answered(_) =
+    poll.until(within: 15_000, every: 200, attempt: fn() {
+      list.each(others, fn(feed) {
+        let assert Ok(remote_feed.Answer(ended: None, ..)) =
+          poll_feed(rig, feed, 0, 0)
+          as "the polled feeds stay live"
+        Nil
+      })
+      case
+        gateway.attached(rig.harness.hub) == rig.baseline + list.length(others)
+      {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the unpolled feed ends and detaches"
+  let assert Ok(remote_feed.Answer(ended: Some(_), ..)) =
+    poll_feed(rig, lapsing, 0, 0)
+    as "a late poll learns that it ended"
+  assert attach_as(rig, rig.session)
+    == Error(remote_top.CapReached(
+      cap: remote_top.MaxFeeds,
+      limit: remote_feed.max_feeds,
+    ))
+
+  // Polling the others keeps them live until the ended feed is forgotten, and
+  // then its place is free.
+  let assert poll.Answered(_) =
+    poll.until(within: 15_000, every: 200, attempt: fn() {
+      list.each(others, fn(feed) {
+        let assert Ok(remote_feed.Answer(ended: None, ..)) =
+          poll_feed(rig, feed, 0, 0)
+          as "the polled feeds stay live"
+        Nil
+      })
+      case attach_as(rig, rig.session) {
+        Ok(_) -> poll.Done(Nil)
+        Error(_) -> poll.Retry
+      }
+    })
+    as "the ended feed's place is free once it is forgotten"
 }
 
 pub fn a_detach_with_a_partial_frame_held_drops_it_and_frees_the_attachment_test() {
   let rig = rig("detach", deciding, remote_feed.lease_ms)
   let attached = attach(rig)
-  let #(head, _tail) = halves(1, subscribe(rig), 10)
-  let assert Ok(Nil) = send_piece(rig, attached, head) as "the head is admitted"
+  let assert Ok(Nil) = send_piece(rig, attached, head_of(1, big_prompt(1)))
+    as "the head is admitted"
   detach(rig, attached)
   let assert poll.Answered(_) =
     poll.until(within: 5000, every: 20, attempt: fn() {
@@ -949,26 +1082,20 @@ pub fn a_detach_with_a_partial_frame_held_drops_it_and_frees_the_attachment_test
   detach(rig, attached)
 }
 
-pub fn a_pause_shorter_than_the_lease_loses_no_frame_test() {
-  let rig = rig("pause", deciding, remote_feed.lease_ms)
+pub fn a_pause_in_polling_shorter_than_the_lease_loses_no_frame_test() {
+  let rig = rig("pause", deciding, short_lease_ms)
   let attached = attach(rig)
   let assert Ok(Nil) = send_piece(rig, attached, whole(1, subscribe(rig)))
     as "the subscribe is admitted"
 
-  // Nobody polls while the gateway answers and pushes, and the first poll
-  // after the pause carries everything from the first frame on.
-  let assert poll.Answered(_) =
-    poll.until(within: 5000, every: 20, attempt: fn() {
-      case poll_feed(rig, attached, 0, 0) {
-        Ok(remote_feed.Answer(frames: [_, ..] as frames, first: 1, ..)) ->
-          case list.any(frames, reply_to(1)) {
-            True -> poll.Done(Nil)
-            False -> poll.Retry
-          }
-        _ -> poll.Retry
-      }
-    })
-    as "the frames are all still there"
+  // Nobody polls for a third of the lease while the gateway answers and pushes.
+  process.sleep(short_lease_ms / 3)
+
+  // The first poll after the pause carries everything from the first frame on.
+  let assert Ok(remote_feed.Answer(frames:, first: 1, ended: None)) =
+    poll_feed(rig, attached, 0, 1000)
+    as "the frames written during the pause are all still there"
+  assert list.any(frames, reply_to(1))
 }
 
 pub fn a_stopped_session_ends_its_feed_stopped_test() {
@@ -980,7 +1107,7 @@ pub fn a_stopped_session_ends_its_feed_stopped_test() {
     as "the gateway runs"
   process.unlink(gateway_pid)
   process.kill(gateway_pid)
-  let assert poll.Answered(_) =
+  let assert poll.Answered(why) =
     poll.until(within: 5000, every: 25, attempt: fn() {
       case poll_feed(rig, attached, 0, 0) {
         Ok(remote_feed.Answer(ended: Some(why), ..)) -> poll.Done(why)
@@ -988,7 +1115,24 @@ pub fn a_stopped_session_ends_its_feed_stopped_test() {
       }
     })
     as "the feed ends"
-  Nil
+  assert why == remote_top.FeedStopped
+}
+
+pub fn the_feeds_token_is_in_no_pushed_frame_and_no_roster_entry_test() {
+  let rig = rig("token-secret", deciding, remote_feed.lease_ms)
+  let attached = attach(rig)
+  let assert Ok(Nil) = send_piece(rig, attached, whole(1, subscribe(rig)))
+    as "the subscribe is admitted"
+
+  // The presence roster and the attachment event name the feed's connection to
+  // every subscriber, so they are read, and none holds the token that names the
+  // feed to the box.
+  let #(frames, _after) =
+    until(rig, attached, 0, [], fn(frame) {
+      string.contains(frame, "\"presence\"")
+    })
+  assert list.any(frames, fn(frame) { string.contains(frame, "feed-") })
+  assert !list.any(frames, fn(frame) { string.contains(frame, attached.feed) })
 }
 
 // --- whether a refused call waits --------------------------------------------------
