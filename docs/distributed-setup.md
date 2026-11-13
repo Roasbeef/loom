@@ -1414,6 +1414,55 @@ run by hand.
   place as a move with no fault. That variable belongs to the test; an operator
   never sets it.
 
+**A session that works in a directory.** **Verified** by hand for the clean path
+(the live drive of 2026-11-13 on commit `024afdadf`, three daemons under separate
+homes on the loopback address and a scripted model provider; the record, with
+the defects it found, is in [docs/review/distributed-1137.md](review/distributed-1137.md)).
+It needs four things beyond the tables above, and the drive failed or stalled
+without each of them:
+
+- The source's row for the destination names the place. The keys go in the
+  source's table, not the receiver's:
+
+  ```toml
+  # On orchestrator alpha, the one that holds the session.
+  [orchestrators.bravo]
+  node = "bravo@10.0.0.4"
+  checkout_executor = "box"
+  checkout_workspace = "proj"
+  ```
+
+- The executor's workspace is in `worktree` mode and its `root` is a primary
+  checkout. `loom distribution provision` writes a `shared` workspace, so add
+  `mode = "worktree"` to `[workspaces.proj]` by hand. Get the name right before
+  the first move: an executor binds a session's scope to the first workspace it is
+  asked for, and a move that was refused or stalled over a wrong name cannot be
+  retried with a right one (the review's finding 1).
+- The source has a global Git identity, in the `~/.gitconfig` of the user that
+  runs `loomd`. Without one, the capture of a directory with uncommitted work is
+  refused.
+- A `loomd` started from a checkout (`bin/loomd` from `make server-shipment`)
+  does not find the `loom-exec` built beside it. It takes the first `loom-exec` on
+  `PATH`, and a helper installed elsewhere failed the capture. Start every daemon
+  with `--helper <checkout>/bin/loom-exec`.
+
+`loom sessions move <id> --to bravo` prints `moving <id> to bravo (operation
+<id>)` and returns; a small checkout was on the executor and open on the receiver
+in about four seconds. How the move ended is in the source daemon's log
+(`daemon.move_finished` or `daemon.move_aborted` with the reason), and the command
+shows nothing more. On the executor the branch `loom/<session>` holds the
+directory's history and one `Working snapshot` commit with the uncommitted and
+untracked files; the receiver's first open makes the tree, which is removed again
+when the session stops. The directory on the source is not changed, the session
+there answers `not_owner`, and the first `git status` on the box is clean. The
+session's original branch name does not travel. Two limits to know: `--abandon` is
+refused in a deployment without a session directory (`not_movable: request
+refused`), so a stalled move there ends only by being fixed or finished; and a move
+that is aborted after the checkout landed and then asked for again, with the
+uncommitted work discarded on the source in between, finishes with the earlier
+snapshot on the executor (the review's finding 2). A repository whose attributes
+name a filter driver is refused by the capture.
+
 **When a move does not finish.** The source retries a move that cannot proceed and
 keeps it as `moving` in the meantime, so the session is not lost and is not served
 by two orchestrators. The reason is in the source daemon's log as
