@@ -1493,9 +1493,12 @@ a session it no longer serves; the receiver's owner grants access on the receive
 Nothing follows a client from the source to the receiver, so a client that held
 the session open reconnects to the receiver and catches up from there.
 
-The source keeps a tombstone. The session stays in its listing, shown as saved, and
-opening it, archiving it, restoring it or deleting it names the new owner. The
-tombstone is what stops a late message of the move from bringing the session back,
+The source keeps a tombstone. `sessions.get` and `sessions.list` still carry the
+record, saved, with a `moved` member naming the new owner, and opening it, archiving
+it, restoring it or deleting it names the new owner. The terminal's `loom sessions
+list` and the web home do not draw the tombstone as a session of the source: the new
+owner lists it, and `loom sessions list --all` shows it under that orchestrator's
+section (protocol-change/085). The tombstone is what stops a late message of the move from bringing the session back,
 and what lets the session return to the source later: moving it from the receiver
 back to the source is a new move, and the source takes it in over the tombstone.
 If you remove `[distribution]` from a daemon while a move is in flight, the move

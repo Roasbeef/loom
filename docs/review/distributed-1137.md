@@ -358,7 +358,14 @@ environment or file.
     `packages/session_view/src/session_view/move_candidates.gleam:191`.
 12. **LOW. The tombstone is not shown as a local row.** The documentation says
     the source lists a moved session as saved; `loom sessions list --all` lists
-    it only under the other orchestrator.
+    it only under the other orchestrator. *Corrected in the documentation, not
+    the code.* The behaviour is the documented one in protocol-change/085 and
+    `docs/client-protocol.md` (3.5): a record that carries `moved` is the
+    tombstone, and the terminal's page decoder (`tui/daemon/protocol.listed`) and
+    the web home leave it out, with tests
+    (`daemon_move_test`, `the_web_listing_and_the_admin_drawer_...`). The stale
+    sentence was in `docs/distributed-setup.md`, which now says what the wire
+    carries and what the clients draw.
 13. **LOW. Retention.** The source keeps the 200 MiB bundle after a successful
     move, and the executor repository keeps a `refs/loom/in/<hash8>` ref for every
     state, including a superseded snapshot. The seven-day sweep covers the bundle
