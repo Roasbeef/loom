@@ -14,6 +14,14 @@
 // sends frame n + 1 only after every piece of frame n was admitted.
 //
 // An answer or a refusal that says the feed ended ends the adapter and the lane.
+// An answer that reports the feed ended delivers none of its frames, whatever it
+// carries: an honest box sends none, and a box that sends some is not believed.
+//
+// Showing. The adapter keeps `down`, which is set when a poll has no answer
+// after `PollTimeout` ticks and cleared by an answer to the poll in flight. When
+// the lane closes the page because it failed, the adapter shows waiting if
+// `down` is set and a failure otherwise, so a page whose link is only down never
+// shows a failure.
 machine UiFeed {
   var link: machine;
   var lane: machine;
@@ -27,6 +35,7 @@ machine UiFeed {
   var curOff: int;
   var closed: int;
   var dead: int;
+  var down: int;
 
   start state Running {
     entry (l: machine) {
@@ -45,6 +54,16 @@ machine UiFeed {
       closed = 1;
       send link, eToBox, (kind = RQ_DETACH, pollId = 0, after = 0, wait = 0, n = 0, offset = 0, total = 0, cmd = CMD_FORWARD);
       send link, eToBox, (kind = RQ_DETACH, pollId = 0, after = 0, wait = 0, n = 0, offset = 0, total = 0, cmd = CMD_FORWARD);
+    }
+
+    // The lane failed and the page is closed. What the page shows depends on
+    // whether the link is down.
+    on eLaneShut do {
+      if (dead == 0 && closed == 0) {
+        closed = 1;
+        announce eShown, showKind();
+        send link, eToBox, (kind = RQ_DETACH, pollId = 0, after = 0, wait = 0, n = 0, offset = 0, total = 0, cmd = CMD_FORWARD);
+      }
     }
 
     on eLaneSubmit do (o: tOut) {
@@ -72,6 +91,7 @@ machine UiFeed {
         if (pollOut == 1) {
           pollAge = pollAge + 1;
           if (pollAge >= PollTimeout()) {
+            down = 1;
             sendPoll();
           }
         }
@@ -116,20 +136,26 @@ machine UiFeed {
       return;
     }
     pollOut = 0;
+    down = 0;
     if (m.ended != EN_NONE) {
       end = 1;
     }
-    foreach (f in m.frames) {
-      if (dead == 0 && f.n > after) {
-        if (f.n == after + 1) {
-          after = f.n;
-          announce eDelivered, (gid = f.gid, endAnswer = end);
-          send lane, eDeliver, f;
-        } else {
-          announce eGapObserved;
-          finish(EN_NONE);
+    // An answer that reports the feed ended delivers nothing.
+    if (end == 0) {
+      foreach (f in m.frames) {
+        if (dead == 0 && f.n > after) {
+          if (f.n == after + 1) {
+            after = f.n;
+            announce eDelivered, (gid = f.gid, endAnswer = end);
+            send lane, eDeliver, f;
+          } else {
+            announce eGapObserved;
+            finish(EN_NONE);
+          }
         }
       }
+    } else if (sizeof(m.frames) > 0) {
+      announce eDroppedEnded;
     }
     if (dead == 1) {
       return;
@@ -151,6 +177,13 @@ machine UiFeed {
       }
       pump();
     }
+  }
+
+  fun showKind(): tShown {
+    if (down == 1) {
+      return SH_WAITING;
+    }
+    return SH_FAILED;
   }
 
   fun finish(kind: tEnded) {

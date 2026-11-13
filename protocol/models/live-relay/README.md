@@ -21,14 +21,36 @@ larger than the byte bound is admitted to an empty queue.
 The box half is built and the model follows it: `FeedHost` is
 `client/remote/feed_host` with its pure parts `feed_queue`, `feed_pieces` and
 `feed_filter`, and the laptop's lease, wait and cursor rules are the proposal's.
-The laptop half, `ui_feed`, is not built when this model is written, so `UiFeed`
-and `Lane` are modelled from the text of protocol-change/108 ("The laptop's socket
-adapter" and "When the link drops"). Slice 3 builds `client/daemon/ui_feed` and must
-keep this model and the code in agreement: a rule the code gives up, such as the
-cursor that drops a frame numbered `after` or less or the piece resent only when its
-answer was lost, fails a property here, and a rule the code adds must be added here
-before the code relies on it. The tests that restate the box's rules over the real
-modules are `feed_queue_test` and `feed_pieces_test`, with fixed seeds.
+The laptop half is built too (slice 3). `UiFeed` is `client/daemon/ui_feed`, whose
+every decision about a poll is the pure `client/remote/feed_cursor` and whose every
+decision about a send is the pure `client/remote/feed_outbox`; `Lane` is the page's
+session channel. A rule the code gives up, such as the cursor that drops a frame
+numbered `after` or less or the piece resent only when its answer was lost, fails a
+property here, and a rule the code adds must be added here before the code relies on
+it. The tests that restate the rules over the real modules are `feed_queue_test`,
+`feed_pieces_test`, `feed_cursor_test` and `feed_outbox_test`, with fixed seeds.
+
+### The rules `ui_feed` follows
+
+These were written down before the process, and each is one of `UiFeed.p`'s or was
+added to it with a mutant and a probe.
+
+| Rule | In the model | In the code |
+|---|---|---|
+| The cursor is the number of the last frame handed to the lane. A poll sends it as `after`. | `after`, `sendPoll` | `feed_cursor.ask` |
+| It advances one frame at a time, only past a frame handed on, and never backward. | `onPoll` | `feed_cursor.answered`, `feed_cursor_test` rule `monotone` |
+| Only an answer to the poll in flight is read. Any other answer, and a second copy, is dropped. | `m.pollId != pollId` | `feed_cursor.heard` (`Stray`) |
+| A frame numbered `after` or less is dropped. The first frame left must be `after + 1`. | `f.n > after`, `f.n == after + 1` | `feed_cursor.answered` |
+| A frame numbered past `after + 1` is a gap: nothing of the answer is handed on and the feed is over. | `eGapObserved`, `finish` | `Broken(Skipped)` |
+| **An answer that reports the feed ended hands on no frame, whatever it carries.** | `end == 0` (added) | `Over` hands on nothing |
+| An answer or a refusal that says the feed ended ends the adapter and the lane. | `finish(m.ended)` | `Over(why)` |
+| A poll with no answer is asked again with the same `after`. | `PollTimeout` | `Retry(pause_ms)` |
+| **A page whose last poll went unanswered shows waiting, and one that heard the box last shows a failure, when the lane closes it.** | `down`, `eLaneShut`, `eShown` (added) | `Shut` ends with `PeerUnreachable` when `silent_for > 0`, else `ConnectionFailed` |
+| One send is in flight. A piece with no answer is sent again unchanged, and frame `n + 1` is sent after every piece of `n` was admitted. | `sendPiece`, `onSend` | `feed_outbox.take`, `admitted`, `unanswered` |
+| A lapse at any point is a fresh attach and a redraw, not a continuation. | not modelled: a new feed | `Over(FeedLapsed)` is `ConnectionFailed`, which the browser reconnects from |
+
+The two bold rows are the ones slice 3 added to the model, with `DownShowsWaiting`
+and `NothingAfterEnd`'s hostile case, each with a mutant (`M7`, `M6`) and a probe.
 
 One difference is deliberate. The proposal admits a single frame larger than the byte
 bound to an empty queue, and `tcOversize` models it. The code carries a frame only if
@@ -69,6 +91,7 @@ safety properties under adversarial timing.
 | `LaneFrameOnceWhole` | Every frame the lane transmitted reaches the gateway at most once and whole, with every piece admitted. |
 | `NothingAfterEnd` | After a feed ends no frame of it reaches a lane. This is checked at the two places the end is visible: the feed host sends no frame once it has ended, and `ui_feed` delivers no frame from an answer that reports the feed ended. |
 | `RelayedDoorOnly` | A decision reaches the hub only through the relayed door, and the feed host never calls the local door. A command outside the forwarding rows never reaches the gateway as a frame. The box owner's own approve uses the local door and is allowed. |
+| `DownShowsWaiting` | A page whose link is cut when the lane closes it shows the waiting state and never a failure. The cut is observed at the link, not in the adapter. |
 | `ShortPartitionLosesNothing` | Liveness. A case that announces a partition shorter than the lease, with the lane deadline above the longest recovery, must end with every written frame delivered. The monitor is hot while a written frame is undelivered, so a run that ends there fails. A lapse or a lane failure in such a run is reported, not excused. |
 
 Frames of an answer the box sent before the feed ended may still arrive at the
@@ -93,6 +116,9 @@ bounded.
 | `tcLeaseLapse` | A partition longer than the lease and the ended token's second lease, so the poll that gets through is refused. |
 | `tcStop`, `tcRevoke`, `tcDetach` | The session stops, access is revoked, and the page detaches twice, each with traffic in flight. |
 | `tcApprovals`, `tcPieces` | Approvals and two-piece frames through a link that loses, duplicates and delays. |
+| `tcLongPartition` | A partition longer than the lane's deadline, begun as the lane sends. The lane fails with the link cut, and the page must show waiting. |
+| `tcFastLane` | A lane whose deadline is shorter than a delayed reply, over a link that is up. The page shows a failure, and `DownShowsWaiting` holds. |
+| `tcHostileEnd` | A box that is not honest answers the late poll with the frames it had as well as its ending. The adapter delivers none. |
 | `tcOnly*` | One spec each, for `mutate.py`. |
 | `tcProbe*` | Reachability probes. Each must fail. |
 
@@ -103,7 +129,8 @@ only meaningful if the model reaches. They cover a lapse by the bound, by bytes
 and by the lease, an oversized frame admitted to an empty queue, a superseded poll,
 a repeated piece answered again, a forgotten token refused, a stopped, revoked and
 detached feed, a decision through the relayed door, a two-piece frame reaching the
-gateway, a lane that failed at its deadline, and a message lost to a partition.
+gateway, a lane that failed at its deadline, a message lost to a partition, a page shown
+waiting, a page shown a failure and the frames of an ended answer dropped.
 
 ## Mutants
 
@@ -117,6 +144,8 @@ that names the rule, and requires the case to fail on that rule.
 | A lapse keeps the queue and the poll that learns of it is answered with the frames | `NothingAfterEnd` |
 | The feed host sends an `approve` to the hub's local door | `RelayedDoorOnly` |
 | The lease is shorter than a partition the lane survives | `ShortPartitionLosesNothing` |
+| The adapter delivers the frames of an answer that reports the feed ended, from a box that sends them | `NothingAfterEnd` |
+| The adapter shows a failure when the lane closes a page whose link is down | `DownShowsWaiting` |
 
 ## What is not modelled
 
@@ -142,6 +171,10 @@ that names the rule, and requires the case to fail on that rule.
   frame, and what the gateway does with an escalation record.
 - `gateway.attached` counting a `PeerDoor` only when it decides.
 - Strands, subagents, the advisor and remote children.
+- The endings a box gives (`stopped`, `revoked`) beyond the fact that each ends the
+  adapter, and the attach that follows an ending, which is a new feed. A refusal of
+  the attach at the box's feed cap is the page's waiting state, retried by the
+  browser, and is not modelled either.
 - The lane's 5 s refresh and its other deadlines. The lane has one deadline, for
   the reply to its one frame in flight.
 - The history window, snapshot transfers and fragment rate.

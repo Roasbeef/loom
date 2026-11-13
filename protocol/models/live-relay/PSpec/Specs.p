@@ -95,6 +95,28 @@ spec RelayedDoorOnly observes eFeedStarted, eDecided, eGwReceived {
   }
 }
 
+// A link that is only down shows waiting and never a failure. When the adapter
+// closes the page because the lane failed, a page whose link is cut at that
+// moment must show the waiting state. The partition is observed at the link, not
+// in the adapter, so the adapter cannot excuse itself.
+spec DownShowsWaiting observes eCut, eHealed, eShown {
+  var cut: int;
+
+  start state Watching {
+    on eCut do {
+      cut = 1;
+    }
+
+    on eHealed do {
+      cut = 0;
+    }
+
+    on eShown do (k: tShown) {
+      assert !(cut == 1 && k == SH_FAILED), "the page showed a failure for a link that was only down";
+    }
+  }
+}
+
 // Liveness. The scenario's premise is a partition shorter than the lease, during
 // which no lane deadline passes: the test case announces it with
 // `eShortPartition` and sets the lane's deadline above the longest recovery. Given

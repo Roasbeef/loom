@@ -57,7 +57,7 @@ MUTATIONS = {
      "    queue = default(seq[tFrame]);\n    qbytes = 0;\n    recvOff = 0;\n",
      "    recvOff = 0;\n"),
     ("PSrc/FeedHost.p",
-     "answerPoll(m.pollId, default(seq[tFrame]), ended);",
+     "answerPoll(m.pollId, leftover(), ended);",
      "answerPoll(m.pollId, queue, ended);")]),
 
   # An `approve` goes to the hub's relayed door. Here the feed host calls the
@@ -74,6 +74,22 @@ MUTATIONS = {
     ("PSrc/Types.p",
      "fun Lease(): int { return 10; }",
      "fun Lease(): int { return 3; }")]),
+
+  # An answer that reports the feed ended delivers no frame. The box here is not
+  # honest and answers its ending with the frames it had; the adapter that
+  # delivers them breaks the rule, and only the laptop's side can be at fault
+  # because the box's own check is blind in this case.
+  "M6-delivers-the-frames-of-an-ended-answer": ("tcOnlyHostileEnd", 4000, r"reports the feed ended", [
+    ("PSrc/UiFeed.p",
+     "    if (end == 0) {\n      foreach",
+     "    if (true) {\n      foreach")]),
+
+  # A link that is only down shows waiting. Here the adapter always shows a
+  # failure when the lane closes the page.
+  "M7-shows-a-failure-for-a-link-that-is-down": ("tcOnlyDownWaiting", 4000, r"failure for a link that was only down", [
+    ("PSrc/UiFeed.p",
+     "    if (down == 1) {\n      return SH_WAITING;\n    }\n",
+     "")]),
 }
 
 

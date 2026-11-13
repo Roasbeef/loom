@@ -22,7 +22,7 @@ type tEmit = (at: int, size: int);
 type tCmdAt = (at: int, cmd: tCmd, pieces: int);
 
 // A tick index of -1 means never.
-type tPlan = (ticks: int, settle: int, emits: seq[tEmit], cmds: seq[tCmdAt], breakAt: int, healAt: int, closeAt: int, stopAt: int, revokeAt: int, ownerAt: int, laneDeadline: int, loses: int, dups: int, delays: int, short: int);
+type tPlan = (ticks: int, settle: int, emits: seq[tEmit], cmds: seq[tCmdAt], breakAt: int, healAt: int, closeAt: int, stopAt: int, revokeAt: int, ownerAt: int, laneDeadline: int, loses: int, dups: int, delays: int, short: int, hostile: int);
 
 type tClockCfg = (plan: tPlan, gateway: machine, host: machine, link: machine, ui: machine, lane: machine);
 
@@ -150,7 +150,7 @@ machine Harness {
       var lane: machine;
       gateway = new Gateway();
       link = new Link((loses = plan.loses, dups = plan.dups, delays = plan.delays));
-      host = new FeedHost((link = link, gateway = gateway));
+      host = new FeedHost((link = link, gateway = gateway, hostile = plan.hostile));
       send gateway, eGwWire, host;
       ui = new UiFeed(link);
       lane = new Lane((ui = ui, deadline = plan.laneDeadline));

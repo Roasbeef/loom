@@ -129,3 +129,30 @@ spec ProbePartitionDropped observes eLinkDropped {
     }
   }
 }
+
+// The adapter closed the page and showed the waiting state.
+spec ProbeShownWaiting observes eShown {
+  start state Watching {
+    on eShown do (k: tShown) {
+      assert k != SH_WAITING, "witness: the page showed the waiting state";
+    }
+  }
+}
+
+// The adapter closed the page and showed a failure.
+spec ProbeShownFailed observes eShown {
+  start state Watching {
+    on eShown do (k: tShown) {
+      assert k != SH_FAILED, "witness: the page showed a failure";
+    }
+  }
+}
+
+// The adapter dropped the frames of an answer that reported the feed ended.
+spec ProbeDroppedEnded observes eDroppedEnded {
+  start state Watching {
+    on eDroppedEnded do {
+      assert false, "witness: the frames of an ended answer were dropped";
+    }
+  }
+}

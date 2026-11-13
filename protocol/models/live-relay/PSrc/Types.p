@@ -12,6 +12,10 @@ enum tCmd { CMD_FORWARD, CMD_APPROVE, CMD_FORBID }
 // same keep-then-forget treatment as the other endings.
 enum tEnded { EN_NONE, EN_LAPSED, EN_STOPPED, EN_REVOKED, EN_DETACHED }
 
+// What the page shows when the adapter closes it: a failure, or a waiting state
+// for a link that is only down.
+enum tShown { SH_FAILED, SH_WAITING }
+
 enum tFrameKind { FK_REPLY, FK_PUSH }
 enum tReqKind { RQ_POLL, RQ_SEND, RQ_DETACH }
 enum tAnsKind { AN_POLL, AN_SEND, AN_DETACH, AN_REFUSED }
@@ -76,6 +80,7 @@ event eLocalApprove: machine;
 event eLaneCmd: tLaneCmd;
 event eOpen;
 event eClose;
+event eLaneShut;
 event eBreak;
 event eHeal;
 
@@ -117,3 +122,7 @@ event eRepeatPiece;
 event eForgotten;
 event eRefusedForgotten;
 event eLinkDropped;
+event eCut;
+event eHealed;
+event eDroppedEnded;
+event eShown: tShown;

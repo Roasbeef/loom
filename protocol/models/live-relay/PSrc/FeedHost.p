@@ -27,11 +27,14 @@ machine FeedHost {
   var recvN: int;
   var recvOff: int;
   var hostGid: int;
+  var hostile: int;
+  var spare: seq[tFrame];
 
   start state Running {
-    entry (p: (link: machine, gateway: machine)) {
+    entry (p: (link: machine, gateway: machine, hostile: int)) {
       link = p.link;
       gateway = p.gateway;
+      hostile = p.hostile;
       nextNum = 1;
       recvN = 1;
       hostGid = 1000;
@@ -109,7 +112,7 @@ machine FeedHost {
       return;
     }
     if (ended != EN_NONE) {
-      answerPoll(m.pollId, default(seq[tFrame]), ended);
+      answerPoll(m.pollId, leftover(), ended);
       return;
     }
     idle = 0;
@@ -229,7 +232,7 @@ machine FeedHost {
 
   fun answerPoll(id: int, frames: seq[tFrame], kind: tEnded) {
     var he: int;
-    if (ended != EN_NONE) {
+    if (ended != EN_NONE && hostile == 0) {
       he = 1;
     }
     announce eAnswerSent, (count = sizeof(frames), hostEnded = he);
@@ -253,16 +256,28 @@ machine FeedHost {
     endFeed(EN_LAPSED);
   }
 
+  // What a box that is not honest keeps to answer with after the feed ended:
+  // the queue it had. An honest box keeps nothing, and answers no frames.
+  fun leftover(): seq[tFrame] {
+    if (hostile == 1) {
+      return spare;
+    }
+    return default(seq[tFrame]);
+  }
+
   fun endFeed(kind: tEnded) {
     ended = kind;
     endedAge = 0;
+    if (hostile == 1) {
+      spare = queue;
+    }
     queue = default(seq[tFrame]);
     qbytes = 0;
     recvOff = 0;
     announce eFeedEnded, kind;
     if (held == 1) {
       held = 0;
-      answerPoll(heldId, default(seq[tFrame]), kind);
+      answerPoll(heldId, leftover(), kind);
     }
   }
 }
