@@ -333,3 +333,29 @@ pub fn counts_read_before_the_turn_miss_a_session_that_became_resident_test() {
   assert ordered == ["e0", "e1"]
   release(directory, second)
 }
+
+// The rows a claim counts resident sessions from come from the registry's
+// running slots, not from a walk of the catalogue, so the turn is bounded by the
+// daemon's session limit. Fifty saved sessions and two running ones hand the
+// counting function two rows.
+pub fn the_resident_rows_are_the_running_sessions_and_not_the_catalogue_test() {
+  let #(registry, store, directory) = start()
+  let _saved = held_catalogue.registered_n(store, directory, "e0", 50)
+  let running = building(registry, store, directory, 2)
+  list.each(running, release(directory, _))
+  list.each(running, resident(registry, _))
+  let seen = process.new_subject()
+  let _ =
+    manager.claim_placement(
+      registry,
+      "none",
+      fn(rows) {
+        process.send(seen, rows)
+        dict.new()
+      },
+      fn(_held) { ["e0"] },
+    )
+  let assert Ok(Ok(rows)) = process.receive(seen, 1000)
+    as "the counting function ran in the registry's turn"
+  assert list.length(rows) == 2
+}

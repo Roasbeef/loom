@@ -1597,9 +1597,10 @@ pub fn seed_executor(
 /// what order, and claims the first for the session.
 ///
 /// `resident` turns the registry's own rows into how many open scopes this
-/// orchestrator holds on each executor by name. The registry reads every
-/// registration with its status and move row in the turn, calls `resident` on
-/// them (a pure function: it must not call the registry), adds one for each
+/// orchestrator holds on each executor by name. The registry reads the rows of
+/// its running sessions, with their status and move row, in the turn, and calls
+/// `resident` on them (a pure function: it must not call the registry). The read
+/// is bounded by the daemon's session limit and never walks the catalogue. It adds one for each
 /// other session that is still being built and has claimed that executor, calls
 /// `choose` with the sum, and keeps the head of its answer as this session's
 /// claim. The rows are read in the same turn as the claims, so a session whose
@@ -1613,7 +1614,8 @@ pub fn seed_executor(
 /// (`seed_executor`), and it stops counting by itself once the session is
 /// resident, failed or removed. A second call for the same session replaces its
 /// claim and never adds to it. A registry that does not answer in five seconds
-/// leaves the session unclaimed and `choose` is applied to `resident` alone.
+/// leaves the session unclaimed, and `choose` is applied to an empty count, so the
+/// pool is tried in its listed order.
 ///
 /// ## Examples
 ///
@@ -4700,34 +4702,39 @@ fn remote_registrations_in(
   |> result.map_error(Catalogue)
 }
 
-// Every registration with its status and move row, read in the registry's own
-// turn for the resident counts of a placement claim. Archived sessions are not
-// in the pages, as they are not in `Page`. A catalogue that cannot be read is
-// `Error(Nil)`, which the counting function reads as no information.
+// The sessions that are resident, with their registration, status and move row,
+// read in the registry's own turn for the resident counts of a placement claim.
+// Only a running slot is resident, so the rows come from `book.slots` and one
+// read of the catalogue for each, not from a walk of every registration: the
+// turn is bounded by the daemon's session limit (`Book.limit`), whatever the
+// catalogue holds. A catalogue that cannot be read is `Error(Nil)`, which the
+// counting function reads as no information.
 /// Reads the rows a placement claim counts resident sessions from.
 fn placed_rows(
   book: Book(instance),
 ) -> Result(List(#(View, catalogue.Custody)), Nil) {
-  use records <- result.try(
-    all_pages(book.catalogue, catalogue.page, "", [])
-    |> result.replace_error(Nil),
-  )
-  use rows <- result.map(
-    catalogue.custodies(book.catalogue) |> result.replace_error(Nil),
-  )
-  let moves = dict.from_list(rows)
-  list.map(records, fn(record) {
-    #(
-      View(record, status(book, record)),
-      result.unwrap(dict.get(moves, record.id), catalogue.Resident),
+  dict.to_list(book.slots)
+  |> list.filter_map(fn(entry) {
+    case entry.1.phase {
+      Running(_) -> Ok(entry.0)
+      WaitingForDomain | Building | Closing | Blocked(_) -> Error(Nil)
+    }
+  })
+  |> list.try_map(fn(id) {
+    use record <- result.try(
+      catalogue.get(book.catalogue, id) |> result.replace_error(Nil),
     )
+    use custody <- result.map(
+      catalogue.custody(book.catalogue, id) |> result.replace_error(Nil),
+    )
+    #(View(record, status(book, record)), custody)
   })
 }
 
 // The claims whose session is still being built. A slot that has become
 // resident, closing or blocked, or has been removed, no longer has a claim:
-// resident sessions are in the figure the caller reads from the catalogue, and
-// the rest hold no scope.
+// resident sessions are counted from their own rows by the same turn
+// (`placed_rows`), and the rest hold no scope.
 /// Keeps the claims of sessions whose slot is still waiting or building.
 fn live_claims(book: Book(instance)) -> Dict(String, String) {
   dict.filter(book.claims, fn(id, _executor) {

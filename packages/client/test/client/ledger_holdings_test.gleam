@@ -305,6 +305,23 @@ pub fn more_executors_than_the_port_carries_are_unknown_not_truncated_test() {
 
 // --- the open scopes a pool spreads by -----------------------------------------
 
+// The counts a pool spreads by, made from the registry's rows as a placement
+// claim makes them: every registration with its status and move row.
+fn resident_counts(
+  registry: manager.Manager(String),
+  listed: roster.Roster(executors.Executor),
+) -> dict.Dict(String, Int) {
+  let assert Ok(#(_revision, views)) = manager.page(registry, after: "")
+  let ids = list.map(views, fn(view) { view.registration.id })
+  let assert Ok(custodies) = manager.custodies(registry, ids)
+  let rows =
+    list.map(views, fn(view) {
+      let assert Ok(custody) = list.key_find(custodies, view.registration.id)
+      #(view, custody)
+    })
+  ledger_holdings.resident_in(Ok(rows), listed)
+}
+
 pub fn resident_sessions_are_counted_by_executor_name_test() {
   let #(registry, store, directory) = held_catalogue.start()
   let on_box = held_catalogue.registered_n(store, directory, "box", 2)
@@ -322,7 +339,7 @@ pub fn resident_sessions_are_counted_by_executor_name_test() {
   // placed on is absent, which the spreading reads as zero.
   let assert poll.Answered(counted) =
     poll.until(within: 2000, every: 1, attempt: fn() {
-      let counted = ledger_holdings.resident_by_name(registry, listed)
+      let counted = resident_counts(registry, listed)
       case dict.get(counted, "box") {
         Ok(1) -> poll.Done(counted)
         _ -> poll.Retry
@@ -349,7 +366,7 @@ pub fn an_unknown_tally_leaves_the_counts_empty_test() {
     )
 
   // A tally that is unknown is no information, and the pool keeps its order.
-  assert ledger_holdings.resident_by_name(registry, listed) == dict.new()
+  assert resident_counts(registry, listed) == dict.new()
 }
 
 pub fn an_empty_catalogue_has_no_placements_test() {

@@ -43,7 +43,7 @@
 //// ## Flow
 ////
 //// `collect` → `targets` → `over_distribution` → `from_catalogue` →
-//// `placements` → `resident_by_name`
+//// `placements` → `resident_in`
 ////
 //// 1. `targets` lists the orchestrators to ask: this node, if it is an active
 ////    orchestrator, and each orchestrator its pin table lists.
@@ -55,7 +55,7 @@
 //// 5. `placements` is the same walk answering a different question, how many of
 ////    the sessions placed on each executor are resident, for the report a
 ////    daemon gives of itself (protocol-change/085).
-//// 6. `resident_by_name` reads those resident counts by executor name, which a
+//// 6. `resident_in` makes those resident counts by executor name, which a
 ////    pool uses to spread the sessions it places.
 
 import client/daemon/manager.{type Manager}
@@ -339,33 +339,10 @@ fn placed_report(
   })
 }
 
-/// How many sessions of this daemon have a resident runtime on each executor,
-/// by the name the roster gives it, for a pool to spread its next session
-/// (`pools.spread`).
-///
-/// A resident session holds an open scope on its executor, so this is the number
-/// of scopes this orchestrator has open there. It is read from `placements`, so
-/// it counts the same sessions and leaves out the same ones. An executor with no
-/// session placed on it is absent, which `pools.spread` counts as zero. Where `placements` is unknown the answer
-/// is empty, which `pools.spread` reads as no information and leaves the pool's
-/// own order, because a spreading choice made on a short count would be wrong
-/// where an unspread one is only less even.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // ledger_holdings.resident_by_name(registry, executors)
-/// // -> dict.from_list([#("box", 2), #("spare", 0)])
-/// ```
-pub fn resident_by_name(
-  registry: Manager(instance),
-  listed: Roster(Executor),
-) -> Dict(String, Int) {
-  names_of(placements(registry, listed), listed)
-}
-
-/// The same counts as `resident_by_name`, from rows the registry read in its own
-/// turn (`manager.claim_placement` gives them), so the count and the claims of a
+/// How many sessions of this daemon have a resident runtime on each executor, by
+/// the name the roster gives it, for a pool to spread its next session
+/// (`pools.spread`). It is made from rows the registry read in its own turn
+/// (`manager.claim_placement` gives them), so the count and the claims of a
 /// placement are one turn. The rows are each registration's view and move row.
 /// It makes no call, because it runs inside the registry. `Error(Nil)`, a
 /// catalogue that could not be read, is no information, as it is there.

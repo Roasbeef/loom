@@ -1087,12 +1087,16 @@ operator's claims, and `pools.candidates` is a pure function of configuration:
 an executor that declared nothing cannot satisfy a requirement, and no message
 asks a machine what it has. The balance is the orchestrator's own count, not
 load: `pools.spread` puts first the candidate on which this orchestrator has the
-fewest resident sessions (`ledger_holdings.resident_by_name`), and the order the
+fewest resident sessions (`ledger_holdings.resident_in`), and the order the
 pool lists breaks ties, so an unused pool is tried in listed order. A session is
 resident only after its attach, so the registry also keeps a claim for each
-session still being built: `manager.claim_placement` reads the resident counts from the registry's own rows,
-adds the claims, runs `pools.spread` and records the session's first choice in
-one registry turn, and sessions that open together therefore see one another.
+session still being built: `manager.claim_placement` reads the resident counts from the rows of the
+registry's running slots, which is bounded by the daemon's session limit and
+never walks the catalogue, adds the claims, runs `pools.spread` and records the
+session's first choice in one registry turn, and sessions that open together
+therefore see one another. A claim call the registry does not answer within five
+seconds falls back to `choose(dict.new())`, so the pool is tried in its listed
+order.
 The count says nothing of what other orchestrators hold on the same machines.
 `protocol/models/placement-claims` ([its README](../../protocol/models/placement-claims/README.md))
 models the claims and states the balance the code guarantees: the executors
