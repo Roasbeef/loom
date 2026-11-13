@@ -962,3 +962,28 @@ section is the record of them. The text above stays as it was written.
   `not_yet_open`, as a feed that does not answer is, and the laptop asks again. A
   detach is no longer answered `null` when the directory was silent and the feed
   was never detached.
+
+## Addendum: slice 3, second review (2026-11-13)
+
+This corrects the addendum above in four places and records one cost.
+
+- A failed connection on a relayed page reads as reconnecting. `ConnectionFailed` is
+  reached on a relayed page by a lapse after the laptop slept, a box that restarted, a
+  gap or an outbox overflow, and the browser reconnects from each, so its advice is
+  "Reconnecting automatically" and names no session and not "reload this page".
+- Only the lane's own timeout draws the waiting page on a relayed route
+  (`session_channel.timed_out`). A frame that does not decode, a cut that names another
+  incarnation and a server error end as `ConnectionFailed`.
+- The image reader of a relayed tab is kept under the tab's own orchestrator and session
+  (`ui_sessions.register_images_for`). Tabs of one home share a cookie, and a reader kept
+  by the cookie alone was replaced by the newest tab's, so an older tab's images came from
+  another tab's lane. A request for a session no open tab draws is a 404.
+- A send refused `not_yet_open` is sent again unchanged, as an attach and a poll refused
+  that way are retried. A detach so refused is not asked again, and the box lapses the
+  feed after its lease. The longest gap between two polls arriving at the box is 10.5 s
+  when the link fails, including a 1.5 s dial, against the 15 s lease.
+
+**What it costs.** A relayed route takes the `PageOperator` permit before the attach is
+made, so a page that then falls back to the transcript is charged 64 MiB where the home
+page it is was charged about 8 MiB. Eight live relayed tabs take the laptop's whole
+default budget, the same arithmetic as eight local operator pages.

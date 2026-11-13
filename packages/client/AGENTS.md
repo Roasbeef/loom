@@ -10800,7 +10800,7 @@ the rules the code follows and the specs, mutants and probes that guard them.
   not read starts the 094 home page with a sentence that says why (`relayed.Fallback`).
   No answer is cached. A relayed route holds a `root.PageOperator` permit. Its images are
   served at the relayed document's `.../sessions/<id>/image/<ref>/<position>`
-  (`ui_http.RelayedImage`), and its tool-result links are not drawn (`lane.Unlinked`).
+  (`ui_http.RelayedImage`, with the reader kept per tab: `ui_sessions.register_images_for`), and its tool-result links are not drawn (`lane.Unlinked`).
 - **What the page shows** when the link drops: the component decides it, in the same
   update that ends its lane (`component.lane_failure`), because it ignores a close that
   arrives after. A lane that fails on a relayed route ends as `PeerUnreachable`, a waiting
