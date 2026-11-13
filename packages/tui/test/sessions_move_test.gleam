@@ -57,6 +57,7 @@ pub fn the_help_and_the_local_session_words_name_the_checkout_keys_test() {
   assert !string.contains(usage, "hands a session on an executor")
 
   let words = move_candidates.local_session_words()
+  assert string.contains(words, "This session has no executor.")
   assert string.contains(words, "[orchestrators.<name>]")
   assert string.contains(words, "checkout_executor")
   assert string.contains(words, "checkout_workspace")

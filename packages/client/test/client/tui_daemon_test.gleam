@@ -835,7 +835,14 @@ pub fn tui_daemon_open_of_a_moved_session_names_the_session_in_its_redirect_test
       Send(reply(
         read.id,
         "sessions.get",
-        session_row(id, json.Object([#("state", json.String("saved"))])),
+        json.Object([
+          #("session_id", json.String(id)),
+          #("workspace", json.String("/work")),
+          #("name", json.String("opened")),
+          #("created_at", json.Int(0)),
+          #("status", json.Object([#("state", json.String("saved"))])),
+          #("moved", json.Object([#("to", json.String("bravo"))])),
+        ]),
       )),
     )
 
@@ -860,6 +867,45 @@ pub fn tui_daemon_open_of_a_moved_session_names_the_session_in_its_redirect_test
     let assert Ok(Error(words)) = process.receive(outcomes, 2000)
       as "the open is refused with the redirect"
     assert string.contains(words, "session " <> id <> " is owned by")
+    assert string.contains(words, "--session " <> id)
+    assert !string.contains(words, "<session-id>")
+  })
+}
+
+/// `loom sessions rm` of a session this daemon moved away stops it first, and
+/// the daemon answers the stop with the redirect. Its words name the session.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match tui_daemon_rm_of_a_moved_session`.
+pub fn tui_daemon_rm_of_a_moved_session_names_the_session_in_its_redirect_test() {
+  let #(id, _) = ids.mint_session(ids.generator(clock.fixed(0), 3))
+  let id = ids.session_id_to_string(id)
+  controlled_peer(fn(control, peer, incoming) {
+    let assert Ok(host) = selection.host(control, address(1), "test-token")
+      as "the controlled control has a selection host"
+    let outcomes = process.new_subject()
+    let _worker =
+      process.spawn(fn() { process.send(outcomes, selection.delete(host, id)) })
+    let stop = received(incoming)
+    assert stop.command == server_protocol.StopSession(id, "controlled")
+    process.send(
+      peer,
+      Send(reply(
+        stop.id,
+        "error",
+        json.Object([
+          #("code", json.String("not_owner")),
+          #(
+            "message",
+            json.String("this session is owned by another orchestrator"),
+          ),
+          #("orchestrator", json.String("bravo")),
+        ]),
+      )),
+    )
+    let assert Ok(Error(words)) = process.receive(outcomes, 2000)
+      as "the stop is refused with the redirect"
     assert string.contains(words, "--session " <> id)
     assert !string.contains(words, "<session-id>")
   })

@@ -209,8 +209,8 @@ pub fn none_words() -> String {
   "No orchestrator can take this session now."
 }
 
-/// The words for a session that works in a directory on this machine, when it
-/// is asked where it can move. Such a session moves when the destination's
+/// The words for a session that has no executor, when it is asked where it can
+/// move. One that works in a directory on this machine moves when the destination's
 /// `[orchestrators.<name>]` table names `checkout_executor` and
 /// `checkout_workspace`: the directory is captured, checked out on that
 /// executor, and the receiving orchestrator continues there.
@@ -219,10 +219,10 @@ pub fn none_words() -> String {
 ///
 /// ```gleam
 /// assert move_candidates.local_session_words()
-///   == "This session works in a directory on this machine. It moves to an orchestrator whose [orchestrators.<name>] table names checkout_executor and checkout_workspace; name it with --to."
+///   == "This session has no executor. If it works in a directory on this machine, it moves to an orchestrator whose [orchestrators.<name>] table names checkout_executor and checkout_workspace; name it with --to."
 /// ```
 pub fn local_session_words() -> String {
-  "This session works in a directory on this machine. It moves to an "
-  <> "orchestrator whose [orchestrators.<name>] table names checkout_executor "
+  "This session has no executor. If it works in a directory on this machine, "
+  <> "it moves to an orchestrator whose [orchestrators.<name>] table names checkout_executor "
   <> "and checkout_workspace; name it with --to."
 }

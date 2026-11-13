@@ -394,7 +394,8 @@ pub fn create_named(
 /// ```
 pub fn delete(host: Host, session: String) -> Result(String, String) {
   delete_using(session, fn(command, within) {
-    daemon.request(host.control, command, within) |> result.map_error(failure)
+    daemon.request(host.control, command, within)
+    |> result.map_error(failure_for(session, _))
   })
 }
 
@@ -429,7 +430,8 @@ type Removal {
 /// ```
 pub fn archive(host: Host, session: String) -> Result(String, String) {
   archive_using(session, fn(command, within) {
-    daemon.request(host.control, command, within) |> result.map_error(failure)
+    daemon.request(host.control, command, within)
+    |> result.map_error(failure_for(session, _))
   })
 }
 
@@ -527,7 +529,7 @@ pub fn executor_of(
 pub fn restore(host: Host, session: String) -> Result(String, String) {
   use reply <- result.try(
     daemon.request(host.control, protocol.RestoreSession(session), 10_000)
-    |> result.map_error(failure),
+    |> result.map_error(failure_for(session, _)),
   )
 
   // Confirm session restoration reply matches target identity.
