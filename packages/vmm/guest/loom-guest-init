@@ -45,17 +45,28 @@ LOOM_GID=10000
 # the loom user takes that id and nothing needs handing over. The way to know
 # which case this is, is to try a hand-over once: a chown that fails means the
 # share's owner is the loom user. The passwd and group entries are rewritten at
-# every boot, so a root kept across a change of host user follows it.
+# every boot, so a root kept across a change of host user follows it, and back
+# again when the host can hand files over. The entries are written only when
+# they differ, so a boot that finds them right changes nothing. A share owned
+# by root would make the loom user root, so that boot stops instead.
 
 ensure_identity() {
-	if chown "$LOOM_UID:$LOOM_GID" /work 2>/dev/null; then
-		return 0
+	if ! chown "$LOOM_UID:$LOOM_GID" /work 2>/dev/null; then
+		LOOM_UID=$(stat -c %u /work)
+		LOOM_GID=$(stat -c %g /work)
 	fi
 
-	LOOM_UID=$(stat -c %u /work)
-	LOOM_GID=$(stat -c %g /work)
-	sed -i -E "s/^loom:([^:]*):[0-9]+:[0-9]+:/loom:\1:$LOOM_UID:$LOOM_GID:/" /etc/passwd
-	sed -i -E "s/^loom:([^:]*):[0-9]+:/loom:\1:$LOOM_GID:/" /etc/group
+	if [ "$LOOM_UID" = 0 ] || [ "$LOOM_GID" = 0 ]; then
+		echo "loom-guest-init: the guest root belongs to root, which would make the loom user root; run loom-vm as an ordinary user, or give it CAP_CHOWN" >&2
+		exit 1
+	fi
+
+	if ! grep -q "^loom:[^:]*:$LOOM_UID:$LOOM_GID:" /etc/passwd; then
+		sed -i -E "s/^loom:([^:]*):[0-9]+:[0-9]+:/loom:\1:$LOOM_UID:$LOOM_GID:/" /etc/passwd
+	fi
+	if ! grep -q "^loom:[^:]*:$LOOM_GID:" /etc/group; then
+		sed -i -E "s/^loom:([^:]*):[0-9]+:/loom:\1:$LOOM_GID:/" /etc/group
+	fi
 }
 
 # loom-guest-executor asks for the identity before it hands the executor's
@@ -64,6 +75,8 @@ if [ "${1:-}" = --identity ]; then
 	ensure_identity
 	exit 0
 fi
+
+ensure_identity
 
 # --- 1. Network -----------------------------------------------------------
 
@@ -131,7 +144,6 @@ fi
 # guest can chown on the share, so the directories the loom user writes to
 # are handed over here, before anything runs as loom.
 
-ensure_identity
 chown -R "$LOOM_UID:$LOOM_GID" /home/loom /var/lib/loom /work
 
 # --- 3. Delegated cgroup v2 subtree ---------------------------------------
