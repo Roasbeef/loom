@@ -2871,7 +2871,7 @@ fn unshadowed(
   case config.ledger {
     None -> Ok(Nil)
     Some(handle) ->
-      case ledger_service.status(handle.service, 2000) {
+      case ledger_service.status(handle.service, 1000) {
         // A reload that cannot ask the ledger cannot know that no written row
         // shadows an enrolled executor, so it changes nothing.
         Error(ledger_service.Unreachable) ->

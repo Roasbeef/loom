@@ -161,9 +161,22 @@ their reads out of order. `loom vm` writes the file atomically and under its
 own lock, so a read never sees half a write.
 
 A stop is a kill and a wait for the name to be free. A link start does not
-dial. The whole reconcile is bounded at three seconds, inside the five the
-client waits for a reply; a row not reached by then is `failed`, stays as it
-was, and is tried again by the next reload.
+dial. One deadline of three seconds starts before the file is read and covers
+the whole turn, inside the five the client waits for a reply. The read costs
+the deadline what it takes, and the ledger check in it waits at most one
+second. A link start, which has a timeout of one second of its own, is begun
+only when that much of the deadline is left, and the old link of a row is
+killed only under the same condition, so a row never loses its link to a start
+that was not tried. A row not reached by the deadline is `failed`, stays as it
+was, and is tried again by the next reload. The caller waits four seconds, a
+full second above the turn's bound, and so does a reader of the rows, because
+the registry answers one message at a time and a read that arrives during a
+turn waits for it: a reload is never applied and then reported `unavailable`,
+and a session placed during a reload does not see an empty roster.
+
+A fault in the registry ends the daemon, as a fault in its start would. It is
+started linked to the process that starts the daemon, and it decodes the file
+inside its own turn.
 
 The roster that placement, `deployment.status` and session creation read is
 computed at each use from the trusted rows the daemon started with and this
@@ -286,3 +299,4 @@ before it was taken.
 | An old daemon's answer is `bad_request`, not a distinct code | Taken. |
 | An idle session's callbacks are refused until its next call after a link is replaced | Accepted as a cost, stated above. |
 | A started table dropped by `loom vm rm` of the last guest was refused, so the removed guest's link kept running (`executor_reload.link_rule`) | Taken: a file with neither the table nor any untrusted row is allowed, and `link_rule` takes the presence of untrusted rows as a typed argument. A table dropped under a live row, or changed, stays refused. |
+| The caller waited four seconds for a turn that could take the file read, a two second ledger wait, three seconds of reconcile and a link start past its deadline, so a reload could be applied and answered `unavailable`, and `rows` answered an empty roster for the whole turn (`untrusted_links`) | Taken: one deadline of three seconds from before the read, the ledger wait cut to one second, no link start or kill unless the start's own timeout fits in what is left, and both waits set a second above the bound. The registry cannot answer a read during a turn, so the read waits for it instead. |

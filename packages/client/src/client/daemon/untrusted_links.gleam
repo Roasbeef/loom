@@ -26,16 +26,23 @@
 //// A reload reads the file inside the registry's own process, through the
 //// `load` function the caller gives. Two reloads are therefore handled in the
 //// order their messages arrive, and the second reads the file after the first
-//// has applied what it read. The whole reconcile has three seconds
-//// (`reconcile_ms`). A row that is not reached in that time is `Failed` and is
-//// left as it was, and the next reload tries it again.
+//// has applied what it read. One deadline of three seconds (`reconcile_ms`)
+//// starts before `load` runs and covers the whole turn, so a slow read leaves
+//// less for the links. A row that is not reached by the deadline is `Failed`
+//// and is left as it was, and the next reload tries it again. A link is
+//// started only when its own timeout (`link_start_ms`) fits in what is left,
+//// and the old link of a row is killed only when that start is certain to be
+//// tried, so a row never loses its link to a start that was not attempted.
 ////
 //// ## What a reader sees
 ////
-//// `rows` answers the rows the registry holds. When the registry does not
-//// answer in time, the answer is no rows at all: placement then finds no
-//// untrusted executor, which refuses a session instead of placing it on a row
-//// that may be gone.
+//// The registry answers one message at a time, so `rows` waits while a
+//// reconcile runs. Both waits are longer than the turn's bound, so a caller
+//// always gets the turn's answer: a reload is never applied and then reported
+//// `Unavailable`, and a session placed during a reload sees the rows after it.
+//// When the registry does not answer at all, the answer is no rows: placement
+//// then finds no untrusted executor, which refuses a session instead of
+//// placing it on a row that may be gone.
 ////
 //// ## Flow
 ////
@@ -64,17 +71,31 @@ import telemetry/log.{type Logger}
 import weft/actor
 import weft/poll
 
-/// How long one reconcile may take, in milliseconds. The client waits five
-/// seconds for a reply, and this is inside that.
+/// The deadline of one registry turn, in milliseconds, counted from before the
+/// file is read. The client waits five seconds for a reply, and this is inside
+/// that.
 pub const reconcile_ms = 3000
 
-/// How long a caller waits for the registry to answer a reconcile. It is a
-/// little above `reconcile_ms`, so a reconcile that uses its whole bound still
-/// answers.
+/// How long a link start is given by the link itself: the initialiser's
+/// timeout in `untrusted_link.start`. A start is not begun with less than this
+/// left of the deadline, so it ends by the deadline.
+const link_start_ms = 1000
+
+/// How long a caller waits for the registry to answer a reconcile.
+///
+/// The turn is bounded as follows. The deadline is `reconcile_ms` from before
+/// `load`. `load` takes a file read and decode and at most one second of
+/// ledger wait, so it ends well inside the deadline, or the rest of the turn
+/// fails at once. Every later step is gated on the deadline: a kill and the
+/// wait for a name are cut at it, and a link start begins only with
+/// `link_start_ms` left and ends within that. The turn therefore ends at
+/// `reconcile_ms` plus the cost of the replies, and this wait is a full second
+/// above it.
 const call_ms = 4000
 
-/// How long a caller waits for the rows.
-const rows_ms = 2000
+/// How long a caller waits for the rows. It equals `call_ms`, so a read that
+/// arrives behind a whole turn still gets an answer instead of an empty list.
+const rows_ms = call_ms
 
 /// The registry's address.
 pub opaque type Registry {
@@ -303,10 +324,14 @@ fn loaded(
   book: Book,
   load: fn() -> Result(Wanted, String),
 ) -> #(Book, Result(Reply, Failure)) {
+  // The deadline starts before the file is read, so a slow read is paid for
+  // out of the time the links have.
+  let deadline = poll.monotonic().now() + reconcile_ms
+
   // A refusal from the loader changes nothing, and neither does a cap.
   case load() |> result.try(admitted(book, _)) {
     Error(reason) -> #(book, Error(Refused(reason)))
-    Ok(wanted) -> reconciled(book, wanted)
+    Ok(wanted) -> reconciled(book, wanted, deadline)
   }
 }
 
@@ -325,9 +350,11 @@ fn admitted(book: Book, wanted: Wanted) -> Result(Wanted, String) {
 }
 
 /// Plans against the held rows and performs the steps before the deadline.
-fn reconciled(book: Book, wanted: Wanted) -> #(Book, Result(Reply, Failure)) {
-  let clock = poll.monotonic()
-  let deadline = clock.now() + reconcile_ms
+fn reconciled(
+  book: Book,
+  wanted: Wanted,
+  deadline: Int,
+) -> #(Book, Result(Reply, Failure)) {
   let held =
     dict.values(book.slots)
     |> list.filter_map(fn(slot) {
@@ -441,7 +468,14 @@ fn replace(
     credentials,
     "there is no [executor_link] to dial with",
   ))
-  use Nil <- result.try(clear_name(book, executor.name, deadline))
+
+  // The old link is killed only when a start can still be tried afterwards:
+  // the wait for its name is cut `link_start_ms` before the deadline.
+  use Nil <- result.try(clear_name(
+    book,
+    executor.name,
+    deadline - link_start_ms,
+  ))
   use pid <- result.map(book.links.start(row, credentials))
 
   // The link was started linked to this process. Unlinking first means its

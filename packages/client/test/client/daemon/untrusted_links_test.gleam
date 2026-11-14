@@ -209,7 +209,42 @@ pub fn a_row_not_reached_in_time_is_failed_and_kept_test() {
   let reply = reload(links, [untrusted(first, 7000), untrusted(second, 7000)])
   let elapsed = ffi_os.system_time_ms() - started_at
   assert changes(reply) == [#(first, Failed), #(second, Failed)]
-  assert elapsed >= untrusted_links.reconcile_ms - 100
-  assert elapsed < untrusted_links.reconcile_ms + 1000
+
+  // The wait for a name stops a link start's timeout before the deadline, so a
+  // start that could not finish is never begun.
+  assert elapsed >= untrusted_links.reconcile_ms - 1100
+  assert elapsed < untrusted_links.reconcile_ms
   assert untrusted_links.rows(links) == []
+}
+
+pub fn a_slow_load_uses_the_budget_and_the_caller_still_gets_a_reply_test() {
+  let kept = unique("slow-a")
+  let fresh = unique("slow-b")
+  let links = registry(fake_links())
+  let _ = reload(links, [untrusted(kept, 7000)])
+  let assert Ok(before) = holder_of(kept) as "the link holds the name"
+  let started_at = ffi_os.system_time_ms()
+
+  // The read of the file takes most of the turn's deadline. What is left is
+  // less than a link start's timeout, so no row is attempted.
+  let reply =
+    untrusted_links.reconcile(links, fn() {
+      process.sleep(untrusted_links.reconcile_ms - 500)
+      Ok(Wanted(
+        rows: [untrusted(kept, 7001), untrusted(fresh, 7000)],
+        credentials: Some(credentials()),
+      ))
+    })
+  let elapsed = ffi_os.system_time_ms() - started_at
+
+  // The caller has an answer and not `Unavailable`, with every row failed.
+  assert changes(reply) == [#(kept, Failed), #(fresh, Failed)]
+  assert elapsed < untrusted_links.reconcile_ms + 500
+
+  // A row whose replacement was not attempted keeps the link it had.
+  assert holder_of(kept) == Ok(before)
+  assert process.is_alive(before)
+  assert holder_of(fresh) == Error(Nil)
+  let assert [row] = untrusted_links.rows(links) as "only the old row is held"
+  assert row.trust == executors.Untrusted("127.0.0.1", 7000, <<1>>)
 }
