@@ -29,6 +29,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/timestamp
+import host/bootstrap
 import simplifile
 import tom
 
@@ -2331,6 +2332,33 @@ pub fn a_process_that_is_not_the_manifests_runner_is_not_stranded_test() {
       None,
     )
     == [500, 501, 502]
+}
+
+pub fn a_runner_installed_through_a_link_is_found_by_its_target_test() {
+  // `loom-vm` starts the runner under its resolved path, so that is what the
+  // process listing shows, whatever path the manifest records.
+  let #(scratch, root, _) = scratch_root()
+  let assert Ok(real) = bootstrap.canonical_path(root)
+  let target = real <> "/go-microvm-runner"
+  let link = real <> "/linked-runner"
+  let assert Ok(Nil) = simplifile.write(target, "")
+  let assert Ok(Nil) = simplifile.create_symlink(target, link)
+
+  let listing = "  700     1 " <> target <> " {\"root_path\":\"/vm/m/root\"}\n"
+  assert vm_cli.running_as(link) == target
+  assert vm_cli.running_as(target) == target
+  assert vm_spec.stranded_runners(
+      listing,
+      "/vm/m/root",
+      "/vm/m/state.img",
+      Some(vm_cli.running_as(link)),
+    )
+    == [700]
+
+  // A path that is not there stays as written, so a manifest naming a missing
+  // runner still gets the refusal's own words.
+  assert vm_cli.running_as(real <> "/absent") == real <> "/absent"
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
 
 pub fn stranded_refusal_names_the_pid_and_how_to_stop_it_test() {

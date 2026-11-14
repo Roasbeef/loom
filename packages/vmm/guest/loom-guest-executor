@@ -92,6 +92,10 @@ case "${1:-}" in
 		device=${3:?--state-device needs a device}
 	fi
 
+	# Settle the loom user's ids first: on a Linux host without privilege
+	# the user cannot be uid 10000, and the chowns below name the user.
+	"$init" --identity
+
 	# A state device keeps the executor's ledger, scopes and logs across
 	# guest restarts, so a standing executor comes back with the sessions
 	# it held. A device with no filesystem is new and is formatted once;
