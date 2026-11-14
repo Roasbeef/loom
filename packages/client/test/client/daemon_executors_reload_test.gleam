@@ -5,8 +5,9 @@
 //// reading of the file do: an owner is answered with the documented body, a
 //// member is refused, a file that a start would refuse changes nothing (the
 //// links' processes are the same afterwards), a new `[executor_link]` outside
-//// the two vm directories is refused, and a daemon with no configuration file
-//// says so.
+//// the two vm directories is refused, a table whose file cannot be resolved is
+//// refused naming the file, a ledger that does not answer refuses the call, and
+//// a daemon with no configuration file says so.
 
 import client/daemon/limits
 import client/daemon/main
@@ -16,6 +17,9 @@ import client/deployment
 import client/executors
 import client/internal/ffi_os
 import client/internal/ffi_tls_stream
+import client/ledger_control
+import client/ledger_holdings
+import client/ledger_service
 import client/remote/untrusted_link
 import client/session_directory
 import client/session_movers
@@ -31,6 +35,8 @@ import host/bootstrap
 import simplifile
 import storage/access
 import storage/catalogue
+import support/ledger_rig
+import support/membership_log as history
 import telemetry/log
 
 const pin = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
@@ -126,11 +132,22 @@ fn reloading(
   file: option.Option(String),
   run: fn(Int, String, untrusted_links.Registry, String) -> Nil,
 ) {
+  reloading_with(state, file, fn(config) { config }, run)
+}
+
+// The same, with the daemon's configuration adjusted before the capability is
+// built over it.
+fn reloading_with(
+  state: String,
+  file: option.Option(String),
+  adjust: fn(main.Config) -> main.Config,
+  run: fn(Int, String, untrusted_links.Registry, String) -> Nil,
+) {
   let assert Ok(registry) = untrusted_links.start(links(), log.discard())
     as "the registry starts"
   let assert Ok(parsed) = main.parse(["--state-dir", state])
     as "the flags parse"
-  let config = main.Config(..parsed, links: Some(registry))
+  let config = adjust(main.Config(..parsed, links: Some(registry)))
   let capability = case file {
     Some(path) -> main.executors_reload_for(config, path)
     None -> None
@@ -286,4 +303,96 @@ pub fn a_new_link_table_outside_the_vm_directories_is_refused_test() {
     assert process.named(untrusted_link.name_for(name)) == Error(Nil)
     assert untrusted_links.rows(registry) == []
   })
+}
+
+// The refusal's message, which names what the developer has to fix.
+fn message_of(reply) -> String {
+  let assert json.String(message) = field(field(reply, "body"), "message")
+    as "a refusal carries a message"
+  message
+}
+
+pub fn a_table_file_that_cannot_be_resolved_is_refused_and_named_test() {
+  let state = state_with_link()
+  let name = unique("reload-e")
+  let path = state <> "/loom.toml"
+
+  // The key's path climbs out of the vm directory and names no file. Written
+  // as it is, it begins with the vm directory, which is what a prefix test on
+  // an unresolved path would take as being inside it.
+  let key = state <> "/vm/../../elsewhere/k.pem"
+  let table =
+    "[executor_link]\nca = \""
+    <> state
+    <> "/vm/ca.pem\"\ncertificate = \""
+    <> state
+    <> "/vm/c.pem\"\nkey = \""
+    <> key
+    <> "\"\n"
+  let assert Ok(Nil) =
+    simplifile.write(path, table <> rows_text([#(name, 7000)]))
+    as "the file is written"
+
+  reloading(state, Some(path), fn(port, credential, registry, _root) {
+    let reply = ask(open(port, credential), 1)
+    assert field(field(reply, "body"), "code") == json.String("reload_invalid")
+    assert string.contains(message_of(reply), "k.pem")
+    assert process.named(untrusted_link.name_for(name)) == Error(Nil)
+    assert untrusted_links.rows(registry) == []
+  })
+}
+
+// A ledger handle whose process has ended, so asking it for its status times
+// out. The service is started by a process nothing else is linked to, because
+// killing a started service ends its starter.
+fn silent_ledger() -> ledger_control.Handle {
+  let started = process.new_subject()
+  let _starter =
+    process.spawn_unlinked(fn() {
+      let rig =
+        ledger_rig.start(
+          "reload-ledger",
+          history.lines(history.genesis()),
+          ledger_rig.patient,
+          [],
+        )
+      process.send(started, rig.service)
+      process.sleep_forever()
+    })
+  let assert Ok(service) = process.receive(started, 10_000)
+    as "the ledger service starts"
+  process.kill(ledger_service.pid(service))
+  ledger_control.Handle(
+    service:,
+    local: "loom@reload.example",
+    name: "reload",
+    asker: ledger_holdings.silent,
+  )
+}
+
+pub fn a_ledger_that_does_not_answer_refuses_the_reload_test() {
+  let state = state_with_link()
+  let name = unique("reload-f")
+  let path = state <> "/loom.toml"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      link_table(state <> "/vm") <> rows_text([#(name, 7000)]),
+    )
+    as "the file is written"
+  let ledger = silent_ledger()
+
+  reloading_with(
+    state,
+    Some(path),
+    fn(config) { main.Config(..config, ledger: Some(ledger)) },
+    fn(port, credential, registry, _root) {
+      let reply = ask(open(port, credential), 1)
+      assert field(field(reply, "body"), "code")
+        == json.String("reload_invalid")
+      assert string.contains(message_of(reply), "ledger did not answer")
+      assert process.named(untrusted_link.name_for(name)) == Error(Nil)
+      assert untrusted_links.rows(registry) == []
+    },
+  )
 }

@@ -307,8 +307,11 @@ pub fn check_names(seen: Int) -> Result(Nil, String) {
 /// could name a key that a session already open can read.
 ///
 /// The caller passes paths that are canonical, so a prefix test is the whole of
-/// the check; a path that could not be resolved is passed as it was written and
-/// fails the test unless it is equal to the started table's.
+/// the check. A caller that cannot make a file of a proposed table canonical
+/// refuses the call and never reaches this rule with the path as written,
+/// because `vm/../../elsewhere/k` begins with the vm home and is not inside it.
+/// Only the started table may be passed with a path as written, since it is
+/// compared for equality with itself.
 ///
 /// ## Examples
 ///

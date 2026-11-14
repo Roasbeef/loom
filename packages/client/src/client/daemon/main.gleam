@@ -2762,24 +2762,70 @@ fn reloaded(
 
 /// Applies `executor_reload.link_rule` to the table this daemon started with
 /// and the table of the new file, with their paths made canonical.
+///
+/// The directories a table may name are the two that every jail masks, spelled
+/// by `workspace_policy.vm_home_directories` so there is one spelling of them.
+/// A daemon that started with no table may take a proposed one, and then every
+/// file of it must resolve, because the rule is a prefix test on the resolved
+/// path and a path that could not be resolved, such as `vm/../../elsewhere/k`
+/// for a file that is not there yet, would pass it as written. A table the
+/// daemon started with is compared for equality, so a path that no longer
+/// resolves is compared as written.
 fn link_table_allowed(config: Config, decoded: Config) -> Result(Nil, String) {
-  let home = bootstrap.getenv("HOME") |> result.map(fn(h) { h <> "/.loom/vm" })
+  let homes =
+    workspace_policy.vm_home_directories(
+      workspace_policy.home_directory(),
+      config.state_root,
+    )
   let allowed =
-    [Ok(config.state_root <> "/vm"), home]
-    |> list.filter_map(fn(directory) { result.map(directory, resolved) })
+    [Some(homes.state), homes.home]
+    |> list.filter_map(fn(directory) {
+      option.to_result(directory, Nil) |> result.map(resolved)
+    })
+  use proposed <- result.try(proposed_table(config, decoded))
   executor_reload.link_rule(
     option.map(config.untrusted.link, resolved_credentials),
-    option.map(decoded.untrusted.link, resolved_credentials),
+    proposed,
     allowed,
   )
   |> result.map_error(fn(reason) { "executors.reload: " <> reason })
 }
 
-/// A path made canonical, or as written when it cannot be resolved, in which
-/// case it lies under no allowed directory unless it was written that way at
-/// start.
+/// The proposed `[executor_link]` table with its paths made canonical. A daemon
+/// that started with no table is the one that applies a proposed table by
+/// prefix, so each of its files must resolve and the first that does not is
+/// named in the refusal.
+fn proposed_table(
+  config: Config,
+  decoded: Config,
+) -> Result(Option(ffi_tls_stream.Credentials), String) {
+  // The start's own table is compared by equality, so it needs no strictness.
+  case config.untrusted.link, decoded.untrusted.link {
+    None, Some(table) -> {
+      use ca <- result.try(resolved_strictly(table.ca))
+      use certificate <- result.try(resolved_strictly(table.certificate))
+      use key <- result.map(resolved_strictly(table.key))
+      Some(ffi_tls_stream.Credentials(ca:, certificate:, key:))
+    }
+    Some(_), proposed | None, proposed ->
+      Ok(option.map(proposed, resolved_credentials))
+  }
+}
+
+/// A path made canonical, or as written when it cannot be resolved, which is
+/// right only where the path is compared for equality with itself.
 fn resolved(path: String) -> String {
   bootstrap.canonical_path(path) |> result.unwrap(path)
+}
+
+/// A path made canonical, or the refusal that names the file that cannot be.
+fn resolved_strictly(path: String) -> Result(String, String) {
+  bootstrap.canonical_path(path)
+  |> result.replace_error(
+    "executors.reload: [executor_link] names "
+    <> path
+    <> ", which cannot be resolved to a path; make the file first or restart the daemon to apply a new [executor_link]",
+  )
 }
 
 /// The three files of an `[executor_link]` table, each made canonical.
@@ -2804,7 +2850,12 @@ fn unshadowed(
     None -> Ok(Nil)
     Some(handle) ->
       case ledger_service.status(handle.service, 2000) {
-        Error(ledger_service.Unreachable) -> Ok(Nil)
+        // A reload that cannot ask the ledger cannot know that no written row
+        // shadows an enrolled executor, so it changes nothing.
+        Error(ledger_service.Unreachable) ->
+          Error(
+            "the ledger did not answer, so the daemon cannot tell whether an untrusted executor has the name of one the ledger enrols",
+          )
         Ok(status) -> {
           let enrolled =
             ledger_rows.executors_of(status.ledger, handle.local, [])
