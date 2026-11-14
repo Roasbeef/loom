@@ -2509,7 +2509,7 @@ fn untrusted_guest(run: Run) -> Nil {
         io.println_error(label <> " deployment.status (untrusted):\n" <> shown)
         assert string.contains(shown, name)
 
-        second_guest_after_reload(run, flags, name, control)
+        second_guest_after_reload(run, flags, name, running, control)
 
         remote_pair.converse_for(
           remote_pair.Opened(orchestrator: running, control:, session:),
@@ -2545,6 +2545,7 @@ fn second_guest_after_reload(
   run: Run,
   flags: List(String),
   first: String,
+  running: remote_daemons.Running,
   control: remote_daemons.Control,
 ) -> Nil {
   let second = first <> "b"
@@ -2566,7 +2567,8 @@ fn second_guest_after_reload(
   let reply =
     remote_daemons.command(control, 30, "executors.reload", json.Object([]))
   io.println_error(label <> " executors.reload:\n" <> string.inspect(reply))
-  let assert Ok(decoded) = executor_reload.decode(reply)
+  let assert Ok(decoded) =
+    executor_reload.decode(remote_daemons.field(reply, "body"))
     as "the reload reply decodes"
   let changes =
     list.map(decoded.executors, fn(entry) {
@@ -2576,7 +2578,7 @@ fn second_guest_after_reload(
   assert list.contains(changes, #(first, "unchanged"))
 
   // The daemon that served the first guest serves the second one now.
-  let #(_session, settled) =
+  let #(session, settled) =
     remote_daemons.create_and_settle(
       control,
       31,
@@ -2585,6 +2587,11 @@ fn second_guest_after_reload(
       remote_pair.workspace_name,
     )
   assert remote_daemons.settled_state(settled) == "resident"
+
+  // The session is stopped while its guest still answers. A session whose
+  // executor has gone cannot close its scope, and the daemon would then wait
+  // on it when the step retires the daemon.
+  remote_daemons.stop_session(running, control, 32, session)
 
   let _stopped = vm(run, ["down", "--name", second])
   let _removed =
@@ -2599,7 +2606,23 @@ fn second_guest_after_reload(
       ]),
       "loom vm rm (second guest)",
     )
-  Nil
+
+  // The row is gone from the file, and a second reload stops its link, which
+  // would otherwise dial the removed guest for as long as the daemon lived.
+  let after =
+    remote_daemons.command(control, 33, "executors.reload", json.Object([]))
+  io.println_error(
+    label <> " executors.reload (after rm):\n" <> string.inspect(after),
+  )
+  let assert Ok(removed) =
+    executor_reload.decode(remote_daemons.field(after, "body"))
+    as "the second reload reply decodes"
+  let after_changes =
+    list.map(removed.executors, fn(entry) {
+      #(entry.name, executor_reload.change_word(entry.change))
+    })
+  assert list.contains(after_changes, #(second, "stopped"))
+  assert list.contains(after_changes, #(first, "unchanged"))
 }
 
 // The host port the guest's row names, as `link-port` records it.
