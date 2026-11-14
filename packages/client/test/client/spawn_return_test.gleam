@@ -13,6 +13,7 @@
 import broker/exec
 import client/agency
 import client/daemon/main
+import client/delegate_host
 import client/internal/ffi_os
 import client/remote/address.{Address}
 import client/remote/orchestrator_port
@@ -21,6 +22,7 @@ import client/remote/state_link
 import client/remote_child
 import client/remote_spawn
 import client/return_apply
+import client/session_states
 import client/spawn_return
 import client/spawn_seed
 import client/spawners.{type Spawner}
@@ -42,6 +44,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import host/bootstrap
 import simplifile
+import support/cell
 import support/state_rig.{type Rig}
 import support/worktree_rig
 import telemetry/log
@@ -131,6 +134,8 @@ seed = \"workspace\"
 // finished with a report of its own.
 fn finishing() -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
+    fresh: fn() { session_states.Fresh },
+    states: None,
     spawn: fn(_delegation, _site, _request) {
       Ok(remote_spawn.Spawned(
         handle: handle(),
@@ -292,8 +297,16 @@ fn world(
       fn(_spawner, _parent) { Ok(finishing()) },
       fn(_spawner, _parent) { Ok(0) },
       fn(_spawner, _parent) { Ok(None) },
-      fn(found, call_site, asked) {
-        spawn_seed.receive(receiver, found, call_site, asked)
+      delegate_host.no_children(),
+      fn(found, parent, call_site, asked) {
+        spawn_seed.land(
+          receiver,
+          delegate_host.no_children(),
+          found,
+          parent,
+          call_site,
+          asked,
+        )
       },
       spawn_return.over(receiver, link_to(parent, parents_port), log.discard()),
       log.discard(),
@@ -552,14 +565,39 @@ pub fn a_restart_clears_the_claims_and_keeps_the_verdicts_test() {
   let assert Ok(Nil) = simplifile.create_directory(directory <> "/a.claim")
   let assert Ok(Nil) = simplifile.write(directory <> "/a.verdict", "{}")
   let assert Ok(Nil) = simplifile.write(directory <> "/a.copy", "{}")
+  let assert Ok(Nil) = simplifile.write(directory <> "/a.joined", "{}")
 
-  spawn_return.sweep(rig.state)
+  // Within the retention only the claim goes: the files are what a restarted
+  // daemon answers from.
+  let now = ffi_os.system_time_ms() / 1000
+  spawn_return.sweep(rig.state, 604_800, now)
   assert simplifile.is_directory(directory <> "/a.claim") == Ok(False)
   assert simplifile.is_file(directory <> "/a.verdict") == Ok(True)
   assert simplifile.is_file(directory <> "/a.copy") == Ok(True)
+  assert simplifile.is_file(directory <> "/a.joined") == Ok(True)
 
   // A state root with no such directory has nothing to sweep.
-  spawn_return.sweep(rig.scratch <> "/nowhere")
+  spawn_return.sweep(rig.scratch <> "/nowhere", 604_800, now)
+  state_rig.stop(rig)
+}
+
+pub fn the_files_of_a_child_older_than_the_retention_are_removed_test() {
+  let rig = state_rig.rig("return-sweep-aged")
+  let directory = rig.state <> "/" <> spawn_return.directory_name
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let assert Ok(Nil) = simplifile.write(directory <> "/a.verdict", "{}")
+  let assert Ok(Nil) = simplifile.write(directory <> "/a.copy", "{}")
+  let assert Ok(Nil) = simplifile.write(directory <> "/a.joined", "{}")
+  let assert Ok(Nil) = simplifile.write(directory <> "/notes.txt", "{}")
+
+  // The kept answer holds the child's whole report and nothing else removes it, so
+  // a sweep that comes a retention later does, and leaves what is not a child's.
+  let later = ffi_os.system_time_ms() / 1000 + 604_801
+  spawn_return.sweep(rig.state, 604_800, later)
+  assert simplifile.is_file(directory <> "/a.verdict") == Ok(False)
+  assert simplifile.is_file(directory <> "/a.copy") == Ok(False)
+  assert simplifile.is_file(directory <> "/a.joined") == Ok(False)
+  assert simplifile.is_file(directory <> "/notes.txt") == Ok(True)
   state_rig.stop(rig)
 }
 
@@ -597,5 +635,65 @@ pub fn a_copy_replaced_by_a_link_is_not_followed_test() {
   assert state_of(joined) == None
   assert string.contains(report_of(joined), "could not be returned")
   assert state_rig.refs(rig.root) == refs
+  state_rig.stop(rig)
+}
+
+pub fn a_parents_store_with_no_room_is_asked_again_and_not_refused_test() {
+  let sends = cell.new(0)
+  let world =
+    world("return-no-room", Seeded, None, fn(_parent, parents_port) {
+      let real = state_link.via_port(parents_port, 5000)
+
+      // The parent's store has no room for the first piece, as one at its total
+      // cap does, and has room for every later one.
+      let link =
+        state_transfer.Link(..real, piece: fn(piece) {
+          let before = cell.get(sends)
+          cell.update(sends, fn(held) { held + 1 })
+          case before == 0 {
+            True ->
+              Ok(
+                state_transfer.Refused(state_transfer.NoRoom(
+                  "the store is at its total cap",
+                )),
+              )
+            False -> real.piece(piece)
+          }
+        })
+      fn(_node) { Some(link) }
+    })
+  let rig = world.parent.rig
+  let _tip = child_works(world)
+
+  // A refusal that passes is not the end of the matter: the child's commits
+  // come back at a later join, and the report does not say they could not.
+  let joined = finished(world, 60)
+  let assert Some(state) = state_of(joined)
+  assert world.parent.endpoint.stage(state.hash) == Ok(state_transfer.Complete)
+  assert string.contains(report_of(joined), "could not be returned") == False
+  state_rig.stop(rig)
+}
+
+pub fn a_record_that_cannot_be_read_leaves_the_child_unfinished_test() {
+  let world = world("return-unreadable", Seeded, None, connected)
+  let rig = world.parent.rig
+  let _tip = child_works(world)
+
+  // Every record of a seeded child is replaced by text that is not one. A child
+  // whose record cannot be read is not a child that was not seeded, so the join
+  // does not report it finished and the commits are not given up.
+  let records = world.receiver.state_root <> "/" <> spawn_return.directory_name
+  let assert Ok(names) = simplifile.read_directory(records)
+  list.each(names, fn(name) {
+    case string.ends_with(name, ".copy") {
+      True -> {
+        let assert Ok(Nil) = simplifile.write(records <> "/" <> name, "junk")
+        Nil
+      }
+      False -> Nil
+    }
+  })
+  let assert remote_spawn.Pending(..) = ask_join(world)
+  let assert remote_spawn.Pending(..) = ask_join(world)
   state_rig.stop(rig)
 }
