@@ -9,6 +9,7 @@ import client/daemon/domain as domain_service
 import client/daemon/manager
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
+import core/agency_limits
 import core/clock
 import core/ids
 import gleam/bit_array
@@ -49,6 +50,7 @@ fn request(key: String) {
     option.None,
     "",
     "",
+    agency_limits.empty,
   )
 }
 

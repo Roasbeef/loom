@@ -50,8 +50,8 @@ question that only the owner can settle.
 
 **Choosing an executor.** `sessions.create` decodes `executor` and `pool` as
 exclusive names and then reads `workspace` as a registered name, not a path
-(`created_workspace`, `client/daemon/protocol.gleam:1258`; `executor_field`,
-`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1239`).
+(`created_workspace`, `client/daemon/protocol.gleam:1323`; `executor_field`,
+`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1304`).
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:96`). The web home is told only the names
@@ -352,7 +352,7 @@ index creates nothing. A terminal golden test of the table.
 
 **Today.** Section 2. A daemon answers for the sessions it holds, and the owner is
 sent elsewhere with the launch line for the owning daemon
-(`redirect_words`, `tui/daemon/selection.gleam:1190`).
+(`redirect_words`, `tui/daemon/selection.gleam:1225`).
 
 **What a daemon can answer about sessions it does not own.** One thing: what the
 owning orchestrator's catalogue says. A new `Sessions` ask on the port returns a
@@ -530,7 +530,7 @@ of the section sits beneath `admin.body_path`, which the Admin socket already ad
 and nothing else (`admin_accepts`). The existing 065 admin addendum's description of
 the page in [the web view](../architecture/web-view.md) gets a paragraph for the
 section. Its reads run in weft tasks with a read number, next to the people and
-session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:5653`).
+session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:5750`).
 
 **Terminal.** A compact rendering, from the same snapshot:
 

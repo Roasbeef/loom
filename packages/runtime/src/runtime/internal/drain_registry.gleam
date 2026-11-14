@@ -47,6 +47,9 @@ pub opaque type Message {
   /// Publishes a reaper and opens its reply after prior generations drain.
   Claim(strand: String, reaper: Pid, reply_with: Subject(List(Pid)))
 
+  /// Waits for any currently live reapers on `strand` without registering a new one.
+  Await(strand: String, reply_with: Subject(List(Pid)))
+
   /// Adjudicates whether a reaper proved drain or destroyed its proof.
   ReaperDown(process.Down)
 
@@ -150,6 +153,24 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           // monitors have proved every member of this exact snapshot clean.
           continue_or_stop(
             State(..state, chains:, waiters: [
+              ClaimWaiter(previous, reply_with),
+              ..state.waiters
+            ]),
+          )
+      }
+    }
+    Await(strand:, reply_with:) -> {
+      let previous = dict.get(state.chains, strand) |> result.unwrap([])
+
+      // Replies immediately when idle or queues behind active predecessors.
+      case previous {
+        [] -> {
+          process.send(reply_with, [])
+          continue_or_stop(state)
+        }
+        [_, ..] ->
+          continue_or_stop(
+            State(..state, waiters: [
               ClaimWaiter(previous, reply_with),
               ..state.waiters
             ]),
@@ -263,8 +284,11 @@ fn forget(
   chains: Dict(String, List(Pid)),
   departed: Pid,
 ) -> Dict(String, List(Pid)) {
-  dict.map_values(chains, fn(_strand, reapers) {
-    list.filter(reapers, fn(reaper) { reaper != departed })
+  dict.fold(chains, dict.new(), fn(acc, strand, reapers) {
+    case list.filter(reapers, fn(reaper) { reaper != departed }) {
+      [] -> acc
+      kept -> dict.insert(acc, strand, kept)
+    }
   })
 }
 
@@ -306,4 +330,16 @@ pub fn claim(
   reaper: Pid,
 ) -> List(Pid) {
   process.call_forever(ledger, Claim(strand, reaper, _))
+}
+
+/// Waits until any currently registered reapers for `strand` have proved normal drain,
+/// without publishing a new reaper into the ledger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let previous = drain_registry.await(ledger, "main")
+/// ```
+pub fn await(ledger: Subject(Message), strand: String) -> List(Pid) {
+  process.call_forever(ledger, Await(strand, _))
 }

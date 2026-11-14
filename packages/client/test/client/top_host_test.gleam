@@ -31,6 +31,7 @@ import client/remote_feed
 import client/remote_top
 import client/spawners
 import client/top_host
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -880,6 +881,7 @@ pub fn a_create_resent_after_the_transaction_and_before_the_store_finishes_it_te
       model: None,
       executor: "exec",
       pool: "",
+      agency: agency_limits.empty,
     )
   let assert Ok(manager.Relaying(session_id:, state:)) =
     manager.reserve_relayed(
@@ -1288,6 +1290,7 @@ fn owner_session(rig: Rig) -> String {
         model: None,
         executor: "exec",
         pool: "",
+        agency: agency_limits.empty,
       ),
       directory: rig.directory,
       generator: ids.generator(clock.fixed(at: 9), 9),
@@ -1308,6 +1311,7 @@ fn other_spawner_session(rig: Rig) -> String {
       model: None,
       executor: "exec",
       pool: "",
+      agency: agency_limits.empty,
     )
   let assert Ok(manager.Relaying(session_id:, ..)) =
     manager.reserve_relayed(

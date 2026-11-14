@@ -124,7 +124,7 @@ Data: all of it is on the page the picker already holds. `protocol.Session`
 creation time and lifecycle. `protocol.Activity` (`:300`) has the state
 (`ActivityState`, `:325`), strand and working counts, approvals, last
 outcome, last message, model, and up to four `GlanceLine`s (`:353`). The
-filters are `session_selector.Filter` (`session_selector.gleam:75`). Nothing
+filters are `session_selector.Filter` (`session_selector.gleam:82`). Nothing
 needs a wire change. Age is the creation age, because the page has no
 last-activity time; if the owner wants "last active" that is a protocol
 change to `sessions.activity`.

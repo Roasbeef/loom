@@ -15,6 +15,36 @@ column and §5.1 of `docs/loom-implementation-spec.md`,
 
 ---
 
+## Session hot-path performance (#1150, #1151, #1152)
+
+These three debt issues separate a targeted runtime change from two measurement
+tracks. [#1150](https://github.com/Roasbeef/loom/issues/1150) narrows pending-entry
+loads to referenced IDs, including staged tool results. Its acceptance requires
+queue and corruption regressions, matched baseline/candidate measurements and
+independent gates. [#1151](https://github.com/Roasbeef/loom/issues/1151) measures
+register queries and actor crossings without claiming full-turn CPU attribution.
+[#1152](https://github.com/Roasbeef/loom/issues/1152) evaluates local SQLite commit
+costs before a decision on group commit. It authorizes no production batching
+or frozen-interface change.
+
+The [November 4 record](review/session-hotpaths-2026-11-04.md) completes the
+original read and commit measurements. Scoped pending points isolate unrelated
+corruption but regress on wide owned queues. On November 13 the owner approved
+[protocol 114](../protocol-change/114-bounded-register-reads.md): exact-key reads
+bounded to 128 raw keys per call, with an explicit limit refusal and one
+per-call snapshot. The runtime now batches its complete captured pending set
+without a namespace-scan fallback or new cache.
+
+The [bulk-read follow-up](review/bulk-register-reads-2026-11-13.md) retains two
+full contemporaneous scan/point/bulk runs and all 1,008 samples. Wide-owned bulk
+reads improve on individual points in both runs, but do not uniformly beat
+scans. The original `register-read-performance.md` and `group-commit-evaluation.md`
+remain separate historical measurements; typed control polling is unchanged
+and production group commit remains deferred. Actual runtime prevalence and
+installed savings remain unmeasured. Verification receipts, negative controls
+and the independent review are recorded in the dated follow-up, not inferred
+from upstream Pi Durable results.
+
 ## Distributed runtime experience (#1137)
 
 The [distributed runtime epic](https://github.com/Roasbeef/loom/issues/1137)

@@ -3903,3 +3903,7 @@ workspace. The wire forms are `docs/client-protocol.md` section 3.32. `launch_pr
 is the parser's test seam and `project_reply_text` builds what each subcommand prints
 from the reply alone, both `@internal` and tested in `project_command_test` without a
 daemon.
+
+## Subagent limits on session creation (`protocol-change/113`)
+
+`tui/daemon/protocol` carries optional `core/agency_limits.AgencyLimits` under the `"agency"` field of session `create` requests, `tui/daemon/selection` threads it through `CreateOptions` and `session_control.LaunchOptions`, and `tui/session_selector` renders an optional collapsed-by-default `"Subagent limits"` section on the New Session form with `fan_out`, `session_strands`, `depth_mode` (`default` / `bounded` / `unlimited`), and `depth_cap`. Empty inputs omit overrides so existing sessions inherit shipped defaults (`100` fan-out, `256` session strands, depth cap `1`).

@@ -39,6 +39,9 @@
 ////    `row_lines`, `window`) beside the details pane (`detail_lines`), and ends
 ////    with `help_lines`; `visible` is the one drawn order the highlight indexes.
 
+import core/agency_limits.{
+  type AgencyLimits, AgencyLimits, BoundedDepth, UnlimitedDepth,
+}
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/keys
@@ -147,6 +150,32 @@ pub type Prompt {
     /// The session the question was asked about.
     session_id: String,
   )
+
+  /// Prompting for optional subagent limits before creating a new session.
+  CreatingLimits(draft: LimitsDraft)
+}
+
+/// Active input field inside the session creation limits modal.
+pub type LimitsField {
+  /// Override for per-strand live child limit (`1..10000`).
+  FanOutField
+
+  /// Override for session-wide live spawned strand limit (`1..10000`).
+  SessionStrandsField
+
+  /// Override for depth cap (`1..256` or `"unlimited"`).
+  DepthCapField
+}
+
+/// Draft values for creating a session with custom subagent limits.
+pub type LimitsDraft {
+  LimitsDraft(
+    field: LimitsField,
+    fan_out: String,
+    session_strands: String,
+    depth_cap: String,
+    error: Option(String),
+  )
 }
 
 /// One page is the complete retained selector inventory.
@@ -182,6 +211,9 @@ pub type Action {
 
   /// Request explicit creation under the terminal's retained durable key.
   NewSession
+
+  /// Request explicit creation carrying custom per-session subagent limits.
+  NewSessionWithLimits(agency: AgencyLimits)
 
   /// Commit the edited name for the identity that opened the editor.
   Rename(
@@ -580,6 +612,7 @@ pub fn update(key: keys.Key, state: State) -> Action {
     Renaming(id, draft) -> renaming(key, state, id, draft)
     ConfirmingDelete(session_id) -> confirming(key, state, Delete(session_id))
     ConfirmingArchive(session_id) -> confirming(key, state, Archive(session_id))
+    CreatingLimits(draft) -> creating_limits(key, state, draft)
   }
 }
 
@@ -607,6 +640,206 @@ fn renaming(key: keys.Key, state: State, id: String, draft: String) -> Action {
       }
     }
     _ -> Continue(state)
+  }
+}
+
+/// Handles keyboard editing inside the subagent limits creation prompt.
+fn creating_limits(key: keys.Key, state: State, draft: LimitsDraft) -> Action {
+  // Dispatch editing, field navigation, cancellation, and submission keys.
+  case key {
+    keys.Escape -> Continue(State(..state, prompt: Browsing))
+    keys.Tab | keys.Down ->
+      Continue(State(..state, prompt: CreatingLimits(next_limits_field(draft))))
+    keys.BackTab | keys.Up ->
+      Continue(State(..state, prompt: CreatingLimits(prev_limits_field(draft))))
+    keys.Backspace ->
+      Continue(State(..state, prompt: CreatingLimits(drop_limit_char(draft))))
+    keys.Ctrl("u") ->
+      Continue(State(..state, prompt: CreatingLimits(clear_limit_field(draft))))
+    keys.Enter -> submit_limits_draft(state, draft)
+    keys.Char(character) ->
+      Continue(
+        State(
+          ..state,
+          prompt: CreatingLimits(append_limit_char(draft, character)),
+        ),
+      )
+    _ -> Continue(state)
+  }
+}
+
+/// Validates the limits draft and either submits creation or shows an inline error.
+fn submit_limits_draft(state: State, draft: LimitsDraft) -> Action {
+  // Parse and validate every non-empty field before dispatching creation.
+  case parse_limits_draft(draft) {
+    Ok(agency) -> NewSessionWithLimits(agency)
+    Error(reason) ->
+      Continue(
+        State(
+          ..state,
+          prompt: CreatingLimits(LimitsDraft(..draft, error: Some(reason))),
+        ),
+      )
+  }
+}
+
+/// Advances focus cyclically through the three limit fields.
+fn next_limits_field(draft: LimitsDraft) -> LimitsDraft {
+  // Advance focus to the next limits input field.
+  let field = case draft.field {
+    FanOutField -> SessionStrandsField
+    SessionStrandsField -> DepthCapField
+    DepthCapField -> FanOutField
+  }
+
+  LimitsDraft(..draft, field:)
+}
+
+/// Moves focus backward cyclically through the three limit fields.
+fn prev_limits_field(draft: LimitsDraft) -> LimitsDraft {
+  // Move focus to the previous limits input field.
+  let field = case draft.field {
+    FanOutField -> DepthCapField
+    SessionStrandsField -> FanOutField
+    DepthCapField -> SessionStrandsField
+  }
+
+  LimitsDraft(..draft, field:)
+}
+
+/// Deletes one trailing character from the focused limits field.
+fn drop_limit_char(draft: LimitsDraft) -> LimitsDraft {
+  // Dispatch on the active field to update its text and clear stale errors.
+  case draft.field {
+    FanOutField ->
+      LimitsDraft(
+        ..draft,
+        fan_out: string.drop_end(draft.fan_out, 1),
+        error: None,
+      )
+    SessionStrandsField ->
+      LimitsDraft(
+        ..draft,
+        session_strands: string.drop_end(draft.session_strands, 1),
+        error: None,
+      )
+    DepthCapField ->
+      LimitsDraft(
+        ..draft,
+        depth_cap: string.drop_end(draft.depth_cap, 1),
+        error: None,
+      )
+  }
+}
+
+/// Clears the focused limits field.
+fn clear_limit_field(draft: LimitsDraft) -> LimitsDraft {
+  // Dispatch on the active field to clear its text.
+  case draft.field {
+    FanOutField -> LimitsDraft(..draft, fan_out: "", error: None)
+    SessionStrandsField ->
+      LimitsDraft(..draft, session_strands: "", error: None)
+    DepthCapField -> LimitsDraft(..draft, depth_cap: "", error: None)
+  }
+}
+
+/// Appends an accepted character to the focused limits field.
+fn append_limit_char(draft: LimitsDraft, character: String) -> LimitsDraft {
+  // Accept digits for numeric counts and digits or `unlimited` for depth_cap.
+  case draft.field {
+    FanOutField ->
+      case is_ascii_digits(character) && string.length(draft.fan_out) < 5 {
+        True ->
+          LimitsDraft(..draft, fan_out: draft.fan_out <> character, error: None)
+        False -> draft
+      }
+    SessionStrandsField ->
+      case
+        is_ascii_digits(character) && string.length(draft.session_strands) < 5
+      {
+        True ->
+          LimitsDraft(
+            ..draft,
+            session_strands: draft.session_strands <> character,
+            error: None,
+          )
+        False -> draft
+      }
+    DepthCapField -> append_depth_char(draft, character)
+  }
+}
+
+/// Appends digits, lowercase letters, or `u` shorthand for `"unlimited"` in depth_cap.
+fn append_depth_char(draft: LimitsDraft, character: String) -> LimitsDraft {
+  // Pressing `u` on an empty depth field fills `"unlimited"` directly.
+  case character == "u" && draft.depth_cap == "" {
+    True -> LimitsDraft(..draft, depth_cap: "unlimited", error: None)
+    False -> {
+      let next = draft.depth_cap <> character
+
+      // Accept bounded numeric depth or characters spelling `"unlimited"`.
+      case is_depth_text(character) && string.length(next) <= 9 {
+        True -> LimitsDraft(..draft, depth_cap: next, error: None)
+        False -> draft
+      }
+    }
+  }
+}
+
+/// Checks whether every codepoint in `text` is an ASCII decimal digit.
+fn is_ascii_digits(text: String) -> Bool {
+  text != ""
+  && list.all(string.to_utf_codepoints(text), fn(cp) {
+    let code = string.utf_codepoint_to_int(cp)
+    code >= 48 && code <= 57
+  })
+}
+
+/// Checks whether `text` contains only ASCII digits or lowercase letters.
+fn is_depth_text(text: String) -> Bool {
+  text != ""
+  && list.all(string.to_utf_codepoints(text), fn(cp) {
+    let code = string.utf_codepoint_to_int(cp)
+    { code >= 48 && code <= 57 } || { code >= 97 && code <= 122 }
+  })
+}
+
+/// Parses and validates the three draft fields into `AgencyLimits`.
+fn parse_limits_draft(draft: LimitsDraft) -> Result(AgencyLimits, String) {
+  use fan_out <- result.try(parse_optional_count(draft.fan_out, "fan_out"))
+  use session_strands <- result.try(parse_optional_count(
+    draft.session_strands,
+    "session_strands",
+  ))
+  use depth_cap <- result.try(parse_depth_draft(draft.depth_cap))
+  agency_limits.validate(AgencyLimits(fan_out:, session_strands:, depth_cap:))
+}
+
+/// Parses an optional positive integer count from a draft field.
+fn parse_optional_count(
+  raw: String,
+  label: String,
+) -> Result(Option(Int), String) {
+  // Treat blank fields as inherited defaults.
+  case string.trim(raw) {
+    "" -> Ok(None)
+    text ->
+      result.map(int.parse(text), Some)
+      |> result.map_error(fn(_) { label <> " must be an integer" })
+  }
+}
+
+/// Parses an optional depth cap (`1..256` or `"unlimited"`) from the draft field.
+fn parse_depth_draft(
+  raw: String,
+) -> Result(Option(agency_limits.DepthCap), String) {
+  // Treat blank fields as inherited defaults and `"unlimited"` as unbounded depth.
+  case string.trim(raw) {
+    "" -> Ok(None)
+    "unlimited" -> Ok(Some(UnlimitedDepth))
+    text ->
+      result.map(int.parse(text), fn(value) { Some(BoundedDepth(value)) })
+      |> result.replace_error("depth_cap must be 1..256 or unlimited")
   }
 }
 
@@ -675,6 +908,8 @@ fn browsing(key: keys.Key, state: State) -> Action {
         Archived -> ShowCollection(Active)
       }
     keys.Char("n") -> NewSession
+    keys.Char("N") ->
+      Continue(State(..state, prompt: CreatingLimits(empty_limits_draft())))
     keys.Char("r") ->
       case selected_row(state) {
         Some(row) ->
@@ -1875,7 +2110,10 @@ fn help_lines(state: State, width: Int) -> List(span.Line) {
     Browsing ->
       case state.collection {
         Active -> [
-          hints(["↑↓ move", "Enter open", "Tab filter", "n new"], width),
+          hints(
+            ["↑↓ move", "Enter open", "Tab filter", "n new", "N limits"],
+            width,
+          ),
           hints(
             list.flatten([
               ["l link", "r rename", "d archive", "a archived"],
@@ -1927,7 +2165,71 @@ fn help_lines(state: State, width: Int) -> List(span.Line) {
       ),
       hints(["y delete", "any other key keeps it"], width),
     ]
+    CreatingLimits(draft) -> limits_help_lines(draft, width)
   }
+}
+
+/// Builds an empty subagent limits creation draft.
+fn empty_limits_draft() -> LimitsDraft {
+  LimitsDraft(
+    field: FanOutField,
+    fan_out: "",
+    session_strands: "",
+    depth_cap: "",
+    error: None,
+  )
+}
+
+/// Renders the compact two-line footer prompt for custom subagent limits.
+fn limits_help_lines(draft: LimitsDraft, width: Int) -> List(span.Line) {
+  let fan = limit_cell("fan", draft.fan_out, "100", draft.field, FanOutField)
+  let strands =
+    limit_cell(
+      "strands",
+      draft.session_strands,
+      "256",
+      draft.field,
+      SessionStrandsField,
+    )
+  let depth =
+    limit_cell(
+      "depth",
+      draft.depth_cap,
+      "1|unlimited",
+      draft.field,
+      DepthCapField,
+    )
+  let summary = fan <> "  " <> strands <> "  " <> depth
+
+  // Append any inline validation error to the summary line.
+  let line = case draft.error {
+    Some(reason) -> summary <> "  [" <> reason <> "]"
+    None -> summary
+  }
+
+  [
+    question(fit_tail(line, width), width),
+    hints(["Tab/↑↓ field", "Enter create", "u unlimited", "Esc cancel"], width),
+  ]
+}
+
+/// Formats one field inside the limits prompt with a cursor when focused.
+fn limit_cell(
+  label: String,
+  value: String,
+  fallback: String,
+  active: LimitsField,
+  target: LimitsField,
+) -> String {
+  // Draw a cursor indicator only on the currently focused field.
+  let body = case value, active == target {
+    "", True -> "▏(" <> fallback <> ")"
+    "", False -> fallback
+    text, True -> text <> "▏"
+    text, False -> text
+  }
+
+  label <> ": " <> body
 }
 
 /// Formats session name with identity for confirmation prompts.

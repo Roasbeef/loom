@@ -374,6 +374,7 @@ fn erase(store: Storage(handle)) -> Storage(Nil) {
     commit: fn(_, tx) { storage.commit(store, tx) },
     get_entries: fn(_, ids) { storage.get_entries(store, ids) },
     get_register: fn(_, ns, key) { storage.get_register(store, ns, key) },
+    get_registers: fn(_, ns, keys) { storage.get_registers(store, ns, keys) },
     list_registers: fn(_, ns, prefix) {
       storage.list_registers(store, ns, prefix)
     },

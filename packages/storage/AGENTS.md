@@ -26,6 +26,16 @@ close (including failed close), and bypasses larger values. Those limits bound
 encoded inventory, not decoded heap bytes. Old values can remain until overflow
 or close; there is no transaction, lease or authorization cache.
 
+`storage.get_registers` implements protocol 113's exact-key bulk read. The wrapper
+accepts at most 128 raw key occurrences in one namespace, rejects larger requests
+with `RegisterReadLimitExceeded(128)` before backend admission, and returns a
+dictionary of existing cells with their sequences. Duplicates collapse and missing
+keys are omitted. Each call observes one snapshot; SQLite selects current rows
+through `internal/register_query` in one indexed statement before decoding them.
+Unrequested malformed cells cannot fail the read. Valid empty calls still check
+handle closure, and multiple calls do not share a snapshot. No cache policy or
+durable format changes.
+
 `domain.source_records` reads one fresh page of at most 100 saved registrations.
 `catalogue.domain_source_records` joins the base rows and display layers in one
 statement and applies the same complete registration validation as point reads.
@@ -38,17 +48,16 @@ independent test oracle, including Unicode rejection and length boundaries.
 
 ## Key Types
 
-- The catalogue is at `user_version` 20. Each later version has its own embedded
+- The catalogue is at `user_version` 21. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
   `catalogue_recent_folders_schema`, `catalogue_profiles_schema`,
   `catalogue_models_schema`, `catalogue_executors_schema`,
   `catalogue_pools_schema`, `catalogue_moves_schema`,
-  `catalogue_deletions_schema`,
-  `catalogue_delegates_schema`, `catalogue_releases_schema`,
+  `catalogue_deletions_schema`, `catalogue_delegates_schema`, `catalogue_releases_schema`,
   `catalogue_spend_schema`, `catalogue_start_failures_schema`,
-  `catalogue_relayed_schema`, `catalogue_projects_schema`), and
+  `catalogue_relayed_schema`, `catalogue_projects_schema`, `catalogue_agency_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -258,6 +267,7 @@ independent test oracle, including Unicode rejection and length boundaries.
   `relayed_page_limit` (64) with the name and placement, skipping archived sessions so the listing is bounded by the cap, and `delete`
   removes the row before the registration, which frees the place. The table is
   defined in `sql/catalogue_relayed.sql`.
+- `catalogue_session_agency(session_id, fan_out, session_strands, depth_mode, depth_cap)` (version 21, `protocol-change/113`, `sql/catalogue_agency.sql`) stores optional per-session `AgencyLimits` overrides without changing `catalogue_sessions`. `domain.reserve_session_with_agency` writes the row atomically on non-default creations, `catalogue.agency_limits` returns `agency_limits.empty` when absent, and `catalogue.delete` deletes any row before deleting the session.
 - `catalogue.StartFailure(reason, at)` is why a reservation's start failed
   (protocol-change/093, catalogue version 18). `catalogue_start_failures(session_id,
   reason, failed_at)` holds at most one row per registration, separate from the
@@ -623,7 +633,8 @@ independent test oracle, including Unicode rejection and length boundaries.
 - **Actor messages** — both backends expose an opaque `Message` and
   serialize everything through one mailbox ("one writer, one queue"):
   `Commit(tx, reply)`, `GetEntries(ids, reply)`,
-  `GetRegister(ns, key, reply)`, `ListRegisters(ns, prefix, reply)`,
+  `GetRegister(ns, key, reply)`, `GetRegisters(ns, keys, reply)`,
+  `ListRegisters(ns, prefix, reply)`,
   `ScanBranch(q, reply)`, `ScanEntries(q, reply)`, `ScanUsage(q, reply)`,
   `Stats(reply)`, `Close(reply)`. Every variant is a call. `sqlite` adds
   lease renewal, driven from `runtime/writer`'s `RenewTick`, and

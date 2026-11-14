@@ -34,6 +34,7 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
+import gleam/option.{type Option}
 import gleam/otp/factory_supervisor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
@@ -87,7 +88,7 @@ pub opaque type Message {
 /// drain claim, the options a strand's driver starts with. The factory sets
 /// the strand's name on what it returns.
 pub type StrandTemplate =
-  fn(address.Address(writer.Message), fn(String, Pid) -> List(Pid)) ->
+  fn(address.Address(writer.Message), fn(String, Option(Pid)) -> List(Pid)) ->
     strand_runtime.Options
 
 type State {

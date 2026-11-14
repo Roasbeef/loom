@@ -211,6 +211,7 @@ import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
 import runtime/api.{type Runtime}
+import runtime/effects
 import runtime/lineage
 import storage/storage
 import telemetry/field
@@ -467,7 +468,9 @@ fn builder(
     |> sm.returning(subject)
     |> Ok
   })
-  |> sm.with_timer_source(timer.Injected(after: runtime.effects.timers.after))
+  |> sm.with_timer_source(
+    timer.Injected(after: effects.after_fn(runtime.effects.timers)),
+  )
   |> sm.addressed(name)
   |> sm.on_enter(entered)
   |> sm.on_event(handle)

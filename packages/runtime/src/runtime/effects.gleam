@@ -28,7 +28,7 @@ import core/message.{
   type AgentMessage, type DeferredHandle, type ToolCall, AssistantMessage,
   Errored,
 }
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject, type Timer}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -520,27 +520,100 @@ pub type Hooks {
 /// discoverable by re-planning — but a wake delivered twice is harmless
 /// too, since the driver re-reads its durable state on every pass.
 pub type Timers {
+  /// Production wall-clock timers backed directly by ERTS `process.send_after`,
+  /// avoiding per-tick helper processes.
+  SystemTimers
+
+  /// Injected logical or custom timers (e.g. `conformance/simulation/vclock`).
   Timers(after: fn(Int, fn() -> Nil) -> Nil)
 }
 
-/// Wall-clock timers: each deadline waits on its own short-lived
-/// unlinked process. Production wiring passes this.
+/// Wall-clock timers: zero-process `process.send_after` for subject wakes,
+/// and short-lived unlinked processes when a generic closure callback is asked.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // effects.Effects(.., timers: effects.real_timers())
 /// ```
-///
 pub fn real_timers() -> Timers {
-  Timers(after: fn(delay_ms, wake) {
-    let _pid =
-      process.spawn_unlinked(fn() {
-        process.sleep(delay_ms)
-        wake()
-      })
-    Nil
-  })
+  SystemTimers
+}
+
+/// Schedules `wake` after `delay_ms` milliseconds on `timers`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // effects.after(effects.real_timers(), 100, fn() { Nil })
+/// ```
+pub fn after(timers: Timers, delay_ms: Int, wake: fn() -> Nil) -> Nil {
+  // Dispatches wall-clock sleep or custom injected timer.
+  case timers {
+    SystemTimers -> {
+      let _pid =
+        process.spawn_unlinked(fn() {
+          process.sleep(delay_ms)
+          wake()
+        })
+      Nil
+    }
+    Timers(after: schedule) -> schedule(delay_ms, wake)
+  }
+}
+
+/// Returns a `fn(Int, fn() -> Nil) -> Nil` adapter for `weft/timer.Injected`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let schedule = effects.after_fn(effects.real_timers())
+/// ```
+pub fn after_fn(timers: Timers) -> fn(Int, fn() -> Nil) -> Nil {
+  fn(delay_ms, wake) { after(timers, delay_ms, wake) }
+}
+
+/// Sends `message` to `subject` after `delay_ms` milliseconds. On `SystemTimers`
+/// this uses ERTS `process.send_after` directly with zero spawned processes and
+/// returns the cancellable timer handle; on injected `Timers` it delegates to `after`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let timer = effects.send_after(effects.real_timers(), to: subject, after: 100, sending: Nil)
+/// ```
+pub fn send_after(
+  timers: Timers,
+  to subject: Subject(msg),
+  after delay_ms: Int,
+  sending message: msg,
+) -> Option(Timer) {
+  // Uses zero-process send_after on system timers or delegates to injected timers.
+  case timers {
+    SystemTimers -> Some(process.send_after(subject, delay_ms, message))
+    Timers(after: schedule) -> {
+      schedule(delay_ms, fn() { process.send(subject, message) })
+      None
+    }
+  }
+}
+
+/// Cancels a timer handle returned by `send_after`, if one was armed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // effects.cancel_timer(None)
+/// ```
+pub fn cancel_timer(timer: Option(Timer)) -> Nil {
+  // Cancels the timer handle if one was returned.
+  case timer {
+    None -> Nil
+    Some(handle) -> {
+      let _cancelled = process.cancel_timer(handle)
+      Nil
+    }
+  }
 }
 
 /// Everything the strand driver needs to touch the world.

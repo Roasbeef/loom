@@ -111,7 +111,7 @@ fn counted_timers(
 ) -> effects.Timers {
   let real = effects.real_timers()
   effects.Timers(after: fn(delay_ms, wake) {
-    real.after(delay_ms, wake)
+    effects.after(real, delay_ms, wake)
     let _counted = case delay_ms {
       delay if delay == short_poll_ms -> recorder.bump(rec, "poll.short")
       delay if delay == idle_poll_ms -> recorder.bump(rec, "poll.long")
@@ -144,7 +144,7 @@ pub fn recording_a_timer_does_not_delay_its_wake_test() {
     weft.new([
       fn() {
         process.send(ready, Nil)
-        counted_timers(rec, long_poll_ms).after(short_poll_ms, fn() {
+        effects.after(counted_timers(rec, long_poll_ms), short_poll_ms, fn() {
           process.send(fired, Nil)
         })
         Ok(Nil)

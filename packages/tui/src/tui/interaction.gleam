@@ -835,6 +835,8 @@ fn update_daemon_selector(
           )
       }
     session_selector.NewSession -> session_control.create_session(model)
+    session_selector.NewSessionWithLimits(agency) ->
+      session_control.create_session_with_limits(model, agency)
     session_selector.Delete(session_id) ->
       session_control.begin_delete(model, session_id)
     session_selector.Archive(session_id) ->

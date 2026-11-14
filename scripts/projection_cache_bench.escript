@@ -19,10 +19,10 @@ run(Build, Check) ->
     {ok, Module, Beam, _Warnings} = compile:forms(Forms, [binary, export_all, return_errors, return_warnings]),
     {module, Module} = code:load_binary(Module, Path, Beam),
     [{type, _, tuple, Fields}] = [T || {attribute, _, type, {state, T, []}} <- Forms],
-    22 = length(Fields),
+    24 = length(Fields),
     %% Refuse a changed State layout rather than timing a different private slot.
-    {remote_type, _, [{atom, _, gleam@option}, {atom, _, option}, [_]]} = lists:nth(20, Fields),
-    Empty = setelement(20, list_to_tuple([state | lists:duplicate(21, undefined)]), none),
+    {remote_type, _, [{atom, _, gleam@option}, {atom, _, option}, [_]]} = lists:nth(22, Fields),
+    Empty = setelement(22, list_to_tuple([state | lists:duplicate(23, undefined)]), none),
     io:format("otp=~s erts=~s word_bytes=~p schedulers=~p~n",
         [erlang:system_info(otp_release), erlang:system_info(version),
          erlang:system_info(wordsize), erlang:system_info(schedulers_online)]),
@@ -46,7 +46,7 @@ measure(Module, Empty, Shape, Check) ->
     Leaf = element(2, hd(Entries)),
     {Expected, State} = Module:remember(Empty, Leaf, Entries),
     Expected = 'runtime@hooks':project_from_scan(Entries),
-    {some, Cache} = element(20, State),
+    {some, Cache} = element(22, State),
     Raw = {cached, Leaf, Entries},
     Word = erlang:system_info(wordsize),
     %% Same-process shared size and flat copy cost answer different questions.
@@ -150,7 +150,8 @@ provider_state(Cached, Padding) ->
     S1 = setelement(2, Cached, 'gleam@erlang@process':new_subject()),
     S2 = setelement(5, S1, Effects),
     S3 = setelement(12, S2, 'telemetry@log':discard()),
-    setelement(13, S3, {reaper, undefined, none, self()}).
+    S4 = setelement(14, S3, {some, {reaper, undefined, none, self(), 'gleam@erlang@process':new_subject()}}),
+    setelement(15, S4, []).
 
 worker_words(Module, State, Leaf, Context) ->
     {ok, Op} = 'core@ids':parse_op_id(<<"00000000-0000-7000-8000-000000000001">>),

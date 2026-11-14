@@ -34,7 +34,7 @@ index is in section 14.
 [light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-120x40-light.png) ·
 [80×24 png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-80x24-dark.png)
 
-The before frames were rendered from `render` at `tui/session_selector.gleam:836` with six fixture sessions, because `--demo` has no daemon and
+The before frames were rendered from `render` at `tui/session_selector.gleam:1071` with six fixture sessions, because `--demo` has no daemon and
 answers `←` with "daemon control is unavailable". What is wrong with it:
 
 - **Alignment.** A row is the name, then ` · ` and the short identity, so the
@@ -100,7 +100,7 @@ Everything drawn is already in the control protocol. A row is
 `Activity` at `tui/daemon/protocol.gleam:419`: state, strands, working,
 approvals, last outcome, last message and model, with up to four
 `GlanceLine` at `tui/daemon/protocol.gleam:439` rows. The filter counts are
-`counts` at `tui/session_selector.gleam:755`. "Created" uses `created_at`. A
+`counts` at `tui/session_selector.gleam:748`. "Created" uses `created_at`. A
 "last active" column would need a new control field, which is a
 protocol-change; this concept does not ask for one (question 6).
 
@@ -411,7 +411,7 @@ record would need a new control command.
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
 | Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3916`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:4228`; the call list has no data and needs a new wire record |
 | Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2912` |
-| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:2914`; not recognised by `session_view` today |
+| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:2939`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
 Every row above is either drawn today or a change inside `session_view` or
@@ -495,7 +495,7 @@ that heading.
 **Local strand messages are weaker.** A message from another strand in the
 same session arrives as a user turn with no origin. Its sender is written by
 the harness into a text frame, `[message from <strand>]` … `[end message. …]`
-(`frame_message` at `client/agency.gleam:2914`). Today `session_view` does not
+(`frame_message` at `client/agency.gleam:2939`). Today `session_view` does not
 recognise the frame, so these messages are drawn as `› User` turns, which is
 one of the pain points in the owner's recordings. Concept B recognises the
 frame by both its header and its footer, as advisor frames are recognised,
