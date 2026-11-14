@@ -218,27 +218,8 @@ fn kept_or_replaced(found: Held, row: Row) -> Change {
   }
 }
 
-/// The rows the daemon holds after the steps are performed, sorted by name. A
-/// `Failed` step leaves its row as it was.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let row = executor_reload.Row("box", "10.0.0.2", 7443, <<1>>)
-/// assert executor_reload.applied(executor_reload.plan([], [row])) == [row]
-/// ```
-pub fn applied(steps: List(Step)) -> List(Row) {
-  list.filter_map(steps, fn(step) {
-    case step.change {
-      Started | Restarted -> option.to_result(step.wanted, Nil)
-      Unchanged | Failed -> option.to_result(step.held, Nil)
-      Stopped -> Error(Nil)
-    }
-  })
-}
-
 /// What the caller is told about a set of steps: one entry for each, sorted by
-/// name, each name once.
+/// name. `plan` yields each name once, so the entries do too.
 ///
 /// ## Examples
 ///
@@ -249,7 +230,6 @@ pub fn reply_of(steps: List(Step)) -> Reply {
   let entries =
     list.map(steps, fn(step) { Entry(step.name, step.change) })
     |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
-    |> list.unique
   Reply(executors: entries)
 }
 

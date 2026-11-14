@@ -102,10 +102,22 @@ fn sorted(rows: List(Row)) -> List(Row) {
   list.sort(rows, fn(a, b) { string.compare(a.name, b.name) })
 }
 
+// The rows the daemon holds after the steps are performed, sorted as the plan
+// is. A `Failed` step leaves its row as it was.
+fn applied(steps: List(executor_reload.Step)) -> List(Row) {
+  list.filter_map(steps, fn(step) {
+    case step.change {
+      Started | Restarted -> option.to_result(step.wanted, Nil)
+      Unchanged | Failed -> option.to_result(step.held, Nil)
+      Stopped -> Error(Nil)
+    }
+  })
+}
+
 pub fn applying_the_plan_yields_the_wanted_set_test() {
   qcheck.run(config(), slots_generator(), fn(slots) {
     let steps = executor_reload.plan(held_of(slots), wanted_of(slots))
-    assert executor_reload.applied(steps) == sorted(wanted_of(slots))
+    assert applied(steps) == sorted(wanted_of(slots))
   })
 }
 
@@ -185,7 +197,7 @@ pub fn a_failed_step_leaves_the_held_row_test() {
   let old = Row("box", "10.0.0.1", 7000, <<1>>)
   let new = Row("box", "10.0.0.2", 7000, <<1>>)
   let step = executor_reload.Step("box", Failed, Some(old), Some(new))
-  assert executor_reload.applied([step]) == [old]
+  assert applied([step]) == [old]
 }
 
 pub fn decode_refuses_what_a_daemon_never_sends_test() {

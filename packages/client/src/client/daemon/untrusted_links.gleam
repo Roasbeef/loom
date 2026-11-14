@@ -12,14 +12,14 @@
 ////
 //// ## Who owns a link
 ////
-//// The registry starts each link from its own process, unlinks it at once and
-//// monitors it. Unlinking means a link's crash does not end the registry, and a
-//// registry that ended would not end the links, so the next owner replaces what
-//// is left. Monitoring means a link's death is logged when it happens and is
-//// seen by the next reload, which starts the link again. A link is never
-//// started while another process holds its name: the registry kills whatever
-//// holds it and waits for the name to be free, so a link that an earlier owner
-//// left is replaced and never refused as a taken name.
+//// The registry starts each link from its own process and unlinks it at once.
+//// Unlinking means a link's crash does not end the registry, and a registry
+//// that ended would not end the links, so the next owner replaces what is
+//// left. A link's death is seen by the next reload, which reads whether each
+//// held pid is alive, logs a dead one and starts the link again. A link is
+//// never started while another process holds its name: the registry kills
+//// whatever holds it and waits for the name to be free, so a link that an
+//// earlier owner left is replaced and never refused as a taken name.
 ////
 //// ## One reload at a time
 ////
@@ -60,7 +60,7 @@ import client/executors.{type Executor}
 import client/internal/ffi_tls_stream.{type Credentials}
 import client/remote/untrusted_link
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Monitor, type Pid, type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -136,13 +136,12 @@ type Message {
     reply: Subject(Result(Reply, Failure)),
   )
   Rows(reply: Subject(List(Executor)))
-  LinkEnded(executor: String, down: process.Down)
 }
 
-/// A row the registry holds: the executor as the file wrote it, the process of
-/// its link and the monitor on that process.
+/// A row the registry holds: the executor as the file wrote it and the process
+/// of its link.
 type Slot {
-  Slot(executor: Executor, pid: Pid, watch: Monitor)
+  Slot(executor: Executor, pid: Pid)
 }
 
 /// What the registry process keeps.
@@ -244,56 +243,14 @@ fn handle(book: Book, message: Message) -> actor.Next(Book, Message) {
     Reconcile(load, reply) -> {
       let #(next, answer) = loaded(book, load)
       process.send(reply, answer)
-      continue(next)
+      actor.continue(next)
     }
 
     Rows(reply) -> {
       process.send(reply, held_rows(book))
-      continue(book)
-    }
-
-    // A link's process ended. The slot stays, because the row is still the
-    // file's, and the next reload starts the link again.
-    LinkEnded(executor, down) -> {
-      let held = dict.get(book.slots, executor)
-
-      // A down message from a link that was replaced since is not news.
-      case result.map(held, fn(slot) { Some(slot.pid) }) == Ok(down_pid(down)) {
-        True ->
-          log.warn(book.logger, "daemon.untrusted_link_ended", [
-            field.text("executor", executor),
-          ])
-        False -> Nil
-      }
-
-      continue(book)
+      actor.continue(book)
     }
   }
-}
-
-/// Keeps the actor going with a selector that listens for each held link.
-fn continue(book: Book) -> actor.Next(Book, Message) {
-  actor.continue(book)
-  |> actor.with_selector(selecting(book))
-}
-
-/// The process a down message is about, or a port's owner placeholder. A link is
-/// never a port, so the second arm cannot match a slot's pid.
-fn down_pid(down: process.Down) -> Option(Pid) {
-  case down {
-    process.ProcessDown(pid:, ..) -> Some(pid)
-    process.PortDown(..) -> None
-  }
-}
-
-/// The registry's own mailbox, and the monitor of each link it holds.
-fn selecting(book: Book) -> process.Selector(Message) {
-  let own = process.new_selector() |> process.select(book.inbox)
-  dict.fold(book.slots, own, fn(selector, executor, slot) {
-    process.select_specific_monitor(selector, slot.watch, fn(down) {
-      LinkEnded(executor, down)
-    })
-  })
 }
 
 /// The held rows, sorted by name.
@@ -361,6 +318,7 @@ fn reconciled(
       use row <- result.map(row_of(slot.executor))
       executor_reload.Held(row:, link: liveness(slot.pid))
     })
+  log_dead_links(book.logger, held)
   let by_name =
     list.map(wanted.rows, fn(executor) { #(executor.name, executor) })
     |> dict.from_list
@@ -375,6 +333,20 @@ fn reconciled(
       #(book, [finished, ..done])
     })
   #(book, Ok(executor_reload.reply_of(steps)))
+}
+
+/// Logs each held link found dead, which is how a link that ended on its own
+/// is noticed: the reload that finds it starts it again.
+fn log_dead_links(logger: Logger, held: List(executor_reload.Held)) -> Nil {
+  list.each(held, fn(found) {
+    case found.link {
+      executor_reload.Dead ->
+        log.warn(logger, "daemon.untrusted_link_ended", [
+          field.text("executor", found.row.name),
+        ])
+      executor_reload.Alive -> Nil
+    }
+  })
 }
 
 fn liveness(pid: Pid) -> executor_reload.Liveness {
@@ -448,9 +420,8 @@ fn retire(book: Book, name: String, deadline: Int) -> Result(Book, String) {
   release(book, name)
 }
 
-/// Drops the slot and the monitor of a row.
+/// Drops the slot of a row.
 fn release(book: Book, name: String) -> Book {
-  stop_watching(book, name)
   Book(..book, slots: dict.delete(book.slots, name))
 }
 
@@ -478,11 +449,11 @@ fn replace(
   ))
   use pid <- result.map(book.links.start(row, credentials))
 
-  // The link was started linked to this process. Unlinking first means its
-  // crash cannot end the registry, and the monitor still reports it.
+  // The link was started linked to this process. Unlinking means its crash
+  // cannot end the registry, and the next reload reads whether it is alive.
   process.unlink(pid)
   let book = release(book, executor.name)
-  let slot = Slot(executor:, pid:, watch: process.monitor(pid))
+  let slot = Slot(executor:, pid:)
   Book(..book, slots: dict.insert(book.slots, executor.name, slot))
 }
 
@@ -497,19 +468,9 @@ fn clear_name(book: Book, name: String, deadline: Int) -> Result(Nil, String) {
     False, _ -> Error("the reload ran out of time before this row")
     True, Error(Nil) -> Ok(Nil)
     True, Ok(holder) -> {
-      stop_watching(book, name)
       process.kill(holder)
       freed(book, name, remaining)
     }
-  }
-}
-
-/// Stops watching a link that is about to be killed on purpose, so its death is
-/// not logged as an accident.
-fn stop_watching(book: Book, name: String) -> Nil {
-  case dict.get(book.slots, name) {
-    Ok(slot) -> process.demonitor_process(slot.watch)
-    Error(Nil) -> Nil
   }
 }
 
