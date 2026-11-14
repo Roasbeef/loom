@@ -565,6 +565,13 @@ pub const max_event_data_lines = 4096
 /// the whole response rather than one frame at a time.
 pub const max_response_bytes = 16_777_216
 
+/// The bounded grace window, in milliseconds, an attempt waits for its native
+/// HTTP transport owner to confirm cancellation drain before reporting
+/// `AttemptCancellationUnconfirmed`. This stays strictly below the gateway's
+/// 1500 ms cancellation grace and the runtime's 2000 ms grace while giving OTP
+/// `httpc_handler` enough room to close a live TLS socket cleanly.
+pub const attempt_cancel_grace_ms = 1000
+
 /// Incremental SSE parser state: pure data, so feeding is a fold. The
 /// carry buffer holds bytes of an incomplete line (chunks may split lines
 /// and even UTF-8 codepoints); the field buffers hold the in-progress
@@ -1337,7 +1344,7 @@ pub fn run_tracked(
       TerminalResponse,
       None,
       Some(timeout),
-      Some(100),
+      Some(attempt_cancel_grace_ms),
       None,
     )
   let http_events = process.new_subject()
@@ -1689,7 +1696,7 @@ fn stop_attempt(
   let outcome =
     process.new_selector()
     |> process.select_specific_monitor(transport_monitor, drain_outcome)
-    |> process.selector_receive(100)
+    |> process.selector_receive(attempt_cancel_grace_ms)
     |> result.unwrap(TimedOut)
   release_attempt_monitors(consumer_monitor, transport_monitor)
   outcome

@@ -19,6 +19,7 @@ import client/pools
 import client/roster
 import client/session_directory
 import client/session_movers
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -588,6 +589,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
@@ -605,6 +607,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 101),
@@ -1004,6 +1007,7 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 200),
@@ -1327,6 +1331,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_and_queues_s
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 400),
@@ -1344,6 +1349,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_and_queues_s
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: generator,
@@ -1541,6 +1547,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 701),
@@ -1558,6 +1565,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 702),
@@ -1739,6 +1747,7 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 703),
@@ -1813,6 +1822,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
             None,
             "",
             "",
+            agency_limits.empty,
           ),
           directory: ready.sessions_directory,
           generator: ids.generator(clock.fixed(0), pair.1),
@@ -1944,6 +1954,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 804),
@@ -2122,6 +2133,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
               None,
               "",
               "",
+              agency_limits.empty,
             ),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),
@@ -2308,6 +2320,7 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),

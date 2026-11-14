@@ -192,6 +192,11 @@ storage suite over the backends.
 - **Registers**: `simulation/invariant` reads `op.state`, `op.meta`, and
   `strand.*` through `machine/codec` to check placement and terminal
   register cleanup; `storage_suite` exercises every namespace generically.
+  Its protocol 113 bulk-read checks compare complete selected dictionaries and
+  sequences with point reads, then cover duplicates, missing keys, namespace
+  isolation, updates/deletes, empty/closed handles and the 128/129 raw-key limit.
+  The simulation's erased store forwards the same operation and preserves
+  `RegisterReadLimitExceeded` in its read-error description.
 - **Multi-strand traffic**: a share of seeds drive the subagent coda —
   `api.create_strand` (fork-in-place at the main leaf), the child's brief
   run to a terminal result, then `api.send_to_strand` delivering its

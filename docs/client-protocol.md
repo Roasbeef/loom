@@ -682,6 +682,7 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `pool` | string | optional | A pool of executors the workspace may be registered on: a `[pools.<name>]` key of the daemon's configuration, in the same grammar. Exclusive with `executor`: a request with both, or with a present value that is not a pool name, is refused as malformed. With a `pool` the workspace is a registered name, the domain scope defaults to `session_only`, and the daemon picks the executor when the session first opens. See the addendum on pools in [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
 | `model` | string | optional | A `[models.<key>]` key of the session's configuration to pin the `main` role to, 1 to 64 bytes. Absent means the chain the profile or configuration gives. A present value that is not a key of that length, including the empty string and a non-string, is refused as malformed. The server stores the key with the session and resolves it again at every open, after the profile. See [protocol-change/080](../protocol-change/080-session-model-choice.md). |
+| `agency` | object | optional | Per-session subagent limits (`fan_out` integer in `1..10000`, `session_strands` integer in `1..10000` with `fan_out <= session_strands`, `depth_cap` integer in `1..256` or `"unlimited"`). Omitted keys inherit the daemon/Agency defaults (`100`, `256`, `1`). Unknown keys or out-of-range values are refused as `bad_request`. See [protocol-change/113](../protocol-change/113-session-agency-limits.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
 (`client/daemon/protocol.gleam:256-263`).
@@ -708,7 +709,7 @@ cannot be read or parsed, whose `message` is the daemon's startup wording
 daemon's configuration, and `pool_unknown` when `pool` names no
 `[pools.<name>]`, each before anything is reserved; `conflict` when
 the key was reused with different metadata, a different `profile`,
-`model`, `executor` or `pool` included; `unavailable`.
+`model`, `executor`, `pool` or `agency` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 On a session directory member, a session with an `executor` or a `pool` is
@@ -1251,7 +1252,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1459`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1524`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 

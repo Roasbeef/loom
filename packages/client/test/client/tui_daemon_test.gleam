@@ -5,6 +5,7 @@
 import client/daemon/manager
 import client/daemon/protocol as server_protocol
 import client/daemon_server_test
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -216,6 +217,7 @@ pub fn tui_daemon_real_control_create_default_stop_lazy_open_test() {
         "",
         "",
         "",
+        agency_limits.empty,
       )
     let assert Ok(protocol.SessionReply(created)) =
       daemon.request(control, creation, 1000)
@@ -368,7 +370,16 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
     ),
     #(protocol.SetDefault("/work", id), server_protocol.SetDefault("/work", id)),
     #(
-      protocol.CreateSession("key", "/work", "é \\\"", "/config", "", "", ""),
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "é \\\"",
+        "/config",
+        "",
+        "",
+        "",
+        agency_limits.empty,
+      ),
       server_protocol.CreateSession(
         "key",
         "/work",
@@ -379,6 +390,7 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
         None,
         None,
         domain.WorkspacePrivate,
+        agency_limits.empty,
       ),
     ),
     #(protocol.OpenSession(id), server_protocol.OpenSession(id, "epoch")),
@@ -657,6 +669,7 @@ pub fn tui_daemon_disconnect_leaves_mutation_outcome_unknown_test() {
               "",
               "",
               "",
+              agency_limits.empty,
             ),
             1000,
           ),

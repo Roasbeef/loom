@@ -114,6 +114,11 @@ pub opaque type Message {
     key: String,
     reply: Subject(Result(Option(storage.Register), StorageError)),
   )
+  GetRegisters(
+    ns: RegisterNs,
+    keys: List(String),
+    reply: Subject(Result(Dict(String, storage.Register), StorageError)),
+  )
   ListRegisters(
     ns: RegisterNs,
     key_prefix: Option(String),
@@ -296,6 +301,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, storage.get_register(state.session.store, ns, key))
       actor.continue(state)
     }
+
+    // Preserve the storage backend's bounded read and error semantics.
+    GetRegisters(ns:, keys:, reply:) -> {
+      process.send(reply, storage.get_registers(state.session.store, ns, keys))
+      actor.continue(state)
+    }
+
     ListRegisters(ns:, key_prefix:, reply:) -> {
       process.send(
         reply,
@@ -344,6 +356,8 @@ fn describe_storage_error(error: StorageError) -> String {
     storage.CorruptRow(report:) -> "corrupt row: " <> report.boundary
     storage.UnknownEntry(id: _) -> "unknown entry"
     storage.BackendFault(reason:) -> reason
+    storage.RegisterReadLimitExceeded(limit:) ->
+      "register read limit exceeded: " <> int.to_string(limit)
     storage.HandleClosed -> "handle closed"
   }
 }
@@ -405,6 +419,61 @@ pub fn get_register(
   use writer <- result.try(resolve(writer))
   process.call_forever(writer, GetRegister(ns, key, _))
   |> result.map_error(Underlying)
+}
+
+/// Reads one bounded batch of exact register keys through the writer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // writer.get_registers(subject, register.PendingEntry, keys)
+/// ```
+pub fn get_registers(
+  writer: address.Address(Message),
+  ns: RegisterNs,
+  keys: List(String),
+) -> Result(Dict(String, storage.Register), Failure(StorageError)) {
+  use writer <- result.try(resolve(writer))
+  process.call_forever(writer, GetRegisters(ns, keys, _))
+  |> result.map_error(Underlying)
+}
+
+/// Reads exact keys in bounded batches; empty inputs send no request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // writer.get_registers_batched(subject, register.PendingEntry, keys)
+/// ```
+pub fn get_registers_batched(
+  writer: address.Address(Message),
+  ns: RegisterNs,
+  keys: List(String),
+) -> Result(Dict(String, storage.Register), Failure(StorageError)) {
+  get_registers_chunks(writer, ns, list.unique(keys), dict.new())
+}
+
+/// Reads each bounded slice and combines the returned cells. Each batch has
+/// its own snapshot; callers must account for changes between batches.
+fn get_registers_chunks(
+  writer: address.Address(Message),
+  ns: RegisterNs,
+  keys: List(String),
+  found: Dict(String, storage.Register),
+) -> Result(Dict(String, storage.Register), Failure(StorageError)) {
+  // Stop without a writer request once every requested key has been read.
+  case keys {
+    [] -> Ok(found)
+    _ -> {
+      use batch <- result.try(get_registers(writer, ns, list.take(keys, 128)))
+      get_registers_chunks(
+        writer,
+        ns,
+        list.drop(keys, 128),
+        dict.merge(found, batch),
+      )
+    }
+  }
 }
 
 /// A namespace listing through the writer.

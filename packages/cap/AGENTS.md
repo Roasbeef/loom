@@ -117,7 +117,7 @@ cannot hide the capability error. This does not grant the program a new effect.
   `from_my_conversation`/`with_model`/`with_tools`/`with_on`/`expecting` build a
   spawn (`with_on` names a configured orchestrator; `Delivery.Queued` is a send
   recorded for one that is away); `spawn`,
-  `wait` (a list of handles against **one** deadline, sliced across rounds up to `max_wait_slice_ms`), `send`, `note`,
+  `wait` (a list of handles against **one** deadline, sliced across rounds up to `max_wait_slice_ms`), `map` (bounded parallel fan-out, `max_concurrency` in `1..256`), `send`, `note`,
   `notes` and `roster` are the six calls, serviced by the same
   `client/agency` closures the `agent_*` tools call. Every `StrandError`
   variant but the last two is one of the harness's own refusal names

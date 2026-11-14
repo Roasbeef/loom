@@ -28,7 +28,30 @@ import weft
 /// let configured = gateway.with_codex_transport(gateway, native)
 /// ```
 pub fn transport() -> gateway.CodexTransport {
-  gateway.CodexTransport(prepare_streaming: prepare_streaming)
+  transport_with_timeout(http.default_response_timeout_ms)
+}
+
+/// The native subscription transport configured with an explicit whole-attempt
+/// HTTP response timeout in milliseconds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let native = transport.transport_with_timeout(930_000)
+/// let configured = gateway.with_codex_transport(gateway, native)
+/// ```
+///
+pub fn transport_with_timeout(timeout_ms: Int) -> gateway.CodexTransport {
+  let inference = http.httpc_transport_with_timeout(timeout_ms)
+  gateway.CodexTransport(prepare_streaming: fn(profile_name, request, events) {
+    prepare_streaming_with(
+      profile.auth,
+      inference,
+      profile_name,
+      request,
+      events,
+    )
+  })
 }
 
 /// Prepares one redacted operator command before any file or network work.
@@ -55,21 +78,6 @@ pub fn command(
       }
     }
   })
-}
-
-/// Prepares a streaming request with default authentication and transport.
-fn prepare_streaming(
-  profile_name: String,
-  request: http.HttpRequest,
-  events: Subject(http.HttpEvent),
-) -> Result(http.PreparedRequest, String) {
-  prepare_streaming_with(
-    profile.auth,
-    http.httpc_transport(),
-    profile_name,
-    request,
-    events,
-  )
 }
 
 /// Injects authorization and inference preparation under production custody.

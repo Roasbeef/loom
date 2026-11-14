@@ -3314,7 +3314,7 @@ fn dispatch(
       })
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
     }
-    protocol.CreateSession(_, _, _, configuration, profile, model, _, _, _) ->
+    protocol.CreateSession(_, _, _, configuration, profile, model, _, _, _, _) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(fn(code) {
         choice_refusal(config, configuration, profile, model, code)
@@ -4707,6 +4707,7 @@ fn dispatch_class(
       executor,
       pool,
       scope,
+      agency,
     ) ->
       create_session(
         config,
@@ -4722,6 +4723,7 @@ fn dispatch_class(
           model,
           option.unwrap(executor, ""),
           option.unwrap(pool, ""),
+          agency,
         ),
         scope,
       )

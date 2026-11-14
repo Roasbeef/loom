@@ -21,6 +21,7 @@ import client/serve
 import client/session_socket_test
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/entry
 import core/ids
@@ -254,6 +255,7 @@ fn first_phase(
         None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), 62),

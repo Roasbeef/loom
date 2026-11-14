@@ -166,17 +166,17 @@ pub const serviced_caps = [
 
 /// The default lifetime ceiling on spawn admissions in one execution.
 ///
-/// Above `session_strands` (16) on purpose. The Agency's live caps —
-/// `fan_out` at 8 per strand and `session_strands` at 16 per session — are
+/// At `session_strands` (256) on purpose. The Agency's live caps —
+/// `fan_out` at 100 per strand and `session_strands` at 256 per session — are
 /// meant to stay the binding constraint in ordinary use, and a ceiling
 /// below them would shadow them and change what a well-behaved program
 /// can do. What this bounds is the pathological case those caps cannot
 /// see: a loop that spawns, joins, and spawns again frees a live slot
-/// every time round and would pass every live check forever. Thirty-two
-/// is two full sessions' worth of strands, which is more fan-out than any
-/// deterministic plan we have written needs and far less than an
-/// unbounded loop reaches in a second.
-pub const default_spawn_ceiling = 32
+/// every time round and would pass every live check forever. Two hundred
+/// fifty-six matches a full default session's strands, which is more fan-out
+/// than any deterministic plan needs and far less than an unbounded loop
+/// reaches in a second.
+pub const default_spawn_ceiling = 256
 
 /// The lifetime ceiling on `strand.send` admissions in one execution.
 ///
@@ -186,9 +186,8 @@ pub const default_spawn_ceiling = 32
 /// mint replaced by a wake, so it costs what a spawn loop costs while
 /// passing every live cap. Sized as four messages per potential child at
 /// the spawn ceiling: a plan that needs more conversation than that with
-/// each of thirty-two children is not a plan a program should be running
-/// unattended.
-pub const send_ceiling = 128
+/// each of 256 children is not a plan a program should be running unattended.
+pub const send_ceiling = 1024
 
 /// The lifetime ceiling on `strand.note` admissions in one execution.
 ///

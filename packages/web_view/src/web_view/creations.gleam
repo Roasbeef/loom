@@ -226,6 +226,10 @@ pub type Reason {
   /// name that held a slash could be taken for a directory on the daemon's host.
   InvalidWorkspaceName
 
+  /// The subagent limits (`fan_out`, `session_strands`, or `depth_cap`) are
+  /// out of range or inconsistent (`fan_out > session_strands`).
+  InvalidLimits
+
   /// This credential has created as many sessions as it may recently. The
   /// count is the daemon's and is kept for the credential and not for the page,
   /// so opening another page does not reset it.
@@ -274,6 +278,8 @@ pub fn reason_words(reason: Reason) -> String {
       "That pool is not in the daemon's configuration now. Reload the page."
     InvalidWorkspaceName ->
       "Use the name the workspace is registered under on the executor: up to 128 bytes, with no slash or control characters. It is a name, not a path."
+    InvalidLimits ->
+      "Subagent limits must be positive integers (fan_out <= session_strands, depth 1..256 or unlimited)."
     TooMany -> "You have created many sessions this hour. Try again later."
     Full -> "The daemon has no room for another session. Stop one first."
     Unavailable -> "The daemon could not create the session. Try again."

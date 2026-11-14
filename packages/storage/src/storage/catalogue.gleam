@@ -57,6 +57,9 @@
 ////     retires one, and `project_standing` answers what a session is to
 ////     project mode as a typed `ProjectStanding`.
 
+import core/agency_limits.{
+  type AgencyLimits, AgencyLimits, BoundedDepth, UnlimitedDepth,
+}
 import core/ids
 import gleam/bit_array
 import gleam/dynamic/decode
@@ -67,6 +70,7 @@ import gleam/result
 import gleam/string
 import parrot/dev
 import sqlight
+import storage/catalogue_agency_schema
 import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
@@ -304,7 +308,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 20
+pub const current_version = 21
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -330,6 +334,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(18, catalogue_start_failures_schema.schema),
     #(19, catalogue_relayed_schema.schema),
     #(20, catalogue_projects_schema.schema),
+    #(21, catalogue_agency_schema.schema),
   ]
 }
 
@@ -2882,6 +2887,10 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
     // A relayed session's row (version 19) names the registration the same
     // way and leaves with it, so the spawner's caps count one session fewer.
     use Nil <- result.try(statement(catalogue, sql.delete_relayed_session(id)))
+    use Nil <- result.try(statement(
+      catalogue,
+      sql.delete_session_agency_limits(id),
+    ))
     use Nil <- result.try(statement(catalogue, sql.delete_registration(id)))
 
     // The revision moves so an open listing page is refused rather than
@@ -3218,8 +3227,8 @@ fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
     dev.ParamInt(value) -> Ok(sqlight.int(value))
     dev.ParamString(value) -> Ok(sqlight.text(value))
     dev.ParamNullable(Some(value)) -> parameter(value)
-    dev.ParamNullable(None)
-    | dev.ParamFloat(_)
+    dev.ParamNullable(None) -> Ok(sqlight.null())
+    dev.ParamFloat(_)
     | dev.ParamBool(_)
     | dev.ParamBitArray(_)
     | dev.ParamTimestamp(_)
@@ -4000,6 +4009,99 @@ pub fn coherent(
   run: fn() -> Result(a, Error),
 ) -> Result(a, Error) {
   snapshot(catalogue.connection, run)
+}
+
+/// Reads the per-session Agency limits persisted for `id`, returning default
+/// empty overrides when no custom row was stored.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.agency_limits(catalogue, id) == Ok(agency_limits.defaults())
+/// ```
+pub fn agency_limits(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(AgencyLimits, Error) {
+  use rows <- result.try(query(catalogue, sql.session_agency_limits(id)))
+
+  // A session with no agency row inherits every daemon/Agency default.
+  case rows {
+    [] -> Ok(agency_limits.defaults())
+    [row] -> decode_agency_row(row)
+    [_, _, ..] -> Error(Invalid("duplicate session agency limits"))
+  }
+}
+
+/// Persists per-session Agency limits inside an existing catalogue transaction.
+///
+/// Empty overrides remove any existing row so default sessions store nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.set_agency_limits_in_transaction(catalogue, id, agency_limits.defaults())
+/// ```
+@internal
+pub fn set_agency_limits_in_transaction(
+  catalogue: Catalogue,
+  id: String,
+  limits: AgencyLimits,
+) -> Result(Nil, Error) {
+  // Validates limits before persisting to match SQLite CHECK constraints.
+  use valid <- result.try(
+    agency_limits.validate(limits) |> result.map_error(Invalid),
+  )
+
+  // Avoid storing a row when every override inherits the default.
+  case agency_limits.is_empty(valid) {
+    True -> statement(catalogue, sql.delete_session_agency_limits(id))
+    False -> {
+      let #(depth_mode, depth_cap) = encode_depth_cap(valid.depth_cap)
+      statement(
+        catalogue,
+        sql.set_session_agency_limits(
+          session_id: id,
+          fan_out: valid.fan_out,
+          session_strands: valid.session_strands,
+          depth_mode:,
+          depth_cap:,
+        ),
+      )
+    }
+  }
+}
+
+/// Decodes one `catalogue_session_agency` row into typed `AgencyLimits`.
+fn decode_agency_row(
+  row: sql.SessionAgencyLimits,
+) -> Result(AgencyLimits, Error) {
+  // Map stored depth_mode and nullable integer cap onto DepthCap.
+  use depth_cap <- result.try(case row.depth_mode, row.depth_cap {
+    "inherit", None -> Ok(None)
+    "unlimited", None -> Ok(Some(UnlimitedDepth))
+    "bounded", Some(depth) -> Ok(Some(BoundedDepth(depth)))
+    _, _ -> Error(Invalid("corrupt session agency depth_cap"))
+  })
+
+  agency_limits.validate(AgencyLimits(
+    fan_out: row.fan_out,
+    session_strands: row.session_strands,
+    depth_cap:,
+  ))
+  |> result.map_error(Invalid)
+}
+
+/// Encodes an optional `DepthCap` into `(depth_mode, depth_cap)` SQL columns.
+fn encode_depth_cap(
+  cap: Option(agency_limits.DepthCap),
+) -> #(String, Option(Int)) {
+  // Map DepthCap variants into the table's two-column check constraint.
+  case cap {
+    None -> #("inherit", None)
+    Some(UnlimitedDepth) -> #("unlimited", None)
+    Some(BoundedDepth(depth)) -> #("bounded", Some(depth))
+  }
 }
 
 fn execute(connection: sqlight.Connection, sql: String) -> Result(Nil, Error) {

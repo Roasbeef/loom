@@ -274,6 +274,7 @@
 //// returns to `Idle` for a session made and not opened. Cancel returns to `Idle`
 //// from `Elsewhere` and `Chosen`.
 
+import core/agency_limits
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -464,6 +465,7 @@ pub type Start {
         String,
         Sharing,
         creations.Roles,
+        agency_limits.AgencyLimits,
         String,
         fn(creations.Answer) -> Nil,
       ) -> Nil,
@@ -1830,6 +1832,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 name,
                 creations.Shareable,
                 roles,
+                agency_limits.empty,
                 "",
               ),
             )
@@ -1847,7 +1850,15 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           case offered_roles(model, roles) {
             True -> #(
               Model(..model, creating: create.Sending, note: None),
-              creating(ask, creations.Typed(path), name, sharing, roles, ""),
+              creating(
+                ask,
+                creations.Typed(path),
+                name,
+                sharing,
+                roles,
+                agency_limits.empty,
+                "",
+              ),
             )
             False -> #(model, effect.none())
           }
@@ -2094,6 +2105,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 name,
                 sharing,
                 roles,
+                agency_limits.empty,
                 "",
               ),
             )
@@ -2853,9 +2865,9 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
         composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
         composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
           founding(model, orchestrator, place, roles, prompt)
-        composer.Create(place:, name:, prompt:, roles:) -> #(
+        composer.Create(place:, name:, prompt:, roles:, agency:) -> #(
           Model(..model, note: None),
-          creating(ask, place, name, creations.Private, roles, prompt),
+          creating(ask, place, name, creations.Private, roles, agency, prompt),
         )
         composer.Depart(path:) -> #(
           Model(..model, departure: Some(path)),
@@ -3161,6 +3173,7 @@ fn creating(
     String,
     Sharing,
     creations.Roles,
+    agency_limits.AgencyLimits,
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -3168,10 +3181,11 @@ fn creating(
   name: String,
   sharing: Sharing,
   roles: creations.Roles,
+  agency: agency_limits.AgencyLimits,
   prompt: String,
 ) -> Effect(Msg) {
   use dispatch <- effect.from
-  ask(place, name, sharing, roles, prompt, fn(answer) {
+  ask(place, name, sharing, roles, agency, prompt, fn(answer) {
     dispatch(Created(answer))
   })
 }
@@ -4122,6 +4136,10 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       model: fn(model) { Composed(composer.ChoseModel(model)) },
       search: fn(text) { Composed(composer.Searched(text)) },
       start: fn(name, typed) { Composed(composer.Started(name, typed)) },
+      toggle_limits: Composed(composer.ToggledLimits),
+      start_with_limits: fn(name, typed, limits) {
+        Composed(composer.StartedWithLimits(name, typed, limits))
+      },
       open: Opening,
       depart: Composed(composer.OpenedUnsent),
       listing: ShowingList,

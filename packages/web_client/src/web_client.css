@@ -1886,6 +1886,8 @@
   .composer-name:focus-visible,.composer-typed:focus-visible{outline:none;border-bottom-color:var(--color-fg-quiet);}
   .composer-typed{border-top:1px solid var(--color-divider);font-size:14px;}
   .cbar{display:flex;align-items:center;gap:8px;}
+  .limits-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:4px 0;}
+  .limits-grid select.composer-typed{background:var(--color-bg-raised);color:var(--color-fg);}
   .place-send{display:inline-flex;align-items:center;gap:8px;height:36px;margin:0 0 0 auto;padding:0 14px;border:0;border-radius:10px;background:var(--color-fg);color:var(--color-bg);font:13.5px/1 var(--font-sans);cursor:pointer;}
   .place-send:hover:not(:disabled){opacity:.9;}
   .place-send:disabled{opacity:.5;cursor:default;}

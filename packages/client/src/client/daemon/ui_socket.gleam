@@ -213,6 +213,7 @@ import client/remote/top_relay
 import client/remote_escalation
 import client/remote_feed
 import client/remote_top
+import core/agency_limits
 import core/ids
 import core/json as wire
 import gleam/bit_array
@@ -873,8 +874,8 @@ pub fn upgrade_home(
     home_create_capability(
       attachment.principal,
       ceiling,
-      fn(place, name, sharing, roles, prompt, deliver) {
-        create_task(
+      fn(place, name, sharing, roles, agency, prompt, deliver) {
+        create_task_with_agency(
           standing,
           tickets,
           open,
@@ -894,6 +895,7 @@ pub fn upgrade_home(
           name,
           sharing,
           roles,
+          agency,
           prompt,
           first_message_for(attachment, gateway_of),
           deliver,
@@ -1830,6 +1832,7 @@ pub fn home_create_capability(
     String,
     creations.Sharing,
     creations.Roles,
+    agency_limits.AgencyLimits,
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -1839,6 +1842,7 @@ pub fn home_create_capability(
     String,
     creations.Sharing,
     creations.Roles,
+    agency_limits.AgencyLimits,
     String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
@@ -2109,6 +2113,7 @@ fn admit_home(
       String,
       creations.Sharing,
       creations.Roles,
+      agency_limits.AgencyLimits,
       String,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
@@ -3668,8 +3673,55 @@ pub fn create_with(
   send: fn(String, String) -> Result(Nil, String),
   within within: Int,
 ) -> creations.Answer {
+  create_with_agency(
+    standing,
+    tickets,
+    open,
+    create,
+    release,
+    folder,
+    place,
+    name,
+    sharing,
+    roles,
+    agency_limits.empty,
+    prompt,
+    send,
+    within:,
+  )
+}
+
+/// `create_with`, carrying optional per-session subagent limits (`protocol-change/113`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.create_with_agency(standing, tickets, open, create, release, folder, place, "", creations.Private, creations.default_roles, agency_limits.empty, "fix it", send, within: 30_000)
+/// ```
+@internal
+pub fn create_with_agency(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  create: fn(access.Principal, manager.Creation, domain.Scope) ->
+    Result(manager.View, String),
+  release: fn(String) -> Result(Nil, manager.AdminError),
+  folder: fn(String) -> Result(String, creations.Reason),
+  place: creations.Place,
+  name: String,
+  sharing: creations.Sharing,
+  roles: creations.Roles,
+  agency: agency_limits.AgencyLimits,
+  prompt: String,
+  send: fn(String, String) -> Result(Nil, String),
+  within within: Int,
+) -> creations.Answer {
   let outcome = {
     use principal <- result.try(authorized_owner(standing, open))
+    use agency <- result.try(
+      agency_limits.validate(agency)
+      |> result.replace_error(creations.InvalidLimits),
+    )
     use workspace <- result.try(placed(standing, folder, place))
     use name <- result.try(
       creations.chosen_name(name, workspace)
@@ -3689,6 +3741,7 @@ pub fn create_with(
       roles.model,
       executor_of(place),
       pool_of(place),
+      agency,
     )
     |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
@@ -4048,10 +4101,53 @@ pub fn create_task(
   send: fn(String, String) -> Result(Nil, String),
   deliver: fn(creations.Answer) -> Nil,
 ) -> Nil {
+  create_task_with_agency(
+    standing,
+    tickets,
+    open,
+    create,
+    release,
+    folder,
+    place,
+    name,
+    sharing,
+    roles,
+    agency_limits.empty,
+    prompt,
+    send,
+    deliver,
+  )
+}
+
+/// `create_task`, carrying optional per-session subagent limits (`protocol-change/113`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.create_task_with_agency(standing, tickets, open, create, release, new_folder.check, place, "", creations.Private, creations.default_roles, agency_limits.empty, "", send, deliver)
+/// ```
+@internal
+pub fn create_task_with_agency(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  create: fn(access.Principal, manager.Creation, domain.Scope) ->
+    Result(manager.View, String),
+  release: fn(String) -> Result(Nil, manager.AdminError),
+  folder: fn(String) -> Result(String, creations.Reason),
+  place: creations.Place,
+  name: String,
+  sharing: creations.Sharing,
+  roles: creations.Roles,
+  agency: agency_limits.AgencyLimits,
+  prompt: String,
+  send: fn(String, String) -> Result(Nil, String),
+  deliver: fn(creations.Answer) -> Nil,
+) -> Nil {
   let _ =
     weft.new([
       fn() {
-        deliver(create_with(
+        deliver(create_with_agency(
           standing,
           tickets,
           open,
@@ -4062,6 +4158,7 @@ pub fn create_task(
           name,
           sharing,
           roles,
+          agency,
           prompt,
           send,
           within: resume_wait_ms,

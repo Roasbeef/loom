@@ -42,6 +42,7 @@ import client/roster
 import client/session_directory
 import client/session_movers
 import client/ui_result_test
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -731,7 +732,7 @@ fn creating_from_home(
     Ok(chosen) -> Some(chosen)
     Error(Nil) -> None
   }
-  let ask = fn(place, name, sharing, roles, prompt, deliver) {
+  let ask = fn(place, name, sharing, roles, _agency, prompt, deliver) {
     ui_socket.create_task(
       standing,
       tickets,
@@ -777,6 +778,7 @@ fn creating_from_home(
         name,
         sharing,
         creations.Roles(profile:, model:),
+        agency_limits.empty,
         "",
         fn(answer) { process.send(answers, answer) },
       )
@@ -1576,7 +1578,17 @@ fn create_session(ready: root.Ready(String), key: String, seed: Int) -> String {
   let assert Ok(created) =
     manager.create(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, "", None, None, "", ""),
+      manager.Creation(
+        key,
+        ready.state_root,
+        key,
+        "",
+        None,
+        None,
+        "",
+        "",
+        agency_limits.empty,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
     )
@@ -3999,7 +4011,17 @@ fn create_shared_session(
   let assert Ok(created) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, "", None, None, "", ""),
+      manager.Creation(
+        key,
+        ready.state_root,
+        key,
+        "",
+        None,
+        None,
+        "",
+        "",
+        agency_limits.empty,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
       scope: domain.SessionOnly,
@@ -7772,6 +7794,7 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1231),
@@ -7813,6 +7836,7 @@ pub fn the_admin_read_summarises_each_listed_session_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1241),

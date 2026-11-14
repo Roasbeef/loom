@@ -71,7 +71,7 @@
 //// 2. `banner` is the phone's line for the session that needs the person, and
 ////    `recent` is the places a session worked in.
 //// 3. `form` draws the message box, the field the target needs and Start, with
-////    `start_fields` as its submit's decoder and `fields` as its one rule.
+////    `start_fields_with_limits` as its submit's decoder and `fields` as its one rule.
 //// 4. `chips` draws the three chips, each with its list while open
 ////    (`agent_list`, `code_list`, `model_list`), and `summary` the sentence.
 //// 5. `refusal` and `unsent` say what a refused or half-done start left.
@@ -116,6 +116,10 @@ pub type Presses(message) {
     profile: fn(Option(String)) -> message,
     /// A main model was pressed, or the default.
     model: fn(Option(String)) -> message,
+    /// The Subagent limits disclosure toggle was pressed.
+    toggle_limits: message,
+    /// The form was submitted carrying optional subagent limit fields.
+    start_with_limits: fn(String, Typed, composer.LimitsInput) -> message,
     /// The code list's search text changed.
     search: fn(String) -> message,
     /// The form was submitted with this message and this typed field.
@@ -213,6 +217,71 @@ pub fn fields(
     [#(_, name)], [#("workspace", text)], NameAndWorkspace ->
       Ok(#(name, composer.Workspace(text)))
     _, _, _ -> Error(Nil)
+  }
+}
+
+/// Decodes form fields including optional collapsed subagent limit inputs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert new_session.fields_with_limits([#("prompt", "x")], new_session.NameOnly, composer.LimitsClosed)
+///   == Ok(#("x", composer.Nothing, composer.default_limits_input))
+/// ```
+pub fn fields_with_limits(
+  listed: List(#(String, String)),
+  needs: Needs,
+  limits_open: composer.LimitsDisclosure,
+) -> Result(#(String, Typed, composer.LimitsInput), Nil) {
+  // Dispatch on whether the subagent limits disclosure is expanded.
+  case limits_open {
+    composer.LimitsClosed ->
+      case fields(listed, needs) {
+        Ok(#(prompt, typed)) ->
+          Ok(#(prompt, typed, composer.default_limits_input))
+        Error(Nil) -> Error(Nil)
+      }
+    composer.LimitsOpen -> decode_open_limits_fields(listed, needs)
+  }
+}
+
+/// Decodes form fields when the subagent limits disclosure is expanded.
+fn decode_open_limits_fields(
+  listed: List(#(String, String)),
+  needs: Needs,
+) -> Result(#(String, Typed, composer.LimitsInput), Nil) {
+  let base =
+    list.filter(listed, fn(pair) {
+      pair.0 != "fan_out"
+      && pair.0 != "session_strands"
+      && pair.0 != "depth_mode"
+      && pair.0 != "depth_cap"
+    })
+  let fan_outs = list.filter(listed, fn(pair) { pair.0 == "fan_out" })
+  let session_strands =
+    list.filter(listed, fn(pair) { pair.0 == "session_strands" })
+  let depth_modes = list.filter(listed, fn(pair) { pair.0 == "depth_mode" })
+  let depth_caps = list.filter(listed, fn(pair) { pair.0 == "depth_cap" })
+
+  // Reject missing or repeated limit inputs beside the base form fields.
+  case fields(base, needs), fan_outs, session_strands, depth_modes, depth_caps {
+    Ok(#(prompt, typed)),
+      [#(_, fan_out)],
+      [#(_, session_strands)],
+      [#(_, depth_mode)],
+      [#(_, depth_cap)]
+    ->
+      Ok(#(
+        prompt,
+        typed,
+        composer.LimitsInput(
+          fan_out:,
+          session_strands:,
+          depth_mode:,
+          depth_cap:,
+        ),
+      ))
+    _, _, _, _, _ -> Error(Nil)
   }
 }
 
@@ -369,7 +438,6 @@ fn recent(pane: Pane(message)) -> Element(message) {
 /// other set. A creation that is out disables the button and says so.
 fn form(pane: Pane(message)) -> Element(message) {
   let needed = needs(pane.target)
-  let working = pane.state.sending == composer.Out
 
   // Dispatch on form state.
   let extra = case needed {
@@ -380,10 +448,25 @@ fn form(pane: Pane(message)) -> Element(message) {
     ]
   }
 
+  // Only local sessions expose configurable subagent limits.
+  let limits_ui = case pane.state.agent {
+    composer.Here -> [limits_disclosure(pane)]
+    composer.Orchestrator(_) -> []
+  }
+
+  let body = list.append(extra, list.append(limits_ui, [cbar(pane)]))
+
   html.form(
     [
       attribute.class("place-composer"),
-      event.on("submit", start_fields(needed, pane.presses.start))
+      event.on(
+        "submit",
+        start_fields_with_limits(
+          needed,
+          pane.state.limits,
+          pane.presses.start_with_limits,
+        ),
+      )
         |> event.prevent_default,
     ],
     [
@@ -398,27 +481,102 @@ fn form(pane: Pane(message)) -> Element(message) {
         ],
         "",
       ),
-      ..list.append(extra, [
-        html.div([attribute.class("cbar")], [
-          html.button(
-            [
-              attribute.type_("submit"),
-              attribute.class("place-send"),
-              attribute.disabled(working),
-              attribute.aria_label("Start session"),
-            ],
-            [
-              icon(Send),
-              html.span([attribute.class("send-word")], [
-                html.text(case pane.state.sending {
-                  composer.Out -> "Starting"
-                  composer.Ready -> "Start"
-                }),
-              ]),
-            ],
+      ..body
+    ],
+  )
+}
+
+/// Renders the submit bar of the new-session composer form.
+fn cbar(pane: Pane(message)) -> Element(message) {
+  let working = pane.state.sending == composer.Out
+
+  html.div([attribute.class("cbar")], [
+    html.button(
+      [
+        attribute.type_("submit"),
+        attribute.class("place-send"),
+        attribute.disabled(working),
+        attribute.aria_label("Start session"),
+      ],
+      [
+        icon(Send),
+        html.span([attribute.class("send-word")], [
+          html.text(case pane.state.sending {
+            composer.Out -> "Starting"
+            composer.Ready -> "Start"
+          }),
+        ]),
+      ],
+    ),
+  ])
+}
+
+/// Renders the collapsed or expanded Subagent limits disclosure inside the form.
+fn limits_disclosure(pane: Pane(message)) -> Element(message) {
+  let expanded = pane.state.limits == composer.LimitsOpen
+  let toggle_button =
+    html.button(
+      [
+        attribute.type_("button"),
+        attribute.class("place-chip"),
+        attribute.aria_expanded(expanded),
+        event.on_click(pane.presses.toggle_limits),
+      ],
+      [html.text("Subagent limits")],
+    )
+
+  // Draw limit inputs only while the disclosure is expanded.
+  case pane.state.limits {
+    composer.LimitsClosed ->
+      html.div([attribute.class("cbar")], [toggle_button])
+    composer.LimitsOpen ->
+      html.div([], [
+        html.div([attribute.class("cbar")], [toggle_button]),
+        html.div([attribute.class("limits-grid")], [
+          limit_number_input("fan_out", "Fan-out (100)", "1", "10000"),
+          limit_number_input(
+            "session_strands",
+            "Session strands (256)",
+            "1",
+            "10000",
           ),
+          depth_mode_select(),
+          limit_number_input("depth_cap", "Max depth (1)", "1", "256"),
         ]),
       ])
+  }
+}
+
+/// Renders one uncontrolled numeric input inside the Subagent limits disclosure.
+fn limit_number_input(
+  name: String,
+  placeholder: String,
+  min: String,
+  max: String,
+) -> Element(message) {
+  html.input([
+    attribute.type_("number"),
+    attribute.name(name),
+    attribute.class("composer-typed"),
+    attribute.aria_label(placeholder),
+    attribute.placeholder(placeholder),
+    attribute.attribute("min", min),
+    attribute.attribute("max", max),
+  ])
+}
+
+/// Renders the depth mode selector (`default`, `bounded`, `unlimited`).
+fn depth_mode_select() -> Element(message) {
+  html.select(
+    [
+      attribute.name("depth_mode"),
+      attribute.class("composer-typed"),
+      attribute.aria_label("Depth mode"),
+    ],
+    [
+      html.option([attribute.value("default")], "Depth: default (1)"),
+      html.option([attribute.value("bounded")], "Depth: bounded"),
+      html.option([attribute.value("unlimited")], "Depth: unlimited"),
     ],
   )
 }
@@ -439,9 +597,10 @@ fn typed_field(name: String, placeholder: String) -> Element(message) {
 
 /// The submit's decoder, for the fields this tree drew. A set of fields the form
 /// was not drawn with fails to decode, so the runtime drops the event.
-fn start_fields(
+fn start_fields_with_limits(
   needed: Needs,
-  start: fn(String, Typed) -> message,
+  limits_open: composer.LimitsDisclosure,
+  start: fn(String, Typed, composer.LimitsInput) -> message,
 ) -> decode.Decoder(message) {
   use listed <- decode.subfield(
     ["detail", "formData"],
@@ -449,9 +608,13 @@ fn start_fields(
   )
 
   // Dispatch on start_fields state.
-  case fields(listed, needed) {
-    Ok(#(name, typed)) -> decode.success(start(name, typed))
-    Error(Nil) -> decode.failure(start("", composer.Nothing), "composer form")
+  case fields_with_limits(listed, needed, limits_open) {
+    Ok(#(name, typed, limits)) -> decode.success(start(name, typed, limits))
+    Error(Nil) ->
+      decode.failure(
+        start("", composer.Nothing, composer.default_limits_input),
+        "composer form",
+      )
   }
 }
 

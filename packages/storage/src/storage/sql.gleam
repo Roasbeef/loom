@@ -1884,6 +1884,64 @@ pub fn project_standing_of_session_decoder() -> decode.Decoder(
   ))
 }
 
+pub type SessionAgencyLimits {
+  SessionAgencyLimits(
+    fan_out: Option(Int),
+    session_strands: Option(Int),
+    depth_mode: String,
+    depth_cap: Option(Int),
+  )
+}
+
+pub fn session_agency_limits(session_id session_id: String) {
+  let sql =
+    "SELECT fan_out, session_strands, depth_mode, depth_cap
+FROM catalogue_session_agency WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_agency_limits_decoder())
+}
+
+pub fn session_agency_limits_decoder() -> decode.Decoder(SessionAgencyLimits) {
+  use fan_out <- decode.field(0, decode.optional(decode.int))
+  use session_strands <- decode.field(1, decode.optional(decode.int))
+  use depth_mode <- decode.field(2, decode.string)
+  use depth_cap <- decode.field(3, decode.optional(decode.int))
+  decode.success(SessionAgencyLimits(
+    fan_out:,
+    session_strands:,
+    depth_mode:,
+    depth_cap:,
+  ))
+}
+
+pub fn set_session_agency_limits(
+  session_id session_id: String,
+  fan_out fan_out: Option(Int),
+  session_strands session_strands: Option(Int),
+  depth_mode depth_mode: String,
+  depth_cap depth_cap: Option(Int),
+) {
+  let sql =
+    "INSERT INTO catalogue_session_agency (session_id, fan_out, session_strands, depth_mode, depth_cap)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET
+  fan_out = excluded.fan_out,
+  session_strands = excluded.session_strands,
+  depth_mode = excluded.depth_mode,
+  depth_cap = excluded.depth_cap"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamNullable(option.map(fan_out, fn(v) { dev.ParamInt(v) })),
+    dev.ParamNullable(option.map(session_strands, fn(v) { dev.ParamInt(v) })),
+    dev.ParamString(depth_mode),
+    dev.ParamNullable(option.map(depth_cap, fn(v) { dev.ParamInt(v) })),
+  ])
+}
+
+pub fn delete_session_agency_limits(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_agency WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
