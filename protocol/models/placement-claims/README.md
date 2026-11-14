@@ -39,7 +39,7 @@ and may retry. The state is:
 
 | Action | What it is |
 |---|---|
-| `Snap(x)` | The caller of `claim_placement` reads the resident counts from the catalogue (`ledger_holdings.resident_by_name`). Skipped when `AtomicRead`. |
+| `Snap(x)` | The caller of `claim_placement` reads the resident counts from the catalogue, as the code did before the read moved into the turn (the removed `ledger_holdings.resident_by_name`). Skipped when `AtomicRead`. |
 | `Turn(x)` | The registry's turn: the resident counts plus one for each other session whose claim `live_claims` keeps, ordered by `pools.spread`. With `OneTurn` it records the head as the claim in the same step. |
 | `Record(x)` | The record of the choice, as a separate step, for the mutant without `OneTurn`. |
 | `Attach(x, i)` | The builder's scope opens on the `i`-th candidate, after the first `i - 1` declined. Only the executors of `Down` decline. The claim and the catalogue row point at the executor that took it. |
@@ -48,18 +48,22 @@ and may retry. The state is:
 | `Retry(x)` | A failed open is asked for again. The old claim entry stays until the next turn replaces it. |
 | `Restart` | The registry restarts: its memory, the claims included, is lost with every slot. Sessions are saved again, their scopes close, and opens are asked for again. |
 
-### What differs between the code and its description
+### What differed between the code and its description
 
 `claim_placement`'s doc comment says the counts, the order and the record are one
-turn of the registry. They are, except for the open scopes. The caller evaluates
+turn of the registry. Until `distributed/claims-read-in-turn` they were not,
+for the open scopes. The caller evaluated
 `ledger_holdings.resident_by_name(directory, roster.fixed(rows))` before it
-calls the registry (`daemon/main.gleam`, the `claim` closure in the pool branch),
-and passes the result as an argument. That function reads the catalogue a page
-at a time, each page and each read of custody being a registry turn of its own,
-and counts the sessions whose slot is running. Only the claims are read inside
-the turn that follows. `AtomicRead = FALSE` is that shape, and it is the shipped
-one. `AtomicRead = TRUE` counts the open scopes in the same turn as the claims,
-which is what the description says, and it is the clean configuration.
+called the registry (`daemon/main.gleam`, the `claim` closure in the pool
+branch), and passed the result as an argument. That function read the catalogue
+a page at a time, each page and each read of custody being a registry turn of
+its own, and counted the sessions whose slot was running. Only the claims were
+read inside the turn that followed. `AtomicRead = FALSE` is that shape, and
+`ClaimsMutantReadOutsideTurn.cfg` is the code before that change.
+`AtomicRead = TRUE` counts the open scopes in the same turn as the claims, which
+is what the description says, and it is the clean configuration and the code
+now: the registry reads its own rows in the turn (`manager.placed_rows`) and
+hands them to a pure function (`ledger_holdings.resident_in`).
 
 ### What is abstracted away
 
@@ -106,8 +110,8 @@ When an attach is declined, the claim of a session that is still building names
 the declining executor, so another ask sees that executor as busy and the
 declined session, which lands on the next candidate, was not counted there. With
 one executor of three declining every attach, `Bound = 1` is violated in 23
-states, and `Bound = 2` holds for three sessions and for four. With the shipped
-read there is no bound: four sessions can all land on one executor, so a bound
+states, and `Bound = 2` holds for three sessions and for four. With the old
+read there was no bound: four sessions can all land on one executor, so a bound
 of three is violated.
 
 ## Running it
@@ -151,7 +155,7 @@ vacuous.
 
 | Mutation | Constant | Counterexample |
 |---|---|---|
-| The open scopes are read before the turn | `AtomicRead = FALSE` | The shipped shape. Session 2 reads the catalogue while session 1 is building. Session 1 attaches and becomes running, so its claim stops counting. Session 2's turn then counts neither the claim nor, in the read it made earlier, the running row. It picks the executor that session 1 holds, and both sessions are on it. `ClaimCountedOnce` breaks, and `Balanced` with it. |
+| The open scopes are read before the turn | `AtomicRead = FALSE` | The code before the change that reads them in the turn. Session 2 reads the catalogue while session 1 is building. Session 1 attaches and becomes running, so its claim stops counting. Session 2's turn then counts neither the claim nor, in the read it made earlier, the running row. It picks the executor that session 1 holds, and both sessions are on it. `ClaimCountedOnce` breaks, and `Balanced` with it. |
 | The count and the record are separate steps | `OneTurn = FALSE` | Two opens read the same counts, and both pick the first executor before either records. This is the burst race the PR fixed, and the registry's five-second fallback has the same effect. `Balanced` breaks. |
 | A claim keeps counting once its slot is running | `CountsRunning = TRUE` | The session is counted as a claim and as an open scope. `ClaimCountedOnce` breaks. |
 | A claim is not released when its builder fails | `FailureKeeps = TRUE` | The failed session keeps counting toward its executor. `NoLeakedClaim` breaks. |
@@ -159,37 +163,34 @@ vacuous.
 To add a mutation, add a `ClaimsMutant<Name>.cfg` with an `expect-violation`
 line. The gate discovers it without an edit to the script.
 
-## Finding: the open scopes are read before the registry's turn
+## Finding: the open scopes were read before the registry's turn
 
-`ClaimCountedOnce` does not hold of the shipped code, because the resident counts
-are read by the caller before `claim_placement`'s turn. The trace from
-`ClaimsMutantReadOutsideTurn.cfg`, seven states long, with the code behind each
-step:
+`ClaimCountedOnce` did not hold of the code that merged with #1185, because the
+resident counts were read by the caller before `claim_placement`'s turn. The
+trace from `ClaimsMutantReadOutsideTurn.cfg`, seven states long, with the code
+behind each step:
 
-1. Session 1 reads the resident counts (`ledger_holdings.resident_by_name`,
-   `ledger_holdings.gleam:352`): none. Its turn (`ClaimPlacement`,
-   `manager.gleam:3404`) records a claim on the first executor.
+1. Session 1 reads the resident counts (`ledger_holdings.resident_by_name`):
+   none. Its turn (`ClaimPlacement` in `client/daemon/manager.gleam`) records a
+   claim on the first executor.
 2. Session 2 reads the resident counts: none, since session 1 is not running.
-3. Session 1's builder attaches (`seed_executor`, `manager.gleam:3397`) and its
-   slot becomes running.
-4. Session 2's turn runs. `live_claims` (`manager.gleam:4702`) drops session 1's
-   claim, because its slot is running and no longer waiting or building. The
-   resident counts that session 2 passes in were read before step 3 and do not
-   hold session 1. `held_by` (`manager.gleam:4718`) therefore adds nothing for it.
+3. Session 1's builder attaches (`seed_executor`) and its slot becomes running.
+4. Session 2's turn runs. `live_claims` drops session 1's claim, because its slot
+   is running and no longer waiting or building. The resident counts that session
+   2 passes in were read before step 3 and do not hold session 1. `held_by` adds
+   nothing for it.
 5. The first executor counts zero, ties with the others on count, and wins on
    position. Both sessions are on it.
 
-The window is the time between a caller's read of the catalogue and its turn,
-and a session's build has to finish inside it. A build takes an attach round
-trip, and a read takes a few registry turns, so it is narrow on an idle daemon.
-A busy registry widens it, because a turn waits behind every message queued
-before it. The effect is one session placed on a busier executor than the pool's
-counts say, and it grows with the number of opens whose reads precede a build's
-end: with the shipped read, `Balanced` has no bound.
+The window was the time between a caller's read of the catalogue and its turn,
+and a session's build had to finish inside it. It was narrow on an idle daemon
+and wider on a busy one, because a turn waits behind every message queued before
+it, and it matters for a burst of opens such as eight children on eight machines.
 
-The fix the model checks is `AtomicRead = TRUE`: the registry counts the
-resident sessions from its own state in the turn that holds the claims. The
-registry cannot call `resident_by_name` from inside a turn, since that function
-asks the registry, so the count would need to be computed from the registry's
-slots and the catalogue rows directly. That is a change to the registry's
-message and was not made.
+The fix is the one the model checks as clean. `resident_by_name` called the
+registry (`manager.page` and `manager.custodies`), so it could not run inside a
+turn, and it is removed. The registry instead reads the registrations, their statuses and move rows
+itself in the turn, and `ledger_holdings.resident_in` turns those rows into the
+same counts with no call. `placement_claim_test` has a test in which a session
+that became resident is counted once, by its row, and one that reads the counts
+before the turn, which reproduces the old placement.
