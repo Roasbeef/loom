@@ -1082,6 +1082,19 @@ that says the call did not happen, even for a key whose row the restart turned
 answered, a lost one is answered `RunLost`, and only a key with no row is refused
 for the missing plane.
 
+#### The surface attaches again when the plane is missing
+
+The refusal above left an open session unable to call until it was closed and
+reopened, and the reopen needed `loomd executor release`. The surface now treats
+`NoPlane` and `PlaneBuilding` as "attach, then ask again": it sends the same
+`Attach` with the incarnation and token it already holds, which the ledger's
+rebind accepts without changing a row, and sends the `Run` or `StartExecution`
+once more. The refusal is given before admission, so the call had not started,
+and the request is keyed, so a send after the repair joins or reads a call that
+did. To keep the repair from taking the token from the live runtime, the host
+judges the scope's fence before it answers `NoPlane` for a key with no row, so a
+dead runtime is told `StaleToken`. The wire does not change.
+
 ### Addendum: background code mode and MCP façades on a remote session
 
 **Status**: ACCEPTED 2026-10-09, revised after an independent design review

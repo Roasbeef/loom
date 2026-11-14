@@ -145,18 +145,21 @@ pub fn orchestrate(
     )),
   )
   use attachment <- result.try(
-    surface.attach(surface.Config(
-      address: address.Address(node: target, name: address.default()),
-      session: "s1",
-      workspace: "/work",
-      incarnation: 0,
-      port:,
-      read_authority: fn(_run) { Ok(fixtures.authority()) },
-      reconnect:,
-      remote_tools: ["bash"],
-      attach_within_ms: 10_000,
-      mint_token: surface.strong_token,
-    ))
+    surface.attach(
+      surface.Config(
+        address: address.Address(node: target, name: address.default()),
+        session: "s1",
+        workspace: "/work",
+        incarnation: 0,
+        port:,
+        read_authority: fn(_run) { Ok(fixtures.authority()) },
+        reconnect:,
+        remote_tools: ["bash"],
+        attach_within_ms: 10_000,
+        mint_token: surface.strong_token,
+        attached: fn(_attached) { Nil },
+      ),
+    )
     |> result.map_error(protocol.describe),
   )
   let remote = attachment.surface
@@ -385,18 +388,21 @@ pub fn orchestrate_worktrees(peer: distribution.Peer) -> Result(Nil, String) {
     )),
   )
   let attach = fn(session) {
-    surface.attach(surface.Config(
-      address: address.Address(node: target, name: address.default()),
-      session:,
-      workspace: "proj",
-      incarnation: 0,
-      port:,
-      read_authority: fn(_run) { Ok(fixtures.authority()) },
-      reconnect: fn() { reconnect_to(peer) },
-      remote_tools: ["fs_write", "fs_read"],
-      attach_within_ms: 120_000,
-      mint_token: surface.strong_token,
-    ))
+    surface.attach(
+      surface.Config(
+        address: address.Address(node: target, name: address.default()),
+        session:,
+        workspace: "proj",
+        incarnation: 0,
+        port:,
+        read_authority: fn(_run) { Ok(fixtures.authority()) },
+        reconnect: fn() { reconnect_to(peer) },
+        remote_tools: ["fs_write", "fs_read"],
+        attach_within_ms: 120_000,
+        mint_token: surface.strong_token,
+        attached: fn(_attached) { Nil },
+      ),
+    )
     |> result.map_error(protocol.describe)
   }
   use first <- result.try(attach(clean_session))
@@ -524,18 +530,21 @@ pub fn orchestrate_workspace(peer: distribution.Peer) -> Result(Nil, String) {
     )),
   )
   use attachment <- result.try(
-    surface.attach(surface.Config(
-      address: address.Address(node: target, name: address.default()),
-      session: "s1",
-      workspace: "proj",
-      incarnation: 0,
-      port:,
-      read_authority: fn(_run) { Ok(fixtures.authority()) },
-      reconnect: fn() { reconnect_to(peer) },
-      remote_tools: ["fs_write", "fs_read"],
-      attach_within_ms: 60_000,
-      mint_token: surface.strong_token,
-    ))
+    surface.attach(
+      surface.Config(
+        address: address.Address(node: target, name: address.default()),
+        session: "s1",
+        workspace: "proj",
+        incarnation: 0,
+        port:,
+        read_authority: fn(_run) { Ok(fixtures.authority()) },
+        reconnect: fn() { reconnect_to(peer) },
+        remote_tools: ["fs_write", "fs_read"],
+        attach_within_ms: 60_000,
+        mint_token: surface.strong_token,
+        attached: fn(_attached) { Nil },
+      ),
+    )
     |> result.map_error(protocol.describe),
   )
   let census: RemoteCensus = attachment.attached.census

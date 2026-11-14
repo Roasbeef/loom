@@ -6,6 +6,7 @@
 //// when the owner port dies. The two-node tests, which lose a real
 //// connection, are in `remote_nodes_test`.
 
+import broker/broker
 import client/escalate
 import client/owner_services
 import client/remote/address
@@ -17,75 +18,17 @@ import core/clock
 import core/json
 import gleam/bit_array
 import gleam/erlang/process
-import gleam/int
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam/string
 import machine/operation
 import runtime/effects.{type ToolRun}
 import support/remote_fixtures as fixtures
-
-type Rig {
-  Rig(
-    host_pid: process.Pid,
-    address: address.Address(protocol.HostMessage(String)),
-    probe: fixtures.Probe,
-    port: owner_port.Port,
-    path: String,
-  )
-}
-
-fn rig(gate: fixtures.Gate, asks: fixtures.Asks) -> Rig {
-  let probe = fixtures.probe(gate)
-  let path = fixtures.scratch("surface") <> "/ledger.db"
-  let factory = fixtures.factory(probe, asks, protocol.AllRetired)
-  let config = fixtures.host_config(path, factory)
-  let assert Ok(started) = host.start(config) as "the host starts"
-  let assert Ok(port) =
-    owner_port.start(owner_port.Config(
-      services: fixtures.quiet_services(),
-      clock: clock.fixed(at: 1000),
-      settled: fn(_key) { False },
-      reconcile_every_ms: 60_000,
-      executions: owner_port.no_executions(),
-      mcp: protocol.empty_mcp_plan(),
-      git_identity: option.None,
-    ))
-    as "the port starts"
-  Rig(host_pid: started.pid, address: started.data, probe:, port:, path:)
-}
-
-fn stop(rig: Rig) -> Nil {
-  process.unlink(rig.host_pid)
-  process.kill(rig.host_pid)
-}
-
-fn config(rig: Rig, token_n: Int) -> surface.Config(String) {
-  surface.Config(
-    address: rig.address,
-    session: "s1",
-    workspace: "/work",
-    incarnation: 0,
-    port: rig.port,
-    read_authority: fn(_run) { Ok(fixtures.authority()) },
-    reconnect: fn() { Ok(Nil) },
-    remote_tools: ["bash"],
-    attach_within_ms: 2000,
-    mint_token: fn() {
-      bit_array.from_string("token-" <> int.to_string(token_n))
-    },
-  )
-}
+import support/restart_rig.{Rig, attached, config, restart, stop}
 
 fn replayable(run: ToolRun) -> ToolRun {
   effects.ToolRun(..run, replay: operation.ReplaySafe)
-}
-
-fn attached(rig: Rig, token_n: Int) -> surface.Surface(String) {
-  let assert Ok(surface.Attachment(surface:, ..)) =
-    surface.attach(config(rig, token_n))
-    as "the attach succeeds"
-  surface
 }
 
 // Runs a call from a process of its own and reports its outcome, so the test
@@ -109,7 +52,7 @@ pub fn the_default_token_is_thirty_two_strong_bytes_test() {
 }
 
 pub fn attach_reports_the_census_and_a_run_comes_back_complete_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let assert Ok(surface.Attachment(surface: remote, attached:)) =
     surface.attach(config(rig, 1))
   assert attached
@@ -126,7 +69,7 @@ pub fn attach_reports_the_census_and_a_run_comes_back_complete_test() {
 }
 
 pub fn a_tool_that_does_not_run_remotely_is_refused_unsent_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let remote = attached(rig, 1)
   let local =
     effects.ToolRun(
@@ -143,7 +86,7 @@ pub fn a_tool_that_does_not_run_remotely_is_refused_unsent_test() {
 }
 
 pub fn an_unreadable_authority_refuses_the_call_unsent_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let blind =
     surface.Config(..config(rig, 1), read_authority: fn(_run) {
       Error("the permissions record is damaged")
@@ -157,7 +100,7 @@ pub fn an_unreadable_authority_refuses_the_call_unsent_test() {
 }
 
 pub fn an_older_runtime_is_fenced_by_the_newer_attach_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let dead = attached(rig, 1)
   let live = attached(rig, 2)
   let run = fixtures.tool_run("call_1", 0)
@@ -172,7 +115,7 @@ pub fn an_older_runtime_is_fenced_by_the_newer_attach_test() {
 }
 
 pub fn recovery_reads_the_ledger_for_every_row_it_can_hold_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let remote = attached(rig, 1)
   let run = fixtures.tool_run("call_1", 0)
 
@@ -191,7 +134,7 @@ pub fn recovery_reads_the_ledger_for_every_row_it_can_hold_test() {
 }
 
 pub fn recovery_waits_for_a_call_that_is_still_running_test() {
-  let rig = rig(fixtures.Held, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Held, fixtures.AsksNothing)
   let old = attached(rig, 1)
   let run = fixtures.tool_run("call_1", 0)
   let _caller = run_in_background(old, run)
@@ -215,7 +158,7 @@ pub fn recovery_waits_for_a_call_that_is_still_running_test() {
 }
 
 pub fn an_aborted_call_recovers_as_unknown_test() {
-  let rig = rig(fixtures.Held, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Held, fixtures.AsksNothing)
   let remote = attached(rig, 1)
   let run = fixtures.tool_run("call_1", 0)
   let #(caller, _outcome) = run_in_background(remote, run)
@@ -233,7 +176,7 @@ pub fn an_aborted_call_recovers_as_unknown_test() {
 }
 
 pub fn a_restarted_executor_recovers_the_call_as_unknown_test() {
-  let rig = rig(fixtures.Held, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Held, fixtures.AsksNothing)
   let remote = attached(rig, 1)
   let run = fixtures.tool_run("call_1", 0)
   let _caller = run_in_background(remote, run)
@@ -259,7 +202,7 @@ pub fn a_restarted_executor_recovers_the_call_as_unknown_test() {
 }
 
 pub fn the_owner_port_dying_settles_a_parked_escalation_promptly_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksOwner)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksOwner)
 
   // An owner that never decides: its escalation parks until released.
   let gate = fixtures.probe(fixtures.Held)
@@ -304,7 +247,7 @@ pub fn the_owner_port_dying_settles_a_parked_escalation_promptly_test() {
 }
 
 pub fn the_survivors_of_a_replaced_port_serve_the_new_one_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksOwner)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksOwner)
   let _first = attached(rig, 1)
 
   // A second attach to the open scope keeps the plane and re-points its link,
@@ -341,7 +284,7 @@ pub fn the_survivors_of_a_replaced_port_serve_the_new_one_test() {
 }
 
 pub fn recovery_fences_a_call_that_must_not_run_twice_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let remote = attached(rig, 1)
   let run = fixtures.tool_run("call_1", 0)
 
@@ -362,7 +305,7 @@ pub fn recovery_fences_a_call_that_must_not_run_twice_test() {
 }
 
 pub fn recovery_waits_for_a_stale_run_that_beat_the_fence_test() {
-  let rig = rig(fixtures.Held, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Held, fixtures.AsksNothing)
   let remote = attached(rig, 1)
   let run = fixtures.tool_run("call_1", 0)
 
@@ -387,7 +330,7 @@ pub fn recovery_waits_for_a_stale_run_that_beat_the_fence_test() {
 }
 
 pub fn a_replayable_call_is_not_fenced_so_the_replay_runs_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let remote = attached(rig, 1)
   let run = replayable(fixtures.tool_run("call_1", 0))
 
@@ -404,7 +347,7 @@ pub fn an_attach_that_meets_a_build_in_progress_waits_for_it_test() {
   // orchestrator's repair sends the same attach again. The host refuses the
   // second one while the first is building, and the open must not fail on that
   // refusal: the build is seconds long and the refusal asks for another try.
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   fixtures.hold_build(rig.probe, "s1")
   address.deliver(
     rig.address,
@@ -441,7 +384,7 @@ pub fn an_attach_that_meets_a_build_in_progress_waits_for_it_test() {
 }
 
 pub fn an_attach_that_never_sees_the_build_finish_reports_it_building_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   fixtures.hold_build(rig.probe, "s1")
   address.deliver(
     rig.address,
@@ -483,7 +426,7 @@ fn inventory(
 }
 
 pub fn the_fence_values_are_the_ones_the_attach_used_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let remote = attached(rig, 7)
 
   assert surface.incarnation(remote) == 0
@@ -492,7 +435,7 @@ pub fn the_fence_values_are_the_ones_the_attach_used_test() {
 }
 
 pub fn ask_returns_the_reply_to_the_message_it_sent_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let remote = attached(rig, 1)
 
   // The fake plane has no evolution machine, so the host answers the fenced
@@ -512,9 +455,181 @@ pub fn ask_returns_the_reply_to_the_message_it_sent_test() {
 }
 
 pub fn ask_within_gives_up_once_the_executor_cannot_be_reached_test() {
-  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
   let remote = attached(rig, 1)
   stop(rig)
 
   assert surface.ask_within(remote, 200, inventory(remote)) == Error(Nil)
+}
+
+pub fn a_session_runs_its_next_call_after_the_executor_restarts_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let before = fixtures.tool_run("call_1", 0)
+  assert surface.run(remote, before) == fixtures.expected_outcome(before)
+  assert list.length(fixtures.builds(rig.probe)) == 1
+
+  // The surface keeps the address and the token it attached with. The new host
+  // holds the scope's row but no plane, and the call must still run, once.
+  let restarted = restart(rig, restart_rig.healthy(rig))
+  let after = fixtures.tool_run("call_2", 1)
+
+  assert surface.run(remote, after) == fixtures.expected_outcome(after)
+  assert fixtures.run_count(rig.probe, "call_2") == 1
+  assert fixtures.run_count(rig.probe, "call_1") == 1
+  assert list.length(fixtures.builds(rig.probe)) == 2
+
+  // The plane is back for good: another call builds nothing.
+  let third = fixtures.tool_run("call_3", 2)
+  assert surface.run(remote, third) == fixtures.expected_outcome(third)
+  assert list.length(fixtures.builds(rig.probe)) == 2
+  stop(restarted)
+}
+
+pub fn calls_that_meet_the_restart_together_share_one_build_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let restarted = restart(rig, restart_rig.healthy(rig))
+
+  // The build is held, so every call is refused for the missing plane before
+  // any build can finish. The first repair starts the build and the rest are
+  // told it is under way and ask again.
+  fixtures.hold_build(rig.probe, "s1")
+  let calls =
+    list.index_map(["call_1", "call_2", "call_3"], fn(id, step) {
+      #(id, step, run_in_background(remote, fixtures.tool_run(id, step)))
+    })
+  assert fixtures.eventually(fn() {
+    list.length(fixtures.builds(rig.probe)) == 2
+  })
+  fixtures.release_build(rig.probe, "s1")
+
+  list.each(calls, fn(entry) {
+    let #(id, step, #(_pid, outcome)) = entry
+    assert process.receive(outcome, 5000)
+      == Ok(fixtures.expected_outcome(fixtures.tool_run(id, step)))
+    assert fixtures.run_count(rig.probe, id) == 1
+  })
+  assert list.length(fixtures.builds(rig.probe)) == 2
+  stop(restarted)
+}
+
+pub fn a_call_in_flight_at_the_restart_is_lost_and_never_run_again_test() {
+  let rig = restart_rig.rig("surface", fixtures.Held, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let lost = fixtures.tool_run("call_1", 0)
+  let #(_pid, outcome) = run_in_background(remote, lost)
+  assert fixtures.eventually(fn() {
+    fixtures.run_count(rig.probe, "call_1") == 1
+  })
+
+  // The waiting surface sees the host go, repairs the link and sends the same
+  // `Run`. The new host holds a row for the key that the restart made unknown.
+  let restarted = restart(rig, restart_rig.healthy(rig))
+  assert process.receive(outcome, 5000)
+    == Ok(effects.ToolFailed(reason: protocol.unknown_outcome_text))
+
+  // That answer came from a host with no plane, where nothing could have run
+  // the call. A fresh call forces the rebuild, and the lost call sent again
+  // with a plane in place is still lost and still ran once.
+  fixtures.release(rig.probe)
+  let fresh = fixtures.tool_run("call_2", 1)
+  assert surface.run(remote, fresh) == fixtures.expected_outcome(fresh)
+  assert surface.run(remote, lost)
+    == effects.ToolFailed(reason: protocol.unknown_outcome_text)
+  assert fixtures.run_count(rig.probe, "call_1") == 1
+  stop(restarted)
+}
+
+pub fn a_background_execution_starts_after_the_executor_restarts_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let restarted = restart(rig, restart_rig.healthy(rig))
+  let terms = fixtures.execution_terms()
+  let key = fixtures.execution_key("s1", "first")
+
+  // The execution's key has no row, so the new host refuses it for the missing
+  // plane. The surface builds the plane and starts it once.
+  let answer = surface.start_execution(remote, key, terms, 5000)
+  assert answer
+    == protocol.ExecutionFinished(fixtures.expected_value(key.step, 5000))
+  assert fixtures.run_count(rig.probe, key.step) == 1
+  assert list.length(fixtures.builds(rig.probe)) == 2
+  stop(restarted)
+}
+
+pub fn the_broker_subject_follows_the_executor_to_its_new_plane_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+
+  // The first attach names one broker and the repair names another. The
+  // counter holds a token once the first attach has been answered.
+  let first = process.new_subject()
+  let second = process.new_subject()
+  let counter = process.new_subject()
+  let named =
+    surface.Config(..config(rig, 1), attached: fn(_attached) {
+      case process.receive(counter, 0) {
+        Error(Nil) -> {
+          process.send(counter, Nil)
+          owner_port.retarget(rig.port, first)
+        }
+        Ok(Nil) -> owner_port.retarget(rig.port, second)
+      }
+    })
+  let assert Ok(surface.Attachment(surface: remote, ..)) = surface.attach(named)
+    as "the attach succeeds"
+  let abort = fn() {
+    let handle = broker.over(owner_port.broker(rig.port), clock.fixed(at: 0))
+    broker.abort(handle, fixtures.execution_terms().op_id)
+  }
+
+  // A message to the port's subject reaches the first broker.
+  abort()
+  assert result.is_ok(process.receive(first, 1000))
+
+  // After a restart, the call that repairs the scope attaches again, and the
+  // same subject then reaches the second broker, which the repair named, and
+  // not the first, which belonged to the plane that is gone.
+  let restarted = restart(rig, restart_rig.healthy(rig))
+  let call = fixtures.tool_run("call_1", 0)
+  assert surface.run(remote, call) == fixtures.expected_outcome(call)
+  abort()
+  assert result.is_ok(process.receive(second, 1000))
+  assert process.receive(first, 100) == Error(Nil)
+  stop(restarted)
+}
+
+pub fn a_dead_runtime_is_refused_by_a_restarted_executor_and_does_not_attach_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+  let dead = attached(rig, 1)
+  let live = attached(rig, 2)
+  let restarted = restart(rig, restart_rig.healthy(rig))
+
+  // The dead runtime's token is stale, so the missing plane is not its business:
+  // it is refused by the fence and the scope keeps the live runtime's token.
+  // Were it told `NoPlane` it would attach again and take the token from the
+  // live runtime.
+  let stale = fixtures.tool_run("call_1", 0)
+  let assert effects.ToolFailed(reason:) = surface.run(dead, stale)
+  assert string.contains(reason, "newer attachment")
+  assert fixtures.run_count(rig.probe, "call_1") == 0
+  assert list.length(fixtures.builds(rig.probe)) == 1
+
+  let current = fixtures.tool_run("call_2", 1)
+  assert surface.run(live, current) == fixtures.expected_outcome(current)
+  stop(restarted)
+}
+
+pub fn a_repair_the_executor_cannot_make_is_the_answer_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let restarted = restart(rig, restart_rig.broken())
+
+  // The plane cannot be rebuilt, so the call is refused with the reason the
+  // build gave, not with the missing plane that led to the attempt.
+  let call = fixtures.tool_run("call_1", 0)
+  let assert effects.ToolFailed(reason:) = surface.run(remote, call)
+  assert string.contains(reason, restart_rig.broken_reason)
+  assert fixtures.run_count(rig.probe, "call_1") == 0
+  stop(restarted)
 }

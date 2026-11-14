@@ -6,8 +6,9 @@
 //// the design note promises for a scope with unknown cleanup. The executor
 //// refuses to attach a session to a scope whose children it could not prove
 //// gone, and it never decides on its own that they are. After an executor VM
-//// restarts, every session that closes finds no workspace plane in the new VM
-//// and records exactly that. A host that ends between the two halves of a close
+//// restarts, a session that closes before it makes another call finds no
+//// workspace plane in the new VM and records exactly that; a session that calls
+//// first has its plane built again by the surface and closes cleanly. A host that ends between the two halves of a close
 //// leaves a scope `closing`, refused for good in the same way. Each such scope
 //// holds one of the executor's sixteen unclean slots until a person who knows
 //// the machine says its processes are gone.
