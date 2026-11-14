@@ -10949,7 +10949,10 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
   `admit_relayed` judges it. The queue's bound ends a feed and never drops a
   frame. A poll that supersedes a held poll releases it at once. A token is looked
   up only among the sender's spawner's feeds. The feed host blocks on a gateway
-  call, for at most the gateway's six seconds, and never on the laptop.
+  call, for at most the gateway's six seconds, and never on the laptop. The attach's
+  label names the session with `registration.name`, as the box's own page heads itself
+  (`top_host.heading_of`), and not with the first prompt a listing row shows, so the
+  relayed page's title reads as the box's page's does.
 
 ## The live session feed, the laptop half (protocol-change/108, slice 3)
 
