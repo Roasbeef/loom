@@ -94,6 +94,7 @@ import client/git_identity
 import client/host
 import client/install
 import client/internal/ffi_os
+import client/internal/ffi_tls_stream
 import client/ledger_boot
 import client/ledger_control
 import client/ledger_holdings
@@ -2691,6 +2692,139 @@ fn written_executors(
   }
 }
 
+/// What `executors.reload` runs (protocol-change/115), or `None` for a daemon
+/// that has no configuration file or no registry of links. The file is read and
+/// decoded inside the registry's process, so two reloads apply in order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.executors_reload_for(config, "/home/u/.loom/loom.toml")
+/// ```
+@internal
+pub fn executors_reload_for(
+  config: Config,
+  configuration: String,
+) -> Option(server.ExecutorsReload) {
+  case configuration, config.links {
+    "", _ | _, None -> None
+    path, Some(registry) ->
+      Some(
+        server.ExecutorsReload(reload: fn() {
+          untrusted_links.reconcile(registry, fn() { reloaded(config, path) })
+          |> result.map(executor_reload.encode)
+          |> result.map_error(fn(failure) {
+            case failure {
+              untrusted_links.Refused(reason:) -> server.ReloadInvalid(reason)
+              untrusted_links.Unavailable ->
+                server.ReloadUnavailable(untrusted_failure(failure))
+            }
+          })
+        }),
+      )
+  }
+}
+
+/// Reads the file a daemon started from and decides what a reload may apply of
+/// it: the whole document must decode as a start would decode it, the
+/// `[executor_link]` table must be one `executor_reload.link_rule` allows, and
+/// no untrusted row may take the name of an executor the ledger enrols, which
+/// the written row would shadow.
+fn reloaded(
+  config: Config,
+  path: String,
+) -> Result(untrusted_links.Wanted, String) {
+  use text <- result.try(
+    simplifile.read(path)
+    |> result.map_error(fn(error) {
+      path <> " is unreadable: " <> string.inspect(error)
+    }),
+  )
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(fn(error) {
+      path <> ": invalid daemon configuration: " <> string.inspect(error)
+    }),
+  )
+  use #(decoded, _limits, _numbers) <- result.try(decode_startup(
+    config,
+    document,
+    path,
+    log.discard(),
+  ))
+  use Nil <- result.try(link_table_allowed(config, decoded))
+  use Nil <- result.map(unshadowed(config, decoded.executors))
+  untrusted_links.Wanted(
+    rows: decoded.executors,
+    credentials: decoded.untrusted.link,
+  )
+}
+
+/// Applies `executor_reload.link_rule` to the table this daemon started with
+/// and the table of the new file, with their paths made canonical.
+fn link_table_allowed(config: Config, decoded: Config) -> Result(Nil, String) {
+  let home = bootstrap.getenv("HOME") |> result.map(fn(h) { h <> "/.loom/vm" })
+  let allowed =
+    [Ok(config.state_root <> "/vm"), home]
+    |> list.filter_map(fn(directory) { result.map(directory, resolved) })
+  executor_reload.link_rule(
+    option.map(config.untrusted.link, resolved_credentials),
+    option.map(decoded.untrusted.link, resolved_credentials),
+    allowed,
+  )
+  |> result.map_error(fn(reason) { "executors.reload: " <> reason })
+}
+
+/// A path made canonical, or as written when it cannot be resolved, in which
+/// case it lies under no allowed directory unless it was written that way at
+/// start.
+fn resolved(path: String) -> String {
+  bootstrap.canonical_path(path) |> result.unwrap(path)
+}
+
+/// The three files of an `[executor_link]` table, each made canonical.
+fn resolved_credentials(
+  credentials: ffi_tls_stream.Credentials,
+) -> ffi_tls_stream.Credentials {
+  ffi_tls_stream.Credentials(
+    ca: resolved(credentials.ca),
+    certificate: resolved(credentials.certificate),
+    key: resolved(credentials.key),
+  )
+}
+
+/// Refuses an untrusted row that has the name of an executor the ledger
+/// enrols. The ledger's derived row would be dropped in favour of the written
+/// one, which would let a file edit stand in for an enrolled member.
+fn unshadowed(
+  config: Config,
+  rows: List(executors.Executor),
+) -> Result(Nil, String) {
+  case config.ledger {
+    None -> Ok(Nil)
+    Some(handle) ->
+      case ledger_service.status(handle.service, 2000) {
+        Error(ledger_service.Unreachable) -> Ok(Nil)
+        Ok(status) -> {
+          let enrolled =
+            ledger_rows.executors_of(status.ledger, handle.local, [])
+            |> list.map(fn(row) { row.name })
+          list.try_each(rows, fn(row) {
+            case row.trust, list.contains(enrolled, row.name) {
+              executors.Untrusted(..), True ->
+                Error(
+                  "untrusted executor "
+                  <> row.name
+                  <> " has the name of an executor the ledger enrols",
+                )
+              executors.Untrusted(..), False | executors.Trusted, _ -> Ok(Nil)
+            }
+          })
+        }
+      }
+  }
+}
+
 /// The orchestrators this daemon asks and moves sessions to, combined the same
 /// way as the executors.
 fn orchestrator_roster(config: Config) -> Roster(orchestrators.Orchestrator) {
@@ -4134,6 +4268,7 @@ pub fn listen_moving(
       movers:,
       deployment: deployment.reporting(deployment_reach(config), reads.report),
       ledger: config.ledger,
+      executors_reload: executors_reload_for(config, domain_configuration),
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),
