@@ -78,6 +78,9 @@ type Record {
 
 type Rig {
   Rig(
+    /// The credentials and pins the link was started with, kept so a test can
+    /// start another link for the same executor.
+    pair: rig.Pair,
     executor: remote_orchestrator.Executor,
     gateway: untrusted_gateway.Gateway,
     link: process.Pid,
@@ -132,18 +135,7 @@ fn start(label: String) -> Rig {
     ))
     as "the gateway starts"
   let name = process.new_name("untrusted_end_to_end")
-  let assert Ok(untrusted_link.Started(pid: link, blobs:)) =
-    untrusted_link.start_placing(untrusted_link.Config(
-      executor: "pod",
-      name:,
-      host: "127.0.0.1",
-      port: gateway.port,
-      pin: pair.executor_pin,
-      credentials: pair.orchestrator,
-      mint: untrusted_link.strong_binding,
-      logger: log.discard(),
-    ))
-    as "the link starts"
+  let #(link, blobs) = start_link(pair, gateway, name)
   let records = process.new_subject()
   let services =
     owner_services_resuming(fixtures.quiet_services(), escalations)
@@ -160,6 +152,7 @@ fn start(label: String) -> Rig {
     ))
     as "the port starts"
   Rig(
+    pair:,
     executor:,
     gateway:,
     link:,
@@ -171,6 +164,47 @@ fn start(label: String) -> Rig {
     keeper:,
     records:,
   )
+}
+
+// Starts a link under `name` for the gateway, as the daemon starts one for a
+// configured executor.
+fn start_link(
+  pair: rig.Pair,
+  gateway: untrusted_gateway.Gateway,
+  name: process.Name(protocol.HostMessage(RemoteCensus)),
+) -> #(process.Pid, Subject(untrusted_bridge.BlobAsk)) {
+  let assert Ok(untrusted_link.Started(pid: link, blobs:)) =
+    untrusted_link.start_placing(untrusted_link.Config(
+      executor: "pod",
+      name:,
+      host: "127.0.0.1",
+      port: gateway.port,
+      pin: pair.executor_pin,
+      credentials: pair.orchestrator,
+      mint: untrusted_link.strong_binding,
+      logger: log.discard(),
+    ))
+    as "the link starts"
+  #(link, blobs)
+}
+
+// Kills the rig's link and waits until its name is free, then starts another
+// link under the same name for the same gateway. The new link holds no
+// binding, as one started again after a crash does. The gateway and the host
+// behind it are untouched, so the executor still holds the session's plane.
+fn restart_link(rig: Rig) -> Rig {
+  process.unlink(rig.link)
+  process.kill(rig.link)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case untrusted_link.running(rig.name, "pod") {
+        Error(_gone) -> poll.Done(Nil)
+        Ok(Nil) -> poll.Retry
+      }
+    })
+    as "the dead link's name is freed"
+  let #(link, blobs) = start_link(rig.pair, rig.gateway, rig.name)
+  Rig(..rig, link:, blobs:)
 }
 
 // Owner services whose capability records the call and answers `pong`.
@@ -235,6 +269,10 @@ fn plane_factory(
           }
           "hold" -> {
             process.sleep_forever()
+            fixtures.expected_outcome(run)
+          }
+          "slow" -> {
+            process.sleep(1500)
             fixtures.expected_outcome(run)
           }
           "big" -> big_outcome()
@@ -413,6 +451,78 @@ pub fn an_escalation_mid_call_reaches_the_owner_and_its_decision_the_plane_test(
   assert process.receive(rig.seen, 2000)
     == Ok(Decided(escalate.Resume(grants: [])))
   stop(rig)
+}
+
+pub fn a_call_after_the_link_started_again_still_reaches_its_owner_test() {
+  let rig = start("relink")
+  let surface.Attachment(surface: remote, ..) = attached(rig)
+  let rig = restart_link(rig)
+  let run = call("ask")
+
+  // The new link holds no binding for the session, though the executor still
+  // holds its plane. The link answers the run with `NoPlane`, the surface
+  // attaches again under a binding of the new link, and the call's escalation
+  // is admitted instead of refused for a binding the link does not hold.
+  assert surface.run(remote, run) == fixtures.expected_outcome(run)
+  let assert Ok(refused) = process.receive(rig.escalations, 5000)
+    as "the owner was asked through the new link"
+  assert refused.call_id == "ask"
+  stop(rig)
+}
+
+pub fn a_call_in_flight_when_the_link_dies_is_sent_again_and_runs_once_test() {
+  let rig = start("relink-flight")
+  let surface.Attachment(surface: remote, ..) = attached(rig)
+  let run = call("slow")
+  let answers = process.new_subject()
+  let _asker =
+    process.spawn_unlinked(fn() {
+      process.send(answers, surface.run(remote, run))
+    })
+  let assert Ok(Running(call: "slow", ..)) = process.receive(rig.seen, 5000)
+    as "the plane started the call"
+
+  // The link dies with the call in flight. The asker finds the address gone,
+  // waits for a link, and sends the same key to the one started in its place.
+  // That link holds no binding and refuses with `NoPlane`; the surface
+  // attaches again and sends the key a third time, and the host joins the
+  // call it is already running.
+  let rig = restart_link(rig)
+  assert process.receive(answers, 15_000) == Ok(fixtures.expected_outcome(run))
+  assert process.receive(rig.seen, 300) == Error(Nil)
+  stop(rig)
+}
+
+pub fn a_request_made_while_no_link_holds_the_name_completes_once_one_does_test() {
+  let rig = start("relink-gap")
+  let surface.Attachment(surface: remote, ..) = attached(rig)
+  process.unlink(rig.link)
+  process.kill(rig.link)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case untrusted_link.running(rig.name, "pod") {
+        Error(_gone) -> poll.Done(Nil)
+        Ok(Nil) -> poll.Retry
+      }
+    })
+    as "the dead link's name is freed"
+
+  // Nothing holds the name now. The call, the ack and the stop are sent to it
+  // from this process and from a second one, and none raises.
+  let run = call("plain")
+  let answers = process.new_subject()
+  let _asker =
+    process.spawn_unlinked(fn() {
+      process.send(answers, surface.run(remote, run))
+    })
+  surface.ack(remote, run)
+  surface.stop_execution(remote, fixtures.execution_key("s1", "e1"))
+  assert process.receive(answers, 300) == Error(Nil)
+
+  // A link registered under the name later is found by the asker's repair.
+  let #(link, _blobs) = start_link(rig.pair, rig.gateway, rig.name)
+  assert process.receive(answers, 15_000) == Ok(fixtures.expected_outcome(run))
+  stop(Rig(..rig, link:))
 }
 
 pub fn the_death_of_the_asker_aborts_the_call_on_the_executor_test() {

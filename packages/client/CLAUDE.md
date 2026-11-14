@@ -60,7 +60,10 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
   asker is the record's worker, `StopExecutionRequest` a cast like `AckRequest`,
   and `about_work` admits a capability or `Holds` at an outstanding start's site
   (`at_work`) and a `LaunchExecutionCall` or `InteractExecutionCall` only from a
-  `code_mode` run in flight.
+  `code_mode` run in flight. A `Run` or a `StartExecution` for a session the link
+  holds no binding for (a link started in place of a dead one) is answered
+  `NoPlane` by `answered_unbound` and never sent, so the surface attaches again
+  and mints one (protocol-change/115); no other message is held to a binding.
 - `remote/untrusted_gateway` is the acceptor, one `weft/state_machine` per
   connection (the handshake runs there, not in the acceptor), a waiter per request
   (unlinked, and exiting with `noconnection` when its connection dies, so a

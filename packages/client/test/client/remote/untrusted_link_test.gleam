@@ -1218,6 +1218,81 @@ pub fn a_blob_for_a_session_with_no_binding_is_refused_at_once_test() {
   stop(rig)
 }
 
+pub fn a_run_or_start_for_a_session_with_no_binding_is_refused_and_never_sent_test() {
+  let rig = start("run-unbound")
+  let run = fixtures.tool_run("call_1", 0)
+  let run_reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Run(
+      key: protocol.key_of("s1", run),
+      incarnation: 0,
+      token: <<"token":utf8>>,
+      run:,
+      authority: fixtures.authority(),
+      reply: run_reply,
+    ),
+  )
+
+  // The refusal is the one an executor's host gives a scope it holds no plane
+  // for, so a surface attaches again.
+  let assert Ok(protocol.RunRefused(protocol.NoPlane(..))) =
+    process.receive(run_reply, 2000)
+    as "a run for a session with no binding is answered NoPlane"
+  let start_reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.StartExecution(
+      key: fixtures.execution_key("s1", "e1"),
+      incarnation: 0,
+      token: <<"token":utf8>>,
+      terms: fixtures.execution_terms(),
+      remaining_ms: 60_000,
+      reply: start_reply,
+    ),
+  )
+  let assert Ok(protocol.ExecutionRefused(protocol.NoPlane(..))) =
+    process.receive(start_reply, 2000)
+    as "a start for a session with no binding is answered NoPlane"
+
+  // Messages that start no work go through for the same session, and they are
+  // the first frames the executor reads: neither refused message was sent.
+  let unacked_reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.ListUnacked(session: "s1", reply: unacked_reply),
+  )
+  let query_reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Query(key: protocol.key_of("s1", run), reply: query_reply),
+  )
+  let stream = rig.greeted(rig.listener)
+  let assert Ok(untrusted_codec.RequestEnvelope(body: first, ..)) =
+    rig.next(stream)
+    as "the listing arrives"
+  let assert Ok(untrusted_codec.RequestEnvelope(body: second, ..)) =
+    rig.next(stream)
+    as "the query arrives"
+  assert untrusted_codec.decode_request(first)
+    == Ok(untrusted_wire.ListUnackedRequest("s1"))
+  assert untrusted_codec.decode_request(second)
+    == Ok(untrusted_wire.QueryRequest(protocol.key_of("s1", run)))
+  stop(rig)
+}
+
+pub fn a_run_after_the_session_attaches_is_sent_not_refused_test() {
+  let rig = start("run-bound")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let run = fixtures.tool_run("call_1", 0)
+
+  // The attach minted the binding, so the same run is carried.
+  let #(_id, _asker, answers) = run_in_flight(rig, stream, "s1", run)
+  assert process.receive(answers, 300) == Error(Nil)
+  stop(rig)
+}
+
 // --- background executions (slice 2) ---------------------------------------------
 
 // Sends a start for execution `id` of `session` from a worker process of its

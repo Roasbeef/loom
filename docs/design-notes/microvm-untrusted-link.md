@@ -75,17 +75,17 @@ developer-path addendum.
 
 ### What a hostile executor can still do to the orchestrator under 109
 
-The link's checks are in `client/remote/untrusted_link.gleam:1502` (`admitted`):
+The link's checks are in `client/remote/untrusted_link.gleam:1576` (`admitted`):
 the binding must be one this link minted and has not retired, the id must be
 fresh, and the callback must be about work the link is carrying
-(`client/remote/untrusted_link.gleam:1575` (`about_work`)). An escalation must
+(`client/remote/untrusted_link.gleam:1649` (`about_work`)). An escalation must
 describe a `run` in flight exactly, arguments included. A capability or
 `Holds` must sit at a `run` or an outstanding background `start`. A launch and
 an interaction need a `code_mode` run in flight. Host-seam capabilities need
 the session's `code_mode` call in flight specifically
-(`client/remote/untrusted_link.gleam:1544` (`from_a_program`)). Facts, notices,
+(`client/remote/untrusted_link.gleam:1618` (`from_a_program`)). Facts, notices,
 wakes, strand activity, the MCP plan and the Git identity need only the binding
-(`client/remote/untrusted_link.gleam:1647` (`McpPlanCall`)), because background
+(`client/remote/untrusted_link.gleam:1721` (`McpPlanCall`)), because background
 jobs send them after their call ended; the owner port fences them to the
 session's reserved fact prefixes. Bounds are 64 callbacks per binding and 1024
 per link.
