@@ -102,22 +102,29 @@ Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 
 Reloading the rows (protocol-change/115). `daemon/untrusted_links` is a
 `weft/actor`, started by `prepare_startup` beside `project_book`, that holds the
-untrusted `executors.Executor` rows and the pid of each row's link, unlinks every
-link it starts and monitors it (a death is logged, and the next reload starts the
-link again). `reconcile(registry, load)` runs `load` inside the actor, checks
-`executor_reload.check_rows` and `check_names`, plans with `executor_reload.plan`
-and performs each step before a three second deadline (`reconcile_ms`); a row not
-reached is `Failed` and stays as it was. Before it starts a link it kills whatever
-holds the link's registered name and waits for the name with `weft/poll`. `rows`
-answers the roster's untrusted rows, and `[]` when the actor does not answer.
+untrusted `executors.Executor` rows and the pid of each row's link and unlinks
+every link it starts (a reload reads each pid with `is_alive`, logs a dead one
+and starts it again). `reconcile(registry, load)` runs `load` inside the actor,
+checks `executor_reload.check_rows` and `check_names`, plans with
+`executor_reload.plan` and performs each step before one three second deadline
+(`reconcile_ms`) that starts before `load`; a row not reached is `Failed` and
+stays as it was. A link start (one second of its own) is begun, and an old link
+killed, only when that much of the deadline is left. Before it starts a link it
+kills whatever holds the link's registered name and waits for the name with
+`weft/poll`. The caller's wait and `rows`' wait are four seconds, above the
+turn's bound, because the actor answers one message at a time. `rows` answers
+the roster's untrusted rows, and `[]` when the actor does not answer.
 `daemon/main.executor_roster` is a read at each use of the trusted rows from start
 and `untrusted_links.rows`, sorted by name; in ledger mode it goes through
 `ledger_rows.executor_roster_over`, so a derived row is unaffected. `start_untrusted`
 is the registry's first reconcile. `executors.reload` is `protocol.ReloadExecutors`;
 `server.Config.executors_reload` holds `main.executors_reload_for`, which reads and
 decodes the file with `decode_startup`, applies `executor_reload.link_rule` to
-canonical paths (the two vm directories), and refuses an untrusted name the ledger
-enrols, answering `reload_invalid` with the reason. `client/executor_reload` is the
+canonical paths under `Config.vm_directories` (the vm directories that existed at
+start, as `ensure_vm_homes` returned them) and dials with the table it checked, and
+refuses an untrusted name the ledger enrols, answering `reload_invalid` with the
+reason. `link_rule` lets a file drop the started table only when it holds no
+untrusted row (`loom vm rm` of the last guest). `client/executor_reload` is the
 pure part and owns the reply codec. Tests: `executor_reload_test`,
 `daemon/untrusted_links_test`, `daemon_executors_reload_test` and
 `remote/untrusted_reload_test`.
@@ -256,7 +263,7 @@ is asked to reload (`executors.reload`, protocol-change/115): `restart_of` and
 `vm_cli.reload_daemon` and read the reply with `vm_link.reload_result` and
 `reload_report`, which prints one line for every entry that is not `unchanged`.
 Only a daemon that predates the command, refuses it, does not answer, or
-reports the guest's own link `failed` or absent gets the earlier path
+reports the guest's own link `failed`, `stopped` or absent gets the earlier path
 (`daemon_outcome`: an idle daemon is stopped, a busy one is left and named).
 `rm` sends the reload after it rewrites the file (`removal_daemon_lines`,
 `vm_link.removal_report`). `host/access.refusal_code` keeps the message of a

@@ -2034,9 +2034,10 @@ the `message`, and no change, when
 
 - the file is one a start would refuse;
 - `[executor_link]` is not one the daemon may apply: it must equal the table the
-  daemon started with, or the daemon must have started with none and each of the
-  table's files must resolve to a path under `$HOME/.loom/vm` or
-  `<state root>/vm`;
+  daemon started with, or be dropped by a file that holds no untrusted row (what
+  `loom vm rm` of the last guest writes), or the daemon must have started with
+  none and each of the table's files must resolve to a path under `$HOME/.loom/vm`
+  or `<state root>/vm`, as that directory existed when the daemon started;
 - an untrusted row has the name of an executor the ledger enrols;
 - the file holds more than 512 untrusted rows, or the daemon would have seen more
   than 1,024 distinct untrusted names since it started.
