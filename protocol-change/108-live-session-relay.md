@@ -987,3 +987,38 @@ This corrects the addendum above in four places and records one cost.
 made, so a page that then falls back to the transcript is charged 64 MiB where the home
 page it is was charged about 8 MiB. Eight live relayed tabs take the laptop's whole
 default budget, the same arithmetic as eight local operator pages.
+
+## Addendum: the relayed page's parity with the box's own page (2026-11-14)
+
+A live drive of the relayed page against the box's own page of the same session
+(`docs/review/distributed-1137.md`, "Exit criterion 4") found five differences. No frame
+or body changed. Three are closed and two are left, and the reasons are recorded here.
+
+- **The attach's `label.name` is the session's name, as this proposal says, and not its
+  first prompt.** `top_host.heading_of` sent the subtitle where one existed, so the
+  relayed page's heading and title read the first prompt where the box's page reads the
+  name. It sends `registration.name`. A listing row (`TopSessions`) still shows the first
+  prompt. A box that has not been updated sends the first prompt, which a laptop draws as
+  it receives it.
+- **The placement strip's commands half** is read from the label on a `Relayed` route
+  (`component.relayed_code`). A local page reads it from the sidebar's list, which has the
+  session in it. The laptop's list never has a session that runs on a box.
+- **The Session tab's invitation control** draws `invites.Elsewhere(machine)` on a `Relayed`
+  route: "This session runs on <box>, so invitations are made from its own page there."
+  The bookmark sentence, which is about how a page was opened, no longer shows. The laptop
+  cannot mint access to a session it does not hold, and the box offers no invitation over
+  the feed, so no control is drawn.
+- **Left: the Changes tab.** A local page's tab is the workspace's Git diff, read by the
+  daemon that serves the page (`Transport.worktree`). The laptop cannot read the box's
+  workspace, so the relayed tab lists the session's own edits and says so. Matching the box
+  needs a feed body that carries the box's observation of the workspace, for example
+  `108.worktree.1` with request `{feed}` and answer the `web_view/worktrees` observation
+  (repository state, branch, files, bounded diff text), which is a new revision of this
+  protocol and a new box-side read the 108 rules do not yet cover.
+- **Left: the session sidebar.** The page lists the laptop's own catalogue, as every session
+  page does, and a session page draws no other orchestrator's sessions: only the home's
+  sidebar has sections "On <name>". A laptop with no local session therefore draws no
+  sidebar. Drawing the relayed sessions on a session page needs the orchestrators read in
+  the component's `Transport`, a timer and the home's relayed-section state in the
+  component, and an open that departs for the relayed address. That is component
+  machinery, not a wire change, and is not done here.
