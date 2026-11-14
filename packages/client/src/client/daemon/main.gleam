@@ -2925,6 +2925,53 @@ fn crash_after_step() -> fn(session_move.Step) -> Nil {
   }
 }
 
+/// Creates the microVM home directories, mode 0700, when they are missing
+/// (protocol-change/115, "The link key and the masks").
+///
+/// A jail's mask over a path that does not exist, under a read-only parent, is
+/// not built, and a session keeps its policy for its life. Creating the
+/// directories before any policy exists makes every policy mask them, whenever
+/// the first guest is made. A directory that exists is left exactly as it is:
+/// no chmod, no chown. A failure is a start failure, because a daemon that
+/// cannot create the directory cannot promise the mask.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = main.ensure_vm_homes(Some("/home/o"), "/home/o/.loom")
+/// ```
+@internal
+pub fn ensure_vm_homes(
+  home: Option(String),
+  state_root: String,
+) -> Result(Nil, String) {
+  workspace_policy.vm_home_directories(home, state_root)
+  |> list.try_each(ensure_private_if_missing)
+}
+
+/// Makes one directory private when it is absent, and does nothing to one
+/// that is present.
+fn ensure_private_if_missing(path: String) -> Result(Nil, String) {
+  let failure = fn(error) {
+    "cannot create the microVM directory "
+    <> path
+    <> ": "
+    <> simplifile.describe_error(error)
+  }
+
+  // An unreadable answer falls through to the creation, which then reports it.
+  case simplifile.is_directory(path) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) | Error(_) -> {
+      use Nil <- result.try(
+        simplifile.create_directory_all(path) |> result.map_error(failure),
+      )
+      simplifile.set_permissions_octal(path, 0o700)
+      |> result.map_error(failure)
+    }
+  }
+}
+
 /// Prepares the root before acquiring any daemon file or session resource.
 /// The caller retains the returned handle through listen or shutdown failures.
 ///
@@ -2997,6 +3044,13 @@ pub fn prepare_startup(
   use #(config, connection_limits, project_numbers) <- result.try(
     decode_startup(config, document, configuration, logger),
   )
+
+  // The microVM homes exist before any distribution, state store, executor
+  // plane or session is started, so every jail built from here on masks them.
+  use Nil <- result.try(ensure_vm_homes(
+    workspace_policy.home_directory(),
+    config.state_root,
+  ))
   let executors = config.executors
   let pools = config.pools
   let orchestrators = config.orchestrators
