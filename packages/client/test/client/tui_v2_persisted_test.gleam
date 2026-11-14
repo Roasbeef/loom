@@ -13,6 +13,7 @@ import client/daemon/session_socket
 import client/owned_assembly_test
 import client/serve
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/entry
 import core/ids
@@ -167,6 +168,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
         None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),

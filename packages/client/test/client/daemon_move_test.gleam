@@ -19,6 +19,7 @@ import client/remote/orchestrator_port
 import client/roster
 import client/session_directory.{type Directory, Directory, Elsewhere}
 import client/session_movers
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -227,7 +228,17 @@ fn remote(ready: root.Ready(String), key: String) -> String {
   let assert Ok(view) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(key, "repo", "Remote", "", None, None, "build-box", ""),
+      manager.Creation(
+        key,
+        "repo",
+        "Remote",
+        "",
+        None,
+        None,
+        "build-box",
+        "",
+        agency_limits.empty,
+      ),
       directory: ready.sessions_directory,
       generator: ids_for(key),
       scope: domain.SessionOnly,
@@ -241,7 +252,17 @@ fn local(ready: root.Ready(String), key: String) -> String {
   let assert Ok(view) =
     manager.create(
       ready.registry,
-      manager.Creation(key, ready.state_root, "Local", "", None, None, "", ""),
+      manager.Creation(
+        key,
+        ready.state_root,
+        "Local",
+        "",
+        None,
+        None,
+        "",
+        "",
+        agency_limits.empty,
+      ),
       directory: ready.sessions_directory,
       generator: ids_for(key),
     )
@@ -657,7 +678,17 @@ fn working_in(
   let assert Ok(view) =
     manager.create(
       ready.registry,
-      manager.Creation(key, directory, "Local", "", None, None, "", ""),
+      manager.Creation(
+        key,
+        directory,
+        "Local",
+        "",
+        None,
+        None,
+        "",
+        "",
+        agency_limits.empty,
+      ),
       directory: ready.sessions_directory,
       generator: ids_for(key),
     )

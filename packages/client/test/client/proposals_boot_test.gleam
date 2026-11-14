@@ -13,6 +13,7 @@ import client/retryconf
 import client/schedule
 import client/serve
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import gleam/option.{None, Some}
 import gleam/string
@@ -68,7 +69,7 @@ fn settings(root: String, file: String) -> serve.Settings {
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,

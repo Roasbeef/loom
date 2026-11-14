@@ -30,6 +30,7 @@ import client/server
 import client/session_socket_test as transfer
 import client/system_prompt
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -185,7 +186,7 @@ pub fn settings_under(root: String) -> serve.Settings {
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,
@@ -462,6 +463,7 @@ fn with_daemon_instance(run) {
               None,
               "",
               "",
+              agency_limits.empty,
             ),
             directory: serving.ready.sessions_directory,
             generator: ids.generator(clock.fixed(1000), 887),

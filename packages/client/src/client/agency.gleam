@@ -327,6 +327,7 @@ import client/remote_send
 import client/remote_spawn
 import client/state_object
 import client/workflow_ledger
+import core/agency_limits.{type DepthCap, BoundedDepth, UnlimitedDepth}
 import core/clock.{type Clock}
 import core/entry
 import core/glance.{type Glance}
@@ -391,7 +392,7 @@ pub const result_schema_prefix = "result-schema/"
 /// claims each name under a `seq: None` compare-and-set — but a bounded
 /// walk costs nothing and turns a corrupt ledger into a refusal rather
 /// than a hang.
-pub const max_ancestor_walk = 32
+pub const max_ancestor_walk = 256
 
 /// Everything the Agency needs that is not the runtime.
 ///
@@ -411,7 +412,7 @@ pub type Config {
   Config(
     name: address.Address(Message),
     clock: Clock,
-    depth_cap: Int,
+    depth_cap: DepthCap,
     fan_out: Int,
     session_strands: Int,
     max_wait_ms: Int,
@@ -530,12 +531,11 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
   Config(
     name:,
     clock:,
-    // Only the strand a human is talking to may spawn. The value of
-    // grandchildren is unproven and the cost of unbounded recursion is
-    // not.
-    depth_cap: 1,
-    fan_out: 8,
-    session_strands: 16,
+    // Only the strand a human is talking to may spawn by default, while a
+    // single main strand can fan out up to 100 concurrent subagents.
+    depth_cap: BoundedDepth(agency_limits.default_depth_cap),
+    fan_out: agency_limits.default_fan_out,
+    session_strands: agency_limits.default_session_strands,
     max_wait_ms: 300_000,
     default_within_ms: Some(child_run.default_within_ms),
     first_slice_ms: 25,
@@ -1337,11 +1337,29 @@ type Source {
 /// above that same cap. A remote child's own spawn is judged as a local one
 /// this session, and for a remote parent the spawner's `max_depth` but never
 /// The deepest child this source may have: the Agency's own cap for a strand of
-fn depth_limit(config: Config, source: Source) -> Int {
+fn depth_limit(config: Config, source: Source) -> DepthCap {
+  // Clamp delegated depth against local depth_cap when bounded.
   case source {
     Local -> config.depth_cap
     Delegated(delegation) ->
-      int.min(delegation.terms.max_depth, config.depth_cap)
+      case config.depth_cap {
+        UnlimitedDepth -> BoundedDepth(delegation.terms.max_depth)
+        BoundedDepth(cap) ->
+          BoundedDepth(int.min(delegation.terms.max_depth, cap))
+      }
+  }
+}
+
+/// Returns `Some(cap)` when `depth` exceeds a bounded depth cap.
+fn depth_exceeds(depth: Int, cap: DepthCap) -> Option(Int) {
+  // UnlimitedDepth never triggers a numeric depth refusal.
+  case cap {
+    UnlimitedDepth -> None
+    BoundedDepth(limit) ->
+      case depth > limit {
+        True -> Some(limit)
+        False -> None
+      }
   }
 }
 
@@ -1366,10 +1384,10 @@ fn spawn_on(
       }
   }
 
-  // State what the branch decides before dispatching.
-  use Nil <- result.try(case depth > depth_limit(config, source) {
-    True -> Error(agent.DepthCapReached(depth: depth_limit(config, source)))
-    False -> Ok(Nil)
+  // Reject spawns past the session or delegated depth cap.
+  use Nil <- result.try(case depth_exceeds(depth, depth_limit(config, source)) {
+    Some(cap) -> Error(agent.DepthCapReached(depth: cap))
+    None -> Ok(Nil)
   })
 
   use name <- result.try(child_name(caller, request.purpose))
@@ -2104,7 +2122,7 @@ fn child_configuration(
 /// A child may narrow its parent's tool set and never widen it: a name the
 fn child_tools(
   source: Source,
-  depth_cap: Int,
+  depth_cap: DepthCap,
   parent_tools: List(String),
   requested: Option(List(String)),
   depth: Int,
@@ -2129,8 +2147,14 @@ fn child_tools(
     }
   })
 
+  // Strip `agent_spawn` once the child reaches a bounded depth cap.
+  let at_cap = case depth_cap {
+    UnlimitedDepth -> False
+    BoundedDepth(cap) -> depth >= cap
+  }
+
   // State what the branch decides before dispatching.
-  let chosen = case depth >= depth_cap {
+  let chosen = case at_cap {
     True -> list.filter(chosen, fn(name) { name != agent.spawn_tool_name })
     False -> chosen
   }
@@ -4357,10 +4381,15 @@ fn admit_remote(
   seed: Option(Seed),
 ) -> Result(#(String, remote_child.Stub), Refusal) {
   use ledger <- result.try(read_ledger(runtime))
-  use <- bool.guard(
-    when: parent_depth(ledger, caller) + 1 > config.depth_cap,
-    return: Error(agent.DepthCapReached(depth: config.depth_cap)),
+
+  // Enforce the local depth cap before writing a remote spawn stub.
+  use Nil <- result.try(
+    case depth_exceeds(parent_depth(ledger, caller) + 1, config.depth_cap) {
+      Some(cap) -> Error(agent.DepthCapReached(depth: cap))
+      None -> Ok(Nil)
+    },
   )
+
   let key = remote_child.stub_key(agent.call_site_digest(caller))
   use found <- result.try(
     remote_child.find(runtime, key) |> result.map_error(agent.PlaneFailed),

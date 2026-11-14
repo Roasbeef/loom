@@ -18,6 +18,7 @@
 //// field with fewer keeps its record update at the call site, where a setter
 //// would cost as much as it saves.
 
+import core/agency_limits
 import tui/model.{type View, View} as _
 
 /// Replaces `View.overlay`; the record documents the field.
@@ -474,6 +475,21 @@ pub fn prompted_approvals(view: View, prompted_approvals) -> View {
 @internal
 pub fn configuring(view: View, configuring) -> View {
   View(..view, configuring:)
+}
+
+/// Replaces `View.pending_agency`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // view_set.pending_agency(model.view, agency_limits.empty)
+/// ```
+@internal
+pub fn pending_agency(
+  view: View,
+  pending_agency: agency_limits.AgencyLimits,
+) -> View {
+  View(..view, pending_agency:)
 }
 
 /// Replaces `View.workspace`; the record documents the field.

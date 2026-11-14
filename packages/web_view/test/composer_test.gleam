@@ -8,6 +8,7 @@
 //// target, the recent places and the summary sentence are written from what the
 //// page holds.
 
+import core/agency_limits
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -204,6 +205,7 @@ pub fn a_start_asks_once_for_the_place_the_form_describes_test() {
       "review",
       "review",
       creations.default_roles,
+      agency_limits.empty,
     )
   assert out.sending == composer.Out
 
@@ -425,6 +427,7 @@ pub fn a_start_carries_the_message_and_its_name_test() {
       "fix the retry test",
       "fix the retry test\nthen the docs",
       creations.default_roles,
+      agency_limits.empty,
     )
 
   let #(_, intent) =
@@ -435,6 +438,7 @@ pub fn a_start_carries_the_message_and_its_name_test() {
       "",
       "",
       creations.default_roles,
+      agency_limits.empty,
     )
 }
 
@@ -734,4 +738,60 @@ pub fn an_empty_message_starts_a_box_session_without_a_message_test() {
   let #(_, local) =
     update(here, composer.Started("   ", composer.Nothing), box_offers())
   let assert composer.Create(prompt: "", ..) = local
+}
+
+pub fn subagent_limits_disclosure_toggles_and_validates_test() {
+  let state = composer.new()
+  assert state.limits == composer.LimitsClosed
+  let #(opened, intent) = update(state, composer.ToggledLimits, offers())
+  assert intent == composer.Stay
+  assert opened.limits == composer.LimitsOpen
+  let #(chosen, _) =
+    update(opened, composer.ChoseTarget(composer.Folder("/src/loom")), offers())
+  let #(bad_state, bad_intent) =
+    update(
+      chosen,
+      composer.StartedWithLimits(
+        "review",
+        composer.Nothing,
+        composer.LimitsInput(
+          fan_out: "300",
+          session_strands: "100",
+          depth_mode: "bounded",
+          depth_cap: "2",
+        ),
+      ),
+      offers(),
+    )
+  assert bad_intent == composer.Stay
+  assert bad_state.refusal
+    == Some(creations.reason_words(creations.InvalidLimits))
+  let #(good_state, good_intent) =
+    update(
+      chosen,
+      composer.StartedWithLimits(
+        "review",
+        composer.Nothing,
+        composer.LimitsInput(
+          fan_out: "200",
+          session_strands: "512",
+          depth_mode: "unlimited",
+          depth_cap: "",
+        ),
+      ),
+      offers(),
+    )
+  assert good_state.sending == composer.Out
+  assert good_intent
+    == composer.Create(
+      creations.Drawn("/src/loom"),
+      "review",
+      "review",
+      creations.default_roles,
+      agency_limits.AgencyLimits(
+        fan_out: Some(200),
+        session_strands: Some(512),
+        depth_cap: Some(agency_limits.UnlimitedDepth),
+      ),
+    )
 }

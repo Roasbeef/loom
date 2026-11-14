@@ -51,6 +51,7 @@ import client/retryconf
 import client/schedule
 import client/serve
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/json.{type JsonValue}
 import core/message
@@ -1064,7 +1065,7 @@ fn settings(
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,

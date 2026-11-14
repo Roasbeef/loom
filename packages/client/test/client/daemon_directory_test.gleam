@@ -16,6 +16,7 @@ import client/remote/orchestrator_port.{NotOwned, Owned}
 import client/session_directory.{
   type Directory, Directory, Elsewhere, Here, Unknown, Unreachable,
 }
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -250,6 +251,7 @@ pub fn a_session_this_daemon_holds_never_asks_the_directory_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 700),

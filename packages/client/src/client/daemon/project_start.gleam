@@ -64,6 +64,7 @@ import client/projectseam
 import client/serve
 import client/workspaces
 import client/worktrees.{type Worktrees}
+import core/agency_limits
 import core/ids
 import gleam/bit_array
 import gleam/crypto
@@ -266,6 +267,7 @@ fn make_project(
         model: None,
         executor: "",
         pool: "",
+        agency: agency_limits.empty,
       ),
       directory: env.sessions,
       generator: env.generator(),
@@ -384,6 +386,7 @@ fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
       model: None,
       executor: "",
       pool: "",
+      agency: agency_limits.empty,
     ),
     directory: env.sessions,
     generator: env.generator(),
@@ -678,6 +681,7 @@ fn start_worker(
       model: None,
       executor: "",
       pool: "",
+      agency: agency_limits.empty,
     )
   use registration <- result.try(
     manager.reserve(

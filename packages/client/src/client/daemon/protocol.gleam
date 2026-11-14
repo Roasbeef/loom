@@ -24,6 +24,9 @@
 //// 4. `event` encodes a reply or a push and refuses one past the outbound bound.
 
 import client/peer_mail
+import core/agency_limits.{
+  type AgencyLimits, AgencyLimits, BoundedDepth, UnlimitedDepth,
+}
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -309,6 +312,8 @@ pub type Command {
     /// workspace name and the scope is session-only (protocol-change/078).
     pool: Option(String),
     domain_scope: domain.Scope,
+    /// Optional per-session subagent limits (protocol-change/113).
+    agency: AgencyLimits,
   )
 
   /// Explicitly requests execution in the named daemon epoch.
@@ -816,7 +821,8 @@ fn decode_fields(
       use configuration <- result.try(configuration_field(fields))
       use profile <- result.try(profile_field(fields))
       use model <- result.try(model_field(fields))
-      use scope <- result.map(domain_scope(fields, placed))
+      use scope <- result.try(domain_scope(fields, placed))
+      use agency <- result.map(agency_field(fields))
       CreateSession(
         key,
         workspace,
@@ -827,6 +833,7 @@ fn decode_fields(
         executor,
         pool,
         scope,
+        agency,
       )
     }
     "sessions.open" -> {
@@ -1184,6 +1191,64 @@ fn configuration_field(
   case list.key_find(fields, "configuration") {
     Ok(json.String("")) -> Ok("")
     Ok(_) | Error(Nil) -> text_field(fields, "configuration", 4096)
+  }
+}
+
+/// Decodes optional per-session subagent limits from `sessions.create`.
+fn agency_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(AgencyLimits, String) {
+  // Absence means inherit all daemon/Agency defaults.
+  case list.key_find(fields, "agency") {
+    Error(Nil) -> Ok(agency_limits.empty)
+    Ok(json.Object(nested)) -> decode_agency_object(nested)
+    Ok(_) -> Error("agency must be an object")
+  }
+}
+
+/// Validates keys and scalar bounds of the `"agency"` creation object.
+fn decode_agency_object(
+  nested: List(#(String, JsonValue)),
+) -> Result(AgencyLimits, String) {
+  // Reject unexpected keys so typos fail closed as bad_request.
+  use Nil <- result.try(
+    list.try_each(nested, fn(pair) {
+      case pair.0 {
+        "fan_out" | "session_strands" | "depth_cap" -> Ok(Nil)
+        other -> Error("unknown agency field: " <> other)
+      }
+    }),
+  )
+  use fan_out <- result.try(optional_agency_int(nested, "fan_out"))
+  use session_strands <- result.try(optional_agency_int(
+    nested,
+    "session_strands",
+  ))
+  use depth_cap <- result.try(optional_depth_cap(nested))
+  agency_limits.validate(AgencyLimits(fan_out:, session_strands:, depth_cap:))
+}
+
+/// Decodes an optional integer inside `"agency"`.
+fn optional_agency_int(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(Option(Int), String) {
+  case list.key_find(fields, key) {
+    Error(Nil) -> Ok(None)
+    Ok(json.Int(value)) -> Ok(Some(value))
+    Ok(_) -> Error("agency." <> key <> " must be an integer")
+  }
+}
+
+/// Decodes optional `depth_cap` as an integer or `"unlimited"`.
+fn optional_depth_cap(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(agency_limits.DepthCap), String) {
+  case list.key_find(fields, "depth_cap") {
+    Error(Nil) -> Ok(None)
+    Ok(json.Int(value)) -> Ok(Some(BoundedDepth(value)))
+    Ok(json.String("unlimited")) -> Ok(Some(UnlimitedDepth))
+    Ok(_) -> Error("agency.depth_cap must be an integer or \"unlimited\"")
   }
 }
 

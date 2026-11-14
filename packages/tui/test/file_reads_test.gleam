@@ -19,6 +19,7 @@
 //// daemon host is a stand-in whose control connection is a subject this
 //// process owns, as in `attachment_jobs_test`.
 
+import core/agency_limits
 import etui/backend
 import etui/widgets/textarea
 import gleam/bit_array
@@ -248,6 +249,7 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
         "",
         "",
         "",
+        agency_limits.empty,
       ),
       90_000,
     )
@@ -416,6 +418,7 @@ pub fn a_creation_carries_the_launch_profile_test() {
         "deepseek",
         "",
         "",
+        agency_limits.empty,
       ),
       90_000,
     )

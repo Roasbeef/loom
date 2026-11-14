@@ -73,8 +73,8 @@
 ////
 //// | call | ceiling | why |
 //// |---|---|---|
-//// | `spawn` | 32 | a child strand, durable |
-//// | `send` | 128 | a durable commit, and to an idle child it starts a run |
+//// | `spawn` | 256 | a child strand, durable |
+//// | `send` | 1024 | a durable commit, and to an idle child it starts a run |
 //// | `note` | 256 | a durable register update under a chosen key |
 //// | `notes` | 64 | a full prefix scan of the session's agent namespaces |
 //// | `wait` | none | its cost is time, which the clamp and the deadline bind |
@@ -1312,10 +1312,10 @@ pub fn map(
   max_concurrency max_concurrency: Int,
   within_ms within_ms: Int,
 ) -> Result(List(Mapped), StrandError) {
-  case max_concurrency >= 1 && max_concurrency <= 32 && within_ms >= 0 {
+  case max_concurrency >= 1 && max_concurrency <= 256 && within_ms >= 0 {
     False ->
       Error(InvalidArgument(
-        "map requires concurrency 1..32 and a nonnegative join window",
+        "map requires concurrency 1..256 and a nonnegative join window",
       ))
     True -> Ok(map_batches(assignments, max_concurrency, within_ms, []))
   }

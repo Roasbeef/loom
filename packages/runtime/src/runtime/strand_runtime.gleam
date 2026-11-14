@@ -184,7 +184,7 @@ pub type Options {
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
     idle_poll_interval_ms: Int,
-    claim_reaper: fn(String, Pid) -> List(Pid),
+    claim_reaper: fn(String, Option(Pid)) -> List(Pid),
     logger: Logger,
   )
 }
@@ -226,7 +226,7 @@ pub opaque type Message {
   /// weft's `continuing`, and constructible nowhere else — the type is
   /// opaque and the resolution subject rides inside the message, so no
   /// later sender can re-open the barrier.
-  AwaitPredecessors(resolution: Subject(Result(Nil, String)))
+  AwaitPredecessors
 
   /// Re-plan now. Loss is harmless: the poll tick finds queued work.
   Nudge
@@ -271,7 +271,7 @@ pub opaque type Message {
 /// This incarnation's reaper: a weft witnessed run whose scope is the drain
 /// barrier the ledger monitors, and whose ledger every effect adopts itself
 /// into at birth. See `start_reaper`.
-type Reaper {
+pub opaque type Reaper {
   Reaper(
     run: weft.Witnessed,
     /// `None` only if the scope died before handing its ledger over; every
@@ -279,6 +279,8 @@ type Reaper {
     ledger: Option(weft.Ledger),
     /// The driver, whose liveness decides an ownerless publication.
     driver: Pid,
+    /// Signals the parked reaper leaf to exit cleanly when the strand goes idle.
+    release: Subject(Nil),
   )
 }
 
@@ -340,7 +342,8 @@ type State {
     /// it at birth, and the moment this driver process dies it asks every
     /// effect to stop and stays alive until they, and every provider owner
     /// they published, are gone. See `start_reaper`.
-    reaper: Reaper,
+    claim_reaper: fn(String, Option(Pid)) -> List(Pid),
+    reaper: Option(Reaper),
     live: List(Live),
     observations: List(Observation),
     poll_permit: Bool,
@@ -356,6 +359,8 @@ type State {
     /// the pending tick alone, so a session configured with one period
     /// for both occupancies arms exactly one deadline for its whole life.
     armed_poll_ms: Option(Int),
+    /// Handle for the currently armed poll timer, cancelled when re-arming.
+    poll_timer: Option(Timer),
     // The write-once branch and its pure default projection share one leaf
     // key. Polls and threshold/request reads reuse the projected value while
     // that key stays unchanged. A moved leaf still joins new entries or scans
@@ -482,8 +487,7 @@ pub fn start(
     // Message variant: the one consumer is the guaranteed-first handler
     // below, and a dedicated channel keeps the claim result out of the
     // mailbox the barrier exists to hold back.
-    let resolution = process.new_subject()
-    let reaper = start_reaper(options, resolution)
+
     let selector =
       process.new_selector()
       |> process.select(subject)
@@ -517,7 +521,8 @@ pub fn start(
       // path that halts instead of arming.
       occupancy: Occupied,
       logger:,
-      reaper:,
+      claim_reaper: options.claim_reaper,
+      reaper: None,
       live: [],
       observations: [],
       poll_wait: None,
@@ -525,12 +530,13 @@ pub fn start(
       retry_wake: None,
       poll_generation: 0,
       armed_poll_ms: None,
+      poll_timer: None,
       cleared: None,
       projection: None,
     ))
     |> actor.selecting(selector)
     |> actor.returning(subject)
-    |> actor.continuing(AwaitPredecessors(resolution:))
+    |> actor.continuing(AwaitPredecessors)
     |> Ok
   })
   |> actor.addressed(address)
@@ -611,7 +617,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
   // Dispatches on incoming messages to drive or update strand state.
   case message {
-    AwaitPredecessors(resolution:) -> await_predecessors(state, resolution)
+    AwaitPredecessors -> await_predecessors(state)
 
     PollTick(generation:) -> polled(logger, state, generation)
 
@@ -655,7 +661,8 @@ fn polled(
 
   // This tick has arrived, so nothing is outstanding until `finish` arms
   // again — and the permit never outlives the drive it was offered to.
-  let state = State(..state, armed_poll_ms: None, poll_permit: True)
+  let state =
+    State(..state, armed_poll_ms: None, poll_timer: None, poll_permit: True)
 
   // Drives the strand during checkpoint poll.
   case poll_drive(state) {
@@ -749,14 +756,11 @@ fn poll_wait_unchanged(state: State, wait: PollWait) -> Result(Bool, String) {
 // mailbox itself preserves the intent. No effect can be driven before this
 // returns, which is the invariant the old two-state gate existed to hold.
 /// Awaits resolution from the predecessor drain barrier.
-fn await_predecessors(
-  state: State,
-  resolution: Subject(Result(Nil, String)),
-) -> actor.Next(State, Message) {
+fn await_predecessors(state: State) -> actor.Next(State, Message) {
   let logger = state.logger
 
-  // Receives resolution from predecessor drain monitor.
-  case process.receive_forever(resolution) {
+  // Waits on any prior incarnation's reaper without starting one while idle.
+  case state.claim_reaper(state.strand, None) |> await_previous_reapers(4000) {
     Ok(Nil) -> {
       // Recovery and its poll clock both begin after the ledger-authored
       // acknowledgement. Before this point, queued doorbells are harmless
@@ -811,12 +815,22 @@ fn arm_poll(state: State) -> State {
     Some(armed) if armed == delay -> state
 
     _ -> {
+      effects.cancel_timer(state.poll_timer)
       let generation = state.poll_generation + 1
       let internal = state.internal
-      state.effects.timers.after(delay, fn() {
-        wake(internal, PollTick(generation:))
-      })
-      State(..state, poll_generation: generation, armed_poll_ms: Some(delay))
+      let poll_timer =
+        effects.send_after(
+          state.effects.timers,
+          to: internal,
+          after: delay,
+          sending: PollTick(generation:),
+        )
+      State(
+        ..state,
+        poll_generation: generation,
+        armed_poll_ms: Some(delay),
+        poll_timer:,
+      )
     }
   }
 }
@@ -833,7 +847,10 @@ fn finish(logger: Logger, outcome: Outcome) -> actor.Next(State, Message) {
     // brought to the period that occupancy names before the next message
     // is taken. A halt arms nothing, so a process about to be gone leaves
     // no deadline behind.
-    Continue(state) -> actor.continue(arm_poll(state))
+    Continue(state) -> {
+      let state = maybe_retire_reaper(state)
+      actor.continue(arm_poll(state))
+    }
     Halt(reason) -> {
       log.error(logger, "strand.halted", [
         field.text(key: "reason", value: reason),
@@ -1239,9 +1256,13 @@ fn abort(state: State, operation: OpId) -> Outcome {
     // converges as soon as the concurrent committers quiet down.
     AbortRaceLost -> {
       let internal = state.internal
-      state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(internal, RequestAbort(operation:))
-      })
+      let _timer =
+        effects.send_after(
+          state.effects.timers,
+          to: internal,
+          after: state.poll_interval_ms,
+          sending: RequestAbort(operation:),
+        )
       Continue(state)
     }
     AbortDurable(state) -> {
@@ -1598,7 +1619,13 @@ fn park_retry(state: State, at: Int, now: Int) -> Outcome {
       log.warn(state.logger, "retry.armed", [
         field.count(key: "delay_ms", value: delay),
       ])
-      state.effects.timers.after(delay, fn() { wake(internal, RetryDue) })
+      let _timer =
+        effects.send_after(
+          state.effects.timers,
+          to: internal,
+          after: delay,
+          sending: RetryDue,
+        )
       Continue(State(..state, retry_wake: Some(at)))
     }
   }
@@ -1926,13 +1953,20 @@ fn tool_key(
           replay:,
           grants: [],
         )
-      KeySpawned(spawn_recovery(
-        state,
-        ToolEffect(operation:, step_id:, source_index:, result_entry:),
-        loaded.configuration,
-        run,
-        recover,
-      ))
+
+      // Spawns recovery worker or halts if the lazy reaper cannot start.
+      case
+        spawn_recovery(
+          state,
+          ToolEffect(operation:, step_id:, source_index:, result_entry:),
+          loaded.configuration,
+          run,
+          recover,
+        )
+      {
+        Ok(next) -> KeySpawned(next)
+        Error(reason) -> KeyHalt(reason)
+      }
     }
   }
 }
@@ -2072,12 +2106,12 @@ fn start_effect(
           context: transformed,
           stream_options:,
         )
-      Ok(spawn_provider(
+      spawn_provider(
         state,
         AssistantEffect(operation:, step_id:, response_entry:),
         generation_context.configuration,
         spec,
-      ))
+      )
     }
     planner.ToolRequest(
       operation:,
@@ -2093,7 +2127,7 @@ fn start_effect(
       // here, which keeps an approval worth exactly the one execution of
       // exactly the one call a human approved.
       let #(grants, state) = take_cleared(state, step_id, source_index)
-      Ok(spawn_tool(
+      spawn_tool(
         state,
         ToolEffect(operation:, step_id:, source_index:, result_entry:),
         loaded.configuration,
@@ -2107,7 +2141,7 @@ fn start_effect(
           replay:,
           grants:,
         ),
-      ))
+      )
     }
     planner.ToolReplay(
       operation:,
@@ -2118,7 +2152,7 @@ fn start_effect(
       result_entry:,
     ) -> {
       use arguments <- result.try(read_tool_arguments(state, arguments_key))
-      Ok(spawn_tool(
+      spawn_tool(
         state,
         ToolEffect(operation:, step_id:, source_index:, result_entry:),
         loaded.configuration,
@@ -2137,7 +2171,7 @@ fn start_effect(
           // approval into two widened executions.
           grants: [],
         ),
-      ))
+      )
     }
     planner.DeferredFetch(
       operation:,
@@ -2152,7 +2186,7 @@ fn start_effect(
         loaded.deferred_source,
         "a deferred fetch was dispatched without a source handle",
       ))
-      Ok(spawn_provider(
+      spawn_provider(
         state,
         PollEffect(operation:, step_id:, poll:, response_entry:),
         configuration,
@@ -2165,7 +2199,7 @@ fn start_effect(
           configuration:,
           stream_options:,
         ),
-      ))
+      )
     }
     planner.SummaryProviderRequest(
       operation:,
@@ -2175,7 +2209,7 @@ fn start_effect(
       context: summary_context,
       ..,
     ) ->
-      Ok(spawn_provider(
+      spawn_provider(
         state,
         SummaryEffect(operation:, task_id:, attempt:, index: request_index),
         summary_context.configuration,
@@ -2194,7 +2228,7 @@ fn start_effect(
           // reason: nothing about a note is written down.
           notes: compaction_notes(state, loaded, operation),
         ),
-      ))
+      )
   }
 }
 
@@ -2465,23 +2499,51 @@ fn scan(state: State, q: storage.BranchScan) -> Result(List(Entry), String) {
 // claimant is a leaf owner the scope must wait for, which holds the scope's
 // pid alive until the ledger has replied, whatever the driver does meanwhile.
 
-/// Spawns the effect reaper and claims it.
-fn start_reaper(
-  options: Options,
-  resolution: Subject(Result(Nil, String)),
-) -> Reaper {
+/// Ensures this incarnation holds an active effect reaper, starting and claiming one lazily.
+fn ensure_reaper(state: State) -> Result(#(Reaper, State), String) {
+  // Reuses the active reaper or starts and claims a new one lazily.
+  case state.reaper {
+    Some(reaper) -> Ok(#(reaper, state))
+    None -> {
+      use reaper <- result.map(claim_reaper_scope(
+        state.claim_reaper,
+        state.strand,
+      ))
+      #(reaper, State(..state, reaper: Some(reaper)))
+    }
+  }
+}
+
+/// Retires the active reaper once the strand is unoccupied and has no live effects.
+fn maybe_retire_reaper(state: State) -> State {
+  // Retires the reaper only once the strand is idle with no live effects.
+  case state.occupancy, state.live, state.reaper {
+    Unoccupied, [], Some(reaper) -> {
+      process.send(reaper.release, Nil)
+      State(..state, reaper: None)
+    }
+    _, _, _ -> state
+  }
+}
+
+/// Spawns a witnessed effect reaper and claims it synchronously in the drain ledger.
+@internal
+pub fn claim_reaper_scope(
+  claim_reaper: fn(String, Option(Pid)) -> List(Pid),
+  strand: String,
+) -> Result(Reaper, String) {
   let driver = process.self()
   let handoff = process.new_subject()
+  let resolution = process.new_subject()
   let run =
     weft.new_prepared([
       weft.managed(fn(ledger) {
-        process.send(handoff, ledger)
+        let release = process.new_subject()
+        process.send(handoff, #(ledger, release))
 
-        // Parked for the life of the incarnation: the scope must stay alive
-        // while the driver does, adopting effects as they are born, and it is
-        // this worker's kill on the driver's exit that lets the scope finish
-        // once the adopted work has drained.
-        process.sleep_forever()
+        // Parked while an effect-bearing operation is active; receives `Nil`
+        // when the strand goes idle with no live effects, or is cancelled on driver exit.
+        process.receive_forever(release)
         Ok(Nil)
       }),
     ])
@@ -2493,7 +2555,7 @@ fn start_reaper(
   // before its first task runs.
   let scope = weft.witness_pid(run)
   let watch = process.monitor(scope)
-  let ledger =
+  let handed =
     process.new_selector()
     |> process.select_map(handoff, Some)
     |> process.select_specific_monitor(watch, fn(_down) { None })
@@ -2501,15 +2563,24 @@ fn start_reaper(
   process.demonitor_process(watch)
 
   // Verifies that reaper handed over its ledger.
-  case ledger {
-    Some(ledger) -> claim_through(ledger, scope, options, resolution)
+  case handed {
+    Some(#(ledger, release)) -> {
+      claim_through(ledger, scope, claim_reaper, strand, resolution)
+
+      // Waits for the ledger to acknowledge the claim or releases the scope on error.
+      case process.receive_forever(resolution) {
+        Ok(Nil) -> Ok(Reaper(run:, ledger: Some(ledger), driver:, release:))
+        Error(reason) -> {
+          process.send(release, Nil)
+          Error(reason)
+        }
+      }
+    }
 
     // A scope that died before handing its ledger over made no claim and
-    // adopted nothing; the driver is told so and halts rather than waiting.
-    None -> process.send(resolution, Error("the effect reaper did not start"))
+    // adopted nothing; the driver halts rather than dispatching without a barrier.
+    None -> Error("the effect reaper did not start")
   }
-
-  Reaper(run:, ledger:, driver:)
 }
 
 /// What the parked claimant is told.
@@ -2531,16 +2602,11 @@ type ClaimOrder {
 fn claim_through(
   ledger: weft.Ledger,
   scope: Pid,
-  options: Options,
+  claim_reaper: fn(String, Option(Pid)) -> List(Pid),
+  strand: String,
   resolution: Subject(Result(Nil, String)),
 ) -> Nil {
   let ready = process.new_subject()
-
-  // The claimant needs the reaper claim and the strand's name only. A
-  // closure over `options` would copy the session's effects into every
-  // claimant, once per driver start.
-  let claim_reaper = options.claim_reaper
-  let strand = options.strand
   let claimant =
     process.spawn_unlinked(fn() {
       let orders = process.new_subject()
@@ -2551,7 +2617,7 @@ fn claim_through(
         ForgoClaim -> Nil
         MakeClaim -> {
           let resolved =
-            claim_reaper(strand, scope)
+            claim_reaper(strand, Some(scope))
             |> await_previous_reapers(4000)
           process.send(resolution, resolved)
         }
@@ -2706,14 +2772,14 @@ fn spawn_provider(
   token: EffectToken,
   configuration: StrandConfiguration,
   spec: effects.RequestSpec,
-) -> State {
+) -> Result(State, String) {
+  use #(reaper, state) <- result.try(ensure_reaper(state))
   let parent = state.internal
   let driver = process.self()
   let surface = state.effects.provider
 
   // The worker needs restart custody, not the driver's cached conversation or
   // sibling tool closures. Project the handle before crossing the spawn boundary.
-  let reaper = state.reaper
   let logger = step_logger(state, token)
   log.debug(logger, "effect.dispatched", [
     field.text(key: "kind", value: effect_kind(token)),
@@ -2763,10 +2829,12 @@ fn spawn_provider(
       }
     })
   let monitor = process.monitor(pid)
-  State(..state, live: [
-    Live(token:, pid:, stop:, monitor:, configuration:, call: None),
-    ..state.live
-  ])
+  Ok(
+    State(..state, live: [
+      Live(token:, pid:, stop:, monitor:, configuration:, call: None),
+      ..state.live
+    ]),
+  )
 }
 
 // The cancellation grace is an acknowledgement window, not another provider
@@ -2977,7 +3045,7 @@ fn spawn_tool(
   token: EffectToken,
   configuration: StrandConfiguration,
   run: effects.ToolRun,
-) -> State {
+) -> Result(State, String) {
   let runner = state.effects.tools.run
   spawn_tool_worker(state, token, configuration, run, fn() {
     ToolDone(token:, outcome: runner(run))
@@ -2995,7 +3063,7 @@ fn spawn_recovery(
   configuration: StrandConfiguration,
   run: effects.ToolRun,
   recover: fn(effects.ToolRun) -> effects.Recovery,
-) -> State {
+) -> Result(State, String) {
   spawn_tool_worker(state, token, configuration, run, fn() {
     ToolRecovered(token:, recovery: recover(run), replay: run.replay)
   })
@@ -3011,7 +3079,8 @@ fn spawn_tool_worker(
   configuration: StrandConfiguration,
   run: effects.ToolRun,
   work: fn() -> Message,
-) -> State {
+) -> Result(State, String) {
+  use #(reaper, state) <- result.try(ensure_reaper(state))
   let parent = state.internal
   let call = run.call
   let logger = step_logger(state, token)
@@ -3020,13 +3089,14 @@ fn spawn_tool_worker(
     field.text(key: "tool", value: run.call.name),
     field.flag(key: "replay", value: run.replay == operation.ReplaySafe),
   ])
-  let #(pid, stop) =
-    spawn_effect(state.reaper, logger, fn() { wake(parent, work()) })
+  let #(pid, stop) = spawn_effect(reaper, logger, fn() { wake(parent, work()) })
   let monitor = process.monitor(pid)
-  State(..state, live: [
-    Live(token:, pid:, stop:, monitor:, configuration:, call: Some(call)),
-    ..state.live
-  ])
+  Ok(
+    State(..state, live: [
+      Live(token:, pid:, stop:, monitor:, configuration:, call: Some(call)),
+      ..state.live
+    ]),
+  )
 }
 
 // --- loading and validation (spec §3.1) -----------------------------------

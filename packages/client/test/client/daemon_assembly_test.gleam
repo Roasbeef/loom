@@ -14,6 +14,7 @@ import client/peer_mail
 import client/peers
 import client/serve
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -126,6 +127,7 @@ fn create(
       model: None,
       executor: "",
       pool: "",
+      agency: agency_limits.empty,
     )
   let assert Ok(view) =
     manager.create(

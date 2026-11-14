@@ -1104,6 +1104,10 @@ settles before summary progress. See protocol-change/101.
 
 ## Poll timer observations
 
+## Single-process strand footprint (`SystemTimers` & lazy reaper)
+
+Steady-state strands run as one `strand_runtime` process rather than four (`driver + idle timer + retry timer + eager reaper`). `effects.SystemTimers` (`erlang:send_after` / `cancel_timer` delivering direct messages to the driver) replaces dedicated timer actors, `strand_runtime` spawns the `weft` drain reaper lazily only when entering `Drain`, and `drain_registry.Await` plus `forget` cleanup retire finished drain records so dormant hibernated strands shrink to ~11 KiB (~21 KiB awake).
+
 `idle_poll_test` starts each real timer before synchronously recording its arm.
 The observed count therefore cannot precede timer creation. A separate regression
 suspends its own recorder, observes the real wake within the existing sample

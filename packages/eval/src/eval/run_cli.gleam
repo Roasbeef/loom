@@ -32,6 +32,7 @@ import client/schedule
 import client/secrets
 import client/serve.{type Settings, Settings}
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import eval/cassette
 import eval/plan
@@ -84,7 +85,7 @@ pub fn base_settings(
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,
