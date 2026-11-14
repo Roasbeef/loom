@@ -1527,7 +1527,14 @@ fn text_field(fields, key: String) -> Result(String, String) {
 }
 
 /// Translates response refusal error codes into descriptive strings.
-fn refusal_code(fields) {
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.refusal_code([#("code", json.String("not_found"))]) == "not_found"
+/// ```
+@internal
+pub fn refusal_code(fields: List(#(String, JsonValue))) -> String {
   case list.key_find(fields, "code") {
     Ok(json.String("forbidden")) -> "forbidden"
     Ok(json.String("conflict")) -> "conflict"
@@ -1541,6 +1548,14 @@ fn refusal_code(fields) {
       case list.key_find(fields, "message") {
         Ok(json.String(step)) -> "ledger_invalid: " <> step
         _ -> "ledger_invalid"
+      }
+
+    // The message of a refused reload is the reason the file was not applied,
+    // which is what the developer needs to fix (protocol-change/115).
+    Ok(json.String("reload_invalid")) ->
+      case list.key_find(fields, "message") {
+        Ok(json.String(reason)) -> "reload_invalid: " <> reason
+        _ -> "reload_invalid"
       }
     Ok(json.String("isolation_required")) ->
       "isolation_required: stop the session and explicitly isolate its existing transcript before sharing"
