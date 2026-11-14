@@ -1270,22 +1270,29 @@ from `[distribution]` alone, so an untrusted executor masked nothing and model
 code, which runs as the same user, could read the key
 (`executor_plane.masked_files`).
 
-#### A new guest needs a daemon restart
+#### A new guest reaches a running daemon by a reload
 
-The daemon reads `[executors.*]` and `[executor_link]` at its start and has no
-command that rereads them. `up` applies the rule it has for a newly installed
-deployment: with the default configuration, an idle default daemon is stopped
-and the next `loom` command starts it, and a daemon that holds sessions is left
-running with a note, or with `ensure`'s refusal, that names the restart. A
-resumed guest whose row did not change is checked instead of assumed: the
-default daemon is asked for its deployment, and one whose executor list does not
-name the guest has not read the row (a first `up` whose boot failed after the
-row was written), and gets the same step. A daemon that is not running or does
-not answer is not claimed to lack it. The question is never whether the daemon
-runs with distribution, which an untrusted guest does not need
-(`vm_link.daemon_need`). With `--config` the
-daemon cannot be found, and the output says it must restart. An owner-only
-`executors.reload` command is the planned fix and is not built.
+The daemon reads `[executors.*]` and `[executor_link]` at its start, and
+`executors.reload` (protocol-change/115) makes it read them again. `up`,
+`ensure` and `rm` write `loom.toml` and then, for an untrusted guest in the
+default configuration, send the command to a daemon that is running when this
+command changed the row or the daemon's executor list does not name the guest
+(`vm_link.daemon_need`). The reply lists every untrusted row that changed,
+whichever guest it names, and the command prints each one, so a row that moved
+without the user's doing is seen. A guest that already serves and that the
+daemon already lists sends nothing. The daemon is no longer stopped.
+
+The earlier rule stays as the fallback (`vm_link.reload_report`): when the
+daemon predates the command (it answers `bad_request`), refuses the call, does
+not answer, or reports the guest's own link `failed` or absent, an idle default
+daemon is stopped and the next `loom` command starts it, and a daemon that holds
+sessions is left running with a note, or with `ensure`'s refusal, that names the
+restart. The listing carries names and no addresses, so a daemon that holds a
+guest's name at an older port is not asked again until a command changes the
+row. A daemon that is not running reads the file when it starts. `rm` of an
+untrusted guest sends the same command after it rewrites the file, and a daemon
+that predates it gets the notice `rm` has always printed. With `--config` the
+daemon cannot be found, and the output says it must restart.
 
 #### What the link lacks today
 

@@ -250,10 +250,17 @@ directory built as `<dir>.minting` and renamed whole. `bring_up_linked` chooses
 the port without recording it, works out the merge (a refusal leaves no guest),
 records the kind and port, writes the file, then runs `stage_with` and
 `launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd entry), which are
-the shared halves of `stage` and `boot`. A changed row is applied by the
-daemon only at its next start (`daemon/main.start_untrusted`), so `restart_of`
-reuses `restart_after`: an idle default daemon is stopped, a busy one is
-left and named. `rm` plans through `linked_removal_plan`; `ensure` reads the
+the shared halves of `stage` and `boot`. A running default daemon
+is asked to reload (`executors.reload`, protocol-change/115): `restart_of` and
+`untrusted_restart_check` ask `vm_link.daemon_need`, send the command through
+`vm_cli.reload_daemon` and read the reply with `vm_link.reload_result` and
+`reload_report`, which prints one line for every entry that is not `unchanged`.
+Only a daemon that predates the command, refuses it, does not answer, or
+reports the guest's own link `failed` or absent gets the earlier path
+(`daemon_outcome`: an idle daemon is stopped, a busy one is left and named).
+`rm` sends the reload after it rewrites the file (`removal_daemon_lines`,
+`vm_link.removal_report`). `host/access.refusal_code` keeps the message of a
+`reload_invalid` refusal. `rm` plans through `linked_removal_plan`; `ensure` reads the
 console's ready line in place of epmd (`vm_link.registration`). The executor's
 jails mask the listener's key and the link's key (`executor_plane.masked_files`).
 `bring_up_linked` runs the shared part (`enroll_linked`: credentials, port, merge,

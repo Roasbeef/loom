@@ -47,7 +47,7 @@ loopback port reserved once and recorded beside the guest).
 |---|---|---|
 | Host daemon (`loomd`) | developer | provider keys, every session store, the hook trust record, approvals, clearance; its `[distribution]` key and the home's `.erlang.cookie`; in a minted guest's deployment, the orchestrator bundle under `<vm home>/<name>/orch/` |
 | `loom-vm` launcher | developer | the libkrun VMM, the hosted network stack and its egress policy, the GitHub credential proxy with the developer's token in memory, the host loopback forward and the guest's epmd registration (`--publish`) |
-| Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`client/vm_cli.gleam:2787` (`stage_node`)); the ledger file in ledger mode; the workspace copies; the state disk |
+| Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`client/vm_cli.gleam:2830` (`stage_node`)); the ledger file in ledger mode; the workspace copies; the state disk |
 | Jailed tool process | `loom`, under `loom-exec` | the workspace copy, the network the policy allows (with GitHub access, the proxy's placeholder token); the node key and cookie are masked by `node_credentials` (`client/executor_plane.gleam:323`) |
 
 ### What each party holds under the proposal
@@ -291,7 +291,7 @@ release that changes `up`.
 
 The daemon reads `[executors.*]` and `[executor_link]` once at start and never
 rereads them (`client/daemon/main.gleam:278` (`untrusted`)); links start only
-there (`client/daemon/main.gleam:4575` (`start_untrusted`)). No daemon-wide
+there (`client/daemon/main.gleam:4626` (`start_untrusted`)). No daemon-wide
 configuration reload exists: `limits` validates its keys again on a catalogue
 reload and never rebinds (`client/daemon/limits.gleam:138` (`listen_address`)),
 and `gateway`'s reload is a session's model catalogue. What does exist is the
@@ -329,7 +329,7 @@ needs **protocol-change/115**.
 ### (b) A stable address
 
 The row names `host:port`, and `boot` reserves a fresh loopback port on every
-boot today (`client/vm_cli.gleam:2535` (`reserve_loopback_port`)), which epmd
+boot today (`client/vm_cli.gleam:2554` (`reserve_loopback_port`)), which epmd
 made harmless.
 
 | Option | Daemon restart | Port taken while the guest is down | Cost |
@@ -495,7 +495,9 @@ Each slice ships alone and is listed in merge order.
    and `up` sending `reload` when a daemon runs. **Exit**: with a daemon
    running, `vm up` of a second guest serves a session with no restart; the
    daemon restarted reaches both; `vm_cli_test` covers the taken-port decision.
-   Needs **protocol-change/115**.
+   Needs **protocol-change/115**. Built: the daemon side, then the clients
+   (`vm_link.reload_report`, `vm_cli.reload_daemon`), under
+   protocol-change/115.
 3. **The broker tunnel (109 slice 3).** Section 5. **Exit**: the
    `untrusted_end_to_end_test` cases of step 7, and the microVM step of slice 1
    extended so the Changes tab shows the jailed call's edit against a recorded
