@@ -426,3 +426,121 @@ executor during the apply, because the sandbox prevents a marker (the evidence
 is indirect); the cause of finding 3's `Operation not permitted`; code mode on
 the executor in the moved tree; concurrent moves; the web home (no Move for a
 local row, as designed).
+
+## Exit criterion 4: live drive of the relayed page (2026-11-13)
+
+Criterion 4 of #1137 is "every session identical from either page; a dropped
+link shows a waiting state". The code is the live session relay
+(protocol-change/108): the box half merged in #1233 and #1242, and the laptop
+half is PR #1240. Before this section the relayed page had run only against
+in-process fixtures. Three drives were made, of `f86ac9e7b` and then twice of
+`8573edbc8`, both heads of #1240. The scripts, logs, screenshots and the full
+record are under `/Users/roasbeef/loom-drives/1137-relay/2026-11-13/` and are
+not kept in the repository.
+
+**Result.** The first drive found that the relayed page never connected
+(finding 1), which #1240 now fixes. On the fixed head a relayed page connects,
+streams, takes a tool call with a diff, an approval, a steer and a five second
+drop, draws the waiting state when the box stops answering, and reconnects by
+itself once the box answers again, provided the tab is visible (finding 2).
+The two pages are not identical: five differences remain (finding 3). The feed
+cap could not be reached (finding 5). Criterion 4 is met for the waiting state
+and the recovery on loopback, and not yet met for "identical".
+
+### Topology
+
+One Mac, loopback, TLS distribution, two `bin/loomd` processes under separate
+`HOME` directories, provisioned with `loom distribution provision plan.toml out
+--static` and installed with `loom distribution install`, each started with
+`--ui`. `alpha` is the laptop and `bravo` the box. Alpha has
+`[orchestrators.bravo]`; bravo has `[spawners.alpha]` with a `top_level` table
+and `page` left at its default, `live`. The model is a scripted provider. The
+pages were driven with Chrome for Testing through `agent-browser`. The link was
+cut by suspending bravo's process with `SIGSTOP` and by stopping and restarting
+it; no firewall rule was used.
+
+### Steps and observations
+
+1. **Create a session on bravo from alpha and open its relayed page.** The
+   socket chose the live session component, not the 094 transcript page, on
+   both heads. On `f86ac9e7b` the page stayed on "connecting" for every one of
+   28 loads. On `8573edbc8` it reaches "connected" and fills within a few
+   seconds, and alpha logs no discarded message. Pass on the fixed head.
+2. **Drive the session from alpha's page beside bravo's own page.** A streamed
+   answer, a turn with a tool call and a diff, an approval allowed from alpha's
+   page (recorded as "Owner allowed fs_write" on both), and a steer all pass.
+   Alpha's page runs about one streamed word behind bravo's, which is one poll
+   round trip. A stop was not run: no live page has a stop control, and Steer
+   is the only interrupt. The effect of the allowed write was not seen, because
+   the scripted provider does not repeat the call after the approval.
+3. **Suspend bravo for five seconds during a 25-word answer.** The page stayed
+   "connected" with no banner and showed all 25 words afterwards. Pass.
+4. **Suspend bravo for thirty seconds.** After about 16 s the page drew the
+   pill "disconnected" and the sentence "The orchestrator that runs this
+   session is not answering. This page will reconnect." On a visible tab the
+   page was "connected" and full within about a second of the continue. Pass.
+5. **Stop and restart bravo.** The page drew "The connection to the session
+   failed. Reconnecting automatically." and showed the full page about 6 s
+   after the restart command returned, by a fresh attach. A message typed while
+   bravo was down was delivered zero times, so never twice. Pass.
+6. **`page = "paged"` on bravo.** Alpha drew the 094 page with "Showing the
+   transcript only, because bravo serves this session as a transcript." Pass.
+7. **Eight relayed tabs and a ninth.** Not run as written (finding 5).
+
+### Findings
+
+1. **HIGH, fixed in #1240. The relayed page never connected.** Lustre installs
+   the selector a `select` effect returns by a message the runtime sends itself
+   after the effect has returned, and until it takes that message it discards
+   anything sent to the selected subjects. The component called the transport's
+   `connect` inside that effect. The relayed page's feed has already attached by
+   then and answers the open from inside `connect`, as do the waiting and
+   crowded refusals, so the answer was ahead of the selector in the mailbox and
+   was discarded. Alpha logged `Actor discarding unexpected message` once for
+   each page load, and the page neither opened nor drew the waiting state. The
+   local page's relay answers from another process after its attach, which is
+   why local pages worked. Fix: `component.open` takes an answer that is already
+   in the mailbox when `connect` returns and dispatches it. `delivery_test` has
+   a transport that answers inside `connect`, and it fails without the fix.
+2. **LOW, by design of the client runtime. A page in a background tab does not
+   reconnect until it is shown.** Lustre's client transport reconnects after any
+   close whose code is not 1000, but while `document.hidden` is true it sets no
+   timer and waits for the document to become visible. A background tab made no
+   socket for 45 s after the old one closed with 4000 and made one in the same
+   second it was brought to the front. The second drive first reported this as
+   a page that never reconnects; the third drive measured it.
+3. **MEDIUM. The relayed page and the box's own page still differ.** The
+   relayed page has no session sidebar and no "Commands on" chip. Its title is
+   the session's first prompt where the box's page shows the session's name. Its
+   Changes tab reads "from this session's edits" and labels a new file
+   "written · 2 lines", where the box's page reads the workspace's Git diff. Its
+   Session tab shows the bookmark page's sentence about inviting, which does not
+   fit a relayed page. The status pill, the context and model figures and the
+   "Owner · operator" label, reported as differences by the first drive, were
+   effects of finding 1 and are the same on both pages now.
+4. **LOW. A visible page retries about twice a second while the box is down.**
+   Alpha accepts each upgrade, so the client's backoff returns to 500 ms when
+   the socket opens, and the socket then closes with 4000 about 250 ms later:
+   21 sockets in about 15 s during the restart. Each one makes an attach call to
+   the box. Protocol-change/108 assumed the backoff would grow.
+5. **A limit of the drive. The feed cap was not reached.** A daemon admits four
+   home pages for one principal, and a page opened from a home counts, so at
+   most four relayed tabs were live at once. The eight-feed cap, the `Feed`
+   permit's charge and what a refused tab draws were not exercised. Nine tabs
+   attached in turn with no refusal, and neither daemon logged anything about a
+   permit.
+6. **Known, slice 5 of 108. A box table with only `node` and `top_level` is
+   refused at start** (`spawners.<name> needs a placement`). The drive gave
+   bravo's table a `directory` and a `profile`.
+7. **LOW. Neither daemon logs why a page, a permit or an attach was refused**
+   at info or warning level.
+
+### Not verified
+
+Two physical machines or a real network (loopback only); a real lid close or
+sleep; the feed cap, `PeerCrowded` and the 64 MiB charge for each tab;
+"allow for the session" and forget from a relayed page; a second strand; a
+tool result over 512 KiB; a box without the 108 revisions; the effect of an
+allowed approval on the file; whether the second drive's tab was in the
+background when it failed to reconnect, which is inferred from the third
+drive and was not measured at the time.

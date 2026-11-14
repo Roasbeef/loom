@@ -8578,9 +8578,11 @@ the session first opens and then never again.
   a `claim` function, called once per first open with a chooser from the counts
   to the executor names in order. `daemon/main` implements it with
   `manager.claim_placement(registry, session, resident, choose)`, where
-  `resident` is `ledger_holdings.resident_by_name` (the resident count of
-  `placements`, by executor name; an unknown tally is an empty dict and so the
-  listed order). A session is resident only after its attach, so the registry's
+  `resident` is `ledger_holdings.resident_in` (the resident count of
+  `placements`, by executor name, made from the rows of the registry's running
+  slots that the turn reads itself, so it is bounded by the session limit and
+  never walks the catalogue; an unknown tally is an empty dict and so the listed
+  order). A session is resident only after its attach, so the registry's
   `Book.claims` (session to executor) adds one count per session still being
   built, runs `choose` and stores the head of its answer, all in the one
   `ClaimPlacement` turn, which is what makes concurrent opens see each other. A

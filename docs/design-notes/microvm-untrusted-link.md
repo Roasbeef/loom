@@ -137,7 +137,7 @@ The table is derived from the code: what the link carries is `untrusted_wire`'s
 broker the link puts in the census
 (`client/remote/untrusted_link.gleam:552` (`refusing_broker`)), which every
 non-tool caller reaches through `broker.over`
-(`client/remote/workspace.gleam:578` (`broker.over`)), and from the evolution
+(`client/remote/workspace.gleam:691` (`broker.over`)), and from the evolution
 census the link sets to `Uncompiled`.
 
 | Capability | Today, over distribution | Over the untrusted link as built | Missing |
@@ -161,7 +161,7 @@ census the link sets to `Uncompiled`.
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
 | Placed blobs, outcomes over 32 MiB (110) | works | works | nothing |
 | Remote evolution | works when the guest's census says `Compiles` | refused: the link sets `Uncompiled` | 109 slice 4 |
-| Operator directory additions | refused for any remote workspace (`client/remote/workspace.gleam:581` (`resolve_directory`)) | same | same as today |
+| Operator directory additions | refused for any remote workspace (`client/remote/workspace.gleam:694` (`resolve_directory`)) | same | same as today |
 | Permission grants and escalations | works | works; `escalate` must describe the call in flight exactly; the residual risk above applies | nothing |
 | Git author identity | works (`AskGitIdentity`) | works (`GitIdentityCall`) | nothing |
 | Working-directory facts in the prompt | works (census) | works (the wire census carries `workspace_plane.Census` and `PromptFacts`) | nothing |
@@ -248,8 +248,8 @@ What the daemon needs, read from the code:
   (`client/daemon/main.gleam:1222` (`start_untrusted_links`)), registered under
   `untrusted_link.name_for(name)`.
 - `remote/workspace.candidate` sends an untrusted row to the link's name and
-  never needs distribution (`client/remote/workspace.gleam:753` (`candidate`),
-  `client/remote/workspace.gleam:776` (`untrusted_candidate`)).
+  never needs distribution (`client/remote/workspace.gleam:732` (`candidate`),
+  `client/remote/workspace.gleam:887` (`untrusted_candidate`)).
 
 ### The guest side
 
@@ -348,7 +348,7 @@ reload command makes that case cheap. The pin makes a collision safe.
 
 Each non-tool caller gets the plane's `broker.Broker`: for a remote session it
 is `broker.over(census.broker, executor_clock)`
-(`client/remote/workspace.gleam:578` (`broker.over`)), and over distribution
+(`client/remote/workspace.gleam:691` (`broker.over`)), and over distribution
 `census.broker` is the executor plane's broker subject
 (`client/remote/remote_census.gleam:42` (`broker`)). The callers then call
 `broker.clear_call`, `broker.stdin` and `broker.cancel` directly:

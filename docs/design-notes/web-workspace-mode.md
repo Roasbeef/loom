@@ -297,7 +297,7 @@ that adds it says what the narrowed holder may ask.
 
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
-(`authenticate` (`client/daemon/manager.gleam:1921`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1928`), `session_authority`,
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
 gateway's per-frame re-check and the admin dispatch all run unchanged
@@ -641,7 +641,7 @@ login add these cases.
 `sessions.create` is owner-only (`CreateSession`
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
-`create_scoped` (`client/daemon/manager.gleam:2027`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:2034`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:847`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
@@ -731,7 +731,7 @@ and the epoch the page was admitted in:
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
    it", the check `OpenSession` (`client/daemon/server.gleam:3044`) makes;
-3. `open` (`client/daemon/manager.gleam:1994`) is called, which is the same
+3. `open` (`client/daemon/manager.gleam:2001`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
 4. the daemon waits for the session to become `Resident`, polling `get`
@@ -770,8 +770,8 @@ membership is.
 053 designed the admin page in full (phase 4) and the owner ruled on
 2026-09-30 that it waits for use of the terminal's `/access` overlay
 (`tui/access_overlay.gleam`). The daemon serves the two owner-only reads it
-needs, `principal_page` (`client/daemon/manager.gleam:1758`) and
-`membership_page` (`client/daemon/manager.gleam:1781`), and every mutation
+needs, `principal_page` (`client/daemon/manager.gleam:1765`) and
+`membership_page` (`client/daemon/manager.gleam:1788`), and every mutation
 through one dispatch, `administer` (`client/daemon/manager.gleam:1199`): invite,
 set-role, revoke membership, rotate, revoke credentials, isolate. The owner's
 session page already starts one of those from a browser, `invite_for`

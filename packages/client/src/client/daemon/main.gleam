@@ -3500,14 +3500,14 @@ pub fn prepare_startup(
             // counts, so they cannot disagree about which executors exist.
             let rows = roster.rows(executor_roster(config))
 
-            // The counts of resident sessions are read here and the sessions
-            // still being built are added by the registry, in the same turn
-            // that records this session's claim.
+            // The registry reads the resident sessions itself and adds the
+            // sessions still being built, in the same turn that records this
+            // session's claim, so no session is counted twice or not at all.
             let claim = fn(choose) {
               manager.claim_placement(
                 directory,
                 session_id,
-                ledger_holdings.resident_by_name(directory, roster.fixed(rows)),
+                ledger_holdings.resident_in(_, roster.fixed(rows)),
                 choose,
               )
             }
