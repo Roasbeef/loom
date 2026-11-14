@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,5 +102,46 @@ func TestGitHubTokenSourceErrors(t *testing.T) {
 		if _, err := parseGitHubFlags(t, "--github-token-from", from).apply(&spec, time.Minute); err == nil {
 			t.Fatalf("--github-token-from %s with no token was accepted", from)
 		}
+	}
+}
+
+// A host with no usable `gh` login is the common first-run failure, so the
+// error must name each way out of it, and must still name the cause.
+func TestGitHubTokenErrorNamesTheRemedies(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\nexit 1\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", dir)
+
+	_, err := readGitHubToken("gh")
+	if err == nil {
+		t.Fatal("a failing gh was accepted")
+	}
+
+	for _, want := range []string{
+		"gh auth token failed",
+		"exit status 1",
+		"gh auth login",
+		"--github env",
+		githubTokenEnv,
+		"--github off",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// An empty variable is a missing token, and names the same remedies.
+func TestGitHubEnvTokenMissingNamesTheRemedies(t *testing.T) {
+	t.Setenv(githubTokenEnv, "")
+
+	_, err := readGitHubToken("env")
+	if err == nil || !strings.Contains(err.Error(), "--github off") {
+		t.Fatalf("empty env token error = %v, want the remedies", err)
 	}
 }
