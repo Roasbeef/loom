@@ -239,6 +239,7 @@ pub fn rows(registry: Registry) -> List(Executor) {
 
 /// The registry's message handler.
 fn handle(book: Book, message: Message) -> actor.Next(Book, Message) {
+  // A reconcile changes the book and answers its reply; a read changes nothing.
   case message {
     Reconcile(load, reply) -> {
       let #(next, answer) = loaded(book, load)

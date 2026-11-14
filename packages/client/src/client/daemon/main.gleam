@@ -3238,6 +3238,7 @@ pub fn ensure_vm_homes(
     Some(Ok(directory)) -> [directory]
     None -> []
   }
+
   [directories.state, ..from_home]
   |> list.filter_map(bootstrap.canonical_path)
 }
