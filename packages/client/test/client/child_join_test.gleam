@@ -13,6 +13,7 @@ import client/agency
 import client/child_join.{Joining}
 import client/delegate_host
 import client/remote_spawn.{type Joined, type Parent, Parent}
+import client/seed_landing
 import client/session_states
 import client/spawn_return
 import client/spawners.{type Spawner}
@@ -516,14 +517,43 @@ pub fn a_seeded_childs_refusal_is_that_childs_by_whether_it_clears_test() {
 
   // A refusal that never clears is the child's failure with its reason.
   let assert remote_spawn.Ready(outcome: agent.Failed(reason:), ..) =
-    one(remote_spawn.StoreFailure(reason: "the session cannot recover"))
+    one(remote_spawn.CapReached(remote_spawn.MaxSessions, 4))
   assert reason != ""
   let assert remote_spawn.Ready(outcome: agent.Failed(..), ..) =
-    one(remote_spawn.CapReached(remote_spawn.MaxSessions, 4))
+    one(remote_spawn.ParentRunEnded)
 
   // One that asks to come again leaves the child unfinished.
   let assert remote_spawn.Pending(..) =
     one(remote_spawn.NotYetOpen(reason: "the session is opening"))
+
+  // A store fault on a join passes too: the daemon was at its session capacity,
+  // or the registry did not answer in time. The child's work is not discarded
+  // for it, so the child stays unfinished and the parent asks again.
+  let assert remote_spawn.Pending(..) =
+    one(remote_spawn.StoreFailure(reason: "the daemon is at capacity"))
+}
+
+pub fn a_join_waits_on_exactly_the_refusals_that_may_pass_test() {
+  // Each refusal with whether a join waits on it and whether a spawn does. The
+  // store fault is the one row where the two differ.
+  let rows = [
+    #(remote_spawn.NotYetOpen(reason: "opening"), True, True),
+    #(remote_spawn.StateMissing(hash: "h", have: 0), True, True),
+    #(remote_spawn.StoreFailure(reason: "busy"), True, False),
+    #(remote_spawn.UnknownSpawner(node: "nobody@nowhere"), False, False),
+    #(remote_spawn.ParentRunEnded, False, False),
+    #(remote_spawn.CapReached(remote_spawn.MaxSessions, 4), False, False),
+    #(remote_spawn.ToolOutsideCeiling(tool: "bash"), False, False),
+    #(remote_spawn.InvalidArgument(reason: "not a descendant"), False, False),
+    #(remote_spawn.NameAlreadyMinted, False, False),
+    #(remote_spawn.TranscriptHidden, False, False),
+    #(remote_spawn.StateRefused(reason: "too large"), False, False),
+  ]
+
+  list.each(rows, fn(row) {
+    assert seed_landing.join_asks_again(row.0) == row.1
+    assert seed_landing.asks_again(row.0) == row.2
+  })
 }
 
 pub fn an_entry_that_could_not_be_kept_leaves_its_session_where_it_is_test() {

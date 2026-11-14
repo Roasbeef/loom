@@ -154,6 +154,37 @@ pub fn asks_again(refusal: remote_spawn.SpawnRefusal) -> Bool {
   }
 }
 
+/// Whether a refusal of a join may pass, so that the child is still finishing as
+/// far as the parent can know. It is wider than `asks_again` by `StoreFailure`.
+/// A spawn refused that way has run nothing, and the model can spawn again. A join
+/// refused that way is about a child whose work is done or under way, and the
+/// faults behind it pass: a delegate session reopening while the daemon is at its
+/// session capacity, a registry call that timed out, a join that met the release
+/// of the one before it. Failing the child there would discard finished work for a
+/// fault of the store, so the parent asks again at its next wait.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert seed_landing.join_asks_again(remote_spawn.StoreFailure("busy"))
+/// assert !seed_landing.join_asks_again(remote_spawn.ParentRunEnded)
+/// ```
+pub fn join_asks_again(refusal: remote_spawn.SpawnRefusal) -> Bool {
+  case refusal {
+    remote_spawn.NotYetOpen(..)
+    | remote_spawn.StateMissing(..)
+    | remote_spawn.StoreFailure(..) -> True
+    remote_spawn.UnknownSpawner(..)
+    | remote_spawn.ParentRunEnded
+    | remote_spawn.CapReached(..)
+    | remote_spawn.ToolOutsideCeiling(..)
+    | remote_spawn.InvalidArgument(..)
+    | remote_spawn.NameAlreadyMinted
+    | remote_spawn.TranscriptHidden
+    | remote_spawn.StateRefused(..) -> False
+  }
+}
+
 /// Whether the failure is kept as the attempt's verdict. Only a refusal the same
 /// inputs would get again is.
 ///

@@ -1448,10 +1448,15 @@ case. It does not cover a failure of the release itself.
   `seed_on_executor_test` has the case, with a parent that committed its edits and a workspace one
   commit past it, and the model has `TestBehind` and a mutant for the old rule.
 - *Every join about a seeded child was told whatever its refusal.* The refusal of a seeded
-  child's group is now that child's: one that asks the sender to come again
-  (`seed_landing.asks_again`) leaves the child unfinished and is logged with its reason, and
-  every other is the child's failure with its reason. The pair's group keeps its refusal as the
-  join's, because one refusal there speaks for handles it does not name.
+  child's group is now that child's: one that may pass (`seed_landing.join_asks_again`) leaves
+  the child unfinished and is logged with its reason, and every other is the child's failure
+  with its reason. The join's rule is the spawn's (`seed_landing.asks_again`: `NotYetOpen`,
+  `StateMissing`) and `StoreFailure` as well. A spawn refused for a store fault has run nothing
+  and stays final, as the sender takes it. A join refused for one is about a child whose work
+  is done or under way, and the faults behind it pass (a delegate session reopening while the
+  daemon is at its session capacity, a registry call that timed out), so the parent asks again.
+  The pair's group keeps its refusal as the join's, because one refusal there speaks for handles
+  it does not name.
 - *An entry that could not be kept did not stop the release.* The session is ended only when the
   entry was kept, and a kept entry that is there and cannot be read leaves the child unfinished
   and is not taken for none.

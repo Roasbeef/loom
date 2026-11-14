@@ -50,8 +50,9 @@
 //// file in `<state root>/seed-returns`, a directory no session can read, so the
 //// next join answers from the file and neither repeats a capture nor repeats a
 //// failed one. A transfer that did not finish keeps the captured state and the
-//// count of tries, and resumes where the parent's store stands; after
-//// `max_attempts` it gives up with a refusal that says so.
+//// count of tries, and resumes where the parent's store stands. A child in a
+//// directory is given up on after `max_attempts`, and a child in a session of
+//// its own after `give_up_s`, each with a refusal that says so.
 ////
 //// ## Flow
 ////
@@ -950,12 +951,11 @@ fn committed(
 }
 
 /// Whether the tries have run out. A child in a session of its own is never given
-/// up on, because giving up ends its session and with it the commits that are
-/// still on the executor, and what costs the tries is often an answer that is not
-/// about the commits at all, such as an executor that restarted. Such a child
-/// stays unfinished and is freed when its run ends or its parent is deleted. A
-/// child in a directory has no session to end and is given up on after
-/// `max_attempts`.
+/// up on by count, because what costs the tries is often an answer that is not
+/// about the commits at all, such as an executor that restarted. It is given up
+/// on by time instead (`bounded`, after `give_up_s`), with a report that says
+/// where its commits still are. A child in a directory has no session to end and
+/// is given up on after `max_attempts`.
 fn tries_out(home: Home, attempts: Int) -> Bool {
   case home {
     Directory -> attempts >= max_attempts

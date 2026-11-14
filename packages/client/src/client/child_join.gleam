@@ -254,19 +254,20 @@ fn pending(group: Group, within_ms: Int) -> List(Joined) {
   })
 }
 
-/// What a seeded child's refusal means for that child. A refusal that asks the
-/// sender to come again (`seed_landing.asks_again`) may pass, so the child is still
-/// finishing as far as the parent can know, and the reason is logged because the
-/// parent is told nothing. Every other refusal is a definite answer about the
-/// child, which never clears, so it is told as the child's failure with the reason.
+/// What a seeded child's refusal means for that child. A refusal that may pass
+/// (`seed_landing.join_asks_again`, which counts a store fault among them) leaves
+/// the child still finishing as far as the parent can know, and the reason is
+/// logged because the parent is told nothing. Every other refusal is a definite
+/// answer about the child, which never clears, so it is told as the child's
+/// failure with the reason.
 fn refused(
   logger: Logger,
   group: Group,
   refusal: SpawnRefusal,
   within_ms: Int,
 ) -> List(Joined) {
-  // Whether the refusal asks to come again decides between waiting and failing.
-  case seed_landing.asks_again(refusal) {
+  // Whether the refusal may pass decides between waiting and failing.
+  case seed_landing.join_asks_again(refusal) {
     True -> {
       log.warn(logger, "child_join.refused_for_now", [
         field.text("reason", remote_spawn.describe_refusal(refusal)),
