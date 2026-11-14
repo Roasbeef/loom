@@ -59,6 +59,7 @@ pub type ProbeMessage {
   Ran(pid: Pid, call: String)
   Wait(reply: Subject(Nil))
   Release
+  Hold
   Runs(reply: Subject(List(#(Pid, String))))
   Built(owner: OwnerServices)
   Builds(reply: Subject(List(OwnerServices)))
@@ -143,6 +144,7 @@ fn probe_loop(
       list.each(state.waiters, fn(waiter) { process.send(waiter, Nil) })
       actor.continue(ProbeState(..state, waiters: [], released: True))
     }
+    Hold -> actor.continue(ProbeState(..state, released: False))
     Runs(reply:) -> {
       process.send(reply, state.runs)
       actor.continue(state)
@@ -217,6 +219,12 @@ pub fn release_build(probe: Probe, session: String) -> Nil {
 /// Lets every held tool, and every later one, finish.
 pub fn release(probe: Probe) -> Nil {
   process.send(probe.subject, Release)
+}
+
+/// Holds every tool that starts from now on, until the next `release`. A tool
+/// already waiting is unaffected.
+pub fn hold(probe: Probe) -> Nil {
+  process.send(probe.subject, Hold)
 }
 
 /// Every run the fake tool began, in order, with the process that ran it.

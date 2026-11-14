@@ -197,18 +197,21 @@ fn stop(placement: Placement) -> Nil {
 
 fn attached(placement: Placement) -> surface.Surface(RemoteCensus) {
   let assert Ok(surface.Attachment(surface: remote, ..)) =
-    surface.attach(surface.Config(
-      address: untrusted_link.address(placement.name),
-      session: session(1),
-      workspace: "repo",
-      incarnation: 0,
-      port: placement.port,
-      read_authority: fn(_run) { Ok(fixtures.authority()) },
-      reconnect: fn() { untrusted_link.running(placement.name, "pod") },
-      remote_tools: ["fs_write", "fs_read", "bash"],
-      attach_within_ms: 120_000,
-      mint_token: surface.strong_token,
-    ))
+    surface.attach(
+      surface.Config(
+        address: untrusted_link.address(placement.name),
+        session: session(1),
+        workspace: "repo",
+        incarnation: 0,
+        port: placement.port,
+        read_authority: fn(_run) { Ok(fixtures.authority()) },
+        reconnect: fn() { untrusted_link.running(placement.name, "pod") },
+        remote_tools: ["fs_write", "fs_read", "bash"],
+        attach_within_ms: 120_000,
+        mint_token: surface.strong_token,
+        attached: fn(_attached) { Nil },
+      ),
+    )
     as "the attach succeeds over the link"
   remote
 }

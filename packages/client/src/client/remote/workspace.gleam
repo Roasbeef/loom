@@ -35,10 +35,12 @@
 //// 4. The owner port starts over the same `OwnerServices` a local session
 ////    builds, because the executor's workspace calls back through it.
 //// 5. The surface attaches with a fresh token. Every strand and every runtime
-////    restart inside this open shares that one surface and token. A second
-////    attach would rotate the token and make the executor refuse another
-////    strand's live `Run`, so nothing below this module attaches again;
-////    orphaned calls are settled through the executor's per-key fence.
+////    restart inside this open shares that one surface and token. An attach
+////    with a new token would rotate it and make the executor refuse another
+////    strand's live `Run`, so nothing below this module attaches with another;
+////    orphaned calls are settled through the executor's per-key fence. The one
+////    repeat is the surface's own, under the same token, when a restarted
+////    executor has lost the scope's plane (`client/remote/surface`).
 //// 6. The census the attach returned is compared with what the operator
 ////    declared for the executor. A contradiction closes the scope, which frees
 ////    its slot, and fails the open naming both values.
@@ -123,6 +125,7 @@ import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
 import tools/tool
+import weft/poll
 
 /// How an orchestrator reaches one executor.
 pub type Reach {
@@ -423,6 +426,9 @@ fn attach_to(
       remote_tools: tool_placement.workspace_names,
       attach_within_ms: reach.attach_within_ms,
       mint_token: surface.strong_token,
+      // The executor's broker is new after a restart, and the port forwards to
+      // whichever one the latest attach named.
+      attached: fn(answer) { owner_port.retarget(port, answer.census.broker) },
     ))
   let received = clock.read(registered.clock).0
 
@@ -569,7 +575,7 @@ fn build(
       // reads it again to send it; the surface owns the send, so the copy
       // handed in here is not used.
       run: fn(run, _authority) { functions.run(run) },
-      broker: broker.over(remote.broker, executor_clock),
+      broker: broker.over(owner_port.broker(port), executor_clock),
       census: remote.census,
       prompt_facts: fn() { Ok(remote.prompt) },
       resolve_directory: fn(_requested, _mode) {
@@ -1209,8 +1215,48 @@ pub fn close_stopped(
   }
 }
 
-/// Request close keeps this client operation’s decoding or state decision in one place.
+/// Asks for the close, and asks again while the executor is building the
+/// scope's plane.
+///
+/// A scope is `Building` after an executor restart, while the surface of a
+/// running session builds the plane again. The host refuses the close
+/// `PlaneBuilding` and changes nothing, so a close that lands then would
+/// record no outcome. The same question is asked again on a doubling pause
+/// until the build lands or `close_within_ms` is spent, and every other answer
+/// is the close's.
 fn request_close(
+  session: String,
+  workspace: String,
+  reach: Reach,
+  incarnation: Int,
+  attempts: Int,
+) -> Result(protocol.CloseOutcome, CloseFailure) {
+  let settled =
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: close_within_ms,
+      every: poll.Doubling(from: 50, to: 1000),
+      from: Nil,
+      attempt: fn(_nothing) {
+        case send_close(session, workspace, reach, incarnation, attempts) {
+          Error(CloseRefused(protocol.PlaneBuilding)) -> poll.Pending(Nil)
+          answer -> poll.Settled(answer)
+        }
+      },
+    )
+
+  // A close that was answered, however it ended, is the close's outcome. One
+  // that only ever met a build in progress is reported as that refusal.
+  case settled {
+    poll.Answer(value:) -> value
+    poll.Failure(error: Nil) | poll.RanOut(state: Nil) ->
+      Error(CloseRefused(protocol.PlaneBuilding))
+  }
+}
+
+/// One close request, with a reconnect and one more ask when the host goes
+/// away first.
+fn send_close(
   session: String,
   workspace: String,
   reach: Reach,
@@ -1243,7 +1289,7 @@ fn request_close(
       // This match resolves attempts > 1, reach.connect() before the surrounding protocol step continues.
       case attempts > 1, reach.connect() {
         True, Ok(Nil) ->
-          request_close(session, workspace, reach, incarnation, attempts - 1)
+          send_close(session, workspace, reach, incarnation, attempts - 1)
         _, _ -> Error(CloseUnanswered)
       }
     Error(Nil) -> Error(CloseUnanswered)
