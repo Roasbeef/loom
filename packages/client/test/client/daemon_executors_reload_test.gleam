@@ -144,7 +144,18 @@ fn reloading_with(
   adjust: fn(main.Config) -> main.Config,
   run: fn(Int, String, untrusted_links.Registry, String) -> Nil,
 ) {
-  let assert Ok(registry) = untrusted_links.start(links(), log.discard())
+  reloading_over(links(), state, file, adjust, run)
+}
+
+// The same, over links the caller supplies.
+fn reloading_over(
+  fakes: untrusted_links.Links,
+  state: String,
+  file: option.Option(String),
+  adjust: fn(main.Config) -> main.Config,
+  run: fn(Int, String, untrusted_links.Registry, String) -> Nil,
+) {
+  let assert Ok(registry) = untrusted_links.start(fakes, log.discard())
     as "the registry starts"
   let assert Ok(parsed) = main.parse(["--state-dir", state])
     as "the flags parse"
@@ -326,6 +337,60 @@ pub fn removing_the_last_guest_stops_its_link_test() {
       assert changes(reply) == [#(name, "stopped")]
       assert process.named(untrusted_link.name_for(name)) == Error(Nil)
       assert untrusted_links.rows(registry) == []
+    },
+  )
+}
+
+pub fn a_table_named_through_a_link_dials_with_the_path_checked_test() {
+  let state = state_with_link()
+  let name = unique("reload-g")
+  let path = state <> "/loom.toml"
+
+  // The key is named through a symbolic link inside the vm directory. The
+  // rule checks the file the link names, and the link must dial with that file
+  // and not with the link, which could be pointed somewhere else later.
+  // A scratch directory of an earlier run may still hold the link.
+  let _ = simplifile.delete(state <> "/vm/key-link.pem")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(state <> "/vm/k.pem", state <> "/vm/key-link.pem")
+    as "the link is made"
+  let assert Ok(canonical) = bootstrap.canonical_path(state <> "/vm/k.pem")
+    as "the key resolves"
+  let table =
+    "[executor_link]\nca = \""
+    <> state
+    <> "/vm/ca.pem\"\ncertificate = \""
+    <> state
+    <> "/vm/c.pem\"\nkey = \""
+    <> state
+    <> "/vm/key-link.pem\"\n"
+  let assert Ok(Nil) =
+    simplifile.write(path, table <> rows_text([#(name, 7000)]))
+    as "the file is written"
+
+  // A link that records the key it was started with in a file, because the
+  // registry starts it in a process that is not the test's.
+  let record = state <> "/dialled-key"
+  let recording =
+    untrusted_links.Links(
+      start: fn(row, credentials) {
+        let assert Ok(Nil) = simplifile.write(record, credentials.key)
+          as "the key is recorded"
+        hold(row.name)
+      },
+      holder: fn(name) { process.named(untrusted_link.name_for(name)) },
+    )
+
+  reloading_over(
+    recording,
+    state,
+    Some(path),
+    fn(config) { config },
+    fn(port, credential, _registry, _root) {
+      assert changes(ask(open(port, credential), 1)) == [#(name, "started")]
+      let assert Ok(used) = simplifile.read(record) as "the link was started"
+      assert used == canonical
+      assert used != state <> "/vm/key-link.pem"
     },
   )
 }

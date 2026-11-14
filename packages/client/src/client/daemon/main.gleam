@@ -2752,12 +2752,9 @@ fn reloaded(
     path,
     log.discard(),
   ))
-  use Nil <- result.try(link_table_allowed(config, decoded))
+  use credentials <- result.try(link_table_allowed(config, decoded))
   use Nil <- result.map(unshadowed(config, decoded.executors))
-  untrusted_links.Wanted(
-    rows: decoded.executors,
-    credentials: decoded.untrusted.link,
-  )
+  untrusted_links.Wanted(rows: decoded.executors, credentials:)
 }
 
 /// Applies `executor_reload.link_rule` to the table this daemon started with
@@ -2771,7 +2768,16 @@ fn reloaded(
 /// for a file that is not there yet, would pass it as written. A table the
 /// daemon started with is compared for equality, so a path that no longer
 /// resolves is compared as written.
-fn link_table_allowed(config: Config, decoded: Config) -> Result(Nil, String) {
+///
+/// The answer is the table the links dial with, and it is the table that was
+/// checked. A table the daemon started with is used with its paths unchanged.
+/// A proposed one is used with the canonical paths that the rule saw, so a
+/// path that goes through a link in the vm home cannot be repointed after the
+/// check and make a link read from somewhere else at its next dial.
+fn link_table_allowed(
+  config: Config,
+  decoded: Config,
+) -> Result(Option(ffi_tls_stream.Credentials), String) {
   let homes =
     workspace_policy.vm_home_directories(
       workspace_policy.home_directory(),
@@ -2783,13 +2789,19 @@ fn link_table_allowed(config: Config, decoded: Config) -> Result(Nil, String) {
       option.to_result(directory, Nil) |> result.map(resolved)
     })
   use proposed <- result.try(proposed_table(config, decoded))
-  executor_reload.link_rule(
-    option.map(config.untrusted.link, resolved_credentials),
-    proposed,
-    untrusted_rows_of(decoded),
-    allowed,
+  use Nil <- result.map(
+    executor_reload.link_rule(
+      option.map(config.untrusted.link, resolved_credentials),
+      proposed,
+      untrusted_rows_of(decoded),
+      allowed,
+    )
+    |> result.map_error(fn(reason) { "executors.reload: " <> reason }),
   )
-  |> result.map_error(fn(reason) { "executors.reload: " <> reason })
+
+  // A started table passed the rule only by equality or by being dropped with
+  // no row to dial, so it is never replaced by what the new file says.
+  option.or(config.untrusted.link, proposed)
 }
 
 /// Whether the decoded file holds an untrusted row, which `link_rule` needs to
