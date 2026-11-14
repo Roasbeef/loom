@@ -147,10 +147,32 @@ pub fn executor_roster(
   local: String,
   written: List(ExecutorRow),
 ) -> Roster(ExecutorRow) {
+  executor_roster_over(service, local, fn() { written })
+}
+
+/// `executor_roster` for written rows that change while the daemon runs, which
+/// the untrusted executor rows do (protocol-change/115). `written` is called
+/// once for each read, and the same list serves both the derivation and the
+/// fallback, so a read never mixes two versions of the written rows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let roster = ledger_rows.executor_roster_over(service, "loom@hub.example", fn() { current_rows() })
+/// roster.rows(roster)
+/// ```
+pub fn executor_roster_over(
+  service: Service,
+  local: String,
+  written: fn() -> List(ExecutorRow),
+) -> Roster(ExecutorRow) {
   roster.reading(fn() {
+    let rows = written()
+
+    // An unreachable ledger leaves the written rows and nothing derived.
     case ledger_service.status(service, read_ms) {
-      Ok(status) -> executors_of(status.ledger, local, written)
-      Error(ledger_service.Unreachable) -> written
+      Ok(status) -> executors_of(status.ledger, local, rows)
+      Error(ledger_service.Unreachable) -> rows
     }
   })
 }

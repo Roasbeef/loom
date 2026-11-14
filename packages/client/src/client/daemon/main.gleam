@@ -73,6 +73,7 @@ import client/daemon/ui_login
 import client/daemon/ui_origin
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/daemon/untrusted_links
 import client/delegate_host
 import client/delegate_outbox
 import client/deployment
@@ -86,6 +87,7 @@ import client/directory/store
 import client/distribution
 import client/distribution_plan
 import client/executor_plane
+import client/executor_reload
 import client/executors
 import client/gateway
 import client/git_identity
@@ -123,7 +125,6 @@ import client/remote/remote_spawner
 import client/remote/state_link
 import client/remote/top_relay
 import client/remote/untrusted_gateway
-import client/remote/untrusted_link
 import client/remote/workspace
 import client/remote_feed
 import client/remote_mail
@@ -224,7 +225,9 @@ pub type Config {
     /// at startup and never reread (protocol-change/078). These are the rows the
     /// operator wrote. A daemon that runs from a ledger also uses the executors
     /// the ledger links it to (protocol-change/086, phase 2), which
-    /// `executor_roster` adds when the list is read.
+    /// `executor_roster` adds when the list is read. The trusted rows stay as
+    /// read at start; the untrusted ones are reread by `executors.reload`, and
+    /// `executor_roster` takes them from `links` (protocol-change/115).
     executors: List(executors.Executor),
     /// The groups of those executors a session may be created in, read from
     /// `[pools.<name>]` at startup and never reread (protocol-change/078).
@@ -275,6 +278,11 @@ pub type Config {
     /// `[executor_listener]`, read at startup and never reread
     /// (protocol-change/109).
     untrusted: untrusted_config.Settings,
+    /// The process that holds the untrusted executor rows and their links,
+    /// started by `prepare_startup` (protocol-change/115). `None` on a `Config`
+    /// that startup has not prepared, which then has the rows of `executors`
+    /// as they were read and no link.
+    links: Option(untrusted_links.Registry),
   )
 }
 
@@ -675,6 +683,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       no_projects,
       state_node.none(),
       untrusted_config.none,
+      None,
     )
   use config <- result.try(parse_loop(arguments, initial))
 
@@ -1143,9 +1152,11 @@ fn untrusted_settings(
 /// `untrusted_link.name_for` so a session's placement finds it by name; on an
 /// executor with `[executor_listener]`, the gateway in front of its host.
 ///
-/// Like the host, the links and the gateway are unlinked from the startup
-/// process and not restarted: a link that died takes its bindings with it, and
-/// the sessions it served refuse their callbacks until they attach again.
+/// The links belong to `untrusted_links`, which starts them unlinked from the
+/// startup process and starts one again when `executors.reload` finds it dead
+/// (protocol-change/115): a link that died takes its bindings with it, and the
+/// sessions it served refuse their callbacks until they attach again. The
+/// gateway is unlinked and not restarted, as the host is.
 ///
 /// ## Examples
 ///
@@ -1158,7 +1169,7 @@ pub fn start_untrusted(
   executor: Option(ExecutorHost),
   logger: Logger,
 ) -> Result(Nil, String) {
-  use Nil <- result.try(start_untrusted_links(config, logger))
+  use Nil <- result.try(start_untrusted_links(config))
 
   // A listener fronts this daemon's own host, so it needs one.
   case config.untrusted.listener, executor {
@@ -1204,32 +1215,44 @@ fn start_placed_blobs(
   })
 }
 
-/// Starts one link per untrusted executor row.
-fn start_untrusted_links(
-  config: Config,
-  logger: Logger,
-) -> Result(Nil, String) {
-  list.try_each(config.executors, fn(executor) {
-    // Only an untrusted row is dialled over the link.
-    case executor.trust, config.untrusted.link {
-      executors.Untrusted(host:, port:, pin:), Some(credentials) -> {
-        use pid <- result.map(
-          untrusted_link.start(untrusted_link.Config(
-            executor: executor.name,
-            name: untrusted_link.name_for(executor.name),
-            host:,
-            port:,
-            pin:,
-            credentials:,
-            mint: untrusted_link.strong_binding,
-            logger:,
-          )),
-        )
-        process.unlink(pid)
-      }
-      executors.Untrusted(..), None | executors.Trusted, _ -> Ok(Nil)
+/// Starts one link per untrusted executor row, as the registry's first
+/// reconcile over the rows this daemon read at start. A row whose link did not
+/// start refuses the daemon's start, as it always has.
+fn start_untrusted_links(config: Config) -> Result(Nil, String) {
+  // A `Config` startup has not prepared has no registry and no link.
+  case config.links {
+    None -> Ok(Nil)
+    Some(registry) -> {
+      use reply <- result.try(
+        untrusted_links.reconcile(registry, fn() {
+          Ok(untrusted_links.Wanted(
+            rows: config.executors,
+            credentials: config.untrusted.link,
+          ))
+        })
+        |> result.map_error(untrusted_failure),
+      )
+      list.try_each(reply.executors, fn(entry) {
+        case entry.change {
+          executor_reload.Failed ->
+            Error("the link to executor " <> entry.name <> " did not start")
+          executor_reload.Started
+          | executor_reload.Restarted
+          | executor_reload.Stopped
+          | executor_reload.Unchanged -> Ok(Nil)
+        }
+      })
     }
-  })
+  }
+}
+
+/// The words for a reconcile that gave no reply.
+fn untrusted_failure(failure: untrusted_links.Failure) -> String {
+  case failure {
+    untrusted_links.Refused(reason:) -> reason
+    untrusted_links.Unavailable ->
+      "the untrusted executor registry did not answer"
+  }
 }
 
 /// Starts the executor host when the configuration serves any workspace, and
@@ -2637,14 +2660,34 @@ fn deployment_reach(config: Config) -> deployment.Reach {
 /// executor enrolled or revoked while the daemon runs is seen by the next
 /// decision. A daemon without a ledger has the rows of its file, as before.
 fn executor_roster(config: Config) -> Roster(executors.Executor) {
+  let startup = config.executors
+  let links = config.links
+
+  // The closure keeps the two values it reads, and not the whole `Config`.
   case config.ledger {
     Some(handle) ->
-      ledger_rows.executor_roster(
-        handle.service,
-        handle.local,
-        config.executors,
-      )
-    None -> roster.fixed(config.executors)
+      ledger_rows.executor_roster_over(handle.service, handle.local, fn() {
+        written_executors(startup, links)
+      })
+    None -> roster.reading(fn() { written_executors(startup, links) })
+  }
+}
+
+/// The executor rows the operator wrote, as they are now: the trusted rows read
+/// at start, and the untrusted rows the registry holds, which `executors.reload`
+/// changes (protocol-change/115). A `Config` with no registry has the rows it
+/// was read with. Rows are sorted by name.
+fn written_executors(
+  startup: List(executors.Executor),
+  links: Option(untrusted_links.Registry),
+) -> List(executors.Executor) {
+  // Only the registry knows the untrusted rows once startup has prepared it.
+  case links {
+    None -> startup
+    Some(registry) ->
+      list.filter(startup, fn(row) { row.trust == executors.Trusted })
+      |> list.append(untrusted_links.rows(registry))
+      |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
   }
 }
 
@@ -3006,6 +3049,13 @@ pub fn prepare_startup(
   // The project book is a running table, so only startup creates it; staged
   // validation reads the same numbers and starts nothing.
   use project_table <- result.try(project_book.start())
+
+  // The registry of untrusted links is a running process too, so only startup
+  // creates it. It starts empty, and `start_untrusted` fills it.
+  use links <- result.try(untrusted_links.start(
+    untrusted_links.production(logger),
+    logger,
+  ))
   use booted <- result.try(start_distribution(
     document,
     configuration,
@@ -3042,6 +3092,7 @@ pub fn prepare_startup(
       membership: option.map(booted, fn(started) { started.membership }),
       ledger:,
       projects: Projects(book: Some(project_table), settings: project_numbers),
+      links: Some(links),
     )
 
   // The states start before the root so that the first session admitted can
