@@ -163,6 +163,12 @@ pub fn asks_again(refusal: remote_spawn.SpawnRefusal) -> Bool {
 /// of the one before it. Failing the child there would discard finished work for a
 /// fault of the store, so the parent asks again at its next wait.
 ///
+/// Some store faults at a join never pass: a delegate session that cannot
+/// recover, or one whose start failed for good. Such a child stays unfinished
+/// at every wait until its own deadline, when the parent's stub is past its
+/// deadline, frees its slot and is no longer asked about. That bound is the
+/// parent's and needs no timer here.
+///
 /// ## Examples
 ///
 /// ```gleam
