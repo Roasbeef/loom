@@ -287,6 +287,21 @@ type Attempt {
 
   // The open fails with this reason, already worded for the operator.
   Failed(reason: String)
+
+  // The executor answered, and what it said will not change by asking again: the
+  // scope is bound to another workspace, or the executor serves none by that
+  // name. `reason` is worded for the operator.
+  Refused(reason: String)
+}
+
+/// Why an attach did not give the session hands.
+pub type AttachFailure {
+  /// The executor's answer is final, so a caller that can give up should.
+  AttachRefused(reason: String)
+
+  /// The link, the fence, a plane still being built or any other condition
+  /// that can pass.
+  AttachUnfinished(reason: String)
 }
 
 /// Chooses an executor, attaches the session's scope to it and builds the
@@ -298,14 +313,34 @@ type Attempt {
 /// // let assert Ok(hands) = workspace.attach(registered)
 /// ```
 pub fn attach(registered: Registered) -> Result(Hands, String) {
-  use stored <- result.try(scope.read(registered.opened))
+  attach_classified(registered)
+  |> result.map_error(fn(failure) { failure.reason })
+}
+
+/// `attach`, with a refusal that will not change told from a failure that may.
+/// A move abandons on the first and stalls on the second.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(hands) = workspace.attach_classified(registered)
+/// ```
+pub fn attach_classified(
+  registered: Registered,
+) -> Result(Hands, AttachFailure) {
+  use stored <- result.try(
+    scope.read(registered.opened) |> result.map_error(AttachUnfinished),
+  )
 
   // This match resolves scope.executor_of(stored) before the enclosing validation continues.
-  use candidates <- result.try(case scope.executor_of(stored) {
-    Some(name) ->
-      registered.placement.named(name) |> result.map(fn(found) { [found] })
-    None -> registered.placement.first()
-  })
+  use candidates <- result.try(
+    case scope.executor_of(stored) {
+      Some(name) ->
+        registered.placement.named(name) |> result.map(fn(found) { [found] })
+      None -> registered.placement.first()
+    }
+    |> result.map_error(AttachUnfinished),
+  )
 
   try_in_order(registered, stored, candidates, [])
 }
@@ -319,16 +354,17 @@ fn try_in_order(
   stored: Option(Scope),
   candidates: List(Candidate),
   declined: List(Attempt),
-) -> Result(Hands, String) {
+) -> Result(Hands, AttachFailure) {
   // This match resolves candidates before the surrounding protocol step continues.
   // This match resolves candidates before the enclosing validation continues.
   case candidates {
-    [] -> Error(none_accepted(list.reverse(declined)))
+    [] -> Error(AttachUnfinished(none_accepted(list.reverse(declined))))
     [candidate, ..rest] ->
       // This match resolves attach_to(registered, stored, candidate, MayHeal) before the surrounding protocol step continues.
       case attach_to(registered, stored, candidate, MayHeal) {
         Ok(hands) -> Ok(hands)
-        Error(Failed(reason)) -> Error(reason)
+        Error(Failed(reason)) -> Error(AttachUnfinished(reason))
+        Error(Refused(reason)) -> Error(AttachRefused(reason))
         Error(Declined(..) as attempt) ->
           try_in_order(registered, stored, rest, [attempt, ..declined])
       }
@@ -353,7 +389,7 @@ fn none_accepted(declined: List(Attempt)) -> String {
             // This match resolves attempt before the surrounding protocol step continues.
             case attempt {
               Declined(executor:, reason:) -> executor <> ": " <> reason
-              Failed(reason:) -> reason
+              Failed(reason:) | Refused(reason:) -> reason
             }
           }),
           "; ",
@@ -465,7 +501,7 @@ fn attach_to(
     }
     Error(refusal) -> {
       owner_port.stop(port)
-      Error(Failed(refused(refusal, incarnation, registered.session)))
+      Error(refused_attempt(registered, candidate, incarnation, stored, refusal))
     }
     Ok(surface.Attachment(surface: joined, attached: reply)) ->
       case
@@ -502,6 +538,80 @@ fn attach_to(
   }
 }
 
+// What an attach the executor refused means for the open. A scope bound to
+// another workspace and a workspace the executor does not serve are answers that
+// asking again does not change. The second leaves a scope that the attach opened
+// and the plane could not be built for; the executor closes it, and it is closed
+// here too and the close recorded, so that the next attach claims the next
+// incarnation. That holds only when this attach opened the scope: a first open,
+// or a reopen after a close the record shows. A record with no close means the
+// scope may be a session's own, which an attach rebinds, and it is left alone.
+// Every other refusal is worded as before and may pass.
+/// Decides whether an executor's refusal of an attach is final, and tidies.
+fn refused_attempt(
+  registered: Registered,
+  candidate: Candidate,
+  incarnation: Int,
+  stored: Option(Scope),
+  refusal: protocol.Refusal,
+) -> Attempt {
+  // The two final answers are named; every other refusal may pass.
+  case refusal {
+    protocol.WorkspaceMismatch(stored: bound) -> Refused(mismatch_words(bound))
+    protocol.NoPlane(reason:) ->
+      case protocol.is_unserved_workspace(reason) {
+        True -> {
+          close_if_opened(registered, candidate, incarnation, stored)
+          Refused(unavailable(protocol.describe(refusal)))
+        }
+        False -> Failed(refused(refusal, incarnation, registered.session))
+      }
+    other -> Failed(refused(other, incarnation, registered.session))
+  }
+}
+
+/// Closes the scope the failed attach opened, and leaves one it rebound.
+fn close_if_opened(
+  registered: Registered,
+  candidate: Candidate,
+  incarnation: Int,
+  stored: Option(Scope),
+) -> Nil {
+  // Only a scope this attach created or reopened is closed from here.
+  case opened_by_attach(stored) {
+    True -> close_scope(registered, candidate, incarnation)
+    False -> Nil
+  }
+}
+
+// Whether an attach made under this record opens the scope: there is no record,
+// or the record's last close was written, so the executor's scope was closed.
+/// Whether the attach under this record creates or reopens the scope.
+fn opened_by_attach(stored: Option(Scope)) -> Bool {
+  case stored {
+    None -> True
+    Some(scope.Scope(closed: Some(_), ..)) -> True
+    Some(scope.Scope(closed: None, ..)) -> False
+  }
+}
+
+// The words for a scope bound to another workspace than the one named. An open
+// scope keeps its workspace, and so does a closed one with a tree, so the
+// corrected name is not taken until the scope is closed without a tree. The way
+// there is to name the bound workspace again, so that the move ends and closes
+// the scope, and then to correct the name.
+/// The operator's words for a refusal of a scope bound to another workspace.
+fn mismatch_words(bound: String) -> String {
+  unavailable(
+    "the executor's scope for this session is bound to the workspace `"
+    <> bound
+    <> "`, which an earlier move named, and the scope is open or holds a tree there, "
+    <> "so it keeps that workspace. Set checkout_workspace back to `"
+    <> bound
+    <> "`, move again so that the move ends and closes the scope, then correct the name and move",
+  )
+}
+
 // Asks the executor how the scope's close at `held` ended, records the answer,
 // and attaches again from the updated record. The answer for a scope that is
 // closed is its stored outcome, so a clean close reopens at the next
@@ -535,7 +645,9 @@ fn learn_unrecorded_close(
         Error(reason) -> Error(Failed(unavailable(reason)))
       }
     }
-    Error(_failure) ->
+    Error(CloseRefused(refusal: protocol.WorkspaceMismatch(stored: bound))) ->
+      Error(Refused(mismatch_words(bound)))
+    Error(CloseRefused(..)) | Error(CloseUnanswered) ->
       Error(
         Failed(refused(
           protocol.StaleIncarnation(stored: held),

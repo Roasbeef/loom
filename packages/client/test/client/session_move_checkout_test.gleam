@@ -127,9 +127,9 @@ fn machine(rig: worktree_rig.Rig) -> executor_plane.Machine {
 // captures and applies through it.
 fn state_node(
   state: String,
+  limits: state_store.Limits,
 ) -> #(state_store.Store, state_transfer.Endpoint, state_capture.Capturer) {
-  let assert Ok(store) =
-    state_store.open(state_store.directory(state), state_store.default_limits)
+  let assert Ok(store) = state_store.open(state_store.directory(state), limits)
   let assert Ok(service) =
     state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 })
   let endpoint = state_service.endpoint(service)
@@ -150,8 +150,11 @@ fn serve(name: String, served: Served) -> Plane {
   let served_workspaces = case served {
     InWorktrees -> [rig.workspace]
     Shared -> [workspaces.shared("repo", rig.root)]
+    Both -> [rig.workspace, workspaces.shared("shared1", rig.root)]
   }
-  let #(store, endpoint, capturer) = state_node(rig.state)
+  let #(store, endpoint, capturer) =
+    state_node(rig.state, state_store.default_limits)
+
   let assert Ok(started) =
     host.start(host.Config(
       name: process.new_name("move_checkout_host"),
@@ -177,6 +180,9 @@ fn serve(name: String, served: Served) -> Plane {
 type Served {
   InWorktrees
   Shared
+  // The `repo` worktree workspace and a `shared` one named `shared1`, so that a
+  // move can name the wrong one first.
+  Both
 }
 
 fn tree_of(plane: Plane, session: String) -> String {
@@ -320,7 +326,8 @@ fn start(label: String, served: Served, padding: Int) -> Rig {
   let state = directory <> "/source-state"
   let assert Ok(Nil) = bootstrap.ensure_private_directory(state)
   worktree_rig.establish(state)
-  let #(store, _endpoint, capturer) = state_node(state)
+  let #(store, _endpoint, capturer) =
+    state_node(state, state_store.default_limits)
 
   // The directory the session works in: a clone of the executor's repository
   // with a commit of its own and uncommitted work.
@@ -555,6 +562,12 @@ fn plain(rig: Rig) -> session_mover.Environment(String) {
 }
 
 fn begin(rig: Rig) -> catalogue.Pending {
+  begin_as(rig, op)
+}
+
+// The owner begins a move under this operation, which is how a move asked for
+// again after an abandon differs from the one before it.
+fn begin_as(rig: Rig, operation: String) -> catalogue.Pending {
   let assert Ok(moving) =
     manager.begin_move_from(
       rig.source.registry,
@@ -562,20 +575,28 @@ fn begin(rig: Rig) -> catalogue.Pending {
       "move-test",
       rig.session,
       to: "bravo",
-      op:,
+      op: operation,
       departure: manager.WithLocalCheckout,
     )
     as "the owner begins the move"
-  assert moving == catalogue.Moving(op:, to: "bravo")
-  catalogue.Pending(session: rig.session, op:, to: "bravo")
+  assert moving == catalogue.Moving(op: operation, to: "bravo")
+  catalogue.Pending(session: rig.session, op: operation, to: "bravo")
 }
+
+// A second operation, for a move asked for again.
+const second_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9f"
 
 // --- what a finished move leaves ---------------------------------------------------------
 
 fn assert_moved(rig: Rig) -> Nil {
-  assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
+  assert_moved_as(rig, op)
+}
+
+fn assert_moved_as(rig: Rig, operation: String) -> Nil {
+  assert custody(rig.source, rig.session)
+    == catalogue.Moved(op: operation, to: "bravo")
   assert custody(rig.target, rig.session)
-    == catalogue.Imported(op:, from: "alpha")
+    == catalogue.Imported(op: operation, from: "alpha")
   assert simplifile.is_file(source_file(rig)) == Ok(False)
   assert simplifile.is_file(source_file(rig) <> ".moved") == Ok(True)
 
@@ -795,6 +816,73 @@ pub fn a_shared_workspace_on_the_executor_refuses_the_state_test() {
   let assert Ok(Some(cell)) =
     scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
   assert cell.closed == Some(protocol.AllRetired)
+  finish(rig)
+}
+
+// A move to a workspace the executor serves in `shared` mode is refused and
+// abandoned, and the scope it attached is closed but was bound to that
+// workspace. The operator corrects `checkout_workspace`, and the next move takes
+// the closed scope over, because it holds nothing of the session.
+pub fn a_corrected_workspace_after_a_refused_one_lands_the_retry_test() {
+  let rig = start("rebind-shared", Both, 0)
+  let _first = begin_as(rig, op)
+  let wrong =
+    environment(
+      rig,
+      Some(ports(rig, silently, direct)),
+      Some(CheckoutTarget(executor: "box", workspace: "shared1")),
+      fn(_) { Nil },
+    )
+  let assert Aborted(reason) =
+    session_mover.drive(
+      wrong,
+      catalogue.Pending(session: rig.session, op:, to: "bravo"),
+    )
+  assert string.contains(reason, "worktree")
+  assert_stays_on_source(rig)
+
+  // The configuration is corrected and the move asked for again.
+  let again =
+    catalogue.Pending(session: rig.session, op: second_op, to: "bravo")
+  let _second = begin_as(rig, second_op)
+  assert session_mover.drive(plain(rig), again) == Finished
+  assert_moved_as(rig, second_op)
+  finish(rig)
+}
+
+// A name the executor does not serve is refused at the attach, which has bound a
+// scope to it. The source closes that scope and abandons the move, naming the
+// workspace, so the executor holds a closed scope and not an open one, and the
+// corrected workspace is taken at the next incarnation.
+pub fn a_corrected_workspace_after_an_unserved_one_lands_the_retry_test() {
+  let rig = start("rebind-unserved", InWorktrees, 0)
+  let _first = begin_as(rig, op)
+  let wrong =
+    environment(
+      rig,
+      Some(ports(rig, silently, direct)),
+      Some(CheckoutTarget(executor: "box", workspace: "nosuch")),
+      fn(_) { Nil },
+    )
+  let assert Aborted(reason) =
+    session_mover.drive(
+      wrong,
+      catalogue.Pending(session: rig.session, op:, to: "bravo"),
+    )
+  assert string.contains(reason, "nosuch")
+  assert_stays_on_source(rig)
+
+  // No scope is left open between the two attempts: the source's record says the
+  // attach was closed.
+  let assert Ok(Some(cell)) =
+    scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
+  assert cell.closed == Some(protocol.AllRetired)
+
+  let again =
+    catalogue.Pending(session: rig.session, op: second_op, to: "bravo")
+  let _second = begin_as(rig, second_op)
+  assert session_mover.drive(plain(rig), again) == Finished
+  assert_moved_as(rig, second_op)
   finish(rig)
 }
 
@@ -1066,5 +1154,154 @@ pub fn a_state_cut_short_by_a_dropped_link_resumes_at_the_executors_offset_test(
   let _arrived = attach_on_receiver(rig)
   let tree = tree_of(rig.plane, rig.session)
   assert simplifile.read(tree <> "/README") == Ok(edited)
+  finish(rig)
+}
+
+// --- scopes the executor already holds ------------------------------------------------
+
+// A second connection to the executor's ledger, which the tests use to leave a
+// scope as an earlier run of the move could have: the host holds the first.
+fn executor_ledger(rig: Rig) -> exec_ledger.Ledger {
+  let assert Ok(ledger) = exec_ledger.open(rig.plane.rig.ledger_path)
+    as "the executor's ledger opens for the test"
+  ledger
+}
+
+fn token(n: Int) -> BitArray {
+  bit_array.from_string("held-token-" <> int.to_string(n))
+}
+
+// The executor holds an open scope for the session, bound to this workspace, at
+// the first incarnation.
+fn open_scope_in(rig: Rig, workspace: String) -> Nil {
+  let assert Ok(_) =
+    exec_ledger.attach(
+      executor_ledger(rig),
+      rig.session,
+      workspace,
+      1,
+      token(1),
+      exec_ledger.default_limits(),
+    )
+    as "the scope is created"
+  Nil
+}
+
+// The source's file records an attach at the first incarnation whose close was
+// never recorded, as a source that died in the landing leaves it.
+fn unclosed_record(rig: Rig) -> Nil {
+  let assert Ok(Nil) =
+    scope.write_at(
+      source_file(rig),
+      "inspector",
+      clock.fixed(at: 9000),
+      scope.Scope(1, None, Some("box")),
+    )
+    as "the record is written"
+  Nil
+}
+
+fn named(rig: Rig, workspace: String) -> session_mover.Environment(String) {
+  environment(
+    rig,
+    Some(ports(rig, silently, direct)),
+    Some(CheckoutTarget(executor: "box", workspace:)),
+    fn(_) { Nil },
+  )
+}
+
+fn executor_scope(rig: Rig) -> exec_ledger.Scope {
+  let assert Ok(Some(found)) =
+    exec_ledger.scope(executor_ledger(rig), rig.session)
+  found
+}
+
+// A scope that is open keeps the workspace it is bound to. The move names
+// another, the ledger refuses, and the source takes the refusal as final: the move
+// is abandoned with the bound workspace named and the scope is left as it was.
+pub fn an_attach_refused_for_the_scopes_workspace_abandons_the_move_test() {
+  let rig = start("mismatch", Both, 0)
+  let move = begin(rig)
+  open_scope_in(rig, "shared1")
+  let assert Aborted(reason) = session_mover.drive(named(rig, "repo"), move)
+  assert string.contains(reason, "bound to the workspace `shared1`")
+  assert string.contains(reason, "checkout_workspace")
+  assert_stays_on_source(rig)
+  assert executor_scope(rig).state == exec_ledger.Open
+  finish(rig)
+}
+
+// An executor restarted with a workspace dropped from its configuration answers
+// the attach of a session that is bound to it with a scope that is rebound and a
+// plane that cannot be built. The scope is a session's own, so the host leaves it
+// open, and the source, whose record shows no close, does not close it either.
+pub fn a_rebound_scope_for_an_unserved_workspace_is_left_open_test() {
+  let rig = start("rebound-unserved", InWorktrees, 0)
+  let move = begin(rig)
+  open_scope_in(rig, "nosuch")
+  unclosed_record(rig)
+  let assert Aborted(reason) = session_mover.drive(named(rig, "nosuch"), move)
+  assert string.contains(reason, "nosuch")
+  assert executor_scope(rig).state == exec_ledger.Open
+  finish(rig)
+}
+
+// The executor's scope is closed cleanly at the first incarnation and bound to
+// the old workspace, and the source's record names that incarnation with no close
+// written, because it died between the attach and the record. The corrected
+// workspace is attached at that incarnation, the ledger answers that the scope is
+// at it, and the question about the close names the new workspace, which the scope
+// is not bound to. That is a refusal for the workspace and ends the move, where it
+// used to be taken for a lost connection and stall for good.
+pub fn a_close_asked_under_the_corrected_workspace_ends_the_move_test() {
+  let rig = start("unrecorded-close", Both, 0)
+  let move = begin(rig)
+  open_scope_in(rig, "shared1")
+  let ledger = executor_ledger(rig)
+  let assert Ok(Nil) =
+    exec_ledger.begin_close(ledger, rig.session, "shared1", 1)
+  let assert Ok(Nil) =
+    exec_ledger.finish_close(
+      ledger,
+      rig.session,
+      "shared1",
+      1,
+      exec_ledger.AllRetired,
+    )
+  unclosed_record(rig)
+  let assert Aborted(reason) = session_mover.drive(named(rig, "repo"), move)
+  assert string.contains(reason, "shared1")
+  assert_stays_on_source(rig)
+  finish(rig)
+}
+
+// An executor whose store is full refuses the state, and the move is abandoned
+// with the reason. Room returns only when held states expire, so waiting would
+// send the bundle again from the start at every retry for days. The refusal is
+// the store's own verdict on the first piece, so the link answers it.
+pub fn a_full_store_on_the_executor_abandons_the_move_test() {
+  let rig = start("store-full", InWorktrees, 0)
+  let move = begin(rig)
+  let full =
+    environment(
+      rig,
+      Some(
+        ports(rig, silently, fn(link) {
+          Link(..link, piece: fn(_piece) {
+            Ok(
+              state_transfer.Refused(state_transfer.NoRoom(
+                "the state store is full",
+              )),
+            )
+          })
+        }),
+      ),
+      box_repo(),
+      fn(_) { Nil },
+    )
+  let assert Aborted(reason) = session_mover.drive(full, move)
+  assert string.contains(reason, "sending the state to the executor")
+  assert string.contains(reason, "no room")
+  assert_stays_on_source(rig)
   finish(rig)
 }
