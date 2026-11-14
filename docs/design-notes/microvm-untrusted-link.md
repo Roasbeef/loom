@@ -208,7 +208,7 @@ orchestrator leaf is re-issued only if its key is suspected: every guest's
 listener reads its configuration at boot. Neither is needed inside five years.
 
 `<vm home>/link/` sits under `~/.loom/vm`, which every jail on the host masks
-(`client/workspace_policy.gleam:1801` (`node_home_masks`)). A `LOOM_VM_HOME`
+(`client/workspace_policy.gleam:1811` (`node_home_masks`)). A `LOOM_VM_HOME`
 elsewhere is unmasked, as the authority directory already is.
 
 ### The orchestrator side
@@ -291,7 +291,7 @@ release that changes `up`.
 
 The daemon reads `[executors.*]` and `[executor_link]` once at start and never
 rereads them (`client/daemon/main.gleam:278` (`untrusted`)); links start only
-there (`client/daemon/main.gleam:4492` (`start_untrusted`)). No daemon-wide
+there (`client/daemon/main.gleam:4575` (`start_untrusted`)). No daemon-wide
 configuration reload exists: `limits` validates its keys again on a catalogue
 reload and never rebinds (`client/daemon/limits.gleam:138` (`listen_address`)),
 and `gateway`'s reload is a session's model catalogue. What does exist is the
