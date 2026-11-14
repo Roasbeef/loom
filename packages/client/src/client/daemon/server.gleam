@@ -166,6 +166,10 @@ pub type Config(instance) {
     /// `ledger.*` owner commands read and extend (protocol-change/086). `None`
     /// answers them `not_found`.
     ledger: Option(ledger_control.Handle),
+    /// What `executors.reload` runs (protocol-change/115): reread the file the
+    /// daemon started from and bring the untrusted links to match. `None` on a
+    /// daemon started with no configuration file, which answers `not_found`.
+    executors_reload: Option(ExecutorsReload),
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -2991,6 +2995,7 @@ fn control(
             | protocol.LedgerEntries(..)
             | protocol.LedgerStatus
             | protocol.LedgerHoldings -> KeepServing
+            protocol.ReloadExecutors -> KeepServing
             protocol.InspectPeers(..)
             | protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
@@ -3116,6 +3121,7 @@ fn control_use(command: protocol.Command) {
     | protocol.AbandonMove(..)
     | protocol.DeleteSession(..)
     | protocol.LedgerAppend(..)
+    | protocol.ReloadExecutors
     | protocol.Shutdown(_) -> root.ControlMutation
   }
 }
@@ -3248,6 +3254,9 @@ fn dispatch(
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings -> ledger_command(config, principal, command)
+
+    // A refused reload names the reason in words, as the ledger's refusals do.
+    protocol.ReloadExecutors -> executors_command(config, principal)
 
     // A refused move says why in words, which the string codes of
     // `dispatch_class` cannot carry, so the two move commands are served here.
@@ -3741,6 +3750,56 @@ fn ledger_command(
       ledger_control.status(handle)
       |> result.map(fn(body) { #("ledger.status", body) })
       |> result.map_error(ledger_refusal)
+  }
+}
+
+/// The capability behind `executors.reload`, built by the daemon, which owns the
+/// configuration file and the registry of links. The server holds a function
+/// and nothing else, as it holds the ledger's handle, so it knows neither the
+/// file nor the links.
+pub type ExecutorsReload {
+  ExecutorsReload(
+    /// Rereads the file and reconciles the links, answering the reply body.
+    reload: fn() -> Result(JsonValue, ReloadFailure),
+  )
+}
+
+/// Why a reload gave no reply.
+pub type ReloadFailure {
+  /// The file, or the table the call would apply, is one the daemon refuses.
+  /// Nothing changed, and the reason reaches the client as the message.
+  ReloadInvalid(reason: String)
+
+  /// The registry did not answer in time.
+  ReloadUnavailable(reason: String)
+}
+
+/// The code `executors.reload` answers when the daemon refuses the file. The
+/// message is the reason (protocol-change/115).
+pub const reload_invalid_code = "reload_invalid"
+
+/// `executors.reload`: owner-only, and `not_found` when the daemon has no
+/// configuration file to reread.
+fn executors_command(
+  config: Config(instance),
+  principal: access.Principal,
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
+  use capability <- result.try(
+    option.to_result(config.executors_reload, Nil)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  capability.reload()
+  |> result.map(fn(body) { #("executors.reload", body) })
+  |> result.map_error(reload_refusal)
+}
+
+/// The refusal frame of a failed reload.
+fn reload_refusal(failure: ReloadFailure) -> Refused {
+  // An invalid file has its own code; a silent registry is `unavailable`.
+  case failure {
+    ReloadInvalid(reason:) -> Refused(reload_invalid_code, reason, [])
+    ReloadUnavailable(reason:) -> Refused("unavailable", reason, [])
   }
 }
 
@@ -4746,6 +4805,7 @@ fn dispatch_class(
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings
+    | protocol.ReloadExecutors
     | protocol.MoveSession(..)
     | protocol.AbandonMove(..) -> Error("unavailable")
 

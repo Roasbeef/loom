@@ -73,6 +73,7 @@ import client/daemon/ui_login
 import client/daemon/ui_origin
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/daemon/untrusted_links
 import client/delegate_host
 import client/delegate_outbox
 import client/deployment
@@ -86,12 +87,14 @@ import client/directory/store
 import client/distribution
 import client/distribution_plan
 import client/executor_plane
+import client/executor_reload
 import client/executors
 import client/gateway
 import client/git_identity
 import client/host
 import client/install
 import client/internal/ffi_os
+import client/internal/ffi_tls_stream
 import client/ledger_boot
 import client/ledger_control
 import client/ledger_holdings
@@ -123,7 +126,6 @@ import client/remote/remote_spawner
 import client/remote/state_link
 import client/remote/top_relay
 import client/remote/untrusted_gateway
-import client/remote/untrusted_link
 import client/remote/workspace
 import client/remote_feed
 import client/remote_mail
@@ -224,7 +226,9 @@ pub type Config {
     /// at startup and never reread (protocol-change/078). These are the rows the
     /// operator wrote. A daemon that runs from a ledger also uses the executors
     /// the ledger links it to (protocol-change/086, phase 2), which
-    /// `executor_roster` adds when the list is read.
+    /// `executor_roster` adds when the list is read. The trusted rows stay as
+    /// read at start; the untrusted ones are reread by `executors.reload`, and
+    /// `executor_roster` takes them from `links` (protocol-change/115).
     executors: List(executors.Executor),
     /// The groups of those executors a session may be created in, read from
     /// `[pools.<name>]` at startup and never reread (protocol-change/078).
@@ -275,6 +279,11 @@ pub type Config {
     /// `[executor_listener]`, read at startup and never reread
     /// (protocol-change/109).
     untrusted: untrusted_config.Settings,
+    /// The process that holds the untrusted executor rows and their links,
+    /// started by `prepare_startup` (protocol-change/115). `None` on a `Config`
+    /// that startup has not prepared, which then has the rows of `executors`
+    /// as they were read and no link.
+    links: Option(untrusted_links.Registry),
   )
 }
 
@@ -675,6 +684,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       no_projects,
       state_node.none(),
       untrusted_config.none,
+      None,
     )
   use config <- result.try(parse_loop(arguments, initial))
 
@@ -1143,9 +1153,11 @@ fn untrusted_settings(
 /// `untrusted_link.name_for` so a session's placement finds it by name; on an
 /// executor with `[executor_listener]`, the gateway in front of its host.
 ///
-/// Like the host, the links and the gateway are unlinked from the startup
-/// process and not restarted: a link that died takes its bindings with it, and
-/// the sessions it served refuse their callbacks until they attach again.
+/// The links belong to `untrusted_links`, which starts them unlinked from the
+/// startup process and starts one again when `executors.reload` finds it dead
+/// (protocol-change/115): a link that died takes its bindings with it, and the
+/// sessions it served refuse their callbacks until they attach again. The
+/// gateway is unlinked and not restarted, as the host is.
 ///
 /// ## Examples
 ///
@@ -1158,7 +1170,7 @@ pub fn start_untrusted(
   executor: Option(ExecutorHost),
   logger: Logger,
 ) -> Result(Nil, String) {
-  use Nil <- result.try(start_untrusted_links(config, logger))
+  use Nil <- result.try(start_untrusted_links(config))
 
   // A listener fronts this daemon's own host, so it needs one.
   case config.untrusted.listener, executor {
@@ -1204,32 +1216,44 @@ fn start_placed_blobs(
   })
 }
 
-/// Starts one link per untrusted executor row.
-fn start_untrusted_links(
-  config: Config,
-  logger: Logger,
-) -> Result(Nil, String) {
-  list.try_each(config.executors, fn(executor) {
-    // Only an untrusted row is dialled over the link.
-    case executor.trust, config.untrusted.link {
-      executors.Untrusted(host:, port:, pin:), Some(credentials) -> {
-        use pid <- result.map(
-          untrusted_link.start(untrusted_link.Config(
-            executor: executor.name,
-            name: untrusted_link.name_for(executor.name),
-            host:,
-            port:,
-            pin:,
-            credentials:,
-            mint: untrusted_link.strong_binding,
-            logger:,
-          )),
-        )
-        process.unlink(pid)
-      }
-      executors.Untrusted(..), None | executors.Trusted, _ -> Ok(Nil)
+/// Starts one link per untrusted executor row, as the registry's first
+/// reconcile over the rows this daemon read at start. A row whose link did not
+/// start refuses the daemon's start, as it always has.
+fn start_untrusted_links(config: Config) -> Result(Nil, String) {
+  // A `Config` startup has not prepared has no registry and no link.
+  case config.links {
+    None -> Ok(Nil)
+    Some(registry) -> {
+      use reply <- result.try(
+        untrusted_links.reconcile(registry, fn() {
+          Ok(untrusted_links.Wanted(
+            rows: config.executors,
+            credentials: config.untrusted.link,
+          ))
+        })
+        |> result.map_error(untrusted_failure),
+      )
+      list.try_each(reply.executors, fn(entry) {
+        case entry.change {
+          executor_reload.Failed ->
+            Error("the link to executor " <> entry.name <> " did not start")
+          executor_reload.Started
+          | executor_reload.Restarted
+          | executor_reload.Stopped
+          | executor_reload.Unchanged -> Ok(Nil)
+        }
+      })
     }
-  })
+  }
+}
+
+/// The words for a reconcile that gave no reply.
+fn untrusted_failure(failure: untrusted_links.Failure) -> String {
+  case failure {
+    untrusted_links.Refused(reason:) -> reason
+    untrusted_links.Unavailable ->
+      "the untrusted executor registry did not answer"
+  }
 }
 
 /// Starts the executor host when the configuration serves any workspace, and
@@ -2637,14 +2661,167 @@ fn deployment_reach(config: Config) -> deployment.Reach {
 /// executor enrolled or revoked while the daemon runs is seen by the next
 /// decision. A daemon without a ledger has the rows of its file, as before.
 fn executor_roster(config: Config) -> Roster(executors.Executor) {
+  let startup = config.executors
+  let links = config.links
+
+  // The closure keeps the two values it reads, and not the whole `Config`.
   case config.ledger {
     Some(handle) ->
-      ledger_rows.executor_roster(
-        handle.service,
-        handle.local,
-        config.executors,
+      ledger_rows.executor_roster_over(handle.service, handle.local, fn() {
+        written_executors(startup, links)
+      })
+    None -> roster.reading(fn() { written_executors(startup, links) })
+  }
+}
+
+/// The executor rows the operator wrote, as they are now: the trusted rows read
+/// at start, and the untrusted rows the registry holds, which `executors.reload`
+/// changes (protocol-change/115). A `Config` with no registry has the rows it
+/// was read with. Rows are sorted by name.
+fn written_executors(
+  startup: List(executors.Executor),
+  links: Option(untrusted_links.Registry),
+) -> List(executors.Executor) {
+  // Only the registry knows the untrusted rows once startup has prepared it.
+  case links {
+    None -> startup
+    Some(registry) ->
+      list.filter(startup, fn(row) { row.trust == executors.Trusted })
+      |> list.append(untrusted_links.rows(registry))
+      |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
+  }
+}
+
+/// What `executors.reload` runs (protocol-change/115), or `None` for a daemon
+/// that has no configuration file or no registry of links. The file is read and
+/// decoded inside the registry's process, so two reloads apply in order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.executors_reload_for(config, "/home/u/.loom/loom.toml")
+/// ```
+@internal
+pub fn executors_reload_for(
+  config: Config,
+  configuration: String,
+) -> Option(server.ExecutorsReload) {
+  case configuration, config.links {
+    "", _ | _, None -> None
+    path, Some(registry) ->
+      Some(
+        server.ExecutorsReload(reload: fn() {
+          untrusted_links.reconcile(registry, fn() { reloaded(config, path) })
+          |> result.map(executor_reload.encode)
+          |> result.map_error(fn(failure) {
+            case failure {
+              untrusted_links.Refused(reason:) -> server.ReloadInvalid(reason)
+              untrusted_links.Unavailable ->
+                server.ReloadUnavailable(untrusted_failure(failure))
+            }
+          })
+        }),
       )
-    None -> roster.fixed(config.executors)
+  }
+}
+
+/// Reads the file a daemon started from and decides what a reload may apply of
+/// it: the whole document must decode as a start would decode it, the
+/// `[executor_link]` table must be one `executor_reload.link_rule` allows, and
+/// no untrusted row may take the name of an executor the ledger enrols, which
+/// the written row would shadow.
+fn reloaded(
+  config: Config,
+  path: String,
+) -> Result(untrusted_links.Wanted, String) {
+  use text <- result.try(
+    simplifile.read(path)
+    |> result.map_error(fn(error) {
+      path <> " is unreadable: " <> string.inspect(error)
+    }),
+  )
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(fn(error) {
+      path <> ": invalid daemon configuration: " <> string.inspect(error)
+    }),
+  )
+  use #(decoded, _limits, _numbers) <- result.try(decode_startup(
+    config,
+    document,
+    path,
+    log.discard(),
+  ))
+  use Nil <- result.try(link_table_allowed(config, decoded))
+  use Nil <- result.map(unshadowed(config, decoded.executors))
+  untrusted_links.Wanted(
+    rows: decoded.executors,
+    credentials: decoded.untrusted.link,
+  )
+}
+
+/// Applies `executor_reload.link_rule` to the table this daemon started with
+/// and the table of the new file, with their paths made canonical.
+fn link_table_allowed(config: Config, decoded: Config) -> Result(Nil, String) {
+  let home = bootstrap.getenv("HOME") |> result.map(fn(h) { h <> "/.loom/vm" })
+  let allowed =
+    [Ok(config.state_root <> "/vm"), home]
+    |> list.filter_map(fn(directory) { result.map(directory, resolved) })
+  executor_reload.link_rule(
+    option.map(config.untrusted.link, resolved_credentials),
+    option.map(decoded.untrusted.link, resolved_credentials),
+    allowed,
+  )
+  |> result.map_error(fn(reason) { "executors.reload: " <> reason })
+}
+
+/// A path made canonical, or as written when it cannot be resolved, in which
+/// case it lies under no allowed directory unless it was written that way at
+/// start.
+fn resolved(path: String) -> String {
+  bootstrap.canonical_path(path) |> result.unwrap(path)
+}
+
+/// The three files of an `[executor_link]` table, each made canonical.
+fn resolved_credentials(
+  credentials: ffi_tls_stream.Credentials,
+) -> ffi_tls_stream.Credentials {
+  ffi_tls_stream.Credentials(
+    ca: resolved(credentials.ca),
+    certificate: resolved(credentials.certificate),
+    key: resolved(credentials.key),
+  )
+}
+
+/// Refuses an untrusted row that has the name of an executor the ledger
+/// enrols. The ledger's derived row would be dropped in favour of the written
+/// one, which would let a file edit stand in for an enrolled member.
+fn unshadowed(
+  config: Config,
+  rows: List(executors.Executor),
+) -> Result(Nil, String) {
+  case config.ledger {
+    None -> Ok(Nil)
+    Some(handle) ->
+      case ledger_service.status(handle.service, 2000) {
+        Error(ledger_service.Unreachable) -> Ok(Nil)
+        Ok(status) -> {
+          let enrolled =
+            ledger_rows.executors_of(status.ledger, handle.local, [])
+            |> list.map(fn(row) { row.name })
+          list.try_each(rows, fn(row) {
+            case row.trust, list.contains(enrolled, row.name) {
+              executors.Untrusted(..), True ->
+                Error(
+                  "untrusted executor "
+                  <> row.name
+                  <> " has the name of an executor the ledger enrols",
+                )
+              executors.Untrusted(..), False | executors.Trusted, _ -> Ok(Nil)
+            }
+          })
+        }
+      }
   }
 }
 
@@ -3006,6 +3183,13 @@ pub fn prepare_startup(
   // The project book is a running table, so only startup creates it; staged
   // validation reads the same numbers and starts nothing.
   use project_table <- result.try(project_book.start())
+
+  // The registry of untrusted links is a running process too, so only startup
+  // creates it. It starts empty, and `start_untrusted` fills it.
+  use links <- result.try(untrusted_links.start(
+    untrusted_links.production(logger),
+    logger,
+  ))
   use booted <- result.try(start_distribution(
     document,
     configuration,
@@ -3042,6 +3226,7 @@ pub fn prepare_startup(
       membership: option.map(booted, fn(started) { started.membership }),
       ledger:,
       projects: Projects(book: Some(project_table), settings: project_numbers),
+      links: Some(links),
     )
 
   // The states start before the root so that the first session admitted can
@@ -4083,6 +4268,7 @@ pub fn listen_moving(
       movers:,
       deployment: deployment.reporting(deployment_reach(config), reads.report),
       ledger: config.ledger,
+      executors_reload: executors_reload_for(config, domain_configuration),
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

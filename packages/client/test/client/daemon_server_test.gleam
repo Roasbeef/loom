@@ -207,6 +207,40 @@ pub fn fixture_with_ledger(
   ledger: option.Option(ledger_control.Handle),
   run,
 ) {
+  fixture_with_reload(
+    connection_limits,
+    peer_endpoint,
+    build,
+    asked,
+    movers,
+    reach,
+    ledger,
+    None,
+    run,
+  )
+}
+
+/// `fixture_with_ledger` with the capability `executors.reload` runs
+/// (protocol-change/115). `None` is a daemon with no configuration file, which
+/// answers the command `not_found`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_with_reload(limits.defaults, fn(_) { None }, build, stub, movers, reach, None, Some(reload), run)
+/// ```
+@internal
+pub fn fixture_with_reload(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  reach: deployment.Reach,
+  ledger: option.Option(ledger_control.Handle),
+  executors_reload: option.Option(server.ExecutorsReload),
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -249,6 +283,7 @@ pub fn fixture_with_ledger(
       movers:,
       deployment: reach,
       ledger:,
+      executors_reload:,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -2159,6 +2194,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           movers: session_movers.idle(),
           deployment: deployment.alone("nonode@nohost"),
           ledger: None,
+          executors_reload: None,
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)

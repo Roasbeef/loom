@@ -218,6 +218,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
       protocol.MoveSession(id, "laptop", "epoch"),
     ),
     #("directory.status", [], protocol.DirectoryStatus),
+    #("executors.reload", [], protocol.ReloadExecutors),
     #("deployment.status", [], protocol.DeploymentStatus(None)),
     #(
       "deployment.status",

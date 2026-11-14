@@ -100,6 +100,28 @@ once, and checks size and digest in `remote/outcome_fetch` before decoding.
 Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 (`RunLost`, `Unknown`), never a refusal that invites a re-run.
 
+Reloading the rows (protocol-change/115). `daemon/untrusted_links` is a
+`weft/actor`, started by `prepare_startup` beside `project_book`, that holds the
+untrusted `executors.Executor` rows and the pid of each row's link, unlinks every
+link it starts and monitors it (a death is logged, and the next reload starts the
+link again). `reconcile(registry, load)` runs `load` inside the actor, checks
+`executor_reload.check_rows` and `check_names`, plans with `executor_reload.plan`
+and performs each step before a three second deadline (`reconcile_ms`); a row not
+reached is `Failed` and stays as it was. Before it starts a link it kills whatever
+holds the link's registered name and waits for the name with `weft/poll`. `rows`
+answers the roster's untrusted rows, and `[]` when the actor does not answer.
+`daemon/main.executor_roster` is a read at each use of the trusted rows from start
+and `untrusted_links.rows`, sorted by name; in ledger mode it goes through
+`ledger_rows.executor_roster_over`, so a derived row is unaffected. `start_untrusted`
+is the registry's first reconcile. `executors.reload` is `protocol.ReloadExecutors`;
+`server.Config.executors_reload` holds `main.executors_reload_for`, which reads and
+decodes the file with `decode_startup`, applies `executor_reload.link_rule` to
+canonical paths (the two vm directories), and refuses an untrusted name the ledger
+enrols, answering `reload_invalid` with the reason. `client/executor_reload` is the
+pure part and owns the reply codec. Tests: `executor_reload_test`,
+`daemon/untrusted_links_test`, `daemon_executors_reload_test` and
+`remote/untrusted_reload_test`.
+
 Invariants: nothing on either side calls `binary_to_term`; every response is
 decoded against its request's kind; a callback reaches an owner port only through
 `admitted`; a waiter's death is the only abort the host sees from this link; a

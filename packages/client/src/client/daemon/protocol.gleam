@@ -380,6 +380,12 @@ pub type Command {
   /// what its catalogue holds, for the operator's check before a `revoke`
   /// (protocol-change/086, phase 2). Owner-only.
   LedgerHoldings
+
+  /// Makes the daemon reread the configuration file it started from and bring
+  /// the links of its untrusted executors to match it (protocol-change/115).
+  /// The body is empty. Owner-only; a daemon started with no file answers
+  /// `not_found`.
+  ReloadExecutors
 }
 
 /// What an invitation or rotation gives the member, as the request chose it.
@@ -875,6 +881,7 @@ fn decode_fields(
     "ledger.entries" -> ledger_entries(fields)
     "ledger.status" -> Ok(LedgerStatus)
     "ledger.holdings" -> Ok(LedgerHoldings)
+    "executors.reload" -> Ok(ReloadExecutors)
     _unknown -> Error("unsupported control command")
   }
 }
