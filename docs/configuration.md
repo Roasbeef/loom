@@ -737,6 +737,12 @@ and the commands that project hooks, goal checks, Git observation and the worktr
 diff run through the executor's broker are refused on an untrusted executor for
 now.
 
+The untrusted rows are the one part of `[executors.<name>]` that a running daemon
+rereads. `executors.reload` (protocol-change 115) rereads the file, starts a link
+for a new untrusted row, replaces the link of a row whose address or pin changed
+or whose link ended, and stops the link of a row that was removed. A session that
+is already placed keeps its placement. Trusted rows are read once, at start.
+
 ### Executors that come from the ledger
 
 (From protocol-change 086, phase 2.) A daemon that runs from a membership ledger
@@ -766,6 +772,12 @@ row (see `ledger` above); `loom deployment status` shows it as down.
 (From protocol-change 109.) Required on an orchestrator that names any untrusted
 `[executors.<name>]`, and read once when the daemon starts. It is the certificate
 this orchestrator presents on the link to every untrusted executor.
+
+`executors.reload` (protocol-change 115) does not change this table in a running
+daemon. It applies the table of the new file only when it equals the table the
+daemon started with, or when the daemon started with none and each of the three
+files is under `$HOME/.loom/vm` or `<state root>/vm`. Any other change takes
+effect at the next start.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |

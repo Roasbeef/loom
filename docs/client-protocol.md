@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:526-187`).
+Source: `handle` (`client/daemon/server.gleam:533-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:2591`).
+`hello_view` (`client/daemon/server.gleam:2598`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -569,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4568`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4627`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1082,7 +1082,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2963-1130`).
+`control_use` (`client/daemon/server.gleam:2970-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1252,7 +1252,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1524`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1531`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -2018,6 +2018,50 @@ ticket with no commit, and when the engine refuses the commit as out of date. Th
 pull request it asks for are the host's: `git push` to `refs/heads/project/<ticket>` of the
 `origin` remote, and `gh api` (REST only) to look for an open pull request from that branch and
 open one when there is none. The ticket's `pull_request` carries the URL once it is recorded.
+
+### 3.33 `executors.reload`
+
+Owner-only (a member is refused `forbidden`), and it needs no epoch
+([protocol-change/115](../protocol-change/115-executors-reload.md)). It is a
+mutation, so a daemon that is draining refuses it as it refuses any mutation. The
+daemon rereads the configuration file it started from and brings the links of its
+untrusted executors to match it. A daemon that was started with no configuration
+file answers `not_found`.
+
+`executors.reload` takes `{}`. The daemon decodes the whole document with the
+decoder its start uses, and refuses the call with `reload_invalid`, the reason as
+the `message`, and no change, when
+
+- the file is one a start would refuse;
+- `[executor_link]` is not one the daemon may apply: it must equal the table the
+  daemon started with, or the daemon must have started with none and each of the
+  table's files must resolve to a path under `$HOME/.loom/vm` or
+  `<state root>/vm`;
+- an untrusted row has the name of an executor the ledger enrols;
+- the file holds more than 512 untrusted rows, or the daemon would have seen more
+  than 1,024 distinct untrusted names since it started.
+
+From a file that passes, the daemon takes every row whose `trust` is `"untrusted"`.
+A new row starts a link (`started`). A row with the address and pin of the running
+link, whose link is alive, is left alone (`unchanged`). A row whose link has
+ended, or whose address or pin differs, gets a new link under the same name
+(`restarted`). A row that the file no longer holds has its link stopped
+(`stopped`). A row that could not be brought to match within three seconds is
+left as it was before the call (`failed`). Trusted rows and every other table are
+neither applied nor compared. The reply lists every untrusted row the file holds
+or the daemon held, sorted by name, at most 512 entries:
+
+```json
+{"v":2,"reply_to":7,"event":"executors.reload","body":{"executors":[{"name":"old-9a01c2","change":"stopped"},{"name":"proj-464e8b","change":"started"},{"name":"review-pod","change":"unchanged"}]}}
+```
+
+`started`, `restarted` and `unchanged` mean that the daemon holds the row and a
+link for it. They do not mean that the executor answers: a link dials on its
+first request. The daemon logs every entry that is not `unchanged` at warning
+level, with the old and the new address and pin and the reason of a `failed` one.
+A daemon that predates the command answers `bad_request`, which a client reads as
+"this daemon predates the command". `client/executor_reload.decode` reads the
+reply.
 
 ## 4. The session endpoint
 
@@ -4670,7 +4714,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:608`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:619`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

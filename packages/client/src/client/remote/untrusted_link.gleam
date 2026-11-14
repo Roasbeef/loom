@@ -402,8 +402,9 @@ pub fn address(
 
 /// The name the link to `executor` registers in production. An executor's
 /// name is the operator's, from `[executors.<name>]`, checked against the
-/// executor grammar and read once at start, so the atoms made here are as few
-/// as the configured executors and none comes from a peer.
+/// executor grammar and read from the configuration file at start and at each
+/// `executors.reload`, which refuses a file past 1,024 distinct names, so the
+/// atoms made here are bounded and none comes from a peer.
 ///
 /// ## Examples
 ///

@@ -243,9 +243,9 @@ What the daemon needs, read from the code:
   passes written rows through (`client/ledger_rows.gleam:145`
   (`executor_roster`)). No `key_elsewhere` refusal can arise.
 - `untrusted_settings` refuses an untrusted row without `[executor_link]`
-  (`client/daemon/main.gleam:1120` (`untrusted_settings`)).
+  (`client/daemon/main.gleam:1133` (`untrusted_settings`)).
 - `start_untrusted_links` starts one link per untrusted row, at boot only
-  (`client/daemon/main.gleam:1205` (`start_untrusted_links`)), registered under
+  (`client/daemon/main.gleam:1222` (`start_untrusted_links`)), registered under
   `untrusted_link.name_for(name)`.
 - `remote/workspace.candidate` sends an untrusted row to the link's name and
   never needs distribution (`client/remote/workspace.gleam:753` (`candidate`),
@@ -290,8 +290,8 @@ release that changes `up`.
 ### (a) A running daemon learning about a new guest
 
 The daemon reads `[executors.*]` and `[executor_link]` once at start and never
-rereads them (`client/daemon/main.gleam:272` (`untrusted`)); links start only
-there (`client/daemon/main.gleam:4306` (`start_untrusted`)). No daemon-wide
+rereads them (`client/daemon/main.gleam:278` (`untrusted`)); links start only
+there (`client/daemon/main.gleam:4492` (`start_untrusted`)). No daemon-wide
 configuration reload exists: `limits` validates its keys again on a catalogue
 reload and never rebinds (`client/daemon/limits.gleam:138` (`listen_address`)),
 and `gateway`'s reload is a session's model catalogue. What does exist is the
@@ -299,7 +299,7 @@ mechanism ledger mode uses for rows that change while the daemon runs, a
 `Roster` read at each use (`client/roster.gleam:51` (`reading`)), and the
 precedent of an owner-only control command that changes rows without a
 restart, `ledger.append`, whose owner check is in
-`ledger_command` (`client/daemon/server.gleam:3715`).
+`ledger_command` (`client/daemon/server.gleam:3724`).
 
 Three options:
 
@@ -315,7 +315,7 @@ touching sessions on other executors. A link whose row changed is stopped and
 started again under the same name; its sessions' bindings retire with it and
 the surface's repair loop reattaches them, which is the path a dead link takes
 today. A side effect worth having: a link that crashed (links are not
-restarted, `client/daemon/main.gleam:1153` (`start_untrusted`)) comes back on
+restarted, `client/daemon/main.gleam:1165` (`start_untrusted`)) comes back on
 the next `reload`.
 
 `up` and `ensure` write the file first, then send `reload` if a daemon is
