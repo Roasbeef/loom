@@ -6,13 +6,16 @@
 //// records, how it routes recovery, which clock its non-tool callers read,
 //// and that one open attaches once.
 
+import broker/broker
 import client/evolution/record
 import client/executors
 import client/extension/hooks as extension_hooks
 import client/jobstate
 import client/pools
+import client/remote/host
 import client/remote/owner_port
 import client/remote/protocol
+import client/remote/remote_census
 import client/remote/scope
 import client/remote/workspace
 import core/clock
@@ -23,6 +26,7 @@ import core/tx
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
@@ -821,5 +825,104 @@ pub fn an_executor_that_cannot_compile_gives_no_link_and_one_notice_test() {
     field.text(key: "executor", value: rig.executor_name),
   )
   assert process.receive(records, 50) == Error(Nil)
+  rig.stop(executor)
+}
+
+// --- an executor that restarts under an open session --------------------------
+
+// Ends the executor and starts another over the same ledger under the same
+// name, as a restart of its machine does. The new host holds no plane.
+fn restarted(
+  executor: rig.Executor,
+  path: String,
+  name: process.Name(protocol.HostMessage(remote_census.RemoteCensus)),
+  factory: host.PlaneFactory(remote_census.RemoteCensus),
+) -> rig.Executor {
+  let ended = process.monitor(executor.pid)
+  rig.stop(executor)
+  let _down =
+    process.new_selector()
+    |> process.select_specific_monitor(ended, fn(_down) { Nil })
+    |> process.selector_receive(5000)
+  rig.start_named(path, factory, name)
+}
+
+// A factory whose first plane names `first` as its broker and every later plane
+// names `second`, so a test can tell which plane a message reached. It waits at
+// the build gate, so a test can hold a build.
+fn two_brokers(
+  probe: fixtures.Probe,
+  first: process.Subject(broker.Msg),
+  second: process.Subject(broker.Msg),
+) -> host.PlaneFactory(remote_census.RemoteCensus) {
+  fn(spec: host.AttachSpec) {
+    let census = case list.length(fixtures.builds(probe)) {
+      0 -> rig.census_over(rig.standard_tools(), first)
+      _ -> rig.census_over(rig.standard_tools(), second)
+    }
+    let built = rig.factory(probe, census, protocol.AllRetired)(spec)
+    process.call(probe.subject, 30_000, fixtures.BuildGate(spec.session, _))
+    built
+  }
+}
+
+pub fn a_session_keeps_its_tools_and_its_broker_across_an_executor_restart_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let first = process.new_subject()
+  let second = process.new_subject()
+  let path = fixtures.scratch("orchestrator") <> "/ledger.db"
+  let name = rig.host_name()
+  let executor = rig.start_named(path, two_brokers(probe, first, second), name)
+  let hands = attached(executor, store())
+  let op_id = fixtures.execution_terms().op_id
+
+  // Before the restart the session's broker handle reaches the first plane's.
+  broker.abort(hands.plane.broker, op_id)
+  assert result.is_ok(process.receive(first, 1000))
+
+  // After it, a tool call repairs the scope, and the same handle reaches the
+  // new plane's broker: the hooks, goal checks, worktree observations and an
+  // operator's abort of the session all use it.
+  let executor =
+    restarted(executor, path, name, two_brokers(probe, first, second))
+  let call = fixtures.tool_run("call_1", 0)
+  let assert effects.ToolCompleted(..) =
+    hands.plane.run(call, fixtures.authority())
+  broker.abort(hands.plane.broker, op_id)
+  assert result.is_ok(process.receive(second, 1000))
+  assert process.receive(first, 100) == Error(Nil)
+  rig.stop(executor)
+}
+
+pub fn a_close_that_meets_the_rebuild_waits_for_it_and_records_the_outcome_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let first = process.new_subject()
+  let second = process.new_subject()
+  let path = fixtures.scratch("orchestrator") <> "/ledger.db"
+  let name = rig.host_name()
+  let executor = rig.start_named(path, two_brokers(probe, first, second), name)
+  let hands = attached(executor, store())
+  let executor =
+    restarted(executor, path, name, two_brokers(probe, first, second))
+
+  // A call starts the rebuild and the build is held. The close arrives while
+  // the scope is building, and is refused until the build lands.
+  fixtures.hold_build(probe, "registered-session")
+  let call = fixtures.tool_run("call_1", 0)
+  let _caller =
+    process.spawn_unlinked(fn() { hands.plane.run(call, fixtures.authority()) })
+  assert fixtures.eventually(fn() { list.length(fixtures.builds(probe)) == 2 })
+  let done = process.new_subject()
+  let _closer =
+    process.spawn_unlinked(fn() {
+      hands.plane.close()
+      process.send(done, Nil)
+    })
+  process.sleep(200)
+  assert fixtures.closes(probe) == 0
+
+  fixtures.release_build(probe, "registered-session")
+  assert result.is_ok(process.receive(done, 10_000))
+  assert fixtures.closes(probe) == 1
   rig.stop(executor)
 }

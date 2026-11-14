@@ -222,13 +222,31 @@ the executor-in-a-guest link and the node credential mask.
 `microvm/dev-experience`, cut from its tip, is the developer path recorded in
 ADR-022's "developer path" addendum. Neither has a hosted CI run.
 
-- **What a developer runs:** `loom-vm setup --release TAG` (or `make
-  vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`, then
-  `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and
+- **One flag (owner, 2026-11-13):** `loom --vm` in any repository sets the
+  artifacts up if needed, boots or resumes that workspace's guest and opens
+  the session with its tools in it; `loom run -p ... --vm` does the same
+  headless. Each workspace has its own guest, named by
+  `vm_spec.guest_name_for`, run by `loomd vm ensure` (`vm_cli.ensure`,
+  `vm_spec.ensure_step`) and found again from the directory alone. Guests stay
+  standing `loom-vm run` processes outside the daemon; no daemon-owned guest
+  and no pool driver was chosen. `ensure` exits 75 with `daemon=required` when
+  a second guest's join needs a daemon that is not running, and the launcher
+  starts one and runs it again once (`tui/vm_ensure`). Not done: the web
+  new-session form; stopping idle guests; reattaching a session after a guest
+  restart (`remote/reattach-after-executor-restart`). Progress is live on the
+  interactive launch (standard error to `/dev/tty` through `/bin/sh`) and shown
+  at the end for `loom run --vm`. The live check passed on a real release build:
+  cold, warm, a second and a third workspace, and the daemon-required retry;
+  the guest's move to the untrusted executor link (protocol-change/109) will
+  replace the mint, join and restart machinery.
+- **What a developer runs (the long form):** `loom-vm setup --release TAG` (or
+  `make vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`,
+  then `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and
   `loom vm status` reports it. A second `up` resumes the guest's checkout and
   its state disk; `--fresh` starts both again. `--github gh|env|off` (default
-  `gh`) chooses the token the credential proxy injects; the guest only ever
-  holds a placeholder.
+  `gh`) chooses the token the credential proxy injects, and a resume keeps the
+  choice recorded in `<vm home>/<name>/github`; the guest only ever holds a
+  placeholder.
 - **Verified on an Apple Silicon Mac:** `daemon_shipped_microvm_test` drives
   `loom vm up`. An orchestrator on the host runs a scripted turn whose
   jailed `bash` call shows the Landlock guest kernel and loom-exec, cannot
@@ -264,18 +282,35 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   fails with the bundle kept, and `up` resumes from it after the operator's
   `loom distribution import`; that path is covered by pure tests and has no
   live step.
+- **Linux x86_64 booted (2026-11-13, branch `vmm/linux-host`):** on an Ubuntu
+  24.04 box with two cores, `loom-vm probe` is usable, a native build gives
+  libkrun v1.19.7, a 6.12.91-loom-landlock `libkrunfw.so.5` (10 minutes) and a
+  guest root, `loom vm up/down/up/list/rm` work, and
+  `daemon_shipped_microvm_test` passes (207 s, no live GitHub steps). Found on
+  the way and fixed: the firmware script's x86_64 refusal is now a check that
+  the kernel matches the library; the guest init renumbers the loom user to the
+  host user's ids when a rootless runner cannot chown; the image drops setuid
+  bits; `Start` raises the open-file limit and refuses a hard limit under
+  65,536; the runner path is symlink-resolved so `down` stops it. Read
+  "A Linux host" in microvm.md before trusting it: rootless Linux gives the
+  loom user every file in the guest root, `--provision` with packages is not
+  expected to work there, and the box's runs needed a raised hard open-file
+  limit, a git built from source for `vm sync` and crun for podman.
 - **Unverified:** `.github/workflows/vmm-release.yml` has never run; the GHCR
   package must be made public once by hand after the first publish;
-  `setup --release` has never downloaded a real release; Linux/KVM has not
-  booted; no real push with a real token has been made.
+  `setup --release` has never downloaded a real release; no real push with a
+  real token has been made; a privileged Linux runner, Linux arm64, and the
+  live GitHub steps on Linux have not run.
 - **Open:** a pool driver and a guest per session; the remaining #214 pieces
   (proxy as the only egress path, per-call allowlists, an enforcement-report
   entry, a self-test probe) before `narrow_unenforceable` stops downgrading
   for guests; whether the proxy should refuse private address ranges, which
   would break a GitHub Enterprise allowlist; a node key installed by `loom
   distribution install` outside the state root is still unmasked for host
-  sessions (the cookie is masked); the Linux half of the firmware build and a
-  Linux runner download; Firecracker.
+  sessions (the cookie is masked); a Linux runner download, which needs a
+  `vmm-release.yml` job for the runner and `libkrunfw-landlock-linux-x86_64.so.5`,
+  a libkrun asset (the runner links it and Ubuntu has none), a `releaseAssets`
+  entry for linux/x86_64 and a place for `setup` to put libkrun; Firecracker.
 
 ## Correction: a Blue-tier entry must name its cyber access program
 

@@ -292,7 +292,7 @@ pub type Refusal {
   NoSuchScope
 
   /// The scope has no workspace plane, because building it failed or the
-  /// executor restarted since it was built. Attach again.
+  /// executor restarted since it was built. The surface attaches again.
   NoPlane(reason: String)
 
   /// The session's workspace plane is still being built. Nothing changed; ask
@@ -1083,6 +1083,22 @@ pub fn execution_id(key: Key) -> Result(String, Nil) {
   }
 }
 
+/// The start of the reason an executor gives for a workspace name it does not
+/// serve. It is the one reason of `NoPlane` that asking again cannot change, so
+/// a caller that must tell it from a plane that failed to build looks for it.
+pub const unserved_workspace = "this executor serves no workspace named"
+
+/// Whether a `NoPlane` reason says the executor serves no such workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert protocol.is_unserved_workspace(protocol.unserved_workspace <> " `x`")
+/// ```
+pub fn is_unserved_workspace(reason: String) -> Bool {
+  string.starts_with(reason, unserved_workspace)
+}
+
 /// The sentence a model or an operator reads for a refusal.
 ///
 /// ## Examples
@@ -1116,7 +1132,9 @@ pub fn describe(refusal: Refusal) -> String {
       <> " and this orchestrator does not"
     WorkspaceMismatch(stored:) ->
       "the executor's scope for this session is for the workspace " <> stored
-    NoSuchScope -> "the executor has no scope for this session"
+    NoSuchScope ->
+      "the executor has no scope for this session; close the session and "
+      <> "open it again"
     NoPlane(reason:) ->
       "the executor has no workspace for this session: " <> reason
     PlaneBuilding ->

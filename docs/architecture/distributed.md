@@ -1009,16 +1009,46 @@ restart would leave their helper pools and jobs actors running beside the
 second set the next attach builds. Ending the VM retires them.
 
 On the next boot, `exec_ledger.open` turns every `admitted` row into `unknown`;
-nothing is relaunched. The new host holds no plane for any scope. A `Run` for a
-key the ledger holds a row for is answered from that row first: a stored outcome
-is returned and an unknown row gets `RunLost`. Only a key with no row is refused
-with `NoPlane`, whose text says nothing started. A session that stays open
-across the restart therefore keeps failing new calls until it is closed and
-reopened. Its close finds no plane, so no witness, and records
-`UnknownCleanup(0)`. The reopen is then refused as an unclean close until the
-operator runs `loomd executor release`. That is the routine way out of an
-executor restart, and the setup guide's troubleshooting section walks through
-it.
+nothing is relaunched. The new host holds no plane for any scope, but the ledger
+still holds each scope's row, incarnation and attach token. A `Run` for a key
+the ledger holds a row for is answered from that row first: a stored outcome is
+returned and an unknown row gets `RunLost`. A key with no row is refused with
+`NoPlane` (or `PlaneBuilding`, while another request is building the plane),
+after the scope's fence has been judged, so a dead runtime hears `StaleToken`
+and never `NoPlane` or `PlaneBuilding`. The refusal is given before anything is admitted, so it
+proves the call did not start.
+
+The surface answers that refusal itself (`surface.with_plane`). It sends the
+same `Attach` again, with the same incarnation and the same token, which the
+ledger treats as a rebind: no row changes and the token does not rotate, so no
+other strand's live `Run` is refused. The host builds the plane because it has
+none, and the surface sends the `Run` once more. Each request makes one repair
+attempt. A repair the executor refuses is the call's answer, with the
+executor's reason, and a second `NoPlane` is the answer as it stands. The same
+repair serves `StartExecution`. A session that stays open across an executor
+restart therefore continues without the operator doing anything, and its next
+close finds a plane and a witness, so the scope closes cleanly.
+
+The repair covers what the session's tool calls and background executions need.
+The orchestrator's non-tool callers (imported hooks, goal checks, the worktree
+observations and an operator's abort) send to the executor's broker through a
+subject the owner port holds, and the attach that answers the repair points it at
+the new plane's broker (`Config.attached`, `owner_port.retarget`), so they reach
+the new plane and not the dead one. A close that arrives while the plane is being
+rebuilt is asked again until the build lands (`workspace.request_close`).
+
+Not repaired: evolution and state messages (`ask`, `ask_within`) return the
+refusal, and the generations the old plane built are gone with it. The session's
+clock offset and its executor census are read at open and not again. A job that
+was running on the old plane is gone, and the orchestrator's record of it is not
+reconciled by the repair.
+
+Two paths still end in `UnknownCleanup(0)` and in `loomd executor release`. A
+session that is closed before it makes any call after the restart closes a scope
+with no plane, so there is no witness. A session whose repair fails (the
+executor cannot build the plane) fails every call with the builder's reason
+until the cause is fixed. The setup guide's troubleshooting section walks
+through the release.
 
 ## Worktree workspaces
 
@@ -1087,19 +1117,24 @@ operator's claims, and `pools.candidates` is a pure function of configuration:
 an executor that declared nothing cannot satisfy a requirement, and no message
 asks a machine what it has. The balance is the orchestrator's own count, not
 load: `pools.spread` puts first the candidate on which this orchestrator has the
-fewest resident sessions (`ledger_holdings.resident_by_name`), and the order the
+fewest resident sessions (`ledger_holdings.resident_in`), and the order the
 pool lists breaks ties, so an unused pool is tried in listed order. A session is
 resident only after its attach, so the registry also keeps a claim for each
-session still being built: `manager.claim_placement` adds the claims to the
-resident counts, runs `pools.spread` and records the session's first choice in
-one registry turn, and sessions that open together therefore see one another.
+session still being built: `manager.claim_placement` reads the resident counts from the rows of the
+registry's running slots, which is bounded by the daemon's session limit and
+never walks the catalogue, adds the claims, runs `pools.spread` and records the
+session's first choice in one registry turn, and sessions that open together
+therefore see one another. A claim call the registry does not answer within five
+seconds falls back to `choose(dict.new())`, so the pool is tried in its listed
+order.
 The count says nothing of what other orchestrators hold on the same machines.
 `protocol/models/placement-claims` ([its README](../../protocol/models/placement-claims/README.md))
 models the claims and states the balance the code guarantees: the executors
 differ by at most one when each session is counted once and each attach lands on
-the first candidate. It also records that the resident counts are read by the
-caller before the registry's turn, so a session that becomes resident between
-the read and the turn is not counted by that ask.
+the first candidate. It also records a defect that
+is fixed: the resident counts were read by the caller before the registry's
+turn, so a session that became resident between the read and the turn was not
+counted by that ask. The registry now reads its own rows in the turn.
 
 The rule that matters is that a session's checkout exists only where its scope
 record says. `remote/workspace` writes the record, naming the executor, after
@@ -1468,9 +1503,15 @@ that was asked for when the tree's HEAD descends from the tip: on a retry after 
 abandoned attempt, where the tree is at the earlier snapshot, and on a first attempt
 when the executor's workspace is ahead of a clean directory. It also records that
 a landing that fails (a `shared` workspace, or a name the executor does not serve)
-leaves the scope bound to that workspace, so a move with the corrected
-`checkout_workspace` stalls. The README has the traces; the first is fixed on its
-own branch, and the second is not fixed.
+left the scope bound to that workspace, so a move with the corrected
+`checkout_workspace` stalled. The README has the traces. The first is fixed on its
+own branch. The second is fixed too: the executor's ledger rebinds a closed scope
+that holds nothing, a failed attach leaves a closed scope, and a refusal that will not
+change abandons the move. A scope left open by a source that died in the landing is
+refused with the workspace named and stays open. `loomd executor release` refuses an
+open scope, so the way out is the one the refusal gives: set `checkout_workspace` back
+to the bound name, move again so that the move ends and closes the scope, then correct
+the name and move.
 
 ### The executor fence
 
@@ -2068,7 +2109,7 @@ the model sees. "Unknown" below always means the model reads
 |---|---|---|
 | Orchestrator VM crashes during a call | The host receives a `noconnection` `DOWN`, so the run continues and its outcome waits in the ledger. On reopen the orchestrator attaches at the same incarnation, which rebinds the scope with a new token, and recovery reads each orphaned call's row. | After the dead daemon's writer lease lapses (up to 60 s), the model gets the stored outcome. The tool ran once. |
 | Strand driver or runtime restarts inside one open | Effect processes die with a reason other than `noconnection`, so their runs are cancelled once no waiter is left and the rows become `unknown`. Recovery fences `ReplayNever` keys; the token stays the same. | Cancelled calls stage as unknown. A finished call stages its outcome. |
-| Executor VM restarts, or the host dies | The daemon halts on the host's death. On boot every `admitted` row becomes `unknown`. Re-sent `Run`s for known keys are answered from the ledger. | In-flight calls stage as unknown. New calls fail with "no workspace for this session ... attach first" until the session is closed and reopened, and the reopen needs `loomd executor release` (refusal: `could not prove 0 children of the closed scope are gone`). |
+| Executor VM restarts, or the host dies | The daemon halts on the host's death. On boot every `admitted` row becomes `unknown`. Re-sent `Run`s for known keys are answered from the ledger. A `Run` for a key with no row is refused `NoPlane`, and the surface attaches again under its own token and sends it once more. | In-flight calls stage as unknown. The next new call of an open session runs. If the executor cannot build the plane, calls fail with the builder's reason. A session closed before its next call records unknown cleanup, and its reopen needs `loomd executor release` (refusal: `could not prove 0 children of the closed scope are gone`). |
 | Partition during a call | The surface reconnects with a doubling pause and re-sends the same `Run`. The run continues on the executor. | The session waits. The call completes once, and its outcome arrives after the link returns. |
 | Abort while partitioned | The kill reaches the host only as `noconnection`, so the run continues. | Cancellation is unconfirmed. The run finishes once, and its outcome stays in the ledger until it is acknowledged. |
 | Partition during attach | `surface.attach` re-sends the same attach and token for up to 30 s. A repeat finds the scope rebound or still building. | Within the window, the open succeeds. After it, `operations.get` reports `start_failed` with `executor_unavailable:`; the scope record names the executor, so the next open retries the same machine and converges. |

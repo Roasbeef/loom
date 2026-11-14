@@ -7,9 +7,16 @@
 # before boot (ADR-022 D1: copied in, never shared). NODE_DIR holds:
 #
 #   loom.toml          the executor's configuration, written with guest paths
-#   home/.erlang.cookie the cluster cookie; the node's HOME is NODE_DIR/home
+#   home/.erlang.cookie the cluster cookie; the node's HOME is NODE_DIR/home.
+#                      An executor on the untrusted link has none, and
+#                      home/ is empty.
 #   creds/             the authority certificate and this node's leaf and key
 #   state/             an empty directory the state root is mounted on
+#
+# A loom.toml with an [executor_listener] table is the untrusted link
+# (protocol-change/109). That daemon is no distribution peer, so the script
+# renders no options file, expects no cookie, and reports ready when the
+# daemon has logged daemon.executor_serving and daemon.untrusted_listener.
 #
 # The script runs in two phases. The first runs as root, as libkrun starts the
 # guest's init: it mounts the state root on DEV, formatting it as ext4 on
@@ -45,13 +52,27 @@ case "${1:-}" in
 --serve)
 	node=$2
 
-	# Render the TLS options from the configuration this daemon boots with.
-	"$loom_home/bin/loomd" distribution options "$node/loom.toml" \
-		"$node/state/dist.options"
+	# The configuration says which link this executor has. An
+	# [executor_listener] table is the untrusted link (protocol-change/109):
+	# the daemon is no distribution peer, so there is no options file to
+	# render, no cookie and no epmd registration to wait for.
+	if grep -q '^\[executor_listener\]' "$node/loom.toml"; then
+		untrusted=1
+	else
+		untrusted=0
 
+		# Render the TLS options from the configuration this daemon boots
+		# with.
+		"$loom_home/bin/loomd" distribution options "$node/loom.toml" \
+			"$node/state/dist.options"
+		LOOM_DISTRIBUTION_OPTFILE="$node/state/dist.options"
+		export LOOM_DISTRIBUTION_OPTFILE
+	fi
+
+	# The node's home is set after the options are rendered, as it always was
+	# for a distribution node.
 	HOME="$node/home"
-	LOOM_DISTRIBUTION_OPTFILE="$node/state/dist.options"
-	export HOME LOOM_DISTRIBUTION_OPTFILE
+	export HOME
 
 	"$loom_home/bin/loomd" --state-dir "$node/state/root" \
 		--config "$node/loom.toml" --helper "$loom_home/bin/loom-exec" \
@@ -62,10 +83,12 @@ case "${1:-}" in
 	short=$(sed -n 's/^node = "\([^@"]*\)@.*/\1/p' "$node/loom.toml" | head -n 1)
 	epmd=$(find "$loom_home" -type f -name epmd -perm -u+x | head -n 1)
 
-	# Wait for the daemon's node to register and its executor host to serve,
-	# or for the daemon to die, in which case its log is the only account of
-	# why. The node registers during configuration load, well before the
-	# executor host starts, so the registration alone is not readiness.
+	# Wait for the executor to be reachable and serving, or for the daemon to
+	# die, in which case its log is the only account of why. A distribution
+	# node registers during configuration load, well before the executor host
+	# starts, so the registration alone is not readiness. The untrusted
+	# listener starts after the executor host, so its log line is the last of
+	# the two.
 	while :; do
 		if ! kill -0 "$daemon" 2>/dev/null; then
 			echo "LOOM-EXECUTOR-FAILED"
@@ -73,7 +96,13 @@ case "${1:-}" in
 			exit 1
 		fi
 
-		if "$epmd" -names 2>/dev/null | grep -q "^name $short " &&
+		if [ "$untrusted" = 1 ]; then
+			if grep -qs 'daemon.executor_serving' "$node/state/loomd.log" &&
+				grep -qs 'daemon.untrusted_listener' "$node/state/loomd.log"; then
+				echo "LOOM-EXECUTOR-READY untrusted"
+				break
+			fi
+		elif "$epmd" -names 2>/dev/null | grep -q "^name $short " &&
 			grep -qs 'daemon.executor_serving' "$node/state/loomd.log"; then
 			echo "LOOM-EXECUTOR-READY $short"
 			break
@@ -91,6 +120,10 @@ case "${1:-}" in
 	if [ "${2:-}" = --state-device ]; then
 		device=${3:?--state-device needs a device}
 	fi
+
+	# Settle the loom user's ids first: on a Linux host without privilege
+	# the user cannot be uid 10000, and the chowns below name the user.
+	"$init" --identity
 
 	# A state device keeps the executor's ledger, scopes and logs across
 	# guest restarts, so a standing executor comes back with the sessions
@@ -110,7 +143,13 @@ case "${1:-}" in
 
 	chown -R loom:loom "$node"
 	chmod 0700 "$node" "$node/home" "$node/creds"
-	chmod 0600 "$node/home/.erlang.cookie" "$node/creds/key.pem"
+	chmod 0600 "$node/creds/key.pem"
+
+	# An executor on the untrusted link is staged with no cookie, and under
+	# `set -eu` a chmod of a missing file would end the boot.
+	if [ -e "$node/home/.erlang.cookie" ]; then
+		chmod 0600 "$node/home/.erlang.cookie"
+	fi
 
 	# Every staged workspace belongs to the executor's user as well.
 	for workspace in /srv/workspaces/*; do

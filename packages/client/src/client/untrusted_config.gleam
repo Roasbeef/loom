@@ -82,6 +82,51 @@ pub fn from_document(
   }
 }
 
+/// Reads both tables from configuration text, for callers that hold no parsed
+/// document.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert untrusted_config.parse("") == Ok(untrusted_config.none)
+/// ```
+pub fn parse(text: String) -> Result(Settings, String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(fn(error) {
+      "invalid daemon configuration: " <> string.inspect(error)
+    }),
+  )
+  from_document(document)
+}
+
+/// The private keys this daemon's untrusted link holds: the listener's, and
+/// the orchestrator's when the configuration has an `[executor_link]`. A jail
+/// must not read either, because model code runs as the same user as the
+/// daemon and a key is what lets a process answer as the executor, or dial one
+/// as the orchestrator. The certificates are public.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert untrusted_config.secret_files(untrusted_config.none) == []
+/// ```
+pub fn secret_files(settings: Settings) -> List(String) {
+  // A table that is absent holds no key, and a present one holds exactly one.
+  let link = case settings.link {
+    Some(credentials) -> [credentials.key]
+    None -> []
+  }
+
+  // The listener's key is the same kind of secret as the link's.
+  let listener = case settings.listener {
+    Some(listener) -> [listener.credentials.key]
+    None -> []
+  }
+
+  list.append(link, listener)
+}
+
 /// The `[executor_link]` table: `ca`, `certificate` and `key`.
 fn link_of(
   document: Dict(String, tom.Toml),

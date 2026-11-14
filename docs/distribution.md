@@ -1307,11 +1307,16 @@ than 20 minutes if the figures above hold and is not measured. Hosted `macos-15`
 minutes are billed at a higher rate than Linux minutes where minutes are billed
 at all.
 
-There is no Linux download. Ubuntu ships no libkrun for the runner to link, so a
-Linux host builds the artifacts (`make vmm vmm-runner vmm-guest-root`, and
-`vmm-firmware` for Landlock) and runs `loom-vm setup --from-build
-packages/vmm/build`. The Linux half of the firmware build does run in CI, to
-produce the macOS dylib.
+There is no Linux download. Ubuntu ships no libkrun for the runner to link, and a
+release publishes no Linux runner or `libkrunfw.so.5`, so a Linux host builds the
+artifacts (`make vmm-libkrun vmm vmm-runner vmm-firmware vmm-guest-root`, with
+`VMM_PODMAN_FLAGS='--runtime crun'` on Ubuntu 24.04) and runs `make
+vmm-install-dev`, which runs `loom-vm setup --from-build packages/vmm/build
+--lib-dir packages/vmm/build/libkrun/lib64` (the library directory matters on
+Linux, where libkrun is not in a system path). That
+path has booted a guest on Linux x86_64 (docs/architecture/microvm.md, "A Linux
+host"). The Linux half of the firmware build also runs in CI, on an arm64
+runner, to produce the macOS dylib.
 
 ### Installing
 
