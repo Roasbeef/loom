@@ -89,6 +89,22 @@ text and a no-break-space prefix followed by text. The
 [October 22 resource report](../../docs/review/loom-resource-profile-2026-10-22.md)
 separates live attribution, fixture savings and unmeasured installed RSS.
 
+## Frozen reading rows
+
+While the reader is above the live tail, `View.reading_lines` holds the
+transient lines frozen. A token that streams in below them still moves the
+transcript revision, so the projection reaches them once per token. Their
+wrapped rows are a function of the lines, the transcript width and the strand,
+so `Caches.reading_rows` keeps the last result with those three inputs and
+`projection.rendered_layout_for` reuses it while they match. Leaving reading
+mode, a width change or a strand change rebuilds it. Before this, a long reply
+read from above was wrapped again on every token; `scripts/tui_perf.erl`
+`mixed_reading` measures it, with the glyph shape that mixes ASCII and
+non-ASCII text, and `live_scrollback_test` pins the reuse and the three
+invalidations. The frame is still painted for each token, since the revision it
+is compared with moved; painting a frame that came out cell for cell the same
+is not avoided here.
+
 ## Sparse frame canvas
 
 `render.repaint_canvas` starts every frame with the buffer's sparse empty-cell
@@ -472,11 +488,50 @@ drawn in half blocks, black on white with ANSI colours) and the lifetime
 record cache makes for durable lines, so the web view's parity test can
 compare against it.
 
+## `loom --vm` (`tui/vm_ensure`)
+
+`loom --vm [--workspace DIR] [--config FILE] [--model-profile NAME]` is the
+launch `tui.Vm(options)`: a local launch that first makes the workspace's
+microVM guest ready and then continues as `--executor <guest> --workspace <name>`
+would. `parse_terminal_launch` takes the switch anywhere in the words and
+refuses `--executor`, `--pool`, `--session` and `--addr` with one line each
+(`vm_refusals`); `--workspace` stays the host directory the guest serves, not a
+registered name. `tui.launch_vm` is the test seam. `main` answers `Vm` after
+`require_terminal` and before the alternate screen (`interactive_vm`): a failed
+`ensure` prints its reason and halts with its status.
+
+`tui/vm_ensure` runs `<server> vm ensure --workspace DIR [--config FILE]` through
+`host.run_captured` (the server from `bootstrap.server_executable`), so it adds no
+FFI. Standard error is merged into the captured text, so progress is shown
+(`report`) when the command ends; the interactive launch (`Progress` `OnTerminal`)
+runs the server through `/bin/sh` with standard error on `/dev/tty` when it opens
+(`vm_ensure.command`), so progress is live and the captured text is the answer
+alone. `loom --vm` serves the nearest `.git` ancestor (`tui.vm_directory`);
+`loom run --vm` the directory itself. `--github` and `--allow` are taken out by
+`vm_ensure.guest_flags` and passed to `ensure`; `--state-dir` is refused with
+`--vm`. `answer` takes the last line that reads as an answer, and a refused
+first run (`daemon=required`) prints one launcher line instead of its refusal. `parse_line` is the total parser of the last
+line, `executor=NAME workspace=NAME`, validated by `placement.new`; `answer` reads
+a status and output as `Ready`, `NeedsDaemon` (status 75 and the last line
+`daemon=required`) or `Failed`. The ordering is `ensure` first, because the first
+guest of a machine installs `[distribution]` and an earlier daemon would not have
+read it; on `NeedsDaemon` `start_daemon` resolves the daemon of the launch (which
+starts one if none runs) and `ensure` runs once more, whose answer is final. The
+runner, the daemon start and the reporter are arguments of `vm_ensure.ensure`;
+`launch` supplies the real ones. The returned options have the executor placement
+and an empty `workspace`, exactly the `--executor` launch's. `loom run -p ...
+--vm` (`run.Request.tools`, `InTheGuest`) calls `vm_ensure.launch` in `execute`
+before it reaches the daemon, and `run.create_target` creates the session from
+`options.placement` (the same `create_named` executor and pool arguments the
+terminal sends); a guest that cannot be made ready exits `1`. Tests:
+`vm_launch_test`. The `vm_usage` help copy is compared with `loomd vm --help` by
+`scripts/cli_help_test.sh`.
+
 ## Headless one-shot (`loom run -p`, issue #492)
 
 `loom run -p <prompt> [--workspace DIR] [--model NAME] [--config FILE]
 [--model-profile NAME] [--server PATH] [--state-dir DIR] [--timeout SECONDS]
-[--keep] [--json]` is `tui/run`, dispatched as `tui.Run(request)` (arguments
+[--keep] [--json] [--vm]` is `tui/run`, dispatched as `tui.Run(request)` (arguments
 it refuses are `RunRefused`, which exits `2`; `run` is a `hoisting_verbs`
 member, so daemon options may precede it). It is a client of the daemon
 protocol and installs no terminal state: `bootstrap.resolve_daemon`, then
@@ -3887,3 +3942,7 @@ workspace. The wire forms are `docs/client-protocol.md` section 3.32. `launch_pr
 is the parser's test seam and `project_reply_text` builds what each subcommand prints
 from the reply alone, both `@internal` and tested in `project_command_test` without a
 daemon.
+
+## Subagent limits on session creation (`protocol-change/113`)
+
+`tui/daemon/protocol` carries optional `core/agency_limits.AgencyLimits` under the `"agency"` field of session `create` requests, `tui/daemon/selection` threads it through `CreateOptions` and `session_control.LaunchOptions`, and `tui/session_selector` renders an optional collapsed-by-default `"Subagent limits"` section on the New Session form with `fan_out`, `session_strands`, `depth_mode` (`default` / `bounded` / `unlimited`), and `depth_cap`. Empty inputs omit overrides so existing sessions inherit shipped defaults (`100` fan-out, `256` session strands, depth cap `1`).

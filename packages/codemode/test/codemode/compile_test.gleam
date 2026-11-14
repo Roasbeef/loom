@@ -100,6 +100,7 @@ pub fn compile_prepares_a_writable_temporary_directory_test() {
   let assert Ok(_artifact) =
     compile.compile(vetted("pub fn main() { 1 }\n"), config, build_phase()).result
   assert simplifile.is_directory(root <> "/tmp") == Ok(True)
+  assert simplifile.is_directory(root <> "/home") == Ok(True)
 }
 
 pub fn generated_entry_boots_the_pinned_program_test() {

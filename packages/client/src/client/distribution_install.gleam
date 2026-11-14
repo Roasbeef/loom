@@ -517,7 +517,13 @@ fn append(kept: String, additions: List(String)) -> String {
 }
 
 /// Parses TOML text into a table dictionary, returning descriptive parse errors.
-fn parse_document(
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert result.is_ok(distribution_install.parse_document("", "loom.toml"))
+/// ```
+pub fn parse_document(
   text: String,
   path: String,
 ) -> Result(Dict(String, tom.Toml), String) {
@@ -536,7 +542,13 @@ fn wanted_value(table: Table) -> Result(tom.Toml, String) {
 }
 
 /// Navigates a nested TOML dictionary by key path segments.
-fn lookup(
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert distribution_install.lookup(dict.new(), ["executors"]) == Error(Nil)
+/// ```
+pub fn lookup(
   document: Dict(String, tom.Toml),
   path: List(String),
 ) -> Result(tom.Toml, Nil) {
@@ -552,12 +564,13 @@ fn lookup(
 }
 
 // Drops the sections whose header names one of the paths, or a table below one
-// of them, up to the next header that does not. A line that is not a header
-// belongs to the section above it, so comments inside a dropped section go
-// with it and comments before the next header stay.
+// of them, up to the next header that does not. A key line belongs to the
+// section above it, and so do the comments and blank lines before it. The
+// comments and blank lines after a dropped section's last key and before the
+// next header that stays are the next section's own, and stay with it.
 /// Removes only the table sections owned by the selected bundle.
 fn remove_sections(text: String, paths: List(List(String))) -> String {
-  // Each line determines whether it belongs to a replaced table section.
+  // With no path nothing is dropped.
   case paths {
     [] -> text
     _ -> {
@@ -565,25 +578,49 @@ fn remove_sections(text: String, paths: List(List(String))) -> String {
         list.map(paths, fn(path) {
           string.join(list.map(path, distribution_bundle.toml_key), ".")
         })
-      let #(kept, _) =
-        list.fold(string.split(text, "\n"), #([], False), fn(state, line) {
-          let #(lines, dropping) = state
-
-          // Each line determines whether it belongs to a replaced table section.
-          let dropping = case header(line) {
-            Some(name) -> names_any(name, prefixes)
-            None -> dropping
-          }
-
-          // Each line determines whether it belongs to a replaced table section.
-          case dropping {
-            True -> #(lines, True)
-            False -> #([line, ..lines], False)
-          }
+      let #(kept, _, _) =
+        list.fold(string.split(text, "\n"), #([], False, []), fn(state, line) {
+          let #(lines, dropping, pending) = state
+          sieve(line, prefixes, lines, dropping, pending)
         })
       kept |> list.reverse |> string.join("\n")
     }
   }
+}
+
+/// What `remove_sections` does with one line. It answers the lines kept so far
+/// (newest first), whether the section being read is dropped, and the comments
+/// and blank lines met since a dropped section's last key (`pending`, newest
+/// first): a header that stays releases them, and a key line or a header that
+/// goes discards them.
+fn sieve(
+  line: String,
+  prefixes: List(String),
+  lines: List(String),
+  dropping: Bool,
+  pending: List(String),
+) -> #(List(String), Bool, List(String)) {
+  // A header decides whether the section after it stays; any other line stays
+  // with the section it is in.
+  case header(line) {
+    Some(name) ->
+      case names_any(name, prefixes) {
+        True -> #(lines, True, [])
+        False -> #([line, ..list.append(pending, lines)], False, [])
+      }
+    None ->
+      case dropping, is_filler(line) {
+        True, True -> #(lines, True, [line, ..pending])
+        True, False -> #(lines, True, [])
+        False, _ -> #([line, ..lines], False, [])
+      }
+  }
+}
+
+// Whether a line is blank or a comment, which carries no key.
+fn is_filler(line: String) -> Bool {
+  let trimmed = string.trim(line)
+  trimmed == "" || string.starts_with(trimmed, "#")
 }
 
 fn names_any(header: String, prefixes: List(String)) -> Bool {

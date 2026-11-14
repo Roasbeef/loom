@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# model_check.sh — check every protocol model: the TLA+ session-move models
-# with TLC, then every P project.
+# model_check.sh — check every protocol model: the TLA+ models (session-move
+# and vm-root-upgrade) with TLC, then every P project.
 #
 # Usage: scripts/model_check.sh
 #   (MODEL_SCHEDULES, MODEL_PROBE_SCHEDULES, TLA2TOOLS, TLA_JAVA)
 #
-# The TLA+ models, protocol/models/session-move, run first. There are two
-# specifications: Move.tla, the move where catalogue rows decide, and
+# The TLA+ models run first. protocol/models/session-move has three
+# specifications: Move.tla, the move where catalogue rows decide,
 # KhepriMove.tla, the moves where the directory's owner record decides
-# (protocol-change/083). For each, TLC must pass the clean configuration
-# (Move.cfg, KhepriMove.cfg) and must report a violation of the property
-# each mutant configuration (Mutant*.cfg, KhepriMutant*.cfg) names on its
+# (protocol-change/083), and MoveCheckout.tla, the checkout step of a move of
+# a session that works in a directory (protocol-change/107, slice 4c).
+# protocol/models/placement-claims has Claims.tla, the placement claims of a
+# pool. For each, TLC must pass the clean configuration (Move.cfg,
+# KhepriMove.cfg, MoveCheckout.cfg, Claims.cfg) and must report a violation
+# of the property each mutant configuration (Mutant*.cfg, KhepriMutant*.cfg,
+# MoveCheckoutMutant*.cfg, ClaimsMutant*.cfg) names on its
 # `\* expect-violation:` line: an invariant, which TLC names when it fails
 # (exit 12), or the one temporal property the configuration lists, which
 # TLC reports as a temporal violation (exit 13). A mutation that no longer
@@ -19,6 +23,11 @@
 # 11 or later ($TLA_JAVA, java on PATH, or a Homebrew openjdk). Without both,
 # this script prints a SKIP line, which the skip census refuses in CI, and
 # moves on to the P projects.
+#
+# protocol/models/vm-root-upgrade holds one specification, RootUpgrade.tla,
+# with several clean configurations (a kept root and a first run, each under
+# a release and a development manifest) and its mutants. Every configuration
+# there whose name does not start with Mutant must pass.
 #
 # Each directory under protocol/models with a .pproj is a P project. Its
 # README says how it is run; this script runs the same commands for every
@@ -42,8 +51,17 @@
 #
 # The schedule counts are smaller than the README's 30,000 because this is
 # a gate run on every model change, not the recorded result. The default
-# of 1,000 schedules takes about six seconds a case. Every probe in the
-# tree finds its witness within 230 schedules, so 2,000 leaves a margin.
+# of 1,000 schedules takes about six seconds a case.
+#
+# A probe stops at its first witness, so its budget costs nothing when the
+# witness is found and is spent only by a probe that finds none. The budget
+# is therefore set by how rare the rarest witness is, not by how long the
+# gate takes. Four runs of each of the 76 probes in the tree, with a budget of
+# 20,000, found a witness for every one; five needed more than 230
+# schedules, at 363, 430, 597, 877 and 950 schedules, which is about one
+# schedule in 500 to one in 800. At 1 in 800 a budget of 2,000 misses about one
+# run in twelve, which is how `tcProbeStaleGenerationRefused` failed the
+# gate. 12,000 schedules miss it about three times in ten million.
 #
 # The P 3.0 dotnet tool must be on PATH or in ~/.dotnet/tools. The model
 # check is not part of `make check` or CI, which do not install it; this
@@ -52,7 +70,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 schedules="${MODEL_SCHEDULES:-1000}"
-probe_schedules="${MODEL_PROBE_SCHEDULES:-2000}"
+probe_schedules="${MODEL_PROBE_SCHEDULES:-12000}"
 failed=0
 
 # --- the TLA+ model --------------------------------------------------------
@@ -101,9 +119,81 @@ tla_counts() {
 
 check_tla() {
 	local jar java name expected code out log
-	tla="$root/protocol/models/session-move"
 	jar="${TLA2TOOLS:-$HOME/tools/tla2tools.jar}"
-	echo "==> session-move (TLA+)"
+	[ -r "$jar" ] || {
+		echo "==> TLA+ models"
+		echo "SKIP tla_models: no tla2tools.jar at $jar (set TLA2TOOLS)"
+		return 0
+	}
+	java="$(find_java)" || {
+		echo "==> TLA+ models"
+		echo "SKIP tla_models: no Java 11 or later (set TLA_JAVA)"
+		return 0
+	}
+	out="$root/build/tla"
+	mkdir -p "$out"
+
+	# Each entry is a directory under protocol/models and the specifications
+	# in it. A specification's mutant configurations are named for it:
+	# Mutant*.cfg for Move, which came first, KhepriMutant*.cfg for
+	# KhepriMove, MoveCheckoutMutant*.cfg for MoveCheckout and
+	# ClaimsMutant*.cfg for Claims.
+	local entry dir spec prefix
+	for entry in "session-move:Move KhepriMove MoveCheckout" "placement-claims:Claims"; do
+		dir="${entry%%:*}"
+		tla="$root/protocol/models/$dir"
+		echo "==> $dir (TLA+)"
+		for spec in ${entry#*:}; do
+			prefix="${spec%Move}"
+
+			# The clean configuration, and any further clean ones named
+			# <spec>Also*.cfg, which cover a range the first one would make
+			# too large to check. Each must pass.
+			for cfg in "$tla/$spec.cfg" "$tla/${spec}Also"*.cfg; do
+				# An unmatched Also glob is skipped. A missing primary
+				# configuration is not: TLC fails on it, and so does the gate.
+				[ -e "$cfg" ] || [ "$cfg" = "$tla/$spec.cfg" ] || continue
+				name="$(basename "$cfg" .cfg)"
+				log="$out/$name.log"
+				if run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log"; then
+					echo "   ok   $name ($(tla_counts "$log"))"
+				else
+					echo "   FAIL $name: see $log"
+					failed=1
+				fi
+			done
+
+			for cfg in "$tla/${prefix}Mutant"*.cfg; do
+				name="$(basename "$cfg" .cfg)"
+				expected="$(sed -n 's/^\\\* expect-violation: *//p' "$cfg")"
+				log="$out/$name.log"
+				code=0
+				run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log" || code=$?
+				if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
+					echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+				elif [ "$code" -eq 13 ] && grep -q "Temporal properties were violated" "$log" &&
+					sed -n '/^PROPERT/,$p' "$cfg" | grep -qw "$expected"; then
+					echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+				else
+					echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
+					failed=1
+				fi
+			done
+		done
+	done
+}
+
+check_tla
+
+# check_tla_single checks a directory that holds one specification: every
+# configuration whose name does not start with Mutant must pass, and every
+# Mutant*.cfg must violate the property its `\* expect-violation:` line
+# names, read the same way as above.
+check_tla_single() {
+	local label="$1" spec="$2" jar java name expected code out log cfg
+	tla="$root/protocol/models/$label"
+	jar="${TLA2TOOLS:-$HOME/tools/tla2tools.jar}"
+	echo "==> $label (TLA+)"
 	[ -r "$jar" ] || {
 		echo "SKIP tla_models: no tla2tools.jar at $jar (set TLA2TOOLS)"
 		return 0
@@ -112,28 +202,18 @@ check_tla() {
 		echo "SKIP tla_models: no Java 11 or later (set TLA_JAVA)"
 		return 0
 	}
-	out="$root/build/tla"
+	out="$root/build/tla/$label"
 	mkdir -p "$out"
 
-	# A specification's mutant configurations are named for it: Mutant*.cfg
-	# for Move, which came first, and KhepriMutant*.cfg for KhepriMove.
-	local spec prefix
-	for spec in Move KhepriMove; do
-		prefix="${spec%Move}"
-		log="$out/$spec.log"
-		if run_tla "$java" "$jar" "$spec" "$spec" "$out/$spec.states" "$log"; then
-			echo "   ok   $spec ($(tla_counts "$log"))"
-		else
-			echo "   FAIL $spec: see $log"
-			failed=1
-		fi
+	for cfg in "$tla"/*.cfg; do
+		name="$(basename "$cfg" .cfg)"
+		log="$out/$name.log"
+		code=0
+		run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log" || code=$?
 
-		for cfg in "$tla/${prefix}Mutant"*.cfg; do
-			name="$(basename "$cfg" .cfg)"
+		case $name in
+		Mutant*)
 			expected="$(sed -n 's/^\\\* expect-violation: *//p' "$cfg")"
-			log="$out/$name.log"
-			code=0
-			run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log" || code=$?
 			if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
 				echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
 			elif [ "$code" -eq 13 ] && grep -q "Temporal properties were violated" "$log" &&
@@ -143,11 +223,21 @@ check_tla() {
 				echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
 				failed=1
 			fi
-		done
+			;;
+		*)
+			if [ "$code" -eq 0 ]; then
+				echo "   ok   $name ($(tla_counts "$log"))"
+			else
+				echo "   FAIL $name: see $log"
+				failed=1
+			fi
+			;;
+		esac
 	done
 }
 
-check_tla
+# The upgrade in place of a microVM guest's root, and its first clone.
+check_tla_single vm-root-upgrade RootUpgrade
 
 # --- the P projects --------------------------------------------------------
 

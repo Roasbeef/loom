@@ -87,6 +87,7 @@ import client/distribution
 import client/distribution_plan
 import client/executor_plane
 import client/executors
+import client/gateway
 import client/git_identity
 import client/host
 import client/install
@@ -124,6 +125,7 @@ import client/remote/top_relay
 import client/remote/untrusted_gateway
 import client/remote/untrusted_link
 import client/remote/workspace
+import client/remote_feed
 import client/remote_mail
 import client/remote_reach
 import client/remote_release
@@ -152,6 +154,7 @@ import client/workspace_policy
 import client/workspaces
 import client/worktree_git
 import client/worktrees
+import core/agency_limits
 import core/clock
 import core/glance
 import core/ids
@@ -1585,6 +1588,7 @@ pub fn start_orchestrator_port(
   delegate_endpoint: fn(instance) -> agency.DelegateEndpoint,
   child_inbox: fn(instance) -> agency.ChildInbox,
   relay_endpoint: fn(instance) -> relayed_session.Endpoint,
+  gateway_of: fn(instance) -> gateway.Gateway,
   movers: session_movers.Control,
   reads: orchestrator_port.Reads,
   states: state_transfer.Endpoint,
@@ -1663,6 +1667,22 @@ pub fn start_orchestrator_port(
             }
           },
           covered: movers.cover,
+          epoch: ready.epoch,
+          gateway: gateway_of,
+          owner: ready.owner,
+          // A live feed is charged what a feed can hold (`root.Feed`), not what a
+          // page can, so eight feeds leave the control socket its room. The permit is reserved here, in the process that
+          // answers the attach, and transferred by the feed's own process,
+          // because a permit is released when the process holding it exits.
+          admit: fn() {
+            use permit <- result.map(root.acquire(
+              daemon,
+              root.Feed,
+              within: 1000,
+            ))
+            fn() { root.transfer(daemon, permit, within: 1000) }
+          },
+          feed_lease_ms: remote_feed.lease_ms,
         ))
       use _started <- result.try(
         orchestrator_port.start_with_states(
@@ -1873,7 +1893,7 @@ pub fn start_link_keepers(
           link_keeper.start(
             link_keeper.Options(
               link: orchestrator_link(membership, orchestrator),
-              after: effects.real_timers().after,
+              after: effects.after_fn(effects.real_timers()),
             ),
             address,
           )
@@ -1965,7 +1985,7 @@ pub fn start_release_drain(
             remote_spawner.release_over(membership, orchestrator_roster(config)),
             logger,
           ),
-          effects.real_timers().after,
+          effects.after_fn(effects.real_timers()),
         )
       use _started <- result.try(
         peer_outbox_drain.start(options, name)
@@ -2494,6 +2514,29 @@ pub fn depth_cap_of(
       |> option.from_result
       |> option.map(fn(spawner) { spawner.max_depth })
     Ok(None) | Error(_) -> None
+  }
+}
+
+/// Resolves a session's stored agency limits, clamping depth_cap for delegate sessions.
+fn agency_limits_of(
+  registry: manager.Manager(instance),
+  configured: List(spawners.Spawner),
+  id: String,
+) -> agency_limits.AgencyLimits {
+  // Read per-session agency overrides from the catalogue, falling back to defaults.
+  let stored = case manager.agency_limits(registry, id) {
+    Ok(limits) -> limits
+    Error(_) -> agency_limits.empty
+  }
+
+  // Delegate sessions enforce their spawner's configured max_depth ceiling.
+  case depth_cap_of(registry, configured, id) {
+    Some(max_depth) ->
+      agency_limits.AgencyLimits(
+        ..stored,
+        depth_cap: Some(agency_limits.BoundedDepth(max_depth)),
+      )
+    None -> stored
   }
 }
 
@@ -3070,7 +3113,11 @@ pub fn prepare_startup(
             ),
             remote_reach: reach_of(config, directory, registration.id, logger),
             deadline_tick_ms: tick,
-            depth_cap: depth_cap_of(directory, config.spawners, registration.id),
+            agency_limits: agency_limits_of(
+              directory,
+              config.spawners,
+              registration.id,
+            ),
             metering: metering_of(
               directory,
               config.spawners,
@@ -3134,14 +3181,14 @@ pub fn prepare_startup(
             // counts, so they cannot disagree about which executors exist.
             let rows = roster.rows(executor_roster(config))
 
-            // The counts of resident sessions are read here and the sessions
-            // still being built are added by the registry, in the same turn
-            // that records this session's claim.
+            // The registry reads the resident sessions itself and adds the
+            // sessions still being built, in the same turn that records this
+            // session's claim, so no session is counted twice or not at all.
             let claim = fn(choose) {
               manager.claim_placement(
                 directory,
                 session_id,
-                ledger_holdings.resident_by_name(directory, roster.fixed(rows)),
+                ledger_holdings.resident_in(_, roster.fixed(rows)),
                 choose,
               )
             }
@@ -4274,6 +4321,7 @@ fn run(
         fn(resident: serve.Resident) { resident.spawns },
         fn(resident: serve.Resident) { resident.inbox },
         fn(resident: serve.Resident) { resident.relay },
+        fn(resident: serve.Resident) { resident.gateway },
         movers,
         reads,
         states,

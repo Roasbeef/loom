@@ -123,7 +123,12 @@ for a host with no surfaces.
   cut still being received.
 - `snapshot_view.View`: the presentation decoded from a cut's metadata
   (`snapshot_view.decode`), and `snapshot_view.Branch`, one strand's
-  records.
+  records. `snapshot_view.CellIndex` (`index_cells`, `cell_at`) keys a
+  cut's cells by namespace and key. A cut holds up to 1024 cells and a
+  strand owns about five, so a projection that describes every strand
+  indexes once and reads from the table; a scan of `View.cells` per strand
+  made a fold quadratic in the strands (`tui/test/capture_scale_test`
+  holds the bound, `scripts/tui_perf.sh scale` measures it).
 - `history_view.State`: the bounded, pageable window of a strand's
   ancestry; `capture` folds a cut in and `branch` gives its records.
   `older`, `range`, `sent`, `accept`, `cancel`, `freeze` and `resume` page
@@ -1097,7 +1102,7 @@ it gave a report (`Unreported` is not), it accepts moved sessions (`Receiving`),
 the executors it serves include the session's. Each offer comes back as a
 `Candidate(name, Eligible | Ineligible(Reason))`, with the first reason that applies
 (`Unreachable | NoReport | NotAccepting | NotServing`) and fixed words for it
-(`reason_words`, `no_executor_words`, `none_words`). `eligible` lists the names that can
+(`reason_words`, `no_executor_words`, `local_session_words`, `none_words`). `eligible` lists the names that can
 be asked for. The module is pure, and `client/deployment.candidates`, the terminal's
 `tui/deployment_view.candidates` and the web home's chooser all use it, so the three say
 one thing. The caller gives `serves` and `executor` in one vocabulary, keys or node

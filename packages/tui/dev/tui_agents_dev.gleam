@@ -18,6 +18,7 @@ import etui/app
 import etui/backend
 import etui/backend/default
 import etui/widgets/textarea
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -33,8 +34,11 @@ import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/transcript_line
+import session_view/transcript_lines
 import session_view/worktree_view
 import tui
 import tui/agents
@@ -164,7 +168,164 @@ fn fixture(
   palette: String,
   main_update: String,
 ) -> tui_model.Model {
-  let fixture = [
+  fixture_of(base, palette, six_agents(main_update))
+}
+
+/// A captured workspace of `count` agents on the benchmark's pinned clock,
+/// for measuring how the capture fold scales with the number of strands.
+///
+/// The agents cycle through the four kinds of work the six-agent fixture
+/// shows, so a share of them is live and a share carries an approval. The
+/// capture decoder bounds a cut at 1024 cells, so a count above about two
+/// hundred is refused by the decoder rather than measured.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_agents_dev.scale_model(100)
+/// ```
+pub fn scale_model(count: Int) -> tui_model.Model {
+  let #(_, base) = tui_perf_dev.bench_model()
+  let model = fixture_of(base, "dark", scale_agents(count))
+  tui_model.Model(
+    shared: shared_set.tool_tails(model.shared, scale_tool_tails(count)),
+    view: tui_model.View(
+      ..model.view,
+      overlay: tui_model.NoOverlay,
+      diff_view: tui_model.DiffHidden,
+      queue_editor: queue_editor.new(),
+    ),
+  )
+}
+
+/// The cut `scale_model(count)` is built from, undecoded, as the wire
+/// delivers it. A `revision` above zero moves the cut's sequence, so the
+/// model sees a changed cut rather than a repeat it ignores.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let captured = tui_agents_dev.scale_capture(100, 1)
+/// ```
+pub fn scale_capture(count: Int, revision: Int) -> snapshot.Captured {
+  let #(_, base) = tui_perf_dev.bench_model()
+  capture_of(base.shared.usage, scale_agents(count), revision).0
+}
+
+/// The shipped decoder over a cut, so a benchmark can time it alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let view = tui_agents_dev.scale_decode(captured)
+/// ```
+pub fn scale_decode(captured: snapshot.Captured) -> snapshot_view.View {
+  let assert Ok(view) = snapshot_view.decode(captured)
+    as "the scale fixture must pass the shipped capture decoder"
+  view
+}
+
+/// A decoded cut applied to the model, as the lane applies a pushed
+/// notice, whether the cut it carries is new or a repeat.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let again = tui_agents_dev.scale_apply(model, captured, view)
+/// ```
+pub fn scale_apply(
+  model: tui_model.Model,
+  captured: snapshot.Captured,
+  view: snapshot_view.View,
+) -> tui_model.Model {
+  inbound.apply_channel_update(
+    model,
+    session_channel.Captured(captured, view, session_channel.Refreshed),
+  )
+}
+
+/// The model with `count` strands listed beside the captured ones, as a
+/// `strands` listing adopted from the daemon would leave it.
+///
+/// A capture is bounded at 1024 cells, but the listing is not bounded by the
+/// decoder, so this is how a benchmark reaches counts the capture cannot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_agents_dev.listed_strands(tui_agents_dev.scale_model(6), 100_000)
+/// ```
+pub fn listed_strands(model: tui_model.Model, count: Int) -> tui_model.Model {
+  let listed =
+    list.repeat(Nil, count)
+    |> list.index_map(fn(_, index) {
+      let id = "sub:listed-" <> int.to_string(index)
+      protocol.Strand(id, Some(id), case index % 7 {
+        0 -> Some("assistant")
+        _ -> None
+      })
+    })
+  tui_model.Model(
+    ..model,
+    shared: shared_set.strands(
+      model.shared,
+      list.append(model.shared.strands, listed),
+    ),
+  )
+}
+
+// One streaming tail for each live agent, the shape a running tool call
+// leaves on the strand until its durable result lands. The fold tests every
+// retained tail against the cut, so a roster of live agents is what makes
+// that cost visible. The presentation holds at most `max_tool_tails`.
+fn scale_tool_tails(count: Int) -> List(transcript_line.ToolTail) {
+  list.repeat(Nil, count)
+  |> list.index_map(fn(_, offset) { offset + 1 })
+  |> list.filter(fn(index) { index % 4 == 1 })
+  |> list.take(transcript_lines.max_tool_tails)
+  |> list.map(fn(index) {
+    let name = "sub:scale-" <> int.to_string(index)
+    transcript_line.ToolTail(
+      strand: name,
+      operation: "scale-op-" <> int.to_string(index),
+      step: "step-1",
+      source_index: 0,
+      call_id: "scale-call-" <> int.to_string(index),
+      stream: "stdout",
+      text: "Reading the shard.",
+      total_bytes: 18,
+    )
+  })
+}
+
+fn scale_agents(count: Int) -> List(Agent) {
+  list.repeat(Nil, count)
+  |> list.index_map(fn(_, offset) {
+    let index = offset + 1
+    let name = "sub:scale-" <> int.to_string(index)
+    case index % 4 {
+      0 -> Agent(name, "Check shard " <> name, "Shard finished.", Complete)
+      1 ->
+        Agent(
+          name,
+          "Run shard " <> name,
+          "Reading the shard.",
+          Active("fs_read"),
+        )
+      2 -> Agent(name, "Probe shard " <> name, "Probe failed.", Failed)
+      _ -> Agent(name, "Hold shard " <> name, "Held for review.", Held)
+    }
+  })
+  |> list.prepend(Agent(
+    "main",
+    "Integrate shards.",
+    "Working.",
+    Active("fs_read"),
+  ))
+}
+
+fn six_agents(main_update: String) -> List(Agent) {
+  [
     Agent(
       "main",
       "Integrate the agent workspace and preserve message targeting.",
@@ -202,6 +363,13 @@ fn fixture(
       Active("fs_read"),
     ),
   ]
+}
+
+fn capture_of(
+  usage: message.Usage,
+  fixture: List(Agent),
+  revision: Int,
+) -> #(snapshot.Captured, snapshot_view.View) {
   let cells =
     fixture
     |> list.index_map(fn(agent, index) { agent_cells(agent, index * 10 + 1) })
@@ -209,14 +377,14 @@ fn fixture(
   let items =
     fixture
     |> list.index_map(fn(agent, index) {
-      agent_entries(agent, index * 10 + 1, base.shared.usage)
+      agent_entries(agent, index * 10 + 1, usage)
     })
     |> list.flatten
   let metadata =
     json.Object([
       #("cells", json.Array(cells)),
       #("message_count", json.Int(list.length(items))),
-      #("usage", core_codec.encode_usage(base.shared.usage)),
+      #("usage", core_codec.encode_usage(usage)),
       #(
         "host_run_settings",
         json.Object([
@@ -236,13 +404,23 @@ fn fixture(
         message.Origin("reviewer", "Reviewer"),
         snapshot.Owner,
       ),
-      100,
+      list.length(fixture) * 10 + 100 + revision,
       metadata,
-      snapshot.Window(list.reverse(items), 0, None),
+      // A cut retains at most one hundred items, newest first.
+      snapshot.Window(list.take(list.reverse(items), 100), 0, None),
       None,
     )
   let assert Ok(view) = snapshot_view.decode(captured)
     as "the native fixture must pass the shipped capture decoder"
+  #(captured, view)
+}
+
+fn fixture_of(
+  base: tui_model.Model,
+  palette: String,
+  fixture: List(Agent),
+) -> tui_model.Model {
+  let #(captured, view) = capture_of(base.shared.usage, fixture, 0)
   let initial =
     tui_model.Model(
       shared: session_model.Shared(

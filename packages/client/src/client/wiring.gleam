@@ -173,6 +173,7 @@ import client/permissions
 import client/tool_holder
 import client/tool_placement
 import client/workspace_gate
+import core/accounting
 import core/clock.{type Clock}
 import core/entry
 import core/ids.{type OpId}
@@ -198,6 +199,7 @@ import provider/model.{
   type ProviderRequest, type RequestTarget, type ResolvedModel, type Role,
   type ToolSpec,
 }
+import provider/stream
 import runtime/effects.{type Effects}
 import runtime/hooks
 import session/session.{type Session}
@@ -1413,10 +1415,7 @@ fn holder_unavailable(
   clock: Clock,
 ) -> effects.ToolOutcome {
   // Decide how to handle let reason =  unavailable {.
-  let reason = case unavailable {
-    tool_holder.Gone -> held <> " is gone"
-    tool_holder.TimedOut -> held <> " did not answer in time"
-  }
+  let reason = holder_unavailable_reason(held, unavailable)
 
   let #(now, _clock) = clock.read(clock)
   tool_table.completed(
@@ -1424,6 +1423,174 @@ fn holder_unavailable(
     run,
     now,
   )
+}
+
+/// Wraps a `ProviderSurface` so every holder of `Effects` retains only the
+/// `tool_holder` address instead of the gateway, catalog, and relay closure graph.
+///
+/// Each provider request fetches the surface inside its short-lived effect worker,
+/// paying one local actor copy per LLM call instead of one copy per resident strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(holder) = tool_holder.start(surface)
+/// // let held = wiring.hold_provider(holder, timeout_ms: 300_000)
+/// ```
+pub fn hold_provider(
+  holder: tool_holder.Holder(effects.ProviderSurface),
+  timeout_ms timeout_ms: Int,
+) -> effects.ProviderSurface {
+  let prepare = fn(spec: effects.RequestSpec) {
+    case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+      Ok(surface) -> effects.prepare_provider(surface, spec)
+      Error(unavailable) -> failed_prepared_stream(unavailable)
+    }
+  }
+  effects.PreparedProviderSurface(
+    request: fn(spec) { prepare(spec) |> stream.start_prepared },
+    prepare:,
+    timeout_ms:,
+  )
+}
+
+/// Builds an already-failed PreparedStream when the session's provider holder
+/// has exited or stalled, keeping failure in-band rather than crashing the effect worker.
+fn failed_prepared_stream(
+  unavailable: tool_holder.Unavailable,
+) -> stream.PreparedStream {
+  let reason =
+    holder_unavailable_reason("the session's provider surface", unavailable)
+  let events = process.new_subject()
+  process.send(
+    events,
+    stream.Failed(
+      error: stream.TransportFailed(reason:),
+      accounting: accounting.empty(),
+    ),
+  )
+  stream.PreparedStream(
+    handle: stream.StreamHandle(events:, cancel: fn() { Nil }, owner: None),
+    begin: fn() { Nil },
+  )
+}
+
+/// Wraps `Hooks` behind a per-session `tool_holder` so strand drivers retain only
+/// the holder address instead of copying session, gateway, and hook closures per strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(holder) = tool_holder.start(hooks)
+/// // let held = wiring.hold_hooks(holder)
+/// ```
+pub fn hold_hooks(holder: tool_holder.Holder(effects.Hooks)) -> effects.Hooks {
+  effects.Hooks(
+    run_start: fn(operation) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.run_start(operation)
+        Error(_) -> []
+      }
+    },
+    admission: fn(query) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.admission(query)
+        Error(unavailable) ->
+          planner.AdmissionUnavailable(operation.OperationError(
+            code: "model_unavailable",
+            message: holder_unavailable_reason(
+              "the session's hooks",
+              unavailable,
+            ),
+            details: None,
+          ))
+      }
+    },
+    run_end: fn(operation) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.run_end(operation)
+        Error(_) -> None
+      }
+    },
+    threshold: fn(query) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.threshold(query)
+        Error(_) -> ThresholdNotExceeded
+      }
+    },
+    overflow_preparation: fn(query) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.overflow_preparation(query)
+        Error(_) -> planner.EmptyPreparation
+      }
+    },
+    structural_decision: fn(operation, task) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.structural_decision(operation, task)
+        Error(_) -> VerdictDeclined
+      }
+    },
+    summary_progress: fn(operation, task, attempt) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.summary_progress(operation, task, attempt)
+        Error(unavailable) ->
+          planner.SummaryFailed(
+            error: operation.OperationError(
+              code: "model_unavailable",
+              message: holder_unavailable_reason(
+                "the session's hooks",
+                unavailable,
+              ),
+              details: None,
+            ),
+            retryable: False,
+          )
+      }
+    },
+    resolution: fn(configuration) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.resolution(configuration)
+        Error(unavailable) ->
+          planner.ModelUnresolved(operation.OperationError(
+            code: "model_unavailable",
+            message: holder_unavailable_reason(
+              "the session's hooks",
+              unavailable,
+            ),
+            details: None,
+          ))
+      }
+    },
+    context: fn(operation, messages) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.context(operation, messages)
+        Error(_) -> messages
+      }
+    },
+    compaction_note: fn(operation, cue) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.compaction_note(operation, cue)
+        Error(_) -> []
+      }
+    },
+    usage: fn(operation, row) {
+      case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+        Ok(hooks) -> hooks.usage(operation, row)
+        Error(_) -> Nil
+      }
+    },
+  )
+}
+
+/// Formats a holder unavailability reason naming the held surface.
+fn holder_unavailable_reason(
+  held: String,
+  unavailable: tool_holder.Unavailable,
+) -> String {
+  case unavailable {
+    tool_holder.Gone -> held <> " is gone"
+    tool_holder.TimedOut -> held <> " did not answer in time"
+  }
 }
 
 /// The workspace half of a tool run as the owner holds it: a function from

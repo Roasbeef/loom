@@ -201,7 +201,7 @@ PR #819's parallel reimplementation lost.
 When a workspace host starts it returns what the orchestrator needs to build
 the prompt and the tool table: platform and enforcement level, the toolchain
 probe, available language servers, helper degradation, the shell, the Git
-program (`host_git.program`, `workspace_plane.gleam:559`, probes the host it runs on),
+program (`host_git.program`, `workspace_plane.gleam:566`, probes the host it runs on),
 the workspace root as an opaque string, the guidance files' text, the project
 hook files' bytes and the base policy summary. The orchestrator renders and
 pins the prompt from it, exactly as it pins guidance today, and checks the
@@ -456,7 +456,7 @@ host creates no scope and changes no state
 (`client/remote/host.gleam:580`). The orchestrator's open then stops the
 session's owner port and fails with `executor_unavailable: the executor speaks
 protocol version N and this orchestrator does not`
-(`refused`, `client/remote/workspace.gleam:952`; the wording is
+(`refused`, `client/remote/workspace.gleam:1070`; the wording is
 `client/remote/protocol.gleam:573`). There is no negotiation and no accepted
 range. `Run`, `Query` and the other messages carry no version of their own,
 because each session open begins with an `Attach`. The constant's doc comment
@@ -478,7 +478,7 @@ call that was `admitted` into `unknown`, as for any executor restart.
 reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
 file `fs_read` returns (`client/remote/host.gleam:365`). The daemon passes it as
 `max_result_bytes` (`client/daemon/main.gleam:1275`) and the host hands it to
-`exec_ledger.admit` (`client/remote/host.gleam:1563`). The ledger's byte budget
+`exec_ledger.admit` (`client/remote/host.gleam:1644`). The ledger's byte budget
 is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:559`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
 `terminal` rows plus the new reservation would pass it

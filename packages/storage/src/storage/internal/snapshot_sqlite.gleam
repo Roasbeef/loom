@@ -118,19 +118,43 @@ fn headers(
   prefix: String,
   predicate: snapshot.Predicate,
 ) -> Result(List(snapshot.Header), Error) {
-  // Extract the filter field and expected string value from the predicate.
-  let #(field, expected) = case predicate {
-    snapshot.All -> #("", "")
-    snapshot.StringFieldEquals(field, expected) -> #(field, expected)
-  }
-
   // Both statements bound the prefix as a key range rather than testing every
   // key in the namespace, so the successor has to be computed before either
   // runs. An empty string is how they spell "no upper bound"; a real successor
   // always has at least one code point, so the two cannot be confused.
   use upper <- result.try(prefix_successor(prefix))
   let upper = option.unwrap(upper, "")
+  let namespace_text = register.ns_to_string(namespace)
 
+  // A `SeqBetween` selection has its own statements, which walk the sequence
+  // index and so touch only the cells that changed.
+  case predicate {
+    snapshot.SeqBetween(after:, through:) ->
+      changed_headers(
+        conn,
+        namespace,
+        namespace_text,
+        after,
+        through,
+        prefix,
+        upper,
+      )
+    snapshot.All -> field_headers(conn, namespace, prefix, upper, "", "")
+    snapshot.StringFieldEquals(field, expected) ->
+      field_headers(conn, namespace, prefix, upper, field, expected)
+  }
+}
+
+/// Reads the headers under a prefix range whose JSON field equals a value, or
+/// every header when the field is empty.
+fn field_headers(
+  conn: sqlight.Connection,
+  namespace: register.RegisterNs,
+  prefix: String,
+  upper: String,
+  field: String,
+  expected: String,
+) -> Result(List(snapshot.Header), Error) {
   // Keys are variable-size payloads too. Account the complete selection before
   // returning even its headers, not merely before fetching register values.
   use budget <- result.try(one(
@@ -155,6 +179,48 @@ fn headers(
       upper,
       field,
       expected,
+    ),
+  ))
+  list.try_map(rows, fn(row) {
+    use byte_length <- result.map(required(row.value_bytes))
+    snapshot.Header(namespace, row.key, row.seq, byte_length)
+  })
+}
+
+/// Reads the headers written above a sequence, accounting them first exactly
+/// as `field_headers` does, so a burst of changes larger than the metadata
+/// budget is refused rather than truncated.
+fn changed_headers(
+  conn: sqlight.Connection,
+  namespace: register.RegisterNs,
+  namespace_text: String,
+  after_seq: Int,
+  through_seq: Int,
+  prefix: String,
+  upper: String,
+) -> Result(List(snapshot.Header), Error) {
+  use budget <- result.try(one(
+    conn,
+    sql.snapshot_register_changed_budget(
+      namespace_text,
+      after_seq,
+      through_seq,
+      prefix,
+      upper,
+    ),
+  ))
+  use Nil <- result.try(snapshot.check_budget(
+    budget.cell_count,
+    budget.total_bytes,
+  ))
+  use rows <- result.try(query(
+    conn,
+    sql.snapshot_register_changed_headers(
+      namespace_text,
+      after_seq,
+      through_seq,
+      prefix,
+      upper,
     ),
   ))
   list.try_map(rows, fn(row) {

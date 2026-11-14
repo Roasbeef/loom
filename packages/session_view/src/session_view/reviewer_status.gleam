@@ -57,25 +57,31 @@ pub fn observe(
         snapshot.Unloaded(..) -> Error(Nil)
       }
     })
+
+  // The cells are indexed once for the whole roster. A reviewer reads its own
+  // operation's registers, so a scan of the cut per strand made the roster
+  // cost quadratic in the strands.
+  let cells = snapshot_view.index_cells(view.cells)
+  let earlier =
+    list.reverse(previous)
+    |> list.map(fn(row) { #(#(row.strand, row.operation), row) })
+    |> dict.from_list
   view.strands
   |> list.filter_map(fn(strand) {
     use current <- result.try(dict.get(view.operations, strand.id))
-    let task = task_excerpt(view.cells, entries, current)
+    let task = task_excerpt_in(cells, entries, current)
 
     // Fall back to previously retained task brief if history is outside the window.
     let retained = case task {
       "" ->
-        previous
-        |> list.find(fn(row) {
-          row.operation == current && row.strand == strand.id
-        })
+        dict.get(earlier, #(strand.id, current))
         |> result.map(fn(row) { row.task })
         |> result.unwrap("task brief outside loaded history")
       text -> text
     }
 
     // Determine current progress summary from active tool calls.
-    let calls = tool_activity.running(view.cells, entries, current)
+    let calls = tool_activity.running_in(cells, entries, current)
 
     // Format tool names or fallback phase as progress text.
     let progress = case calls {
@@ -122,12 +128,28 @@ pub fn task_excerpt(
   entries: List(entry.Entry),
   current: String,
 ) -> String {
+  task_excerpt_in(snapshot_view.index_cells(cells), entries, current)
+}
+
+/// `task_excerpt` over cells already indexed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert reviewer_status.task_excerpt_in(dict.new(), [], "missing") == ""
+/// ```
+@internal
+pub fn task_excerpt_in(
+  cells: snapshot_view.CellIndex,
+  entries: List(entry.Entry),
+  current: String,
+) -> String {
   let prompt = {
-    use cell <- result.try(
-      list.find(cells, fn(cell) {
-        cell.namespace == register.OpMeta && cell.key == current
-      }),
-    )
+    use cell <- result.try(snapshot_view.cell_at(
+      cells,
+      register.OpMeta,
+      current,
+    ))
     use meta <- result.try(
       codec.decode_operation(cell.value) |> result.replace_error(Nil),
     )

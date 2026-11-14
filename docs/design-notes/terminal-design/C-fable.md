@@ -43,7 +43,7 @@ gets a "before" capture from the real client, a list of what is sloppy, an
 The "before" captures were made in a private tmux session from this worktree
 at `f9927f7d9`. The agent workspace is `gleam dev agents dark`, the shipped
 six-agent fixture through the shipped loop. The picker was drawn by the
-shipped `render` (`tui/session_selector.gleam:836`) over a seven-session
+shipped `render` (`tui/session_selector.gleam:1071`) over a seven-session
 fixture page, because `--demo` has no daemon to list sessions from and
 `open_session_selector` (`tui/submit.gleam:156`) refuses without a control
 host. The frames are the real renderer's output either way.
@@ -63,7 +63,7 @@ host. The frames are the real renderer's output either way.
   picker adds a bracketed lifecycle tag, so the row reads
   `▸ ● ws · main · 01a0a1e2-af88                 current`. The identity is the
   same twelve characters on every row, so it tells the operator nothing, and
-  `row_lines` (`tui/session_selector.gleam:1027`) puts it there to keep two
+  `row_lines` (`tui/session_selector.gleam:1262`) puts it there to keep two
   same-named sessions apart, which the detail pane already does.
 - Nothing lines up. The name, the tag and the identity are one string, so
   the second column starts wherever the name ends.
@@ -105,8 +105,8 @@ model and the strand rows come from `Activity`
 (`tui/daemon/protocol.gleam:325`) and `GlanceLine`
 (`tui/daemon/protocol.gleam:352`), which `observe`
 (`tui/session_selector.gleam:405`) folds in from the `sessions.activity` poll
-that `service_activity` (`tui/session_control.gleam:1513`) runs while the
-picker is open. The filter tabs are `Filter` (`tui/session_selector.gleam:75`)
+that `service_activity` (`tui/session_control.gleam:1543`) runs while the
+picker is open. The filter tabs are `Filter` (`tui/session_selector.gleam:82`)
 and the glyphs are `Presence` (`tui/session_selector.gleam:73`). The one
 figure that does not exist is an age for a resident session's last activity:
 `created_at` is the only timestamp a row carries, so the mockup shows `created
@@ -171,7 +171,7 @@ heading.
 
 **Data.** The row comes from `Row` (`session_view/agent_view.gleam:79`),
 whose `Status` (`session_view/agent_view.gleam:52`) carries the glyph and
-`label` (`session_view/agent_view.gleam:607`) the word, and from `Line`
+`label` (`session_view/agent_view.gleam:625`) the word, and from `Line`
 (`session_view/agent_roster.gleam:84`), which adds elapsed time and context
 size; `lines` (`session_view/agent_roster.gleam:571`) is the order. The task,
 activity, latest update, pending input, recent tools and approvals are the
@@ -735,7 +735,7 @@ No single key sends a decision.
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
-| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:441`), today in `cache_outlook` (`tui/model.gleam:485`) |
+| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:441`), today in `cache_outlook` (`tui/model.gleam:513`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:308`) |
 | Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
 | Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3916`), `execution_value` (`tools/codemode.gleam:1732`) |
@@ -749,7 +749,7 @@ No single key sends a decision.
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
 | Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:426`), `render` (`tui/approval_panel.gleam:305`) |
 | Todo line | the strand's board | yes | `height` (`tui/todo_panel.gleam:50`), `todo_boards` (`session_view/model.gleam:381`) |
-| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1346`), `viewport_backlog` (`tui/model.gleam:762`) |
+| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1371`), `viewport_backlog` (`tui/model.gleam:792`) |
 | Images | bytes, type, pixel size | partly | `Image` (`session_view/transcript_image.gleam:29`) holds the bytes and type; the pixel size is decoded client-side from the PNG, JPEG, GIF or WebP header, no wire change; drawing needs etui |
 | Layout memory | the three preferences | new | section 10 |
 

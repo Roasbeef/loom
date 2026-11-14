@@ -352,6 +352,7 @@ fn prepare(
   let src_dir = root <> "/src"
   use _ <- result.try(make_directory(src_dir))
   use _ <- result.try(make_directory(root <> "/tmp"))
+  use _ <- result.try(make_directory(root <> "/home"))
 
   // Defence 1: the program is written under the pinned name, not one the
   // source chose. A Gleam module is named by its path, so this is the only

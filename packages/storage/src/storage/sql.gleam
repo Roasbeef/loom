@@ -1884,6 +1884,64 @@ pub fn project_standing_of_session_decoder() -> decode.Decoder(
   ))
 }
 
+pub type SessionAgencyLimits {
+  SessionAgencyLimits(
+    fan_out: Option(Int),
+    session_strands: Option(Int),
+    depth_mode: String,
+    depth_cap: Option(Int),
+  )
+}
+
+pub fn session_agency_limits(session_id session_id: String) {
+  let sql =
+    "SELECT fan_out, session_strands, depth_mode, depth_cap
+FROM catalogue_session_agency WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_agency_limits_decoder())
+}
+
+pub fn session_agency_limits_decoder() -> decode.Decoder(SessionAgencyLimits) {
+  use fan_out <- decode.field(0, decode.optional(decode.int))
+  use session_strands <- decode.field(1, decode.optional(decode.int))
+  use depth_mode <- decode.field(2, decode.string)
+  use depth_cap <- decode.field(3, decode.optional(decode.int))
+  decode.success(SessionAgencyLimits(
+    fan_out:,
+    session_strands:,
+    depth_mode:,
+    depth_cap:,
+  ))
+}
+
+pub fn set_session_agency_limits(
+  session_id session_id: String,
+  fan_out fan_out: Option(Int),
+  session_strands session_strands: Option(Int),
+  depth_mode depth_mode: String,
+  depth_cap depth_cap: Option(Int),
+) {
+  let sql =
+    "INSERT INTO catalogue_session_agency (session_id, fan_out, session_strands, depth_mode, depth_cap)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET
+  fan_out = excluded.fan_out,
+  session_strands = excluded.session_strands,
+  depth_mode = excluded.depth_mode,
+  depth_cap = excluded.depth_cap"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamNullable(option.map(fan_out, fn(v) { dev.ParamInt(v) })),
+    dev.ParamNullable(option.map(session_strands, fn(v) { dev.ParamInt(v) })),
+    dev.ParamString(depth_mode),
+    dev.ParamNullable(option.map(depth_cap, fn(v) { dev.ParamInt(v) })),
+  ])
+}
+
+pub fn delete_session_agency_limits(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_agency WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
@@ -2226,6 +2284,14 @@ pub fn rebind_ledger_scope(
     dev.ParamString(session),
     dev.ParamString(workspace),
   ])
+}
+
+pub fn rebind_ledger_scope_workspace(
+  workspace workspace: String,
+  session session: String,
+) {
+  let sql = "UPDATE scope SET workspace = ? WHERE session = ?"
+  #(sql, [dev.ParamString(workspace), dev.ParamString(session)])
 }
 
 pub fn reopen_ledger_scope(
@@ -3183,6 +3249,91 @@ pub fn snapshot_register_budget_decoder() -> decode.Decoder(
   use cell_count <- decode.field(0, decode.int)
   use total_bytes <- decode.field(1, decode.int)
   decode.success(SnapshotRegisterBudget(cell_count:, total_bytes:))
+}
+
+pub type SnapshotRegisterChangedHeaders {
+  SnapshotRegisterChangedHeaders(
+    key: String,
+    seq: Int,
+    value_bytes: Option(Int),
+  )
+}
+
+pub fn snapshot_register_changed_headers(
+  namespace namespace: String,
+  after_seq after_seq: Int,
+  through_seq through_seq: Int,
+  prefix prefix: String,
+  prefix_upper prefix_upper: String,
+) {
+  let sql =
+    "SELECT key, seq, length(value) AS value_bytes
+FROM registers INDEXED BY ix_register_seq
+WHERE ns = ?1 AND seq > ?2 AND seq <= ?3
+AND key >= ?4 AND key <
+  CASE WHEN CAST(?5 AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(?5 AS TEXT) END
+ORDER BY key LIMIT 1025"
+  #(
+    sql,
+    [
+      dev.ParamString(namespace),
+      dev.ParamInt(after_seq),
+      dev.ParamInt(through_seq),
+      dev.ParamString(prefix),
+      dev.ParamString(prefix_upper),
+    ],
+    snapshot_register_changed_headers_decoder(),
+  )
+}
+
+pub fn snapshot_register_changed_headers_decoder() -> decode.Decoder(
+  SnapshotRegisterChangedHeaders,
+) {
+  use key <- decode.field(0, decode.string)
+  use seq <- decode.field(1, decode.int)
+  use value_bytes <- decode.field(2, decode.optional(decode.int))
+  decode.success(SnapshotRegisterChangedHeaders(key:, seq:, value_bytes:))
+}
+
+pub type SnapshotRegisterChangedBudget {
+  SnapshotRegisterChangedBudget(cell_count: Int, total_bytes: Int)
+}
+
+pub fn snapshot_register_changed_budget(
+  namespace namespace: String,
+  after_seq after_seq: Int,
+  through_seq through_seq: Int,
+  prefix prefix: String,
+  prefix_upper prefix_upper: String,
+) {
+  let sql =
+    "SELECT COUNT(*) AS cell_count,
+  CAST(COALESCE(SUM(length(value) + length(CAST(key AS BLOB)) + length(CAST(ns AS BLOB)) + 65), 0) AS INTEGER) AS total_bytes
+FROM registers INDEXED BY ix_register_seq
+WHERE ns = ?1 AND seq > ?2 AND seq <= ?3
+AND key >= ?4 AND key <
+  CASE WHEN CAST(?5 AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(?5 AS TEXT) END"
+  #(
+    sql,
+    [
+      dev.ParamString(namespace),
+      dev.ParamInt(after_seq),
+      dev.ParamInt(through_seq),
+      dev.ParamString(prefix),
+      dev.ParamString(prefix_upper),
+    ],
+    snapshot_register_changed_budget_decoder(),
+  )
+}
+
+pub fn snapshot_register_changed_budget_decoder() -> decode.Decoder(
+  SnapshotRegisterChangedBudget,
+) {
+  use cell_count <- decode.field(0, decode.int)
+  use total_bytes <- decode.field(1, decode.int)
+  decode.success(SnapshotRegisterChangedBudget(cell_count:, total_bytes:))
 }
 
 pub type SnapshotRegisterValue {

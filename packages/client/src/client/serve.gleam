@@ -177,6 +177,7 @@ import client/skill_tool
 import client/state_object
 import client/system_prompt
 import client/tool_holder
+import client/untrusted_config
 import client/upgrade/control as upgrade_control
 import client/wiring
 import client/workspace_gate
@@ -186,6 +187,7 @@ import client/worktree_diff
 import codemode/compile
 import codemode/evolution as codemode_evolution
 import codemode/seed
+import core/agency_limits
 import core/clock.{type Clock}
 import core/entry as evolution_entry
 import core/glance as diagnostic
@@ -514,12 +516,9 @@ pub type Settings {
     /// the daemon sets it for a delegate session alone, whose children belong
     /// to a spawner that may never return (protocol-change/084).
     deadline_tick_ms: Option(Int),
-    /// The deepest spawn the Agency admits, counting the strand a human talks
-    /// to as depth 0, or `None` for the Agency's default of one. The daemon sets
-    /// it for a delegate session alone, to its spawner's `max_depth`, so a child
-    /// there may start children of its own as the policy allows
-    /// (protocol-change/084, phase 4).
-    depth_cap: Option(Int),
+    /// Per-session subagent limits (`fan_out`, `session_strands`, `depth_cap`)
+    /// from the catalogue or delegate spawner policy (`protocol-change/113`).
+    agency_limits: agency_limits.AgencyLimits,
     /// What a delegate session reports about its children's spend and the
     /// budget it enforces on one child (protocol-change/084, phase 2). `None`
     /// for every session but the delegate session of a metered spawner.
@@ -759,6 +758,10 @@ pub type Instance {
     /// teardown can stop it after the runtime drains; an owned session
     /// retires it through custody instead, and stopping it twice is a no-op.
     tools: tool_holder.Holder(wiring.Config),
+    /// The holder of the assembled provider surface, retired beside `tools`.
+    provider_holder: tool_holder.Holder(effects.ProviderSurface),
+    /// The holder of the composed hook surface, retired beside `tools`.
+    hooks_holder: tool_holder.Holder(effects.Hooks),
     /// The helper pool, or `None` for a workspace on an executor, whose
     /// helpers are the executor's.
     pool: Option(Pool),
@@ -1257,9 +1260,42 @@ pub fn resolve_managed(
           settings.base_policy,
           state_root,
         )
-        |> workspace_policy.protecting_projects(state_root),
+        |> workspace_policy.protecting_projects(state_root)
+        |> workspace_policy.protecting_node_credentials(link_secrets(
+          configuration,
+        )),
     ),
   )
+}
+
+/// The private keys of the untrusted link that a daemon's configuration names:
+/// `[executor_link]`'s, which dials every untrusted executor as this daemon, and
+/// `[executor_listener]`'s. A session's jail masks them. Under the default
+/// `~/.loom/vm` the vm home's directory mask already covers the first, but a
+/// `LOOM_VM_HOME` elsewhere is not masked, and a tool with loopback networking
+/// that could read the key could dial every guest as the orchestrator. A
+/// configuration that is absent or cannot be read names none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.link_secrets(None) == []
+/// ```
+@internal
+pub fn link_secrets(configuration: Option(String)) -> List(String) {
+  // Only a readable file that the daemon's own reader accepts names keys.
+  case configuration {
+    None -> []
+    Some(path) ->
+      case simplifile.read(path) {
+        Error(_) -> []
+        Ok(text) ->
+          case untrusted_config.parse(text) {
+            Ok(settings) -> untrusted_config.secret_files(settings)
+            Error(_) -> []
+          }
+      }
+  }
 }
 
 /// Where a managed session binds its code-mode cap sockets: the daemon's
@@ -1546,7 +1582,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       schedule_list,
       schedule_policy,
       jobs_policy,
-      retry_policy,
+      #(retry_policy, request_timeout_ms),
       memory,
       tools,
       secret_entries,
@@ -1593,11 +1629,14 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
   let gateway =
     catalog.gateway(
       catalogue,
-      transport: http.httpc_transport(),
+      transport: http.httpc_transport_with_timeout(request_timeout_ms + 30_000),
       secrets: secret_store,
       clock:,
     )
-    |> provider_gateway.with_codex_transport(codex_transport.transport())
+    |> provider_gateway.with_codex_transport(
+      codex_transport.transport_with_timeout(request_timeout_ms + 30_000),
+    )
+    |> provider_gateway.with_attempt_timeout(request_timeout_ms)
 
   Ok(
     Settings(
@@ -1613,7 +1652,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       peer_defaults: None,
       remote_reach: None,
       deadline_tick_ms: None,
-      depth_cap: None,
+      agency_limits: agency_limits.empty,
       metering: None,
       spawner: None,
       laptop: None,
@@ -1879,7 +1918,7 @@ type Loaded =
     List(schedule.Schedule),
     schedule.Policy,
     jobs.JobsPolicy,
-    operation.NormalizedRetryPolicy,
+    #(operation.NormalizedRetryPolicy, Int),
     memory_config.Options,
     catalog.ToolsConfig,
     List(secrets.Entry),
@@ -1938,7 +1977,7 @@ fn load_config(
         [],
         schedule.default_policy,
         jobs.default_policy,
-        retryconf.default_policy,
+        #(retryconf.default_policy, retryconf.default_request_timeout_ms),
         memory_config.default_options(),
         catalog.default_tools(),
         [],
@@ -2019,6 +2058,9 @@ fn parse_config(
   use retry_policy <- result.try(
     retryconf.policy_from_document(document) |> result.map_error(named),
   )
+  use request_timeout_ms <- result.try(
+    retryconf.request_timeout_from_document(document) |> result.map_error(named),
+  )
   use memory <- result.try(
     memory_config.from_document(document) |> result.map_error(named),
   )
@@ -2040,7 +2082,7 @@ fn parse_config(
     schedule_list,
     schedule_policy,
     jobs_policy,
-    retry_policy,
+    #(retry_policy, request_timeout_ms),
     memory,
     tools,
     secret_entries,
@@ -4024,6 +4066,7 @@ fn assemble_in(
   // the tool calls that must wait for it can name it before it exists.
   let gate_address = address.new_address(namespace)
   let gate = workspace_gate.at(gate_address)
+  let resolved_limits = agency_limits.resolve(settings.agency_limits)
   let agency_config =
     agency.Config(
       ..agency_base,
@@ -4034,7 +4077,9 @@ fn assemble_in(
         option.then(settings.remote_reach, fn(reach) { reach.capture }),
         option.then(settings.remote_reach, fn(reach) { reach.apply }),
       ),
-      depth_cap: option.unwrap(settings.depth_cap, agency_base.depth_cap),
+      depth_cap: resolved_limits.depth_cap,
+      fan_out: resolved_limits.fan_out,
+      session_strands: resolved_limits.session_strands,
       peer_defaults: option.unwrap(
         settings.peer_defaults,
         peer_mail.no_defaults,
@@ -4768,6 +4813,10 @@ fn assemble_in(
       )
   })
 
+  let attempt_ms = provider_gateway.attempt_timeout_ms(gateway)
+  let max_routes = int.max(1, provider_gateway.max_route_count(gateway))
+  let provider_timeout_ms =
+    int.min(attempt_ms * max_routes + 60_000, 4_294_967_295)
   let wiring_config =
     wiring.Config(
       observe_output: owner_api.output,
@@ -4778,7 +4827,7 @@ fn assemble_in(
       api: settings.api,
       fallback_context_window: settings.context_window,
       fallback_max_output_tokens: settings.max_output_tokens,
-      provider_timeout_ms: 300_000,
+      provider_timeout_ms:,
       session: opened,
       compaction: settings.compaction,
       broker: broker_actor,
@@ -4816,17 +4865,6 @@ fn assemble_in(
   // until the runtime has drained.
   use holders <- result.try(start_holders(wiring_config, plane.run))
   let #(holder, run_holder) = holders
-  use Nil <- result.try(
-    retain(
-      owner,
-      custody.ToolConfig,
-      fn() { stop_holders(holder, run_holder) },
-      fn() {
-        process.unlink(tool_holder.pid(holder))
-        process.unlink(tool_holder.pid(run_holder))
-      },
-    ),
-  )
 
   // A call is routed by the tool's name to the half that runs it. Owner-side
   // tools and extensions take the path every call took before the halves were
@@ -4971,6 +5009,45 @@ fn assemble_in(
     None -> effects_record
     Some(wiring) -> evolution_hook.wire(effects_record, wiring.live)
   }
+
+  // Hold the composed provider and hook surfaces in per-session processes so
+  // strand drivers and supervisors retain only their holder addresses rather
+  // than copying the gateway, catalog, relay, and session closure graphs per strand.
+  use effect_holders <- result.try(
+    case start_effect_holders(effects_record.provider, effects_record.hooks) {
+      Ok(effect_holders) -> Ok(effect_holders)
+      Error(reason) -> {
+        let _retired = stop_holders(holder, run_holder)
+        Error(reason)
+      }
+    },
+  )
+
+  let #(provider_holder, hooks_holder) = effect_holders
+  let effects_record =
+    effects.Effects(
+      ..effects_record,
+      provider: wiring.hold_provider(
+        provider_holder,
+        timeout_ms: effects.provider_timeout_ms(effects_record.provider),
+      ),
+      hooks: wiring.hold_hooks(hooks_holder),
+    )
+  use Nil <- result.try(
+    retain(
+      owner,
+      custody.ToolConfig,
+      fn() {
+        stop_all_holders(holder, run_holder, provider_holder, hooks_holder)
+      },
+      fn() {
+        process.unlink(tool_holder.pid(holder))
+        process.unlink(tool_holder.pid(run_holder))
+        process.unlink(tool_holder.pid(provider_holder))
+        process.unlink(tool_holder.pid(hooks_holder))
+      },
+    ),
+  )
 
   let options = api.default_options(configuration)
   use runtime <- result.try(
@@ -5498,6 +5575,8 @@ fn assemble_in(
     storage_owner:,
     broker: broker_actor,
     tools: holder,
+    provider_holder:,
+    hooks_holder:,
     pool: half.pool,
     executor: half.executor,
     evolution_retire: close_evolution(evolution_wiring),
@@ -5570,6 +5649,41 @@ fn stop_holders(
 ) -> Result(Nil, String) {
   use Nil <- result.try(tool_holder.stop(run_holder))
   tool_holder.stop(holder)
+}
+
+/// Starts per-session holders for the composed provider and hook surfaces.
+fn start_effect_holders(
+  provider: effects.ProviderSurface,
+  hooks: effects.Hooks,
+) -> Result(
+  #(
+    tool_holder.Holder(effects.ProviderSurface),
+    tool_holder.Holder(effects.Hooks),
+  ),
+  String,
+) {
+  use provider_holder <- result.try(tool_holder.start(provider))
+
+  // Roll back the provider holder if starting the hooks holder fails.
+  case tool_holder.start(hooks) {
+    Ok(hooks_holder) -> Ok(#(provider_holder, hooks_holder))
+    Error(reason) -> {
+      let _retired = tool_holder.stop(provider_holder)
+      Error(reason)
+    }
+  }
+}
+
+/// Retires all four per-session configuration and effect holders in order.
+fn stop_all_holders(
+  holder: tool_holder.Holder(wiring.Config),
+  run_holder: tool_holder.Holder(wiring.WorkspaceRun),
+  provider_holder: tool_holder.Holder(effects.ProviderSurface),
+  hooks_holder: tool_holder.Holder(effects.Hooks),
+) -> Result(Nil, String) {
+  use Nil <- result.try(tool_holder.stop(hooks_holder))
+  use Nil <- result.try(tool_holder.stop(provider_holder))
+  stop_holders(holder, run_holder)
 }
 
 // Acknowledgement transfers startup custody before any resource can begin work.
@@ -5835,7 +5949,7 @@ fn with_peer_outbox_drain(
     peer_outbox_drain.supervised(
       peer_outbox_drain.over(
         peer_outbox_drain.peer_pass(wiring, logger),
-        runtime.effects.timers.after,
+        effects.after_fn(runtime.effects.timers),
       ),
       name,
     ),
@@ -5866,7 +5980,7 @@ fn with_remote_drain(
           agency_config.clock,
           logger,
         ),
-        runtime.effects.timers.after,
+        effects.after_fn(runtime.effects.timers),
       ),
       name,
     ),
@@ -5907,7 +6021,7 @@ fn with_upward_drain(
               option.lazy_unwrap(settings.laptop, delegate_outbox.absent),
               logger,
             ),
-            runtime.effects.timers.after,
+            effects.after_fn(runtime.effects.timers),
           ),
           name,
         ),
@@ -8448,6 +8562,8 @@ fn instance_retirement_body(instance: Instance) -> evolution_retirement.Task {
     })
   let holder =
     evolution_retirement.repeat(fn() {
+      let _retired_hooks = tool_holder.stop(instance.hooks_holder)
+      let _retired_provider = tool_holder.stop(instance.provider_holder)
       let _retired = tool_holder.stop(instance.tools)
       Ok(Nil)
     })
@@ -8767,7 +8883,7 @@ pub fn trial_settings(
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,

@@ -158,8 +158,8 @@ actual startup repeats validation and can still fail on runtime resources.
 
 ## Standing microVM guest (`loom vm`)
 
-`client.gleam` dispatches `loomd vm setup | up | down | status | logs | list | rm |
-sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
+`client.gleam` dispatches `loomd vm setup | up | ensure | down | status | logs |
+list | rm | sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
 private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
 the artifact manifest decoder and revision check, the two-node
@@ -201,7 +201,73 @@ recorded and in a `--checkout` scratch one), a hostile `.git/config` and hook
 planted by a jailed call whose marker never appears on the host after `vm sync`
 (with a control repository showing the marker would be writable), `vm sync
 --to-guest` read back by a jailed `git fetch`, a refused second guest, and `vm rm`
-of the idle and failing guests under the isolated home.
+of the idle and failing guests under the isolated home. Its last step boots a guest
+with `--link untrusted` (below), starts an orchestrator on the file `up` wrote,
+and checks that a jailed call settles on the guest's kernel, the root holds no
+cookie and no `[distribution]` table, the host's epmd lists no node for it, a
+jailed read of the executor's key returns nothing, and `status` names the link.
+
+`up --link untrusted` (`UpOptions.link`, `vm_spec.LinkKind`) reaches a guest over
+protocol-change/109's untrusted link instead of distribution; the default is
+still `distribution` and its code is unchanged. `bring_up` settles the kind first
+(`vm_cli.link_of` over `vm_link.settle`: the host-owned record
+`<vm home>/<name>/link`, bundles, and the flag; absent record and bundles mean
+distribution, and a guest never changes its link) and branches once, in
+`vm_cli.on_link`, to `bring_up_linked`. `client/vm_link` is the pure part: the
+`link` and `link-port` record codecs (total), `port_step`, `install` and
+`uninstall` of `[executor_link]` and the guest's row (a table that differs is
+refused; only the guest's own row at another port, identified by its pin, is
+replaced; nothing else in the file changes), the guest's `[executor_listener]`
+configuration and `staging` (no cookie, no ledger), and the daemon and status
+wording. `client/vm_link_pki` mints the authority and leaves under
+`<vm home>/link/` and `<vm home>/<name>/link-credentials/` with `ffi_pki`, each
+directory built as `<dir>.minting` and renamed whole. `bring_up_linked` chooses
+the port without recording it, works out the merge (a refusal leaves no guest),
+records the kind and port, writes the file, then runs `stage_with` and
+`launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd entry), which are
+the shared halves of `stage` and `boot`. A changed row is applied by the
+daemon only at its next start (`daemon/main.start_untrusted`), so `restart_of`
+reuses `restart_after`: an idle default daemon is stopped, a busy one is
+left and named. `rm` plans through `linked_removal_plan`; `ensure` reads the
+console's ready line in place of epmd (`vm_link.registration`). The executor's
+jails mask the listener's key and the link's key (`executor_plane.masked_files`).
+`bring_up_linked` runs the shared part (`enroll_linked`: credentials, port, merge,
+records, file) under `with_link_lock` (`<vm home>/link.lock`, after any guest
+lock), and `rm` plans and applies under it. `vm_link_pki` checks each leaf with
+`ffi_pki.inspect` against the current authority. `vm_link.Traces` lets a guest
+directory with `link-credentials/` and no record settle as untrusted.
+`vm_link.uninstall` removes the guest's row only on its pin and reports whether
+`[executor_link]` remains (`LinkTable`), which decides whether `rm` removes the
+credentials. `restart_check` and `restart_of` ask an untrusted guest
+`vm_link.daemon_need`, from `deployment.status`'s `placements.executors`
+(`vm_link.listed_executors`), and never `daemon_lacks_distribution`. A command
+with no `--name` means the directory's guest when no guest is named `vm`
+(`vm_cli.named`, `vm_spec.default_guest`). `serve.link_secrets` masks the link
+keys in every managed session's jail.
+Tests: `vm_link_test` (codecs, merge properties against the daemon's own readers,
+a pinned handshake with the minted credentials), `vm_link_model_test` (a `statem`
+model of one home with guests of both kinds), and `executor_mask_test`.
+
+`ensure` is what `loom --vm` runs (`tui/vm_ensure`). `vm_spec.guest_name_for`
+names the guest of a workspace from its canonical path (slug, then six hex
+digits of the SHA-256, at most `name_limit` bytes), so there is one guest per
+workspace. `vm_cli.ensure` observes the guest's process (pid record plus birth
+marker), the host epmd and the manifest, and `vm_spec.ensure_step` returns
+`AlreadyServing`, `NeedsDaemon`, `NeedsSetup`, `Boot` or `Refuse`: a serving
+guest answers first and nothing else is read or written; a join of an existing
+ledger deployment with no daemon answers `NeedsDaemon` before any setup, as
+exit status 75 and the last stdout line `daemon=required`; a manifest from
+another release gets `loom vm setup` first (`vm_spec.manifest_action`, which
+`up` uses too); otherwise `vm_cli.bring_up`, the code `up` runs, boots it. The
+last stdout line is `executor=<guest> workspace=<registered name>`
+(`vm_spec.ensure_line`), and progress goes to stderr one line per step. After a
+boot that installed a deployment, `vm_spec.restart_refusal` turns a daemon left
+running into one error sentence; a resumed or joined guest (`Row::Resumed`,
+`Derived`) asks for no restart. `up` records `--github` in
+`<vm home>/<name>/github` (`vm_spec.effective_github`, `encode_github`,
+`decode_github`); `UpOptions.github` is an `Option`, `None` meaning not given.
+Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a `statem` model over
+the pure decisions.
 
 `logs`, `list`, `rm` and `sync` read the guest's root, which model-influenced code
 writes, so they treat it as untrusted: no `git` with a working directory in the
@@ -248,6 +314,15 @@ before `build_next_root`. `state.img` is kept. The host keeps the `--provision` 
 clears it) and a new root is provisioned from it (`vm_spec.new_root_provision`),
 never from the root; an unfinished script is retried from it too
 (`provision_plan`'s `kept`), and the copy is written by temporary file and rename.
+A clone (`replace_root`) is made as `root.building` and renamed to `root`, an
+old root is renamed to `root.building` before it is deleted (`remove_root`),
+and a workspace copy is made as `<vm home>/<name>/workspace.building`, given
+its repository and scrubbed there, and renamed into the root (`copy_workspace`),
+so a `root` or a copy that exists is whole. `vm_spec.carry_over` decides what an
+upgrade moves from what `old_workspaces` finds and, only when the directory is
+missing, the host's `checkouts` record: real `srv/workspaces` moves, a root with
+none and no recorded copy is cloned again (an interrupted first `up`, announced
+by `unfinished_line`), anything else is refused. `protocol/models/vm-root-upgrade` is the TLA+ model of both.
 `stranded_in` lists processes; `refuse_stranded` refuses `up` and `rm`, `down`'s
 not-running arm fails and `status` adds a `runner:` line when a runner survives
 whose command starts with the manifest's runner path (`Some`; without a readable
@@ -278,14 +353,22 @@ proves the idle stop on its isolated home.
 Invariants that break things when violated:
 
 - A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `root.next/` (only during an upgrade), `state.img`, `allow`, `checkouts`,
+  `root/`, `root.next/` (only during an upgrade), `root.building/` and
+  `workspace.building/` (only while `up` makes a clone or a copy), `state.img`, `allow`, `github`, `checkouts`,
   `root-revision`, `provision`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
   `~/.loom/vm`.
 - `up` reads the bundles in `deploy/` again instead of minting new ones, so the
   orchestrator's installed pins keep matching the executor's certificate.
 - The install is `RefuseExisting`: a `loom.toml` that holds another
   deployment, or a cookie that differs, is refused and never replaced.
-- The manifest's revision must be `dev` or the running build's commit.
+- The manifest's revision must be `dev` or the running build's commit; a
+  release build installs the right one first, and only a development build
+  refuses.
+- `ensure` on a serving guest writes nothing: it reads the pid record, epmd, the
+  console log, the manifest, `loom.toml` and the daemon record, and refuses a root
+  of another release. Everything else runs under `<vm home>/<name>.lock` and
+  decides again once it holds it. `NeedsDaemon` is decided before anything is
+  written, and a cookie conflict before any bundle is.
 - `up` never stops a daemon that holds a session, and never starts one.
 - A linked worktree's copy never keeps a `.git` file or an `origin` that names
   a host path; any failed copy step removes the copy, because a resumed `up`
@@ -323,7 +406,11 @@ See `docs/architecture/microvm.md`, "A standing guest".
 ## Node credential masks on an executor
 
 `executor_plane.machine` parses its own `[distribution]` table and keeps the
-node's TLS key and cookie in `Machine.credentials`. The executor's base policy
+node's TLS key and cookie in `Machine.credentials`, and with the untrusted
+link's tables the private keys of `[executor_listener]` and `[executor_link]`
+too (`executor_plane.masked_files`; before it, a daemon with no `[distribution]`
+masked nothing, and a microVM guest on the untrusted link held its key where
+model code could read it). The executor's base policy
 adds them through `workspace_policy.protecting_node_credentials`, beside the
 state-root and blob masks, so a jailed child cannot print them into a tool
 result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
@@ -1529,8 +1616,10 @@ executor's case (slice 4a): the scope's linked worktree already exists on
 and `git checkout -B` moves the branch onto the tip. `check_linked` requires the
 tree's `.git` to be a plain file and what Git finds from inside it to be the named
 repository (top, worktree Git directory, common directory, branch); a tree that
-already contains the tip is answered as applied and not touched, and any other tree
-must have no change in it. A dirty state's snapshot commit is checked out as it is.
+was last applied, or whose `HEAD` is the tip, is answered as applied and not touched
+(a tip that is only an ancestor of `HEAD` moves the tree), and any other tree must have
+no change in it. The apply keeps one ref per session, `refs/loom/applied/<session>`,
+written after the checkout and dropped before the next one. A dirty state's snapshot commit is checked out as it is.
 The checkouts (`checked_out`) empty every `filter.<name>` driver the configuration
 names for the call, since a `.gitattributes` in the bundle can attach one and a
 checkout would run its `smudge` command. The listing runs in the directory the
@@ -3574,7 +3663,7 @@ cannot read `states/`.
   that fell behind how much it missed rather than handing it a
   plausible-looking window, and binary output goes out rather than being
   held back forever waiting for a character boundary.
-- `client/retryconf.{default_policy, unbounded_attempts, parse_policy}` —
+- `client/retryconf.{default_policy, default_request_timeout_ms, max_request_timeout_ms, unbounded_attempts, parse_policy, parse_request_timeout}` —
   the optional `[retry]` table from the same `loom.toml`, parsed by the
   same strict, total discipline as `[schedules]` and `[jobs]`: unknown
   keys refused, `attempts = 0` refused, a negative delay refused, each
@@ -3588,7 +3677,7 @@ cannot read `states/`.
   place those three numbers live, so the parser cannot drift from the
   runtime default. That default never gives up, so the table is mostly
   for the operator who wants a bounded ladder that fails the run instead
-  of long-polling a provider that is refusing.
+  of long-polling a provider that is refusing. `request_timeout_ms` is a positive integer in `1..86_400_000` milliseconds (default `600_000`, 10 minutes); `serve` applies it to `http.httpc_transport_with_timeout(request_timeout_ms + 30_000)`, `codex_transport.transport_with_timeout(request_timeout_ms + 30_000)`, and `provider_gateway.with_attempt_timeout`, and sets `wiring.Config.provider_timeout_ms` to `int.min(attempt_ms * max_routes + 60_000, 4_294_967_295)` so an attempt timeout settles as a retryable `TransportFailed` instead of racing into `runtime`'s `RequestDeadline` or overflowing ERTS `send_after`.
 - `client/notice.{Work, Delivered, Activity, Due, IdleClock, key_prefix,
   heartbeat_tick_ms, default_heartbeat_ms, key, deliver,
   deliver_to_remote_child, activity, beat,
@@ -5016,7 +5105,7 @@ these forks because they define the same modules.
 
 ## Traffic
 
-- `serve` injects `codex_transport.transport()` into assembled catalogue
+- `serve` injects `codex_transport.transport_with_timeout(request_timeout_ms + 30_000)` into assembled catalogue
   gateways. `gateway.CodexTransport.prepare_streaming` requests a parked
   `http.PreparedRequest`; the gateway publishes its owner before `begin`.
   Inside that operation, `profile.auth(profile, ledger)` acquires the durable
@@ -5996,7 +6085,9 @@ these forks because they define the same modules.
   unix-socket connects by path, so on macOS the unlisted digest name is
   the barrier. A session whose writable roots cover `<state root>/run`
   (one opened on the home directory) binds under its own work root
-  instead (`serve.codemode_socket_root`). The in-band length refusal remains
+  instead (`serve.codemode_socket_root`), and `workspace_policy.short_tool_tmpdir`
+  applies the same rule to place managed tool `TMPDIR` under `<state root>/tmp/<digest12>`
+  outside deep workspace checkouts. The in-band length refusal remains
   for the residual case and names the socket root, not the workspace.
 - **MCP reaches a model through code mode, and a host with no code mode
   starts no MCP server.** A server's tools are a *module* a program may
@@ -7960,7 +8051,10 @@ below.
   and for the evolution messages `ask`, `ask_within`, `incarnation` and `token`. A lost connection is repaired with `weft/poll.fold_until` on a
   doubling interval and the same `Run` is sent again. `recover` sends
   `QueryOrFence` for a call whose `run.replay` is `ReplayNever` and plain
-  `Query` for a `ReplaySafe` one.
+  `Query` for a `ReplaySafe` one. `run` and `start_execution` go through
+  `with_plane`: a refusal of `NoPlane` or `PlaneBuilding` (the executor restarted
+  and holds no plane for the scope, or another request is building it) sends the
+  same attach again, with the surface's own token, and then the request once.
 
 Invariants that break things when violated:
 
@@ -7968,9 +8062,25 @@ Invariants that break things when violated:
   `recover`, and shares that one surface across every strand and every strand
   or runtime restart inside the open. The fresh token is the only fence against
   a dead open's in-flight `Run`; Erlang orders messages per sender pair only. A
-  second attach inside one open rotates the token and gets another strand's
-  live `Run` refused as `StaleToken`. `recover` assumes the attach ran, because
-  "no row" means "never started" only after it.
+  second attach with a new token inside one open rotates the token and gets
+  another strand's live `Run` refused as `StaleToken`. The one repeat that is
+  allowed is `surface.reattach`, which sends the held token again: the ledger
+  rebinds without changing a row, and it builds the plane an executor restart
+  lost. `recover` assumes the attach ran, because "no row" means "never started"
+  only after it.
+- `NoPlane` and `PlaneBuilding` may only be told to the scope's current runtime.
+  `host.unplaced` judges the fence (`exec_ledger.current`) before it answers
+  either for a key with no row, so a dead runtime hears `StaleToken` and does not attach
+  again, which would take the token from the live one. The repair is tried once
+  for each request: a refused repair is the answer, and a second `NoPlane` is
+  not repaired again. Not repaired: `ask` and `ask_within` (evolution and state
+  messages) and `query`, which return the refusal to their caller.
+- The session's broker handle is `broker.over(owner_port.broker(port), clock)`,
+  not the census's subject. The port forwards to the broker the latest attach
+  named (`surface.Config.attached` calls `owner_port.retarget`, which returns
+  once the port holds it), so after a repair the hooks, goal checks, worktree
+  observations and an operator's abort reach the new plane. Capture no
+  `RemoteCensus.broker` for non-tool callers.
 - A `Run` is idempotent by call key and the host never starts a second run for a
   key. The surface relies on this to re-send after a reconnect; do not re-send
   `Run` anywhere else.
@@ -7987,11 +8097,13 @@ Invariants that break things when violated:
 - A `Run` for a scope with no plane in this VM (after an executor restart,
   before the next attach) is answered from the ledger first: a key with a stored
   outcome gets it, a key with an unknown or orphaned-admitted row gets `RunLost`,
-  and only a key with no row is refused with `NoPlane` or `PlaneBuilding`. The
-  refusal says nothing started, which is false for a call the restart cut off
-  (`answer_without_plane`; model: `RefusalMeansUntouched`).
+  and only a key with no row is refused with `NoPlane` or `PlaneBuilding`, after
+  the scope's fence. The refusal says nothing started, which is false for a call
+  the restart cut off (`answer_without_plane`; model: `RefusalMeansUntouched`).
 - A scope with no plane in this VM closes as `UnknownCleanup(0)`: without a
-  plane there is no retirement witness. A failed plane build leaves the scope
+  plane there is no retirement witness. A session that calls after an executor
+  restart has its plane rebuilt by the surface's repair first, so only a session
+  closed before its next call reaches this. A failed plane build leaves the scope
   open for a retry attach at the same incarnation.
 - The plane build, a tool run and a close are each a weft run, so none blocks
   the host or another session. While a scope is `Building`, a second `Attach`,
@@ -8425,9 +8537,11 @@ the session first opens and then never again.
   a `claim` function, called once per first open with a chooser from the counts
   to the executor names in order. `daemon/main` implements it with
   `manager.claim_placement(registry, session, resident, choose)`, where
-  `resident` is `ledger_holdings.resident_by_name` (the resident count of
-  `placements`, by executor name; an unknown tally is an empty dict and so the
-  listed order). A session is resident only after its attach, so the registry's
+  `resident` is `ledger_holdings.resident_in` (the resident count of
+  `placements`, by executor name, made from the rows of the registry's running
+  slots that the turn reads itself, so it is bounded by the session limit and
+  never walks the catalogue; an unknown tally is an empty dict and so the listed
+  order). A session is resident only after its attach, so the registry's
   `Book.claims` (session to executor) adds one count per session still being
   built, runs `choose` and stores the head of its answer, all in the one
   `ClaimPlacement` turn, which is what makes concurrent opens see each other. A
@@ -8693,6 +8807,22 @@ the protocol-change/078 addendum on moving a session have the protocol.
   registry's turn, because the catalogue open waits up to one second on the
   store's lease. A `Workspace`-scoped selection does not block a move.
   A catalogue that cannot be read refuses the move too.
+- A refused `sessions.move` or abandon carries its cause in the error's
+  `message`. `dispatch` serves the two commands through `move_command` and
+  `abandon_command` (not `dispatch_class`, whose refusals are bare codes), and
+  `move_refusal_words` words each `MoveRefusal`: a reason the registry or the
+  daemon's checks wrote (`AdminNotMovable`) is passed on as it is, the rest are
+  fixed sentences, and nothing names a path or quotes a catalogue's own error. The
+  pages still word the refusals in their own fixed sentences. How a move ended is
+  not readable after the fact: it is the daemon's log, `daemon.move_finished` or
+  `daemon.move_aborted` with the reason.
+- The move's log lines: `session_mover` writes `move_finished` and `move_aborted`;
+  `move_checkout` writes `move_checkout_captured`, `_sent`, `_applied` and `_closed`
+  (session, op, state's short hash, bytes, `elapsed_ms`); `session_importer` writes
+  `move_imported` and `move_activated` on the receiver. A stall is logged by
+  `session_movers` through `session_mover.note_stall`, after the first, second,
+  fourth, eighth attempt and so on (`stall_is_logged`), from a count kept on the
+  mover's `Entry`.
 - `remote/orchestrator_port` gains `Import`, `ImportStatus` and `Activate` beside
   `Owns`, and `Ownership` gains `Moved(to)`. The daemon supplies an `Importer` of
   three functions, so the port knows neither the catalogue nor the filesystem. A
@@ -10687,6 +10817,59 @@ and `gateway_test`, and `orchestrator_port_test`.
   dials the laptop for this. The page's browser never reaches the box.
 
 
+## The live session feed, the box half (protocol-change/108, slice 2)
+
+A relayed session's page on another orchestrator can be the full session page.
+The box attaches to the session's gateway the way a page socket does, queues the
+frames the gateway writes, and the laptop pulls them with a long poll through the
+stable peer exchange and sends its lane's frames back in pieces. The box sends
+nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
+`feed_pieces_test` (fixed-seed `statem` properties), `feed_directory_test`,
+`feed_host_test` (one VM: real gateway, real `TopHost`, real stable endpoint) and
+`gateway_peer_door_test`. The model is `protocol/models/live-relay`.
+
+- **The vocabulary** is `client/remote_feed`, with no process in it, as
+  `remote_top` has none: the bodies of `108.attach.1`, `108.feed.1`, `108.send.1`
+  and `108.detach.1`, the answers, the bounds both ends hold and a total decoder
+  for each. `peer_codec.revisions` advertises the four and `peer_top.dispatch`
+  decodes a body with `remote_feed.decode_request` and calls
+  `TopHost.feeds`, a `remote_feed.Host` of four closures. `remote_top` gained
+  `FeedEnded(lapsed | stopped | revoked)`, `CapReached(MaxFeeds, _)` and
+  `NotOffered(OfferedPage, "live")`.
+- **The pure parts** are `remote/feed_queue` (the numbered queue: unacknowledged
+  frames bounded at 512 and 1,048,576 bytes, a poll's `after` acknowledges, a
+  bound passed lapses the whole feed and never one frame; the lease is not here,
+  it is `feed_host`'s timer), `remote/feed_pieces` (the lane's frames put back together: pieces in
+  order, a piece admitted before is answered again and changes nothing, so the
+  gateway receives each frame once and whole) and `remote/feed_filter` (the closed
+  command table: forward, `forbidden`, a decision through the relayed door, a
+  forget of one grant, or a refusal). None holds a process or reads a clock.
+- **The processes** are `remote/feed_host`, one `weft/state_machine` per feed
+  (`Live` and `Ended`) whose timers (the held poll, the lease, the forget) are named
+  timeouts, and `remote/feed_directory`, the one place a token is found among the
+  feeds of the sender's spawner and the one place the cap of eight per spawner is
+  counted, from reservation until the feed's process exits, an ended feed
+  included. A feed attaches with `gateway.attach_authenticated_flushing` giving its
+  own pid as the socket, so the gateway drops the attachment when the feed exits.
+  The permit, of class `root.Feed` and charged `remote_feed.feed_charge_bytes`
+  (28,049,408, so eight feeds take about 42 percent of the default budget), is
+  reserved by the process that answers the attach and transferred by the feed's
+  own process (`top_host.Context.admit`). A feed watches the attach's process until
+  `feed_host.registered`, so a cancelled attach leaves no uncounted feed. The
+  feed's gateway connection id is its own random id, never its token. A piece that
+  does not end its frame carries at least `remote_feed.min_piece_bytes`.
+- **The door** is `gateway.PeerDoor(spawner, Decides | Watches)`. `gateway.attached`
+  does not count a feed that `Watches`, so a refused call in a session whose
+  spawner has no `approval_ceiling` settles in band, and one whose spawner has a
+  ceiling parks, as under a local page.
+- **Invariants.** A decision never reaches the gateway's own `approve`: the feed
+  turns `approve`, `approve_for_session`, `deny` and a forget of one grant into
+  `gateway.decide_relayed` with the spawner's name and ceiling, so the hub's
+  `admit_relayed` judges it. The queue's bound ends a feed and never drops a
+  frame. A poll that supersedes a held poll releases it at once. A token is looked
+  up only among the sender's spawner's feeds. The feed host blocks on a gateway
+  call, for at most the gateway's six seconds, and never on the laptop.
+
 ## The relayed session page's daemon side (protocol-change/094, slice S2b)
 
 `ui_http.route` has `RelayedPage(key, orchestrator, session_id)` and
@@ -10965,3 +11148,8 @@ its custody, deadline and router inside that dispatcher before admission.
 The executor's `backgrounded` wrapper forwards `Run` to the existing dispatcher
 and sends `Launch` to the owner without retaining another base configuration.
 The capture-multiplicity regression lives in `client/codemode_test`.
+
+## Per-session agency limits and shared effects (`protocol-change/113`)
+
+- **Shared per-session provider and hooks holders.** `client/wiring.hold_provider` and `client/wiring.hold_hooks` park the session-invariant provider closure and runtime hook closures in two per-session actors alongside `client/tool_holder`, publishing them under `custody.ToolConfig` in `client/serve`. Steady-state strands no longer retain or copy ~158 KiB of shared `Effects` closures per process.
+- **Per-session `AgencyLimits` and raised defaults.** `client/agency.Config` uses `core/agency_limits.DepthCap` (`BoundedDepth` | `UnlimitedDepth`) with shipped defaults `default_fan_out = 100`, `default_session_strands = 256`, `default_depth_cap = 1`, and `max_ancestor_walk = 256`. `client/daemon/protocol`, `client/daemon/domain`, `client/daemon/manager`, `client/daemon/server`, `client/daemon/ui_socket`, and `client/serve.Settings` thread optional `AgencyLimits` through session creation and recovery (persisted in catalogue v21 `catalogue_session_agency`).

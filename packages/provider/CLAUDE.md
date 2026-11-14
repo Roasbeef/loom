@@ -240,7 +240,7 @@ not split the batch. These are transient wire projections.
   injected transport seam. A running request exposes a monitorable owner and
   cancel capability; normal owner exit acknowledges that native work has
   stopped, while abnormal exit loses that proof.
-  `httpc_transport()` is the production wiring.
+  `httpc_transport()` (defaulting to `default_response_timeout_ms = 630_000`, 30 seconds above `gateway.default_attempt_timeout_ms`) and `httpc_transport_with_timeout(timeout_ms)` are the production wiring. `gateway.default_attempt_timeout_ms` is `600_000`, `stream.attempt_cancel_grace_ms` is `1000` (inside `gateway`'s `1500` ms `request_cancel_grace_ms` so OTP `httpc_handler` TLS socket teardown drains cleanly without false `CancellationUnconfirmed`), and `gateway.{attempt_timeout_ms, max_route_count}` expose the configured bounds for outer runtime deadlines.
 - `provider/secret.SecretStore` — an injected `fn(String) ->
   Result(String, Nil)`; backends are `env()`, `from_list`, `from_function`.
   The harness layers its own on top: `client/secrets.store` lays the

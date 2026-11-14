@@ -13,14 +13,16 @@
 //// ## What an apply may write
 ////
 //// Objects, one ref under `refs/loom/in/`, and the checkout. It never moves an
-//// existing ref. The ref is created with the zero object id as its expected old
+//// existing incoming ref. The ref is created with the zero object id as its expected old
 //// value, so Git refuses when it exists with another value; an existing ref
 //// that already names the state's tip is the state having been applied before,
 //// which is how two children of one parent share an import. The session's
 //// branch is created with `git worktree add -b` or `git checkout -b`, and Git
 //// refuses a name that exists. `Reset` is the one placement that moves a branch,
-//// and only the session's own, in a tree no session has written yet. No
-//// transport is used by apply itself. A fetch
+//// and only the session's own, in a tree no session has written yet, and the
+//// one that keeps a second ref per session, `refs/loom/applied/<session>`, which
+//// names the tip last applied there and is rewritten by each apply that moves
+//// the tree. No transport is used by apply itself. A fetch
 //// from a path reads the repository's `url.<base>.insteadOf` and `protocol.*`
 //// settings, which can turn a bundle path into a command, so the bundle is
 //// unpacked with `git bundle unbundle`, checked for connectivity, and given its
@@ -69,8 +71,10 @@
 //// ask for anything, so `Reset` does not add a worktree. It imports the state
 //// into the repository the tree belongs to, as `Worktree` does, and moves the
 //// tree's own branch, `loom/<session>`, onto the tip. It requires the tree to be
-//// clean and not yet written by the session; a tree that already contains the
-//// tip is left alone, so a repeated request changes nothing. A dirty state's
+//// clean and not yet written by the session. A request for the tip that was
+//// last applied, or for the tip the tree's `HEAD` already is, is left alone, so
+//// a repeated request changes nothing. A tip that is only an ancestor of the
+//// tree's `HEAD` is not a repeat: it moves the tree. A dirty state's
 //// snapshot commit is checked out as it is, which means the session sees the
 //// sender's uncommitted work as committed content.
 ////
@@ -92,7 +96,7 @@
 ////    because a new repository holds no base.
 //// 4. `into_existing` checks that the tree is the linked worktree it should be
 ////    (`check_linked`), imports the bundle, and moves the tree's branch when the
-////    tree is clean and does not hold the tip yet.
+////    tree is clean and the tip is neither the last one applied nor its `HEAD`.
 //// 5. `import_bundle` is the shared part: it answers the incoming ref, creating
 ////    it from the bundle when absent.
 
@@ -598,11 +602,21 @@ fn into_clone(
 /// The tree is checked before anything is written: it must be the linked
 /// worktree of this repository, on the session's branch, and not reached through
 /// a link. The import is the shared one, so objects and the incoming ref go into
-/// the repository and no other ref is made. A tree that already holds the tip is
-/// answered as applied and left alone, which is what makes a resent request
-/// harmless after the session has begun to commit on top. Otherwise the tree must
-/// be clean, since a state is never laid over changes, and the branch is moved
-/// with `checkout -B`.
+/// the repository and no other ref is made. A request for a state that was the
+/// last one applied for the session is answered as applied and left alone, which
+/// is what makes a resent request harmless after the session has begun to commit
+/// on top. So is a tree whose `HEAD` is the tip, which also records the apply.
+/// Anything else moves the tree, whatever its history: the tree must be clean,
+/// since a state is never laid over changes, and the branch is moved with
+/// `checkout -B`. A tip that is an ancestor of the tree's `HEAD` is not a resend.
+/// It is a state that was captured after the tree was set, such as a directory
+/// whose edits the operator discarded, or a commit the executor's workspace had
+/// before the session did.
+///
+/// The record rests on one assumption: `loom/<session>` is moved only by an apply
+/// or by the session. A branch deleted out of band is made again from the base
+/// (`worktrees.recreate`), and a request for the recorded tip would then be
+/// answered as applied.
 fn into_existing(
   git: Git,
   bundle: String,
@@ -616,23 +630,82 @@ fn into_existing(
   use Nil <- result.try(check_linked(git, repository, worktree, branch))
   use Nil <- result.try(require_base(git, repository, state))
   use ref <- result.try(import_bundle(git, repository, bundle, state))
-  use held <- result.try(holds_tip(git, worktree, state.tip))
+  use last <- result.try(current_value(git, repository, applied_ref(session)))
+  use head <- result.try(head_of(git, worktree))
   let applied = Applied(ref:, tip: state.tip, destination: worktree, branch:)
 
-  // A tree that holds the state needs nothing, and one that does not is moved.
-  case held {
-    True -> Ok(applied)
-    False -> {
+  // The last apply of this state decides, and the tree's own tip is the other
+  // way a state is already in place.
+  case last == Some(state.tip), head == state.tip {
+    True, _ -> Ok(applied)
+    False, True ->
+      record_applied(git, repository, session, state.tip)
+      |> result.replace(applied)
+    False, False -> {
       use Nil <- result.try(require_clean(git, worktree))
+
+      // The record is dropped before the branch moves and written after, so a
+      // crash at any point leaves either no record, which the other arms answer
+      // from the tree, or a record that names what the tree holds. Left in place
+      // it would name the older tip while the tree held the new one, and a later
+      // request for the older tip would be answered as applied.
+      use _ <- result.try(forget_applied(git, repository, session, last))
       let writable = [repository <> "/.git", worktree]
-      use _ <- result.map(
+      use _ <- result.try(
         checked_out(git, worktree, writable, [
           "checkout", "--quiet", "-B", branch, state.tip,
         ]),
       )
-      applied
+      record_applied(git, repository, session, state.tip)
+      |> result.replace(applied)
     }
   }
+}
+
+/// The ref that names the tip last applied for a session. A resend of that state
+/// is recognised by it, not by the tree's history.
+fn applied_ref(session: String) -> String {
+  "refs/loom/applied/" <> session
+}
+
+/// Drops the record of the last apply, given what the caller already read of it:
+/// there is nothing to drop on a first apply.
+fn forget_applied(
+  git: Git,
+  repository: String,
+  session: String,
+  last: Option(String),
+) -> Result(String, String) {
+  // Only a ref that exists is deleted; `update-ref -d` of a missing one is a no-op
+  // in Git but names a ref the call never needed to touch.
+  case last {
+    None -> Ok("")
+    Some(_) ->
+      git_ok(git, repository, [repository <> "/.git"], [
+        "update-ref",
+        "-d",
+        applied_ref(session),
+      ])
+  }
+}
+
+/// Records the tip as the last one applied for the session.
+fn record_applied(
+  git: Git,
+  repository: String,
+  session: String,
+  tip: String,
+) -> Result(String, String) {
+  git_ok(git, repository, [repository <> "/.git"], [
+    "update-ref",
+    applied_ref(session),
+    tip,
+  ])
+}
+
+/// The commit the tree's `HEAD` names.
+fn head_of(git: Git, worktree: String) -> Result(String, String) {
+  git_ok(git, worktree, [], ["rev-parse", "HEAD"]) |> result.map(string.trim)
 }
 
 /// Runs a Git command that writes a working tree, with every filter driver the
@@ -774,23 +847,6 @@ fn check_linked(
           )
       }
     _ -> Error("Git did not describe the tree")
-  }
-}
-
-/// Whether the tree's `HEAD` already contains the tip, which for a tree this
-/// apply moved is the tip itself and for one the session has committed on is a
-/// descendant of it. Git answers by exit code: zero is yes, one is no, and
-/// anything else is a failure to ask.
-fn holds_tip(git: Git, worktree: String, tip: String) -> Result(Bool, String) {
-  use output <- result.try(
-    git_run(git, worktree, [], ["merge-base", "--is-ancestor", tip, "HEAD"]),
-  )
-
-  // Exit one is Git's answer that the tip is not an ancestor, not a failure.
-  case output.code {
-    0 -> Ok(True)
-    1 -> Ok(False)
-    _ -> Error("Git could not compare the tree with the state's tip")
   }
 }
 

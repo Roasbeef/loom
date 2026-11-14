@@ -30,6 +30,10 @@ pub fn entry_reasons(
   cells: List(Cell),
   strand: String,
 ) -> Dict(String, String) {
+  // One index serves every aborted result below, so the cost of the reasons
+  // does not multiply by the number of results.
+  let index = snapshot_view.index_cells(cells)
+
   cells
   |> list.filter_map(fn(cell) {
     // Handle the `entry_reasons` branch dispatch.
@@ -56,7 +60,7 @@ pub fn entry_reasons(
         ..,
       ) -> {
         use reason <- result.try(
-          operation_reason(cells, ids.op_id_to_string(id), strand)
+          operation_reason_in(index, ids.op_id_to_string(id), strand)
           |> option.to_result(Nil),
         )
         Ok(#(ids.entry_id_to_string(entry), reason))
@@ -80,19 +84,25 @@ pub fn operation_reason(
   operation: String,
   strand: String,
 ) -> Option(String) {
-  cells
-  |> list.find_map(fn(cell) {
-    // Check if cell is the child-run fact for this operation.
-    use _ <- result.try(
-      case
-        cell.namespace == register.FactCustom
-        && cell.key == "child-run/" <> operation
-      {
-        True -> Ok(Nil)
-        False -> Error(Nil)
-      },
-    )
+  operation_reason_in(snapshot_view.index_cells(cells), operation, strand)
+}
 
+/// `operation_reason` over cells already indexed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert child_stop.operation_reason_in(dict.new(), "operation", "main")
+///   == None
+/// ```
+@internal
+pub fn operation_reason_in(
+  cells: snapshot_view.CellIndex,
+  operation: String,
+  strand: String,
+) -> Option(String) {
+  snapshot_view.cell_at(cells, register.FactCustom, "child-run/" <> operation)
+  |> result.try(fn(cell) {
     // Decode child-run metadata fields.
     use fields <- result.try(case cell.value {
       json.Object(fields) -> Ok(fields)

@@ -10,6 +10,7 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon_server_test as wire
 import client/session_socket_test
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
@@ -60,6 +61,7 @@ fn shared_session(ready: root.Ready(String), seed: Int) -> String {
         None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),

@@ -41,6 +41,7 @@
 ////    connection), `drain_configuration` (`create_session`) and `drain_activity`
 ////    (`service_activity`).
 
+import core/agency_limits
 import core/json
 import gleam/int
 import gleam/option.{type Option, None, Some}
@@ -599,6 +600,21 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
 /// configuration, as it always did.
 @internal
 pub fn create_session(model: Model) -> Model {
+  create_session_with_limits(model, agency_limits.empty)
+}
+
+/// Starts a session creation carrying optional per-session subagent limits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.create_session_with_limits(model, agency_limits.empty)
+/// ```
+@internal
+pub fn create_session_with_limits(
+  model: Model,
+  agency: agency_limits.AgencyLimits,
+) -> Model {
   // Resolve local paths before retaining a creation key: a local failure sent
   // nothing and must leave the operator free to correct the invocation.
   //
@@ -609,7 +625,7 @@ pub fn create_session(model: Model) -> Model {
   // lost-reply window, and the operator sees a named conflict, not a session
   // created under a catalogue they did not ask for.
   case model.view.local_options, model.view.configuring {
-    None, _ -> create_session_configured(model, "")
+    None, _ -> create_session_configured(model, "", agency)
 
     // A second press while the first resolution runs adds nothing: the
     // first creation continues when its configuration arrives.
@@ -618,7 +634,9 @@ pub fn create_session(model: Model) -> Model {
       let #(model, key) = tui_model.start_job(model, job.Configure(options))
       Model(
         ..model,
-        view: view_set.configuring(model.view, Some(job.awaiting(key))),
+        view: model.view
+          |> view_set.configuring(Some(job.awaiting(key)))
+          |> view_set.pending_agency(agency),
       )
     }
   }
@@ -666,7 +684,14 @@ fn apply_configuration_reply(
   model: Model,
   reply: job.ConfigurationReply,
 ) -> Model {
-  let finished = Model(..model, view: view_set.configuring(model.view, None))
+  let agency = model.view.pending_agency
+  let finished =
+    Model(
+      ..model,
+      view: model.view
+        |> view_set.configuring(None)
+        |> view_set.pending_agency(agency_limits.empty),
+    )
 
   // Check configuration reply status.
   case reply {
@@ -677,7 +702,7 @@ fn apply_configuration_reply(
     // picker and the creation notice need an invalidation of their own. The
     // failure arms below get theirs from `append_error`.
     weft.PulledOutcome(weft.Completed(value: config, ..)) ->
-      create_session_configured(finished, config)
+      create_session_configured(finished, config, agency)
       |> tui_model.invalidate_frame
     weft.PulledOutcome(weft.Failed(error:, ..)) ->
       tui_model.append_error(finished, error)
@@ -756,7 +781,11 @@ fn refuse_creation(model: Model, reason: String) -> Model {
 }
 
 /// Initiates session creation with parsed configuration.
-fn create_session_configured(model: Model, config: String) -> Model {
+fn create_session_configured(
+  model: Model,
+  config: String,
+  agency: agency_limits.AgencyLimits,
+) -> Model {
   let model =
     inbound.cancel_pending(model, "target change from " <> model.shared.session)
 
@@ -824,6 +853,7 @@ fn create_session_configured(model: Model, config: String) -> Model {
           chosen_profile(model),
           executor,
           pool,
+          agency,
         )
       let #(model, job_key) =
         tui_model.start_job(model, job.Attach(route, attach_timeout_ms))

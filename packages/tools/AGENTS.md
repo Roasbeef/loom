@@ -1156,10 +1156,7 @@ rather than merely to render.
 and total resolver. `fs.read_tool_with` routes `://` references before file
 resolution. An unknown namespace returns `unknown_scheme`; a resolver returns
 typed not-found, unavailable, or malformed refusals. A virtual answer is
-windowed by line and bounded inline (clamping multi-line windows to fit within
-`blob.overflow_threshold_bytes` and setting `has_more` so spilled `blob://`
-reads succeed with the default 2000-line limit), without a file digest or edit
-anchors.
+windowed by line and bounded inline (wrapping over-budget single lines on UTF-8 boundaries and clamping multi-line windows to fit within `blob.overflow_threshold_bytes` while setting `has_more`, so both multi-line and compact single-line JSON `blob://` reads page cleanly with `offset`), without a file digest or edit anchors.
 Ordinary paths still use `resolve_invocation`, and ordinary images still return
 `ToolResultImage` blocks. `fs.blob_scheme()` is registered in
 `client/contributions` alongside `cap://` and `job://`.

@@ -450,7 +450,11 @@ A successful reply's `event` name is the command name. A failure is an
 Source: (`client/daemon/server.gleam:426-458`).
 
 Dispatcher refusals carry `request refused`, except an authorized exact
-`operations.get` startup failure (protocol 055). Its `start_failed` code
+`operations.get` startup failure (protocol 055), the refusals that
+`sessions.move` and its abandon decide themselves, which carry their cause
+(section 3.27), and the `moving` and `busy` refusals of `sessions.archive`,
+`sessions.restore` and `sessions.delete`, which carry words. The
+`operations.get` `start_failed` code
 remains machine-readable and its message preserves one line of at most 2048
 UTF-8 bytes, including the configuration path and available parser context.
 The recorded failure precedes live `stopping` status while cleanup retains
@@ -565,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4540`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4568`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -678,6 +682,7 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `pool` | string | optional | A pool of executors the workspace may be registered on: a `[pools.<name>]` key of the daemon's configuration, in the same grammar. Exclusive with `executor`: a request with both, or with a present value that is not a pool name, is refused as malformed. With a `pool` the workspace is a registered name, the domain scope defaults to `session_only`, and the daemon picks the executor when the session first opens. See the addendum on pools in [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
 | `model` | string | optional | A `[models.<key>]` key of the session's configuration to pin the `main` role to, 1 to 64 bytes. Absent means the chain the profile or configuration gives. A present value that is not a key of that length, including the empty string and a non-string, is refused as malformed. The server stores the key with the session and resolves it again at every open, after the profile. See [protocol-change/080](../protocol-change/080-session-model-choice.md). |
+| `agency` | object | optional | Per-session subagent limits (`fan_out` integer in `1..10000`, `session_strands` integer in `1..10000` with `fan_out <= session_strands`, `depth_cap` integer in `1..256` or `"unlimited"`). Omitted keys inherit the daemon/Agency defaults (`100`, `256`, `1`). Unknown keys or out-of-range values are refused as `bad_request`. See [protocol-change/113](../protocol-change/113-session-agency-limits.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
 (`client/daemon/protocol.gleam:256-263`).
@@ -704,7 +709,7 @@ cannot be read or parsed, whose `message` is the daemon's startup wording
 daemon's configuration, and `pool_unknown` when `pool` names no
 `[pools.<name>]`, each before anything is reserved; `conflict` when
 the key was reused with different metadata, a different `profile`,
-`model`, `executor` or `pool` included; `unavailable`.
+`model`, `executor`, `pool` or `agency` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 On a session directory member, a session with an `executor` or a `pool` is
@@ -1247,7 +1252,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1459`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1524`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1533,6 +1538,17 @@ session is in a pool and has no executor yet; it is archived; has not finished b
 another destination is in flight), and `not_owner` (the session already moved).
 `moving` is not a refusal of this command: asking again is how a client learns
 the stored `op`.
+
+Every refusal that the move itself decides carries its cause in `message`, in
+words an owner can act on: the destination's table that lacks `checkout_executor`
+and `checkout_workspace`, the executor this daemon does not list, a directory that
+is not the top of a primary checkout, a move already in flight toward another
+destination, and so on. A refusal before the command is dispatched (`unavailable`,
+`unauthorized`) stays bare for every command. `sessions.archive`,
+`sessions.restore` and `sessions.delete` of a session that is moving answer
+`moving` with `orchestrator` and `op` beside the words. The words name configuration keys and orchestrators and
+never a path of the daemon's machine. A client prints the code and the message
+together and does not match on the message.
 
 On a session directory member
 ([protocol-change/083](../protocol-change/083-khepri-session-ownership.md)) the
@@ -2261,7 +2277,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2770`).
+`wrong_session`. Source: (`client/gateway.gleam:2831`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -2606,7 +2622,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:7799`).
+   is `stale_approval`. Source: (`client/gateway.gleam:8027`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -4346,7 +4362,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
 | `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
 | `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does; or `sessions.open`, `sessions.archive`, `sessions.restore`, `sessions.delete` or `sessions.move` named a session this daemon handed to another orchestrator. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |
-| `moving` | `sessions.open`, `sessions.archive` or `sessions.delete` named a session that is being handed to another orchestrator (section 3.27). The body also carries `orchestrator`, the destination, and `op`. | Wait and ask again: the move ends in `not_owner` for this daemon or, if it is abandoned, in an ordinary session. |
+| `moving` | `sessions.open`, `sessions.archive`, `sessions.restore` or `sessions.delete` named a session that is being handed to another orchestrator (section 3.27). The body also carries `orchestrator`, the destination, and `op`. | Wait and ask again: the move ends in `not_owner` for this daemon or, if it is abandoned, in an ordinary session. |
 | `orchestrator_unknown` | `sessions.move` named a destination that is not a key of the daemon's `[orchestrators.<name>]` tables. | Fix the name, or have the owner add the orchestrator and restart the daemon. |
 | `not_movable` | `sessions.move` named a session that has no executor (a local session, or a pooled one that never opened), is archived, or has not finished being created. It is also the answer for a session this daemon imported when the orchestrator it came from did not answer that it has handed the session on: that orchestrator may still be finishing its move, or is down, or is no longer in this daemon's `[orchestrators.<name>]` tables. | Move a session that lives on an executor, restoring it first if it is archived. For an imported session, ask again after the source's move has finished (`sessions.get` there reports `moved`), or when the source is reachable again. |
 | `owner_unreachable` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, no orchestrator said it holds it, and some could not be asked. The body also carries `orchestrators`, the names that did not answer. | Retry later, or connect to one of the named orchestrators directly. |
@@ -4647,7 +4663,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:4781`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:5004`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

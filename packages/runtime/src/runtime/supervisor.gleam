@@ -216,7 +216,10 @@ pub fn start_published(
     let strand_options = registry.template(reg)
     let template =
       strand_options(writer_name, fn(strand, reaper) {
-        drain_registry.claim(drains, strand, reaper)
+        case reaper {
+          option.None -> drain_registry.await(drains, strand)
+          option.Some(scope) -> drain_registry.claim(drains, strand, scope)
+        }
       })
 
     // Start strand runtime with template options and registered address.

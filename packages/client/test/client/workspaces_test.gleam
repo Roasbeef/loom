@@ -60,6 +60,33 @@ pub fn workspaces_need_a_distribution_table_test() {
   )
 }
 
+const listener =
+  "[executor_listener]
+listen = \"0.0.0.0:4370\"
+ca = \"/srv/loom-node/creds/ca.pem\"
+certificate = \"/srv/loom-node/creds/cert.pem\"
+key = \"/srv/loom-node/creds/key.pem\"
+orchestrators = [\"0000000000000000000000000000000000000000000000000000000000000001\"]
+"
+
+pub fn an_untrusted_listener_serves_workspaces_without_a_distribution_table_test() {
+  // A guest on the untrusted link (protocol-change/109) is reached by the
+  // orchestrators its listener admits, and has no `[distribution]` table.
+  let text = listener <> "
+[workspaces.loom]
+root = \"/srv/checkouts/loom\"
+"
+  assert workspaces.parse(text)
+    == Ok([workspaces.shared("loom", "/srv/checkouts/loom")])
+}
+
+pub fn a_listener_beside_a_distribution_table_is_still_refused_test() {
+  refused(
+    distribution <> listener <> "[workspaces.loom]\nroot = \"/srv/loom\"\n",
+    "cannot share a configuration",
+  )
+}
+
 pub fn a_root_must_be_one_absolute_unambiguous_path_test() {
   refused(
     distribution <> "[workspaces.loom]\nroot = \"srv/loom\"\n",

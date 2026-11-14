@@ -286,7 +286,7 @@ func checkGuestRoot(add func(string, Status, string, ...any), root string) {
 
 	case info.Mode().Perm() != 0o777 || info.Mode()&os.ModeSticky == 0:
 		add("guest root", Fail, "/tmp is %v, want drwxrwxrwt; the root was copied without "+
-			"preserving modes (clone with cp -cRp)", info.Mode())
+			"preserving modes (clone with cp -cRp on macOS, cp -a on Linux)", info.Mode())
 
 	default:
 		add("guest root", OK, "%s", root)

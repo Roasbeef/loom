@@ -370,7 +370,8 @@ session and sends it many invocations.
   cloned from. `prepare` lays one out, `verify` refuses a stale or
   differently-pinned one, `main` is `gleam run -m codemode/seed`.
 - `codemode/build.BuildConfig` — the production `Builder`: `gleam build
-  --warnings-as-errors` inside a network-off jail, then the flattened
+  --warnings-as-errors` inside a network-off jail with `TMPDIR` and `HOME` pinned
+  beneath `build_root` (so `rebar3` finds a writable home when compiling native dependencies), then the flattened
   modules and fixed `esqlite3_nif.so` library with their content address.
   Native loading is module-relative and stays inside the same artifact read
   root. Missing library copies fail the build; extra `priv` files do not enter
@@ -537,7 +538,7 @@ session and sends it many invocations.
   replacing the turn with a loop removes an implicit throttle and has to
   add an explicit one. The test is whether a call *mints something that
   outlives the execution*, which four of the six meet: `strand.spawn`
-  (32), `strand.send` (128 — a durable commit, and to an idle descendant
+  (256), `strand.send` (1024 — a durable commit, and to an idle descendant
   it starts a run), `strand.note` (256 — a durable write-once register
   under a program-chosen key) and `strand.notes` (64 — a full prefix scan
   per call). `strand.wait` and `strand.roster` have none: a wait's whole

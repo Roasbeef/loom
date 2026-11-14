@@ -10,6 +10,7 @@
 //// daemon for, how the browser's fields decode, and how a remote session is
 //// listed.
 
+import core/agency_limits
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -57,6 +58,7 @@ fn page(
       String,
       creations.Sharing,
       creations.Roles,
+      agency_limits.AgencyLimits,
       String,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
@@ -125,7 +127,7 @@ fn hearing(
     executors,
     pools,
     read,
-    Some(fn(place, name, sharing, roles, _, _) {
+    Some(fn(place, name, sharing, roles, _, _, _) {
       process.send(asked, #(place, name, sharing, roles))
     }),
   )

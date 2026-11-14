@@ -24,6 +24,7 @@
 //// 4. `elsewhere` is the read of the other orchestrators' sessions, with
 ////    `elsewhere_failure` for its words.
 
+import core/agency_limits
 import core/json
 import gleam/bit_array
 import gleam/bool
@@ -265,13 +266,16 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
 
 /// Requests session opening from the daemon and produces an attachable target.
 fn open_selected(host: Host, selected: protocol.Session) {
+  // A session this daemon handed away is held as a saved tombstone, so the
+  // read before this open succeeds and the redirect arrives here. The words
+  // name the session, because the launch line they print needs its identity.
   use reply <- result.try(
     daemon.request(
       host.control,
       protocol.OpenSession(selected.session_id),
       10_000,
     )
-    |> result.map_error(failure),
+    |> result.map_error(failure_for(selected.session_id, _)),
   )
 
   // Extract lifecycle status from opening reply.
@@ -328,6 +332,37 @@ pub fn create_named(
   executor: String,
   pool: String,
 ) -> Result(Target, String) {
+  create_named_with_agency(
+    host,
+    key,
+    workspace,
+    name,
+    configuration,
+    profile,
+    executor,
+    pool,
+    agency_limits.empty,
+  )
+}
+
+/// `create_named`, carrying optional per-session subagent limits (`protocol-change/113`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.create_named_with_agency(host, key, project.path, workspace.session_name(project), config, "", "", "", agency_limits.empty)
+/// ```
+pub fn create_named_with_agency(
+  host: Host,
+  key: String,
+  workspace: String,
+  name: String,
+  configuration: String,
+  profile: String,
+  executor: String,
+  pool: String,
+  agency: agency_limits.AgencyLimits,
+) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
@@ -339,6 +374,7 @@ pub fn create_named(
         profile,
         executor,
         pool,
+        agency,
       ),
       10_000,
     )
@@ -391,7 +427,8 @@ pub fn create_named(
 /// ```
 pub fn delete(host: Host, session: String) -> Result(String, String) {
   delete_using(session, fn(command, within) {
-    daemon.request(host.control, command, within) |> result.map_error(failure)
+    daemon.request(host.control, command, within)
+    |> result.map_error(failure_for(session, _))
   })
 }
 
@@ -426,7 +463,8 @@ type Removal {
 /// ```
 pub fn archive(host: Host, session: String) -> Result(String, String) {
   archive_using(session, fn(command, within) {
-    daemon.request(host.control, command, within) |> result.map_error(failure)
+    daemon.request(host.control, command, within)
+    |> result.map_error(failure_for(session, _))
   })
 }
 
@@ -524,7 +562,7 @@ pub fn executor_of(
 pub fn restore(host: Host, session: String) -> Result(String, String) {
   use reply <- result.try(
     daemon.request(host.control, protocol.RestoreSession(session), 10_000)
-    |> result.map_error(failure),
+    |> result.map_error(failure_for(session, _)),
   )
 
   // Confirm session restoration reply matches target identity.
@@ -1080,7 +1118,7 @@ fn await(host: Host, session, operation) {
         )
       {
         Error(daemon.TimedOut) -> poll.Fail(startup_incomplete)
-        Error(reason) -> poll.Fail(failure(reason))
+        Error(reason) -> poll.Fail(failure_for(session, reason))
         Ok(protocol.SessionReply(row)) ->
           case row.status {
             protocol.Resident(incarnation) -> poll.Done(incarnation)

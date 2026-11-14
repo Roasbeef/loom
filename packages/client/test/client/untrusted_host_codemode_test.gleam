@@ -243,18 +243,21 @@ fn drive(seed: String) -> Nil {
     ))
     as "the owner port starts"
   let assert Ok(attachment) =
-    surface.attach(surface.Config(
-      address: untrusted_link.address(name),
-      session: "s1",
-      workspace: "proj",
-      incarnation: 0,
-      port:,
-      read_authority: fn(_run) { Ok(fixtures.authority()) },
-      reconnect: fn() { Ok(Nil) },
-      remote_tools: ["code_mode"],
-      attach_within_ms: 120_000,
-      mint_token: surface.strong_token,
-    ))
+    surface.attach(
+      surface.Config(
+        address: untrusted_link.address(name),
+        session: "s1",
+        workspace: "proj",
+        incarnation: 0,
+        port:,
+        read_authority: fn(_run) { Ok(fixtures.authority()) },
+        reconnect: fn() { Ok(Nil) },
+        remote_tools: ["code_mode"],
+        attach_within_ms: 120_000,
+        mint_token: surface.strong_token,
+        attached: fn(_attached) { Nil },
+      ),
+    )
     as "the session attaches through the link"
 
   // The executor describes the seam it was sent: the host module in the index

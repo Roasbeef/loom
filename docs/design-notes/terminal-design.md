@@ -69,7 +69,7 @@ the grids are exact. Running the generator also writes a viewer page,
 
 Reached with `←` from an empty composer (`packages/tui/src/tui/interaction.gleam:1376`).
 A draft or a pending attachment keeps `←` as a cursor key, as today. The view
-is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:836`)
+is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:1071`)
 (`render`), and this note redraws it without changing its keys.
 
 ![Picker, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-120-dark.png)
@@ -102,7 +102,7 @@ change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:537`)
 (`Session`). The state, strand counts, approvals, last message and up to four
 glance lines come from `Activity` (`packages/tui/src/tui/daemon/protocol.gleam:419`)
 (`Activity`) and `GlanceLine` (`packages/tui/src/tui/daemon/protocol.gleam:439`)
-(`GlanceLine`). The tabs are `Filter` (`packages/tui/src/tui/session_selector.gleam:75`)
+(`GlanceLine`). The tabs are `Filter` (`packages/tui/src/tui/session_selector.gleam:82`)
 (`Filter`). Age is the creation age, because the page has no last-activity
 time; a "last active" field would be a change to `sessions.activity`.
 
@@ -594,7 +594,7 @@ New `F` keys wait on a check of what Herdr and common terminals pass through
 | Peer messages | `PeerOrigin` | None |
 | Code-mode program and result | `code_mode_program`, `code_mode_result_lines` | None |
 | Code-mode call list | A call record in the result | **protocol-change 060** |
-| Images | The tool result block at `packages/tools/src/tools/fs.gleam:1576` (`ToolResultImage`), read through `of_entry` | None; etui work |
+| Images | The tool result block at `packages/tools/src/tools/fs.gleam:1646` (`ToolResultImage`), read through `of_entry` | None; etui work |
 | Repeats, repeated errors | New folds in `session_view` | None |
 | Harness notices | See section 9 | Possibly a marker |
 | Layout memory | A file in the state root | None |

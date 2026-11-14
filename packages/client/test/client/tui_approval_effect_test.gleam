@@ -21,6 +21,7 @@ import client/session_socket_test
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/entry
 import core/ids
@@ -252,6 +253,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), directory) {
         option.None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), 51),

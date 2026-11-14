@@ -252,7 +252,10 @@ fn collect_entries(
 fn fork_branch_scan_error(error: StorageError) -> ForkError {
   case error {
     storage.UnknownEntry(id:) -> ForkPointUnknown(id:)
-    storage.CorruptRow(..) | storage.BackendFault(..) | storage.HandleClosed ->
+    storage.CorruptRow(..)
+    | storage.BackendFault(..)
+    | storage.HandleClosed
+    | storage.RegisterReadLimitExceeded(..) ->
       ForkSourceRead(error: session.StoreFailure(error:))
   }
 }

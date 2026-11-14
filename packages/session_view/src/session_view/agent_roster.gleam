@@ -235,14 +235,16 @@ pub fn observe(
 
   // Each strand with a current operation gets a clock. The previous clock
   // carries over only for the same operation, and a newer glance re-anchors
-  // it to the daemon's own measurement.
+  // it to the daemon's own measurement. Metadata is found by identity in an
+  // index built once, so the clocks do not cost a scan of the cut per strand.
+  let cells = snapshot_view.index_cells(view.cells)
   let clocks =
     view.operations
     |> dict.to_list
     |> list.map(fn(pair) {
       let #(strand, operation) = pair
       let current = current_glance(glances, strand, operation)
-      let started = started_at(view.cells, operation)
+      let started = started_at(cells, operation)
       let previous =
         dict.get(roster.clocks, strand)
         |> option.from_result
@@ -440,13 +442,10 @@ fn current_glance(
 // against a host's.
 /// Documents `started_at` helper.
 fn started_at(
-  cells: List(snapshot_view.Cell),
+  cells: snapshot_view.CellIndex,
   operation: String,
 ) -> Option(Int) {
-  cells
-  |> list.find(fn(cell) {
-    cell.namespace == register.OpMeta && cell.key == operation
-  })
+  snapshot_view.cell_at(cells, register.OpMeta, operation)
   |> result.try(fn(cell) {
     codec.decode_operation(cell.value) |> result.replace_error(Nil)
   })

@@ -109,11 +109,17 @@ COPY . .
 # BUILD_COMMIT names the commit the image is built from: the build context
 # excludes .git, so scripts/build-commit.sh would otherwise report `unknown`
 # and the guest daemon could not say which release it is.
+#
+# Only /opt/loom leaves this stage, and the checkout's build output, which runs
+# to gigabytes, would otherwise be committed with it as a layer. The stage is
+# built on disks that cannot always hold that layer (a 25 GB Linux host ran out
+# of space writing it), so the checkout is removed in the same step.
 ARG LOOM_REVISION=unknown
 RUN --mount=type=cache,target=/root/.cache/gleam \
 	--mount=type=cache,target=/root/go/pkg/mod \
 	--mount=type=cache,target=/root/.cache/go-build \
-	DIST_VM=0 PREFIX=/opt/loom make install BUILD_COMMIT="${LOOM_REVISION}"
+	DIST_VM=0 PREFIX=/opt/loom make install BUILD_COMMIT="${LOOM_REVISION}" \
+	&& cd / && rm -rf /work
 
 # ----------------------------------------------------------- runtime stage
 FROM docker.io/library/debian:trixie-slim AS runtime
@@ -141,6 +147,13 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 		libssl3t64 \
 		zlib1g \
 	&& rm -rf /var/lib/apt/lists/*
+
+# No setuid or setgid file stays in the guest root. The root is a share of a
+# host directory whose files belong to the host user, so on Linux a setuid-root
+# `mount` runs as that user and refuses to mount for the init, and nothing in a
+# guest that has no login needs one: the init is root already and the loom
+# user is meant to stay unprivileged.
+RUN find / -xdev -type f -perm /6000 -exec chmod a-s {} +
 
 # The same non-root user the root Dockerfile creates. The init drops to it
 # before running the workload; running as root would leave loom-exec's inner

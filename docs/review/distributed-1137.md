@@ -126,3 +126,421 @@ documentation gate retains 231 warnings; neither reports an error.
 
 Broad affected checks, hosted CI and applicable Linux signoff remain pending.
 No live model call, daemon deployment or issue-level acceptance is implied.
+
+## Exit criterion 2: live drive of sessions.move (2026-11-13)
+
+Criterion 2 of #1137 is "move a laptop session to the box and continue it
+there". The code is the checkout step of `sessions.move` (PR #1192,
+protocol-change/107 slice 4c), which had run only against in-process fixtures.
+This section records the first drive against real daemons. Source baseline:
+`024afdadf`. The scripts, logs and daemon homes are under
+`/Users/roasbeef/loom-drives/1137-move/2026-11-13/` and are not kept in the
+repository.
+
+**Result.** Steps 2 to 5 pass with no manual intervention once the daemons
+are started with an explicit `--helper` (finding 3). The failure paths found
+two defects that leave a session stuck in `moving` with no operator recovery
+(finding 1) and one that delivers discarded edits after a retry (finding 2).
+Criterion 2 is therefore met for the clean path and not met for recovery.
+
+### Topology
+
+One Mac, loopback, TLS distribution, three `bin/loomd` processes (built with
+`make binaries`, `make server-shipment`, `make codemode-seed`) under separate
+`HOME` directories, provisioned with `loom distribution provision plan.toml out
+--static` and `loom distribution install out/<node>.loombundle --home <home>`:
+
+| Daemon | Role | Node | Control port | Notes |
+|---|---|---|---|---|
+| `alpha` | orchestrator, the laptop | `alpha1137@127.0.0.1` | 17451 | `[orchestrators.bravo]` names `checkout_executor = "box"` and `checkout_workspace = "proj"` |
+| `bravo` | orchestrator, the box | `bravo1137@127.0.0.1` | 17452 | `[orchestrators.alpha]`, `[executors.box]` |
+| `exec` | executor | `exec1137@127.0.0.1` | 17453 | `[workspaces.proj]` with `mode = "worktree"`, root a primary checkout |
+
+The checkout keys belong to the source's row for the destination, as
+`docs/configuration.md` says, and not to the receiver. The model was a
+deterministic Anthropic-dialect peer on loopback (`fake_provider.py`, which
+answers `bash: <command>` with one `bash` tool call), because the repository's
+own scripted provider is a test module and cannot be started from a shell. The
+daemons were driven through `loom acp` (`acp.py`), `loom sessions move` and
+`loom sessions list`. A second pass used the documented Baseten entry
+(`docs/examples/loom-baseten.toml`, Kimi K3, credential from
+`BASETEN_GLM_5_2`, never printed).
+
+Hygiene: the scripted pass started all three daemons from a shell that had
+`BASETEN_GLM_5_2` exported, so each inherited it, the executor included. The
+scripted pass never used it, but the criterion "no provider key on the
+executor" is not established by that pass. Before the real-model pass the
+executor was restarted with the variable unset; `ps -E` showed it absent from
+the executor's environment, and the model, asked to run `env | grep -c BASETEN`
+in the moved checkout, was told `0`. No GitHub token was present in any daemon
+environment or file.
+
+### Steps and observations
+
+1. **Start a session on alpha.** `acp.py new laptop-repo` with two turns. Turn
+   one ran `git checkout -b feature/move-drive`, wrote `committed.txt` and
+   committed it. Turn two appended to `notes.txt` and wrote `untracked.txt`.
+   Session `01a1d475-a431-7a1b-96bd-c90c44f66b09`, branch
+   `feature/move-drive`, `HEAD` `cc9c49b`, status ` M notes.txt` and
+   `?? untracked.txt`. Pass.
+2. **Move.** `loom sessions move 01a1d475-... --to bravo` printed one line,
+   `moving 01a1d475-a431-7a1b-96bd-c90c44f66b09 to bravo (operation
+   01a1d480-4e37-7eec-a60b-b9617aa6ed70)`, and returned 0. `daemon.move_finished`
+   appeared on alpha and `daemon.move_activated` on bravo after 4.1 s (polled
+   once a second). Those are the only move lines in either log. The first
+   attempt, with the daemons started as the documentation shows, aborted in 5.4
+   s (finding 3). Pass after that.
+3. **Executor.** The branch `loom/01a1d475-...` in the workspace repository was
+   `32ce70d Working snapshot` on top of `cc9c49b add committed.txt`, the
+   laptop's `HEAD`, so it descends from it. The snapshot commit held exactly the
+   modified `notes.txt` and the new `untracked.txt` (2 files, 2 insertions),
+   authored by the source's global Git identity. After the move no tree
+   existed, because the scope's clean close removes it. While bravo held the
+   session open, `git worktree list` showed
+   `<executor state>/worktrees/proj/01a1d475-...` on that branch and no worktree
+   after the stop. Hooks, filters, fsmonitor and network: a laptop and an
+   executor repository were given executable hooks that fail and touch a marker,
+   `core.fsmonitor`, a credential helper, an ssh command and an `origin` URL
+   pointing at a listener of this drive. The move finished, the listener saw 0
+   connections and no marker appeared. A marker cannot be written inside the
+   sandbox, so absence of a marker alone proves little; the stronger evidence is
+   that the move finished with failing hooks present on the laptop side, and the
+   `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never`
+   arguments of `client/state_apply` and `client/repository_snapshot`. A hook of
+   the executor repository did run during the attach (finding 6). Pass, with
+   that exception.
+4. **Alpha.** The laptop directory's `HEAD`, refs, `git status` and every file
+   hash were identical before and after (`snap.sh`, `diff` empty). The session
+   file was `01a1d475-....db.moved`. `session/load` on alpha was refused with
+   `session <session-id> is owned by orchestrator bravo, which has no address in
+   this daemon's configuration` (finding 9). `loom sessions list --all` on alpha
+   no longer listed it as a local row, and listed it under bravo as
+   `box:proj` (finding 12). Pass.
+5. **Continue on bravo.** `acp.py load` on bravo replayed the three earlier
+   turns in order, and a new turn ran `pwd` in
+   `<executor state>/worktrees/proj/01a1d475-...`, with `git status` clean, `HEAD`
+   `32ce70d`, and the committed, modified and untracked content present. Two more
+   turns committed `executor.txt` (`b67aaaa`) there; the branch in the
+   workspace repository then read `b67aaaa`, `32ce70d`, `cc9c49b`. The real-model
+   pass did the same on a second repository: the model read `hello.txt` and the
+   README, named the snapshot commit, committed `executor.txt` and the
+   executor branch ended at `cad3619`. Pass. One model statement was wrong
+   (finding 8).
+6. **Failure paths**, each on a fresh session:
+   - (a) The row without `checkout_executor`: `loom sessions move` printed
+     `loom sessions: not_movable: request refused` and exited 1, with nothing in
+     the daemon log. The session opened normally on alpha. Pass for behaviour,
+     finding 5 for the words.
+   - (b) A `shared` workspace: `moving ...` then `daemon.move_aborted` with the
+     executor's words (``the workspace `shared1` has mode = "shared", and a state
+     is applied only into a workspace with mode = "worktree"``). The session
+     opened on alpha. An unknown name stalled as documented, with the executor's
+     words every few seconds. Neither could then be moved to the right workspace
+     (finding 1).
+   - (c) A 200 MiB repository (200 files of random bytes, 201 MB of `.git`).
+     The capture took about 37 s; the executor's `.part` file was 7.1 MB when the
+     executor (the PID this drive started) received SIGKILL, and 8.1 MB when
+     checked after the kill. After a restart of the executor with no other
+     action, alpha's mover finished the move. The stored bundle's SHA-256 equals
+     its name, its size is 209,786,883 bytes, the executor branch is
+     `Working snapshot` on the laptop's `HEAD`, and the tree entries and blob
+     hashes match the laptop's. Whether the send resumed at the executor's offset
+     or started again is not observable: no log line says. Pass for outcome.
+   - (d) `loom sessions move ID --abandon` on a stalled move printed
+     `not_movable: request refused`. A static deployment has no directory, so
+     `--abandon` is unavailable, as the help says, and the stalled move cannot be
+     ended by the owner. To test the retry rule, the move was instead aborted
+     after the landing by making bravo refuse the sender (`bravo` without
+     `[orchestrators.alpha]`: `daemon.move_aborted`, "does not list the node").
+     The executor held the snapshot. With the laptop's edits discarded (tree
+     equal to `HEAD`) and the move asked for again, it finished and the executor
+     stayed at the earlier snapshot: its tree still had the discarded `README`
+     line and `extra.txt`, which the laptop no longer had. With different
+     uncommitted edits instead, the branch moved to the new snapshot and held the
+     new content. The known observation is confirmed (finding 2).
+7. **Leaks.** `repository-snapshots` was empty on all three daemons and no
+   `.part` file remained. Left behind, all by design or by the findings below:
+   alpha and the executor each keep every bundle in `states/` (14 bundles, 205 MB,
+   including the 200 MiB one); the executor repository keeps one `loom/<id>`
+   branch and one `refs/loom/in/<hash8>` ref for every state it ever received,
+   including the superseded `990cb1e` (10 refs); the executor ledger holds one
+   `open` scope bound to the misspelt workspace `nosuch` and one `closed` scope
+   bound to `shared1`. No orphan worktree existed.
+8. **Stop.** SIGTERM to the three recorded PIDs and the provider; each daemon
+   logged `daemon.stopped`, and no process naming the drive directory remained.
+   The operator's `epmd` was untouched.
+
+### Findings
+
+1. **HIGH. A move that failed at the executor leaves a scope bound to the wrong
+   workspace, and the documented recovery does not work.** An aborted move to a
+   `shared` workspace leaves a closed scope bound to `shared1`; a move to a name
+   the executor does not serve leaves an open scope bound to that name. A later
+   move with a corrected `checkout_workspace` then stalls for good with
+   `the executor's scope for this session is for the workspace shared1` (or
+   `nosuch`). `docs/configuration.md` and protocol-change/107 say to fix the file
+   and restart the daemon; that was done and the move still stalled.
+   `loom executor release` answers `already closed` for the first and `is open`
+   for the second, and `--abandon` is refused in a static deployment, so the
+   session stays `moving` and cannot be opened on alpha. Recovery that worked:
+   none without editing the executor ledger. Evidence: `logs/step6b3.txt`,
+   `logs/step6e.txt`, `logs/step6e2.txt`, `logs/step7-leaks.txt`. Responsible:
+   `packages/storage/src/storage/exec_ledger.gleam:1904` (`same_workspace`
+   binds a scope to the first workspace it names, whether or not that attach
+   succeeded) and `packages/client/src/client/move_checkout.gleam:602`
+   (`attach_and_apply` leaves the scope it attached when the apply is refused, so
+   the "next attach rebinds it" claim holds only for the same workspace).
+2. **MEDIUM. A retry after an aborted move can silently deliver discarded
+   edits.** Confirmed as the earlier review predicted: after the landing, an
+   abort, and the operator discarding the uncommitted work, the retry reports
+   `daemon.move_finished` and the executor keeps the old snapshot. The move
+   reports nothing about it. Evidence: `logs/step6d-stale.txt`. Responsible:
+   `packages/client/src/client/state_apply.gleam:619` and `:784`
+   (`holds_tip` treats a descendant of the new tip as applied). A different
+   edit is delivered correctly (`logs/step6d-changed.txt`).
+3. **MEDIUM. A daemon started from a checkout takes `loom-exec` from `PATH`,
+   and the first move failed with an unhelpful message.** `install.helper()` is
+   `<erlang root>/bin/loom-exec`, which does not exist for `bin/loomd` from
+   `make server-shipment`, so the ladder falls to `PATH`. The drive shell had an
+   installed release's `loom-exec` first on `PATH`. Tool calls ran, but the
+   capture's Git failed with `sandbox-exec: execvp() of
+   '<installed>/bin/loom-exec' failed: Operation not permitted` (seen only after a
+   local patch that appended the helper's standard error). With `--helper
+   <checkout>/bin/loom-exec` every move worked. The cause of the denial under the
+   capture's profile was not determined. The setup document says nothing about
+   the helper for a checkout. Responsible:
+   `packages/client/src/client/executor_plane.gleam:1630` and
+   `packages/client/src/client/serve.gleam:2127` (ladder), and finding 4 for the
+   message.
+4. **LOW. The refusal text for a degraded sandbox is Linux advice and hides the
+   cause.** On macOS the move aborted with "Run this command under the same
+   delegated cgroup as the executor daemon (a user service or a systemd scope with
+   Delegate=yes)", and the helper's own error was dropped. Responsible:
+   `packages/client/src/client/worktree_git.gleam:722` (`failure_words`) and
+   `:523` (the result's standard error is not carried).
+5. **MEDIUM. The owner cannot learn how a move ended or why it was refused.**
+   `loom sessions move` returns after `moving ...`; abort reasons exist only as a
+   warning in the daemon log. A destination with no checkout place is refused as
+   `not_movable: request refused` with no log line. The `--abandon` refusal has
+   the same words. Responsible:
+   `packages/client/src/client/daemon/server.gleam:5628` and `:3758` (code
+   without a message).
+
+   *Half fixed in the move-legibility PR.* (a) Fixed: a refusal of `sessions.move`
+   and of its abandon now carries the cause in `message` (`move_refusal_words`,
+   `move_command` and `abandon_command` in `server.gleam`), asserted by cause in
+   `daemon_move_test`. A live remote child stub is not a refusal: the mover finds it
+   in the closed file after the session has stopped, so it ends the move as an
+   abort. (b) Not done: how a move ended is still only in the daemon log. A reason
+   that survives the move needs either a durable row in the catalogue (a storage
+   schema change) or an in-memory last-outcome on the movers, which a restart
+   loses. Either is read by `deployment.status` or `loom sessions move <id>` through
+   a new optional member, and the `moves` rows of the node report cannot carry it
+   because an older peer rejects an unknown `phase`. The owner's call is which of the
+   two to build, and whether a daemon restart may forget an outcome.
+6. **LOW. The executor's `git worktree add` at the attach runs the workspace
+   repository's hooks.** A failing `reference-transaction` hook in the executor
+   repository made the attach fail and stall the move (it recovered by itself
+   when the hook was removed). The apply disables hooks; the attach does not.
+   Evidence: `logs/step3-trap6.txt`.
+7. **LOW. A repository whose attributes name a filter is refused as "repository
+   path has a content transformation"**, naming neither the path nor the
+   attribute, and the refusal persisted after the working-tree `.gitattributes`
+   and the `filter.*` configuration were removed because `HEAD` still holds the
+   file. The documented refusals are a submodule, LFS and a shallow clone.
+   Responsible: `packages/client/src/client/repository_snapshot.gleam:1536`.
+8. **LOW. The moved session's model is not told.** Its history says branch
+   `main` or `feature/move-drive` and an untracked `extra.txt`; on the box the
+   branch is `loom/<id>`, the original branch name is gone, and the same edits
+   are committed in `Working snapshot`. The real model, asked to commit, said
+   `extra.txt` remains untracked, which was false (`logs/real-step5.log`). It had
+   named the snapshot commit one turn earlier.
+
+   *Not done in the move-legibility PR; options.* No existing mechanism delivers a
+   one-time harness note to a model. Protocol-change/025 (worktree observation) is a
+   human's transient request that makes no model turn, 068 is a per-strand
+   working-directory fact, and the context transform the checkpoint reminder uses
+   (`client/checkpoint`) is stateless, so it would repeat on every request. The
+   facts for the note are all on the receiver: the executor and workspace in the
+   registration, the branch `loom/<session>`, and the snapshot hash in the reserved
+   cell `client/move/checkout`. (A) A context transform that reads that cell and
+   appends one short note on each request until the strand's next compaction: no
+   new record kind, but it repeats and costs prompt tokens. (B) A durable one-shot
+   entry the receiver writes at its first open of an imported session, delivered
+   once and replayed with the history: exact, but a new entry kind, so a
+   protocol-change. (C) The receiver appends an ordinary harness-authored user
+   message at the first open: no new kind, but it writes into a transcript the
+   sender's digest covered, and the wording is then indistinguishable from a
+   person's. The owner's call is which; (B) is the one that says exactly once what
+   happened.
+9. **LOW. The refusal on the source has literal placeholders.** `session/load`
+   of a moved session on alpha returns `session <session-id> is owned by
+   orchestrator bravo ... loom --addr <its control address> --session
+   <session-id> --token-file ...`, with no real id.
+
+   *Fixed in the move-legibility PR*: `selection.open_selected` and
+   `selection.await` word their failures with the session
+   (`tui_daemon_test`, `tui_daemon_open_of_a_moved_session_names_the_session_in_its_redirect`).
+10. **LOW. Little to read in the logs.** A clean move is one line on each
+    orchestrator and two executor lines unrelated to the apply; there is no line
+    for capture, send, landing or a resumed send (so 6c cannot be shown to
+    resume at an offset), and a stalled move logs a warning every few seconds
+    (30 lines in about two and a half minutes).
+
+    *Fixed in the move-legibility PR*: one line per stage of the checkout on the
+    source and `daemon.move_imported` on the receiver, and a stall is logged after
+    its first, second, fourth, eighth attempt and so on (`session_mover.note_stall`).
+11. **LOW. The help and message for local sessions are stale.** `loom sessions
+    move --help` says it "hands a session on an executor", and `loom sessions
+    move ID` with no `--to` prints "Only a session on an executor can move." for
+    a local session that can move. Responsible:
+    `packages/session_view/src/session_view/move_candidates.gleam:191`.
+
+    *Fixed in the move-legibility PR*: the help and the answer for a local session
+    name `checkout_executor` and `checkout_workspace`
+    (`move_candidates.local_session_words`). The home page keeps its own sentence,
+    because it offers Move for a session on an executor only.
+12. **LOW. The tombstone is not shown as a local row.** The documentation says
+    the source lists a moved session as saved; `loom sessions list --all` lists
+    it only under the other orchestrator. *Corrected in the documentation, not
+    the code.* The behaviour is the documented one in protocol-change/085 and
+    `docs/client-protocol.md` (3.5): a record that carries `moved` is the
+    tombstone, and the terminal's page decoder (`tui/daemon/protocol.listed`) and
+    the web home leave it out, with tests
+    (`daemon_move_test`, `the_web_listing_and_the_admin_drawer_...`). The stale
+    sentence was in `docs/distributed-setup.md`, which now says what the wire
+    carries and what the clients draw.
+13. **LOW. Retention.** The source keeps the 200 MiB bundle after a successful
+    move, and the executor repository keeps a `refs/loom/in/<hash8>` ref for every
+    state, including a superseded snapshot. The seven-day sweep covers the bundle
+    files; nothing prunes the refs.
+
+### Not verified
+
+Two physical machines or a real network (loopback only); a real lid close or
+sleep; a directory member deployment (a local session is refused on a member by
+design) and so `--abandon` of a local session's move; Linux enforcement (the
+Mac's seatbelt was the only jail); a checkout that uses submodules, LFS or a
+shallow clone; whether the 6c send resumed at an offset; a hook running on the
+executor during the apply, because the sandbox prevents a marker (the evidence
+is indirect); the cause of finding 3's `Operation not permitted`; code mode on
+the executor in the moved tree; concurrent moves; the web home (no Move for a
+local row, as designed).
+
+## Exit criterion 4: live drive of the relayed page (2026-11-13)
+
+Criterion 4 of #1137 is "every session identical from either page; a dropped
+link shows a waiting state". The code is the live session relay
+(protocol-change/108): the box half merged in #1233 and #1242, and the laptop
+half is PR #1240. Before this section the relayed page had run only against
+in-process fixtures. Three drives were made, of `f86ac9e7b` and then twice of
+`8573edbc8`, both heads of #1240. The scripts, logs, screenshots and the full
+record are under `/Users/roasbeef/loom-drives/1137-relay/2026-11-13/` and are
+not kept in the repository.
+
+**Result.** The first drive found that the relayed page never connected
+(finding 1), which #1240 now fixes. On the fixed head a relayed page connects,
+streams, takes a tool call with a diff, an approval, a steer and a five second
+drop, draws the waiting state when the box stops answering, and reconnects by
+itself once the box answers again, provided the tab is visible (finding 2).
+The two pages are not identical: five differences remain (finding 3). The feed
+cap could not be reached (finding 5). Criterion 4 is met for the waiting state
+and the recovery on loopback, and not yet met for "identical".
+
+### Topology
+
+One Mac, loopback, TLS distribution, two `bin/loomd` processes under separate
+`HOME` directories, provisioned with `loom distribution provision plan.toml out
+--static` and installed with `loom distribution install`, each started with
+`--ui`. `alpha` is the laptop and `bravo` the box. Alpha has
+`[orchestrators.bravo]`; bravo has `[spawners.alpha]` with a `top_level` table
+and `page` left at its default, `live`. The model is a scripted provider. The
+pages were driven with Chrome for Testing through `agent-browser`. The link was
+cut by suspending bravo's process with `SIGSTOP` and by stopping and restarting
+it; no firewall rule was used.
+
+### Steps and observations
+
+1. **Create a session on bravo from alpha and open its relayed page.** The
+   socket chose the live session component, not the 094 transcript page, on
+   both heads. On `f86ac9e7b` the page stayed on "connecting" for every one of
+   28 loads. On `8573edbc8` it reaches "connected" and fills within a few
+   seconds, and alpha logs no discarded message. Pass on the fixed head.
+2. **Drive the session from alpha's page beside bravo's own page.** A streamed
+   answer, a turn with a tool call and a diff, an approval allowed from alpha's
+   page (recorded as "Owner allowed fs_write" on both), and a steer all pass.
+   Alpha's page runs about one streamed word behind bravo's, which is one poll
+   round trip. A stop was not run: no live page has a stop control, and Steer
+   is the only interrupt. The effect of the allowed write was not seen, because
+   the scripted provider does not repeat the call after the approval.
+3. **Suspend bravo for five seconds during a 25-word answer.** The page stayed
+   "connected" with no banner and showed all 25 words afterwards. Pass.
+4. **Suspend bravo for thirty seconds.** After about 16 s the page drew the
+   pill "disconnected" and the sentence "The orchestrator that runs this
+   session is not answering. This page will reconnect." On a visible tab the
+   page was "connected" and full within about a second of the continue. Pass.
+5. **Stop and restart bravo.** The page drew "The connection to the session
+   failed. Reconnecting automatically." and showed the full page about 6 s
+   after the restart command returned, by a fresh attach. A message typed while
+   bravo was down was delivered zero times, so never twice. Pass.
+6. **`page = "paged"` on bravo.** Alpha drew the 094 page with "Showing the
+   transcript only, because bravo serves this session as a transcript." Pass.
+7. **Eight relayed tabs and a ninth.** Not run as written (finding 5).
+
+### Findings
+
+1. **HIGH, fixed in #1240. The relayed page never connected.** Lustre installs
+   the selector a `select` effect returns by a message the runtime sends itself
+   after the effect has returned, and until it takes that message it discards
+   anything sent to the selected subjects. The component called the transport's
+   `connect` inside that effect. The relayed page's feed has already attached by
+   then and answers the open from inside `connect`, as do the waiting and
+   crowded refusals, so the answer was ahead of the selector in the mailbox and
+   was discarded. Alpha logged `Actor discarding unexpected message` once for
+   each page load, and the page neither opened nor drew the waiting state. The
+   local page's relay answers from another process after its attach, which is
+   why local pages worked. Fix: `component.open` takes an answer that is already
+   in the mailbox when `connect` returns and dispatches it. `delivery_test` has
+   a transport that answers inside `connect`, and it fails without the fix.
+2. **LOW, by design of the client runtime. A page in a background tab does not
+   reconnect until it is shown.** Lustre's client transport reconnects after any
+   close whose code is not 1000, but while `document.hidden` is true it sets no
+   timer and waits for the document to become visible. A background tab made no
+   socket for 45 s after the old one closed with 4000 and made one in the same
+   second it was brought to the front. The second drive first reported this as
+   a page that never reconnects; the third drive measured it.
+3. **MEDIUM. The relayed page and the box's own page still differ.** The
+   relayed page has no session sidebar and no "Commands on" chip. Its title is
+   the session's first prompt where the box's page shows the session's name. Its
+   Changes tab reads "from this session's edits" and labels a new file
+   "written · 2 lines", where the box's page reads the workspace's Git diff. Its
+   Session tab shows the bookmark page's sentence about inviting, which does not
+   fit a relayed page. The status pill, the context and model figures and the
+   "Owner · operator" label, reported as differences by the first drive, were
+   effects of finding 1 and are the same on both pages now.
+4. **LOW. A visible page retries about twice a second while the box is down.**
+   Alpha accepts each upgrade, so the client's backoff returns to 500 ms when
+   the socket opens, and the socket then closes with 4000 about 250 ms later:
+   21 sockets in about 15 s during the restart. Each one makes an attach call to
+   the box. Protocol-change/108 assumed the backoff would grow.
+5. **A limit of the drive. The feed cap was not reached.** A daemon admits four
+   home pages for one principal, and a page opened from a home counts, so at
+   most four relayed tabs were live at once. The eight-feed cap, the `Feed`
+   permit's charge and what a refused tab draws were not exercised. Nine tabs
+   attached in turn with no refusal, and neither daemon logged anything about a
+   permit.
+6. **Known, slice 5 of 108. A box table with only `node` and `top_level` is
+   refused at start** (`spawners.<name> needs a placement`). The drive gave
+   bravo's table a `directory` and a `profile`.
+7. **LOW. Neither daemon logs why a page, a permit or an attach was refused**
+   at info or warning level.
+
+### Not verified
+
+Two physical machines or a real network (loopback only); a real lid close or
+sleep; the feed cap, `PeerCrowded` and the 64 MiB charge for each tab;
+"allow for the session" and forget from a relayed page; a second strand; a
+tool result over 512 KiB; a box without the 108 revisions; the effect of an
+allowed approval on the file; whether the second drive's tab was in the
+background when it failed to reconnect, which is inferred from the third
+drive and was not measured at the time.

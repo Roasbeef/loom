@@ -1131,3 +1131,187 @@ the following. Two are fixed here and two are accepted, with the reason.
   its end on the executor may still be writing the tree, and a close that finds the tree busy
   can record `UnknownCleanup`, which an operator on the executor releases. It needs an apply
   that outlives the wait.
+
+## Addendum: the checkout step is modelled, and `holds_tip` is wrong for it (2026-11-13)
+
+The checkout step of slice 4c merged without a formal model. It has one now,
+`protocol/models/session-move/MoveCheckout.tla`, which extends `Move.tla`. It models the
+laptop directory as a git repository the operator can change whenever no move runs
+(including between an abandon and a retry), the capture, the state store, the executor's
+scope, tree and branch, one fenced `StateApply` with a lost reply and a retry, the
+progress cell and what a restarted mover does for each of its values, crashes of the
+source, the destination and the executor, the abandons of the step, and a second attempt
+after an abandon. Nothing in the code, the wire or this protocol changes, and the version
+stays at 6. Nothing above is edited; this addendum corrects one entry of the slice 4c
+review.
+
+**What holds.** With the apply rule described below, the model checks that once the
+destination owns the session the executor's branch holds exactly the content the laptop
+directory had when that attempt began; that the step never writes the directory; that an
+apply changes the tree only under the fence of a scope the current attempt attached; that
+after an abandon the laptop owns the session alone and no run takes another attempt's
+state for its own; that a settled move leaves no scope that the source attached; and that
+a move with a checkout step settles. `OneOwner` and the other `Move.tla` invariants hold
+over the composition. Four mutants of those rules are each caught: a cell believed for any
+move, an apply that skips the fence, a capture that commits into the directory, and an
+abandon on request while the scope is open.
+
+**What does not hold: `state_apply.holds_tip`.** The review above accepted one defect, "a
+retry after an abort can deliver the earlier snapshot", on the ground that tightening the
+apply to equality would break the resend rule of slice 4a. The model confirms it and
+finds a second trace that needs no abandon:
+
+- *The retry.* After an abandon that follows the landing, the executor's branch is at the
+  abandoned attempt's snapshot. If the operator discards the edits and moves again, the
+  capture of the clean tree has `HEAD` as its tip, which is the snapshot's parent, and the
+  tree that the executor recreates from the branch already contains it. `holds_tip` answers
+  that the apply is done, and the destination continues in a tree that holds the discarded
+  edits. The same happens when the operator resets `HEAD` to an older commit.
+- *An executor that is ahead.* The first apply of a clean directory is taken for done
+  whenever the tip is an ancestor of the commit the executor's workspace starts a tree
+  from (`worktrees.create` branches from `base`, which is `HEAD` unless the workspace sets
+  another). A box that has pulled further than the laptop gives the destination its own
+  commit, and the move reports the laptop's tip.
+
+The traces, with the function and line of each step, are in the README of the model. Both
+are reachable from real inputs. A dirty directory is not affected on a first attempt,
+because its snapshot commit is new and descends from nothing the executor holds.
+
+**What the fix needs.** Ancestry answers two questions at once: whether this state was
+applied to this tree (a resend), and whether the tree already contains it (a session
+that committed on top). The first is what the apply needs to know. The rule the model
+checks as correct is that the tree is left alone when its `HEAD` is the tip, or when the
+last apply for the session was of this tip; the second condition covers a resend after
+the session has committed on top, and the first covers a crash between the checkout and
+the record. The model separates this rule from the ancestry rule, but it has no step that
+commits on the executor's branch, so the resend after a commit on top is covered by the
+code test `applying_into_the_same_tree_twice_changes_nothing_test`, not by the model. The record is one ref per session on the executor, for example
+`refs/loom/applied/<session>`, written after the `checkout -B`. The shipped rule is the
+mutants `MoveCheckoutMutantHoldsTipAncestry` and `MoveCheckoutMutantHoldsTipAhead`, which
+TLC reports as the violations they are, and the clean configuration is the proposed rule.
+The first live drive of `sessions.move` reproduced the retry trace on real daemons
+(`docs/review/distributed-1137.md`, finding 2). The change is made on its own branch,
+`distributed/move-checkout-stale-tip`, with regression tests that fail against the
+ancestry rule; it adds the one ref per session and keeps the resend rule of slice 4a.
+
+**A second defect, in the executor ledger.** The same drive found (finding 1 there) that
+a failed landing leaves the session's scope bound to the workspace it named. The ledger
+binds a scope to the first workspace an attach names, whether or not the attach
+succeeded (`exec_ledger.same_workspace`), and refuses an attach that names another. A
+refused apply (a `shared` workspace) leaves a closed scope bound to it, and an attach for
+a name the executor does not serve leaves an open one. A move with the corrected
+`checkout_workspace` then stalls for good, the owner cannot release the scope, and a
+daemon that decides by catalogue rows has no abandon on request. The model reproduces
+both cases (`MoveCheckoutMutantScopeKeepsWorkspace`, `MoveCheckoutMutantScopeKeepsWorkspaceStall`),
+and the clean configurations check a rule that lets an attach rebind a scope with no
+tree record. That rule is not built: it also loosens the binding for a live session in a
+`shared` workspace, which has no tree record, so the options (a rebind only for a scope
+the move created, which needs the landing to say so on the wire; a rebind of a closed
+scope plus a release of an open one; binding after the plane is built) are for the
+ledger's owner to choose. The text of this protocol that says to fix the file and restart
+the daemon does not recover a move that failed this way.
+
+**Also recorded by the model.** The cell `client/move/checkout` stays in the session file
+after the move settles and names the finished attempt. A later attempt ignores a cell of
+another attempt, so it is a leftover and not a state any step trusts. An abandon on
+request, which only a directory member has, may arrive while the source's landing scope is
+open and does not close it. A directory member does not move a local session yet, so this
+is not reachable today. `MoveCheckoutMutantOperatorAbandon` records it for whoever builds
+the member path.
+
+The placement claims of a pool (PR #1185) are modelled the same way, in
+`protocol/models/placement-claims`; that is not part of this protocol.
+
+## Addendum: a failed landing no longer binds the scope (2026-11-13)
+
+The previous addendum recorded that a move that failed at the executor left the session's
+scope bound to the workspace it named, so that a move with the corrected
+`checkout_workspace` stalled for good. Three rules, none of which changes the wire or a
+configuration key, remove it. The first live drive of `sessions.move` found it
+(`docs/review/distributed-1137.md`, finding 1), and `MoveCheckout.tla` checks the rules.
+Nothing above is edited.
+
+- *The ledger rebinds a closed scope that holds nothing.* An attach that names another
+  workspace takes over a scope that is closed cleanly and has no tree record, in the
+  attach's transaction, and the incarnation rule is the same. An open scope, a scope with
+  a tree record and a scope closed with unknown cleanup keep their workspace and answer
+  `WorkspaceMismatch`. The open scope is the protection for a live session, which in a
+  `shared` workspace has no tree record.
+- *A failed attach leaves a closed scope, not an open one.* An attach for a name the
+  executor does not serve creates a scope and cannot build its plane. The host closes it as
+  retired, since no plane means no call was admitted, and the source closes it too and
+  records the close. The reason of the refusal starts with a fixed sentence
+  (`protocol.unserved_workspace`) so that the source can tell it without a new refusal.
+- *A refusal that will not change abandons the move.* The checkout step used to report every
+  attach error as one that may pass, so the move stalled. A scope bound to another
+  workspace and a workspace the executor does not serve are now final: the move is
+  abandoned with the reason and the session is resident on the source again. A connection
+  failure, the fence and a plane still being built stay unfinished. In the same file a full
+  store on the executor is unfinished and no longer final, and the apply's refusals are
+  classified by naming every variant.
+
+The fix-the-file-and-restart recovery that slice 4c describes now works for a `shared`
+workspace and for a name the executor does not serve. One case is left. If the source dies
+after the attach for an unserved name and before it closes the scope, and the operator then
+corrects the name, the scope is open and bound to the old one. The move is refused for that
+workspace, which the refusal names, and the scope stays open. `loomd executor release`
+refuses an open scope, so nothing frees it yet. Letting `release` take an open scope is a
+few lines of the ledger and a state word in the release table, and is not built.
+
+## Addendum: corrections to the workspace rebind, and the apply record as shipped (2026-11-14)
+
+Review of the workspace rebind found five points in the previous addendum that are wrong or
+incomplete, and the apply record of an earlier addendum is now in the code. Nothing above is
+edited.
+
+- *The unserved attach closes a scope only when it opened it.* The host closes the scope
+  that an attach for a workspace the executor does not serve leaves, but only for a scope
+  that the attach created or reopened. A rebound scope is a session's own, with a tree and
+  earlier calls, and an executor restarted with the workspace dropped from its
+  configuration must not close it as retired. The source closes it only when its record
+  shows the same: no record, or a record whose close was written.
+- *A close that names the corrected workspace ends the move.* If the source's record names
+  an incarnation with no close written (it died between the attach and the record, or the
+  reply was lost) and the executor's scope is closed at that incarnation and bound to the
+  old name, the attach under the new name is answered that the scope is at that
+  incarnation, and the question about the close names the new workspace, which the scope is
+  not bound to. That refusal is final and the move is abandoned. It used to read as a lost
+  connection, and the move stalled and retried every five seconds with the session
+  `moving`.
+- *A full store on the executor is final.* The earlier addendum said it is unfinished. It is
+  the store's total byte cap, room returns only when held states expire, which takes days,
+  a daemon that decides by catalogue rows has no abandon on request, and each retry sends
+  the bundle again from the start. The move is abandoned with the reason.
+- *The case the rules leave is the `shared` one.* It was described as a source that dies
+  after an attach for an unserved name. The host closes that scope. What leaves an open scope
+  is a source that dies in the landing for a `shared` workspace, after the attach and before
+  the close, followed by a corrected name: the move is refused for the open scope's
+  workspace and the scope stays open. `loomd executor release` refuses an open scope, so the
+  recovery is the one the refusal gives. Set `checkout_workspace` back to the name the scope
+  is bound to, move again so that the move ends and closes the scope, then correct the name
+  and move. No release of an open scope is added, and the earlier addendum's statement that
+  nothing frees the scope is corrected by this recovery.
+- *Still open.* A `WorktreeFailed` attach and a `NoPlane` for a root that is not a directory
+  leave an open scope, and a failed `git worktree add` leaves a `Removed` tree row, which
+  counts as a tree record and keeps the scope from being rebound. An attach for an unserved
+  name whose build dies before the workspace is checked, followed by a retry, leaves an open
+  scope bound to that name: the retry is a rebound attach and neither side closes a rebound
+  scope. It needs both faults, and no recovery is built for it.
+- *What the refusal's recovery does not reach.* A scope that still holds a tree after the
+  move ends keeps its workspace for as long as the tree exists, so the corrected name is
+  taken only by a scope that closed with no tree. The refusal says so.
+
+**The apply record, as shipped.** The record of the last apply decides whether an apply is a
+resend. `state_apply.into_existing` answers a request as applied when
+`refs/loom/applied/<session>` names the tip, and when the tree's `HEAD` is the tip, in which
+case it writes the record. Anything else moves a clean tree with `checkout -B`. A tip that is
+only an ancestor of the tree's `HEAD` is not a resend, which is what ancestry took it for.
+The record is deleted before the checkout and written after it, so that a crash at any point
+leaves either no record, which the tree's own `HEAD` answers, or a record that names what the
+tree holds. Left in place across the checkout, a crash would leave it naming the older tip
+while the tree held the new one, and a later request for the older tip would be answered as
+applied. The record trusts that `loom/<session>` is moved only by an apply or by the session.
+A branch deleted out of band is made again from the base, and a request for the recorded tip
+would then be answered as applied. The model checks the rule and separates it from ancestry,
+and has no step that commits on the branch, so the resend after the session committed on top
+is covered by `applying_into_the_same_tree_twice_changes_nothing_test`.

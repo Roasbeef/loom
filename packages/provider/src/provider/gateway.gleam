@@ -95,6 +95,9 @@ const request_start_timeout_ms = 5000
 
 const request_cancel_grace_ms = 1500
 
+/// Default per-attempt provider timeout in milliseconds (10 minutes).
+pub const default_attempt_timeout_ms = 600_000
+
 /// The public cancel capability, as the guard hears it.
 ///
 /// One variant, because the only deadline the guard ever armed by hand —
@@ -570,7 +573,7 @@ pub fn new(
     codex_transport: None,
     secrets:,
     clock:,
-    attempt_timeout_ms: 300_000,
+    attempt_timeout_ms: default_attempt_timeout_ms,
     profiles: None,
     request_guard: None,
     attempt_settled: None,
@@ -834,6 +837,34 @@ pub fn api_for(gateway: Gateway, target: ResolvedModel) -> Result(String, Nil) {
 ///
 pub fn with_attempt_timeout(gateway: Gateway, timeout_ms: Int) -> Gateway {
   Gateway(..gateway, attempt_timeout_ms: timeout_ms)
+}
+
+/// Returns the configured per-attempt timeout in milliseconds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.attempt_timeout_ms(gw) -> 600_000
+/// ```
+///
+pub fn attempt_timeout_ms(gateway: Gateway) -> Int {
+  gateway.attempt_timeout_ms
+}
+
+/// Returns the longest configured fallback chain across all routed roles, or 0
+/// when no role is routed. Used by hosts to keep outer runtime deadlines strictly
+/// above a complete fallback walk.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.max_route_count(gw) -> 1
+/// ```
+///
+pub fn max_route_count(gateway: Gateway) -> Int {
+  list.fold(gateway.routes, 0, fn(longest, entry) {
+    int.max(longest, list.length(entry.1))
+  })
 }
 
 /// Resolves a role to the identity durable state should store: the first

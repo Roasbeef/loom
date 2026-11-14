@@ -1,3 +1,4 @@
+import core/agency_limits
 import core/json
 import gleam/int
 import gleam/list
@@ -128,6 +129,7 @@ pub fn request_scalar_limits_and_stale_operation_epoch_test() {
         "",
         "",
         "",
+        agency_limits.empty,
       ),
       epoch,
     )
@@ -289,7 +291,16 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
   let assert Ok(encoded) =
     protocol.encode(
       1,
-      protocol.CreateSession("key", "/work", "New session", "", "", "", ""),
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "New session",
+        "",
+        "",
+        "",
+        "",
+        agency_limits.empty,
+      ),
       epoch,
     )
     as "omitted config can reach the daemon's inherited defaults"
@@ -305,6 +316,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
         "",
         "",
         "",
+        agency_limits.empty,
       ),
       epoch,
     )
@@ -657,4 +669,46 @@ fn row(id: String, extra: String) -> String {
   <> "\",\"workspace\":\"/work\",\"name\":\"n\",\"created_at\":5,\"status\":{\"state\":\"saved\"}"
   <> extra
   <> "}"
+}
+
+pub fn creation_omits_default_agency_and_encodes_custom_agency_test() {
+  let epoch = protocol.Epoch("current")
+  let assert Ok(plain) =
+    protocol.encode(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "New",
+        "",
+        "",
+        "",
+        "",
+        agency_limits.empty,
+      ),
+      epoch,
+    )
+  assert !string.contains(plain, "\"agency\"")
+  let assert Ok(custom) =
+    protocol.encode(
+      2,
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "New",
+        "",
+        "",
+        "",
+        "",
+        agency_limits.AgencyLimits(
+          fan_out: Some(200),
+          session_strands: Some(512),
+          depth_cap: Some(agency_limits.UnlimitedDepth),
+        ),
+      ),
+      epoch,
+    )
+  assert string.contains(custom, "\"fan_out\":200")
+  assert string.contains(custom, "\"session_strands\":512")
+  assert string.contains(custom, "\"depth_cap\":\"unlimited\"")
 }

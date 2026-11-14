@@ -303,3 +303,19 @@ FROM catalogue_projects WHERE router_session = ?
 UNION ALL
 SELECT CAST('worker' AS TEXT) AS role, project_id, ticket_id, assignment_seq
 FROM catalogue_project_workers WHERE session_id = ?;
+
+-- name: SessionAgencyLimits :many
+SELECT fan_out, session_strands, depth_mode, depth_cap
+FROM catalogue_session_agency WHERE session_id = ?;
+
+-- name: SetSessionAgencyLimits :exec
+INSERT INTO catalogue_session_agency (session_id, fan_out, session_strands, depth_mode, depth_cap)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET
+  fan_out = excluded.fan_out,
+  session_strands = excluded.session_strands,
+  depth_mode = excluded.depth_mode,
+  depth_cap = excluded.depth_cap;
+
+-- name: DeleteSessionAgencyLimits :exec
+DELETE FROM catalogue_session_agency WHERE session_id = ?;

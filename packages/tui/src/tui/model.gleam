@@ -92,6 +92,7 @@
 //// `send_frame`, `send_via` and `apply_submission` wrap the shared send path.
 //// The renderer consumes this model; these helpers perform no socket write.
 
+import core/agency_limits
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/span
@@ -292,6 +293,30 @@ pub type FrameCache {
   )
 }
 
+/// The rows the frozen reading lines wrapped to, with every input those rows
+/// were a function of.
+///
+/// While the reader is above the live tail the transient lines are frozen, so
+/// a streamed token changes nothing they say, yet every token moves the
+/// transcript revision and sends the projection back through them. Wrapping is
+/// a function of the lines, the width and the strand alone, so these rows are
+/// reused for as long as all three are the ones they were built from.
+@internal
+pub type ReadingRows {
+  ReadingRows(
+    /// The frozen lines the rows were wrapped from.
+    lines: List(Line),
+    /// The transcript width they were wrapped to.
+    width: Int,
+    /// The strand the lines belong to, which the row builder reads.
+    strand: String,
+    /// The wrapped rows, in the order `rendered_lines` returns them.
+    rows: List(span.Line),
+    /// The copy gutters of those rows, in the same order.
+    gutters: List(Int),
+  )
+}
+
 /// Local editing and reading state belongs to an exact session and strand.
 ///
 /// A parked workspace holds the editor itself, including its cursor, rather
@@ -365,6 +390,9 @@ pub type Caches {
     diff_line_cache: Dict(Line, List(span.Line)),
     /// The last completed frame and the screen and revision it was for.
     frame_cache: Option(FrameCache),
+    /// The frozen reading lines' rows, so a token streaming in below the
+    /// reader does not wrap them again.
+    reading_rows: Option(ReadingRows),
     /// The selected pane stays on its original cells until the selection ends.
     selection_frame: Option(buffer.Buffer),
     /// The `Shared.record_cache_epoch` the record rows were built at. A
@@ -392,6 +420,7 @@ pub fn empty_caches() -> Caches {
     diff_rows: [],
     diff_line_cache: dict.new(),
     frame_cache: None,
+    reading_rows: None,
     selection_frame: None,
     record_cache_epoch: 0,
   )
@@ -561,6 +590,8 @@ pub type View {
     /// file system, so it runs as a job and the creation continues when
     /// `session_control.drain_configuration` takes the reply.
     configuring: Option(job.Awaiting(job.ConfigurationReply)),
+    /// Per-session subagent limits carried while a local creation resolves its configuration.
+    pending_agency: agency_limits.AgencyLimits,
     /// The open-image job, while one runs: `o` while reading hands the
     /// newest image to the platform's opener, and `image_open.drain` takes
     /// the reply into the notice.

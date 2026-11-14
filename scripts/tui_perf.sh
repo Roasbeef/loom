@@ -20,9 +20,27 @@
 #   growth <frames>        per-frame cost as one reply grows, at powers of two
 #   profile_at <frames>    calls by function for the tick after <frames> of a
 #                          reply (TUI_PERF_TYPE=call_count|call_time|call_memory)
+#   scale <strands>...     decode, refresh, paint, key and tick for captures of
+#                          each strand count (a cut holds at most ~200)
+#   scale_profile <n>      calls by function for one refresh of an n-strand cut
+#                          (TUI_PERF_PAINT=1 adds the repaint that follows)
+#   scale_paint_profile <n> calls by function for one paint at n strands
+#   listed <n>...          key, tick and paint with n strands listed beside the
+#                          captured ones, beyond what a capture can carry
+#   listed_profile <n>     calls by function for one tick at n listed strands
+#   mixed <words>          a long reply of ASCII mixed with glyphs, then an idle
+#                          tick, pointer move, key, streamed word and wheel
+#                          notch, open and closed
+#   mixed_reading <words>  the reader scrolled up into that reply while it
+#                          keeps streaming; counts the repainted frames that
+#                          came out cell for cell the same
+#   mixed_profile <words> <tick|key|delta|scroll|reading>
+#                          calls by function for one such event
 #
 # The streamed reply is one long paragraph, a line break every twelve words;
-# TUI_PERF_SHAPE=paragraphs makes every break a blank line instead.
+# TUI_PERF_SHAPE=paragraphs makes every break a blank line instead, and
+# TUI_PERF_SHAPE=glyphs does the same with non-ASCII glyphs among the words
+# (the mixed scenarios choose it unless the variable is set).
 #
 # Each run is one fresh VM on one scheduler. To compare revisions, add a git
 # worktree per revision (not under /tmp), build each, and alternate the runs:
@@ -31,7 +49,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
-  sed -n '5,23p' "$0"
+  sed -n '5,43p' "$0"
   exit 2
 fi
 

@@ -154,6 +154,7 @@ pub type Storage(handle)
 pub fn commit(h, tx: Tx) -> Result(CommitResult, CommitError)
 pub fn get_entries(h, ids: List(EntryId)) -> Result(Dict(EntryId, Entry), StorageError)
 pub fn get_register(h, ns: RegisterNs, key: String) -> Result(Option(Register), StorageError)
+pub fn get_registers(h, ns: RegisterNs, keys: List(String)) -> Result(Dict(String, Register), StorageError) // (protocol-change/114) at most 128 raw keys; one exact-key read snapshot.
 pub fn list_registers(h, ns: RegisterNs, key_prefix: Option(String)) -> ...
 pub fn scan_branch(h, q: BranchScan) -> Result(List(Entry), StorageError)
 pub fn scan_entries(h, q: EntryScan) -> ...
@@ -169,6 +170,7 @@ Rules (normative, from pi Part 1, unchanged unless noted):
 3. Register set replaces; delete removes; delete-absent is a no-op; no history.
 4. **Loom addition — CAS**: before applying writes, evaluate `expected`: each names the register seq the committer computed against (`None` = must not exist). Any mismatch → `StaleExpectation`, nothing applied. This subsumes pi's "conditional transitions identify state by register seq."
 5. SQLite: `BEGIN IMMEDIATE` always; writer lease table with fenced ownership; one DB file per session; branch index per pi §2.6 with asserted query plans (`CROSS JOIN` driving from `branch_entries`; any `TEMP B-TREE FOR ORDER BY` is a CI-failing regression).
+6. [Protocol 114](../protocol-change/114-bounded-register-reads.md): `get_registers` reads only the requested keys in one namespace and one per-call snapshot. Missing cells are omitted; duplicates collapse; returned cells retain their current sequences. Requested corruption fails the entire call, while unrequested payloads are not decoded. The module-level wrapper rejects more than 128 raw key occurrences, before deduplication or backend admission, with `StorageError.RegisterReadLimitExceeded(limit: 128)`, including on closed handles. A valid empty request returns an empty dictionary only when the handle is open; otherwise it returns `HandleClosed`. Multiple calls do not promise a shared snapshot.
 
 ### 1.3 Operation machine (WP-D pure; WP-E drives)
 

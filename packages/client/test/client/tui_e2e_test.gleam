@@ -62,6 +62,7 @@ import client/schedule
 import client/serve
 import client/session_socket_test
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/entry
 import core/ids
@@ -988,6 +989,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
         None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(
@@ -1064,7 +1066,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,

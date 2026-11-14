@@ -112,6 +112,7 @@ func RunStage2(cfg Stage2Config) error {
 		}
 		rep.Applied = append(rep.Applied, "rlimit-cpu")
 	}
+	raiseSoftNofile()
 
 	switch runtime.GOOS {
 	case "linux":
@@ -264,4 +265,37 @@ func landlockView(pol policy.Policy, scratchMounted bool) llock.PolicyView {
 		view.ScratchPath = ScratchMount
 	}
 	return view
+}
+
+// defaultSoftNofile is the descriptor soft ceiling stage 2 raises low inherited
+// soft limits (such as macOS's 256 non-interactive child default) toward, matching
+// Darwin's per-process OPEN_MAX without lowering higher limits on Linux.
+const defaultSoftNofile uint64 = 10240
+
+// targetSoftNofile computes the raised RLIMIT_NOFILE pair when lim.Cur sits below
+// min(defaultSoftNofile, lim.Max), avoiding RLIM_INFINITY in Cur (rejected with
+// EINVAL by Darwin's setrlimit) and leaving higher soft limits untouched.
+func targetSoftNofile(lim unix.Rlimit) (unix.Rlimit, bool) {
+	want := defaultSoftNofile
+	if lim.Max != unix.RLIM_INFINITY && lim.Max < want {
+		want = lim.Max
+	}
+	if lim.Cur >= want {
+		return lim, false
+	}
+	return unix.Rlimit{Cur: want, Max: lim.Max}, true
+}
+
+// raiseSoftNofile lifts a low inherited soft descriptor ceiling before execve so
+// concurrent child test suites do not fail with EMFILE at 256 open files.
+func raiseSoftNofile() {
+	var lim unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &lim); err != nil {
+		return
+	}
+	next, ok := targetSoftNofile(lim)
+	if !ok {
+		return
+	}
+	_ = unix.Setrlimit(unix.RLIMIT_NOFILE, &next)
 }

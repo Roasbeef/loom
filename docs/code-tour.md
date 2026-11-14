@@ -205,7 +205,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:5109`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:5332`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -257,7 +257,7 @@ tree-write that moved the leaf refuses the acceptance rather than
 mis-parenting its entries.
 
 The commit itself is a call into one actor. `writer.commit` is
-`process.call_forever` into the StorageWriter (`runtime/writer.gleam:372`),
+`process.call_forever` into the StorageWriter (`runtime/writer.gleam:386`),
 whose mailbox *is* the serialization order for the session — "transactions
 on one session are serialized" is a property of the process topology, not
 a convention someone must remember. On success the writer publishes a
@@ -332,7 +332,7 @@ those large payloads again. A changed frontier, a doorbell, an effect event or
 a restart takes the full load. The remembered frontier contains only identities
 and sequences, and every restart reconstructs it from durable state.
 
-`plan` (`runtime/strand_runtime.gleam:1314`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:1322`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -501,7 +501,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:2037`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:2071`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -625,7 +625,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:830`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:3924`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:3985`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -653,7 +653,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:7442`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:7670`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -732,10 +732,10 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:2095`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:2129`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1769`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1794`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 

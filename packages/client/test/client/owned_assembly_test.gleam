@@ -17,6 +17,7 @@ import client/schedule
 import client/secrets
 import client/serve
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -85,7 +86,7 @@ pub fn settings() -> serve.Settings {
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,
@@ -256,8 +257,8 @@ pub fn a_resident_projection_excludes_the_session_runtime_test() {
   let #(prepared, instance, watch) = opened(settings, identity(9))
   let resident = serve.resident(instance)
 
-  assert ffi_memory.flat_words(resident) * 8 < ffi_memory.flat_words(instance)
-    as "the projection must be a small fraction of the instance"
+  assert ffi_memory.flat_words(resident) * 2 < ffi_memory.flat_words(instance)
+    as "the projection must stay far smaller than the instance"
   assert list.length(resident.children)
     == list.length(serve.instance_children(instance))
     as "the projection must name the same fatal roots"

@@ -221,13 +221,17 @@ fn captured_cells(captured: snapshot.Captured) {
 
 /// Decodes the complete View record from metadata fields, cells, and usage.
 fn decode_view(fields, cells, usage) {
+  // The cells are indexed once. A strand reads four registers of its own, so
+  // a scan per read made decoding a cut quadratic in the strands it holds.
+  let index = index_cells(cells)
+
   // The mutable server default is read from this same cut, never from a
   // separate config response which could race its attribution cell. The
   // key is `runtime/api.run_settings_key`, spelled out here because the
   // terminal does not depend on the runtime package; a change there must
   // be mirrored by hand.
   let settings_value = case
-    find(cells, register.FactCustom, "client/run_settings")
+    cell_at(index, register.FactCustom, "client/run_settings")
   {
     Ok(cell) -> Ok(cell.value)
     Error(Nil) -> field(fields, "host_run_settings")
@@ -250,7 +254,7 @@ fn decode_view(fields, cells, usage) {
   use strands <- result.try(
     list.try_map(
       list.filter(cells, fn(cell) { cell.namespace == register.StrandConfig }),
-      fn(cell) { decode_strand(cells, cell) },
+      fn(cell) { decode_strand(index, cell) },
     ),
   )
   use preview <- result.try(decode_preview(fields))
@@ -510,13 +514,13 @@ fn unique_cells(cells: List(Cell)) {
 }
 
 /// Decodes a strand descriptor and state from configuration cells.
-fn decode_strand(cells: List(Cell), config: Cell) {
+fn decode_strand(cells: CellIndex, config: Cell) {
   use configuration <- result.try(
     machine_codec.decode_configuration(config.value)
     |> result.replace_error("invalid captured strand configuration"),
   )
   use leaf_cell <- result.try(
-    find(cells, register.StrandLeaf, config.key)
+    cell_at(cells, register.StrandLeaf, config.key)
     |> result.replace_error("configured strand omitted its leaf"),
   )
   use leaf <- result.try(
@@ -524,7 +528,7 @@ fn decode_strand(cells: List(Cell), config: Cell) {
     |> result.replace_error("invalid captured strand leaf"),
   )
   use state_cell <- result.try(
-    find(cells, register.StrandState, config.key)
+    cell_at(cells, register.StrandState, config.key)
     |> result.replace_error("configured strand omitted its state"),
   )
   use state <- result.try(
@@ -548,7 +552,7 @@ fn operation_phase(cells, current) {
     None -> Ok(None)
     Some(id) -> {
       use cell <- result.try(
-        find(cells, register.OpState, ids.op_id_to_string(id))
+        cell_at(cells, register.OpState, ids.op_id_to_string(id))
         |> result.replace_error("captured live operation omitted its state"),
       )
       use state <- result.try(
@@ -581,7 +585,7 @@ fn phase_name(state) {
 /// Extracts the configuration origin record for a strand from custom cells.
 fn configuration_origin(cells, strand) {
   // Look up custom origin cell for this strand.
-  case find(cells, register.FactCustom, "client/config_origin/" <> strand) {
+  case cell_at(cells, register.FactCustom, "client/config_origin/" <> strand) {
     Error(Nil) -> Ok(None)
     Ok(cell) -> {
       use fields <- result.try(object(cell.value))
@@ -676,16 +680,43 @@ fn optional_text(fields, name, fallback) {
 /// // snapshot_view.branch(view, captured.window, "main")
 /// ```
 pub fn branch(view: View, window: snapshot.Window, strand: String) -> Branch {
-  let entries =
-    dict.from_list(
-      list.filter_map(window.items, fn(item) {
-        case item {
-          snapshot.Loaded(entry, _) -> Ok(#(entry.id, entry))
-          snapshot.Unloaded(..) -> Error(Nil)
-        }
-      }),
-    )
+  branch_in(window_entries(window), view, strand)
+}
 
+/// The window's loaded entries keyed by identity.
+///
+/// The table does not depend on the strand, so a reader that projects the
+/// branch of every strand builds it once and calls `branch_in`, rather than
+/// rebuilding it for each strand it describes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let entries = snapshot_view.window_entries(captured.window)
+/// ```
+pub fn window_entries(window: snapshot.Window) -> Dict(ids.EntryId, Entry) {
+  dict.from_list(
+    list.filter_map(window.items, fn(item) {
+      case item {
+        snapshot.Loaded(entry, _) -> Ok(#(entry.id, entry))
+        snapshot.Unloaded(..) -> Error(Nil)
+      }
+    }),
+  )
+}
+
+/// `branch` over a window whose entries are already indexed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let branch = snapshot_view.branch_in(entries, view, "main")
+/// ```
+pub fn branch_in(
+  entries: Dict(ids.EntryId, Entry),
+  view: View,
+  strand: String,
+) -> Branch {
   // Look up the strand's current leaf entry to begin the ancestor walk.
   case dict.get(view.leaves, strand) {
     Error(Nil) -> Branch([], Some("strand is not present in the captured cut"))
@@ -720,8 +751,42 @@ fn walk(
   }
 }
 
-fn find(cells: List(Cell), namespace, key) {
-  list.find(cells, fn(cell) { cell.namespace == namespace && cell.key == key })
+/// The captured cells keyed by register namespace and key.
+///
+/// A cut's cells are write-once for the cut, so a reader that asks for one by
+/// identity builds this once and asks the dictionary, rather than scanning
+/// the list for each strand it describes.
+pub type CellIndex =
+  Dict(#(register.RegisterNs, String), Cell)
+
+/// Indexes cells by namespace and key. Where a hand-built list repeats an
+/// identity the first cell wins, as a scan of the list would have it; a
+/// decoded cut never repeats one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let index = snapshot_view.index_cells(view.cells)
+/// ```
+pub fn index_cells(cells: List(Cell)) -> CellIndex {
+  list.fold(list.reverse(cells), dict.new(), fn(index, cell) {
+    dict.insert(index, #(cell.namespace, cell.key), cell)
+  })
+}
+
+/// The cell registered under a namespace and key, if the cut holds one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let found = snapshot_view.cell_at(index, register.OpState, operation)
+/// ```
+pub fn cell_at(
+  index: CellIndex,
+  namespace: register.RegisterNs,
+  key: String,
+) -> Result(Cell, Nil) {
+  dict.get(index, #(namespace, key))
 }
 
 /// Asserts that a JSON value is an object, returning its fields.
@@ -802,11 +867,24 @@ fn array(fields, name) {
 /// assert snapshot_view.has_result(view, "main", "unobserved") == False
 /// ```
 pub fn has_result(view: View, strand: String, current: String) -> Bool {
+  has_result_in(index_cells(view.cells), strand, current)
+}
+
+/// `has_result` over cells already indexed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert snapshot_view.has_result_in(dict.new(), "main", "unobserved")
+///   == False
+/// ```
+pub fn has_result_in(
+  cells: CellIndex,
+  strand: String,
+  current: String,
+) -> Bool {
   let result =
-    view.cells
-    |> list.find(fn(cell) {
-      cell.namespace == register.StrandLastResult && cell.key == strand
-    })
+    cell_at(cells, register.StrandLastResult, strand)
     |> result.try(fn(cell) {
       machine_codec.decode_last_result(cell.value) |> result.replace_error(Nil)
     })
@@ -835,7 +913,23 @@ pub fn has_tool_result(
   strand: String,
   call_id: String,
 ) -> Bool {
-  let Branch(records:, ..) = branch(view, window, strand)
+  has_tool_result_in(window_entries(window), view, strand, call_id)
+}
+
+/// `has_tool_result` over a window whose entries are already indexed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot_view.has_tool_result_in(entries, view, "main", "call-1")
+/// ```
+pub fn has_tool_result_in(
+  entries: Dict(ids.EntryId, Entry),
+  view: View,
+  strand: String,
+  call_id: String,
+) -> Bool {
+  let Branch(records:, ..) = branch_in(entries, view, strand)
   list.any(records, fn(record) {
     let protocol.EntryRecord(entry:, ..) = record
 

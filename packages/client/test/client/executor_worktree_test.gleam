@@ -124,6 +124,7 @@ fn config(
     remote_tools: ["fs_write", "fs_read", "bash"],
     attach_within_ms: 120_000,
     mint_token: surface.strong_token,
+    attached: fn(_attached) { Nil },
   )
 }
 

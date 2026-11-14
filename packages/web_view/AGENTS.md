@@ -423,7 +423,7 @@ page keys and nonces, and the relay into the session's gateway.
   `Start.activity`; `admin.sidebar_path`, whose clicks `admin_accepts` admits) and a
   machine's "Show its sessions", which narrows the sidebar in place.
   The composer's box is the session's first message. `Start.create` takes the
-  message as its fifth argument; `ui_socket.create_with` (which `create_for`
+  `agency_limits.AgencyLimits` as its fifth and the message as its sixth argument; `ui_socket.create_with` (which `create_for`
   wraps with no message) creates the session exactly as before, opens it, and then
   calls `send` once, for the new session, when the message is not empty:
   `first_message_for` resolves the session as the page's principal and
@@ -1661,6 +1661,7 @@ and `create.Offered`'s submits all take it, and `home.offered_roles` checks both
 fields against the page's lists. Only the key string reaches the page; no URL,
 key variable, upstream identifier or pricing does. A key removed since the page
 opened is `creations.UnknownModel`, whose fixed words say to reload the page.
+- **Subagent limits disclosure (`protocol-change/113`).** When targeting the local daemon (`composer.Here`), `new_session.form` renders a collapsed-by-default `"Subagent limits"` toggle (`composer.LimitsDisclosure`, `ToggledLimits`) expanding `.limits-grid` inputs for `fan_out`, `session_strands`, `depth_mode` (`default` / `bounded` / `unlimited`), and `depth_cap`. `composer.parse_limits` validates via `core/agency_limits.validate`, refusing malformed or inconsistent inputs with `creations.InvalidLimits` before `Start.create` runs.
 
 ## Sessions on an executor (protocol 078)
 

@@ -2,6 +2,7 @@
 //// (protocol-change/076). It is not `--profile`, which the native launcher
 //// consumes for BEAM profiling before the application starts.
 
+import core/agency_limits
 import gleam/string
 import tui
 import tui/daemon/protocol
@@ -55,6 +56,7 @@ pub fn creation_sends_the_profile_only_when_one_was_asked_for_test() {
           profile,
           "",
           "",
+          agency_limits.empty,
         ),
         protocol.Epoch("current"),
       )
@@ -76,6 +78,7 @@ pub fn an_over_long_profile_name_is_refused_before_it_is_sent_test() {
         string.repeat("a", 65),
         "",
         "",
+        agency_limits.empty,
       ),
       protocol.Epoch("current"),
     )
