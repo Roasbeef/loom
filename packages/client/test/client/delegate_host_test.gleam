@@ -12,20 +12,26 @@ import client/daemon/domain as domain_service
 import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/delegate_host
+import client/executors
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/peer_outbox_drain
+import client/pools
+import client/remote/protocol
 import client/remote_child
 import client/remote_escalation
 import client/remote_reach
 import client/remote_release
 import client/remote_spawn.{Parent}
+import client/session_states
 import client/spawners
 import core/clock
 import core/ids
 import core/json
+import gleam/dict
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
@@ -34,6 +40,7 @@ import simplifile
 import sqlight
 import storage/catalogue
 import storage/domain
+import support/cell
 import support/fake_orchestrators
 import support/remote_stubs
 import telemetry/log
@@ -94,6 +101,8 @@ fn tagged_with(
   occupancy: agency.Occupancy,
 ) -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
+    fresh: fn() { session_states.Fresh },
+    states: None,
     spawn: fn(_delegation, _site, _request) {
       Error(remote_spawn.StoreFailure(reason: "tag " <> int.to_string(tag)))
     },
@@ -387,6 +396,7 @@ pub fn a_session_that_cannot_open_ends_the_wait_with_a_refusal_test() {
       manager.DelegateRequest(
         spawner: laptop.name,
         parent_session: remote.session,
+        child: "",
         creation: made,
         directory: here.sessions_directory,
         generator: here.generator(),
@@ -795,6 +805,330 @@ pub fn a_release_stops_the_resident_session_and_deletes_it_and_its_row_test() {
   assert catalogue.delegates_held(store, "laptop") == Ok(0)
   assert delegate_host.releaser(here)(laptop, remote) == Ok(0)
   assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// --- a session for one seeded child (protocol-change/107, slice 4b) ----------
+
+const first_child = "seed-0123456789abcdef"
+
+const second_child = "seed-fedcba9876543210"
+
+// The spawner of the child tests, which may hold four sessions.
+fn roomy() -> spawners.Spawner {
+  spawners.Spawner(
+    ..spawner("executor = \"runner\"\nworkspace = \"loom\"\n"),
+    max_sessions: 4,
+  )
+}
+
+pub fn a_child_has_a_session_of_its_own_and_a_join_never_makes_one_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let here = context(registry, "/delegate-host/sessions")
+  let sessions = delegate_host.children(here)
+  let laptop = roomy()
+  let remote = parent(86)
+
+  // A join, a return or a release about a child with no session finds none and
+  // makes none, so a settled child's answer cannot create a session to hold it.
+  assert sessions.open(laptop, remote, first_child) == Ok(None)
+  assert sessions.release(laptop, remote, first_child) == Ok(0)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+
+  // A spawn makes the child's session, with the placement of the spawner and a
+  // key that names the child, apart from the pair's and from another child's.
+  let assert Ok(one) = sessions.resolve(laptop, remote, first_child)
+  let assert Ok(two) = sessions.resolve(laptop, remote, second_child)
+  let assert Ok(pair) = delegate_host.resolver(here)(laptop, remote)
+  assert tag_of(one) != tag_of(two)
+  assert tag_of(one) != tag_of(pair)
+  assert catalogue.delegates_held(store, "laptop") == Ok(3)
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_child_for(store, "laptop", remote.session, first_child)
+  assert row.parent_session == remote.session
+  assert row.child == first_child
+  let assert Ok(view) = manager.get(registry, row.session_id)
+  assert view.registration.executor == "runner"
+  assert view.registration.request_key
+    == "delegate:laptop:" <> remote.session <> ":" <> first_child
+
+  // Once it has a session, a later message about the child reaches that session.
+  let assert Ok(Some(again)) = sessions.open(laptop, remote, first_child)
+  assert tag_of(again) == tag_of(one)
+  let assert Ok(spawned_again) = sessions.resolve(laptop, remote, first_child)
+  assert tag_of(spawned_again) == tag_of(one)
+  assert catalogue.delegates_held(store, "laptop") == Ok(3)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_settled_child_does_not_hold_a_slot_against_the_cap_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let sessions = delegate_host.children(context(registry, "/delegate-host"))
+  let laptop = spawners.Spawner(..roomy(), max_sessions: 2)
+  let remote = parent(87)
+  let assert Ok(one) = sessions.resolve(laptop, remote, first_child)
+  let assert Ok(_two) = sessions.resolve(laptop, remote, second_child)
+  let third = "seed-aaaaaaaaaaaaaaaa"
+
+  // A third child is over the spawner's cap while both are held.
+  assert sessions.resolve(laptop, remote, third)
+    == Error(remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 2))
+
+  // Releasing the first stops its run, and the registry deletes its session and
+  // its row once the slot drains. Only then is the room there.
+  assert sessions.release(laptop, remote, first_child) == Ok(tag_of(one))
+  assert eventually(fn() {
+    catalogue.delegate_child_for(store, "laptop", remote.session, first_child)
+    == Ok(None)
+  })
+  let assert Ok(_third) = sessions.resolve(laptop, remote, third)
+  assert catalogue.delegates_held(store, "laptop") == Ok(2)
+
+  // A repeat of the release, and a release of a child that never had a session,
+  // do nothing and make nothing.
+  assert sessions.release(laptop, remote, first_child) == Ok(0)
+  assert sessions.release(laptop, remote, "seed-bbbbbbbbbbbbbbbb") == Ok(0)
+  assert catalogue.delegates_held(store, "laptop") == Ok(2)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_release_of_one_child_leaves_the_pair_and_the_other_children_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let here = context(registry, "/delegate-host/sessions")
+  let sessions = delegate_host.children(here)
+  let laptop = roomy()
+  let remote = parent(88)
+  let assert Ok(_one) = sessions.resolve(laptop, remote, first_child)
+  let assert Ok(two) = sessions.resolve(laptop, remote, second_child)
+  let assert Ok(pair) = delegate_host.resolver(here)(laptop, remote)
+  let assert Ok(option.Some(gone)) =
+    catalogue.delegate_child_for(store, "laptop", remote.session, first_child)
+
+  assert sessions.release(laptop, remote, first_child) != Ok(0)
+  assert eventually(fn() {
+    manager.delegate_of(registry, gone.session_id) == Ok(None)
+  })
+
+  // The pair's session and the other child's still answer.
+  let assert Ok(Some(still_two)) = sessions.open(laptop, remote, second_child)
+  assert tag_of(still_two) == tag_of(two)
+  let assert Ok(still_pair) = delegate_host.resolver(here)(laptop, remote)
+  assert tag_of(still_pair) == tag_of(pair)
+  assert catalogue.delegates_held(store, "laptop") == Ok(2)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_parents_release_ends_the_pair_and_every_child_it_started_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let here = context(registry, "/delegate-host/sessions")
+  let sessions = delegate_host.children(here)
+  let laptop = roomy()
+  let remote = parent(89)
+  let other = parent(90)
+  let assert Ok(one) = sessions.resolve(laptop, remote, first_child)
+  let assert Ok(two) = sessions.resolve(laptop, remote, second_child)
+  let assert Ok(pair) = delegate_host.resolver(here)(laptop, remote)
+  let assert Ok(_unrelated) = sessions.resolve(laptop, other, first_child)
+
+  // The end of a run reaches the children that are open, and only the parent's.
+  let assert Ok(live) = sessions.live(laptop, remote)
+  assert list.map(live, tag_of) |> list.sort(int.compare)
+    == list.sort([tag_of(one), tag_of(two)], int.compare)
+
+  // The parent's deletion stops all three, and the registry deletes all three
+  // sessions and their rows. Another parent's child is not touched.
+  assert delegate_host.releaser(here)(laptop, remote)
+    == Ok(tag_of(one) + tag_of(two) + tag_of(pair))
+  assert eventually(fn() {
+    catalogue.delegates_of_parent(store, "laptop", remote.session) == Ok([])
+  })
+  assert catalogue.delegates_held(store, "laptop") == Ok(1)
+  assert sessions.live(laptop, remote) == Ok([])
+  assert delegate_host.releaser(here)(laptop, remote) == Ok(0)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_daemon_that_died_mid_release_leaves_nothing_for_the_next_one_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = roomy()
+  let sessions = "/delegate-host/sessions"
+  let remote = parent(91)
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.children(context_at(first, sessions, 1000)).resolve(
+      laptop,
+      remote,
+      first_child,
+    )
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_child_for(store, "laptop", remote.session, first_child)
+  stop(first)
+
+  // The release was marked and the daemon died before the slot drained. The row
+  // says so, and a new daemon's sweep deletes it though it is far inside the
+  // retention, so nothing is leaked against the cap.
+  let assert Ok(Nil) =
+    catalogue.set_delegate_state(store, row.session_id, catalogue.Releasing)
+  let second = started(store, fn(_built) { Error("must not open") })
+  assert manager.sweep_delegates(
+      second,
+      sweeping(1_000_000, 1_000_000),
+      2000,
+      sessions,
+    )
+    == Ok(manager.Swept(deleted: 1, closed: 0))
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+
+  // A release that arrives after the sweep finds no row and does nothing, so
+  // the settle that began it cannot double-release.
+  assert delegate_host.children(context(second, sessions)).release(
+      laptop,
+      remote,
+      first_child,
+    )
+    == Ok(0)
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_release_of_a_released_child_finishes_the_deletion_it_began_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = roomy()
+  let sessions = "/delegate-host/sessions"
+  let remote = parent(92)
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.children(context(first, sessions)).resolve(
+      laptop,
+      remote,
+      first_child,
+    )
+  let assert Ok(option.Some(row)) =
+    catalogue.delegate_child_for(store, "laptop", remote.session, first_child)
+  stop(first)
+  let assert Ok(Nil) =
+    catalogue.set_delegate_state(store, row.session_id, catalogue.Releasing)
+
+  // A spawn for a child that is being released is refused and opens nothing.
+  let second = started(store, fn(_built) { Error("must not open") })
+  let children = delegate_host.children(context(second, sessions))
+  assert children.resolve(laptop, remote, first_child)
+    == Error(remote_spawn.ParentRunEnded)
+
+  // A repeated release finishes the deletion the first began.
+  assert children.release(laptop, remote, first_child) == Ok(0)
+  assert catalogue.delegate_of(store, row.session_id) == Ok(None)
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// Eight seeded children of one parent in a pool of three executors. Each child's
+// session is made by the production resolver with the pool's name, and its build
+// asks the registry for its executor the way an open does (`workspace.pooled`):
+// the spread order over the pool, with the claims of the sessions still being
+// built added to the resident counts. The builds wait for each other so that all
+// eight are building when the last one asks, which is the case the claims exist
+// for.
+pub fn eight_children_in_a_pool_of_three_executors_are_placed_three_three_two_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let pool =
+    list.map(["alpha", "bravo", "charlie"], fn(name) {
+      executors.plain(name, name <> "@10.0.0.9")
+    })
+  let claimed = cell.new(0)
+  let placed = cell.new(dict.new())
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
+        build: fn(record, _domain, _services, _owner, registry) {
+          // The registry reads the running sessions' rows in the claim's turn.
+          // None is running here until all eight have claimed, so the resident
+          // count is empty and the claims alone spread the pool.
+          let ordered =
+            manager.claim_placement(
+              registry,
+              record.id,
+              fn(_rows) { dict.new() },
+              fn(held) {
+                pools.spread(pool, held)
+                |> list.map(fn(executor) { executor.name })
+              },
+            )
+          cell.update(placed, fn(held) {
+            dict.insert(held, record.id, #(record.pool, ordered))
+          })
+          cell.update(claimed, fn(held) { held + 1 })
+
+          // No session is resident until all eight have claimed.
+          let _waited =
+            poll.until(within: 10_000, every: 5, attempt: fn() {
+              case cell.get(claimed) >= 8 {
+                True -> poll.Done(Nil)
+                False -> poll.Retry
+              }
+            })
+          Ok(tagged(ffi_os.unique_positive_integer()))
+        },
+        drain: fn(_, _) { Nil },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "delegate-host-pool-test",
+      limit: 16,
+    )
+    as "the registry starts"
+  let sessions = delegate_host.children(context(registry, "/delegate-host"))
+  let laptop =
+    spawners.Spawner(
+      ..spawner("pool = \"linux\"\nworkspace = \"loom\"\n"),
+      max_sessions: 8,
+    )
+  let remote = parent(93)
+  let made = process.new_subject()
+
+  // Each child asks for its session from a process of its own, all at once.
+  let names =
+    list.map([0, 1, 2, 3, 4, 5, 6, 7], fn(number) {
+      "seed-000000000000000" <> int.to_string(number)
+    })
+  list.each(names, fn(name) {
+    process.spawn(fn() {
+      process.send(made, sessions.resolve(laptop, remote, name))
+    })
+  })
+  list.each(names, fn(_name) {
+    let assert Ok(Ok(_endpoint)) = process.receive(made, 15_000)
+      as "every child's session opens"
+    Nil
+  })
+
+  // Every session was made for the pool, and the first choice of each spreads the
+  // eight three, three and two over the three executors.
+  let heads =
+    cell.get(placed)
+    |> dict.values
+    |> list.map(fn(each) {
+      assert each.0 == "linux"
+      let assert [head, ..] = each.1
+      head
+    })
+  assert list.length(heads) == 8
+  let counts =
+    list.map(["alpha", "bravo", "charlie"], fn(name) {
+      list.count(heads, fn(head) { head == name })
+    })
+  assert list.sort(counts, int.compare) == [2, 3, 3]
+  assert catalogue.delegates_held(store, "laptop") == Ok(8)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
@@ -1356,4 +1690,28 @@ pub fn a_resident_session_owes_the_release_only_once_its_slot_has_drained_test()
   let assert Ok([_still_one]) = catalogue.remote_releases(store)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn an_executor_with_no_room_is_a_request_to_ask_again_and_not_a_refusal_test() {
+  // The executor's own words for a full table of scopes and a full ledger are the
+  // two the receiver reads as no room, so a rewording there fails here.
+  assert delegate_host.no_room(
+    protocol.describe(protocol.CapacityExhausted(limit: 7)),
+  )
+  assert delegate_host.no_room(
+    protocol.describe(protocol.BudgetExhausted(limit: 4096)),
+  )
+  assert !delegate_host.no_room("the executor's workspace is not a repository")
+
+  // A start that failed for want of room asks the sender to come again, which a
+  // pool with every executor full is. Any other failed start is a store failure.
+  let full = protocol.describe(protocol.CapacityExhausted(limit: 7))
+  assert delegate_host.refused(
+      manager.DelegateFailed(manager.StartFailed(reason: full)),
+    )
+    == remote_spawn.NotYetOpen(reason: delegate_host.no_room_reason)
+  let assert remote_spawn.StoreFailure(..) =
+    delegate_host.refused(
+      manager.DelegateFailed(manager.StartFailed(reason: "no git")),
+    )
 }

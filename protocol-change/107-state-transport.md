@@ -1315,3 +1315,282 @@ A branch deleted out of band is made again from the base, and a request for the 
 would then be answered as applied. The model checks the rule and separates it from ancestry,
 and has no step that commits on the branch, so the resend after the session committed on top
 is covered by `applying_into_the_same_tree_twice_changes_nothing_test`.
+
+## Addendum: slice 4b, a seeded spawn on an executor or a pool (2026-11-04)
+
+Slice 3 left a placement the spawn refused, and slice 4a gave the executor the two
+messages it needs. This slice is the orchestrator side that uses them: a spawn that carries
+the parent's workspace now works when the spawner is placed on an `executor` or a `pool`,
+for exit criterion 3 of #1137 (one orchestrator starting several children on several
+machines, each doing real work in its own worktree, the results coming back). No wire
+constructor was added and the version stays at 6. Nothing above is edited.
+
+**What was built.** Each seeded child on an executor or a pool runs in a delegate session
+of its own. Its workspace is that session's worktree, and the parent's state becomes the
+worktree's checkout before the child's first turn. In order: the receiving orchestrator
+holds the whole bundle in its store (otherwise `StateMissing`, before any session is made);
+the child's session is found or made, which on a pool is where the executor is chosen; the
+attach census says whether the executor's workspace takes a state; the bundle is sent to the
+executor's store over `remote/state_link.via_host` with `state_transfer.send`, which resumes
+at the executor's offset; `StateApply` is sent under the scope's incarnation and token; and
+only after it is acknowledged is the request handed to the Agency, whose `spawn` is the
+child's first turn. A step that fails is a refusal that names the step, and a child that
+was not started is never reported started. `spawn_seed.land` is that order,
+`session_states.SessionStates` is the record of what a session can do with states, and
+`remote/workspace.states_over` builds it over the attached surface.
+
+**The first-turn fence is held on the orchestrator.** The executor cannot tell a tree the
+session has worked in from a fresh one. `agency.DelegateEndpoint.fresh` reads the
+session's lineage facts (a child's lineage cell is written before its strand runs, and a
+cell that will not decode still counts, and a read that fails answers "not fresh"). The
+session assembly wraps `apply` so it refuses once the session has begun, asked at the
+moment of each request, and `land` asks again immediately before the request. A resend of
+a spawn whose child began finds a session that is not fresh and sends nothing; the Agency
+answers the child it already started.
+
+**Keying.** A child's session is the delegate session of a (spawner, parent session, child)
+triple. The table is unchanged: the `parent_session` text is the parent's identity for the
+pair's session and the identity, a slash and the child's name for a child's, and
+`catalogue.Delegate` splits it into `parent_session` (always the parent, which mail and
+progress go to) and `child`. A name is a profile-name word of at most 24 bytes so that the
+key fits the column. This was chosen over a new column because a primary key change in SQLite
+is a table rebuild and a migration for a name that only the registry reads. The child's name
+is `spawn_seed.name_of`, a digest of the call site and the state, so a resend finds the same
+session. A child's session counts against the spawner's `max_sessions`, so the cap is sized
+for the children in flight and one more for the pair's own session.
+
+**Settled: where a child's session is ended.** The design asked for release when the child
+settles. The Agency's end of a child is not enough, because the session also holds what the
+join answers from: the child's report, usage and unsent mail. The release is therefore at the
+join: when a child's entry is `Ready`, after the return has decided what becomes of its
+commits, and the child owes the parent no mail (`owed` is zero). It is `release_delegate_child`,
+which writes the releasing state before it stops the slot, so a daemon that dies in between
+leaves a row the retention sweep deletes and a repeat finds nothing and does nothing. A
+refusal makes the same release at once: a workspace the census refuses, a failed send or
+apply, or an Agency that refuses the child for good ends the session made for it. A child nobody
+joins is ended with its parent, whose release now walks the pair's session and every child's
+(`delegates_of_parent`), or by the sweep.
+
+**Return.** For a `Session` home `spawn_return` asks the executor for `StateCapture` of the
+committed content thin against the tip that was sent, pulls the bundle into the receiving
+node's store with `state_transfer.pull`, and pushes it to the parent as every other child's
+is. `None` from the capture is "no commits", worded as the directory path words it. A capture or
+a pull that gets no answer is a new non-final outcome, `Waiting`, tried again at the next join
+up to the five tries a transfer gets, and then a refusal that says the commits are in the
+child's workspace. `child_join` asks each child's own session in a task of its own, all
+under one deadline, and a message into a child, a decision about its request, a read of its
+transcript and the end of a run reach the session the child runs in.
+
+**Differences from the text above.**
+
+- *The mode is learned at the attach.* The design says a `shared` workspace is refused with a
+  reason naming the mode. The orchestrator cannot read the executor's workspace table, so
+  `permitted` accepts every executor and pool placement under `seed = "workspace"`, and the
+  refusal is made from the attach census (`branch` present means worktree mode), which costs
+  no request. The executor refuses a shared workspace too, with the same words.
+- *`receive` stays the directory half.* It refuses an executor or pool placement and says a
+  session of its own is needed. `land` serves both, and the daemon's spawn host calls it.
+- *`Returning.settle` takes the session's record.* A child on an executor cannot be captured
+  without it, and the pair's children are settled with none.
+
+**Costs and limits accepted for now.**
+
+- Uncommitted changes in an executor child's tree are not reported to the parent, as a
+  directory child's are, because asking would need a message the executor's vocabulary lacks.
+- A join that asks again after a child's session was ended is refused ("holds no such
+  child"), because the report lived in the session. The parent asks only about handles it
+  holds from a spawn it saw answered, and the answer that ends the session is the one
+  carrying the result, so the cost is a lost reply: the commits are in the parent's store but
+  the parent is not told their ref.
+- A spawn delayed past the end of its run is not fenced by the run-end fence, which is
+  written in the pair's session. It needs a spawn that is itself late past its run's end,
+  and the child is still ended with its parent.
+- A run end creates the pair's session if none exists, as it always did, so a parent whose
+  children were all seeded still holds one extra session until the sweep.
+- A session whose own workspace is on an executor still cannot seed a child: the parent's
+  workspace is captured from the orchestrator's machine only. `sessions.move` and its
+  checkout step are unchanged.
+- The pool placement is tested at the registry, with the existing claim machinery
+  (`manager.claim_placement` and `pools.spread`) asked from eight concurrent builds, and the
+  executor leg is tested against one real in-process executor. Nothing here was run over a
+  real TLS distribution link, under bubblewrap and Landlock, on three machines or by a model.
+
+## Addendum: slice 4b reviewed and checked against models (2026-11-13)
+
+Two independent reviews of the slice 4b change found faults, and the owner asked that
+the landing of a seed be checked with the repository's model tools before anything is
+built on it. Nothing above is edited, and no wire constructor changed.
+
+**The first review.**
+
+- *A record that cannot be read was taken for a session that has begun.*
+  `DelegateEndpoint.fresh` returned a boolean that failed closed, so an unreadable
+  lineage record skipped the apply and the child started on a checkout nothing was put
+  in. It returns `session_states.Freshness`, which is `Fresh`, `Begun` or `Unreadable`,
+  and `seed_landing.gate` says what the caller does: an unreadable record is asked
+  about again. This replaces "a read that fails answers not fresh" in slice 4b.
+- *A failure that asking again can cure was kept as a permanent verdict.* An executor
+  with no room, a fence that has moved, an unanswered request and the deadline left a
+  `.refused` file that answered every later ask. `seed_landing` separates `Retry`, which
+  keeps nothing and leaves the session, from `Refuse`, which is a malformed description
+  or piece, a node with no store, or a workspace that refuses the state, and keeps the
+  verdict. `workspace.failed_by` reads an executor's refusal of an apply the same way.
+- *A history read or a message reopened a closed child session.*
+  `ChildSessions.resident` finds a child's session only when it is open and resident.
+- *`seed_applied` was logged for a resend that applied nothing.*
+
+**The second review.**
+
+- *A join could be asked only once.* The child's session was ended at the first `Ready`
+  entry that owed no mail, and the session holds that entry's report, usage and notes, so
+  a join asked again was refused, and the refusal failed the whole join. The parent asks
+  again by design: a wait made from a program is deferred and retried, a second wait
+  names handles that settled in the first, and a reply can be lost. The settled entry is
+  now kept beside the child's verdict before the session is ended (`joined_record`,
+  `Returning.keep`), and `child_join` answers from it when the session is gone or is
+  being released, so a join gets the same answer however often it is asked. One group's
+  refusal is now that group's: a child this orchestrator holds no record of is answered
+  as failed with the reason, any other refusal leaves it unfinished, and the other
+  children of the join are answered. The kept entry stays in `seed-returns` as the
+  verdicts do. This replaces the accepted cost in slice 4b that a join after the
+  session was ended is refused.
+- *A refusal after the child's session existed leaked it.* The sender takes every
+  refusal but `NotYetOpen` and `StateMissing` as final, so no ask follows. The session is
+  now ended for every other refusal, in `unstarted_ended` and when `children.resolve`
+  fails (`seed_landing.asks_again` is the one rule). A pool whose every executor has no
+  room answered `StoreFailure` and so a permanent refusal. It now answers `NotYetOpen`,
+  recognising the executor's own words for a full table of scopes and a full ledger
+  (`delegate_host.no_room`), and ends the failed row so the next ask places afresh. The
+  pool-full path is tested at the classification and not driven end to end.
+- *The run's end did not stop the children when the pair's session could not be made.*
+  The children are stopped first and independently. A child stopped at the run's end
+  keeps its session: a child the run owned can still be joined, its commits returned and
+  its session ended by that join. A child nobody joins is freed with its parent or by the
+  sweep.
+- *Two checkouts of one state could run at once on an executor.* A sender whose
+  connection was repaired resends `StateApply` while the first run is still checking out,
+  and the second run failed on what the first made and was kept as the workspace
+  refusing the state. The host now joins a request for a state already being applied to a
+  scope to that run, and the run's answer reaches both (`apply_state`). The run is not
+  cancelled with a requester, as before.
+- *The two reads of whether a session has begun disagreed.* The check before the apply
+  took `Begun` as success and the session's own check at the request took it as a
+  refusal, which was kept as a verdict and released the child that had just started.
+  `apply_once` reads the second as the first.
+- *A return that could pass was refused.* A parent's store with no room, a fault that may
+  pass and the deadline are tried again with the same classification the landing uses.
+  A child in a session of its own is never given up on after a number of tries, because
+  giving up ends its session and the commits still on the executor with it, and what
+  costs the tries is often an answer that is not about the commits. It stays unfinished
+  until the time bound below. A record that cannot be read leaves the
+  child unfinished and its session kept, and the report for such a child says that only
+  committed work is returned, because its tree is not looked at. Waiting for ever withholds
+  the child's report, so the wait is bounded by time and not by count: the first verdict that
+  is not final carries the second it was made (`since`), and once it is older than
+  `spawn_return.give_up_s`, ten minutes, the join gives up, returns the report with a
+  sentence naming the executor and the branch `loom/<session>` where the commits still are,
+  and ends the session. Ten minutes is longer than an executor takes to restart and than the
+  surface takes to repair a link, which it bounds at a minute.
+
+**Not changed.** A census with no branch is read as `mode = "shared"` and refused for
+good. The executor reports a branch exactly when it built a worktree for the scope
+(`executor_plane`), and a worktree that failed to build refuses the attach, so a census
+without one is a shared workspace and the refusal is right.
+
+**What the release at a verdict covers.** An ask that finds a verdict ends the child's
+session (`spawn_seed.landed`). `placing` writes the verdict, lets go of the claim, ends
+the session and only then answers the asker, so the leak the first edition of this
+addendum described, a daemon stopping between the verdict and the end of the session
+with the asker told, does not exist, and the daemon deletes `seed-staging`, where
+verdicts and claims are kept, when it starts, so a restart forgets both. What remains is
+a second ask that arrives between the verdict and the end of the session: it is answered
+with the verdict, its sender asks no more, and a restart before the end of the session
+loses the step that ends it. The ask that finds the verdict ends the session for that
+case. It does not cover a failure of the release itself.
+
+**What checks the landing.**
+
+- `protocol/models/seeded-spawn` models both placements and the whole round trip with
+  dropped links, restarts of either orchestrator and of the executor, an asker that gives
+  up, a late bundle, a stale fence, a store with no room and a run that ends. It checks
+  the first turn after the seed, one session per child, one apply and never over a newer
+  tip, one checkout at a time for a scope, a ref that names only a described bundle and is
+  made once, no verdict from a transient failure, an unreadable record never read as
+  begun, a join asked again answered as the first was, the commits returned and not lost,
+  a session not released while its child runs or before the answer is kept, and a run end
+  that stops the children whatever becomes of the pair's session, with liveness for the
+  spawn and for the release of every settled child. Nineteen mutants, three of them
+  review findings as they stood, are each caught by the spec that names them. No
+  counterexample was found on the code as it now stands. The model did show where a
+  property rests: a `StateApply` that arrives late, after the child began to work, is
+  kept from clobbering the child's commits by the executor answering a tip it applied
+  before without touching the tree (`state_apply`), and not by the orchestrator's begun
+  check, which only keeps most such requests from being sent.
+- `seed_landing_model_test` is a `statem` model of the decisions in the order
+  `spawn_seed.land` takes its steps, with a fault injected at each. It proves that the
+  four functions of `seed_landing` classify the generated faults as its table says. It
+  does not call `spawn_seed` and has no concurrency, claims, restarts or real join.
+
+**Also fixed in the second round.**
+
+- *A clean parent behind the executor's workspace started the child on the executor's commit.*
+  The scope's tree is made from the workspace's base, and an apply that took a tree holding a
+  descendant of the parent's commit for the parent's tree did not move it, so the child began on
+  the executor's commit and the thin return carried the executor's commits as its own. The rule
+  merged in #1231 (a state is applied when the session's last-applied ref names its tip or the tree's
+  `HEAD` is it, and otherwise the clean tree is moved) is right for every apply this change makes.
+  `seed_on_executor_test` has the case, with a parent that committed its edits and a workspace one
+  commit past it, and the model has `TestBehind` and a mutant for the old rule.
+- *Every join about a seeded child was told whatever its refusal.* The refusal of a seeded
+  child's group is now that child's: one that may pass (`seed_landing.join_asks_again`) leaves
+  the child unfinished and is logged with its reason, and every other is the child's failure
+  with its reason. The join's rule is the spawn's (`seed_landing.asks_again`: `NotYetOpen`,
+  `StateMissing`) and `StoreFailure` as well. A spawn refused for a store fault has run nothing
+  and stays final, as the sender takes it. A join refused for one is about a child whose work
+  is done or under way, and the faults behind it pass (a delegate session reopening while the
+  daemon is at its session capacity, a registry call that timed out), so the parent asks again.
+  The pair's group keeps its refusal as the join's, because one refusal there speaks for handles
+  it does not name.
+- *An entry that could not be kept did not stop the release.* The session is ended only when the
+  entry was kept, and a kept entry that is there and cannot be read leaves the child unfinished
+  and is not taken for none.
+- *A resend whose child had begun was released on a failure of the Agency's answer.* The sender
+  is asked to come again and is answered by the child it already has. A final refusal from
+  `children.open` ends the session too.
+- *An apply that raised left its key.* The apply is a run whose every outcome is reported, so the
+  key that joins requests to it is always cleared.
+- *Two children seeded from one parent raced to make the ref that names their state.* An apply
+  whose ref could not be made re-reads it and accepts it when it names the tip.
+- *The files of a child were never removed.* A sweep at start removes the record, verdict and
+  kept answer of a child older than the longest `retain_s` of the configured spawners, which is how
+  long its delegate session is kept with no message from the spawner. There is no hook at the parent's
+  deletion that knows a child's files, which are named by a digest of the strand.
+- `outliving.wait_for` stays a spawn that no process is linked to: weft's detached, witnessed and
+  relayed starts link the run's scope to the process that starts it, so a starter that is killed takes
+  the run with it, and weft has no unlinked start.
+
+`spawn_return.kept` looks a child up by the spawner, the parent session and the child's strand. It does
+not compare the kept entry's handle with the operation of the asked handle, and it does not repeat the
+Agency's descent check. The spawner and the parent session are checked, and the strand comes from the
+call site, so a handle that is not the parent's child still finds nothing.
+
+**Open.**
+
+- A session whose capture is refused as stale after an executor restart is not attached again before
+  the capture. The return waits for the window and gives up. A re-attach before the capture is not
+  built here.
+
+- A seeded spawn placed on an executor reached over the untrusted link of
+  protocol-change 109 and 110 is not designed here. `untrusted_bridge.state_outbound`
+  carries the state messages, so it runs the same path, untested.
+- A spawn asked again after its child was joined and its session deleted, while the bundle
+  is still stored, starts a second child that nothing joins. The sender as written does not
+  send that duplicate, and neither the model nor a test covers it beyond the model's
+  statement that the code does so.
+- `return_apply.behind_gate` and `return_apply.held` record a read fault as a final
+  `NotApplied`. That is older code and not this change.
+- The model joins the attach to the claim. In the code the attach runs before the claim,
+  so two asks may attach at once. An attach is idempotent on the executor and the claim
+  still admits one apply.
+- The pool placement with every executor full is classified and tested at
+  `delegate_host.refused`, and not driven through a real pool.

@@ -918,16 +918,28 @@ fn create_ref(
     ]),
   )
 
-  // The zero id as the old value makes Git refuse when the ref exists.
-  use _ <- result.map(
+  // The zero id as the old value makes Git refuse when the ref exists. Several
+  // children seeded from one parent carry one state, and a pool smaller than their
+  // number puts two of them on one executor, so another apply of the same state in
+  // this repository may have made the ref since it was read. A ref that now names
+  // the tip is the state imported, which is what this apply was making.
+  let made =
     git_ok(git, repository, writable, [
       "update-ref",
       ref,
       state.tip,
       string.repeat("0", string.length(state.tip)),
-    ]),
-  )
-  ref
+    ])
+
+  // The ref was made, or another apply made it, or it is a refusal to report.
+  case made {
+    Ok(_) -> Ok(ref)
+    Error(reason) ->
+      case current_value(git, repository, ref) {
+        Ok(Some(oid)) if oid == state.tip -> Ok(ref)
+        Ok(Some(_)) | Ok(None) | Error(_) -> Error(reason)
+      }
+  }
 }
 
 /// The commit a ref names, or `None` when it does not exist.

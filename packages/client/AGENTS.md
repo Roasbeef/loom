@@ -1728,7 +1728,11 @@ answer and the host handing it to the factory. `workspace_plane_test` runs real
 commits in the jail under a hostile `.git/config` and an overwritten tool-home
 gitconfig, and shows that `amend` and `rebase` keep an existing author while the
 pinned name becomes the committer. `protocol/models/state-transfer` is the P model
-of the drop and restart cases.
+of the drop and restart cases, and `protocol/models/seeded-spawn` is the P model of a
+seeded spawn from the ask to the pull of the commits, with its mutants.
+`seed_landing_model_test` is the `statem` model of the decisions `seed_landing` takes in the
+order `spawn_seed.land` takes its steps (it does not call `spawn_seed`), with a qcheck
+property for `delegate_key`.
 
 `git_identity.resolve` reads the source's effective name/email, while `publish`
 projects only those two values through the existing descriptor-confined helper.
@@ -1798,12 +1802,14 @@ it must be. An executor's scope is `LinkedTo` the workspace's canonical `.git`, 
 workspace refuses with a reason that names both modes.
 
 The receiver. `main.spawn_host_seeding` judges `seeded` before it finds or creates a
-delegate session. `spawn_seed.receive` passes a request with no state through,
-and otherwise: `permitted` (ceiling, placement, description, size), `held` (the whole
+delegate session. `spawn_seed.land` passes a request with no state through,
+and otherwise: `permitted` (ceiling, placement, description, size; answers a `Target`,
+`Directory` or `Session`), `held` (the whole
 bundle in the store, else `StateMissing`), `applied` (the copy at
 `<directory>/seeds/<name>`, made in `<state root>/seed-staging` and renamed in), and
-`briefed` (the words appended to the brief). Only an `InDirectory` placement takes a
-copy. `name_of` is a digest of the call site and the state hash. `copy` looks at the
+`briefed` (the words appended to the brief). `receive` is the directory half and refuses
+an executor or pool placement, which `land` serves with a session of the child's own
+(slice 4b, below). `name_of` is a digest of the call site and the state hash. `copy` looks at the
 final name first (`settled`: `Missing`, `Whole` or `Tampered`, by `link_info` and the
 canonical path, so a link is never taken for a finished copy) and a resend returns
 before the store is read. `applied` claims the copy (`claim`, a marker directory in
@@ -1840,8 +1846,12 @@ only its commits.
   tip, a refusal when `HEAD` does not descend from it or the directory is not a primary
   checkout at its own path). `sent` pushes the bundle with `state_transfer.send` over
   `state_link.via_port` to the spawner's node; `Silent` and `Stalled` keep the captured
-  state in the verdict (`Captured`) for the next join, `max_attempts` (5) of them make a
-  final refusal, and a decline or a lost state is final at once. A verdict carries the
+  state in the verdict (`Captured`) for the next join. A decline that the same bytes get
+  again is final at once; one that passes (no room, a piece out of place), a fault that
+  may pass and the deadline are tried again (`seed_landing.of_declined`). `max_attempts`
+  (5) tries make a final refusal for a child in a directory only: a child in a session of
+  its own is never given up on, because giving up ends its session and the commits still
+  on the executor, and stays unfinished until `give_up_s` has passed since its first verdict that was not final. A verdict carries the
   outcome, whether the copy had uncommitted changes (`status --porcelain` in the jail),
   and the attempts. `amend` sets `Joined.state` on a return and appends fixed sentences
   to the report for no commits, a refusal and uncommitted work. A return never fails
@@ -1867,9 +1877,75 @@ only its commits.
   (the `remote_children` snapshot), encoded only for a returned child and read as a
   well-formed pair or not at all.
 - *Limits.* A linked-worktree workspace is refused by `check_repository` (only a primary
-  checkout takes the apply); an executor or pool placement takes no copy, so no return;
-  commits made after the join first reported the child are not returned; a crash between
-  a spawn's answer and `remember` loses that child's return.
+  checkout takes the apply); commits made after the join first reported the child are not
+  returned; a crash between a spawn's answer and `remember` loses that child's return.
+
+Slice 4b: a seeded child on an executor or a pool. A session has one workspace, so each
+such child runs in a delegate session of its own, and its workspace is its worktree.
+
+- *Keying.* `catalogue.Delegate` gains `child`; the table keeps its one `parent_session`
+  text key, which is the parent's identity for the pair's session and the identity, `/` and
+  the child's name for a child's (`delegate_key`, `split_delegate_key`, so no table is
+  rebuilt and `Delegate.parent_session` is always the parent mail goes to).
+  `claim_delegate_child`, `delegate_child_for` and `delegates_of_parent` take the name; the
+  old functions are the empty child. `manager.DelegateRequest.child`, `delegate_child`,
+  `delegate_family` and `release_delegate_child` carry it through the registry's turn.
+  `delegate_host.children(context)` is `ChildSessions`: `resolve` (create or open, for a
+  spawn), `open` (an existing session or `None`, never creates), `resident` (the session
+  of a child only when it is open and resident, for a read or a message, so a closed
+  session is not reopened), `live` (a parent's resident children, for the end of a run)
+  and `release`. The request key of a session is `delegate_key.key`, which names the pair's
+  session and each child's without collision. `releaser` walks the pair and
+  every child. The child's name is `spawn_seed.name_of(site, state)`.
+- *Session record.* `session_states.SessionStates` (link to the executor's store, `fit`
+  from the attach census, `apply`, `capture`) is built by `remote/workspace.states_over`
+  over the surface and carried on `Hands.states`, `serve.Half.states` and
+  `agency.DelegateEndpoint.states`. `serve` wraps `apply` in
+  `session_states.before_first_turn`, which asks `DelegateEndpoint.fresh`
+  (`agency.delegate_fresh`: `session_states.Freshness`, which is `Fresh` for no lineage
+  fact under the prefix, `Begun` for any, and `Unreadable` when the read failed; an
+  unreadable record is asked about again and never taken for a begun one) at each
+  request.
+- *Order.* `spawn_seed.land` (via `landed`): the refusal an earlier attempt kept, a session
+  that already began (a resend: nothing is put anywhere), the whole bundle in this node's
+  store (`StateMissing` before any session is made), `children.resolve`, `fit` (a
+  `shared` workspace is refused naming the mode and the session is released), then `placed`
+  runs `placing` in an unlinked process under a claim and `apply_ms`: `delivered`
+  (`state_transfer.send` over `state_link.via_host`) and `applied_on` (asks `fresh` once
+  more, then `states.apply`). `seed_landing` decides what a failure means: `Retry` (no room, a fence that
+  moved, no answer, the deadline, an unreadable record) is `NotYetOpen`, keeps no verdict
+  and leaves the session, and `Refuse` (a malformed description or piece, a workspace
+  that refuses the state) is `StateRefused`, kept as a verdict, and releases the session.
+  An ask that finds a verdict releases the session too, for an ask that arrives between the
+  verdict and the release. `workspace.failed_by` reads an executor's refusal of an apply the same way. The host calls the
+  Agency's `spawn` only after `land` returned `Ok`, in the session `Landed.session` names,
+  and releases that session (`unstarted_ended`) when the Agency refuses for good.
+- *Join and return.* `spawn_return.Returning.session_of` reads the record (`Copy.home`,
+  `Directory` or `Session`) and answers `Whereabouts`: `Unseeded` (no record), `OwnSession`
+  or `Unreadable` (a record that is there and does not read, which leaves the child
+  `Pending` and its session kept and is never taken for unseeded).
+  `child_join.join` asks the pair's session once for its handles and each child's own
+  session in a task of its own (`weft`, one deadline), settles each entry with the
+  session's `SessionStates`, keeps the settled `Ready` entry (`Returning.keep`, in
+  `seed-returns/<key>.joined` as `joined_record` text) and releases a child's session when
+  the entry is `Ready` and `owed` is zero. A join that finds the session gone, or being
+  released, answers from the kept entry (`Returning.kept`), so a join asked again gets the
+  same answer; one group's refusal is that group's (`InvalidArgument` and `ParentRunEnded`
+  answer the child as failed with the reason, any other leaves it `Pending`). The work that
+  outlives its asker (`placed`, `applied`, `attempt`) is started by `outliving.wait_for`.
+  The executor's `host.apply_state` joins a second `StateApply` for a state being applied
+  to a scope to the run in progress. For a `Session` home `found_in_session` calls `states.capture(Thin(sent
+  tip), CommittedOnly)` (`committed`: `Waiting` verdict on `Later`, a fixed refusal on
+  `Final`), then `pulled` (`state_transfer.pull` into the node's endpoint, then the usual
+  `sent`). `main.spawn_host_seeding` routes `send`, `resolve` and `history` by
+  `session_of` and adds the live children to `run_ended`.
+- *Limits.* Uncommitted changes in an executor child's tree are not reported, and the
+  report says so (`session_tree_note`); a child in a session of its own is given up on by time, not count: a
+  verdict that is not final carries `since`, and after `give_up_s` (ten minutes) the join returns the
+  report with the executor's name and the branch `loom/<session>` and ends the session, with no re-attach
+  before a capture; a spawn delayed past its run's end is not fenced for
+  a child's session; a child stopped at its run's end keeps its session, because a join can
+  still return its commits.
 
 Tests: `workspace_gate_test` (overlap, concurrent file writes, drain refusal, stuck
 capture released and refused, dead holders), `state_return_apply_test` (the apply and its
@@ -1880,8 +1956,13 @@ decline, link swap), `return_apply_test` (the gate, the workspace check, the sto
 `executor_capture_test` (real repository, real helper, real host), `spawn_seed_test`
 (judging and applying, resume, the ceiling, hostile `.git/config`), `seeded_spawn_test`
 (the sender's step against a real port and two stores), the `agency_test` cases for
-`my_workspace`, and the jail assertion in `daemon_state_masks_test` that a session tool
-cannot read `states/`.
+`my_workspace` and for `delegate_fresh`, and the jail assertion in
+`daemon_state_masks_test` that a session tool cannot read `states/`. Slice 4b:
+`seed_on_executor_test` (the real executor host and plane, the production
+`workspace.states_over`: the whole spawn, a resend, the first-turn fence, a shared
+workspace, a refused spawn, a cut transfer, a silent executor), `child_join_test`,
+`delegate_host_test` (the sessions of children, release on settle and after a restart,
+eight pooled children placed three, three and two) and `catalogue_test` (the keying).
 
 ## Key Types
 

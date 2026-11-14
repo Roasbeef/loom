@@ -51,8 +51,17 @@
 #
 # The schedule counts are smaller than the README's 30,000 because this is
 # a gate run on every model change, not the recorded result. The default
-# of 1,000 schedules takes about six seconds a case. Every probe in the
-# tree finds its witness within 230 schedules, so 2,000 leaves a margin.
+# of 1,000 schedules takes about six seconds a case.
+#
+# A probe stops at its first witness, so its budget costs nothing when the
+# witness is found and is spent only by a probe that finds none. The budget
+# is therefore set by how rare the rarest witness is, not by how long the
+# gate takes. Four runs of each of the 76 probes in the tree, with a budget of
+# 20,000, found a witness for every one; five needed more than 230
+# schedules, at 363, 430, 597, 877 and 950 schedules, which is about one
+# schedule in 500 to one in 800. At 1 in 800 a budget of 2,000 misses about one
+# run in twelve, which is how `tcProbeStaleGenerationRefused` failed the
+# gate. 12,000 schedules miss it about three times in ten million.
 #
 # The P 3.0 dotnet tool must be on PATH or in ~/.dotnet/tools. The model
 # check is not part of `make check` or CI, which do not install it; this
@@ -61,7 +70,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 schedules="${MODEL_SCHEDULES:-1000}"
-probe_schedules="${MODEL_PROBE_SCHEDULES:-2000}"
+probe_schedules="${MODEL_PROBE_SCHEDULES:-12000}"
 failed=0
 
 # --- the TLA+ model --------------------------------------------------------

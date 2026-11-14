@@ -2207,6 +2207,7 @@ pub fn a_delegate_claim_records_a_pair_once_and_a_repeat_only_touches_it_test() 
     catalogue.Delegate(
       spawner: "laptop",
       parent_session: parent,
+      child: "",
       session_id: record.id,
       last_contact_ms: 1000,
       state: catalogue.Open,
@@ -2263,6 +2264,139 @@ pub fn a_delegate_claim_records_a_pair_once_and_a_repeat_only_touches_it_test() 
   let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
   assert catalogue.delegate_of(reopened, record.id) == Ok(option.Some(later))
   assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn a_child_has_a_delegate_session_of_its_own_beside_the_pairs_test() {
+  let path = fresh_path("delegate-child")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let pair = registration(94)
+  let first = registration(95)
+  let second = registration(96)
+  let parent = parent_of(97)
+  let elsewhere = parent_of(98)
+  assert catalogue.reserve(store, pair) == Ok(pair)
+  assert catalogue.reserve(store, first) == Ok(first)
+  assert catalogue.reserve(store, second) == Ok(second)
+  let one = "seed-0123456789abcdef"
+  let two = "seed-fedcba9876543210"
+
+  // One parent holds a session for its pair and one for each child, under one
+  // cap, and each is found by its own key without disturbing the others.
+  let assert Ok(catalogue.Claimed(_)) =
+    catalogue.claim_delegate(
+      store,
+      "laptop",
+      parent,
+      pair.id,
+      limit: 3,
+      now_ms: 1,
+    )
+  let assert Ok(catalogue.Claimed(recorded)) =
+    catalogue.claim_delegate_child(
+      store,
+      "laptop",
+      parent,
+      one,
+      first.id,
+      limit: 3,
+      now_ms: 2,
+    )
+  let assert Ok(catalogue.Claimed(_)) =
+    catalogue.claim_delegate_child(
+      store,
+      "laptop",
+      parent,
+      two,
+      second.id,
+      limit: 3,
+      now_ms: 3,
+    )
+  assert recorded.parent_session == parent
+  assert recorded.child == one
+  assert catalogue.delegate_child_for(store, "laptop", parent, one)
+    == Ok(option.Some(recorded))
+  assert catalogue.delegate_of(store, first.id) == Ok(option.Some(recorded))
+  assert catalogue.delegates_held(store, "laptop") == Ok(3)
+
+  // A fourth session is over the cap whatever it is for.
+  let extra = registration(99)
+  assert catalogue.reserve(store, extra) == Ok(extra)
+  assert catalogue.claim_delegate_child(
+      store,
+      "laptop",
+      parent,
+      "seed-aaaaaaaaaaaaaaaa",
+      extra.id,
+      limit: 3,
+      now_ms: 4,
+    )
+    == Ok(catalogue.AtLimit(held: 3))
+
+  // A parent's sessions are found together, and another parent's are not.
+  let assert Ok(mine) = catalogue.delegates_of_parent(store, "laptop", parent)
+  assert list.map(mine, fn(row) { row.child }) |> list.sort(string.compare)
+    == list.sort(["", one, two], string.compare)
+  assert catalogue.delegates_of_parent(store, "laptop", elsewhere) == Ok([])
+  assert catalogue.close(store) == Ok(Nil)
+
+  // The rows read back as they were written after a restart.
+  let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
+  assert catalogue.delegate_child_for(reopened, "laptop", parent, one)
+    == Ok(option.Some(recorded))
+  assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn a_child_name_that_cannot_share_a_row_with_its_parent_is_invalid_test() {
+  let assert Ok(store) = catalogue.open(fresh_path("delegate-child-name"))
+    as "catalogue opens"
+  let record = registration(100)
+  let parent = parent_of(101)
+  assert catalogue.reserve(store, record) == Ok(record)
+
+  // The stored key is the parent's identity, a slash and the name, in 64 bytes.
+  let invalid = Error(catalogue.Invalid("invalid delegate session metadata"))
+  assert catalogue.delegate_child_for(store, "laptop", parent, "Upper")
+    == invalid
+  assert catalogue.delegate_child_for(store, "laptop", parent, "a/b") == invalid
+  assert catalogue.delegate_child_for(
+      store,
+      "laptop",
+      parent,
+      "seed-0123456789abcdef0123456789",
+    )
+    == invalid
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_damaged_delegate_key_is_invalid_and_never_the_pairs_session_test() {
+  let path = fresh_path("delegate-damaged-key")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(102)
+  let parent = parent_of(103)
+  assert catalogue.reserve(store, record) == Ok(record)
+  assert catalogue.close(store) == Ok(Nil)
+
+  // A key whose child is missing, or that has a second slash, is written by hand,
+  // as a damaged file would hold it.
+  let assert Ok(db) = sqlight.open(path) as "raw connection opens"
+  assert sqlight.exec(
+      "INSERT INTO catalogue_delegate_sessions(spawner, parent_session, session_id, last_contact_ms) VALUES ('laptop', '"
+        <> parent
+        <> "/', '"
+        <> record.id
+        <> "', 1)",
+      on: db,
+    )
+    == Ok(Nil)
+  assert sqlight.close(db) == Ok(Nil)
+
+  // The session reads as damaged, and neither lookup takes it for the pair's.
+  let assert Ok(store) = catalogue.open(path) as "catalogue reopens"
+  let invalid = catalogue.Invalid("invalid delegate session metadata")
+  assert catalogue.delegate_of(store, record.id) == Error(invalid)
+  assert catalogue.delegates(store) == Error(invalid)
+  assert catalogue.delegate_for(store, "laptop", parent) == Ok(option.None)
+  assert catalogue.close(store) == Ok(Nil)
 }
 
 pub fn every_delegate_session_is_listed_in_identity_order_test() {
