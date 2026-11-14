@@ -325,7 +325,14 @@ use and cached.
 | --- | --- | --- |
 | `/usr/local/share/ca-certificates/loom-vm-proxy.crt` | the CA certificate | `loom-guest-init` runs `update-ca-certificates` when this file exists, before it drops privileges |
 | `/etc/loom-vm/github.env` | `HTTPS_PROXY`, `https_proxy`, `NO_PROXY`, `no_proxy`, and `GH_TOKEN` and `GITHUB_TOKEN` set to the placeholder | `loom-guest-init` exports it (`set -a`) into the workload, so `loomd` inherits it |
-| `/etc/gitconfig` | `http.proxy`, and for each injection host a credential helper answering `username=x-access-token` and `password=${GH_TOKEN:-<placeholder>}` | git, as the system configuration, in any shell |
+| `/etc/gitconfig` | `http.proxy`, for each injection host a credential helper answering `username=x-access-token` and `password=${GH_TOKEN:-<placeholder>}`, and a `url."https://<host>/".insteadOf` rewrite of `git@<host>:` and `ssh://git@<host>/` | git, as the system configuration, in any shell |
+
+The rewrite exists because a developer's checkout usually names its origin
+as `git@github.com:owner/repo`, and the copy in the guest keeps that URL. The
+guest has no ssh client, no key and no route to port 22, so `git push` to
+such a remote failed with "cannot run ssh". With the rewrite the same remote
+resolves to HTTPS on the same host and goes through the proxy like any other
+request; the rewrite adds no credential and reaches no new host.
 
 The credential helper falls back to the placeholder so a jailed call whose
 environment omits `GH_TOKEN` still authenticates through the proxy.
@@ -1167,14 +1174,18 @@ the host are not in it.
 - The host epmd entry assumes the node name's host part is `127.0.0.1`. A
   guest executor reached from another machine would need a different
   transport.
-- The credential proxy is driven end to end only with a made-up token.
+- The automated test drives the credential proxy only with a made-up token.
   `daemon_shipped_microvm_test` boots a guest with `loom vm up --github env`
   and a fake `LOOM_VM_GITHUB_TOKEN`, and a jailed `bash` call shows the
   placeholder in `GH_TOKEN`, the fake token nowhere under the guest's files, and
   (with `LOOM_VM_GITHUB_LIVE=1`) `api.github.com/zen` answering 200 and
-  `/user` answering 401 through the proxy. A real push, which needs a real
-  token with write access, has not been run. The test needs a guest root with
-  `curl`; the one it was run with also has `gh`.
+  `/user` answering 401 through the proxy. A real push was run once by hand,
+  on 2026-11-13 against the nightly of commit `ebae32cf2`: a model session in
+  a guest pushed a branch to a private repository whose origin is an SSH URL,
+  with a real token given through `--github env`, and the token was found
+  nowhere under the guest's directory. No test repeats it, because it needs a
+  token with write access. The test needs a guest root with `curl`; the one it
+  was run with also has `gh`.
 - Firecracker, the second backend ADR-022 names, has no implementation.
 - This document was written from the code directly rather than from
   per-subsystem reader summaries; go-microvm's internals (`microvm.Run`, the

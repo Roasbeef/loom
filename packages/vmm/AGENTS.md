@@ -32,7 +32,10 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   a per-VM in-memory ECDSA P-256 CA, and the placeholder in an `Authorization`
   header (`Basic`, `token`, `Bearer`) becomes the real token; other admitted
   hosts are tunnelled untouched; the rest get 403. `GuestFiles` renders the CA,
-  `/etc/loom-vm/github.env` and `/etc/gitconfig`, none holding the token.
+  `/etc/loom-vm/github.env` and `/etc/gitconfig`, none holding the token. The
+  gitconfig also rewrites each injection host's SSH remote forms
+  (`git@host:`, `ssh://git@host/`) to `https://host/`, because the guest has
+  no ssh client or key and a checkout's origin is usually an SSH URL.
 - `machine.Egress` — the complete outbound allowlist. The zero value allows
   nothing; it never means "the hypervisor's default".
 - `machine.Backend` / `machine.Machine` — the hypervisor-independent
