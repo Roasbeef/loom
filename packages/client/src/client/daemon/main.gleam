@@ -2821,11 +2821,11 @@ fn resolved(path: String) -> String {
 /// A path made canonical, or the refusal that names the file that cannot be.
 fn resolved_strictly(path: String) -> Result(String, String) {
   bootstrap.canonical_path(path)
-  |> result.replace_error(
+  |> result.map_error(fn(_) {
     "executors.reload: [executor_link] names "
     <> path
-    <> ", which cannot be resolved to a path; make the file first or restart the daemon to apply a new [executor_link]",
-  )
+    <> ", which cannot be resolved to a path; make the file first or restart the daemon to apply a new [executor_link]"
+  })
 }
 
 /// The three files of an `[executor_link]` table, each made canonical.

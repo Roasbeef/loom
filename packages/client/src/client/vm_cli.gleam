@@ -1096,10 +1096,12 @@ fn reload_or_refuse(name: String) -> Result(Nil, String) {
 /// the daemon says it holds. A row this call wrote is unread whatever the
 /// daemon holds, but whether a daemon runs at all is still observed.
 fn untrusted_need(upped: Upped) -> vm_link.DaemonNeed {
+  // A row this call wrote or derived is changed; a resumed one is standing.
   let rows = case upped.enrolled.row {
     Resumed -> vm_link.RowStanding
     Written | Derived -> vm_link.RowChanged
   }
+
   vm_link.daemon_need(rows, daemon_saw(), upped.options.name)
 }
 
@@ -2763,6 +2765,8 @@ fn restart_of(upped: Upped) -> Restart {
 /// run after the answer is read, because a daemon it stops can no longer say.
 fn reloaded(name: String) -> Restart {
   let report = vm_link.reload_report(name, reload_daemon())
+
+  // The old path runs only when the reload did not leave the row held.
   case report.old_path {
     vm_link.OldPathSkipped -> Reloaded(report.lines, None)
     vm_link.OldPathRuns -> Reloaded(report.lines, Some(daemon_outcome()))
@@ -5044,6 +5048,8 @@ fn linked_removal_plan(
   use default <- result.try(
     bootstrap.absolute_path(distribution_install.default_config(home)),
   )
+
+  // A daemon is asked only when the default file changed.
   let daemon = case rewritten, config == default {
     Some(_), True -> ReloadDaemon
     _, _ -> LeaveDaemon
@@ -5497,6 +5503,8 @@ fn removal_daemon_lines(plan: RemovalPlan, name: String) -> List(String) {
   case plan.daemon, running_fence() {
     ReloadDaemon, Some(_) -> {
       let report = vm_link.removal_report(name, reload_daemon())
+
+      // A failed stop keeps the notice that the daemon holds the row.
       case report.old_path {
         vm_link.OldPathSkipped -> report.lines
         vm_link.OldPathRuns -> list.append(report.lines, enrolment_notice(plan))

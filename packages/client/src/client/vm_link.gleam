@@ -24,8 +24,8 @@
 //// - `guest_config` and `staging` are what the guest's root holds: a listener
 ////   that admits the orchestrator's pin, three credential files, and no cookie.
 //// - `daemon_need` decides whether the default daemon is asked to reload, and
-////   `reload_result` and `reload_report` turn its answer into the lines `up`
-////   prints and the question of whether the old stop-or-name path still runs.
+////   `reload_result` and `reload_report` turn its answer into the lines to print
+////   and the question of whether the old stop-or-name path still runs.
 //// - `daemon_lines` and `status_lines` word what a developer is told.
 ////
 //// ## Two rules for the host's `loom.toml`
@@ -1080,6 +1080,8 @@ fn own_change(
 fn changed_lines(reply: executor_reload.Reply) -> List(String) {
   list.filter_map(reply.executors, fn(entry) {
     let who = "untrusted executor " <> entry.name
+
+    // Each change that happened is one sentence; an unchanged row is silent.
     case entry.change {
       executor_reload.Unchanged -> Error(Nil)
       executor_reload.Started ->
