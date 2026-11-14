@@ -98,6 +98,7 @@ import client/daemon/manager
 import client/delegate_key
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/spawners.{type Spawner, InDirectory, InPool, OnExecutor}
+import core/agency_limits
 import core/ids
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -222,6 +223,7 @@ pub fn creation_for(
     model: None,
     executor:,
     pool:,
+    agency: agency_limits.empty,
   )
 }
 

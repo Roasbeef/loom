@@ -218,7 +218,7 @@ pub const max_slug_length = 24
 /// Most handles one `agent_wait` call may name. The wait is one loop over
 /// one deadline, so this bounds the store traffic per iteration rather
 /// than the wall-clock cost.
-pub const max_handles = 32
+pub const max_handles = 256
 
 /// The blackboard key, relative to the child's own namespace, under
 /// which a child records the structured result its brief asked for. The

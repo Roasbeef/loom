@@ -1,3 +1,4 @@
+import core/agency_limits
 import etui/backend
 import etui/buffer
 import etui/geometry
@@ -7,7 +8,7 @@ import etui/text
 import gleam/dict
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/connection
@@ -278,4 +279,30 @@ pub fn a_moving_session_names_its_destination_and_offers_no_open_test() {
     assert string.contains(drawn, "cannot be opened")
     assert !string.contains(drawn, "Enter opens")
   })
+}
+
+pub fn creating_limits_prompt_accepts_custom_bounds_and_unlimited_depth_test() {
+  let state = selector(0)
+  let assert session_selector.Continue(state) =
+    session_selector.update(keys.Char("N"), state)
+  let assert session_selector.CreatingLimits(_) = state.prompt
+  let press = fn(s, key) {
+    let assert session_selector.Continue(next) = session_selector.update(key, s)
+    next
+  }
+  let state = press(state, keys.Char("1"))
+  let state = press(state, keys.Char("5"))
+  let state = press(state, keys.Char("0"))
+  let state = press(state, keys.Tab)
+  let state = press(state, keys.Char("3"))
+  let state = press(state, keys.Char("0"))
+  let state = press(state, keys.Char("0"))
+  let state = press(state, keys.Tab)
+  let state = press(state, keys.Char("u"))
+  assert session_selector.update(keys.Enter, state)
+    == session_selector.NewSessionWithLimits(agency_limits.AgencyLimits(
+      fan_out: Some(150),
+      session_strands: Some(300),
+      depth_cap: Some(agency_limits.UnlimitedDepth),
+    ))
 }

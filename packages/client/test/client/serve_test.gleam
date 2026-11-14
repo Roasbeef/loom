@@ -30,6 +30,7 @@ import client/server
 import client/session_socket_test as transfer
 import client/system_prompt
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -58,6 +59,8 @@ import session_view/connection_event
 import session_view/snapshot
 import session_view/snapshot_view
 import simplifile
+import storage/catalogue
+import storage/domain
 import storage/sqlite
 import support/addresses
 import support/internal/ffi_ws
@@ -183,7 +186,7 @@ pub fn settings_under(root: String) -> serve.Settings {
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,
@@ -460,6 +463,7 @@ fn with_daemon_instance(run) {
               None,
               "",
               "",
+              agency_limits.empty,
             ),
             directory: serving.ready.sessions_directory,
             generator: ids.generator(clock.fixed(1000), 887),
@@ -3314,4 +3318,80 @@ fn basis(settings: serve.Settings) -> workspace_policy.Basis {
     tools: settings.tools,
     go_caches: settings.go_caches,
   )
+}
+
+pub fn resolve_managed_applies_retry_request_timeout_to_gateway_test() {
+  let root =
+    absolute(
+      "build/resolve-timeout-"
+      <> int.to_string(ffi_os.unique_positive_integer()),
+    )
+  let state = root <> "/state"
+  let workspace = root <> "/work"
+  let config_path = root <> "/loom.toml"
+  let _stale = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(state)
+  let domain_root = serve.workspace_data_root(state, workspace)
+  let selected =
+    domain.Domain(
+      id: "dom-1",
+      scope: domain.WorkspacePrivate,
+      workspace:,
+      configuration: config_path,
+      memory_path: domain_root <> "/loom-memory.db",
+      index_path: domain_root <> "/loom-search.db",
+    )
+  let base_config =
+    "[models.gemini]
+dialect = \"gemini\"
+api_key_env = \"GEMINI_API_KEY\"
+model_id = \"gemini-3.5-flash\"
+context_window = 1000000
+max_output_tokens = 8192
+
+[roles]
+main = [\"gemini\"]
+"
+  let assert Ok(Nil) = simplifile.write(config_path, base_config)
+  let assert Ok(Nil) = serve.check_config(config_path, base_config, None, None)
+  let registration =
+    catalogue.Registration(
+      id: "01a10000-0000-7000-8000-000000000001",
+      path: state <> "/sessions/s1.db",
+      workspace:,
+      name: "timeout test",
+      configuration: config_path,
+      profile: None,
+      model: None,
+      executor: "",
+      pool: "",
+      created_at: 1,
+      request_key: "req-1",
+      state: catalogue.Saved,
+      subtitle: None,
+    )
+  let assert Ok(defaulted) =
+    serve.resolve_managed(
+      ["--helper", absolute("../sandbox/loom-exec")],
+      registration,
+      selected,
+      state,
+    )
+  assert provider_gateway.attempt_timeout_ms(defaulted.gateway) == 600_000
+  assert provider_gateway.max_route_count(defaulted.gateway) == 1
+
+  let custom_config = base_config <> "\n[retry]\nrequest_timeout_ms = 900000\n"
+  let assert Ok(Nil) = simplifile.write(config_path, custom_config)
+  let assert Ok(Nil) =
+    serve.check_config(config_path, custom_config, None, None)
+  let assert Ok(overridden) =
+    serve.resolve_managed(
+      ["--helper", absolute("../sandbox/loom-exec")],
+      registration,
+      selected,
+      state,
+    )
+  assert provider_gateway.attempt_timeout_ms(overridden.gateway) == 900_000
+  let _cleanup = simplifile.delete(root)
 }

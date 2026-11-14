@@ -3657,7 +3657,7 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   that fell behind how much it missed rather than handing it a
   plausible-looking window, and binary output goes out rather than being
   held back forever waiting for a character boundary.
-- `client/retryconf.{default_policy, unbounded_attempts, parse_policy}` —
+- `client/retryconf.{default_policy, default_request_timeout_ms, max_request_timeout_ms, unbounded_attempts, parse_policy, parse_request_timeout}` —
   the optional `[retry]` table from the same `loom.toml`, parsed by the
   same strict, total discipline as `[schedules]` and `[jobs]`: unknown
   keys refused, `attempts = 0` refused, a negative delay refused, each
@@ -3671,7 +3671,7 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   place those three numbers live, so the parser cannot drift from the
   runtime default. That default never gives up, so the table is mostly
   for the operator who wants a bounded ladder that fails the run instead
-  of long-polling a provider that is refusing.
+  of long-polling a provider that is refusing. `request_timeout_ms` is a positive integer in `1..86_400_000` milliseconds (default `600_000`, 10 minutes); `serve` applies it to `http.httpc_transport_with_timeout(request_timeout_ms + 30_000)`, `codex_transport.transport_with_timeout(request_timeout_ms + 30_000)`, and `provider_gateway.with_attempt_timeout`, and sets `wiring.Config.provider_timeout_ms` to `int.min(attempt_ms * max_routes + 60_000, 4_294_967_295)` so an attempt timeout settles as a retryable `TransportFailed` instead of racing into `runtime`'s `RequestDeadline` or overflowing ERTS `send_after`.
 - `client/notice.{Work, Delivered, Activity, Due, IdleClock, key_prefix,
   heartbeat_tick_ms, default_heartbeat_ms, key, deliver,
   deliver_to_remote_child, activity, beat,
@@ -5099,7 +5099,7 @@ these forks because they define the same modules.
 
 ## Traffic
 
-- `serve` injects `codex_transport.transport()` into assembled catalogue
+- `serve` injects `codex_transport.transport_with_timeout(request_timeout_ms + 30_000)` into assembled catalogue
   gateways. `gateway.CodexTransport.prepare_streaming` requests a parked
   `http.PreparedRequest`; the gateway publishes its owner before `begin`.
   Inside that operation, `profile.auth(profile, ledger)` acquires the durable
@@ -11119,3 +11119,8 @@ its custody, deadline and router inside that dispatcher before admission.
 The executor's `backgrounded` wrapper forwards `Run` to the existing dispatcher
 and sends `Launch` to the owner without retaining another base configuration.
 The capture-multiplicity regression lives in `client/codemode_test`.
+
+## Per-session agency limits and shared effects (`protocol-change/113`)
+
+- **Shared per-session provider and hooks holders.** `client/wiring.hold_provider` and `client/wiring.hold_hooks` park the session-invariant provider closure and runtime hook closures in two per-session actors alongside `client/tool_holder`, publishing them under `custody.ToolConfig` in `client/serve`. Steady-state strands no longer retain or copy ~158 KiB of shared `Effects` closures per process.
+- **Per-session `AgencyLimits` and raised defaults.** `client/agency.Config` uses `core/agency_limits.DepthCap` (`BoundedDepth` | `UnlimitedDepth`) with shipped defaults `default_fan_out = 100`, `default_session_strands = 256`, `default_depth_cap = 1`, and `max_ancestor_walk = 256`. `client/daemon/protocol`, `client/daemon/domain`, `client/daemon/manager`, `client/daemon/server`, `client/daemon/ui_socket`, and `client/serve.Settings` thread optional `AgencyLimits` through session creation and recovery (persisted in catalogue v21 `catalogue_session_agency`).

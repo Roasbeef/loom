@@ -9,6 +9,7 @@
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/otp/actor
 import gleam/otp/factory_supervisor
 import gleam/result
@@ -160,7 +161,7 @@ fn cycle_factory(inbox: process.Subject(registry.Message)) -> Nil {
 // Registry tests start no driver, so the template is never asked for.
 fn unused_template(
   _writer: address.Address(writer.Message),
-  _claim: fn(String, process.Pid) -> List(process.Pid),
+  _claim: fn(String, Option(process.Pid)) -> List(process.Pid),
 ) -> strand_runtime.Options {
   panic as "registry tests start no driver"
 }

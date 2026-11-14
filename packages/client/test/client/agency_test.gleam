@@ -50,6 +50,7 @@ import client/workflow_ledger
 import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/accounting
+import core/agency_limits
 import core/clock.{type Clock}
 import core/codec
 import core/entry
@@ -1174,6 +1175,54 @@ pub fn the_session_cap_is_reached_at_its_own_bound_test() {
   close(harness)
 }
 
+pub fn default_fan_out_permits_one_hundred_concurrent_subagents_test() {
+  // Raised defaults allow 100 concurrent live subagents from main, while the 101st hits fan_out.
+  let harness = start_harness(Hangs)
+  int.range(from: 0, to: 100, with: Nil, run: fn(_, idx) {
+    let assert Ok(_) =
+      harness.seam.spawn(
+        caller_on("main", "turn-1:tools", idx),
+        a_spawn("worker-" <> int.to_string(idx)),
+      )
+      as "up to 100 concurrent subagents must succeed under default limits"
+    Nil
+  })
+  let assert Error(agent.FanOutCapReached(live: 100, cap: 100)) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 100),
+      a_spawn("worker-100"),
+    )
+    as "the 101st concurrent subagent must hit the 100 fan_out cap"
+  close(harness)
+}
+
+pub fn unlimited_depth_cap_permits_multi_level_recursive_spawning_test() {
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, depth_cap: agency_limits.UnlimitedDepth)
+    })
+  let spawn_tools = Some(["agent_spawn", "agent_note"])
+  let assert Ok(child) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      agent.SpawnRequest(..a_spawn("depth-1"), tools: spawn_tools),
+    )
+  assert list.contains(child.tools, "agent_spawn")
+  let assert Ok(grandchild) =
+    harness.seam.spawn(
+      caller_on(child.strand, "turn-1:tools", 0),
+      agent.SpawnRequest(..a_spawn("depth-2"), tools: spawn_tools),
+    )
+  assert list.contains(grandchild.tools, "agent_spawn")
+  let assert Ok(great_grandchild) =
+    harness.seam.spawn(
+      caller_on(grandchild.strand, "turn-1:tools", 0),
+      agent.SpawnRequest(..a_spawn("depth-3"), tools: spawn_tools),
+    )
+  assert list.contains(great_grandchild.tools, "agent_spawn")
+  close(harness)
+}
+
 // --- replay ----------------------------------------------------------------
 
 pub fn a_replayed_spawn_reconciles_onto_the_same_child_test() {
@@ -2064,7 +2113,7 @@ pub fn the_default_tool_set_drops_the_spawn_tool_on_its_own_test() {
   // of the depth bound, and the numeric check is the expensive half.
   let harness =
     start_harness_with(Hangs, fn(config) {
-      agency.Config(..config, depth_cap: 2)
+      agency.Config(..config, depth_cap: agency_limits.BoundedDepth(2))
     })
   let caller = caller_on("main", "turn-1:tools", 0)
   let assert Ok(spawned) = harness.seam.spawn(caller, a_spawn("review"))
@@ -5742,7 +5791,7 @@ pub fn a_deeper_spawner_lets_a_child_hold_the_spawn_tool_only_below_its_limit_te
   // consistent: a child that holds the spawn tool can use it.
   let harness =
     start_harness_with(Settles("done"), fn(config) {
-      agency.Config(..config, depth_cap: 2)
+      agency.Config(..config, depth_cap: agency_limits.BoundedDepth(2))
     })
   let deeper =
     remote_spawn.Terms(
@@ -9111,7 +9160,7 @@ fn start_deep(boxes: List(fake_orchestrators.Box)) -> #(Harness, Subject(Nil)) {
     start_harness_with(Hangs, fn(config) {
       agency.Config(
         ..config,
-        depth_cap: 2,
+        depth_cap: agency_limits.BoundedDepth(2),
         remote: remote_reach.restricted(
           fake_orchestrators.reach(parent_session, boxes, fn() { False }),
           ["third"],

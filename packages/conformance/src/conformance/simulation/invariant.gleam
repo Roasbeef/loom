@@ -358,6 +358,8 @@ fn describe_error(error: storage.StorageError) -> String {
     storage.CorruptRow(report:) -> "corrupt row at " <> report.boundary
     storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)
     storage.BackendFault(reason:) -> reason
+    storage.RegisterReadLimitExceeded(limit:) ->
+      "register read limit " <> string.inspect(limit)
     storage.HandleClosed -> "handle closed"
   }
 }

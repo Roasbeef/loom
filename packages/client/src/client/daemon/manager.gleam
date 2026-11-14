@@ -87,6 +87,7 @@ import client/project_standing
 import client/remote_child
 import client/remote_release
 import client/spawners
+import core/agency_limits.{type AgencyLimits}
 import core/clock
 import core/glance
 import core/ids
@@ -226,6 +227,8 @@ pub type Creation {
     /// empty string. A creation names an executor or a pool and never both:
     /// the pool picks the executor when the session first opens.
     pool: String,
+    /// Optional per-session subagent limits (`protocol-change/113`).
+    agency: AgencyLimits,
   )
 }
 
@@ -789,6 +792,9 @@ type Message(instance) {
 
   /// The delegate record of a session, read without waking it.
   DelegateOf(String, Subject(Result(Option(catalogue.Delegate), Error)))
+
+  /// The optional per-session agency limits, read without waking the session.
+  AgencyLimitsOf(String, Subject(Result(AgencyLimits, Error)))
 
   /// Installs the bell a deletion rings after it writes the releases it owes.
   SetReleaseBell(fn() -> Nil)
@@ -2283,6 +2289,22 @@ pub fn delegate_of(
   id: String,
 ) -> Result(Option(catalogue.Delegate), Error) {
   call.try_call(manager.commands, waiting: 5000, sending: DelegateOf(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Reads a session's optional per-session agency limits without waking it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.agency_limits(registry, session_id) == Ok(option.None)
+/// ```
+@internal
+pub fn agency_limits(
+  manager: Manager(instance),
+  id: String,
+) -> Result(AgencyLimits, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: AgencyLimitsOf(id, _))
   |> result.unwrap(Error(Unavailable))
 }
 
@@ -4035,6 +4057,14 @@ fn handle(
       process.send(
         reply,
         catalogue.delegate_of(book.catalogue, id)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    AgencyLimitsOf(id, reply) -> {
+      process.send(
+        reply,
+        catalogue.agency_limits(book.catalogue, id)
           |> result.map_error(Catalogue),
       )
       sm.keep(book)
@@ -5911,9 +5941,13 @@ fn reserve_creation(
       {
         True -> {
           use selected <- result.try(domain.for_session(store, record.id))
+          use expected_agency <- result.try(catalogue.agency_limits(
+            store,
+            record.id,
+          ))
 
-          // reserve_creation distinguishes the selected.scope == scope outcomes before continuing the transition.
-          case selected.scope == scope {
+          // Retry must repeat both the domain scope and the agency limits.
+          case selected.scope == scope && expected_agency == request.agency {
             True -> Ok(record)
             False -> Error(catalogue.Conflict)
           }
@@ -5929,7 +5963,12 @@ fn reserve_creation(
         configuration,
         filepath.directory_name(directory),
       ))
-      domain.reserve_session(store, record, selected)
+      domain.reserve_session_with_agency(
+        store,
+        record,
+        selected,
+        request.agency,
+      )
     }
     Error(error) -> Error(error)
   }

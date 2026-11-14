@@ -87,6 +87,7 @@ import simplifile
 import sqlight.{type Connection}
 import storage/internal/branch
 import storage/internal/register_cache
+import storage/internal/register_query
 import storage/internal/snapshot_call
 import storage/internal/snapshot_sqlite
 import storage/session_schema
@@ -137,6 +138,13 @@ pub opaque type Message {
     ns: RegisterNs,
     key: String,
     reply: Subject(Result(Option(Register), StorageError)),
+  )
+
+  /// Read selected register cells in one actor turn.
+  GetRegisters(
+    ns: RegisterNs,
+    keys: List(String),
+    reply: Subject(Result(Dict(String, Register), StorageError)),
   )
 
   /// List a namespace's cells.
@@ -878,6 +886,9 @@ fn start_actor(
           },
           get_register: fn(handle, ns, key) {
             process.call_forever(handle, GetRegister(ns, key, _))
+          },
+          get_registers: fn(handle, ns, keys) {
+            process.call_forever(handle, GetRegisters(ns, keys, _))
           },
           list_registers: fn(handle, ns, prefix) {
             process.call_forever(handle, ListRegisters(ns, prefix, _))
@@ -2447,6 +2458,7 @@ fn handle_closed(
       answer(state, reply, Error(Faulted(reason: "storage handle closed")))
     GetEntries(reply:, ..) -> answer(state, reply, Error(HandleClosed))
     GetRegister(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    GetRegisters(reply:, ..) -> answer(state, reply, Error(HandleClosed))
     ListRegisters(reply:, ..) -> answer(state, reply, Error(HandleClosed))
     ScanBranch(reply:, ..) -> answer(state, reply, Error(HandleClosed))
     ScanEntries(reply:, ..) -> answer(state, reply, Error(HandleClosed))
@@ -2525,6 +2537,13 @@ fn handle_open(
     }
     GetRegister(ns:, key:, reply:) -> {
       case do_get_register(state.conn, ns, key, state.registers) {
+        Ok(#(value, registers)) ->
+          answer(ActorState(..state, registers:), reply, Ok(value))
+        Error(error) -> answer(state, reply, Error(error))
+      }
+    }
+    GetRegisters(ns:, keys:, reply:) -> {
+      case do_get_registers(state.conn, ns, keys, state.registers) {
         Ok(#(value, registers)) ->
           answer(ActorState(..state, registers:), reply, Ok(value))
         Error(error) -> answer(state, reply, Error(error))
@@ -3422,6 +3441,48 @@ fn do_get_register(
         register_cache.read(cache, blob) |> result.map_error(CorruptRow),
       )
       #(Some(Register(value:, seq:)), cache)
+    }
+  }
+}
+
+/// Reads selected rows in a single SQLite statement snapshot.
+///
+/// The wrapper already bounds the keys. Missing cells produce no rows, and
+/// every returned blob must decode before the actor publishes the result
+/// and the updated cache. Empty input requires no SQLite statement.
+fn do_get_registers(
+  conn: Connection,
+  ns: RegisterNs,
+  keys: List(String),
+  cache: register_cache.Cache,
+) -> Result(#(Dict(String, Register), register_cache.Cache), StorageError) {
+  // Empty requests do not need a SQLite statement.
+  case keys {
+    [] -> Ok(#(dict.new(), cache))
+    _ -> {
+      let decoder = {
+        use key <- decode.field(0, decode.string)
+        use seq <- decode.field(1, decode.int)
+        use blob <- decode.field(2, decode.bit_array)
+        decode.success(#(key, seq, blob))
+      }
+
+      // One query selects only requested rows, preserving SQLite snapshot scope.
+      let #(statement, args) = register_query.selected(ns, keys)
+      use rows <- result.try(
+        run(conn, statement, args, decoder)
+        |> result.map_error(fail_to_storage_error),
+      )
+
+      // Failed decoding discards the whole result and the tentative cache.
+      list.try_fold(rows, #(dict.new(), cache), fn(acc, row) {
+        let #(found, cache) = acc
+        let #(key, seq, blob) = row
+        use #(value, cache) <- result.map(
+          register_cache.read(cache, blob) |> result.map_error(CorruptRow),
+        )
+        #(dict.insert(found, key, Register(value:, seq:)), cache)
+      })
     }
   }
 }

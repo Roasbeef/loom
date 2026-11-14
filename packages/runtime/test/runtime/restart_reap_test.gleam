@@ -45,7 +45,7 @@ import storage/storage
 import support/fake
 import support/harness
 import support/recorder
-import telemetry/log
+
 import weft/registry as address
 
 pub fn strand_restart_reaps_the_live_tool_effect_test() {
@@ -1099,50 +1099,30 @@ fn release_first_drain(log: DrainGateLog) -> Nil {
 /// claim is in flight, and asks whether the claimed pid was still alive when
 /// the claim was answered.
 pub fn reaper_claim_outlives_a_driver_killed_mid_claim_test() {
-  let rec = recorder.start()
-  let effects =
-    fake.effects(
-      rec,
-      clock.stepping(from: 2_000_000, by: 25),
-      [],
-      fn(_spec) { fake.Hang },
-      fn(_run) { fake.ToolHang },
-    )
   let observed = process.new_subject()
-  let assert Ok(names) = address.start()
-    as "the strand address namespace must start"
-  let options =
-    strand_runtime.Options(
-      writer: address.new_address(names),
-      strand: "main",
-      effects:,
-      stream_options: json.Object([]),
-      retry_policy: NormalizedRetryPolicy(
-        attempts: Bounded(max_attempts: 1),
-        base_delay_ms: 10,
-        max_delay_ms: 1_073_741_824,
-      ),
-      poll_interval_ms: 1000,
-      idle_poll_interval_ms: 1000,
-      claim_reaper: fn(_strand, reaper) {
-        // A slow ledger: the driver dies before this returns, and the pid
-        // it named must still be there for the monitor the ledger installs.
-        process.sleep(300)
-        process.send(observed, process.is_alive(reaper))
-        []
-      },
-      logger: log.discard(),
-    )
-  let assert Ok(started) =
-    strand_runtime.start(options, address.new_address(names))
-    as "the driver must start"
+  let driver =
+    process.spawn_unlinked(fn() {
+      let _reaper =
+        strand_runtime.claim_reaper_scope(
+          fn(_strand, reaper) {
+            // A slow ledger: the driver dies before this returns, and the pid
+            // it named must still be there for the monitor the ledger installs.
+            case reaper {
+              option.Some(scope) -> {
+                process.sleep(300)
+                process.send(observed, process.is_alive(scope))
+              }
+              option.None -> Nil
+            }
+            []
+          },
+          "main",
+        )
+      Nil
+    })
 
-  // The driver is linked to whoever started it; the kill below must reach
-  // it alone, not this test.
-  process.unlink(started.pid)
   process.sleep(50)
-  process.kill(started.pid)
+  process.kill(driver)
   assert process.receive(observed, within: 2000) == Ok(True)
     as "the claimed pid must outlive the driver until the claim is answered"
-  assert address.stop(names) == Ok(Nil)
 }

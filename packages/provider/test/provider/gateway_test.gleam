@@ -1839,3 +1839,59 @@ pub fn service_tier_fallback_uses_own_selection_for_both_dialects_test() {
     }
   })
 }
+
+pub fn gateway_exposes_default_attempt_timeout_and_max_route_count_test() {
+  let gw = two_provider_gateway(fixture.transport([]))
+  assert gateway.attempt_timeout_ms(gw) == 2000
+  assert gateway.max_route_count(gw) == 2
+  let fresh =
+    gateway.new(fixture.transport([]), secret.from_list([]), clock.fixed(0))
+  assert gateway.attempt_timeout_ms(fresh) == gateway.default_attempt_timeout_ms
+  assert gateway.default_attempt_timeout_ms == 600_000
+  assert gateway.max_route_count(fresh) == 0
+}
+
+pub fn attempt_timeout_with_delayed_cancel_drain_falls_back_cleanly_test() {
+  let happy = happy_transcript("from backup")
+  let transport =
+    http.Transport(prepare_streaming: fn(request, events) {
+      case string.starts_with(request.url, "https://primary.test") {
+        True -> {
+          let ready = process.new_subject()
+          let owner =
+            process.spawn_unlinked(fn() {
+              let stop = process.new_subject()
+              process.send(ready, stop)
+              let _cancel = process.receive_forever(stop)
+              process.sleep(200)
+            })
+          let assert Ok(stop) = process.receive(ready, within: 1000)
+          Ok(
+            http.PreparedRequest(
+              running: http.RunningRequest(owner:, cancel: fn() {
+                process.send(stop, Nil)
+              }),
+              begin: fn() { Nil },
+            ),
+          )
+        }
+        False -> {
+          let http.Transport(prepare_streaming:) =
+            fixture.transport([
+              http.ResponseStatus(200, []),
+              http.ResponseChunk(bit_array.from_string(happy)),
+              http.ResponseEnd,
+            ])
+          prepare_streaming(request, events)
+        }
+      }
+    })
+  let gw = two_provider_gateway(transport) |> gateway.with_attempt_timeout(20)
+  let handle = gateway.request(gw, main_request())
+  let assert Ok(#(_deltas, stream.Settled(message: settled, accounting: report))) =
+    stream.await_terminal(handle, within: 2000)
+    as "delayed primary drain must fall back rather than emit CancellationUnconfirmed"
+  assert accounting.attempts(report) == 2
+  let assert message.AssistantMessage(content:, ..) = stream.message(settled)
+  assert content == [message.AssistantText("from backup", None)]
+}

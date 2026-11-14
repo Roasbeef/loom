@@ -92,6 +92,7 @@
 //// `send_frame`, `send_via` and `apply_submission` wrap the shared send path.
 //// The renderer consumes this model; these helpers perform no socket write.
 
+import core/agency_limits
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/span
@@ -589,6 +590,8 @@ pub type View {
     /// file system, so it runs as a job and the creation continues when
     /// `session_control.drain_configuration` takes the reply.
     configuring: Option(job.Awaiting(job.ConfigurationReply)),
+    /// Per-session subagent limits carried while a local creation resolves its configuration.
+    pending_agency: agency_limits.AgencyLimits,
     /// The open-image job, while one runs: `o` while reading hands the
     /// newest image to the platform's opener, and `image_open.drain` takes
     /// the reply into the notice.

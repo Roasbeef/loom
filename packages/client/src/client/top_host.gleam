@@ -75,6 +75,7 @@ import client/remote_escalation
 import client/remote_feed
 import client/remote_top.{type Placement, type Refusal}
 import client/spawners.{type Spawner, type TopLevel}
+import core/agency_limits
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -474,6 +475,7 @@ fn create(
       model:,
       executor: place.executor,
       pool: place.pool,
+      agency: agency_limits.empty,
     )
   use reserved <- result.try(
     manager.reserve_relayed(

@@ -7,6 +7,7 @@
 
 import broker/token
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import core/agency_limits
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
@@ -125,6 +126,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
         "",
         "",
         "",
+        agency_limits.empty,
       ),
       5000,
     )
@@ -142,6 +144,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       "",
       "",
       "",
+      agency_limits.empty,
     )
   let assert Error(daemon.Refused("capacity", _)) =
     daemon.request(first.control, request, 5000)

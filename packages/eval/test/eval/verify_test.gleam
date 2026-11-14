@@ -24,6 +24,7 @@ import client/schedule
 import client/secrets
 import client/serve
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import eval/task.{type Task, AllRewardsOne, AllRewardsPositive, Inline, Program}
 import eval/verify.{type Jail}
@@ -1039,7 +1040,7 @@ pub fn settings(root: String) -> serve.Settings {
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,

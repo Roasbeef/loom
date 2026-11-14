@@ -501,6 +501,7 @@ doubles up to a one-minute cap.
 | `attempts` | integer or string | `"unbounded"` | a whole number of at least 1, or `"unbounded"` | The retry budget. A bounded ladder fails the run once spent. `0` is refused. |
 | `base_delay_ms` | integer | `1000` | zero or more | The first wait, in milliseconds. |
 | `max_delay_ms` | integer | `60000` | zero or more | The ceiling the wait doubles toward, in milliseconds. |
+| `request_timeout_ms` | integer | `600000` | 1 to 86400000 | Per-attempt HTTP response timeout, in milliseconds (10 minutes by default). |
 
 ## `[peers]`
 
