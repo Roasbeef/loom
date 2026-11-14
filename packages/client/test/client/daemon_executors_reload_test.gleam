@@ -23,6 +23,7 @@ import client/ledger_service
 import client/remote/untrusted_link
 import client/session_directory
 import client/session_movers
+import client/untrusted_config
 import core/json
 import gleam/bit_array
 import gleam/erlang/process.{type Pid}
@@ -280,6 +281,53 @@ pub fn a_file_a_start_would_refuse_changes_nothing_test() {
     assert process.named(untrusted_link.name_for(name)) == Ok(before)
     assert list.length(untrusted_links.rows(registry)) == 1
   })
+}
+
+pub fn removing_the_last_guest_stops_its_link_test() {
+  let state = state_with_link()
+  let name = unique("reload-f")
+  let path = state <> "/loom.toml"
+  let started =
+    ffi_tls_stream.Credentials(
+      ca: state <> "/vm/ca.pem",
+      certificate: state <> "/vm/c.pem",
+      key: state <> "/vm/k.pem",
+    )
+
+  // The file is what `loom vm rm` leaves after the last guest: neither the
+  // table nor any untrusted row.
+  let assert Ok(Nil) = simplifile.write(path, "") as "the file is written"
+
+  reloading_with(
+    state,
+    Some(path),
+    fn(config) {
+      main.Config(
+        ..config,
+        untrusted: untrusted_config.Settings(
+          ..config.untrusted,
+          link: Some(started),
+        ),
+      )
+    },
+    fn(port, credential, registry, _root) {
+      // The daemon started with the table and this one row.
+      let assert Ok(_) =
+        untrusted_links.reconcile(registry, fn() {
+          Ok(untrusted_links.Wanted(
+            rows: [untrusted(name, 7000)],
+            credentials: Some(started),
+          ))
+        })
+        as "the row is held"
+      assert process.named(untrusted_link.name_for(name)) |> result.is_ok
+
+      let reply = ask(open(port, credential), 1)
+      assert changes(reply) == [#(name, "stopped")]
+      assert process.named(untrusted_link.name_for(name)) == Error(Nil)
+      assert untrusted_links.rows(registry) == []
+    },
+  )
 }
 
 pub fn a_new_link_table_outside_the_vm_directories_is_refused_test() {

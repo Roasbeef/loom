@@ -297,10 +297,27 @@ pub fn check_names(seen: Int) -> Result(Nil, String) {
   }
 }
 
+/// Whether the file a reload read holds any untrusted row. A link dials with
+/// the `[executor_link]` table, so a table nothing dials with can be dropped.
+pub type UntrustedRows {
+  /// The file holds no untrusted row.
+  NoUntrustedRows
+
+  /// The file holds at least one untrusted row.
+  SomeUntrustedRows
+}
+
 /// Decides whether the `[executor_link]` table of the new file may be applied.
 ///
 /// A table the daemon started with is kept as it is, and a changed one is not
 /// applied, because rotating the credentials of a running link is a restart.
+/// There is one exception: a file that drops the table and holds no untrusted
+/// row. `loom vm rm` of the last untrusted guest writes exactly that file, and
+/// nothing is left to dial with the table, so the reload stops the links and
+/// the daemon keeps the table it started with until its next start. A file that
+/// drops the table and still holds a row is refused, since that row could not
+/// be dialled with a changed table.
+///
 /// A daemon that started with no table may take one, but only when each of its
 /// three files is under one of the `allowed` directories, which are the
 /// directories that every jail masks from its start. A table anywhere else
@@ -316,21 +333,24 @@ pub fn check_names(seen: Int) -> Result(Nil, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert executor_reload.link_rule(None, None, ["/home/u/.loom/vm"]) == Ok(Nil)
+/// assert executor_reload.link_rule(None, None, NoUntrustedRows, ["/home/u/.loom/vm"]) == Ok(Nil)
 /// ```
 pub fn link_rule(
   started: Option(Credentials),
   proposed: Option(Credentials),
+  rows: UntrustedRows,
   allowed: List(String),
 ) -> Result(Nil, String) {
-  case started == proposed, started, proposed {
-    True, _, _ -> Ok(Nil)
-    False, Some(_), _ ->
+  // The table's two states and the file's rows decide between four outcomes.
+  case started == proposed, started, proposed, rows {
+    True, _, _, _ -> Ok(Nil)
+    False, Some(_), None, NoUntrustedRows -> Ok(Nil)
+    False, Some(_), _, _ ->
       Error(
         "[executor_link] differs from the table this daemon started with; restart it to apply that",
       )
-    False, None, None -> Ok(Nil)
-    False, None, Some(table) -> files_under(table, allowed)
+    False, None, None, _ -> Ok(Nil)
+    False, None, Some(table), _ -> files_under(table, allowed)
   }
 }
 

@@ -2786,9 +2786,19 @@ fn link_table_allowed(config: Config, decoded: Config) -> Result(Nil, String) {
   executor_reload.link_rule(
     option.map(config.untrusted.link, resolved_credentials),
     proposed,
+    untrusted_rows_of(decoded),
     allowed,
   )
   |> result.map_error(fn(reason) { "executors.reload: " <> reason })
+}
+
+/// Whether the decoded file holds an untrusted row, which `link_rule` needs to
+/// tell the removal of the last guest from a table dropped under a live row.
+fn untrusted_rows_of(decoded: Config) -> executor_reload.UntrustedRows {
+  case list.any(decoded.executors, fn(row) { row.trust != executors.Trusted }) {
+    True -> executor_reload.SomeUntrustedRows
+    False -> executor_reload.NoUntrustedRows
+  }
 }
 
 /// The proposed `[executor_link]` table with its paths made canonical. A daemon

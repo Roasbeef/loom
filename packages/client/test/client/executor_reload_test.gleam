@@ -8,8 +8,8 @@
 //// equal, present and different, alive, dead) is reached many times in one run.
 
 import client/executor_reload.{
-  type Held, type Row, Alive, Dead, Entry, Failed, Held, Reply, Restarted, Row,
-  Started, Stopped, Unchanged,
+  type Held, type Row, Alive, Dead, Entry, Failed, Held, NoUntrustedRows, Reply,
+  Restarted, Row, SomeUntrustedRows, Started, Stopped, Unchanged,
 }
 import client/internal/ffi_tls_stream.{type Credentials, Credentials}
 import core/json
@@ -247,28 +247,92 @@ fn credentials(dir: String) -> Credentials {
 pub fn a_started_table_is_kept_and_never_changed_test() {
   let started = Some(credentials("/elsewhere"))
   let allowed = ["/h/.loom/vm"]
-  assert executor_reload.link_rule(started, started, allowed) == Ok(Nil)
-  assert executor_reload.link_rule(started, None, allowed) |> result_is_error
+  assert executor_reload.link_rule(started, started, SomeUntrustedRows, allowed)
+    == Ok(Nil)
+  assert executor_reload.link_rule(started, None, SomeUntrustedRows, allowed)
+    |> result_is_error
   assert executor_reload.link_rule(
       started,
       Some(credentials("/h/.loom/vm/link")),
+      NoUntrustedRows,
       allowed,
     )
     |> result_is_error
 }
 
+pub fn the_last_untrusted_row_may_take_its_table_with_it_test() {
+  let started = Some(credentials("/elsewhere"))
+  let allowed = ["/h/.loom/vm"]
+
+  // `loom vm rm` of the last guest drops the table and every untrusted row.
+  assert executor_reload.link_rule(started, None, NoUntrustedRows, allowed)
+    == Ok(Nil)
+
+  // A row that is left would be dialled with a table that changed.
+  assert executor_reload.link_rule(started, None, SomeUntrustedRows, allowed)
+    |> result_is_error
+
+  // A different table is never applied, whether or not a row is left.
+  let other = Some(credentials("/h/.loom/vm/link"))
+  assert executor_reload.link_rule(started, other, NoUntrustedRows, allowed)
+    |> result_is_error
+}
+
+pub fn a_started_table_goes_only_with_the_last_row_test() {
+  // Over every started table, proposed table and row presence, a table the
+  // daemon started with is left only by an identical one or by a file with
+  // neither the table nor any untrusted row.
+  let table_of = fn(index) {
+    case index {
+      0 -> None
+      1 -> Some(credentials("/a"))
+      _ -> Some(credentials("/b"))
+    }
+  }
+  qcheck.run(
+    config(),
+    qcheck.tuple3(
+      qcheck.bounded_int(0, 2),
+      qcheck.bounded_int(0, 2),
+      qcheck.bounded_int(0, 1),
+    ),
+    fn(sample) {
+      let started = table_of(sample.0)
+      let proposed = table_of(sample.1)
+      let rows = case sample.2 {
+        0 -> NoUntrustedRows
+        _ -> SomeUntrustedRows
+      }
+      let verdict =
+        executor_reload.link_rule(started, proposed, rows, ["/h/.loom/vm"])
+      case started {
+        Some(_) -> {
+          let allowed =
+            started == proposed
+            || { proposed == None && rows == NoUntrustedRows }
+          assert result_is_error(verdict) == !allowed
+        }
+        None -> Nil
+      }
+    },
+  )
+}
+
 pub fn a_new_table_must_lie_under_an_allowed_directory_test() {
   let allowed = ["/h/.loom/vm", "/state/vm"]
-  assert executor_reload.link_rule(None, None, allowed) == Ok(Nil)
+  assert executor_reload.link_rule(None, None, NoUntrustedRows, allowed)
+    == Ok(Nil)
   assert executor_reload.link_rule(
       None,
       Some(credentials("/h/.loom/vm/link")),
+      NoUntrustedRows,
       allowed,
     )
     == Ok(Nil)
   assert executor_reload.link_rule(
       None,
       Some(credentials("/state/vm/link")),
+      NoUntrustedRows,
       allowed,
     )
     == Ok(Nil)
@@ -277,13 +341,19 @@ pub fn a_new_table_must_lie_under_an_allowed_directory_test() {
   assert executor_reload.link_rule(
       None,
       Some(credentials("/h/.loom/vm-other")),
+      NoUntrustedRows,
       allowed,
     )
     |> result_is_error
-  assert executor_reload.link_rule(None, Some(credentials("/h/.loom")), allowed)
+  assert executor_reload.link_rule(
+      None,
+      Some(credentials("/h/.loom")),
+      NoUntrustedRows,
+      allowed,
+    )
     |> result_is_error
   let stray = Credentials("/h/.loom/vm/ca", "/h/.loom/vm/c", "/etc/key")
-  assert executor_reload.link_rule(None, Some(stray), allowed)
+  assert executor_reload.link_rule(None, Some(stray), NoUntrustedRows, allowed)
     |> result_is_error
 }
 

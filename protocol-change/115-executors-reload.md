@@ -191,8 +191,13 @@ Two rules remove it:
 2. `executors.reload` applies an `[executor_link]` table only when it equals
    the table the daemon started with, or when the daemon started with none and
    each of the table's files resolves to a path under one of those two
-   directories. Anything else refuses the whole call with `reload_invalid`,
-   and the table takes effect at the next start.
+   directories. One change to a started table is allowed: a file that drops
+   the table and holds no untrusted row, which is what `loom vm rm` of the last
+   untrusted guest writes. Nothing is left to dial with the table, so the
+   reload stops the links, and the daemon keeps the table it started with. A
+   file that drops the table and still holds a row, and any other change,
+   refuses the whole call with `reload_invalid`, and the table takes effect at
+   the next start.
 
 A vm home moved with `LOOM_VM_HOME` to somewhere else is therefore not applied
 by reload. Rotating the link's credentials is a restart, as it is today.
@@ -280,3 +285,4 @@ before it was taken.
 | The ledger roster must go through the ledger's derivation, and a written name must not shadow an enrolled one | Taken. |
 | An old daemon's answer is `bad_request`, not a distinct code | Taken. |
 | An idle session's callbacks are refused until its next call after a link is replaced | Accepted as a cost, stated above. |
+| A started table dropped by `loom vm rm` of the last guest was refused, so the removed guest's link kept running (`executor_reload.link_rule`) | Taken: a file with neither the table nor any untrusted row is allowed, and `link_rule` takes the presence of untrusted rows as a typed argument. A table dropped under a live row, or changed, stays refused. |
