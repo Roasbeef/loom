@@ -1052,11 +1052,19 @@ pub fn eight_children_in_a_pool_of_three_executors_are_placed_three_three_two_te
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, _owner, registry) {
+          // The registry reads the running sessions' rows in the claim's turn.
+          // None is running here until all eight have claimed, so the resident
+          // count is empty and the claims alone spread the pool.
           let ordered =
-            manager.claim_placement(registry, record.id, dict.new(), fn(held) {
-              pools.spread(pool, held)
-              |> list.map(fn(executor) { executor.name })
-            })
+            manager.claim_placement(
+              registry,
+              record.id,
+              fn(_rows) { dict.new() },
+              fn(held) {
+                pools.spread(pool, held)
+                |> list.map(fn(executor) { executor.name })
+              },
+            )
           cell.update(placed, fn(held) {
             dict.insert(held, record.id, #(record.pool, ordered))
           })
