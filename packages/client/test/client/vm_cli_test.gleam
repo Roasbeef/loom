@@ -1651,9 +1651,9 @@ fn upgrade_stopped_after(count: Int) -> #(Bool, Bool, vm_spec.RootStep) {
     simplifile.is_directory(next <> "/srv/workspaces/real") == Ok(True)
 
   // What `up` reads: the layout is the evidence that the workspaces moved.
-  let moved = case simplifile.is_directory(next <> "/srv/workspaces") {
-    Ok(True) -> vm_spec.Present
-    _ -> vm_spec.Absent
+  let moved = case simplifile.link_info(next <> "/srv/workspaces") {
+    Ok(_) -> vm_spec.Present
+    Error(_) -> vm_spec.Absent
   }
   let step =
     vm_spec.root_step(
@@ -1691,6 +1691,74 @@ pub fn a_stop_after_the_clone_is_an_upgrade_again_not_a_finish_test() {
   let moved = vm_spec.RootLayout(vm_spec.Present, vm_spec.Present)
   assert vm_spec.root_step(vm_spec.Resume, moved, Some("aaaaaaa"), "bbbbbbb")
     == vm_spec.FinishUpgrade
+}
+
+pub fn a_root_with_no_workspace_copy_carries_nothing_test() {
+  // A first `up` that stopped between the clone and the workspace copy left
+  // no record and no directory, and that root is replaced without a move.
+  assert vm_spec.carry_over([], vm_spec.Missing) == vm_spec.CarryNothing
+
+  // Workspaces that are there always move, whatever the record says.
+  assert vm_spec.carry_over([], vm_spec.Movable) == vm_spec.CarryWorkspaces
+  assert vm_spec.carry_over(["app"], vm_spec.Movable) == vm_spec.CarryWorkspaces
+}
+
+pub fn an_unfinished_root_is_not_announced_as_an_upgrade_test() {
+  // The upgrade line promises that workspaces are kept, which says the wrong
+  // thing about a root that never had any.
+  let line = vm_spec.unfinished_line("dev")
+  assert string.contains(line, "guest dev")
+  assert string.contains(line, "nothing to keep")
+  assert !string.contains(line, "Upgrading")
+}
+
+pub fn recorded_workspaces_that_are_gone_refuse_the_upgrade_test() {
+  // The host's record says a copy was made, so a missing directory is not a
+  // first run: the upgrade would delete a root something already emptied.
+  let assert vm_spec.RefuseCarry(reason) =
+    vm_spec.carry_over(["app"], vm_spec.Missing)
+  assert string.contains(reason, "srv/workspaces is gone")
+
+  // A link or a file is refused with its own reason under either record.
+  assert vm_spec.carry_over(["app"], vm_spec.Unsafe("x is a link"))
+    == vm_spec.RefuseCarry("x is a link")
+  assert vm_spec.carry_over([], vm_spec.Unsafe("x is a link"))
+    == vm_spec.RefuseCarry("x is a link")
+}
+
+pub fn the_old_roots_workspaces_are_read_without_following_a_link_test() {
+  let #(scratch, root, outside) = scratch_root()
+
+  // No `srv` at all, and an `srv` with nothing in it: both are a root the
+  // host never copied a workspace into.
+  assert vm_cli.old_workspaces(root) == vm_spec.Missing
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/srv")
+  assert vm_cli.old_workspaces(root) == vm_spec.Missing
+
+  // A file where the directory belongs is not a missing directory.
+  let assert Ok(Nil) = simplifile.write(root <> "/srv/workspaces", "x")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is not a directory")
+  let assert Ok(Nil) = simplifile.delete(root <> "/srv/workspaces")
+
+  // A real directory moves.
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(root <> "/srv/workspaces")
+  assert vm_cli.old_workspaces(root) == vm_spec.Movable
+
+  // A link there is refused, whatever it points at, and so is a link at
+  // `srv` even when its target holds a real `workspaces`.
+  let assert Ok(Nil) = simplifile.delete_all([root <> "/srv/workspaces"])
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside, root <> "/srv/workspaces")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is a link")
+  let assert Ok(Nil) = simplifile.delete_all([root <> "/srv"])
+  let assert Ok(Nil) = simplifile.create_directory_all(outside <> "/workspaces")
+  let assert Ok(Nil) = simplifile.create_symlink(outside, root <> "/srv")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is a link")
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
 
 pub fn a_host_copy_with_no_staged_script_is_staged_again_test() {
