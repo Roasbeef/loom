@@ -296,6 +296,65 @@ pub fn a_scope_is_bound_to_its_workspace_test() {
     == Error(exec_ledger.NoSuchScope)
 }
 
+// A scope that is open keeps its workspace, whoever asks, because a session may
+// be working in it.
+pub fn an_open_scope_keeps_its_workspace_test() {
+  let ledger = open_at(path("open-keeps-workspace"))
+  attached(ledger)
+  assert exec_ledger.attach(ledger, "s", "/elsewhere", 0, token(2), limits())
+    == Error(exec_ledger.WorkspaceMismatch("/work"))
+
+  // The refusal changed nothing: the scope is still bound and still open.
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+}
+
+// A scope that closed cleanly and has no tree record holds nothing of the session
+// in the workspace it was bound to, as a scope a failed attempt leaves, so an
+// attach that names another workspace takes it over at the next incarnation.
+pub fn a_closed_scope_with_no_tree_is_rebound_by_the_next_attach_test() {
+  let ledger = open_at(path("closed-rebinds"))
+  attached(ledger)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, AllRetired)
+    == Ok(Nil)
+
+  // The incarnation rule is as for any reopen: only the next one.
+  assert exec_ledger.attach(ledger, "s", "/elsewhere", 0, token(2), limits())
+    == Error(exec_ledger.StaleIncarnation(0))
+  assert exec_ledger.attach(ledger, "s", "/elsewhere", 1, token(2), limits())
+    == Ok(exec_ledger.Attached(how: Reopened, terminal: [], unknown: []))
+
+  // The scope now belongs to the new workspace and not to the old one.
+  assert exec_ledger.attach(ledger, "s", "/work", 1, token(3), limits())
+    == Error(exec_ledger.WorkspaceMismatch("/elsewhere"))
+  assert exec_ledger.begin_close(ledger, "s", "/elsewhere", 1) == Ok(Nil)
+}
+
+// A scope with a tree record has a worktree in its workspace, so it keeps it.
+pub fn a_closed_scope_with_a_tree_keeps_its_workspace_test() {
+  let ledger = open_at(path("closed-with-tree"))
+  attached(ledger)
+  assert exec_ledger.record_tree(ledger, tree("s", exec_ledger.Present))
+    == Ok(Nil)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, AllRetired)
+    == Ok(Nil)
+  assert exec_ledger.attach(ledger, "s", "/elsewhere", 1, token(2), limits())
+    == Error(exec_ledger.WorkspaceMismatch("/work"))
+}
+
+// A scope closed with unknown cleanup is not rebound either: it is released by
+// an operator first.
+pub fn a_scope_closed_with_unknown_cleanup_keeps_its_workspace_test() {
+  let ledger = open_at(path("unknown-keeps-workspace"))
+  attached(ledger)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, UnknownCleanup(1))
+    == Ok(Nil)
+  assert exec_ledger.attach(ledger, "s", "/elsewhere", 1, token(2), limits())
+    == Error(exec_ledger.WorkspaceMismatch("/work"))
+}
+
 pub fn a_clean_close_reopens_at_the_next_incarnation_only_test() {
   let ledger = open_at(path("reopen"))
   attached(ledger)

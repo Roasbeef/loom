@@ -222,13 +222,31 @@ the executor-in-a-guest link and the node credential mask.
 `microvm/dev-experience`, cut from its tip, is the developer path recorded in
 ADR-022's "developer path" addendum. Neither has a hosted CI run.
 
-- **What a developer runs:** `loom-vm setup --release TAG` (or `make
-  vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`, then
-  `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and
+- **One flag (owner, 2026-11-13):** `loom --vm` in any repository sets the
+  artifacts up if needed, boots or resumes that workspace's guest and opens
+  the session with its tools in it; `loom run -p ... --vm` does the same
+  headless. Each workspace has its own guest, named by
+  `vm_spec.guest_name_for`, run by `loomd vm ensure` (`vm_cli.ensure`,
+  `vm_spec.ensure_step`) and found again from the directory alone. Guests stay
+  standing `loom-vm run` processes outside the daemon; no daemon-owned guest
+  and no pool driver was chosen. `ensure` exits 75 with `daemon=required` when
+  a second guest's join needs a daemon that is not running, and the launcher
+  starts one and runs it again once (`tui/vm_ensure`). Not done: the web
+  new-session form; stopping idle guests; reattaching a session after a guest
+  restart (`remote/reattach-after-executor-restart`). Progress is live on the
+  interactive launch (standard error to `/dev/tty` through `/bin/sh`) and shown
+  at the end for `loom run --vm`. The live check passed on a real release build:
+  cold, warm, a second and a third workspace, and the daemon-required retry;
+  the guest's move to the untrusted executor link (protocol-change/109) will
+  replace the mint, join and restart machinery.
+- **What a developer runs (the long form):** `loom-vm setup --release TAG` (or
+  `make vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`,
+  then `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and
   `loom vm status` reports it. A second `up` resumes the guest's checkout and
   its state disk; `--fresh` starts both again. `--github gh|env|off` (default
-  `gh`) chooses the token the credential proxy injects; the guest only ever
-  holds a placeholder.
+  `gh`) chooses the token the credential proxy injects, and a resume keeps the
+  choice recorded in `<vm home>/<name>/github`; the guest only ever holds a
+  placeholder.
 - **Verified on an Apple Silicon Mac:** `daemon_shipped_microvm_test` drives
   `loom vm up`. An orchestrator on the host runs a scripted turn whose
   jailed `bash` call shows the Landlock guest kernel and loom-exec, cannot

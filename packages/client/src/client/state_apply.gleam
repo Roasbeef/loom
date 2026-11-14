@@ -649,7 +649,7 @@ fn into_existing(
       // from the tree, or a record that names what the tree holds. Left in place
       // it would name the older tip while the tree held the new one, and a later
       // request for the older tip would be answered as applied.
-      use _ <- result.try(forget_applied(git, repository, session))
+      use _ <- result.try(forget_applied(git, repository, session, last))
       let writable = [repository <> "/.git", worktree]
       use _ <- result.try(
         checked_out(git, worktree, writable, [
@@ -668,17 +668,17 @@ fn applied_ref(session: String) -> String {
   "refs/loom/applied/" <> session
 }
 
-/// Drops the record of the last apply, which is already gone on a first apply.
+/// Drops the record of the last apply, given what the caller already read of it:
+/// there is nothing to drop on a first apply.
 fn forget_applied(
   git: Git,
   repository: String,
   session: String,
+  last: Option(String),
 ) -> Result(String, String) {
-  use found <- result.try(current_value(git, repository, applied_ref(session)))
-
   // Only a ref that exists is deleted; `update-ref -d` of a missing one is a no-op
   // in Git but names a ref the call never needed to touch.
-  case found {
+  case last {
     None -> Ok("")
     Some(_) ->
       git_ok(git, repository, [repository <> "/.git"], [

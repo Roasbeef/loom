@@ -2286,6 +2286,14 @@ pub fn rebind_ledger_scope(
   ])
 }
 
+pub fn rebind_ledger_scope_workspace(
+  workspace workspace: String,
+  session session: String,
+) {
+  let sql = "UPDATE scope SET workspace = ? WHERE session = ?"
+  #(sql, [dev.ParamString(workspace), dev.ParamString(session)])
+}
+
 pub fn reopen_ledger_scope(
   incarnation incarnation: Int,
   attach_token attach_token: BitArray,

@@ -488,11 +488,50 @@ drawn in half blocks, black on white with ANSI colours) and the lifetime
 record cache makes for durable lines, so the web view's parity test can
 compare against it.
 
+## `loom --vm` (`tui/vm_ensure`)
+
+`loom --vm [--workspace DIR] [--config FILE] [--model-profile NAME]` is the
+launch `tui.Vm(options)`: a local launch that first makes the workspace's
+microVM guest ready and then continues as `--executor <guest> --workspace <name>`
+would. `parse_terminal_launch` takes the switch anywhere in the words and
+refuses `--executor`, `--pool`, `--session` and `--addr` with one line each
+(`vm_refusals`); `--workspace` stays the host directory the guest serves, not a
+registered name. `tui.launch_vm` is the test seam. `main` answers `Vm` after
+`require_terminal` and before the alternate screen (`interactive_vm`): a failed
+`ensure` prints its reason and halts with its status.
+
+`tui/vm_ensure` runs `<server> vm ensure --workspace DIR [--config FILE]` through
+`host.run_captured` (the server from `bootstrap.server_executable`), so it adds no
+FFI. Standard error is merged into the captured text, so progress is shown
+(`report`) when the command ends; the interactive launch (`Progress` `OnTerminal`)
+runs the server through `/bin/sh` with standard error on `/dev/tty` when it opens
+(`vm_ensure.command`), so progress is live and the captured text is the answer
+alone. `loom --vm` serves the nearest `.git` ancestor (`tui.vm_directory`);
+`loom run --vm` the directory itself. `--github` and `--allow` are taken out by
+`vm_ensure.guest_flags` and passed to `ensure`; `--state-dir` is refused with
+`--vm`. `answer` takes the last line that reads as an answer, and a refused
+first run (`daemon=required`) prints one launcher line instead of its refusal. `parse_line` is the total parser of the last
+line, `executor=NAME workspace=NAME`, validated by `placement.new`; `answer` reads
+a status and output as `Ready`, `NeedsDaemon` (status 75 and the last line
+`daemon=required`) or `Failed`. The ordering is `ensure` first, because the first
+guest of a machine installs `[distribution]` and an earlier daemon would not have
+read it; on `NeedsDaemon` `start_daemon` resolves the daemon of the launch (which
+starts one if none runs) and `ensure` runs once more, whose answer is final. The
+runner, the daemon start and the reporter are arguments of `vm_ensure.ensure`;
+`launch` supplies the real ones. The returned options have the executor placement
+and an empty `workspace`, exactly the `--executor` launch's. `loom run -p ...
+--vm` (`run.Request.tools`, `InTheGuest`) calls `vm_ensure.launch` in `execute`
+before it reaches the daemon, and `run.create_target` creates the session from
+`options.placement` (the same `create_named` executor and pool arguments the
+terminal sends); a guest that cannot be made ready exits `1`. Tests:
+`vm_launch_test`. The `vm_usage` help copy is compared with `loomd vm --help` by
+`scripts/cli_help_test.sh`.
+
 ## Headless one-shot (`loom run -p`, issue #492)
 
 `loom run -p <prompt> [--workspace DIR] [--model NAME] [--config FILE]
 [--model-profile NAME] [--server PATH] [--state-dir DIR] [--timeout SECONDS]
-[--keep] [--json]` is `tui/run`, dispatched as `tui.Run(request)` (arguments
+[--keep] [--json] [--vm]` is `tui/run`, dispatched as `tui.Run(request)` (arguments
 it refuses are `RunRefused`, which exits `2`; `run` is a `hoisting_verbs`
 member, so daemon options may precede it). It is a client of the daemon
 protocol and installs no terminal state: `bootstrap.resolve_daemon`, then

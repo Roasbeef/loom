@@ -142,6 +142,7 @@ import client/secrets
 import client/serve
 import client/state_capture
 import client/state_object
+import client/untrusted_config
 import client/workspace_plane
 import client/workspace_policy
 import client/workspaces.{type Workspace}
@@ -261,11 +262,7 @@ pub fn machine(
     catalog.parse_mcp(text) |> result.map_error(named),
   )
   use helper_path <- result.try(find_helper(flags.helper))
-  use credentials <- result.try(
-    distribution.parse(text)
-    |> result.map(node_credentials)
-    |> result.map_error(named),
-  )
+  use credentials <- result.try(masked_files(text) |> result.map_error(named))
 
   // Each failed entry is one warned line, never a refused start: a credential
   // this machine's tools may never need must not stop the executor.
@@ -307,6 +304,28 @@ pub fn machine(
     credentials:,
     logger:,
   ))
+}
+
+/// The files of this daemon's identities a jailed child must not read, from its
+/// configuration text: the distribution key and cookie, and the private key of
+/// the untrusted link's listener and link tables. An executor reached over the
+/// untrusted link has no `[distribution]` table, so without the second part
+/// nothing masked its key, which model code, running as the same user, could
+/// read. The certificates are public.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert executor_plane.masked_files("") == Ok([])
+/// ```
+pub fn masked_files(text: String) -> Result(List(String), String) {
+  use distribution <- result.try(
+    distribution.parse(text) |> result.map(node_credentials),
+  )
+  use link <- result.map(
+    untrusted_config.parse(text) |> result.map(untrusted_config.secret_files),
+  )
+  list.append(distribution, link)
 }
 
 /// The files of this node's distribution identity a jailed child must not
@@ -466,7 +485,7 @@ fn build(
     workspaces.find(configured, spec.workspace)
     |> result.map_error(fn(_missing) {
       host.NoPlaneBuilt(
-        "this executor serves no workspace named `" <> spec.workspace <> "`",
+        protocol.unserved_workspace <> " `" <> spec.workspace <> "`",
       )
     }),
   )
