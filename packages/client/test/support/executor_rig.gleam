@@ -190,6 +190,7 @@ pub fn attach(plane: Plane, n: Int, executor: String) -> Attached {
         port: plane.port,
         read_authority: fn(_run) { Ok(fixtures.authority()) },
         reconnect: fn() { Ok(Nil) },
+        attached: fn(_attached) { Nil },
         remote_tools: ["fs_write", "fs_read", "bash"],
         attach_within_ms: 120_000,
         mint_token: fn() { token },
