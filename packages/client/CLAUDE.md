@@ -345,7 +345,13 @@ included, also masks the state root's `vm` directory, the home's `.loom/vm`
 and the home's `.erlang.cookie` (`workspace_policy.lazy_masks`,
 `node_home_masks`): `loom vm up` keeps each guest's bundles and its
 executor's key and cookie there, and the cookie is every distributed
-daemon's. A node key `loom distribution install` places outside the state
+daemon's. The daemon creates the home's `.loom/vm` and the state root's `vm`
+(mode 0700, only when missing, never changed when present) in `prepare_startup`
+through `main.ensure_vm_homes`, before distribution, the states or any jail, so
+a policy built later masks both even when the first guest comes after the
+session began (`workspace_policy.vm_home_directories` names them; a failure
+stops the start; `LOOM_VM_HOME` elsewhere is not covered; tests in
+`daemon_state_masks_test`). A node key `loom distribution install` places outside the state
 root is still unmasked for host sessions. `loom vm up` installs a newly
 minted deployment with `listen_address = "127.0.0.1"`
 (`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.

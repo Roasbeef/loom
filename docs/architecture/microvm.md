@@ -849,7 +849,14 @@ The directory is under the vm home, and the daemon's jails mask it:
 `vm`, and the authority directory is below either. A `$LOOM_VM_HOME` set
 anywhere else is not masked, so a jailed tool of a daemon whose home is not
 under `~/.loom/vm` or the state root can read the key and its passphrase. Keep
-`LOOM_VM_HOME` at the default, or under a path the daemon masks. `authority` is
+`LOOM_VM_HOME` at the default, or under a path the daemon masks. A mask over a
+missing path under a read-only parent is not built, and a session keeps its
+policy for its life, so the daemon creates `~/.loom/vm` and `<state root>/vm`,
+mode 0700, at its start, before any jail is built (`daemon/main.ensure_vm_homes`,
+protocol-change/115). It creates a directory only when it is missing and never
+changes one that exists, and a failure to create one stops the start. Every
+session and plane therefore masks both whenever the first guest is made. A
+`LOOM_VM_HOME` elsewhere is not created and not covered. `authority` is
 not a valid guest name, since it names this directory.
 
 `rm` deletes the directory with the guest, after the guest's directory and
