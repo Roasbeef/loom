@@ -404,6 +404,7 @@ keep working while the daemon drains; mutations need the root to be in
 | Membership | `Invite`, `SetRole`, `RevokeMembership`, `RotateCredential`, `RevokeCredentials` | Owner |
 | Peer mail | `LinkPeers`, `UnlinkPeers`, `SendPeer` | Owner |
 | Daemon | `Shutdown` | Owner |
+| Executors | `ReloadExecutors` (`executors.reload`), a mutation: rereads the configuration file and reconciles the untrusted executors' links through `daemon/untrusted_links` (protocol-change/115) | Owner |
 
 Most commands that change a session or its membership, and `GetOperation`,
 carry the epoch the client saw in `hello`; a mismatch is refused as

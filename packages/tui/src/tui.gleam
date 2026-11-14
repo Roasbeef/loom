@@ -3779,7 +3779,8 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             [executors.NAME] into loom.toml beside whatever is there (it never
             replaces a table that differs, and leaves [distribution] as it is),
             and needs no deployment, ledger or running daemon. A daemon that is
-            already running reads the new row only when it restarts. The link
+            already running is asked to read the new row; it is stopped, or
+            named, only when it predates that command or refuses it. The link
             is recorded and kept for the guest's life; `distribution` is the
             default. The link lacks project hooks, goal checks and the Changes
             tab for now: docs/architecture/microvm.md lists them.

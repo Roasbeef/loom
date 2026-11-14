@@ -196,6 +196,13 @@ The differences from the trusted mode are these.
   a background execution whose `start` is outstanding, and a background launch or
   interaction must come from a `code_mode` call in flight. Anything else is
   answered with the failure its type allows.
+- **A link with no binding for a session refuses its work.** A `run` or a `start`
+  for a session the link holds no binding for is answered `NoPlane` by the link
+  and never sent. This is the case of a link started in place of a dead one
+  while the executor still holds the session's plane: the surface attaches
+  again, the attach mints a binding, and the executor rebinds the plane it has
+  (protocol-change/115). An `attach`, a `close`, a query, an ack and a stop need
+  no binding.
 - **Everything returned is decoded totally**, against the kind of reply the
   request waits for. A frame that does not decode, a reply of the wrong kind, a
   reply to an id never issued and any frame only an orchestrator sends close the

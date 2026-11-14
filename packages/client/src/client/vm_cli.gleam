@@ -229,7 +229,8 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             [executors.NAME] into loom.toml beside whatever is there (it never
             replaces a table that differs, and leaves [distribution] as it is),
             and needs no deployment, ledger or running daemon. A daemon that is
-            already running reads the new row only when it restarts. The link
+            already running is asked to read the new row; it is stopped, or
+            named, only when it predates that command or refuses it. The link
             is recorded and kept for the guest's life; `distribution` is the
             default. The link lacks project hooks, goal checks and the Changes
             tab for now: docs/architecture/microvm.md lists them.
@@ -1054,8 +1055,11 @@ fn restart_check(upped: Upped) -> Result(Nil, String) {
 /// `restart_check` for a guest on the untrusted link. In the default
 /// configuration the daemon is asked which executors it holds, and one that
 /// does not hold the guest has not read its row, whether this call wrote the
-/// row or an earlier call did and then failed to boot. A configuration other
-/// than the default belongs to a daemon that cannot be asked, as for any guest.
+/// row or an earlier call did and then failed to boot. Such a daemon is asked
+/// to reload (protocol-change/115), and the refusal that says to restart it
+/// is given only when it cannot reload: it predates the command, refused it, or
+/// could not bring the guest's link up. A configuration other than the default
+/// belongs to a daemon that cannot be asked, as for any guest.
 fn untrusted_restart_check(upped: Upped) -> Result(Nil, String) {
   let enrolled = upped.enrolled
 
@@ -1065,25 +1069,40 @@ fn untrusted_restart_check(upped: Upped) -> Result(Nil, String) {
     OtherConfigFile -> distribution_restart_check(enrolled)
     DefaultConfigFile ->
       case untrusted_need(upped) {
-        vm_link.MustRestart -> vm_spec.restart_refusal(daemon_outcome())
+        vm_link.MustReload -> reload_or_refuse(upped.options.name)
         vm_link.NeedsNothing -> Ok(Nil)
       }
   }
 }
 
-/// Whether the default daemon must restart to reach an untrusted guest: the
-/// decision of `vm_link.daemon_need`, from what the row's state is and what the
-/// daemon says it holds. A daemon is asked only about a row that was already
-/// there.
-fn untrusted_need(upped: Upped) -> vm_link.DaemonNeed {
-  let name = upped.options.name
+/// Asks the default daemon to reload and prints what changed on standard
+/// error, so `ensure`'s own line stays alone on standard output. A daemon that
+/// holds the guest's row afterwards needs nothing; any other answer is the old
+/// path, which stops an idle daemon and refuses with the command that stops a
+/// busy one.
+fn reload_or_refuse(name: String) -> Result(Nil, String) {
+  let report = vm_link.reload_report(name, reload_daemon())
+  list.each(report.lines, io.println_error)
 
-  // A row this call wrote is unread without asking anyone.
-  case upped.enrolled.row {
-    Resumed -> vm_link.daemon_need(vm_link.RowStanding, daemon_saw(), name)
-    Written | Derived ->
-      vm_link.daemon_need(vm_link.RowChanged, vm_link.SawNoDaemon, name)
+  // The old path runs exactly as it did before the command existed.
+  case report.old_path {
+    vm_link.OldPathSkipped -> Ok(Nil)
+    vm_link.OldPathRuns -> vm_spec.restart_refusal(daemon_outcome())
   }
+}
+
+/// Whether the default daemon is asked to reload to reach an untrusted guest:
+/// the decision of `vm_link.daemon_need`, from what the row's state is and what
+/// the daemon says it holds. A row this call wrote is unread whatever the
+/// daemon holds, but whether a daemon runs at all is still observed.
+fn untrusted_need(upped: Upped) -> vm_link.DaemonNeed {
+  // A row this call wrote or derived is changed; a resumed one is standing.
+  let rows = case upped.enrolled.row {
+    Resumed -> vm_link.RowStanding
+    Written | Derived -> vm_link.RowChanged
+  }
+
+  vm_link.daemon_need(rows, daemon_saw(), upped.options.name)
 }
 
 /// What the default daemon says it holds: nothing when none runs, the names of
@@ -2081,8 +2100,8 @@ type Row {
 
   // A resume: an earlier `up` wrote it and this one found it still in the
   // file, so this `up` changed nothing the daemon reads. A daemon that started
-  // since has read it; `ensure` therefore never asks such a daemon to restart,
-  // and `up` says so in its report.
+  // since has read it. `up` and `ensure` ask such a daemon to restart only
+  // when it says it runs without the table.
   Resumed
 
   // The ledger gives the daemon the row when the guest is a member, and the
@@ -2652,8 +2671,9 @@ fn stage_linked_node(
   })
 }
 
-/// What `up` tells the user about a guest on the untrusted link. The daemon
-/// has no reload command yet, so a row that changed reaches it at its next
+/// What `up` tells the user about a guest on the untrusted link. A running
+/// daemon is asked to reload and says what it did; one that cannot reload is
+/// handled as before, and a daemon that is not running reads the row at its
 /// start.
 fn linked_report(upped: Upped, restart: Restart) -> String {
   let Upped(options:, workspace:, port:, enrolled:, ..) = upped
@@ -2703,6 +2723,9 @@ fn linked_daemon_lines(name: String, restart: Restart) -> List(String) {
   case restart {
     NoRestart -> []
     Daemon(outcome, _) -> vm_link.daemon_lines(name, outcome)
+    Reloaded(lines:, stopped: None) -> spaced(lines)
+    Reloaded(lines:, stopped: Some(outcome)) ->
+      list.append(spaced(lines), vm_link.daemon_lines(name, outcome))
     OtherDaemon(_) -> [
       "A daemon already running with that file must restart to reach the guest.",
       "",
@@ -2710,21 +2733,43 @@ fn linked_daemon_lines(name: String, restart: Restart) -> List(String) {
   }
 }
 
-/// What `up` does about the user's daemon after a guest: nothing for an
-/// untrusted guest whose row was already there, and otherwise what a newly
-/// installed deployment asks, which is the one decision to stop an idle daemon
-/// and leave a busy one running.
+/// A block of lines followed by the blank line that ends a paragraph, or
+/// nothing for no lines.
+fn spaced(lines: List(String)) -> List(String) {
+  case lines {
+    [] -> []
+    _ -> list.append(lines, [""])
+  }
+}
+
+/// What `up` does about the user's daemon after a guest: for an untrusted
+/// guest, ask a running daemon that has not read the row to reload, and only
+/// when it cannot do that, what a newly installed deployment asks, which is the
+/// one decision to stop an idle daemon and leave a busy one running.
 fn restart_of(upped: Upped) -> Restart {
-  // The default daemon is asked about an untrusted guest's standing row; a
+  // The default daemon is asked about an untrusted guest's row; a
   // configuration other than the default has a daemon `up` cannot ask.
   case upped.link, upped.enrolled.file, upped.enrolled.row {
     vm_spec.Untrusted, DefaultConfigFile, _ ->
       case untrusted_need(upped) {
-        vm_link.MustRestart -> Daemon(daemon_outcome(), vm_spec.Installed)
+        vm_link.MustReload -> reloaded(upped.options.name)
         vm_link.NeedsNothing -> NoRestart
       }
     vm_spec.Untrusted, OtherConfigFile, Resumed -> NoRestart
     _, _, _ -> restart_after(upped.enrolled)
+  }
+}
+
+/// Asks the default daemon to reload, and does the old path after it only when
+/// the reload did not leave the daemon holding the guest's row. The old path is
+/// run after the answer is read, because a daemon it stops can no longer say.
+fn reloaded(name: String) -> Restart {
+  let report = vm_link.reload_report(name, reload_daemon())
+
+  // The old path runs only when the reload did not leave the row held.
+  case report.old_path {
+    vm_link.OldPathSkipped -> Reloaded(report.lines, None)
+    vm_link.OldPathRuns -> Reloaded(report.lines, Some(daemon_outcome()))
   }
 }
 
@@ -3285,6 +3330,7 @@ fn stranded_in(
       guest.state_disk,
       prefixes,
     )
+    |> list.sort(int.compare)
   #(pids, vm_spec.certainty_of(runner))
 }
 
@@ -4033,18 +4079,36 @@ type Restart {
   // read its configuration before the guest existed; after a resume it has
   // nothing new to read.
   Daemon(vm_spec.DaemonOutcome, vm_spec.Table)
+
+  // A running daemon was asked to reload an untrusted guest's row: the lines
+  // that say what it changed, and what `up` then did about a daemon that could
+  // not reload, which is `None` when the reload left it holding the row.
+  Reloaded(lines: List(String), stopped: option.Option(vm_spec.DaemonOutcome))
 }
 
 /// Does what `up` does about the daemon, which can stop an idle one, and
 /// answers the outcome. It runs after the guest booted, since a failed `up`
 /// must not have stopped a daemon.
 fn restart_after(enrolled: Enrolled) -> Restart {
+  // A derived row asks nothing of any daemon. A written or resumed row asks
+  // the daemon that reads its file, and only the default file's daemon can be
+  // found and acted on.
   case enrolled.row, enrolled.file {
     Derived, _ -> NoRestart
     Written, OtherConfigFile -> OtherDaemon(vm_spec.Installed)
     Resumed, OtherConfigFile -> OtherDaemon(vm_spec.AlreadyThere)
     Written, DefaultConfigFile -> Daemon(daemon_outcome(), vm_spec.Installed)
-    Resumed, DefaultConfigFile -> Daemon(daemon_outcome(), vm_spec.AlreadyThere)
+    Resumed, DefaultConfigFile -> {
+      // The daemon is asked before anything is done about it. One that never
+      // read the table an earlier `up` installed must still restart, and a
+      // daemon this `up` stopped could no longer say.
+      let table = case daemon_lacks_distribution() {
+        True -> vm_spec.Installed
+        False -> vm_spec.AlreadyThere
+      }
+
+      Daemon(daemon_outcome(), table)
+    }
   }
 }
 
@@ -4104,6 +4168,9 @@ fn daemon_lines(restart: Restart) -> List(String) {
   case restart {
     NoRestart -> []
     Daemon(outcome, table) -> vm_spec.daemon_note(outcome, table)
+
+    // Only an untrusted guest is reloaded, and its report is `linked_report`.
+    Reloaded(lines:, ..) -> spaced(lines)
     OtherDaemon(vm_spec.Installed) -> [
       "A daemon already running with that file must restart to use the guest.",
       "",
@@ -4200,6 +4267,14 @@ fn ask_daemon(command: String) -> Result(core_json.JsonValue, String) {
     [body] -> Ok(body)
     _ -> Error("the daemon's reply to " <> command <> " is not one body")
   }
+}
+
+/// Asks the default daemon to reread its configuration and bring the links of
+/// its untrusted executors to match (protocol-change/115), and classifies what
+/// came back. The reply body is decoded by `executor_reload.decode`, which is
+/// total, so a daemon that answers anything else is `NoAnswer`.
+fn reload_daemon() -> vm_link.ReloadResult {
+  vm_link.reload_result(ask_daemon("executors.reload"))
 }
 
 // How long `up` waits for a drained daemon's process to go. The daemon's own
@@ -4768,7 +4843,20 @@ type RemovalPlan {
     // The vm home's link credentials, when this is the last untrusted guest
     // and nothing needs them any more.
     link_home: option.Option(String),
+    // Whether a running daemon is asked to reload once the row is gone.
+    daemon: AfterRemoval,
   )
+}
+
+// What `rm` asks of the default daemon after it took a row out of the file.
+type AfterRemoval {
+  // The guest has no row for a daemon to read, or the file is not the one the
+  // default daemon reads.
+  LeaveDaemon
+
+  // An untrusted guest's row left the default file, so a running daemon is
+  // asked to stop its link (protocol-change/115).
+  ReloadDaemon
 }
 
 // A guest that joined its daemon's deployment is a member of the ledger, and
@@ -4912,6 +5000,7 @@ fn removal_plan(
     authority: removable_authority(vm_home, name),
     revocation:,
     link_home: None,
+    daemon: LeaveDaemon,
   ))
 }
 
@@ -4924,6 +5013,7 @@ fn linked_removal_plan(
   guest: Instance,
   name: String,
   config: String,
+  home: String,
 ) -> Result(RemovalPlan, String) {
   use text <- result.try(read_or_empty(config))
   use others <- result.try(other_kinds(vm_home, name))
@@ -4953,6 +5043,18 @@ fn linked_removal_plan(
     False -> Some(removal.text)
   }
 
+  // The default daemon holds a row only for the file it reads, and a file that
+  // did not change has no row to drop.
+  use default <- result.try(
+    bootstrap.absolute_path(distribution_install.default_config(home)),
+  )
+
+  // A daemon is asked only when the default file changed.
+  let daemon = case rewritten, config == default {
+    Some(_), True -> ReloadDaemon
+    _, _ -> LeaveDaemon
+  }
+
   // The vm home's credentials go with the last untrusted guest, and only when
   // no table names them any more: an operator's own untrusted row keeps
   // `[executor_link]`, and the files it names.
@@ -4973,6 +5075,7 @@ fn linked_removal_plan(
     authority: None,
     revocation: NoRevocation,
     link_home:,
+    daemon:,
   ))
 }
 
@@ -5014,7 +5117,7 @@ fn planned_removal(
 
   // The guest's own link says what undoing it means.
   case kind {
-    vm_spec.Untrusted -> linked_removal_plan(vm_home, guest, name, config)
+    vm_spec.Untrusted -> linked_removal_plan(vm_home, guest, name, config, home)
     vm_spec.Distribution -> removal_plan(vm_home, guest, name, config, home)
   }
 }
@@ -5334,6 +5437,10 @@ fn apply_removal(
     None -> Ok(Nil)
   })
 
+  // A running daemon is asked to drop the link as soon as the row is gone, so
+  // the file and the daemon disagree for as short a time as the command allows.
+  let daemon_lines = removal_daemon_lines(plan, name)
+
   // The cookie goes after the tables that name it, and only when the plan
   // found it to be this guest's deployment's.
   use Nil <- result.try(case plan.teardown.cookie {
@@ -5380,10 +5487,31 @@ fn apply_removal(
         _ -> []
       },
       list.map(plan.teardown.left, fn(line) { "Left in place: " <> line }),
-      enrolment_notice(plan),
+      daemon_lines,
     ]),
     "\n",
   ))
+}
+
+/// What `rm` tells the user about the daemon after a guest's row left the file.
+/// An untrusted guest's row is dropped by a running daemon that is asked to
+/// reload, and the entries it names are printed. A daemon that cannot reload
+/// leaves the notice that it keeps the enrolment until it restarts.
+fn removal_daemon_lines(plan: RemovalPlan, name: String) -> List(String) {
+  // Only a row removed from the default file has a daemon to ask, and only a
+  // daemon that is running can be asked.
+  case plan.daemon, running_fence() {
+    ReloadDaemon, Some(_) -> {
+      let report = vm_link.removal_report(name, reload_daemon())
+
+      // A failed stop keeps the notice that the daemon holds the row.
+      case report.old_path {
+        vm_link.OldPathSkipped -> report.lines
+        vm_link.OldPathRuns -> list.append(report.lines, enrolment_notice(plan))
+      }
+    }
+    ReloadDaemon, None | LeaveDaemon, _ -> enrolment_notice(plan)
+  }
 }
 
 /// The reminder that a running daemon keeps the enrolment until it restarts,

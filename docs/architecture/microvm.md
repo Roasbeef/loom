@@ -978,7 +978,17 @@ The directory is under the vm home, and the daemon's jails mask it:
 `vm`, and the authority directory is below either. A `$LOOM_VM_HOME` set
 anywhere else is not masked, so a jailed tool of a daemon whose home is not
 under `~/.loom/vm` or the state root can read the key and its passphrase. Keep
-`LOOM_VM_HOME` at the default, or under a path the daemon masks. `authority` is
+`LOOM_VM_HOME` at the default, or under a path the daemon masks. A mask over a
+missing path under a read-only parent is not built, and a session keeps its
+policy for its life, so the daemon creates `~/.loom/vm` and `<state root>/vm`,
+mode 0700, at its start, before any jail is built (`daemon/main.ensure_vm_homes`,
+protocol-change/115). It creates a directory only when it is missing and never
+changes one that exists. A failure to create the state root's directory stops
+the start; a failure to create the home's is logged as
+`daemon.vm_home_unavailable` and the daemon starts, since `loom vm up` runs as
+the same user with the same `HOME` and cannot create it either. Every
+session and plane therefore masks both whenever the first guest is made. A
+`LOOM_VM_HOME` elsewhere is not created and not covered. `authority` is
 not a valid guest name, since it names this directory.
 
 `rm` deletes the directory with the guest, after the guest's directory and
@@ -1260,22 +1270,29 @@ from `[distribution]` alone, so an untrusted executor masked nothing and model
 code, which runs as the same user, could read the key
 (`executor_plane.masked_files`).
 
-#### A new guest needs a daemon restart
+#### A new guest reaches a running daemon by a reload
 
-The daemon reads `[executors.*]` and `[executor_link]` at its start and has no
-command that rereads them. `up` applies the rule it has for a newly installed
-deployment: with the default configuration, an idle default daemon is stopped
-and the next `loom` command starts it, and a daemon that holds sessions is left
-running with a note, or with `ensure`'s refusal, that names the restart. A
-resumed guest whose row did not change is checked instead of assumed: the
-default daemon is asked for its deployment, and one whose executor list does not
-name the guest has not read the row (a first `up` whose boot failed after the
-row was written), and gets the same step. A daemon that is not running or does
-not answer is not claimed to lack it. The question is never whether the daemon
-runs with distribution, which an untrusted guest does not need
-(`vm_link.daemon_need`). With `--config` the
-daemon cannot be found, and the output says it must restart. An owner-only
-`executors.reload` command is the planned fix and is not built.
+The daemon reads `[executors.*]` and `[executor_link]` at its start, and
+`executors.reload` (protocol-change/115) makes it read them again. `up`,
+`ensure` and `rm` write `loom.toml` and then, for an untrusted guest in the
+default configuration, send the command to a daemon that is running when this
+command changed the row or the daemon's executor list does not name the guest
+(`vm_link.daemon_need`). The reply lists every untrusted row that changed,
+whichever guest it names, and the command prints each one, so a row that moved
+without the user's doing is seen. A guest that already serves and that the
+daemon already lists sends nothing. The daemon is no longer stopped.
+
+The earlier rule stays as the fallback (`vm_link.reload_report`): when the
+daemon predates the command (it answers `bad_request`), refuses the call, does
+not answer, or reports the guest's own link `failed` or absent, an idle default
+daemon is stopped and the next `loom` command starts it, and a daemon that holds
+sessions is left running with a note, or with `ensure`'s refusal, that names the
+restart. The listing carries names and no addresses, so a daemon that holds a
+guest's name at an older port is not asked again until a command changes the
+row. A daemon that is not running reads the file when it starts. `rm` of an
+untrusted guest sends the same command after it rewrites the file, and a daemon
+that predates it gets the notice `rm` has always printed. With `--config` the
+daemon cannot be found, and the output says it must restart.
 
 #### What the link lacks today
 

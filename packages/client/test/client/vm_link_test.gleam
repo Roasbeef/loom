@@ -10,6 +10,7 @@
 //// leaf the way the link does. Properties draw from a fixed seed.
 
 import client/distribution
+import client/executor_reload
 import client/executors
 import client/internal/ffi_pki
 import client/internal/ffi_tls_stream
@@ -786,26 +787,169 @@ pub fn lines_the_user_wrote_after_the_guests_tables_stay_test() {
 
 // --- whether the daemon has read the row ---------------------------------------------------------
 
-pub fn a_changed_row_always_needs_a_restart_and_a_standing_one_when_unlisted_test() {
+pub fn a_running_daemon_is_asked_to_reload_for_a_changed_row_or_an_unlisted_one_test() {
   let changed = vm_link.RowChanged
   let standing = vm_link.RowStanding
-  assert vm_link.daemon_need(changed, vm_link.SawNoDaemon, "dev")
-    == vm_link.MustRestart
+
+  // A changed row is unread by any daemon that was running before it, whatever
+  // that daemon lists.
   assert vm_link.daemon_need(changed, vm_link.SawExecutors(["dev"]), "dev")
-    == vm_link.MustRestart
+    == vm_link.MustReload
+  assert vm_link.daemon_need(changed, vm_link.SawUnanswered, "dev")
+    == vm_link.MustReload
 
   // A standing row is unread by a daemon that does not hold the guest, which is
   // a first `up` whose boot failed after the row was written.
   assert vm_link.daemon_need(standing, vm_link.SawExecutors(["other"]), "dev")
-    == vm_link.MustRestart
+    == vm_link.MustReload
   assert vm_link.daemon_need(standing, vm_link.SawExecutors(["dev"]), "dev")
     == vm_link.NeedsNothing
 
-  // No daemon, or none that answers, is not claimed to lack the row.
+  // No daemon is asked anything, and one that does not answer is not claimed
+  // to lack a row that was already there.
+  assert vm_link.daemon_need(changed, vm_link.SawNoDaemon, "dev")
+    == vm_link.NeedsNothing
   assert vm_link.daemon_need(standing, vm_link.SawNoDaemon, "dev")
     == vm_link.NeedsNothing
   assert vm_link.daemon_need(standing, vm_link.SawUnanswered, "dev")
     == vm_link.NeedsNothing
+}
+
+fn reply(
+  entries: List(#(String, executor_reload.Change)),
+) -> vm_link.ReloadResult {
+  vm_link.Answered(
+    executor_reload.Reply(
+      list.map(entries, fn(entry) { executor_reload.Entry(entry.0, entry.1) }),
+    ),
+  )
+}
+
+pub fn a_reply_that_holds_the_guests_row_runs_no_old_path_test() {
+  let report =
+    vm_link.reload_report(
+      "dev",
+      reply([
+        #("dev", executor_reload.Started),
+        #("other", executor_reload.Unchanged),
+      ]),
+    )
+  assert report.old_path == vm_link.OldPathSkipped
+  assert report.lines
+    == ["Your daemon started its link to untrusted executor dev."]
+
+  // Every kept state of the guest's own entry is a row the daemon holds.
+  list.each([executor_reload.Restarted, executor_reload.Unchanged], fn(change) {
+    assert vm_link.reload_report("dev", reply([#("dev", change)])).old_path
+      == vm_link.OldPathSkipped
+  })
+}
+
+pub fn a_row_that_changed_without_the_users_doing_is_named_test() {
+  let report =
+    vm_link.reload_report(
+      "dev",
+      reply([
+        #("dev", executor_reload.Unchanged),
+        #("gone", executor_reload.Stopped),
+        #("moved", executor_reload.Restarted),
+        #("new", executor_reload.Started),
+      ]),
+    )
+  assert report.old_path == vm_link.OldPathSkipped
+  assert list.length(report.lines) == 3
+  assert list.all(["gone", "moved", "new"], fn(name) {
+    list.any(report.lines, string.contains(_, name))
+  })
+  assert !list.any(report.lines, string.contains(_, "dev"))
+}
+
+pub fn a_failed_stopped_or_missing_own_entry_runs_the_old_path_test() {
+  let failed =
+    vm_link.reload_report("dev", reply([#("dev", executor_reload.Failed)]))
+  assert failed.old_path == vm_link.OldPathRuns
+  assert list.length(failed.lines) == 1
+
+  // The wording does not claim the old link was left alone: a failed
+  // replacement may have stopped it.
+  assert list.all(failed.lines, fn(line) {
+    !string.contains(line, "left that link as it was")
+    && string.contains(line, "the next reload tries again")
+  })
+
+  // After an `up`, a guest whose own entry is `stopped` has no link serving it.
+  let stopped =
+    vm_link.reload_report("dev", reply([#("dev", executor_reload.Stopped)]))
+  assert stopped.old_path == vm_link.OldPathRuns
+  assert list.length(stopped.lines) == 1
+
+  let missing =
+    vm_link.reload_report("dev", reply([#("other", executor_reload.Started)]))
+  assert missing.old_path == vm_link.OldPathRuns
+  assert list.length(missing.lines) == 1
+}
+
+pub fn a_daemon_that_predates_refuses_or_is_silent_runs_the_old_path_test() {
+  let predates = vm_link.reload_report("dev", vm_link.PredatesReload)
+  assert predates == vm_link.ReloadReport([], vm_link.OldPathRuns)
+
+  let refused =
+    vm_link.reload_report(
+      "dev",
+      vm_link.RefusedReload("reload_invalid", Some("the file has a bad row")),
+    )
+  assert refused.old_path == vm_link.OldPathRuns
+  assert list.any(refused.lines, string.contains(_, "the file has a bad row"))
+
+  let silent = vm_link.reload_report("dev", vm_link.NoAnswer("timed out"))
+  assert silent.old_path == vm_link.OldPathRuns
+  assert list.any(silent.lines, string.contains(_, "timed out"))
+}
+
+pub fn a_removal_needs_no_old_path_unless_its_own_link_failed_test() {
+  // The removed guest's link is stopped, or the daemon never held it.
+  assert vm_link.removal_report(
+      "dev",
+      reply([#("dev", executor_reload.Stopped)]),
+    )
+    == vm_link.ReloadReport(
+      [
+        "Your daemon stopped its link to untrusted executor dev, whose row is gone.",
+      ],
+      vm_link.OldPathSkipped,
+    )
+  assert vm_link.removal_report("dev", reply([])).old_path
+    == vm_link.OldPathSkipped
+
+  // A link that could not be stopped is still held, so the notice stays.
+  assert vm_link.removal_report(
+      "dev",
+      reply([#("dev", executor_reload.Failed)]),
+    ).old_path
+    == vm_link.OldPathRuns
+
+  // A daemon that predates the command says nothing here.
+  assert vm_link.removal_report("dev", vm_link.PredatesReload)
+    == vm_link.ReloadReport([], vm_link.OldPathRuns)
+}
+
+pub fn the_exchange_is_classified_by_what_it_returned_test() {
+  let good = executor_reload.encode(executor_reload.Reply([]))
+  assert vm_link.reload_result(Ok(good))
+    == vm_link.Answered(executor_reload.Reply([]))
+  assert vm_link.reload_result(Error("bad_request")) == vm_link.PredatesReload
+  assert vm_link.reload_result(Error("reload_invalid: no good"))
+    == vm_link.RefusedReload("reload_invalid", Some("no good"))
+  assert vm_link.reload_result(Error("forbidden"))
+    == vm_link.RefusedReload("forbidden", None)
+  assert vm_link.reload_result(Error("unavailable"))
+    == vm_link.RefusedReload("unavailable", None)
+  assert vm_link.reload_result(Error("no daemon"))
+    == vm_link.NoAnswer("no daemon")
+
+  // A body that is not a reply is no answer, and never a partial one.
+  let assert vm_link.NoAnswer(_) = vm_link.reload_result(Ok(json.Object([])))
+    as "a body without executors is no answer"
 }
 
 pub fn the_executors_a_daemon_lists_are_read_from_its_deployment_status_test() {

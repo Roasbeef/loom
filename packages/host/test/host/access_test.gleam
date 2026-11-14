@@ -637,3 +637,18 @@ pub fn the_listing_row_keeps_the_login_count_when_the_daemon_sends_one_test() {
     json.parse(string.replace(with, "\"logins\":2", "\"logins\":-1"))
   let assert Error(_) = access.principal_lines(bad)
 }
+
+pub fn a_refused_reload_keeps_its_reason_and_other_codes_stay_bare_test() {
+  assert access.refusal_code([
+      #("code", json.String("reload_invalid")),
+      #("message", json.String("the file has a bad row")),
+    ])
+    == "reload_invalid: the file has a bad row"
+  assert access.refusal_code([#("code", json.String("reload_invalid"))])
+    == "reload_invalid"
+  assert access.refusal_code([
+      #("code", json.String("bad_request")),
+      #("message", json.String("unsupported control command")),
+    ])
+    == "bad_request"
+}

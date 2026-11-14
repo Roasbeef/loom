@@ -76,10 +76,10 @@ pub fn fixed_name(text: String) -> Name(message) {
 /// Sends `message` to the process registered as `name` on `node`.
 ///
 /// Nothing is reported when the node is unreachable or the name is not
-/// registered there; a caller that needs to know watches the destination
-/// with `watch`. A name that is not registered on the local node raises, so
-/// this is for peers on other nodes, and for a local host that is known to
-/// be up.
+/// registered there, on the local node as on any other: `erlang:send/2` with a
+/// `{Name, Node}` destination drops the message instead of raising, unlike a
+/// send to a bare registered name. A caller that needs to know watches the
+/// destination with `watch`.
 ///
 /// ## Examples
 ///

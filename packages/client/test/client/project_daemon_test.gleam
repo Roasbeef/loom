@@ -586,6 +586,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
       movers: session_movers.idle(),
       deployment: deployment.alone("nonode@nohost"),
       ledger: None,
+      executors_reload: None,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(
         request,

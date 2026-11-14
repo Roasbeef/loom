@@ -121,6 +121,7 @@
 import broker/token
 import client/authority_key
 import client/distribution_bundle
+import client/executor_reload
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/vm_spec
 import core/json
@@ -2508,6 +2509,8 @@ fn untrusted_guest(run: Run) -> Nil {
         io.println_error(label <> " deployment.status (untrusted):\n" <> shown)
         assert string.contains(shown, name)
 
+        second_guest_after_reload(run, flags, name, running, control)
+
         remote_pair.converse_for(
           remote_pair.Opened(orchestrator: running, control:, session:),
           untrusted_prompt,
@@ -2529,6 +2532,97 @@ fn untrusted_guest(run: Run) -> Nil {
   let result = remote_daemons.result_text(requests, "untrusted-call")
   io.println_error(label <> " untrusted tool result:\n" <> result)
   assert_untrusted_turn(key, result)
+}
+
+// A second guest on the untrusted link, brought up while the daemon of the
+// first still runs (protocol-change/115). The step's configuration is not the
+// default file, so `up` cannot find this daemon and the test sends the command
+// itself: the reply must list the new guest `started` and the first
+// `unchanged`, and a session on the new guest must be resident with no second
+// daemon start and no restart. The guest is stopped and removed here, before
+// the first guest's daily verbs, so those still see one untrusted guest.
+fn second_guest_after_reload(
+  run: Run,
+  flags: List(String),
+  first: String,
+  running: remote_daemons.Running,
+  control: remote_daemons.Control,
+) -> Nil {
+  let second = first <> "b"
+  let second_flags =
+    list.map(flags, fn(flag) {
+      case flag == first {
+        True -> second
+        False -> flag
+      }
+    })
+  let output =
+    expect_ok(
+      vm(run, ["up", "--link", "untrusted", ..second_flags]),
+      "loom vm up --link untrusted (second guest)",
+    )
+  io.println_error(label <> " vm up (second untrusted guest):\n" <> output)
+
+  // The daemon has not read the new row until it is asked to.
+  let reply =
+    remote_daemons.command(control, 30, "executors.reload", json.Object([]))
+  io.println_error(label <> " executors.reload:\n" <> string.inspect(reply))
+  let assert Ok(decoded) =
+    executor_reload.decode(remote_daemons.field(reply, "body"))
+    as "the reload reply decodes"
+  let changes =
+    list.map(decoded.executors, fn(entry) {
+      #(entry.name, executor_reload.change_word(entry.change))
+    })
+  assert list.contains(changes, #(second, "started"))
+  assert list.contains(changes, #(first, "unchanged"))
+
+  // The daemon that served the first guest serves the second one now.
+  let #(session, settled) =
+    remote_daemons.create_and_settle(
+      control,
+      31,
+      "untrusted-guest-second",
+      second,
+      remote_pair.workspace_name,
+    )
+  assert remote_daemons.settled_state(settled) == "resident"
+
+  // The session is stopped while its guest still answers. A session whose
+  // executor has gone cannot close its scope, and the daemon would then wait
+  // on it when the step retires the daemon.
+  remote_daemons.stop_session(running, control, 32, session)
+
+  let _stopped = vm(run, ["down", "--name", second])
+  let _removed =
+    expect_ok(
+      vm(run, [
+        "rm",
+        "--name",
+        second,
+        "--yes",
+        "--config",
+        run.untrusted.config,
+      ]),
+      "loom vm rm (second guest)",
+    )
+
+  // The row is gone from the file, and a second reload stops its link, which
+  // would otherwise dial the removed guest for as long as the daemon lived.
+  let after =
+    remote_daemons.command(control, 33, "executors.reload", json.Object([]))
+  io.println_error(
+    label <> " executors.reload (after rm):\n" <> string.inspect(after),
+  )
+  let assert Ok(removed) =
+    executor_reload.decode(remote_daemons.field(after, "body"))
+    as "the second reload reply decodes"
+  let after_changes =
+    list.map(removed.executors, fn(entry) {
+      #(entry.name, executor_reload.change_word(entry.change))
+    })
+  assert list.contains(after_changes, #(second, "stopped"))
+  assert list.contains(after_changes, #(first, "unchanged"))
 }
 
 // The host port the guest's row names, as `link-port` records it.

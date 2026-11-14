@@ -23,6 +23,9 @@
 ////   owner port's subject, with the session, the port and the highest
 ////   callback id accepted. A binding retires when its session attaches again,
 ////   when its owner port dies, and on a successful close.
+////   A link holds none when it starts, so it answers a `Run` or a
+////   `StartExecution` for a session it holds none for with `NoPlane`
+////   (`answered_unbound`), and the surface attaches again.
 ////
 //// ## Re-sending
 ////
@@ -402,8 +405,9 @@ pub fn address(
 
 /// The name the link to `executor` registers in production. An executor's
 /// name is the operator's, from `[executors.<name>]`, checked against the
-/// executor grammar and read once at start, so the atoms made here are as few
-/// as the configured executors and none comes from a peer.
+/// executor grammar and read from the configuration file at start and at each
+/// `executors.reload`, which refuses a file past 1,024 distinct names, so the
+/// atoms made here are bounded and none comes from a peer.
 ///
 /// ## Examples
 ///
@@ -605,8 +609,8 @@ fn handle(
 }
 
 /// A `HostMessage` from a session: answered at once if the link does not carry
-/// it, otherwise made an outstanding request and sent, or held for the next
-/// connection.
+/// it or holds no binding for the session it starts work for, otherwise made
+/// an outstanding request and sent, or held for the next connection.
 fn hosted(
   phase: Phase,
   data: Data,
@@ -614,6 +618,77 @@ fn hosted(
 ) -> sm.Next(Phase, Data, Message) {
   let bind = fn(session, port) { binding_for(data, session, port) }
 
+  // A run or a start for a session with no binding never leaves this link.
+  case answered_unbound(data, message) {
+    Refused -> sm.keep(data)
+    Passed -> carried(phase, data, message, bind)
+  }
+}
+
+/// What `answered_unbound` decided for a message.
+type Unbound {
+  /// The link answered the message and it must not be sent.
+  Refused
+
+  /// The link holds what the message needs, or the message needs nothing.
+  Passed
+}
+
+/// Answers a `Run` or a `StartExecution` for a session the link holds no
+/// binding for with `NoPlane`, the refusal the executor's host gives a scope
+/// it holds no plane for, so the surface cannot tell the two apart and attaches
+/// again (protocol-change/115).
+///
+/// A link started in place of a dead one holds no bindings, but the executor
+/// behind it may still hold the session's plane, and would run the call and
+/// never answer `NoPlane`. Every callback the call then made would be refused
+/// for a binding this link never minted. Refusing the call here, before it
+/// reaches the executor, makes the surface's attach mint the binding, and the
+/// executor rebinds the plane it already has. The refusal proves the call
+/// never started, so the surface may send it again after attaching.
+///
+/// Every other message passes. An `Attach` mints the binding; a `Close`, a
+/// query, a state transfer and a `ListUnacked` are answered by the executor's
+/// ledger or scope record whatever the link holds; an `Ack` and a
+/// `StopExecution` have no reply to refuse with.
+fn answered_unbound(data: Data, message: HostMessage(RemoteCensus)) -> Unbound {
+  let reason =
+    "the link to the executor holds no binding for this session; "
+    <> "the next tool call restores it"
+
+  // Only the two messages that start work for a session are held to a binding.
+  case message {
+    protocol.Run(key:, reply:, ..) ->
+      case dict.has_key(data.sessions, key.session) {
+        True -> Passed
+        False -> {
+          process.send(reply, protocol.RunRefused(protocol.NoPlane(reason)))
+          Refused
+        }
+      }
+    protocol.StartExecution(key:, reply:, ..) ->
+      case dict.has_key(data.sessions, key.session) {
+        True -> Passed
+        False -> {
+          process.send(
+            reply,
+            protocol.ExecutionRefused(protocol.NoPlane(reason)),
+          )
+          Refused
+        }
+      }
+    _ -> Passed
+  }
+}
+
+/// A message the link carries: made an outstanding request and sent, or held
+/// for the next connection.
+fn carried(
+  phase: Phase,
+  data: Data,
+  message: HostMessage(RemoteCensus),
+  bind: fn(String, Subject(OwnerMessage)) -> BitArray,
+) -> sm.Next(Phase, Data, Message) {
   // An ack and a stop have no reply and are not kept: a lost one is found
   // again by the owner port's reconciler, so it goes out only on an open
   // connection.

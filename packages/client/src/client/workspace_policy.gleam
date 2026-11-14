@@ -1522,7 +1522,10 @@ pub fn protecting_rules(
 /// ```
 ///
 pub fn state_root_mask_candidates(state_root: String) -> List(String) {
-  list.append(established_masks(state_root), lazy_masks(state_root))
+  list.append(
+    established_masks(state_root),
+    lazy_masks(state_root, home_directory()),
+  )
 }
 
 /// The base policy with this node's own distribution secrets protected: the
@@ -1574,10 +1577,27 @@ pub fn protecting_state_root(
   base: policy.SandboxPolicy,
   state_root: String,
 ) -> policy.SandboxPolicy {
+  protecting_state_root_at(base, state_root, home_directory())
+}
+
+/// `protecting_state_root` for an explicit home directory rather than the
+/// process's `HOME`, so a test can build the policy a session builds without
+/// changing the environment other tests read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_state_root_at(base, "/home/o/.loom", Some("/home/o"))
+/// ```
+pub fn protecting_state_root_at(
+  base: policy.SandboxPolicy,
+  state_root: String,
+  home: Option(String),
+) -> policy.SandboxPolicy {
   protecting(
     base,
     always: established_masks(state_root),
-    where_maskable: lazy_masks(state_root),
+    where_maskable: lazy_masks(state_root, home),
   )
 }
 
@@ -1741,7 +1761,7 @@ fn established_masks(state_root: String) -> List(String) {
 // refuses such a mask and the refusal takes the whole session with it.
 
 /// Establishes lazy masks for the caller, keeping its validation and result policy at this boundary.
-fn lazy_masks(state_root: String) -> List(String) {
+fn lazy_masks(state_root: String, home: Option(String)) -> List(String) {
   list.flatten([
     // The catalogue runs in WAL mode, so a write to `-wal` is the same
     // forgery one filename to the right. Conditional for the reason
@@ -1780,7 +1800,7 @@ fn lazy_masks(state_root: String) -> List(String) {
       // guest root, whose node directory holds the executor's TLS key and
       // cookie. Either pair lets a process join this daemon's distribution
       // as a pinned node, which is Erlang RPC on the host daemon.
-      state_root <> "/vm",
+      state_vm_home(state_root),
 
       // The blobs an orchestrator placed on this executor over the untrusted
       // link (protocol-change/110), made when the listener starts. A plane
@@ -1788,7 +1808,7 @@ fn lazy_masks(state_root: String) -> List(String) {
       // a jailed tool that read the directory would hold every session's.
       state_root <> "/placed-blobs",
     ],
-    node_home_masks(),
+    node_home_masks(home),
   ])
 }
 
@@ -1798,12 +1818,62 @@ fn lazy_masks(state_root: String) -> List(String) {
 /// guests in `$HOME/.loom/vm` whatever `--state-dir` the daemon runs with.
 /// A jailed process that read the cookie and a key could connect to this
 /// daemon's distribution listener as a pinned peer.
-fn node_home_masks() -> List(String) {
+fn node_home_masks(home: Option(String)) -> List(String) {
   // A daemon with no `HOME` has neither file to mask.
-  case home_directory() {
-    Some(home) -> list.append(existing_cookie(home), [home <> "/.loom/vm"])
+  case home {
+    Some(home) -> list.append(existing_cookie(home), [home_vm_home(home)])
     None -> []
   }
+}
+
+/// The microVM home under the user's home, where `loom vm up` keeps a
+/// guest's distribution cookie and node keys.
+fn home_vm_home(home: String) -> String {
+  home <> "/.loom/vm"
+}
+
+/// The microVM directory under a state root, where `loom vm up` keeps each
+/// guest's bundles and the orchestrator's link key.
+fn state_vm_home(state_root: String) -> String {
+  state_root <> "/vm"
+}
+
+/// The microVM directories the daemon creates at its start, split by what a
+/// failure to create them means.
+pub type VmHomes {
+  VmHomes(
+    /// The state root's `vm` directory. The daemon owns the state root, so a
+    /// failure to create this one is a fault.
+    state: String,
+    /// The home's `.loom/vm`, or `None` for a daemon with no (or an empty)
+    /// `HOME`. A daemon whose home is read-only works without it.
+    home: Option(String),
+  )
+}
+
+/// The microVM directories the daemon creates at its start, so that every
+/// policy built afterwards masks them (protocol-change/115, "The link key and
+/// the masks"). A mask over a path that does not exist, under a read-only
+/// parent, is not built, and a session keeps its policy for its life, so a
+/// directory created after the first session began would be readable by it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.vm_home_directories(Some("/home/o"), "/state")
+/// // == VmHomes(state: "/state/vm", home: Some("/home/o/.loom/vm"))
+/// ```
+pub fn vm_home_directories(
+  home: Option(String),
+  state_root: String,
+) -> VmHomes {
+  // A missing or empty home has no directory to create.
+  let from_home = case home {
+    Some("") | None -> None
+    Some(home) -> Some(home_vm_home(home))
+  }
+
+  VmHomes(state: state_vm_home(state_root), home: from_home)
 }
 
 /// The home's cookie, only when it is already a file. A missing path under a
@@ -1854,7 +1924,8 @@ fn sqlite_side_files(path: String) -> List(String) {
 // The residual is stated rather than hidden: an entry that has not been
 // created yet, under a read-only parent, is unmasked until it appears,
 // and a session that began before it appeared keeps the policy it
-// booted with.
+// booted with. The microVM homes are the case the daemon's start removes:
+// it creates them before it builds any jail (`vm_home_directories`).
 
 /// Establishes protecting for the caller, keeping its validation and result policy at this boundary.
 fn protecting(
@@ -2057,7 +2128,7 @@ pub fn build_plane_policy(
     always: [],
     where_maskable: list.flatten([
       established_masks(state_root),
-      lazy_masks(state_root),
+      lazy_masks(state_root, home_directory()),
     ]),
   )
 }

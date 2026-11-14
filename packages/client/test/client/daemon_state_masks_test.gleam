@@ -39,13 +39,14 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap as native
 import simplifile
 import storage/catalogue
 import storage/domain
 import support/enforcement
+import telemetry/log
 import weft/poll
 
 // --- resolution -------------------------------------------------------------
@@ -463,4 +464,169 @@ fn repository_root() -> String {
   let assert Ok(root) = native.canonical_directory(here <> "/../..")
     as "the checkout root is two levels above the package"
   root
+}
+
+// --- the microVM home -------------------------------------------------------
+
+pub fn the_vm_directories_are_named_from_home_and_state_root_test() {
+  assert workspace_policy.vm_home_directories(Some("/home/o"), "/state")
+    == workspace_policy.VmHomes(
+      state: "/state/vm",
+      home: Some("/home/o/.loom/vm"),
+    )
+
+  // A daemon with no `HOME` names only the state root's directory, and an
+  // empty `HOME` is no home rather than a directory at the filesystem root.
+  assert workspace_policy.vm_home_directories(None, "/state")
+    == workspace_policy.VmHomes(state: "/state/vm", home: None)
+  assert workspace_policy.vm_home_directories(Some(""), "/state")
+    == workspace_policy.VmHomes(state: "/state/vm", home: None)
+}
+
+pub fn the_start_step_creates_missing_directories_and_spares_existing_ones_test() {
+  let home = fixture_workspace("vm-create-home")
+  let root = fixture_workspace("vm-create-root")
+
+  // The home's directory already exists with a mode the owner chose.
+  let existing = home <> "/.loom/vm"
+  let assert Ok(Nil) = simplifile.create_directory_all(existing)
+    as "the owner's directory exists"
+  let assert Ok(Nil) = simplifile.set_permissions_octal(existing, 0o750)
+    as "the owner's mode is not 0700"
+
+  let assert Ok(directories) =
+    entrypoint.ensure_vm_homes(Some(home), root, log.discard())
+    as "the start step succeeds"
+  let assert Ok(state_directory) = native.canonical_path(root <> "/vm")
+    as "the state root's directory resolves"
+  let assert Ok(home_directory) = native.canonical_path(existing)
+    as "the home's directory resolves"
+  assert directories == [state_directory, home_directory]
+    as "both directories exist, so both are answered as canonical paths"
+  let assert Ok(kept) = simplifile.file_info(existing)
+    as "the existing directory is readable"
+  assert int.bitwise_and(kept.mode, 0o777) == 0o750
+    as "an existing directory is left exactly as it was"
+  let assert Ok(made) = simplifile.file_info(root <> "/vm")
+    as "the state root's directory was created"
+  assert int.bitwise_and(made.mode, 0o777) == 0o700
+    as "a created directory is private"
+}
+
+pub fn a_file_in_the_way_of_the_state_roots_directory_fails_the_start_test() {
+  let root = fixture_workspace("vm-refuse-state")
+  let assert Ok(Nil) = simplifile.write(root <> "/vm", "a file in the way")
+    as "a file occupies the path"
+  let assert Error(reason) =
+    entrypoint.ensure_vm_homes(None, root, log.discard())
+    as "a start failure, not a warning"
+  assert string.contains(reason, root <> "/vm")
+}
+
+pub fn a_file_in_the_way_of_the_homes_directory_does_not_fail_the_start_test() {
+  let home = fixture_workspace("vm-refuse-home")
+  let root = fixture_workspace("vm-refuse-home-root")
+  let assert Ok(Nil) = simplifile.write(home <> "/.loom", "a file in the way")
+    as "a file occupies the home's .loom"
+  let assert Ok(answered) =
+    entrypoint.ensure_vm_homes(Some(home), root, log.discard())
+    as "the start step succeeds"
+  let assert Ok(state_directory) = native.canonical_path(root <> "/vm")
+    as "the state root's directory resolves"
+  assert answered == [state_directory]
+    as "only the state root's directory is answered, since the home's is absent"
+  assert simplifile.is_directory(home <> "/.loom/vm") != Ok(True)
+    as "nothing was created for the home"
+  assert simplifile.is_directory(root <> "/vm") == Ok(True)
+    as "the state root's directory was still created"
+}
+
+// Whether the daemon's start step ran before the policy was built.
+type StartStep {
+  StartStepRan
+  StartStepSkipped
+}
+
+pub fn a_jail_built_after_the_start_step_cannot_read_the_vm_home_test() {
+  case vm_home_probe() {
+    enforcement.EnforcementAbsent -> Nil
+    enforcement.EnforcementLive -> {
+      let #(code, text) = read_vm_secret(StartStepRan)
+      assert code != 0 as "the secret is unreadable from the jail"
+      assert !string.contains(text, vm_secret)
+        as "no byte of the secret reaches the jail"
+    }
+  }
+}
+
+pub fn without_the_start_step_a_later_vm_home_is_readable_test() {
+  // The control: the same policy, built while the directory is missing, does
+  // not mask it, so the test above can tell the start step from its absence.
+  case vm_home_probe() {
+    enforcement.EnforcementAbsent -> Nil
+    enforcement.EnforcementLive -> {
+      let #(code, text) = read_vm_secret(StartStepSkipped)
+      assert code == 0 as "an unmasked directory is readable"
+      assert string.contains(text, vm_secret) as "the secret comes back"
+    }
+  }
+}
+
+const vm_secret = "fixture-vm-link-key"
+
+fn vm_home_probe() -> enforcement.Enforcement {
+  enforcement.probe(
+    filepath.join(repository_root(), "bin/loom"),
+    "microVM home masking",
+  )
+}
+
+// Builds a policy the way a session does, in a temporary home and state root,
+// then creates a secret under the home's `.loom/vm` and reads it from a jail.
+fn read_vm_secret(start: StartStep) -> #(Int, String) {
+  let home = fixture_workspace("vm-home")
+  let root = fake_state_root("vm-probe")
+  let workspace = fixture_workspace("vm-workspace")
+  case start {
+    StartStepRan -> {
+      let assert Ok(_) =
+        entrypoint.ensure_vm_homes(Some(home), root, log.discard())
+        as "the start step runs"
+      Nil
+    }
+    StartStepSkipped -> Nil
+  }
+  let base =
+    workspace_policy.protecting_state_root_at(
+      workspace_policy.base_policy(workspace),
+      root,
+      Some(home),
+    )
+
+  // `loom vm up` makes the directory and its files after the session began.
+  let assert Ok(Nil) = simplifile.create_directory_all(home <> "/.loom/vm")
+    as "the guest's directory appears"
+  let secret = home <> "/.loom/vm/link.key"
+  let assert Ok(Nil) = simplifile.write(secret, vm_secret)
+    as "the key is written"
+
+  let assert Ok(helper_path) =
+    filepath.join(repository_root(), "bin/loom-exec")
+    |> native.find_executable
+    as "the jailed reading needs the built loom-exec"
+  let assert Ok(helper) =
+    exec.spawn_helper(exec.SpawnConfig(
+      helper_path: helper_path,
+      shell_path: workspace_policy.shell_path,
+      base_policy: base,
+      helper_args: exec.unenforced_helper_args(exec.host_platform()),
+      tmp_dir: root <> "/.tmp",
+      handshake_timeout_ms: 5000,
+      cancel_grace_ms: 3000,
+      heartbeat_interval_ms: 0,
+    ))
+    as "the helper starts"
+  let reading = jailed(helper, base, workspace, "cat " <> secret)
+  let assert Ok(Nil) = exec.close(helper, waiting: 5000) as "the helper retires"
+  reading
 }
