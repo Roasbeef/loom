@@ -1354,7 +1354,11 @@ page keys and nonces, and the relay into the session's gateway.
   and a `Nil` from its one deadline timer, armed for the lane's
   `session_channel.next_due` (mapped to `Ticked`). Each source is one
   `server_component.select` from `init`, so its subjects belong to the
-  component's process. Every message reaches the shared step as
+  component's process. Lustre discards a message that reaches a selected
+  subject before the runtime has taken the selector, which it installs by a
+  message to itself after the effect returns. A transport may answer the open
+  from inside `connect` (the relayed page's feed does), so `open` takes an
+  answer that is already in the mailbox and dispatches it (`delivery_test`). Every message reaches the shared step as
   `step.update`: `Arrived` is `msg.Arrived` then a tick, `Ticked` and
   `Opened` are a tick, and a command is `Acted`. The step folds each lane
   update into `shared` (captures, history pages, usage and the cache

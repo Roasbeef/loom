@@ -1577,23 +1577,44 @@ pub fn init(start: Start(socket)) -> #(Model(socket), Effect(Msg(socket))) {
 /// the process that owns them. `connect` returns at once; the answer is a
 /// message, so a slow gateway attach cannot hold the component's start.
 ///
+/// A transport may also answer from inside `connect`: the relayed page's feed
+/// has already attached by then, and its refusals need no call at all. Lustre
+/// installs the selector returned here by a message the runtime sends itself
+/// after this function returns, and until it takes that message it discards
+/// anything sent to these subjects. An answer sent from inside `connect` is
+/// in the mailbox ahead of that message, so it would be discarded and the page
+/// would stay connecting for good. It is taken here instead and dispatched,
+/// which the runtime always reads. An answer that comes later, from another
+/// process, is read by the selector as before.
+///
 /// A frame's mapping drains the inbox behind it, so a burst that is already
 /// waiting becomes one message and one render. Neither mapping reads the
 /// clock: `update` does, once, when it takes the message.
 fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
-  use _dispatch, opened <- server_component.select
+  use dispatch, opened <- server_component.select
   let inbox = process.new_subject()
   transport.connect(inbox, opened)
+
+  // This process sent any answer that is already here, so it is in the
+  // mailbox now and a wait of zero finds it.
+  case process.receive(opened, 0) {
+    Ok(outcome) -> dispatch(answered(outcome))
+    Error(Nil) -> Nil
+  }
+
   process.new_selector()
-  |> process.select_map(opened, fn(outcome) {
-    case outcome {
-      Ok(socket) -> Opened(socket)
-      Error(reason) -> Refused(reason)
-    }
-  })
+  |> process.select_map(opened, answered)
   |> process.select_map(inbox, fn(first) {
     Arrived([first, ..waiting(inbox, arrival_batch - 1, [])])
   })
+}
+
+/// The message for the transport's answer to the open.
+fn answered(outcome: Result(socket, String)) -> Msg(socket) {
+  case outcome {
+    Ok(socket) -> Opened(socket)
+    Error(reason) -> Refused(reason)
+  }
 }
 
 /// Up to `room` messages already in the inbox, oldest first, without waiting

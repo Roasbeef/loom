@@ -51,18 +51,17 @@ type Page {
   )
 }
 
-// Starts a real server component whose transport hands the test the inbox
-// it reads and the subject the open is answered on, and whose client is a
-// callback that counts every patch the runtime broadcasts. The test answers
-// the open on a wire it owns. It waits first, as a relay's attach does,
-// because Lustre installs the selector for that answer only after `connect`
-// returns and discards a message that arrives before it.
-fn started() -> Page {
-  let handed = process.new_subject()
-  let wire = process.new_subject()
+// What a component for session A starts with, over a transport that writes
+// its frames to the wire it was opened with and connects as `connect` says.
+fn start_with(
+  connect: fn(
+    Subject(connection_event.Message),
+    Subject(Result(Subject(String), String)),
+  ) -> Nil,
+) -> component.Start(Subject(String)) {
   let transport =
     component.Transport(
-      connect: fn(inbox, opened) { process.send(handed, #(inbox, opened)) },
+      connect:,
       transmit: fn(wire, frame) { process.send(wire, frame) },
       shut: fn(_) { Nil },
       now:,
@@ -79,18 +78,45 @@ fn started() -> Page {
       logins: None,
       manage: None,
     )
-  let start =
-    component.Start(
-      completion_models: [],
-      completion_profiles: [],
-      session_id: "A",
-      label: None,
-      workspace_digest: "",
-      expected: snapshot.Expected("A", "epoch", "incarnation"),
-      standing: component.unplaced,
-      transport:,
-    )
-  let assert Ok(runtime) = lustre.start_server_component(component.app(), start)
+  component.Start(
+    completion_models: [],
+    completion_profiles: [],
+    session_id: "A",
+    label: None,
+    workspace_digest: "",
+    expected: snapshot.Expected("A", "epoch", "incarnation"),
+    standing: component.unplaced,
+    transport:,
+  )
+}
+
+// A transport may answer the open from inside `connect`, as the relayed
+// page's feed does once its attach has already happened. Lustre installs a
+// selector only after the effect that made it has returned, and discards a
+// message that reaches the subject before then, so the component takes an
+// answer that is already there before it returns its selector. The lane's
+// first frame is written only when the component took the answer.
+pub fn an_open_answered_inside_connect_is_heard_test() {
+  let wire = process.new_subject()
+  let connect = fn(_inbox, opened) { process.send(opened, Ok(wire)) }
+  let assert Ok(_runtime) =
+    lustre.start_server_component(component.app(), start_with(connect))
+
+  let assert Ok(_first_frame) = process.receive(wire, 1000)
+    as "the lane opened and wrote its first frame"
+}
+
+// Starts a real server component whose transport hands the test the inbox
+// it reads and the subject the open is answered on, and whose client is a
+// callback that counts every patch the runtime broadcasts. The test answers
+// the open on a wire it owns, after the client is registered, as a relay's
+// attach answers some time after `connect` returned.
+fn started() -> Page {
+  let handed = process.new_subject()
+  let wire = process.new_subject()
+  let connect = fn(inbox, opened) { process.send(handed, #(inbox, opened)) }
+  let assert Ok(runtime) =
+    lustre.start_server_component(component.app(), start_with(connect))
   let assert Ok(#(inbox, opened)) = process.receive(handed, 1000)
   let renders = process.new_subject()
   lustre.send(
