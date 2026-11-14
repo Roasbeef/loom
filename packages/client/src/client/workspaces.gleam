@@ -34,14 +34,16 @@
 ////
 //// `from_document` → `row` → `mode_of` → `known_keys`
 ////
-//// 1. `from_document` reads the table and requires the distribution table,
-////    because an executor with no pinned peers has nobody to serve.
+//// 1. `from_document` reads the table and requires the distribution table or
+////    an `[executor_listener]` table, because an executor that no pinned peer
+////    and no admitted orchestrator can reach has nobody to serve.
 //// 2. `row` validates one entry's name and keys.
 //// 3. `mode_of` reads the mode and its base together, so a base cannot be
 ////    accepted without the mode that uses it.
 //// 4. `find` resolves a name an orchestrator sent to its configured row.
 
 import client/distribution
+import client/untrusted_config
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{None, Some}
@@ -134,8 +136,9 @@ pub fn parse(text: String) -> Result(List(Workspace), String) {
 /// with `worktree` only, `base`. A name outside the
 /// registered-workspace grammar, a key the table does not know and a value of
 /// the wrong type are each refused with the key's full name, so the operator
-/// can find the line. A document with workspaces and no `[distribution]` table
-/// is refused, because nobody could reach them.
+/// can find the line. A document with workspaces and neither a `[distribution]`
+/// table nor an `[executor_listener]` table is refused, because nobody could
+/// reach them.
 ///
 /// ## Examples
 ///
@@ -155,14 +158,20 @@ pub fn from_document(
         |> list.try_map(fn(entry) { row(entry.0, entry.1) }),
       )
 
-      // The table is only useful to a node that peers can reach.
+      // The table is only useful to a node that something can reach: pinned
+      // distribution peers, or the orchestrators an untrusted listener admits.
       use found <- result.try(distribution.from_document(document))
+      use link <- result.try(untrusted_config.from_document(document))
 
-      // Decide how to handle found {.
-      case found {
-        Some(_settings) -> Ok(configured)
-        None ->
-          Error("workspaces needs a [distribution] table naming its peers")
+      // Either way of being reached serves the table, and a daemon with
+      // neither has nobody to serve.
+      case found, link.listener {
+        Some(_settings), _ | None, Some(_) -> Ok(configured)
+        None, None ->
+          Error(
+            "workspaces needs a [distribution] table naming its peers, or an "
+            <> "[executor_listener] table naming the orchestrators it admits",
+          )
       }
     }
     Ok(_) -> Error("workspaces must be a table of [workspaces.<name>] tables")
