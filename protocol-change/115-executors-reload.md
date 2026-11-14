@@ -204,7 +204,10 @@ Two rules remove it:
 2. `executors.reload` applies an `[executor_link]` table only when it equals
    the table the daemon started with, or when the daemon started with none and
    each of the table's files resolves to a path under one of those two
-   directories. One change to a started table is allowed: a file that drops
+   directories, as they stood when the daemon started. A directory the daemon
+   could not create then is not among them, even if it appears later, because
+   the jails built in between do not mask it. The link is given the resolved
+   paths that were checked, not the paths as written. One change to a started table is allowed: a file that drops
    the table and holds no untrusted row, which is what `loom vm rm` of the last
    untrusted guest writes. Nothing is left to dial with the table, so the
    reload stops the links, and the daemon keeps the table it started with. A
@@ -298,5 +301,6 @@ before it was taken.
 | The ledger roster must go through the ledger's derivation, and a written name must not shadow an enrolled one | Taken. |
 | An old daemon's answer is `bad_request`, not a distinct code | Taken. |
 | An idle session's callbacks are refused until its next call after a link is replaced | Accepted as a cost, stated above. |
+| (Second review, of the built branch.) The checked path was not the path the link was given, and the allowed directories were computed at reload time | Taken: the link dials with the resolved paths, and the allowed directories are fixed at start. |
 | A started table dropped by `loom vm rm` of the last guest was refused, so the removed guest's link kept running (`executor_reload.link_rule`) | Taken: a file with neither the table nor any untrusted row is allowed, and `link_rule` takes the presence of untrusted rows as a typed argument. A table dropped under a live row, or changed, stays refused. |
 | The caller waited four seconds for a turn that could take the file read, a two second ledger wait, three seconds of reconcile and a link start past its deadline, so a reload could be applied and answered `unavailable`, and `rows` answered an empty roster for the whole turn (`untrusted_links`) | Taken: one deadline of three seconds from before the read, the ledger wait cut to one second, no link start or kill unless the start's own timeout fits in what is left, and both waits set a second above the bound. The registry cannot answer a read during a turn, so the read waits for it instead. |
