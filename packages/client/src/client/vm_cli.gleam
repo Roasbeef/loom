@@ -233,7 +233,7 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             is recorded and kept for the guest's life; `distribution` is the
             default. The link lacks project hooks, goal checks and the Changes
             tab for now: docs/architecture/microvm.md lists them.
-  ensure   Make the guest of one workspace ready, which is what `loom --vm`
+  ensure    Make the guest of one workspace ready, which is what `loom --vm`
             runs. The guest is named after DIR (default: the current
             directory): its last segment and six digits of its path, so every
             workspace has a guest of its own. A guest that already serves is

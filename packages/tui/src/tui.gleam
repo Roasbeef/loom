@@ -3708,8 +3708,9 @@ fn vm_usage() -> String {
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
                   [--allow HOST]... [--provision SCRIPT]
+                  [--link distribution|untrusted]
        loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
-                      [--config PATH]
+                      [--config PATH] [--link distribution|untrusted]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -3771,6 +3772,17 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             in loom-vm.log. A failing script fails up, and the next up runs it
             again. A resume skips a script that succeeded, and refuses a new
             one: add --fresh. Use --allow for the hosts it needs.
+            --link untrusted reaches the guest over a pinned TLS link that is
+            not Erlang distribution, so the guest holds no cookie and its
+            takeover reaches no code in your daemon. It mints a private link
+            authority under the vm home, writes [executor_link] and
+            [executors.NAME] into loom.toml beside whatever is there (it never
+            replaces a table that differs, and leaves [distribution] as it is),
+            and needs no deployment, ledger or running daemon. A daemon that is
+            already running reads the new row only when it restarts. The link
+            is recorded and kept for the guest's life; `distribution` is the
+            default. The link lacks project hooks, goal checks and the Changes
+            tab for now: docs/architecture/microvm.md lists them.
   ensure    Make the guest of one workspace ready, which is what `loom --vm`
             runs. The guest is named after DIR (default: the current
             directory): its last segment and six digits of its path, so every
@@ -3805,7 +3817,10 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             other [executors.*] table remains; otherwise it leaves them and
             says so. A guest that joined a ledger deployment is revoked with
             the key, when it is on this machine, and otherwise rm prints the
-            revoke to run. A guest that others joined is removed last. Every other line of loom.toml is kept. A running guest is
+            revoke to run. A guest that others joined is removed last. A guest
+            on the untrusted link has nothing to revoke: rm removes its
+            [executors.NAME] table, and [executor_link] with the vm home's
+            link credentials when no other untrusted guest remains. Every other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
             the workspaces and the local branches that origin lacks.
