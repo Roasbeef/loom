@@ -428,7 +428,7 @@ extended by the M3 runtime wave.
 
 - **Actor messages**
   - `writer.Message` (all calls except `Subscribe`/`RenewTick`):
-    `Commit(tx, reply)`, `GetEntries`, `GetRegister`, `ListRegisters`,
+    `Commit(tx, reply)`, `GetEntries`, `GetRegister`, `GetRegisters`, `ListRegisters`,
     `ScanBranch`, `ScanUsage`, `Stats`, `Subscribe(subscriber)`,
     `RenewTick`. Senders: `runtime/api`, `runtime/strand_runtime`, and the
     conformance harnesses — except `RenewTick`, which nobody sends. It is
@@ -1060,6 +1060,30 @@ retry waits do not establish a live-effect frontier. `poll_frontier_test` holds
 requests open to prove skipped preparation loads and quiet invalidation before
 provider completion. The existing doorbell, deferred, retry and recovery tests
 remain part of the runtime gate.
+
+## Referenced pending-entry reads
+
+Run admission reads only the IDs captured in `StrandState.pending_next_run`.
+The driver reads the run inbox's steer, follow-up and write IDs, together with
+the `CallOutcomeReady` result IDs staged by a tool batch. Those staged results
+are essential: the planner places them in source order after concurrent tool
+effects finish. Structural requests do not dereference pending payloads.
+
+`writer.get_registers_batched` deduplicates the referenced keys and sends consecutive
+batches of at most 128 through `GetRegisters`. Empty captured sets send no request.
+Each batch uses protocol 113's `storage.get_registers`: one exact-key snapshot,
+with no pending namespace scan or point-read fallback. Payloads retain their
+existing typed decode. An absent referenced payload remains absent so the machine
+keeps its corruption diagnosis; unrelated queued payloads are not decoded.
+
+There is no pending-payload cache or snapshot shared across batches. Payloads are
+immutable while live, and placement transactions still expect the captured
+operation or strand state. Bulk payload reads do not make those separate
+control-register reads atomic.
+
+The pending-entry benchmark and correctness record is at
+`docs/review/pending-entry-performance.md`; the register-read and group-commit
+measurements are separate from a full runtime-turn benchmark.
 
 ## Structural preparation reads
 

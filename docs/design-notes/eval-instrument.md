@@ -630,7 +630,7 @@ the denominator.
 - `eval transcripts --state <dir> --since <date> --out <dir>` opens *copies*
   of session databases (`session.open_sqlite` takes a writer lease;
   `client_dev.gleam:15-17` carries the same warning), walks
-  `storage.scan_entries` (`storage.gleam:365`) and `storage.scan_usage` (`storage.gleam:402`), and
+  `storage.scan_entries` (`storage.gleam:391`) and `storage.scan_usage` (`storage.gleam:428`), and
   writes one JSONL per session with: user/assistant text through
   `trace.scrub_excerpt` (`evolution/trace.gleam:464`; thinking and images excluded
   as `trace.select` does, the trace section of `docs/architecture/evolution.md`), tool calls (name +

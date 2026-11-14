@@ -4,10 +4,8 @@
 //// than wedging).
 ////
 //// The last two tests bound that fault path from the other side. A
-//// corrupt register only gets to fault a driver if the driver's own
-//// operation reads it, and the pending queue is read by the run intent
-//// alone — so the same undecodable payload stops a run's load and
-//// leaves a navigation's load alone.
+//// corrupt pending payload only faults a run when that run references it;
+//// a structural operation does not consume pending payloads.
 
 import core/clock
 import core/ids
@@ -228,12 +226,9 @@ pub fn corrupt_queue_payload_leaves_a_navigation_driver_alone_test() {
 /// The run half of the same rule. A run does dereference queue ids —
 /// `place_pending` turns each one into an entry — so its driver load
 /// must still refuse an undecodable payload rather than place content it
-/// cannot read. Admission already refuses a *fresh* run outright
-/// (`runtime/api.read_pending_for`), so the only way to reach the drive
-/// loop's read with the payload already present is to corrupt the queue
-/// under a run that is open: the tree is killed mid-tool, the register is
-/// planted while nothing is driving, and the reboot's load faults the
-/// strand until the supervisor gives up. The same reboot without the
+/// cannot read. The tree is killed mid-tool after the run has queued a
+/// steer, then that referenced payload is corrupted while nothing drives.
+/// The reboot faults the strand until the supervisor gives up. The same reboot without the
 /// payload is `never_tool_interrupted_mid_flight_test`, which completes.
 pub fn corrupt_queue_payload_still_faults_a_run_driver_test() {
   let rec = recorder.start()
@@ -253,14 +248,14 @@ pub fn corrupt_queue_payload_still_faults_a_run_driver_test() {
   let assert Ok(_op) = api.prompt(rt, [fake.user("delete the migrations")])
     as "the prompt must be accepted"
 
-  // The tool is mid-flight, so the strand's open operation is a run and
-  // the reboot has a run-intent load to perform.
+  // The queued steer remains referenced while the tool is in flight.
   wait_for(fn() { recorder.read(rec, "tool:write:c1") >= 1 }, 5000)
+  let assert Ok(queued) = api.steer_quietly(rt, fake.user("queued"))
+    as "the run must own the queued payload"
   process.kill(rt.tree.supervisor)
   wait_for(fn() { !process.is_alive(rt.tree.supervisor) }, 1000)
 
-  // The same undecodable payload, planted directly in the store while
-  // no driver is running.
+  // Corrupt the referenced payload while no driver is running.
   let assert Ok(_) =
     storage.commit(
       sess.store,
@@ -268,7 +263,7 @@ pub fn corrupt_queue_payload_still_faults_a_run_driver_test() {
         writes: [
           SetRegister(
             ns: register.PendingEntry,
-            key: "corrupt-pending-item",
+            key: ids.entry_id_to_string(queued),
             value: register.value(json.String("not a pending entry")),
           ),
         ],

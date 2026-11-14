@@ -133,10 +133,11 @@ import machine/operation.{
   type NormalizedRetryPolicy, type Operation, type OperationState,
   type PendingEntry, type ReplayPolicy, type StructuralPreparation,
   type SummaryGeneration, Assistant, AwaitingDeferred, BranchSummaryPreparation,
-  CallEffectPending, Compacting, CompactionIntent, CompactionPreparation,
-  CompactionState, DeferredEffectPending, DeferredSuspended, Generating,
-  GenerationReady, NavigationIntent, NavigationState, OverflowReason, RunIntent,
-  RunState, SummarizedNavigation, ThresholdReason, Tools,
+  CallEffectPending, CallOutcomeReady, Compacting, CompactionIntent,
+  CompactionPreparation, CompactionState, DeferredEffectPending,
+  DeferredSuspended, Generating, GenerationReady, NavigationIntent,
+  NavigationState, OverflowReason, RunIntent, RunState, SummarizedNavigation,
+  ThresholdReason, Tools,
 }
 import machine/planner.{type Observation, type StructuralVerdict, NoObservation}
 import machine/queue
@@ -3162,7 +3163,7 @@ fn load_operation(
       use Nil <- result.try(validate_meta(state, op, op_id))
       use batch_source <- result.try(load_batch_source(state, op_state))
       use deferred_source <- result.try(load_deferred_source(state, op_state))
-      use pending <- result.try(load_pending_for(state, op))
+      use pending <- result.try(load_pending_for(state, op, op_state))
       use tool_args_keys <- result.try(list_keys(
         state,
         register.OpToolArgs,
@@ -3277,47 +3278,56 @@ fn entry_message(
   }
 }
 
-// The drive loop's half of the rule `runtime/api.read_pending_for`
-// states for the admission path: the queue is read only by the intent
-// that consumes it. `pending` leaves here for `PlannerInputs.pending`,
-// and the planner's only two readers of that dict — `place_pending` and
-// `place_ready_run` — both sit under a `RunPass`, which `next_action`
-// enters for a `RunIntent` operation and nothing else. A compaction or
-// a navigation carries `pending_next_run` across untouched and never
-// dereferences an id, so for those the empty dict is the whole truth.
-//
-// The distinction earns a function for the same reason it did on the
-// admission side: `pending.entry` keys are entry ids with no strand in
-// them, and `load_pending` decodes every register in the session under
-// `try_map`. Reading the queue for a structural operation therefore let
-// one strand's undecodable payload fault every other strand's
-// compaction and navigation driver — repeatedly, until the supervisor
-// gave up on a tree whose real work was fine (issue #70).
+// Only a run dereferences pending payloads. Inbox IDs and staged tool
+// results are the complete set the planner can place; drained abort IDs
+// are deleted at termination without decoding their payloads.
 /// Loads pending entries relevant to operation intent.
 fn load_pending_for(
   state: State,
   op: Operation,
+  op_state: OperationState,
 ) -> Result(Dict(String, PendingEntry), String) {
-  case op.intent {
-    RunIntent(..) -> load_pending(state)
-    CompactionIntent(..) | NavigationIntent(..) -> Ok(dict.new())
-  }
-}
+  // Structural intents never dereference pending entries.
+  case op.intent, op_state {
+    RunIntent(..), RunState(inbox:, phase:, ..) -> {
+      // Only ready tool outcomes have a staged result to place.
+      let staged = case phase {
+        Tools(batch:) ->
+          list.filter_map(batch.calls, fn(call) {
+            case call {
+              CallOutcomeReady(result_entry:, ..) -> Ok(result_entry)
+              _ -> Error(Nil)
+            }
+          })
+        _ -> []
+      }
 
-/// Loads all pending entries from storage.
-fn load_pending(state: State) -> Result(Dict(String, PendingEntry), String) {
-  use cells <- result.try(
-    writer.list_registers(state.writer, register.PendingEntry, None)
-    |> result.map_error(describe_read_error),
-  )
-  cells
-  |> list.try_map(fn(pair) {
-    let #(key, storage.Register(value:, ..)) = pair
-    codec.decode_pending_entry(value.payload)
-    |> result.map(fn(pending) { #(key, pending) })
-    |> result.map_error(corruption.describe)
-  })
-  |> result.map(dict.from_list)
+      let pending_ids =
+        list.flatten([inbox.steer, inbox.follow_up, inbox.writes, staged])
+      let keys = list.map(pending_ids, ids.entry_id_to_string)
+      use cells <- result.try(
+        writer.get_registers_batched(state.writer, register.PendingEntry, keys)
+        |> result.map_error(describe_read_error),
+      )
+      list.try_fold(keys, dict.new(), fn(pending, key) {
+        let cell = dict.get(cells, key) |> option.from_result
+
+        // Missing IDs stay absent so the planner reports its usual corruption.
+        case cell {
+          None -> Ok(pending)
+          Some(storage.Register(value:, ..)) -> {
+            use payload <- result.try(
+              codec.decode_pending_entry(value.payload)
+              |> result.map_error(corruption.describe),
+            )
+            Ok(dict.insert(pending, key, payload))
+          }
+        }
+      })
+    }
+    RunIntent(..), _ | CompactionIntent(..), _ | NavigationIntent(..), _ ->
+      Ok(dict.new())
+  }
 }
 
 /// Loads structural preparation registers.
@@ -3721,6 +3731,8 @@ fn describe_storage_error(error: storage.StorageError) -> String {
     storage.CorruptRow(report:) -> corruption.describe(report)
     storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)
     storage.BackendFault(reason:) -> reason
+    storage.RegisterReadLimitExceeded(limit: _) ->
+      "register read limit exceeded"
     storage.HandleClosed -> "storage handle closed"
   }
 }

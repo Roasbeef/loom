@@ -112,6 +112,9 @@ these forks because they define the same modules.
   pass-through to the backend actor behind the `Storage` record.
   The additional snapshot capability reaches that same actor without
   creating a reader process or retaining a network-owned transaction.
+  Handle erasure also forwards protocol 113's `get_registers` operation through
+  the module-level storage wrapper, retaining the 128-key limit and its explicit
+  error. It adds no reader process, cache or cross-call snapshot.
 - **Commits**: initialization and repository paths run outside the writer where no
   supervision tree owns the store.
   - `ensure_strand`'s three-write seed (`SetRegister` on `strand.leaf`,

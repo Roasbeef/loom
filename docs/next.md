@@ -1,5 +1,9 @@
 # Current handoff
 
+The session hot-path section is re-baselined on November 13 against source
+`3e28c16f4` and its recorded local gates. Other sections retain their upstream
+baselines; this scoped update does not revalidate their hosted CI or live status.
+
 ## Platform-selected JSON decoding
 
 [The fixed compatibility and storage replay](review/platform-json-2026-11-09.md)
@@ -359,6 +363,42 @@ are in this worktree's `.notes/profiles/2026-10-30/`. No production process was
 upgraded, restarted, collected or retired during this round. The historical
 sections below retain their recorded scope; unrelated CI readiness was not
 revalidated for this observation-only work.
+
+## Session hot-path scoped bulk reads
+
+The previous edition left scoped multi-key design open after measuring the
+point-read regression. That is now settled by owner-approved
+[protocol 114](../protocol-change/114-bounded-register-reads.md). Both storage
+backends implement exact-key reads bounded to 128 raw occurrences, with an
+explicit refusal and one per-call snapshot. Runtime admission and the driver
+deduplicate and chunk their complete captured pending set; missing/corrupt
+referenced payloads still fail, and unrelated payloads are not decoded.
+
+The [November 13 record](review/bulk-register-reads-2026-11-13.md) pins source
+`3e28c16f4` on `perf/session-hot-paths`, rebased onto upstream `fb6024e4b`. Two
+full scan/point/bulk invocations exited 0 and retain all 1,008 samples. At 128
+owned SQLite keys and no unrelated backlog, scan/point/bulk medians were
+25/94/30 ms in the first run and 76/158/35 ms in the independent rerun, per
+50 loads. With 1,000 unrelated keys they were 267/98/34 and 249/107/37 ms.
+Bulk reads improve on points here but do not uniformly beat scans. Fixed order,
+identical payloads, warm-cache carryover and loaded-host variation remain limits.
+
+Primary storage/runtime/session/conformance gates passed, reporting
+383/232/73/116 passed entries. Real-helper and LSP conformance fixtures reported
+existing nested-jail prerequisite skips, not exercised signoff. The broader
+client gate is not green; its failed receipt and fixture triage are recorded
+in the dated follow-up. Three new semantic controls rejected over-limit admission,
+truncated SQL selection and skipped chunks. Independent source/test review
+found no actionable correctness, simplification or nearby-variant finding.
+
+Next, use the final PR's hosted full-gate and real-helper receipts as the
+acceptance evidence for lanes this jail cannot exercise. Do not infer installed
+savings or live rollout readiness from the local read benchmark. Actual runtime
+ownership/commit prevalence remains unmeasured in #1150/#1151/#1152; general
+typed control polling is unchanged, and production group commit remains
+deferred. No new cache, dependency, FFI, durability policy or daemon update
+is part of this series. The [November 4 record](review/session-hotpaths-2026-11-04.md)
+remains historical evidence for the original point-read and commit evaluations.
 
 ## Catalogue source-read performance
 

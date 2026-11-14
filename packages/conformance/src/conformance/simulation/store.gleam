@@ -91,6 +91,10 @@ pub fn instrument(
         use <- guarded(ctl, schedule, read_faults)
         storage.get_register(inner, ns, key)
       },
+      get_registers: fn(_handle, ns, keys) {
+        use <- guarded(ctl, schedule, read_faults)
+        storage.get_registers(inner, ns, keys)
+      },
       list_registers: fn(_handle, ns, prefix) {
         use <- guarded(ctl, schedule, read_faults)
         storage.list_registers(inner, ns, prefix)

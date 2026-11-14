@@ -258,12 +258,20 @@ checking that the refused commit left no row behind.
 
 Both backends implement one interface, a record of functions over an
 opaque handle, so callers are written once: `commit`, `get_entries`,
-`get_register`, `list_registers`, `scan_branch`, `scan_entries`,
+`get_register`, `get_registers`, `list_registers`, `scan_branch`, `scan_entries`,
 `scan_entry_heads`, `scan_usage`, `stats`, `close`. Commits fail with `CommitError`
 (`StaleExpectation`, `Corruption`, `Faulted`); reads fail with
 `StorageError` (`CorruptRow`, `UnknownEntry`, `BackendFault`,
-`HandleClosed`). Closing is idempotent, and a closed handle returns an
-error value rather than crashing the caller.
+`RegisterReadLimitExceeded`, `HandleClosed`). Closing is idempotent, and a valid
+read on a closed handle returns an error value rather than crashing the caller.
+
+[Protocol 114](../../protocol-change/114-bounded-register-reads.md) adds one exact-key
+bulk read: at most 128 raw keys in one namespace, with existing cells and their
+sequences returned as a dictionary. Oversized requests fail before backend
+admission, including after close. Missing keys are omitted, duplicates collapse,
+and only selected payloads are decoded. Each accepted call has one snapshot;
+separate calls do not share one. SQLite uses the existing namespace/key index
+and one parameterized statement, not a namespace scan followed by filtering.
 
 ### Memory
 
@@ -662,6 +670,7 @@ sync under the bumped generation.
 | `storage/catalogue.gleam` | Daemon registrations, defaults and membership-filtered metadata pages. |
 | `storage/access.gleam` | Stable principals, credential digests and session membership. |
 | `storage/internal/branch.gleam` | The shared stop/filter/cursor/limit pipeline. |
+| `storage/internal/register_query.gleam` | The bounded exact-key SQL statement and bindings shared by the actor and query-plan test. |
 | `session/repo.gleam` | Session-level administration: fork, the precise rewrite for both backends, and the erasure transforms. |
 | `conformance/storage_suite.gleam` | The suite that defines correctness. |
 
