@@ -143,8 +143,9 @@ which executors a new session may be placed on.
 
 A request in flight on an executor whose row was removed behaves as a request
 on an executor that died: it is retried until the operator aborts it. A send
-to a link's name while no process holds it must not raise in the sender; the
-surface's sends are checked for that as part of this change.
+to a link's name while no process holds it is dropped and does not raise in
+the sender, because the surface addresses the link as a name on a node; the
+surface then waits for a link to hold the name again.
 
 ### Who owns the rows
 
