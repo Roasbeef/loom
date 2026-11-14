@@ -1838,32 +1838,42 @@ fn state_vm_home(state_root: String) -> String {
   state_root <> "/vm"
 }
 
+/// The microVM directories the daemon creates at its start, split by what a
+/// failure to create them means.
+pub type VmHomes {
+  VmHomes(
+    /// The state root's `vm` directory. The daemon owns the state root, so a
+    /// failure to create this one is a fault.
+    state: String,
+    /// The home's `.loom/vm`, or `None` for a daemon with no (or an empty)
+    /// `HOME`. A daemon whose home is read-only works without it.
+    home: Option(String),
+  )
+}
+
 /// The microVM directories the daemon creates at its start, so that every
 /// policy built afterwards masks them (protocol-change/115, "The link key and
 /// the masks"). A mask over a path that does not exist, under a read-only
 /// parent, is not built, and a session keeps its policy for its life, so a
 /// directory created after the first session began would be readable by it.
 ///
-/// The state root's directory is always named. The home's is named only when
-/// the daemon has a non-empty `HOME`.
-///
 /// ## Examples
 ///
 /// ```gleam
 /// // workspace_policy.vm_home_directories(Some("/home/o"), "/state")
-/// // == ["/home/o/.loom/vm", "/state/vm"]
+/// // == VmHomes(state: "/state/vm", home: Some("/home/o/.loom/vm"))
 /// ```
 pub fn vm_home_directories(
   home: Option(String),
   state_root: String,
-) -> List(String) {
-  // A missing or empty home contributes no directory.
+) -> VmHomes {
+  // A missing or empty home has no directory to create.
   let from_home = case home {
-    Some("") | None -> []
-    Some(home) -> [home_vm_home(home)]
+    Some("") | None -> None
+    Some(home) -> Some(home_vm_home(home))
   }
 
-  list.append(from_home, [state_vm_home(state_root)])
+  VmHomes(state: state_vm_home(state_root), home: from_home)
 }
 
 /// The home's cookie, only when it is already a file. A missing path under a

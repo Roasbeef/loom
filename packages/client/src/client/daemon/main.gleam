@@ -2925,28 +2925,56 @@ fn crash_after_step() -> fn(session_move.Step) -> Nil {
   }
 }
 
-/// Creates the microVM home directories, mode 0700, when they are missing
+/// Creates the microVM directories, mode 0700, when they are missing
 /// (protocol-change/115, "The link key and the masks").
 ///
 /// A jail's mask over a path that does not exist, under a read-only parent, is
 /// not built, and a session keeps its policy for its life. Creating the
 /// directories before any policy exists makes every policy mask them, whenever
 /// the first guest is made. A directory that exists is left exactly as it is:
-/// no chmod, no chown. A failure is a start failure, because a daemon that
-/// cannot create the directory cannot promise the mask.
+/// no chmod, no chown.
+///
+/// The state root's directory is the daemon's own, so a failure to make it
+/// stops the start. The state root is made private first, so that creating
+/// `vm` never creates it with default permissions. The home's directory is
+/// only warned about: a daemon with a read-only or missing `HOME` works today,
+/// and `loom vm up` runs as the same user with the same `HOME`, so a guest's
+/// files cannot appear there later either.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(Nil) = main.ensure_vm_homes(Some("/home/o"), "/home/o/.loom")
+/// // let assert Ok(Nil) = main.ensure_vm_homes(Some("/home/o"), "/home/o/.loom", logger)
 /// ```
 @internal
 pub fn ensure_vm_homes(
   home: Option(String),
   state_root: String,
+  logger: Logger,
 ) -> Result(Nil, String) {
-  workspace_policy.vm_home_directories(home, state_root)
-  |> list.try_each(ensure_private_if_missing)
+  let directories = workspace_policy.vm_home_directories(home, state_root)
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(state_root)
+    |> result.map_error(fn(reason) {
+      "cannot make the state root " <> state_root <> " private: " <> reason
+    }),
+  )
+  use Nil <- result.try(ensure_private_if_missing(directories.state))
+
+  // The home's directory is not worth refusing to start for.
+  case option.map(directories.home, ensure_private_if_missing) {
+    Some(Error(reason)) -> {
+      log.warn(logger, "daemon.vm_home_unavailable", [
+        field.text(key: "reason", value: reason),
+        field.text(
+          key: "effect",
+          value: "a guest's files there would not be masked from sessions",
+        ),
+      ])
+      Ok(Nil)
+    }
+    Some(Ok(Nil)) | None -> Ok(Nil)
+  }
 }
 
 /// Makes one directory private when it is absent, and does nothing to one
@@ -3050,6 +3078,7 @@ pub fn prepare_startup(
   use Nil <- result.try(ensure_vm_homes(
     workspace_policy.home_directory(),
     config.state_root,
+    logger,
   ))
   let executors = config.executors
   let pools = config.pools

@@ -46,6 +46,7 @@ import simplifile
 import storage/catalogue
 import storage/domain
 import support/enforcement
+import telemetry/log
 import weft/poll
 
 // --- resolution -------------------------------------------------------------
@@ -469,13 +470,17 @@ fn repository_root() -> String {
 
 pub fn the_vm_directories_are_named_from_home_and_state_root_test() {
   assert workspace_policy.vm_home_directories(Some("/home/o"), "/state")
-    == ["/home/o/.loom/vm", "/state/vm"]
+    == workspace_policy.VmHomes(
+      state: "/state/vm",
+      home: Some("/home/o/.loom/vm"),
+    )
 
   // A daemon with no `HOME` names only the state root's directory, and an
   // empty `HOME` is no home rather than a directory at the filesystem root.
-  assert workspace_policy.vm_home_directories(None, "/state") == ["/state/vm"]
+  assert workspace_policy.vm_home_directories(None, "/state")
+    == workspace_policy.VmHomes(state: "/state/vm", home: None)
   assert workspace_policy.vm_home_directories(Some(""), "/state")
-    == ["/state/vm"]
+    == workspace_policy.VmHomes(state: "/state/vm", home: None)
 }
 
 pub fn the_start_step_creates_missing_directories_and_spares_existing_ones_test() {
@@ -489,7 +494,8 @@ pub fn the_start_step_creates_missing_directories_and_spares_existing_ones_test(
   let assert Ok(Nil) = simplifile.set_permissions_octal(existing, 0o750)
     as "the owner's mode is not 0700"
 
-  let assert Ok(Nil) = entrypoint.ensure_vm_homes(Some(home), root)
+  let assert Ok(Nil) =
+    entrypoint.ensure_vm_homes(Some(home), root, log.discard())
     as "the start step succeeds"
   let assert Ok(kept) = simplifile.file_info(existing)
     as "the existing directory is readable"
@@ -501,13 +507,26 @@ pub fn the_start_step_creates_missing_directories_and_spares_existing_ones_test(
     as "a created directory is private"
 }
 
-pub fn the_start_step_fails_naming_the_path_it_cannot_create_test() {
-  let root = fixture_workspace("vm-refuse")
+pub fn a_file_in_the_way_of_the_state_roots_directory_fails_the_start_test() {
+  let root = fixture_workspace("vm-refuse-state")
   let assert Ok(Nil) = simplifile.write(root <> "/vm", "a file in the way")
     as "a file occupies the path"
-  let assert Error(reason) = entrypoint.ensure_vm_homes(None, root)
+  let assert Error(reason) =
+    entrypoint.ensure_vm_homes(None, root, log.discard())
     as "a start failure, not a warning"
   assert string.contains(reason, root <> "/vm")
+}
+
+pub fn a_file_in_the_way_of_the_homes_directory_does_not_fail_the_start_test() {
+  let home = fixture_workspace("vm-refuse-home")
+  let root = fixture_workspace("vm-refuse-home-root")
+  let assert Ok(Nil) = simplifile.write(home <> "/.loom", "a file in the way")
+    as "a file occupies the home's .loom"
+  assert entrypoint.ensure_vm_homes(Some(home), root, log.discard()) == Ok(Nil)
+  assert simplifile.is_directory(home <> "/.loom/vm") != Ok(True)
+    as "nothing was created for the home"
+  assert simplifile.is_directory(root <> "/vm") == Ok(True)
+    as "the state root's directory was still created"
 }
 
 // Whether the daemon's start step ran before the policy was built.
@@ -558,7 +577,8 @@ fn read_vm_secret(start: StartStep) -> #(Int, String) {
   let workspace = fixture_workspace("vm-workspace")
   case start {
     StartStepRan -> {
-      let assert Ok(Nil) = entrypoint.ensure_vm_homes(Some(home), root)
+      let assert Ok(Nil) =
+        entrypoint.ensure_vm_homes(Some(home), root, log.discard())
         as "the start step runs"
       Nil
     }
