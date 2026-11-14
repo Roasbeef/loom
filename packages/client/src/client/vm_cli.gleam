@@ -2081,8 +2081,8 @@ type Row {
 
   // A resume: an earlier `up` wrote it and this one found it still in the
   // file, so this `up` changed nothing the daemon reads. A daemon that started
-  // since has read it; `ensure` therefore never asks such a daemon to restart,
-  // and `up` says so in its report.
+  // since has read it. `up` and `ensure` ask such a daemon to restart only
+  // when it says it runs without the table.
   Resumed
 
   // The ledger gives the daemon the row when the guest is a member, and the
@@ -3285,6 +3285,7 @@ fn stranded_in(
       guest.state_disk,
       prefixes,
     )
+    |> list.sort(int.compare)
   #(pids, vm_spec.certainty_of(runner))
 }
 
@@ -4039,12 +4040,25 @@ type Restart {
 /// answers the outcome. It runs after the guest booted, since a failed `up`
 /// must not have stopped a daemon.
 fn restart_after(enrolled: Enrolled) -> Restart {
+  // A derived row asks nothing of any daemon. A written or resumed row asks
+  // the daemon that reads its file, and only the default file's daemon can be
+  // found and acted on.
   case enrolled.row, enrolled.file {
     Derived, _ -> NoRestart
     Written, OtherConfigFile -> OtherDaemon(vm_spec.Installed)
     Resumed, OtherConfigFile -> OtherDaemon(vm_spec.AlreadyThere)
     Written, DefaultConfigFile -> Daemon(daemon_outcome(), vm_spec.Installed)
-    Resumed, DefaultConfigFile -> Daemon(daemon_outcome(), vm_spec.AlreadyThere)
+    Resumed, DefaultConfigFile -> {
+      // The daemon is asked before anything is done about it. One that never
+      // read the table an earlier `up` installed must still restart, and a
+      // daemon this `up` stopped could no longer say.
+      let table = case daemon_lacks_distribution() {
+        True -> vm_spec.Installed
+        False -> vm_spec.AlreadyThere
+      }
+
+      Daemon(daemon_outcome(), table)
+    }
   }
 }
 
