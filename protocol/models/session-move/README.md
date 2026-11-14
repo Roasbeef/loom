@@ -673,3 +673,15 @@ directory leave an open scope, as before, and a failed `git worktree add` leaves
 `Removed` tree row that keeps the scope from being rebound. A move that meets either
 is refused or stalled with the executor's words, and the operator releases or fixes
 the executor.
+
+One more case needs two faults. An attach for a name the executor does not serve
+records the scope as created, and its build dies before the workspace is checked (a
+lost build job, an executor crash, or an owner that does not answer the plan
+question). The retried attach finds the scope already open, so it is a rebound one,
+and neither side closes a rebound scope (`close_unserved` in `client/remote/host.gleam`,
+`close_if_opened` in `client/remote/workspace.gleam`). The scope stays open and bound
+to a name nobody serves: setting the name back gives the same refusal, and
+`loomd executor release` refuses an open scope. No recovery is built for it. The
+earlier rule closed this scope, and with it the scope of a live session whose
+workspace an executor's restart had dropped from its configuration, which is the
+worse loss.

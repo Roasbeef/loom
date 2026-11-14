@@ -608,7 +608,8 @@ fn mismatch_words(bound: String) -> String {
     <> "`, which an earlier move named, and the scope is open or holds a tree there, "
     <> "so it keeps that workspace. Set checkout_workspace back to `"
     <> bound
-    <> "`, move again so that the move ends and closes the scope, then correct the name and move",
+    <> "`, move again so that the move ends and closes the scope, then correct the name and move. "
+    <> "A scope that still holds a tree after that close keeps its workspace for as long as the tree exists",
   )
 }
 

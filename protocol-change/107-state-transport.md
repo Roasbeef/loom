@@ -1293,7 +1293,13 @@ edited.
   nothing frees the scope is corrected by this recovery.
 - *Still open.* A `WorktreeFailed` attach and a `NoPlane` for a root that is not a directory
   leave an open scope, and a failed `git worktree add` leaves a `Removed` tree row, which
-  counts as a tree record and keeps the scope from being rebound.
+  counts as a tree record and keeps the scope from being rebound. An attach for an unserved
+  name whose build dies before the workspace is checked, followed by a retry, leaves an open
+  scope bound to that name: the retry is a rebound attach and neither side closes a rebound
+  scope. It needs both faults, and no recovery is built for it.
+- *What the refusal's recovery does not reach.* A scope that still holds a tree after the
+  move ends keeps its workspace for as long as the tree exists, so the corrected name is
+  taken only by a scope that closed with no tree. The refusal says so.
 
 **The apply record, as shipped.** The record of the last apply decides whether an apply is a
 resend. `state_apply.into_existing` answers a request as applied when
