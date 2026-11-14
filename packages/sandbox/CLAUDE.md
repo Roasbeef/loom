@@ -297,6 +297,19 @@ only Go module.
   table and environment, so no network fd can be smuggled in. AF_UNIX stays
   usable and is confined by the filesystem layers; bwrap's network unshare
   is the independent second layer.
+- **Network `loopback` is the same namespace with a second program.** It
+  adds `socket(AF_INET, SOCK_STREAM, 0|IPPROTO_TCP)` (type masked with
+  `0xf`) and refuses `setsockopt(IPPROTO_TCP, TCP_ULP)`; every other
+  socket stays `EPERM`. The filter is sound only inside bwrap's fresh
+  network namespace, so `jail.Start` refuses the mode on Darwin, on the
+  degraded no-bwrap path and anywhere else, never narrowing it. Nothing
+  in Loom selects it. Its bwrap argv alone uses `--unshare-user`,
+  `--disable-userns` and `--cap-drop ALL`, and `Start` refuses the mode
+  unless a startup probe of bwrap with those flags ran
+  (`Features.LoopbackReady`) and seccomp filtering is available
+  (`Features.Seccomp`), since stage 2 skips a missing filter. The off program's bytes are pinned by a test. Both
+  programs also fail the io_uring system calls (425 to 427) with `EPERM`.
+  [protocol-change/115](../../protocol-change/115-network-loopback-mode.md).
 - **Landlock has no deny rules, and the layering contract is: strictly
   weaker than the mounts, never independent of them.** Landlock's grants
   union — RWDirs, RWFiles, and RODirs only ever add access, and nothing

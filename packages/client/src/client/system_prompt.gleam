@@ -307,7 +307,9 @@ pub fn enforcement(
 
 /// The network posture, mirrored from the composed base policy. The
 /// proxy address is dropped on purpose — it changes nothing an agent
-/// does, and the pack has nowhere to put it.
+/// does, and the pack has nowhere to put it. Loopback is posted as
+/// blocked: it reaches no external network, and nothing in Loom selects
+/// it, so the pack has no wording for it.
 ///
 /// ## Examples
 ///
@@ -317,7 +319,7 @@ pub fn enforcement(
 ///
 pub fn posture(network: policy.NetworkPolicy) -> pack.NetworkPosture {
   case network {
-    policy.NetworkOff -> pack.NetworkBlocked
+    policy.NetworkOff | policy.NetworkLoopback -> pack.NetworkBlocked
     policy.NetworkProxy(allow:, proxy: _) -> pack.NetworkProxied(allow:)
     policy.NetworkFull -> pack.NetworkOpen
   }

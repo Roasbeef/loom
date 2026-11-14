@@ -141,7 +141,11 @@ func RunStage2(cfg Stage2Config) error {
 		}
 		if BlocksDirectNetwork(pol.Network.Mode) {
 			if seccompf.Supported() {
-				if err := seccompf.Install(); err != nil {
+				install := seccompf.Install
+				if pol.Network.Mode == policy.NetworkLoopback {
+					install = seccompf.InstallLoopback
+				}
+				if err := install(); err != nil {
 					return fmt.Errorf("stage2: seccomp: %w", err)
 				}
 				rep.Applied = append(rep.Applied, "seccomp-net")

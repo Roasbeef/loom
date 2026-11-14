@@ -57,13 +57,16 @@ const MaskSource = "/dev/null"
 
 // BlocksDirectNetwork reports whether a network mode requires the jail
 // to deny direct socket access. NetworkOff blocks by definition.
+// NetworkLoopback blocks too: it reaches only the jail's own loopback
+// inside the fresh namespace, never a host or external address.
 // NetworkProxy blocks too: the egress sidecar that would carry
 // allowlisted traffic is not implemented in phase 1, so proxy mode
 // fails closed to no direct network rather than silently widening to
 // unrestricted egress — the one failure mode the design forbids. Only
 // NetworkFull leaves the host network reachable.
 func BlocksDirectNetwork(m policy.NetworkMode) bool {
-	return m == policy.NetworkOff || m == policy.NetworkProxy
+	return m == policy.NetworkOff || m == policy.NetworkLoopback ||
+		m == policy.NetworkProxy
 }
 
 // ProxyUnenforcedSkip is the enforcement-report entry stage 2 emits for
@@ -175,6 +178,24 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind, helper string) []stri
 	return bwrapArgsForPlan(p, MountPlan(p, kinds, helper))
 }
 
+// LoopbackBwrapArgs are the namespace and capability flags that a
+// loopback-mode jail requires of bwrap, in the order they are passed.
+var LoopbackBwrapArgs = []string{
+	"--unshare-user", "--disable-userns", "--cap-drop", "ALL",
+}
+
+// loopbackBwrapPrefix swaps the soft user-namespace flag in args for the
+// loopback flags.
+func loopbackBwrapPrefix(args []string) []string {
+	out := make([]string, 0, len(args)+len(LoopbackBwrapArgs))
+	for _, a := range args {
+		if a != "--unshare-user-try" {
+			out = append(out, a)
+		}
+	}
+	return append(out, LoopbackBwrapArgs...)
+}
+
 // bwrapArgsForPlan renders the same plan that the mount audit inspected.
 // Host path resolution happens before planning, never between audit and exec.
 func bwrapArgsForPlan(p policy.Policy, plan []MountOp) []string {
@@ -184,19 +205,34 @@ func bwrapArgsForPlan(p policy.Policy, plan []MountOp) []string {
 		// with it. No orphaned jails.
 		"--die-with-parent",
 		// Fresh PID/IPC/UTS namespaces; user and cgroup namespaces are
-		// "try" so the same argv works both privileged and not.
+		// "try" so the same argv works both privileged and not. Loopback
+		// mode is the exception, below.
 		"--unshare-pid",
 		"--unshare-ipc",
 		"--unshare-uts",
 		"--unshare-user-try",
 		"--unshare-cgroup-try",
 	}
+	if p.Network.Mode == policy.NetworkLoopback {
+		// Loopback mode never runs weaker than this: its own user
+		// namespace (the hard form, which fails rather than falls back),
+		// no nested user namespaces, and an empty capability set. The
+		// -try form above is replaced, not repeated. LoopbackBwrapArgs
+		// is the same set, used by the startup probe, so the probe tests
+		// exactly what the jail will ask for.
+		args = loopbackBwrapPrefix(args)
+	}
 	if BlocksDirectNetwork(p.Network.Mode) {
-		// A fresh, interface-less network namespace. The seccomp filter
-		// (stage 2) independently denies non-AF_UNIX socket creation;
-		// two layers, either alone sufficient for egress denial. Proxy
-		// mode lands here too: with no egress sidecar in phase 1 it
-		// fails closed to no direct network (see BlocksDirectNetwork).
+		// A fresh network namespace whose only interface is `lo`: bwrap
+		// brings it up with 127.0.0.1/8 itself (loopback_setup, run when
+		// --unshare-net is given), and there is no other interface and
+		// no default route. The seccomp filter (stage 2) independently
+		// denies non-AF_UNIX socket creation, except that loopback mode
+		// admits IPv4 TCP sockets, which then reach only this namespace's
+		// own `lo`; two layers, either alone sufficient for egress
+		// denial. Proxy mode lands here too: with no egress sidecar in
+		// phase 1 it fails closed to no direct network (see
+		// BlocksDirectNetwork).
 		args = append(args, "--unshare-net")
 	}
 	for _, op := range plan {

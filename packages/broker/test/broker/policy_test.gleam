@@ -1,5 +1,6 @@
 import broker/policy
 import core/msgpack
+import gleam/int
 import gleam/list
 import simplifile
 
@@ -69,6 +70,12 @@ pub fn roundtrip_proxy_test() {
   assert policy.decode(bytes) == Ok(proxy_policy())
 }
 
+pub fn roundtrip_loopback_test() {
+  let loopback = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let assert Ok(bytes) = policy.encode(loopback)
+  assert policy.decode(bytes) == Ok(loopback)
+}
+
 pub fn roundtrip_empty_lists_test() {
   let empty =
     policy.SandboxPolicy(
@@ -124,6 +131,24 @@ pub fn golden_sandbox_policy_off_fixture_test() {
     Ok(stored) -> {
       assert stored == bytes
       assert policy.decode(stored) == Ok(base())
+    }
+    Error(simplifile.Enoent) -> {
+      let assert Ok(Nil) = simplifile.write_bits(path, bytes)
+      Nil
+    }
+    Error(_) -> panic as "fixture directory unreadable"
+  }
+}
+
+pub fn golden_sandbox_policy_loopback_fixture_test() {
+  let path =
+    "../../protocol/msgpack-fixtures/sandbox_policy_4_network_loopback.bin"
+  let loopback = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let assert Ok(bytes) = policy.encode(loopback)
+  case simplifile.read_bits(path) {
+    Ok(stored) -> {
+      assert stored == bytes
+      assert policy.decode(stored) == Ok(loopback)
     }
     Error(simplifile.Enoent) -> {
       let assert Ok(Nil) = simplifile.write_bits(path, bytes)
@@ -257,6 +282,16 @@ pub fn decode_rejects_adversarial_test() {
     ),
     #("mounts as a map", with_entry("mounts", msgpack.MapValue([]))),
     #("unknown key", with_entry("sneaky", msgpack.BoolValue(True))),
+    #(
+      "loopback network with a stray key",
+      with_entry(
+        "network",
+        msgpack.MapValue([
+          #(msgpack.StringValue("allow"), msgpack.ArrayValue([])),
+          #(msgpack.StringValue("mode"), msgpack.StringValue("loopback")),
+        ]),
+      ),
+    ),
     #(
       "relative writable root",
       with_entry(
@@ -636,6 +671,11 @@ pub fn narrow_unenforceable_leaves_off_alone_test() {
 pub fn narrow_unenforceable_leaves_full_alone_test() {
   let full = policy.SandboxPolicy(..base(), network: policy.NetworkFull)
   assert policy.narrow_unenforceable(full) == #(full, [])
+}
+
+pub fn narrow_unenforceable_leaves_loopback_alone_test() {
+  let loopback = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  assert policy.narrow_unenforceable(loopback) == #(loopback, [])
 }
 
 // --- composition tables -------------------------------------------------
@@ -1183,4 +1223,113 @@ pub fn session_lease_leaves_memory_and_processes_alone_test() {
   assert lease.limits.fsize_bytes == proxy_policy().limits.fsize_bytes
   assert policy.SandboxPolicy(..lease, limits: proxy_policy().limits)
     == proxy_policy()
+}
+
+// --- the network lattice: Off < Loopback < Proxy < Full --------------------
+
+fn lattice_modes() -> List(policy.NetworkPolicy) {
+  [
+    policy.NetworkOff,
+    policy.NetworkLoopback,
+    policy.NetworkProxy(allow: ["r.example"], proxy: "p"),
+    policy.NetworkFull,
+  ]
+}
+
+fn rank(network: policy.NetworkPolicy) -> Int {
+  case network {
+    policy.NetworkOff -> 0
+    policy.NetworkLoopback -> 1
+    policy.NetworkProxy(..) -> 2
+    policy.NetworkFull -> 3
+  }
+}
+
+// Meet through `compose`: with no grants, the composed network is the meet
+// of base and requirements, and a narrowing is reported exactly when the
+// requirement ranks above what was granted (`network_exceeds`). Every
+// ordered pair of the four modes is checked, so every pair that includes
+// loopback is.
+pub fn lattice_meet_and_exceeds_for_every_pair_test() {
+  list.each(lattice_modes(), fn(a) {
+    list.each(lattice_modes(), fn(b) {
+      let #(composed, narrowings) =
+        policy.compose(
+          base: policy.SandboxPolicy(..base(), network: a),
+          requirements: policy.SandboxPolicy(..base(), network: b),
+          grants: [],
+        )
+      case a, b {
+        // Loopback and proxy are incomparable, so their meet is off.
+        policy.NetworkLoopback, policy.NetworkProxy(..)
+        | policy.NetworkProxy(..), policy.NetworkLoopback
+        -> {
+          assert composed.network == policy.NetworkOff
+          assert !list.is_empty(narrowings)
+        }
+        _, _ -> {
+          assert rank(composed.network) == int.min(rank(a), rank(b))
+          assert list.is_empty(narrowings) == { rank(b) <= rank(a) }
+        }
+      }
+    })
+  })
+}
+
+// Join through a grant: with base and requirements equal to `a`, granting
+// `b` widens the composed network to the join, which is the higher rank.
+pub fn lattice_join_for_every_pair_test() {
+  list.each(lattice_modes(), fn(a) {
+    list.each(lattice_modes(), fn(b) {
+      let asking = policy.SandboxPolicy(..base(), network: a)
+      let #(composed, _) =
+        policy.compose(base: asking, requirements: asking, grants: [
+          policy.GrantNetwork(b),
+        ])
+      assert rank(composed.network) == int.max(rank(a), rank(b))
+    })
+  })
+}
+
+pub fn loopback_is_narrowed_to_off_by_an_off_base_test() {
+  let wants = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let #(composed, narrowings) =
+    policy.compose(base: base(), requirements: wants, grants: [])
+  assert composed.network == policy.NetworkOff
+  assert policy.wanted_grants(narrowings)
+    == [policy.GrantNetwork(policy.NetworkLoopback)]
+}
+
+// A loopback requirement exceeds a proxy grant: a host allowlist does not
+// bound loopback, and the approval ceiling refuses it under one as well.
+// The grant widens the composed network to proxy, and the requirement is
+// still reported as exceeding what was granted.
+pub fn loopback_exceeds_a_proxy_grant_test() {
+  let wants = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let proxy = policy.NetworkProxy(allow: ["r.example"], proxy: "p")
+  let #(composed, narrowings) =
+    policy.compose(base: wants, requirements: wants, grants: [
+      policy.GrantNetwork(proxy),
+    ])
+  assert composed.network == proxy
+  assert narrowings
+    == [policy.NarrowedNetwork(wanted: policy.NetworkLoopback, granted: proxy)]
+}
+
+pub fn loopback_does_not_exceed_a_loopback_grant_test() {
+  let wants = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let #(_, narrowings) =
+    policy.compose(base: wants, requirements: wants, grants: [])
+  assert narrowings == []
+}
+
+pub fn a_proxy_base_never_yields_loopback_without_a_grant_test() {
+  let proxy = policy.NetworkProxy(allow: ["r.example"], proxy: "p")
+  let proxied = policy.SandboxPolicy(..base(), network: proxy)
+  let wants = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let #(composed, narrowings) =
+    policy.compose(base: proxied, requirements: wants, grants: [])
+  assert composed.network == policy.NetworkOff
+  assert policy.wanted_grants(narrowings)
+    == [policy.GrantNetwork(policy.NetworkLoopback)]
 }

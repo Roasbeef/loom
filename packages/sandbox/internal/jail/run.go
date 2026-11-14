@@ -273,6 +273,44 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 			strings.Join(bad, ", "))
 	}
 
+	// Loopback mode is a seccomp program that admits TCP sockets, and
+	// what keeps those sockets off the host network is the fresh network
+	// namespace bwrap creates. Seatbelt has no such namespace, and the
+	// degraded Linux path (no bwrap) runs in the host's, so there the
+	// filter alone would hand out host sockets. Refused, never narrowed.
+	if req.Policy.Network.Mode == policy.NetworkLoopback &&
+		feat.Platform.GOOS == "linux" && feat.BwrapPath != "" &&
+		!feat.LoopbackReady {
+		policyR.Close()
+		reportR.Close()
+		reportW.Close()
+		return nil, fmt.Errorf("jail: network mode loopback requires bwrap "+
+			"with its own user namespace, no nested user namespaces and no "+
+			"capabilities, and that is not available here (%s); refusing "+
+			"to run it with less", feat.LoopbackReason)
+	}
+	if req.Policy.Network.Mode == policy.NetworkLoopback &&
+		!(feat.Platform.GOOS == "linux" && feat.BwrapPath != "") {
+		policyR.Close()
+		reportR.Close()
+		reportW.Close()
+		return nil, fmt.Errorf("jail: network mode loopback needs a fresh " +
+			"network namespace, which only the Linux bubblewrap jail " +
+			"provides; refusing to run it on this platform or in degraded mode")
+	}
+
+	// The loopback filter is the only thing that limits the sockets the
+	// jail may open, and stage 2 skips a missing seccomp filter and execs
+	// anyway. Without filtering the mode would hand out every socket.
+	if req.Policy.Network.Mode == policy.NetworkLoopback && !feat.Seccomp {
+		policyR.Close()
+		reportR.Close()
+		reportW.Close()
+		return nil, fmt.Errorf("jail: network mode loopback needs seccomp " +
+			"filtering, which is not available here; refusing to run it " +
+			"without the socket filter")
+	}
+
 	switch {
 	case feat.Platform.GOOS == "linux" && feat.BwrapPath != "":
 		// The mount plan is built from a policy whose protected paths

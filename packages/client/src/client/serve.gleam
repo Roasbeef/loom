@@ -8901,7 +8901,8 @@ pub fn trial_settings(
     base_policy: evolution_trial_policy(base, private_trials, workspace),
     tools: catalog.ToolsConfig(..settings.tools, network: case base.network {
       policy.NetworkFull -> catalog.ToolNetworkFull
-      policy.NetworkOff | policy.NetworkProxy(_, _) -> catalog.ToolNetworkOff
+      policy.NetworkOff | policy.NetworkLoopback | policy.NetworkProxy(_, _) ->
+        catalog.ToolNetworkOff
     }),
     helper_pool_size: 2,
     session_id: "trial-" <> tag,

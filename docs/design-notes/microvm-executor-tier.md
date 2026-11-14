@@ -70,7 +70,7 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:3006`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:3017`)
 takes a `spawn` closure and hands helpers out through `checkout`
 (`packages/broker/src/broker/exec.gleam:2550`) and `checkin`
 (`packages/broker/src/broker/exec.gleam:2562`). "One microVM per helper"
@@ -127,7 +127,7 @@ shows from what the policy demanded, splitting each report entry at its
 first `:` or `=` through `layer_tag`
 (`packages/broker/src/broker/exec.gleam:1631`) so that `landlock:abi=5`
 counts as the landlock layer and `mounts:ro=2,rw=1,…` as the mount layer.
-`degraded_report` (`packages/broker/src/broker/exec.gleam:1873`) then
+`degraded_report` (`packages/broker/src/broker/exec.gleam:1884`) then
 fails a `FullEnforcement` demand on any of three grounds: the helper's
 degraded bool, any `skip:` entry, or any required layer simply absent
 from the list.
@@ -154,7 +154,7 @@ refuses everything.
 The fix is that the demanded set has to become a property of the driver
 rather than a constant, or be negotiated at handshake. The helper already
 sends a `hello` with a feature list the broker reads
-(`handle_hello`, `packages/broker/src/broker/exec.gleam:2022`), and at the time
+(`handle_hello`, `packages/broker/src/broker/exec.gleam:2033`), and at the time
 that list was consulted for exactly one thing: whether it contained
 `"degraded"` (`degraded_features`,
 `packages/broker/src/broker/exec.gleam:1460`). Issue #64 already proposes
@@ -392,7 +392,7 @@ but the operator-delegation problem — the part that produced #52 — goes
 away entirely.
 
 **4. `Proxy(allowlist)` finally gets somewhere to live.**
-`narrow_unenforceable` (`packages/broker/src/broker/policy.gleam:673`)
+`narrow_unenforceable` (`packages/broker/src/broker/policy.gleam:679`)
 has exactly one rule today: `NetworkProxy` becomes `NetworkOff`, because
 the egress proxy sidecar does not exist and a proxy-mode jail would
 otherwise run with unrestricted direct egress. Spec Part 5 track 10

@@ -990,6 +990,22 @@ pub fn darwin_required_layers_name_seatbelt_and_rlimits_test() {
     ]
 }
 
+pub fn loopback_requires_the_seccomp_layer_test() {
+  let pol =
+    policy.SandboxPolicy(
+      ..network_off_policy(),
+      network: policy.NetworkLoopback,
+    )
+  assert exec.required_layers_for(Some(pol), "linux")
+    == ["bwrap", "mounts", "landlock", "no-new-privs", "seccomp-net"]
+  // Seatbelt cannot report seccomp-net, so a Darwin run of the mode can
+  // never satisfy the demand; the helper refuses it before that matters.
+  assert list.contains(
+    exec.required_layers_for(Some(pol), "darwin"),
+    "seccomp-net",
+  )
+}
+
 pub fn hello_features_choose_the_helpers_enforcement_matrix_test() {
   assert exec.required_layers_for_features(None, ["rlimits", "seatbelt"])
     == ["seatbelt", "seatbelt-fs"]
