@@ -343,9 +343,10 @@ fn placed_report(
 /// the name the roster gives it, for a pool to spread its next session
 /// (`pools.spread`). It is made from rows the registry read in its own turn
 /// (`manager.claim_placement` gives them), so the count and the claims of a
-/// placement are one turn. The rows are each registration's view and move row.
-/// It makes no call, because it runs inside the registry. `Error(Nil)`, a
-/// catalogue that could not be read, is no information, as it is there.
+/// placement are one turn. The rows are each running session's view and move
+/// row. It makes no call, because it runs inside the registry. `Error(Nil)`, a
+/// catalogue that could not be read, is no information: the pool then spreads
+/// by the claims alone.
 ///
 /// ## Examples
 ///

@@ -39,7 +39,7 @@ and may retry. The state is:
 
 | Action | What it is |
 |---|---|
-| `Snap(x)` | The caller of `claim_placement` reads the resident counts from the catalogue (`ledger_holdings.resident_by_name`). Skipped when `AtomicRead`. |
+| `Snap(x)` | The caller of `claim_placement` reads the resident counts from the catalogue, as the code did before the read moved into the turn (the removed `ledger_holdings.resident_by_name`). Skipped when `AtomicRead`. |
 | `Turn(x)` | The registry's turn: the resident counts plus one for each other session whose claim `live_claims` keeps, ordered by `pools.spread`. With `OneTurn` it records the head as the claim in the same step. |
 | `Record(x)` | The record of the choice, as a separate step, for the mutant without `OneTurn`. |
 | `Attach(x, i)` | The builder's scope opens on the `i`-th candidate, after the first `i - 1` declined. Only the executors of `Down` decline. The claim and the catalogue row point at the executor that took it. |
@@ -187,9 +187,9 @@ and a session's build had to finish inside it. It was narrow on an idle daemon
 and wider on a busy one, because a turn waits behind every message queued before
 it, and it matters for a burst of opens such as eight children on eight machines.
 
-The fix is the one the model checks as clean. `resident_by_name` calls the
-registry (`manager.page` and `manager.custodies`), so it cannot run inside a
-turn. The registry instead reads the registrations, their statuses and move rows
+The fix is the one the model checks as clean. `resident_by_name` called the
+registry (`manager.page` and `manager.custodies`), so it could not run inside a
+turn, and it is removed. The registry instead reads the registrations, their statuses and move rows
 itself in the turn, and `ledger_holdings.resident_in` turns those rows into the
 same counts with no call. `placement_claim_test` has a test in which a session
 that became resident is counted once, by its row, and one that reads the counts

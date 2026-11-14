@@ -305,8 +305,10 @@ pub fn more_executors_than_the_port_carries_are_unknown_not_truncated_test() {
 
 // --- the open scopes a pool spreads by -----------------------------------------
 
-// The counts a pool spreads by, made from the registry's rows as a placement
-// claim makes them: every registration with its status and move row.
+// The counts a pool spreads by, made here from every registration with its
+// status and move row. A placement claim hands the counting function only the
+// running sessions' rows; the counts agree, because a registration that is not
+// resident adds nothing.
 fn resident_counts(
   registry: manager.Manager(String),
   listed: roster.Roster(executors.Executor),

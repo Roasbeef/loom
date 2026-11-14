@@ -966,10 +966,10 @@ type Message(instance) {
   LocalSessions(Subject(Result(List(String), Error)))
 
   /// A session being built asks which executors of a pool to try, in order. The
-  /// registry adds the executors that sessions still being built have been told
-  /// to try first to the resident counts it is given, hands the sum to the
-  /// chooser, and records the head of the answer as the session's claim, all in
-  /// one turn so that concurrent askers see one another.
+  /// registry counts the resident sessions from its own running slots, adds the
+  /// executors that sessions still being built have been told to try first,
+  /// hands the sum to the chooser, and records the head of the answer as the
+  /// session's claim, all in one turn so that concurrent askers see one another.
   ClaimPlacement(
     String,
     fn(Result(List(#(View, catalogue.Custody)), Nil)) -> Dict(String, Int),
