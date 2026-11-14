@@ -485,7 +485,7 @@ fn build(
     workspaces.find(configured, spec.workspace)
     |> result.map_error(fn(_missing) {
       host.NoPlaneBuilt(
-        "this executor serves no workspace named `" <> spec.workspace <> "`",
+        protocol.unserved_workspace <> " `" <> spec.workspace <> "`",
       )
     }),
   )

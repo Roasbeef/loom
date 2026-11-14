@@ -467,6 +467,9 @@ type Job(census) {
   )
   BuildJob(
     session: String,
+    workspace: String,
+    incarnation: Int,
+    how: exec_ledger.Attachment,
     link: owner_link.Link,
     unacked: protocol.Unacked,
     reply: Subject(Result(protocol.Attached(census), Refusal)),
@@ -1283,7 +1286,7 @@ fn place(
     -> {
       let _outcome = stale.plane.close(fn() { retire_children(stale.children) })
       owner_link.stop(stale.link)
-      build_plane(state, binding, unacked, reply)
+      build_plane(state, binding, how, unacked, reply)
     }
 
     exec_ledger.Rebound, Ok(Building(..))
@@ -1297,7 +1300,7 @@ fn place(
     exec_ledger.Rebound, Error(Nil)
     | exec_ledger.Created, Error(Nil)
     | exec_ledger.Reopened, Error(Nil)
-    -> build_plane(state, binding, unacked, reply)
+    -> build_plane(state, binding, how, unacked, reply)
   }
 }
 
@@ -1311,6 +1314,7 @@ fn place(
 fn build_plane(
   state: State(census),
   binding: Binding,
+  how: exec_ledger.Attachment,
   unacked: protocol.Unacked,
   reply: Subject(Result(protocol.Attached(census), Refusal)),
 ) -> State(census) {
@@ -1356,7 +1360,15 @@ fn build_plane(
         })
       let tracked =
         Tracked(
-          job: BuildJob(session:, link:, unacked:, reply:),
+          job: BuildJob(
+            session:,
+            workspace:,
+            incarnation:,
+            how:,
+            link:,
+            unacked:,
+            reply:,
+          ),
           sink:,
           cancel:,
         )
@@ -1376,6 +1388,9 @@ fn build_plane(
 fn plane_built(
   state: State(census),
   session: String,
+  workspace: String,
+  incarnation: Int,
+  how: exec_ledger.Attachment,
   link: owner_link.Link,
   unacked: protocol.Unacked,
   reply: Subject(Result(protocol.Attached(census), Refusal)),
@@ -1384,7 +1399,10 @@ fn plane_built(
   // This match resolves built before the surrounding protocol step continues.
   // This match resolves built before the enclosing validation continues.
   case built {
-    Error(failure) -> build_failed(state, session, link, reply, failure)
+    Error(failure) -> {
+      close_unserved(state, session, workspace, incarnation, how, failure)
+      build_failed(state, session, link, reply, failure)
+    }
     Ok(plane) ->
       // This match resolves start_children(plane) before the surrounding protocol step continues.
       case start_children(plane) {
@@ -1437,6 +1455,58 @@ fn refusal_of_failure(failure: PlaneFailure) -> Refusal {
   case failure {
     NoPlaneBuilt(reason:) -> protocol.NoPlane(reason)
     WorktreeNotMade(reason:) -> protocol.WorktreeFailed(reason)
+  }
+}
+
+// An attach for a workspace the executor does not serve that created or reopened
+// the scope made the ledger bind it to the name, and no plane was ever built for
+// it, so no call was admitted and nothing runs. The scope is closed here as
+// cleanly closed, which a scope with no plane would otherwise record as unproven,
+// so that the attach for the corrected workspace meets a closed scope that holds
+// nothing (the ledger rebinds it) and not an open one bound to a name nobody
+// serves. A rebound scope is not touched: it is a session's own scope from before,
+// which has a tree and earlier calls, and an executor restarted with the
+// workspace dropped from its configuration must leave it as the operator finds
+// it. Any other build failure leaves the scope open for the next attach to build
+// again, as before.
+/// Closes the scope an attach for an unserved workspace opened, as retired.
+fn close_unserved(
+  state: State(census),
+  session: String,
+  workspace: String,
+  incarnation: Int,
+  how: exec_ledger.Attachment,
+  failure: PlaneFailure,
+) -> Nil {
+  case how, failure {
+    exec_ledger.Rebound, _ -> Nil
+    exec_ledger.Created, NoPlaneBuilt(reason:)
+    | exec_ledger.Reopened, NoPlaneBuilt(reason:)
+    ->
+      case protocol.is_unserved_workspace(reason) {
+        True -> {
+          let _begun =
+            exec_ledger.begin_close(
+              state.ledger,
+              session,
+              workspace,
+              incarnation,
+            )
+          let _finished =
+            exec_ledger.finish_close(
+              state.ledger,
+              session,
+              workspace,
+              incarnation,
+              exec_ledger.AllRetired,
+            )
+          Nil
+        }
+        False -> Nil
+      }
+    exec_ledger.Created, WorktreeNotMade(..)
+    | exec_ledger.Reopened, WorktreeNotMade(..)
+    -> Nil
   }
 }
 
@@ -1950,8 +2020,26 @@ fn settle_job(
     weft.Completed(index: _, value: PlaneBuilt(built:)) ->
       // This match resolves tracked.job before the surrounding protocol step continues.
       case tracked.job {
-        BuildJob(session:, link:, unacked:, reply:) ->
-          plane_built(state, session, link, unacked, reply, built)
+        BuildJob(
+          session:,
+          workspace:,
+          incarnation:,
+          how:,
+          link:,
+          unacked:,
+          reply:,
+        ) ->
+          plane_built(
+            state,
+            session,
+            workspace,
+            incarnation,
+            how,
+            link,
+            unacked,
+            reply,
+            built,
+          )
         RunJob(..) | CloseJob(..) -> job_lost(state, id, tracked)
       }
     weft.Failed(index: _, error: Nil)
@@ -2124,7 +2212,7 @@ fn job_lost(
 
     // A build that died without a result may have started helpers nobody
     // holds, so the scope is left without a plane and the sender is told why.
-    BuildJob(session:, link:, unacked: _, reply:) ->
+    BuildJob(session:, link:, unacked: _, reply:, ..) ->
       build_failed(
         state,
         session,

@@ -966,13 +966,13 @@ type Message(instance) {
   LocalSessions(Subject(Result(List(String), Error)))
 
   /// A session being built asks which executors of a pool to try, in order. The
-  /// registry adds the executors that sessions still being built have been told
-  /// to try first to the resident counts it is given, hands the sum to the
-  /// chooser, and records the head of the answer as the session's claim, all in
-  /// one turn so that concurrent askers see one another.
+  /// registry counts the resident sessions from its own running slots, adds the
+  /// executors that sessions still being built have been told to try first,
+  /// hands the sum to the chooser, and records the head of the answer as the
+  /// session's claim, all in one turn so that concurrent askers see one another.
   ClaimPlacement(
     String,
-    Dict(String, Int),
+    fn(Result(List(#(View, catalogue.Custody)), Nil)) -> Dict(String, Int),
     fn(Dict(String, Int)) -> List(String),
     Subject(List(String)),
   )
@@ -1602,20 +1602,26 @@ pub fn seed_executor(
 /// Asks, for a session being built, which executors of a pool to try and in
 /// what order, and claims the first for the session.
 ///
-/// `resident` is how many open scopes this orchestrator holds on each executor
-/// by name, read by the caller from the catalogue. The registry adds one for each
+/// `resident` turns the registry's own rows into how many open scopes this
+/// orchestrator holds on each executor by name. The registry reads the rows of
+/// its running sessions, with their status and move row, in the turn, and calls
+/// `resident` on them (a pure function: it must not call the registry). The read
+/// is bounded by the daemon's session limit and never walks the catalogue. It adds one for each
 /// other session that is still being built and has claimed that executor, calls
 /// `choose` with the sum, and keeps the head of its answer as this session's
-/// claim. All of it is one turn of the registry, so sessions that are built at the
-/// same moment each see the claims of those before them, which the resident
-/// figure alone cannot show them: a session is resident only after its attach.
+/// claim. The rows are read in the same turn as the claims, so a session whose
+/// slot becomes running is counted once, by its row, and never by neither: if
+/// the caller read the rows first, a session that became running between its
+/// read and the turn would have left the claims and be missing from the read.
+/// `Error(Nil)` is a catalogue that could not be read.
 ///
 /// A claim lasts while the session's slot is waiting or building. The
 /// session's own attach replaces it with the executor that took the scope
 /// (`seed_executor`), and it stops counting by itself once the session is
 /// resident, failed or removed. A second call for the same session replaces its
 /// claim and never adds to it. A registry that does not answer in five seconds
-/// leaves the session unclaimed and `choose` is applied to `resident` alone.
+/// leaves the session unclaimed, and `choose` is applied to an empty count, so the
+/// pool is tried in its listed order.
 ///
 /// ## Examples
 ///
@@ -1626,7 +1632,8 @@ pub fn seed_executor(
 pub fn claim_placement(
   manager: Manager(instance),
   id: String,
-  resident: Dict(String, Int),
+  resident: fn(Result(List(#(View, catalogue.Custody)), Nil)) ->
+    Dict(String, Int),
   choose: fn(Dict(String, Int)) -> List(String),
 ) -> List(String) {
   call.try_call(manager.commands, waiting: 5000, sending: ClaimPlacement(
@@ -1635,7 +1642,7 @@ pub fn claim_placement(
     choose,
     _,
   ))
-  |> result.lazy_unwrap(fn() { choose(resident) })
+  |> result.lazy_unwrap(fn() { choose(dict.new()) })
 }
 
 /// Remembers a folder a session was just created in, without waiting
@@ -3425,7 +3432,8 @@ fn handle(
     }
     ClaimPlacement(id, resident, choose, reply) -> {
       let live = live_claims(book)
-      let ordered = choose(held_by(resident, live, id))
+      let counted = resident(placed_rows(book))
+      let ordered = choose(held_by(counted, live, id))
       process.send(reply, ordered)
       sm.keep(Book(..book, claims: claimed(live, id, ordered)))
     }
@@ -4724,10 +4732,39 @@ fn remote_registrations_in(
   |> result.map_error(Catalogue)
 }
 
+// The sessions that are resident, with their registration, status and move row,
+// read in the registry's own turn for the resident counts of a placement claim.
+// Only a running slot is resident, so the rows come from `book.slots` and one
+// read of the catalogue for each, not from a walk of every registration: the
+// turn is bounded by the daemon's session limit (`Book.limit`), whatever the
+// catalogue holds. A catalogue that cannot be read is `Error(Nil)`, which the
+// counting function reads as no information.
+/// Reads the rows a placement claim counts resident sessions from.
+fn placed_rows(
+  book: Book(instance),
+) -> Result(List(#(View, catalogue.Custody)), Nil) {
+  dict.to_list(book.slots)
+  |> list.filter_map(fn(entry) {
+    case entry.1.phase {
+      Running(_) -> Ok(entry.0)
+      WaitingForDomain | Building | Closing | Blocked(_) -> Error(Nil)
+    }
+  })
+  |> list.try_map(fn(id) {
+    use record <- result.try(
+      catalogue.get(book.catalogue, id) |> result.replace_error(Nil),
+    )
+    use custody <- result.map(
+      catalogue.custody(book.catalogue, id) |> result.replace_error(Nil),
+    )
+    #(View(record, status(book, record)), custody)
+  })
+}
+
 // The claims whose session is still being built. A slot that has become
 // resident, closing or blocked, or has been removed, no longer has a claim:
-// resident sessions are in the figure the caller reads from the catalogue, and
-// the rest hold no scope.
+// resident sessions are counted from their own rows by the same turn
+// (`placed_rows`), and the rest hold no scope.
 /// Keeps the claims of sessions whose slot is still waiting or building.
 fn live_claims(book: Book(instance)) -> Dict(String, String) {
   dict.filter(book.claims, fn(id, _executor) {
