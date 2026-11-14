@@ -1002,7 +1002,9 @@ or body changed. Three are closed and two are left, and the reasons are recorded
   it receives it.
 - **The placement strip's commands half** is read from the label on a `Relayed` route
   (`component.relayed_code`). A local page reads it from the sidebar's list, which has the
-  session in it. The laptop's list never has a session that runs on a box.
+  session in it. The laptop's list never has a session that runs on a box. One difference
+  remains: for a session created into a pool the label names the pool, so the relayed
+  page draws the pool where the box's own page draws the executor that took the session.
 - **The Session tab's invitation control** draws `invites.Elsewhere(machine)` on a `Relayed`
   route: "This session runs on <box>, so invitations are made from its own page there."
   The bookmark sentence, which is about how a page was opened, no longer shows. The laptop
