@@ -839,17 +839,10 @@ pub fn a_reply_that_holds_the_guests_row_runs_no_old_path_test() {
     == ["Your daemon started its link to untrusted executor dev."]
 
   // Every kept state of the guest's own entry is a row the daemon holds.
-  list.each(
-    [
-      executor_reload.Restarted,
-      executor_reload.Unchanged,
-      executor_reload.Stopped,
-    ],
-    fn(change) {
-      assert vm_link.reload_report("dev", reply([#("dev", change)])).old_path
-        == vm_link.OldPathSkipped
-    },
-  )
+  list.each([executor_reload.Restarted, executor_reload.Unchanged], fn(change) {
+    assert vm_link.reload_report("dev", reply([#("dev", change)])).old_path
+      == vm_link.OldPathSkipped
+  })
 }
 
 pub fn a_row_that_changed_without_the_users_doing_is_named_test() {
@@ -871,11 +864,24 @@ pub fn a_row_that_changed_without_the_users_doing_is_named_test() {
   assert !list.any(report.lines, string.contains(_, "dev"))
 }
 
-pub fn a_failed_or_missing_own_entry_runs_the_old_path_test() {
+pub fn a_failed_stopped_or_missing_own_entry_runs_the_old_path_test() {
   let failed =
     vm_link.reload_report("dev", reply([#("dev", executor_reload.Failed)]))
   assert failed.old_path == vm_link.OldPathRuns
   assert list.length(failed.lines) == 1
+
+  // The wording does not claim the old link was left alone: a failed
+  // replacement may have stopped it.
+  assert list.all(failed.lines, fn(line) {
+    !string.contains(line, "left that link as it was")
+    && string.contains(line, "the next reload tries again")
+  })
+
+  // After an `up`, a guest whose own entry is `stopped` has no link serving it.
+  let stopped =
+    vm_link.reload_report("dev", reply([#("dev", executor_reload.Stopped)]))
+  assert stopped.old_path == vm_link.OldPathRuns
+  assert list.length(stopped.lines) == 1
 
   let missing =
     vm_link.reload_report("dev", reply([#("other", executor_reload.Started)]))

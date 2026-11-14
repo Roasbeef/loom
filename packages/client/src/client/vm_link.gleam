@@ -998,7 +998,9 @@ pub fn reload_result(
 /// so a row that changed without this command's doing is seen. The old path
 /// runs when the daemon was not made to hold the guest's row: it predates the
 /// command, refused it, did not answer, or answered with the guest's entry
-/// `failed` or missing. A refusal's reason is printed before it does.
+/// `failed`, `stopped` or missing. A `stopped` entry after `up` means the
+/// daemon found no row for the guest, or took it out, so no link serves it. A
+/// refusal's reason is printed before it does.
 ///
 /// ## Examples
 ///
@@ -1012,8 +1014,11 @@ pub fn reload_report(name: String, result: ReloadResult) -> ReloadReport {
       ReloadReport(
         lines: changed_lines(reply),
         old_path: case own_change(name, reply) {
-          Some(executor_reload.Failed) | None -> OldPathRuns
-          Some(_) -> OldPathSkipped
+          Some(executor_reload.Failed) | Some(executor_reload.Stopped) | None ->
+            OldPathRuns
+          Some(executor_reload.Started)
+          | Some(executor_reload.Restarted)
+          | Some(executor_reload.Unchanged) -> OldPathSkipped
         },
       )
     PredatesReload -> ReloadReport(lines: [], old_path: OldPathRuns)
@@ -1094,7 +1099,7 @@ fn changed_lines(reply: executor_reload.Reply) -> List(String) {
         Ok(
           "Your daemon could not bring its link to "
           <> who
-          <> " to match the file, so it left that link as it was.",
+          <> " to match the file, and the next reload tries again.",
         )
     }
   })
