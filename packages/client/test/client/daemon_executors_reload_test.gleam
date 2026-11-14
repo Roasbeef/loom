@@ -159,7 +159,15 @@ fn reloading_over(
     as "the registry starts"
   let assert Ok(parsed) = main.parse(["--state-dir", state])
     as "the flags parse"
-  let config = adjust(main.Config(..parsed, links: Some(registry)))
+  // The directories that existed at the daemon's start: its vm directory.
+  let assert Ok(vm_directory) = bootstrap.canonical_path(state <> "/vm")
+    as "the vm directory resolves"
+  let config =
+    adjust(
+      main.Config(..parsed, links: Some(registry), vm_directories: [
+        vm_directory,
+      ]),
+    )
   let capability = case file {
     Some(path) -> main.executors_reload_for(config, path)
     None -> None
@@ -391,6 +399,35 @@ pub fn a_table_named_through_a_link_dials_with_the_path_checked_test() {
       let assert Ok(used) = simplifile.read(record) as "the link was started"
       assert used == canonical
       assert used != state <> "/vm/key-link.pem"
+    },
+  )
+}
+
+pub fn a_table_under_a_directory_made_after_the_start_is_refused_test() {
+  let state = state_with_link()
+  let name = unique("reload-h")
+  let path = state <> "/loom.toml"
+
+  // The table is under the state root's vm directory, which exists, but the
+  // daemon's start did not list it, as when the home's vm directory could only
+  // be warned about at start and appeared later.
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      link_table(state <> "/vm") <> rows_text([#(name, 7000)]),
+    )
+    as "the file is written"
+
+  reloading_with(
+    state,
+    Some(path),
+    fn(config) { main.Config(..config, vm_directories: []) },
+    fn(port, credential, registry, _root) {
+      let reply = ask(open(port, credential), 1)
+      assert field(field(reply, "body"), "code")
+        == json.String("reload_invalid")
+      assert process.named(untrusted_link.name_for(name)) == Error(Nil)
+      assert untrusted_links.rows(registry) == []
     },
   )
 }

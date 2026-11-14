@@ -494,9 +494,15 @@ pub fn the_start_step_creates_missing_directories_and_spares_existing_ones_test(
   let assert Ok(Nil) = simplifile.set_permissions_octal(existing, 0o750)
     as "the owner's mode is not 0700"
 
-  let assert Ok(Nil) =
+  let assert Ok(directories) =
     entrypoint.ensure_vm_homes(Some(home), root, log.discard())
     as "the start step succeeds"
+  let assert Ok(state_directory) = native.canonical_path(root <> "/vm")
+    as "the state root's directory resolves"
+  let assert Ok(home_directory) = native.canonical_path(existing)
+    as "the home's directory resolves"
+  assert directories == [state_directory, home_directory]
+    as "both directories exist, so both are answered as canonical paths"
   let assert Ok(kept) = simplifile.file_info(existing)
     as "the existing directory is readable"
   assert int.bitwise_and(kept.mode, 0o777) == 0o750
@@ -522,7 +528,13 @@ pub fn a_file_in_the_way_of_the_homes_directory_does_not_fail_the_start_test() {
   let root = fixture_workspace("vm-refuse-home-root")
   let assert Ok(Nil) = simplifile.write(home <> "/.loom", "a file in the way")
     as "a file occupies the home's .loom"
-  assert entrypoint.ensure_vm_homes(Some(home), root, log.discard()) == Ok(Nil)
+  let assert Ok(answered) =
+    entrypoint.ensure_vm_homes(Some(home), root, log.discard())
+    as "the start step succeeds"
+  let assert Ok(state_directory) = native.canonical_path(root <> "/vm")
+    as "the state root's directory resolves"
+  assert answered == [state_directory]
+    as "only the state root's directory is answered, since the home's is absent"
   assert simplifile.is_directory(home <> "/.loom/vm") != Ok(True)
     as "nothing was created for the home"
   assert simplifile.is_directory(root <> "/vm") == Ok(True)
@@ -577,7 +589,7 @@ fn read_vm_secret(start: StartStep) -> #(Int, String) {
   let workspace = fixture_workspace("vm-workspace")
   case start {
     StartStepRan -> {
-      let assert Ok(Nil) =
+      let assert Ok(_) =
         entrypoint.ensure_vm_homes(Some(home), root, log.discard())
         as "the start step runs"
       Nil

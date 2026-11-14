@@ -65,6 +65,7 @@ fn config(
       state_node.none(),
       untrusted_config.none,
       None,
+      [],
     ),
     state_root: state,
     session_defaults: arguments,

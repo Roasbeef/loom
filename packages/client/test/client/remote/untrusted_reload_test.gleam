@@ -209,7 +209,10 @@ pub fn a_row_added_by_a_reload_serves_while_the_first_link_stays_test() {
 
   let assert Ok(parsed) = main.parse(["--state-dir", state])
     as "the flags parse"
-  let config = main.Config(..parsed, links: Some(registry))
+  let assert Ok(vm_directory) = bootstrap.canonical_path(state <> "/vm")
+    as "the vm directory resolves"
+  let config =
+    main.Config(..parsed, links: Some(registry), vm_directories: [vm_directory])
   wire.fixture_with_reload(
     limits.defaults,
     fn(_) { None },

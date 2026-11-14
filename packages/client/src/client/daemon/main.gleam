@@ -284,6 +284,13 @@ pub type Config {
     /// that startup has not prepared, which then has the rows of `executors`
     /// as they were read and no link.
     links: Option(untrusted_links.Registry),
+    /// The microVM directories that existed, as canonical paths, when startup
+    /// built the first jail policy, which is when each was masked.
+    /// `executors.reload` applies a new `[executor_link]` only under one of
+    /// these, because a directory that appeared later is masked from no jail
+    /// already built (protocol-change/115). Empty on a `Config` that startup
+    /// has not prepared.
+    vm_directories: List(String),
   )
 }
 
@@ -685,6 +692,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       state_node.none(),
       untrusted_config.none,
       None,
+      [],
     )
   use config <- result.try(parse_loop(arguments, initial))
 
@@ -2760,8 +2768,10 @@ fn reloaded(
 /// Applies `executor_reload.link_rule` to the table this daemon started with
 /// and the table of the new file, with their paths made canonical.
 ///
-/// The directories a table may name are the two that every jail masks, spelled
-/// by `workspace_policy.vm_home_directories` so there is one spelling of them.
+/// The directories a table may name are the ones that existed when the first
+/// jail policy was built, which `ensure_vm_homes` returned at start and
+/// `Config.vm_directories` keeps. A directory that was only created later is
+/// masked from no jail already built, so it is not one of them.
 /// A daemon that started with no table may take a proposed one, and then every
 /// file of it must resolve, because the rule is a prefix test on the resolved
 /// path and a path that could not be resolved, such as `vm/../../elsewhere/k`
@@ -2778,23 +2788,13 @@ fn link_table_allowed(
   config: Config,
   decoded: Config,
 ) -> Result(Option(ffi_tls_stream.Credentials), String) {
-  let homes =
-    workspace_policy.vm_home_directories(
-      workspace_policy.home_directory(),
-      config.state_root,
-    )
-  let allowed =
-    [Some(homes.state), homes.home]
-    |> list.filter_map(fn(directory) {
-      option.to_result(directory, Nil) |> result.map(resolved)
-    })
   use proposed <- result.try(proposed_table(config, decoded))
   use Nil <- result.map(
     executor_reload.link_rule(
       option.map(config.untrusted.link, resolved_credentials),
       proposed,
       untrusted_rows_of(decoded),
-      allowed,
+      config.vm_directories,
     )
     |> result.map_error(fn(reason) { "executors.reload: " <> reason }),
   )
@@ -3176,13 +3176,14 @@ fn crash_after_step() -> fn(session_move.Step) -> Nil {
 }
 
 /// Creates the microVM directories, mode 0700, when they are missing
-/// (protocol-change/115, "The link key and the masks").
+/// (protocol-change/115, "The link key and the masks"), and answers the ones
+/// that exist afterwards as canonical paths.
 ///
 /// A jail's mask over a path that does not exist, under a read-only parent, is
 /// not built, and a session keeps its policy for its life. Creating the
 /// directories before any policy exists makes every policy mask them, whenever
-/// the first guest is made. A directory that exists is left exactly as it is:
-/// no chmod, no chown.
+/// the first guest is made. A directory that exists is left exactly as it is,
+/// with no change of mode or owner.
 ///
 /// The state root's directory is the daemon's own, so a failure to make it
 /// stops the start. The state root is made private first, so that creating
@@ -3191,17 +3192,23 @@ fn crash_after_step() -> fn(session_move.Step) -> Nil {
 /// and `loom vm up` runs as the same user with the same `HOME`, so a guest's
 /// files cannot appear there later either.
 ///
+/// The answer is what `executors.reload` may apply a link table under: the
+/// state root's directory always, the home's only when it existed or was
+/// made, and neither unless it can be made canonical. A directory left out
+/// here is masked from no jail the daemon builds, so a later reload must not
+/// trust it.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(Nil) = main.ensure_vm_homes(Some("/home/o"), "/home/o/.loom", logger)
+/// // let assert Ok(directories) = main.ensure_vm_homes(Some("/home/o"), "/home/o/.loom", logger)
 /// ```
 @internal
 pub fn ensure_vm_homes(
   home: Option(String),
   state_root: String,
   logger: Logger,
-) -> Result(Nil, String) {
+) -> Result(List(String), String) {
   let directories = workspace_policy.vm_home_directories(home, state_root)
   use Nil <- result.try(
     bootstrap.ensure_private_directory(state_root)
@@ -3209,10 +3216,15 @@ pub fn ensure_vm_homes(
       "cannot make the state root " <> state_root <> " private: " <> reason
     }),
   )
-  use Nil <- result.try(ensure_private_if_missing(directories.state))
+  use Nil <- result.map(ensure_private_if_missing(directories.state))
 
-  // The home's directory is not worth refusing to start for.
-  case option.map(directories.home, ensure_private_if_missing) {
+  // The home's directory is not worth refusing to start for, and it is in the
+  // answer only when it is there.
+  let from_home = case
+    option.map(directories.home, fn(directory) {
+      ensure_private_if_missing(directory) |> result.replace(directory)
+    })
+  {
     Some(Error(reason)) -> {
       log.warn(logger, "daemon.vm_home_unavailable", [
         field.text(key: "reason", value: reason),
@@ -3221,10 +3233,13 @@ pub fn ensure_vm_homes(
           value: "a guest's files there would not be masked from sessions",
         ),
       ])
-      Ok(Nil)
+      []
     }
-    Some(Ok(Nil)) | None -> Ok(Nil)
+    Some(Ok(directory)) -> [directory]
+    None -> []
   }
+  [directories.state, ..from_home]
+  |> list.filter_map(bootstrap.canonical_path)
 }
 
 /// Makes one directory private when it is absent, and does nothing to one
@@ -3325,7 +3340,7 @@ pub fn prepare_startup(
 
   // The microVM homes exist before any distribution, state store, executor
   // plane or session is started, so every jail built from here on masks them.
-  use Nil <- result.try(ensure_vm_homes(
+  use vm_directories <- result.try(ensure_vm_homes(
     workspace_policy.home_directory(),
     config.state_root,
     logger,
@@ -3383,6 +3398,7 @@ pub fn prepare_startup(
       ledger:,
       projects: Projects(book: Some(project_table), settings: project_numbers),
       links: Some(links),
+      vm_directories:,
     )
 
   // The states start before the root so that the first session admitted can
