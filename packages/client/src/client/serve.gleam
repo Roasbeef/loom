@@ -177,6 +177,7 @@ import client/skill_tool
 import client/state_object
 import client/system_prompt
 import client/tool_holder
+import client/untrusted_config
 import client/upgrade/control as upgrade_control
 import client/wiring
 import client/workspace_gate
@@ -1259,9 +1260,42 @@ pub fn resolve_managed(
           settings.base_policy,
           state_root,
         )
-        |> workspace_policy.protecting_projects(state_root),
+        |> workspace_policy.protecting_projects(state_root)
+        |> workspace_policy.protecting_node_credentials(link_secrets(
+          configuration,
+        )),
     ),
   )
+}
+
+/// The private keys of the untrusted link that a daemon's configuration names:
+/// `[executor_link]`'s, which dials every untrusted executor as this daemon, and
+/// `[executor_listener]`'s. A session's jail masks them. Under the default
+/// `~/.loom/vm` the vm home's directory mask already covers the first, but a
+/// `LOOM_VM_HOME` elsewhere is not masked, and a tool with loopback networking
+/// that could read the key could dial every guest as the orchestrator. A
+/// configuration that is absent or cannot be read names none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.link_secrets(None) == []
+/// ```
+@internal
+pub fn link_secrets(configuration: Option(String)) -> List(String) {
+  // Only a readable file that the daemon's own reader accepts names keys.
+  case configuration {
+    None -> []
+    Some(path) ->
+      case simplifile.read(path) {
+        Error(_) -> []
+        Ok(text) ->
+          case untrusted_config.parse(text) {
+            Ok(settings) -> untrusted_config.secret_files(settings)
+            Error(_) -> []
+          }
+      }
+  }
 }
 
 /// Where a managed session binds its code-mode cap sockets: the daemon's

@@ -56,6 +56,10 @@
 //// - `valid_host`, `encode_allow`, `decode_allow` and `effective_allow` keep
 ////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
 ////   `--provision` does.
+//// - `guest_name_for` names the guest of a workspace, `ensure_step` decides what
+////   the ensure command does from the facts about it (`guest_state`, `manifest_action`),
+////   `restart_refusal` says when a daemon must restart, and `effective_github`
+////   keeps the guest's GitHub access across resumes.
 //// - `printable`, `decode_checkouts`, `only_workspace`, `fetch_arguments`,
 ////   `bundle_arguments` and `check_git_version` serve the commands that read a
 ////   guest's root and sync it; `read_enrolment` and `plan_teardown` decide what
@@ -81,6 +85,7 @@ import client/membership_signing
 import core/json as core_json
 import gleam/bit_array
 import gleam/bool
+import gleam/crypto
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
@@ -165,6 +170,11 @@ pub const log_lines_limit = 100_000
 /// cannot be called this, because its directory would be the key's.
 pub const authority_dir = "authority"
 
+/// The directory of the vm home that holds the untrusted link's authority and
+/// the orchestrator's leaf (`client/vm_link_pki`). A guest cannot be called
+/// this either, because its directory would be the credentials'.
+pub const link_dir = "link"
+
 /// The file inside a deployment's authority directory that holds the
 /// passphrase `up` sealed its key under.
 pub const passphrase_file = "passphrase"
@@ -194,8 +204,11 @@ pub type UpOptions {
     /// The `loom.toml` the orchestrator is installed into, or `None` for
     /// `$HOME/.loom/loom.toml`.
     config: Option(String),
-    /// Where the guest's GitHub token comes from, or that it has none.
-    github: GitHubAccess,
+    /// Where the guest's GitHub token comes from, or that it has none, when
+    /// `--github` said. `None` means the flag was not given, which is not the
+    /// same as `gh`: a resume keeps what the guest was started with
+    /// (`effective_github`).
+    github: Option(GitHubAccess),
     /// Whether `up` keeps the guest's root and state disk or starts both
     /// again.
     freshness: Freshness,
@@ -205,7 +218,22 @@ pub type UpOptions {
     allow: List(String),
     /// The host path of the script `--provision` names.
     provision: Option(String),
+    /// How the daemon reaches the guest when `--link` said. `None` means the
+    /// flag was not given, which is not the same as `distribution`: a resume
+    /// keeps the link the guest was made with (`client/vm_link.settle`).
+    link: Option(LinkKind),
   )
+}
+
+/// How the host daemon reaches a guest's executor.
+pub type LinkKind {
+  /// A trusted Erlang distribution peer, which is how every guest was reached
+  /// before `--link` existed.
+  Distribution
+
+  /// An untrusted executor over a pinned TLS link that is not distribution
+  /// (protocol-change/109), so the guest holds no cookie.
+  Untrusted
 }
 
 /// How a standing guest reaches GitHub. The token is read on the host by
@@ -253,6 +281,13 @@ pub type Command {
 
   /// Provision, stage and boot the guest.
   Up(UpOptions)
+
+  /// Make the guest that serves one workspace ready and say which executor and
+  /// workspace name to use it by. Its options are `up`'s subset that
+  /// `only_ensure_flags` admits; the guest's name is derived from the
+  /// workspace, so `name` is a placeholder until `vm_cli` knows the canonical
+  /// path.
+  Ensure(UpOptions)
 
   /// Stop the guest named.
   Down(name: String)
@@ -323,6 +358,10 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
       use Nil <- result.try(valid_name(options.name))
       Ok(Up(options))
     }
+    ["ensure", ..flags] -> {
+      use Nil <- result.try(only_ensure_flags(flags))
+      up_flags(flags, default_up()) |> result.map(Ensure)
+    }
     ["down", ..flags] -> name_flag(flags) |> result.map(Down)
     ["status", ..flags] -> name_flag(flags) |> result.map(Status)
     ["logs", ..flags] -> logs_flags(flags, default_name, default_log_lines)
@@ -335,9 +374,41 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
       |> result.map(Sync)
     [] ->
       Error(
-        "loom vm needs a command: setup, up, down, status, logs, list, rm or sync",
+        "loom vm needs a command: setup, up, ensure, down, status, logs, list, rm or sync",
       )
     [word, ..] -> Error("unknown loom vm command " <> word)
+  }
+}
+
+/// Refuses every option `ensure` does not take. `ensure` is `up` for a guest
+/// that is named after its workspace, so the guest's name, size and root
+/// freshness are not the caller's to choose: `--name` would break the
+/// workspace-to-guest correspondence, and `--fresh` and `--provision` replace
+/// state a command that runs on every `loom --vm` must never replace. A flag
+/// the word list does not name falls through to `up_flags`, which reports it.
+fn only_ensure_flags(arguments: List(String)) -> Result(Nil, String) {
+  case arguments {
+    [] -> Ok(Nil)
+    [flag, _, ..rest]
+      if flag == "--workspace"
+      || flag == "--config"
+      || flag == "--github"
+      || flag == "--allow"
+      || flag == "--link"
+    -> only_ensure_flags(rest)
+    [flag, ..]
+      if flag == "--name"
+      || flag == "--mem"
+      || flag == "--cpus"
+      || flag == "--fresh"
+      || flag == "--provision"
+    ->
+      Error(
+        flag
+        <> " is not an ensure option: ensure names the guest after its "
+        <> "workspace and keeps its root; use `loom vm up` for that",
+      )
+    [_, ..rest] -> only_ensure_flags(rest)
   }
 }
 
@@ -550,10 +621,11 @@ fn default_up() -> UpOptions {
     memory_mib: 2048,
     cpus: 4,
     config: None,
-    github: GitHubFromGh,
+    github: None,
     freshness: Resume,
     allow: [],
     provision: None,
+    link: None,
   )
 }
 
@@ -596,7 +668,11 @@ fn up_flags(
       }
     ["--github", value, ..rest] -> {
       use github <- result.try(github_access(value))
-      up_flags(rest, UpOptions(..options, github:))
+      up_flags(rest, UpOptions(..options, github: Some(github)))
+    }
+    ["--link", value, ..rest] -> {
+      use link <- result.try(link_kind(value))
+      up_flags(rest, UpOptions(..options, link: Some(link)))
     }
 
     // The one flag with no value: starting again is a choice, not a setting.
@@ -623,6 +699,16 @@ fn up_flags(
   }
 }
 
+/// Reads `--link`'s value.
+fn link_kind(value: String) -> Result(LinkKind, String) {
+  // The two words are the ones `status` and the guest's `link` record use.
+  case value {
+    "distribution" -> Ok(Distribution)
+    "untrusted" -> Ok(Untrusted)
+    _ -> Error("--link takes distribution or untrusted, not " <> value)
+  }
+}
+
 /// Reads `--github`'s value.
 fn github_access(value: String) -> Result(GitHubAccess, String) {
   // The three sources are spelled as `loom-vm run --github-token-from` spells
@@ -632,6 +718,79 @@ fn github_access(value: String) -> Result(GitHubAccess, String) {
     "env" -> Ok(GitHubFromEnv)
     "off" -> Ok(GitHubOff)
     _ -> Error("--github must be gh, env or off, got " <> value)
+  }
+}
+
+// --- the GitHub access a guest keeps -----------------------------------------
+
+/// The name of the file in a guest's directory that records its GitHub access:
+/// the word `gh`, `env` or `off`, then a newline.
+pub const github_file = "github"
+
+/// The access a guest has when nothing was ever chosen.
+pub const default_github = GitHubFromGh
+
+/// The text of a guest's github file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.encode_github(vm_spec.GitHubOff) == "off\n"
+/// ```
+pub fn encode_github(access: GitHubAccess) -> String {
+  case access {
+    GitHubFromGh -> "gh\n"
+    GitHubFromEnv -> "env\n"
+    GitHubOff -> "off\n"
+  }
+}
+
+/// Reads a github file. Only one of the three words, with whitespace around it
+/// ignored, is a record; anything else is refused whole, so a hand-edited file
+/// is never half-read into a different egress posture.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.decode_github("env\n") == Ok(vm_spec.GitHubFromEnv)
+/// assert result.is_error(vm_spec.decode_github("on\n"))
+/// ```
+pub fn decode_github(text: String) -> Result(GitHubAccess, String) {
+  case string.trim(text) {
+    "gh" -> Ok(GitHubFromGh)
+    "env" -> Ok(GitHubFromEnv)
+    "off" -> Ok(GitHubOff)
+    _ -> Error("it must hold one word, gh, env or off")
+  }
+}
+
+/// The GitHub access a guest is launched with. A flag given replaces whatever
+/// was recorded. With none given, a resume keeps the recorded access and
+/// `--fresh` starts from the default, as they do for the allowlist and the
+/// root.
+///
+/// The record exists because the access is the guest's egress posture: a guest
+/// first started with `--github off` and resumed with no flag must not come
+/// back with the default `gh` and a credential proxy it never had. A guest with
+/// no record (one started before the record existed) takes the default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.effective_github(None, Some(vm_spec.GitHubOff), vm_spec.Resume)
+///   == vm_spec.GitHubOff
+/// assert vm_spec.effective_github(None, Some(vm_spec.GitHubOff), vm_spec.Fresh)
+///   == vm_spec.GitHubFromGh
+/// ```
+pub fn effective_github(
+  given: Option(GitHubAccess),
+  recorded: Option(GitHubAccess),
+  freshness: Freshness,
+) -> GitHubAccess {
+  case given, freshness {
+    Some(access), _ -> access
+    None, Resume -> option.unwrap(recorded, default_github)
+    None, Fresh -> default_github
   }
 }
 
@@ -1209,6 +1368,25 @@ pub fn stranded_runners(
   state_disk: String,
   runner: Option(String),
 ) -> List(Int) {
+  stranded_runners_under(
+    listing,
+    root,
+    state_disk,
+    option.map(runner, fn(path) { [path <> " "] }),
+  )
+}
+
+/// `stranded_runners` for a manifest that may not be the only one a live guest
+/// was started from. Setup moves the manifest to `cache/<new tag>` while guests
+/// of the old release keep running, and such a guest's runner no longer starts
+/// with the current manifest's path, so each prefix given counts: the manifest's
+/// runner and the vm home's cache directory. `None` is the JSON alone.
+pub fn stranded_runners_under(
+  listing: String,
+  root: String,
+  state_disk: String,
+  prefixes: Option(List(String)),
+) -> List(Int) {
   let names_root = "\"root_path\":\"" <> root <> "\""
   let names_disk = "\"path\":\"" <> state_disk <> "\""
 
@@ -1226,8 +1404,8 @@ pub fn stranded_runners(
 
     // Only a command that starts with the manifest's runner counts when the
     // manifest is at hand.
-    let started_by_runner = case runner {
-      Some(path) -> string.starts_with(command, path <> " ")
+    let started_by_runner = case prefixes {
+      Some(paths) -> list.any(paths, string.starts_with(command, _))
       None -> True
     }
 
@@ -1356,7 +1534,7 @@ fn name_flag(arguments: List(String)) -> Result(String, String) {
   // like it did something.
   case arguments {
     [] -> Ok(default_name)
-    ["--name", value] -> valid_name(value) |> result.replace(value)
+    ["--name", value] -> valid_existing_name(value) |> result.replace(value)
     ["--name"] -> Error("--name needs a value")
     [word, ..] -> Error("unexpected argument " <> word)
   }
@@ -1372,7 +1550,7 @@ fn logs_flags(
   case arguments {
     [] -> Ok(Logs(name, lines))
     ["--name", value, ..rest] -> {
-      use Nil <- result.try(valid_name(value))
+      use Nil <- result.try(valid_existing_name(value))
       logs_flags(rest, value, lines)
     }
     ["--lines", value, ..rest] -> {
@@ -1392,7 +1570,7 @@ fn remove_flags(
   case arguments, command {
     [], _ -> Ok(command)
     ["--name", value, ..rest], Remove(_, config, consent) -> {
-      use Nil <- result.try(valid_name(value))
+      use Nil <- result.try(valid_existing_name(value))
       remove_flags(rest, Remove(value, config, consent))
     }
     ["--config", value, ..rest], Remove(name, _, consent) ->
@@ -1412,7 +1590,7 @@ fn sync_flags(
   case arguments {
     [] -> Ok(options)
     ["--name", value, ..rest] -> {
-      use Nil <- result.try(valid_name(value))
+      use Nil <- result.try(valid_existing_name(value))
       sync_flags(rest, SyncOptions(..options, name: value))
     }
     ["--workspace", value, ..rest] -> {
@@ -1457,10 +1635,32 @@ fn unknown_flag(arguments: List(String)) -> Result(a, String) {
 /// assert result.is_error(vm_spec.valid_name(vm_spec.authority_dir))
 /// ```
 pub fn valid_name(name: String) -> Result(Nil, String) {
+  check_name(name, [authority_dir, link_dir])
+}
+
+/// Whether text can name a guest that may already exist. `valid_name` refuses
+/// `link` for a guest being made, because the untrusted link's credentials
+/// live in the vm home's directory of that name; a distribution guest made
+/// before that rule can still be stopped, read and removed by its name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.valid_existing_name("link") == Ok(Nil)
+/// assert result.is_error(vm_spec.valid_existing_name(vm_spec.authority_dir))
+/// ```
+pub fn valid_existing_name(name: String) -> Result(Nil, String) {
+  check_name(name, [authority_dir])
+}
+
+/// The shared rule of `valid_name` and `valid_existing_name`: the executor
+/// grammar, the length limit, and the directory names of the vm home that no
+/// guest can have, which differ between the two.
+fn check_name(name: String, reserved: List(String)) -> Result(Nil, String) {
   case
     catalogue.is_executor_name(name)
     && string.byte_size(name) <= name_limit
-    && name != authority_dir
+    && !list.contains(reserved, name)
   {
     True -> Ok(Nil)
     False ->
@@ -1473,6 +1673,88 @@ pub fn valid_name(name: String) -> Result(Nil, String) {
       )
   }
 }
+
+/// The guest a command without `--name` means. One guest per workspace made the
+/// literal default `vm` the wrong guess in most directories, so when no guest
+/// is named `vm` and the guest of this directory's workspace
+/// (`guest_name_for`) exists, that guest is meant. `up` keeps `vm`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.default_guest(vm_spec.Absent, "proj-1a2b3c", vm_spec.Present)
+///   == "proj-1a2b3c"
+/// assert vm_spec.default_guest(vm_spec.Present, "proj-1a2b3c", vm_spec.Present)
+///   == "vm"
+/// ```
+pub fn default_guest(
+  named_vm: Presence,
+  workspace_guest: String,
+  workspace_guest_present: Presence,
+) -> String {
+  // A guest named `vm` keeps the name it has always had; otherwise the
+  // directory's own guest, when there is one.
+  case named_vm, workspace_guest_present {
+    Absent, Present -> workspace_guest
+    _, _ -> default_name
+  }
+}
+
+/// The name of the guest that serves one workspace, from the workspace's
+/// canonical path: the directory's last segment, then six hexadecimal digits of
+/// the path's SHA-256.
+///
+/// One guest serves one workspace, because `up` refuses a guest that runs and a
+/// second workspace cannot join it without a restart, and because separate
+/// guests keep one project's agent away from another project's copy. The name
+/// must therefore be the same every time for one path (`loom --vm` finds its
+/// guest again by it) and different for two directories that share a last
+/// segment, which the digest provides. The slug keeps the lowercase letters,
+/// digits, `_` and `-` of the segment, is prefixed with `w` when what remains
+/// is empty or does not start with a letter, and is cut so the whole name is
+/// at most `name_limit` bytes, so the result always passes `valid_name`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.starts_with(vm_spec.guest_name_for("/src/Loom"), "loom-")
+/// assert vm_spec.guest_name_for("/src/a") != vm_spec.guest_name_for("/dst/a")
+/// assert vm_spec.valid_name(vm_spec.guest_name_for("/")) == Ok(Nil)
+/// ```
+pub fn guest_name_for(workspace: String) -> String {
+  let digest =
+    crypto.hash(crypto.Sha256, bit_array.from_string(workspace))
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> string.slice(0, digest_digits)
+
+  // The slug budget is what the digest and its separator leave.
+  let budget = name_limit - digest_digits - 1
+  let segment =
+    string.split(workspace, "/")
+    |> list.last
+    |> result.unwrap("")
+  let kept =
+    string.lowercase(segment)
+    |> string.to_graphemes
+    |> list.filter(string.contains("abcdefghijklmnopqrstuvwxyz0123456789_-", _))
+    |> string.concat
+
+  // A name must start with a letter, so a segment that does not gets one.
+  let slug = case string.first(kept) {
+    Ok(first) ->
+      case string.contains("abcdefghijklmnopqrstuvwxyz", first) {
+        True -> kept
+        False -> "w" <> kept
+      }
+    Error(Nil) -> "w"
+  }
+
+  string.slice(slug, 0, budget) <> "-" <> digest
+}
+
+// How many hexadecimal digits of the path's digest end a guest's name.
+const digest_digits = 6
 
 /// Whether a directory's last segment can name its copy in the guest and its
 /// `[workspaces.<name>]` row: one segment of letters, digits, `.`, `_` and
@@ -1675,6 +1957,70 @@ pub fn check_revision(
         <> "Install the artifacts for this release with `loom vm setup`, or "
         <> "with `make vmm-install-dev` in a checkout of it.",
       )
+  }
+}
+
+/// What to do about the artifact manifest before a guest boots.
+pub type ManifestAction {
+  /// The installed manifest is usable as it is.
+  UseManifest(manifest: Manifest)
+
+  /// Run `loom vm setup` for this build, then use what it installs. The text
+  /// is the progress line that says why.
+  InstallRelease(why: String)
+
+  /// Neither use nor install: this build has no release to install from, or
+  /// the manifest says something a build must not boot from.
+  RefuseManifest(reason: String)
+}
+
+/// Decides what `up` does about the manifest: use it, install the running
+/// build's release, or refuse.
+///
+/// A manifest that is missing and one from another release have the same
+/// remedy, `loom vm setup`, and a failed setup changes nothing, so a build with
+/// a release runs it for either instead of refusing and naming the command.
+/// Every developer meets the second case after `loom update`. A development
+/// build has no release to install, so it keeps both refusals, which name
+/// `make vmm-install-dev`. A manifest the check passes is used, including a
+/// `dev` one, which a release build also accepts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert vm_spec.InstallRelease(_) =
+///   vm_spec.manifest_action(None, "0.3.2", "abc1234", "/h/manifest.json")
+/// ```
+pub fn manifest_action(
+  found: Option(Manifest),
+  version: String,
+  commit: String,
+  path: String,
+) -> ManifestAction {
+  let release = release_candidates(version, commit)
+
+  // Whether the manifest is missing or only stale decides the words, and
+  // whether the build has a release decides whether setup can fix either.
+  case found, release {
+    None, Ok(_) ->
+      InstallRelease(
+        "No microVM artifacts are installed; running `loom vm setup` for this "
+        <> "build.",
+      )
+    None, Error(_) -> RefuseManifest(missing_manifest(path, version))
+    Some(manifest), _ ->
+      case check_revision(manifest, commit), release {
+        Ok(Nil), _ -> UseManifest(manifest)
+        Error(_), Ok(_) ->
+          InstallRelease(
+            "The installed microVM artifacts were built from revision "
+            <> manifest.revision
+            <> " and this loom is "
+            <> commit
+            <> "; running `loom vm setup` for this build.",
+          )
+        Error(reason), Error(_) -> RefuseManifest(reason)
+      }
   }
 }
 
@@ -2158,13 +2504,31 @@ pub fn guest_config(
   github: GitHubAccess,
   allow: List(String),
 ) -> String {
+  // The executor's own tables come from the bundle, so its node name, its
+  // listen port and its trust in the orchestrator are what the plan said.
   let tables =
     distribution_bundle.config_tables(bundle, guest_files())
     |> list.map(fn(table) { table.text })
+  guest_config_with(tables, workspaces, github, allow)
+}
 
-  // The executor's own tables come from the bundle, so its node name, its
-  // listen port and its trust in the orchestrator are what the plan said. The
-  // workspace rows are the one thing the plan leaves to `up`.
+/// The executor's `loom.toml` around the tables that say how it is reached.
+/// The workspace rows are the one thing a plan leaves to `up`, and the model,
+/// workspace and tools tables are the same for every kind of link
+/// (`client/vm_link.guest_config` passes the untrusted link's listener).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let text = vm_spec.guest_config_with([], ["proj"], vm_spec.GitHubOff, [])
+/// assert string.contains(text, "[workspaces.proj]")
+/// ```
+pub fn guest_config_with(
+  tables: List(String),
+  workspaces: List(String),
+  github: GitHubAccess,
+  allow: List(String),
+) -> String {
   string.join(
     list.flatten([
       [unused_model],
@@ -2237,7 +2601,20 @@ pub type Launch {
     /// The hosts the guest may reach besides GitHub's. They are allowed and
     /// never injection hosts: nothing here reaches `--inject-host`.
     allow: List(String),
+    /// How the forwarded port is announced.
+    reach: Reach,
   )
+}
+
+/// How `loom-vm run` makes the guest's port reachable from the host.
+pub type Reach {
+  /// `--publish`: forward the port and register the executor's node name in
+  /// the host's epmd, which a distribution peer is found by.
+  Publish
+
+  /// `--forward`: forward the port and register nothing, so the host's epmd
+  /// lists no node for the guest. The untrusted link dials the port directly.
+  Forward
 }
 
 /// `text`, a `loom.toml` just enrolled for a standing guest, with its
@@ -2326,17 +2703,28 @@ pub fn launch_arguments(launch: Launch) -> List(String) {
       "0",
       "--state-disk",
       launch.state_disk,
-      "--publish",
-      launch.names.executor_short
-        <> ":"
-        <> int.to_string(launch.host_port)
-        <> ":"
-        <> int.to_string(guest_port),
     ],
+    reach_arguments(launch),
     github,
     list.flat_map(launch.allow, fn(host) { ["--allow", host] }),
     ["--", guest_entry, node_dir, "--state-device", state_device],
   ])
+}
+
+/// The flag that forwards the guest's port: `--publish` also registers the
+/// executor's node in the host's epmd, and `--forward` does not.
+fn reach_arguments(launch: Launch) -> List(String) {
+  let host = int.to_string(launch.host_port)
+  let guest = int.to_string(guest_port)
+
+  // Only a distribution peer is found through epmd.
+  case launch.reach {
+    Publish -> [
+      "--publish",
+      launch.names.executor_short <> ":" <> host <> ":" <> guest,
+    ]
+    Forward -> ["--forward", host <> ":" <> guest]
+  }
 }
 
 /// `--allow` for each GitHub host.
@@ -2881,16 +3269,48 @@ pub type Table {
 /// assert vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.Installed) != []
 /// ```
 pub fn daemon_note(outcome: DaemonOutcome, table: Table) -> List(String) {
+  daemon_note_about(outcome, "the table", restart_reason(table), table)
+}
+
+/// The lines `up` ends with about the daemon, for a change to the daemon's
+/// configuration that it reads only at its start: `effect` names what the next
+/// start puts in effect, and `reason` says whether a running daemon must
+/// restart and why. `table` says whether this `up` made the change, because
+/// only then does the note name the command that stops the daemon.
+/// `daemon_note` is the words for a `[distribution]` table, and
+/// `client/vm_link.daemon_lines` the words for an untrusted guest's row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.daemon_note_about(
+///     vm_spec.NoDaemon,
+///     "the row",
+///     "Restart it.",
+///     vm_spec.Installed,
+///   )
+///   != []
+/// ```
+pub fn daemon_note_about(
+  outcome: DaemonOutcome,
+  effect: String,
+  reason: String,
+  table: Table,
+) -> List(String) {
   // Each outcome is one thing said, and only a daemon that is still running
   // gets the command that stops it, and only after an install.
   case outcome {
     NoDaemon -> [
-      "The next `loom` command starts the daemon with the table in effect.",
+      "The next `loom` command starts the daemon with "
+        <> effect
+        <> " in effect.",
       "",
     ]
     Stopped -> [
       "Your daemon held no sessions, so it was stopped. The next `loom` "
-        <> "command starts it with the table in effect.",
+        <> "command starts it with "
+        <> effect
+        <> " in effect.",
       "",
     ]
     NotStopped(pid, why) ->
@@ -2899,7 +3319,7 @@ pub fn daemon_note(outcome: DaemonOutcome, table: Table) -> List(String) {
           "Your daemon holds no sessions but did not stop ("
           <> why
           <> "). "
-          <> restart_reason(table),
+          <> reason,
         ],
         stop_lines(table, pid, "Stop it"),
         [""],
@@ -2912,7 +3332,7 @@ pub fn daemon_note(outcome: DaemonOutcome, table: Table) -> List(String) {
           <> " session"
           <> plural(sessions)
           <> ", so it was left running. "
-          <> restart_reason(table),
+          <> reason,
         ],
         stop_lines(table, pid, "When they are finished, stop it"),
         [""],
@@ -2922,7 +3342,7 @@ pub fn daemon_note(outcome: DaemonOutcome, table: Table) -> List(String) {
         [
           "Your daemon is running and did not say whether it holds sessions, "
           <> "so it was left running. "
-          <> restart_reason(table),
+          <> reason,
         ],
         stop_lines(table, pid, "When it holds none, stop it"),
         [""],
@@ -2957,6 +3377,407 @@ fn plural(count: Int) -> String {
     1 -> ""
     _ -> "s"
   }
+}
+
+// --- ensure: one guest per workspace, made ready --------------------------------
+
+/// The exit status `ensure` ends with when the only thing missing is a running
+/// daemon. It is not otherwise used by `loomd vm`, whose failures all exit 1.
+pub const daemon_required_status = 75
+
+/// The last line of standard output that goes with `daemon_required_status`.
+pub const daemon_required_line = "daemon=required"
+
+/// What the host says about a guest's process and its executor node.
+pub type GuestState {
+  /// No process the pid record names is there.
+  GuestStopped
+
+  /// The process is there, but its node is not in the host's epmd yet, so the
+  /// guest is booting or its executor failed.
+  GuestStarting(pid: Int)
+
+  /// The process is there and its node is in epmd: the executor serves.
+  GuestServing(pid: Int)
+}
+
+/// Whether the host epmd lists the guest's executor node.
+pub type Registration {
+  Registered
+  Unregistered
+}
+
+/// The guest's state from the pid record's process, when it is still there,
+/// and the epmd listing. A node listed with no process is a stranded runner,
+/// which `up` refuses on its own account, so it reads as stopped here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.guest_state(Some(7), vm_spec.Registered)
+///   == vm_spec.GuestServing(7)
+/// assert vm_spec.guest_state(None, vm_spec.Registered) == vm_spec.GuestStopped
+/// ```
+pub fn guest_state(pid: Option(Int), registration: Registration) -> GuestState {
+  case pid, registration {
+    None, _ -> GuestStopped
+    Some(pid), Registered -> GuestServing(pid)
+    Some(pid), Unregistered -> GuestStarting(pid)
+  }
+}
+
+/// Whether bringing the guest up would enrol it in a ledger deployment that
+/// already exists, which only a running daemon can do.
+pub type EnrolmentNeed {
+  /// The guest has its bundles, or the configuration holds no ledger
+  /// deployment to join, so enrolment needs no daemon.
+  NeedsNoDaemon
+
+  /// The guest has no bundles and the default configuration holds a ledger
+  /// deployment: the second and later guests of a machine.
+  JoinsLedger
+}
+
+/// Whether the daemon of the default configuration is running.
+pub type DaemonFact {
+  DaemonRunning
+  DaemonStopped
+}
+
+/// Everything `ensure` looks at before it changes anything.
+pub type EnsureFacts {
+  EnsureFacts(
+    /// The guest's name, for the words of a refusal.
+    name: String,
+    /// What the process table and epmd say.
+    state: GuestState,
+    /// The manifest decision, or why the manifest could not be read.
+    manifest: Result(ManifestAction, String),
+    /// Whether enrolment will need the daemon.
+    enrolment: EnrolmentNeed,
+    /// Whether the daemon runs.
+    daemon: DaemonFact,
+  )
+}
+
+/// What `ensure` does next.
+pub type EnsureStep {
+  /// The guest serves already: print the line and stop, touching nothing.
+  AlreadyServing
+
+  /// Enrolment needs the daemon and none runs. Nothing was written. The caller
+  /// is a launcher that starts daemons, and answers with
+  /// `daemon_required_status`.
+  NeedsDaemon
+
+  /// Run `up` for the guest, fresh or resumed.
+  Boot
+
+  /// Do nothing and say why.
+  Refuse(reason: String)
+}
+
+/// Decides `ensure`'s next step from the facts.
+///
+/// The order is the point. A serving guest answers first, before the manifest
+/// is looked at, so the common case reads nothing else and a damaged manifest
+/// cannot break a guest that already runs. A guest that is running but not
+/// registered is refused, since `up` refuses a running guest and a second
+/// process on its root would corrupt it. Then a manifest that must be refused
+/// is, then a missing daemon is reported, before any setup, so that answer
+/// leaves the disk as it was. Only then does a missing or stale manifest
+/// start setup, and only a usable one boots.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.ensure_step(facts_with(vm_spec.GuestServing(7)))
+///   == vm_spec.AlreadyServing
+/// ```
+pub fn ensure_step(facts: EnsureFacts) -> EnsureStep {
+  // The guest's own state decides first; the rest matters only for a guest
+  // that is not running.
+  case facts.state {
+    GuestServing(_) -> AlreadyServing
+    GuestStarting(pid) -> Refuse(starting_refusal(facts.name, pid))
+    GuestStopped -> stopped_step(facts)
+  }
+}
+
+/// The step for a guest that is not running: a manifest that cannot be used
+/// refuses, a join with no daemon waits for one, and only then does setup or
+/// the boot follow.
+fn stopped_step(facts: EnsureFacts) -> EnsureStep {
+  // A manifest that must be refused ends it before anything else is asked.
+  case facts.manifest {
+    Error(reason) -> Refuse(reason)
+    Ok(RefuseManifest(reason)) -> Refuse(reason)
+    Ok(_) -> usable_step(facts.enrolment, facts.daemon)
+  }
+}
+
+/// The step once the manifest is usable or installable: the daemon question
+/// comes first so that its answer leaves the disk unchanged. Setup itself is
+/// not a step of its own: `bring_up` installs a missing or stale manifest as
+/// `up` does, so a `Boot` covers it.
+fn usable_step(enrolment: EnrolmentNeed, daemon: DaemonFact) -> EnsureStep {
+  // A join with the daemon down is reported first; anything else boots.
+  case enrolment, daemon {
+    JoinsLedger, DaemonStopped -> NeedsDaemon
+    _, _ -> Boot
+  }
+}
+
+/// Why `ensure` will not start a guest whose process is there and whose node is
+/// not ready: still booting, since the node is listed before the console says
+/// the executor serves, or failed.
+fn starting_refusal(name: String, pid: Int) -> String {
+  "the guest "
+  <> name
+  <> " runs as process "
+  <> int.to_string(pid)
+  <> " but its executor is not ready yet, so it is still booting or it "
+  <> "failed. Wait and run this again, or stop it with `loom vm down --name "
+  <> name
+  <> "` and read `loom vm logs --name "
+  <> name
+  <> "`."
+}
+
+/// The line `ensure` ends its standard output with: the executor and the
+/// registered workspace name that `loom --executor E --workspace W` takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.ensure_line("proj-1a2b3c", "proj")
+///   == "executor=proj-1a2b3c workspace=proj"
+/// ```
+pub fn ensure_line(executor: String, workspace: String) -> String {
+  "executor=" <> executor <> " workspace=" <> workspace
+}
+
+/// The refusal `ensure` ends with when `up` left the user's daemon running with
+/// the guest's `[distribution]` table unread, or none when the daemon is
+/// stopped or was never running. One sentence, naming how many sessions hold
+/// the daemon and the exact command that restarts it; the guest stays up, so
+/// the next `loom --vm` after the restart finds it serving.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.restart_refusal(vm_spec.NoDaemon) == Ok(Nil)
+/// assert result.is_error(vm_spec.restart_refusal(vm_spec.Holding(7, 2)))
+/// ```
+pub fn restart_refusal(outcome: DaemonOutcome) -> Result(Nil, String) {
+  // One sentence each, ending with the command, so a script that shows the
+  // error shows what to run.
+  let then = fn(pid) {
+    "; the guest stays up, so after the restart the next `loom --vm` uses it "
+    <> "at once. Restart it with `"
+    <> stop_command(pid)
+    <> "`"
+  }
+
+  // Each outcome that left a daemon running is a sentence of its own; the two
+  // that left none need no restart.
+  case outcome {
+    NoDaemon | Stopped -> Ok(Nil)
+    Holding(pid, sessions) ->
+      Error(
+        "your daemon holds "
+        <> int.to_string(sessions)
+        <> " session"
+        <> plural(sessions)
+        <> " and must restart once to enable microVMs"
+        <> then(pid)
+        <> " when they are finished.",
+      )
+    NotStopped(pid, why) ->
+      Error(
+        "your daemon did not stop ("
+        <> why
+        <> ") and must restart once to enable microVMs"
+        <> then(pid)
+        <> ".",
+      )
+    Unasked(pid) ->
+      Error(
+        "your daemon did not say whether it holds sessions and must restart "
+        <> "once to enable microVMs"
+        <> then(pid)
+        <> " when it holds none.",
+      )
+  }
+}
+
+// --- what a first guest may write, and what a kept one still owes --------------
+
+/// Whether the home already has an `.erlang.cookie`.
+pub type HomeCookie {
+  NoHomeCookie
+  HomeCookieThere
+}
+
+/// Decides, before anything is minted, whether a deployment can be installed in
+/// a configuration that holds none. A deployment's cookie is minted fresh, so
+/// it can never equal a file that already exists, and `install` refuses to
+/// replace that file. Deciding it here leaves nothing behind: the bundles and
+/// the sealed key are written only after this answers `Ok`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.mint_check(vm_spec.NoHomeCookie, "/h/.erlang.cookie") == Ok(Nil)
+/// assert result.is_error(vm_spec.mint_check(vm_spec.HomeCookieThere, "/h/.erlang.cookie"))
+/// ```
+pub fn mint_check(cookie: HomeCookie, path: String) -> Result(Nil, String) {
+  case cookie {
+    NoHomeCookie -> Ok(Nil)
+    HomeCookieThere -> Error(cookie_refusal(path))
+  }
+}
+
+/// The refusal for a home that has a cookie already. It says what the choice
+/// costs, because the file is the one every other Erlang node of the user reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.cookie_refusal("/h/.erlang.cookie"), "nothing was written")
+/// ```
+pub fn cookie_refusal(path: String) -> String {
+  path
+  <> " already exists, and a guest's deployment needs its own cookie there. "
+  <> "Erlang reads that one file for every distributed node this user starts, "
+  <> "so `loom vm` will not replace it, and nothing was written. If no other "
+  <> "Erlang, Elixir or Gleam node of yours relies on that cookie, move it "
+  <> "aside and run this again; otherwise this home cannot host a guest's "
+  <> "deployment."
+}
+
+/// What a guest with both of its bundles owes the configuration.
+pub type KeptStep {
+  /// The configuration holds no deployment, as after a refused install: the
+  /// bundles are installed now, which is the install that was refused.
+  InstallKept
+
+  /// The configuration holds a deployment: only the guest's row is checked.
+  CheckKeptRow
+}
+
+/// Decides what a resumed guest with orchestrator bundles does about the
+/// configuration. A deployment that is there means the earlier `up` installed
+/// it and the row is what must still exist. One that is not there means the
+/// earlier `up` minted the bundles and its install was refused, so reporting a
+/// missing row would be false: the bundles are installed instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.kept_step(Ok(vm_spec.NoDeployment)) == vm_spec.InstallKept
+/// ```
+pub fn kept_step(state: Result(DeploymentState, String)) -> KeptStep {
+  case state {
+    Ok(NoDeployment) -> InstallKept
+    Ok(LedgerDeployment(..)) | Ok(StaticDeployment) | Error(_) -> CheckKeptRow
+  }
+}
+
+/// Whether a `deployment.status` reply says the daemon runs without
+/// distribution, which means it has not read a `[distribution]` table. A reply
+/// that says nothing about it is not read as lacking it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.lacks_distribution(core_json.Object([#("distribution", core_json.String("none"))]))
+/// ```
+pub fn lacks_distribution(body: core_json.JsonValue) -> Bool {
+  case body {
+    core_json.Object(fields) ->
+      list.key_find(fields, "distribution") == Ok(core_json.String("none"))
+    _ -> False
+  }
+}
+
+/// The refusal for a guest enrolled in a configuration other than the default,
+/// whose daemon `ensure` cannot find or ask.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.other_config_refusal("/c/loom.toml"), "/c/loom.toml")
+/// ```
+pub fn other_config_refusal(config: String) -> String {
+  "the guest is enrolled in "
+  <> config
+  <> ", which is not the default configuration, so `ensure` cannot tell whether "
+  <> "the daemon running with it has read the deployment; restart that daemon "
+  <> "once to enable microVMs"
+}
+
+/// Why a serving guest is refused: its root came from another release than
+/// this build, so the executor protocol would be refused with no remedy. A
+/// development manifest keeps a root, as `root_step` does, and a build with no
+/// commit to compare cannot tell, so neither is refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.serving_release_refusal("vm", Some("abc1234"), "def5678", Some("def5678"))
+///   != Ok(Nil)
+/// ```
+pub fn serving_release_refusal(
+  name: String,
+  recorded: Option(String),
+  commit: String,
+  manifest_revision: Option(String),
+) -> Result(Nil, String) {
+  let comparable =
+    string.byte_size(commit) >= 7
+    && list.all(string.to_graphemes(commit), string.contains(
+      "0123456789abcdef",
+      _,
+    ))
+  let dev = manifest_revision == Some(dev_revision)
+
+  // The record is the host's own account of what the root was cloned from.
+  case comparable && !dev, recorded {
+    False, _ -> Ok(Nil)
+    True, Some(origin) if origin == commit -> Ok(Nil)
+    True, Some(origin) ->
+      case same_commit(origin, commit) {
+        True -> Ok(Nil)
+        False -> Error(stale_serving(name, Some(origin), commit))
+      }
+    True, None -> Error(stale_serving(name, None, commit))
+  }
+}
+
+/// The refusal for a serving guest whose root is from another release: what it
+/// came from, what this build is, and the command that stops it.
+fn stale_serving(
+  name: String,
+  origin: Option(String),
+  commit: String,
+) -> String {
+  // A root from before the record has no revision to name.
+  let from = case origin {
+    Some(origin) -> "revision " <> printable(origin)
+    None -> "an earlier loom that recorded none"
+  }
+
+  "the guest "
+  <> name
+  <> " runs a root cloned from "
+  <> from
+  <> " and this loom is "
+  <> printable(commit)
+  <> ", so a session on it would be refused on the protocol version. Stop it "
+  <> "with `loom vm down --name "
+  <> name
+  <> "`; the next start upgrades its root."
 }
 
 // --- the pid file and the epmd listing ---------------------------------------
