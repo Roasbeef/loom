@@ -4,6 +4,7 @@
 import client/daemon/domain as domain_service
 import client/daemon/manager
 import client/internal/instance_owner as custody
+import core/agency_limits
 import core/clock
 import core/ids
 import gleam/erlang/process
@@ -26,6 +27,7 @@ fn create(registry, key, workspace, scope) {
       option.None,
       "",
       "",
+      agency_limits.empty,
     ),
     directory: "/unopened-domain-admission/sessions",
     generator: ids.generator(clock.fixed(1), key),

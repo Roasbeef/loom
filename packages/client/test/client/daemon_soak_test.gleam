@@ -23,6 +23,7 @@ import client/owned_assembly_test
 import client/serve
 import client/session_socket_test as transfer
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import core/agency_limits
 import core/clock
 import core/entry
 import core/ids
@@ -245,6 +246,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
         None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),

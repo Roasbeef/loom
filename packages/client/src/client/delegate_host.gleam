@@ -81,6 +81,7 @@ import client/agency
 import client/daemon/manager
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/spawners.{type Spawner, InDirectory, InPool, OnExecutor}
+import core/agency_limits
 import core/ids
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -170,6 +171,7 @@ pub fn creation(
     model: None,
     executor:,
     pool:,
+    agency: agency_limits.empty,
   )
 }
 

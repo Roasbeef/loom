@@ -20,6 +20,7 @@ import client/internal/ffi_os
 import client/roster
 import client/session_directory
 import client/session_movers
+import core/agency_limits
 import core/clock
 import core/codec
 import core/entry
@@ -159,6 +160,7 @@ fn fixture_serving(
         None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1_700_000_000_000), 981),

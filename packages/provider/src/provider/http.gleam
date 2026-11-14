@@ -15,6 +15,7 @@
 //// event ever carries the request back out (spec §3.3 invariant 4).
 
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/int
 import provider/internal/ffi_httpc
 
 /// One outbound HTTP request, fully built.
@@ -150,6 +151,10 @@ pub type Transport {
   )
 }
 
+/// Default whole-attempt transport response timeout, in milliseconds (10 minutes + 30 seconds).
+/// Kept 30 seconds above `gateway.default_attempt_timeout_ms` so Gleam's attempt timer fires first.
+pub const default_response_timeout_ms = 630_000
+
 /// The production transport: Erlang `httpc` in asynchronous streaming
 /// mode, wrapped so chunks arrive as `HttpEvent` messages on the subject.
 /// The native owner is allocated while parked, then receives its begin permit
@@ -168,8 +173,23 @@ pub type Transport {
 /// ```
 ///
 pub fn httpc_transport() -> Transport {
+  httpc_transport_with_timeout(default_response_timeout_ms)
+}
+
+/// Constructs the production `httpc` streaming transport with an explicit
+/// whole-attempt response timeout in milliseconds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let transport = http.httpc_transport_with_timeout(600_000)
+/// // stream.run(transport, request, machine, ...)
+/// ```
+///
+pub fn httpc_transport_with_timeout(timeout_ms: Int) -> Transport {
+  let clamped_timeout_ms = int.max(timeout_ms, 1)
   Transport(prepare_streaming: fn(request, subject) {
-    start_httpc(request, subject)
+    start_httpc(request, subject, clamped_timeout_ms)
   })
 }
 
@@ -177,7 +197,9 @@ pub fn httpc_transport() -> Transport {
 fn start_httpc(
   request: HttpRequest,
   subject: Subject(HttpEvent),
+  timeout_ms: Int,
 ) -> Result(PreparedRequest, String) {
+  let HttpRequest(method:, url:, headers:, body:) = request
   let owner =
     ffi_httpc.prepare_stream_request(
       fn(status, headers) {
@@ -195,10 +217,11 @@ fn start_httpc(
       begin: fn() {
         ffi_httpc.begin_stream_request(
           owner,
-          request.method,
-          request.url,
-          request.headers,
-          request.body,
+          method,
+          url,
+          headers,
+          body,
+          timeout_ms,
         )
       },
     ),

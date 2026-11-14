@@ -9,6 +9,7 @@
 //// no composer; the sidebar's filter pills and groups; and that every handler the
 //// composer adds is beneath the region the owner's socket admits.
 
+import core/agency_limits
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -71,10 +72,11 @@ fn recording(
   String,
   creations.Sharing,
   creations.Roles,
+  agency_limits.AgencyLimits,
   String,
   fn(creations.Answer) -> Nil,
 ) -> Nil {
-  fn(place, name, sharing, roles, prompt, _) {
+  fn(place, name, sharing, roles, _, prompt, _) {
     process.send(asked, #(place, name, sharing, roles, prompt))
   }
 }

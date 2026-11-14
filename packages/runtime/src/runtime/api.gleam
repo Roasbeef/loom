@@ -879,7 +879,7 @@ fn accept_with_child_run(
       runtime,
     ))
     use #(leaf_seq, leaf) <- result.try(read_leaf(runtime))
-    use pending <- result.try(read_pending_for(runtime, request))
+    use pending <- result.try(read_pending_for(runtime, request, strand_state))
     use defaults <- result.try(run_defaults_cell(runtime))
     let #(now, generator) = mint_context(runtime)
     let ctx =
@@ -4198,47 +4198,43 @@ fn read_leaf(
   }
 }
 
-// The queue read, scoped to the one admission that consumes it.
-// `accept_run` places every captured next-run item from its stored
-// payload, so a run has to see the queue and has to refuse when a
-// captured id's payload is missing or undecodable. Compaction and
-// navigation carry `pending_next_run` across untouched and never read
-// `ctx.pending` at all, so for them the empty dict is the whole truth.
-//
-// The distinction is worth a function because `pending.entry` keys are
-// entry ids with no strand in them, and `read_pending` decodes every
-// one of them under `try_map`. Reading the queue for a structural
-// admission therefore let one strand's corrupt queue item refuse every
-// other strand's compaction, and made a path that wants three point
-// lookups scan the whole session (issue #70).
+// Only run acceptance consumes captured next-run IDs. Structural requests
+// preserve the queue without decoding it.
 /// Reads pending queue entries needed for the given accept request kind.
 fn read_pending_for(
   runtime: Runtime,
   request: acceptance.AcceptRequest,
+  strand_state: StrandState,
 ) -> Result(dict.Dict(String, operation.PendingEntry), ApiError) {
+  // Only run acceptance places the captured next-run payloads.
   case request {
-    AcceptRun(..) -> read_pending(runtime)
+    AcceptRun(..) -> {
+      let w = writer_subject(runtime)
+      let keys = list.map(strand_state.pending_next_run, ids.entry_id_to_string)
+      use cells <- result.try(
+        writer.get_registers_batched(w, register.PendingEntry, keys)
+        |> result.map_error(read_failure),
+      )
+      list.try_fold(keys, dict.new(), fn(pending, key) {
+        let cell = dict.get(cells, key) |> option.from_result
+
+        // Leave missing IDs to the acceptance machine's corruption check.
+        case cell {
+          None -> Ok(pending)
+          Some(storage.Register(value:, ..)) -> {
+            use payload <- result.try(
+              codec.decode_pending_entry(value.payload)
+              |> result.map_error(fn(report) {
+                ReadFailed(reason: report.boundary)
+              }),
+            )
+            Ok(dict.insert(pending, key, payload))
+          }
+        }
+      })
+    }
     AcceptCompaction(..) | AcceptNavigation(..) -> Ok(dict.new())
   }
-}
-
-/// Reads all pending entries from storage.
-fn read_pending(
-  runtime: Runtime,
-) -> Result(dict.Dict(String, operation.PendingEntry), ApiError) {
-  let w = writer_subject(runtime)
-  use cells <- result.try(
-    writer.list_registers(w, register.PendingEntry, None)
-    |> result.map_error(fn(error) { read_failure(error) }),
-  )
-  cells
-  |> list.try_map(fn(pair) {
-    let #(key, storage.Register(value:, ..)) = pair
-    codec.decode_pending_entry(value.payload)
-    |> result.map(fn(pending) { #(key, pending) })
-    |> result.map_error(fn(report) { ReadFailed(reason: report.boundary) })
-  })
-  |> result.map(dict.from_list)
 }
 
 /// Reads and decodes a register value from storage.
@@ -4283,6 +4279,8 @@ fn describe_storage(error: storage.StorageError) -> String {
     storage.CorruptRow(report:) -> "corrupt row at " <> report.boundary
     storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)
     storage.BackendFault(reason:) -> reason
+    storage.RegisterReadLimitExceeded(limit: _) ->
+      "register read limit exceeded"
     storage.HandleClosed -> "storage handle closed"
   }
 }

@@ -107,7 +107,7 @@ is buying nothing and the modules go under `client/dev/`.
 instrument *produces* and the governed plane *consumes*; they share three
 things and nothing else:
 
-1. **One trial recipe.** `serve.evolution_trial` (`serve.gleam:8622-8195`)
+1. **One trial recipe.** `serve.evolution_trial` (`serve.gleam:8708-8206`)
    builds a `Settings` for a fresh jailed session. Extract its body into
    `@internal pub fn trial_settings(settings, target, api, profiles, root, tag,
    base_policy) -> Settings` so `eval/trial.gleam` and the governed opener
@@ -350,7 +350,7 @@ applying it.
 Agency children (`sub:{parent}/{slug}-{digest}`, `agency.child_name`), the
 advisor strand (`advisor`, `client/advisor.ensure_strand`) and the
 `summarize`/`vision` routes. Per-role profile selection would need the strand
-or role at `compose_profile` (`provider/gateway.gleam:2104`) and a 9th field in
+or role at `compose_profile` (`provider/gateway.gleam:2136`) and a 9th field in
 `prompt.encode_profile` (`evolution/prompt.gleam:118-137`), hence a persisted-format
 bump and protocol-change 101. Deferred.
 
@@ -496,7 +496,7 @@ the rule cannot hold α on synthetic data it will not hold it on a model.
   clustering that prevents a leaked near-duplicate.
 - The seal: `evolution.compare` can name only a task set admitted into the
   *source session* by `admit_tasks` (`tasks.load`, `tasks.gleam:95-120`;
-  `serve.evolution_compare`, `serve.gleam:8557-8120`). The instrument's
+  `serve.evolution_compare`, `serve.gleam:8643-8131`). The instrument's
   `eval admit --split tune|validate` writes a v2 task set through the same
   operator door; `eval admit --split holdout` **does not exist** — the
   command refuses, and a lint-style test in `eval` asserts no holdout id
@@ -544,7 +544,7 @@ digest of the message list with these normalised: absolute paths under
 the trial root → `<root>`, ISO dates → `<date>`, tool-use ids kept (they
 come from the tape, so they recur). Determinism needs: `Settings` with a
 `clock.stepping` clock, a fixed trial tag (today minted from
-`token.production_entropy()` at `serve.gleam:8360`, so `trial_settings`
+`token.production_entropy()` at `serve.gleam:8444`, so `trial_settings`
 takes the tag as a parameter — part of the §2 extraction), and the agent's
 tools running against a workspace prepared identically (the tree id
 guarantees it). What the lane may claim: *the harness produced the same
@@ -630,7 +630,7 @@ the denominator.
 - `eval transcripts --state <dir> --since <date> --out <dir>` opens *copies*
   of session databases (`session.open_sqlite` takes a writer lease;
   `client_dev.gleam:15-17` carries the same warning), walks
-  `storage.scan_entries` (`storage.gleam:365`) and `storage.scan_usage` (`storage.gleam:402`), and
+  `storage.scan_entries` (`storage.gleam:391`) and `storage.scan_usage` (`storage.gleam:428`), and
   writes one JSONL per session with: user/assistant text through
   `trace.scrub_excerpt` (`evolution/trace.gleam:464`; thinking and images excluded
   as `trace.select` does, the trace section of `docs/architecture/evolution.md`), tool calls (name +

@@ -719,7 +719,7 @@ pub fn run_timeout_refuses_to_retry_stubborn_transport_owner_test() {
     as "the stubborn owner has not confirmed drain"
   assert context.cause == stream.RequestDeadline
   assert context.request_timeout_ms == Some(20)
-  assert context.cancellation_timeout_ms == Some(100)
+  assert context.cancellation_timeout_ms == Some(stream.attempt_cancel_grace_ms)
   assert receive_from(cancelled, 100) == Ok(Nil)
   assert process.is_alive(owner)
   process.kill(owner)
@@ -1069,4 +1069,41 @@ pub fn cancellation_retains_reported_usage_snapshot_test() {
   assert accounting.attempts(report) == 1
   assert usage.evidence == usage_evidence.partial(usage_evidence.Api)
   assert receive_from(cancelled, 1000) == Ok(Nil)
+}
+
+pub fn delayed_transport_drain_confirms_within_attempt_cancel_grace_test() {
+  let delayed =
+    http.Transport(prepare_streaming: fn(_request, _subject) {
+      let ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let stop = process.new_subject()
+          process.send(ready, stop)
+          let _cancel = process.receive_forever(stop)
+          process.sleep(200)
+        })
+      let assert Ok(stop) = process.receive(ready, within: 1000)
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(stop, Nil)
+          }),
+          begin: fn() { Nil },
+        ),
+      )
+    })
+  let outcome =
+    stream.run(
+      delayed,
+      http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
+      echo_machine(),
+      fn(_delta) { Nil },
+      control: process_subject(),
+      consumer: process.self(),
+      within: 20,
+    )
+  let assert stream.AttemptTerminal(stream.Failed(error, _)) = outcome
+    as "a 200 ms TLS close still drains cleanly inside the 1000 ms grace"
+  let assert stream.TransportFailed("timed out waiting for the provider") =
+    stream.underlying_error(error)
 }

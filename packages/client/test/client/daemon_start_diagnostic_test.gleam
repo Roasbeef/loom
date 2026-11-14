@@ -10,6 +10,7 @@ import client/daemon_server_test as wire
 import client/internal/ffi_os
 import client/owned_assembly_test
 import client/serve
+import core/agency_limits
 import core/clock
 import core/glance
 import core/ids
@@ -80,6 +81,7 @@ pub fn daemon_start_diagnostic_classifies_missing_helper_without_raw_error_test(
         option.None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), 992),
@@ -219,6 +221,7 @@ fn rejected_configuration(defect: ConfigDefect) {
         option.None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), 993),

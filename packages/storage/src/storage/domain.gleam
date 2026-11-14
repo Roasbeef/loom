@@ -7,6 +7,7 @@
 //// The daemon must establish stopped custody and owner acknowledgement before
 //// calling isolate; the DAL supplies atomicity, not process-lifetime proof.
 
+import core/agency_limits
 import core/ids
 import gleam/list
 import gleam/result
@@ -125,6 +126,32 @@ pub fn reserve_session(
   catalogue.atomic(store, fn() {
     use saved <- result.try(catalogue.reserve_in_transaction(store, record))
     use _ <- result.try(bind_initial(store, saved, domain))
+    Ok(saved)
+  })
+}
+
+/// Atomically reserves a session registration, its domain mapping, and any
+/// optional per-session agency limits in one transaction.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // domain.reserve_session_with_agency(store, record, mapping, agency_limits.empty)
+/// ```
+pub fn reserve_session_with_agency(
+  store: Catalogue,
+  record: catalogue.Registration,
+  domain: Domain,
+  limits: agency_limits.AgencyLimits,
+) -> Result(catalogue.Registration, Error) {
+  catalogue.atomic(store, fn() {
+    use saved <- result.try(catalogue.reserve_in_transaction(store, record))
+    use _ <- result.try(bind_initial(store, saved, domain))
+    use Nil <- result.try(catalogue.set_agency_limits_in_transaction(
+      store,
+      saved.id,
+      limits,
+    ))
     Ok(saved)
   })
 }

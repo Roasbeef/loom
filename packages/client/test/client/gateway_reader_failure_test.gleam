@@ -16,6 +16,7 @@ import client/gateway
 import client/owned_assembly_test
 import client/protocol
 import client/serve
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -95,6 +96,7 @@ fn resident(epoch: String) -> Resident {
         None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), 414),

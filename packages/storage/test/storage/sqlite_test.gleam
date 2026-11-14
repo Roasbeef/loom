@@ -19,6 +19,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 import sqlight
+import storage/internal/register_query
 import storage/sqlite
 import storage/storage
 import support/fixtures
@@ -990,4 +991,67 @@ pub fn releasing_an_export_of_a_file_that_is_gone_is_nothing_to_do_test() {
   let path = fresh_path("export_release_absent")
   assert sqlite.release_export(path:, owner: "move:op1") == Ok(Nil)
   assert simplifile.is_file(path) == Ok(False)
+}
+
+// Selection happens in SQLite, before any register payload is decoded.
+pub fn selected_registers_ignore_unrelated_corruption_test() {
+  let path = fresh_path("register-selection")
+  let assert Ok(store) =
+    sqlite.open(sqlite.config(path:, owner: "w1"), clock.fixed(1000))
+  let value = register.value(json.Int(42))
+  let assert Ok(_) =
+    storage.commit(
+      store,
+      Tx(
+        writes: [
+          SetRegister(register.OpState, "same:good", value),
+          SetRegister(register.OpState, "same:bad", value),
+        ],
+        expected: [],
+      ),
+    )
+  let assert Ok(conn) = sqlight.open(path)
+  let assert Ok(_) =
+    sqlight.query(
+      "UPDATE registers SET value = ? WHERE key = ?",
+      conn,
+      [sqlight.blob(<<"bad":utf8>>), sqlight.text("same:bad")],
+      decode.dynamic,
+    )
+  let assert Ok(found) =
+    storage.get_registers(store, register.OpState, ["same:good"])
+  assert dict.size(found) == 1
+  let assert Ok(cell) = dict.get(found, "same:good")
+  assert cell.value == value
+  let assert Error(storage.CorruptRow(_)) =
+    storage.get_registers(store, register.OpState, ["same:good", "same:bad"])
+  assert sqlight.close(conn) == Ok(Nil)
+  assert storage.close(store) == Ok(Nil)
+}
+
+// The IN lookup must use the composite namespace/key primary key.
+pub fn register_batch_plan_uses_primary_key_test() {
+  let path = fresh_path("register-batch-plan")
+  let assert Ok(store) =
+    sqlite.open(sqlite.config(path:, owner: "w1"), clock.fixed(1000))
+  let assert Ok(conn) = sqlight.open(path)
+  let #(statement, args) = register_query.selected(register.OpState, ["a", "b"])
+  let assert Ok(lines) =
+    sqlight.query("EXPLAIN QUERY PLAN " <> statement, conn, args, {
+      use detail <- decode.field(3, decode.string)
+      decode.success(detail)
+    })
+  let #(full_statement, full_args) =
+    register_query.selected(register.OpState, list.repeat("a", 128))
+  assert list.length(full_args) == 129
+  assert list.length(string.split(full_statement, "?")) == 130
+  assert list.length(string.split(full_statement, "SELECT")) == 2
+  let plan = string.join(lines, "\n")
+  assert string.contains(
+    plan,
+    "SEARCH registers USING INDEX sqlite_autoindex_registers_1",
+  )
+  assert !string.contains(plan, "SCAN registers")
+  assert sqlight.close(conn) == Ok(Nil)
+  assert storage.close(store) == Ok(Nil)
 }

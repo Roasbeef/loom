@@ -10,6 +10,7 @@ import client/daemon/manager
 import client/daemon/root
 import client/internal/instance_owner as custody
 import client/serve
+import core/agency_limits
 import core/clock
 import core/ids
 import gleam/bit_array
@@ -123,6 +124,7 @@ fn created(serving: entrypoint.Serving(String), key: String, seed: Int) {
         option.None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),
@@ -410,6 +412,7 @@ pub fn daemon_listener_production_opens_two_owned_sessions_test() {
             option.None,
             "",
             "",
+            agency_limits.empty,
           ),
           directory: serving.ready.sessions_directory,
           generator: ids.generator(clock.fixed(1000), pair.1),

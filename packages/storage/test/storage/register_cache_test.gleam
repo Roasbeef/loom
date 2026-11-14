@@ -6,6 +6,7 @@ import core/json
 import core/register
 import core/tx
 import gleam/bit_array
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
@@ -59,6 +60,9 @@ pub fn changed_persisted_bytes_are_never_hidden_test() {
     as "a warm read sees changed bytes at the same sequence"
   assert changed.seq == cell.seq
   assert changed.value == second
+  let assert Ok(batch) =
+    storage.get_registers(store, register.FactCustom, ["key"])
+  assert dict.get(batch, "key") == Ok(changed)
   assert storage.list_registers(store, register.FactCustom, Some("ke"))
     == Ok([#("key", changed)])
 
@@ -69,6 +73,9 @@ pub fn changed_persisted_bytes_are_never_hidden_test() {
     as "sequence-only changes are visible"
   assert resequenced.seq == 99
   assert resequenced.value == second
+  let assert Ok(batch) =
+    storage.get_registers(store, register.FactCustom, ["key"])
+  assert dict.get(batch, "key") == Ok(resequenced)
 
   // Warm data cannot mask invalid JSON, invalid UTF-8 or a malformed row type.
   list.each(
@@ -83,11 +90,17 @@ pub fn changed_persisted_bytes_are_never_hidden_test() {
         storage.get_register(store, register.FactCustom, "key")
         as "a point read refuses current corruption"
       let assert Error(_) =
+        storage.get_registers(store, register.FactCustom, ["key"])
+        as "a batch read refuses current corruption"
+      let assert Error(_) =
         storage.list_registers(store, register.FactCustom, None)
         as "a list read refuses current corruption"
     },
   )
   assert sqlight.exec("DELETE FROM registers", conn) == Ok(Nil)
+  let assert Ok(empty) =
+    storage.get_registers(store, register.FactCustom, ["key"])
+  assert dict.size(empty) == 0
   assert storage.get_register(store, register.FactCustom, "key") == Ok(None)
   assert storage.list_registers(store, register.FactCustom, None) == Ok([])
   assert sqlight.close(conn) == Ok(Nil)

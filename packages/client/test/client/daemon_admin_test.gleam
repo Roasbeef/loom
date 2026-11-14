@@ -7,6 +7,7 @@ import client/daemon/manager
 import client/daemon_claim_test
 import client/daemon_server_test
 import client/session_socket_test
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -116,6 +117,7 @@ pub fn claim_command_names_the_given_address_and_never_the_token_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(1), 907),
@@ -234,6 +236,7 @@ pub fn owner_explicit_isolation_control_preserves_transcript_consent_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(1), 906),
@@ -283,6 +286,7 @@ pub fn owner_admin_real_transport_rotates_and_revokes_members_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(1), 902),
@@ -440,6 +444,7 @@ pub fn lost_invitation_reply_recovers_by_explicit_principal_rotation_test() {
           None,
           "",
           "",
+          agency_limits.empty,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(1), 903),

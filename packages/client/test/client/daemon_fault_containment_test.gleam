@@ -16,6 +16,7 @@ import client/internal/instance_owner as custody
 import client/owned_assembly_test
 import client/serve
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/ids
 import core/message
@@ -168,7 +169,17 @@ fn create(
   let assert Ok(manager.View(record, manager.Opening(_))) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(name, workspace, name, "", None, None, "", ""),
+      manager.Creation(
+        name,
+        workspace,
+        name,
+        "",
+        None,
+        None,
+        "",
+        "",
+        agency_limits.empty,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed:),
       scope: domain.SessionOnly,
