@@ -817,7 +817,15 @@ fn meet_network(
     NetworkOff, _ | _, NetworkOff -> NetworkOff
     NetworkFull, other -> other
     other, NetworkFull -> other
-    NetworkLoopback, _ | _, NetworkLoopback -> NetworkLoopback
+
+    // Loopback and proxy are incomparable: a proxy grant is bounded by a
+    // host allowlist and loopback is a host TCP stack, so neither covers
+    // the other. A meet must never hand out what the base did not grant,
+    // so the pair yields off, which reports a narrowing and leads to an
+    // explicit grant.
+    NetworkLoopback, NetworkProxy(..) | NetworkProxy(..), NetworkLoopback ->
+      NetworkOff
+    NetworkLoopback, NetworkLoopback -> NetworkLoopback
     NetworkProxy(allow: base_allow, proxy: base_proxy),
       NetworkProxy(allow: requested_allow, proxy: _)
     ->

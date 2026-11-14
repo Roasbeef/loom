@@ -306,7 +306,8 @@ only Go module.
   in Loom selects it. Its bwrap argv alone uses `--unshare-user`,
   `--disable-userns` and `--cap-drop ALL`, and `Start` refuses the mode
   unless a startup probe of bwrap with those flags ran
-  (`Features.LoopbackReady`). The off program's bytes are pinned by a test. Both
+  (`Features.LoopbackReady`) and seccomp filtering is available
+  (`Features.Seccomp`), since stage 2 skips a missing filter. The off program's bytes are pinned by a test. Both
   programs also fail the io_uring system calls (425 to 427) with `EPERM`.
   [protocol-change/115](../../protocol-change/115-network-loopback-mode.md).
 - **Landlock has no deny rules, and the layering contract is: strictly

@@ -42,7 +42,10 @@ cross-language fixture, `sandbox_policy_4_network_loopback.bin`, is written
 by the Gleam golden test and decoded by the Go suite.
 
 **Gleam.** `NetworkPolicy` gains `NetworkLoopback`. `meet` takes the lower
-rank, `join` the higher, `network_exceeds` follows the ranks, except that a loopback request also
+rank, except that loopback and proxy are incomparable and meet to `off`, so a
+proxy base never yields loopback without an explicit grant; `join` takes the
+higher rank, and the join of loopback and proxy is proxy, which is enforced as
+`off`, so it widens nothing, `network_exceeds` follows the ranks, except that a loopback request also
 exceeds a `proxy` grant, because a host allowlist does not bound it and
 proxy is enforced as `off` (the client's approval ceiling agrees), and `narrow_unenforceable`
 leaves it alone: it is enforceable where the helper can enforce it and the
@@ -73,6 +76,10 @@ bwrap argv requires its own user namespace (`--unshare-user`, not
 off and full argv are unchanged. The helper probes bwrap once at startup
 with exactly those flags, and `jail.Start` refuses the mode, naming it, when
 the probe fails. A hand-built feature set that was not probed is refused.
+`jail.Start` also refuses the mode when seccomp filtering is unavailable,
+because stage 2 skips a missing filter and the filter is what limits the
+sockets. That is the fourth refusal, beside no bwrap, a failed probe and a
+platform without a network namespace.
 
 **Who selects it.** Nothing in Loom does. No tool, profile or configuration
 requests it, and `permissions.network` still accepts only `full`. It exists

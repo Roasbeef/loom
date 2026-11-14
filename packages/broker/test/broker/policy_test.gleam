@@ -1259,8 +1259,19 @@ pub fn lattice_meet_and_exceeds_for_every_pair_test() {
           requirements: policy.SandboxPolicy(..base(), network: b),
           grants: [],
         )
-      assert rank(composed.network) == int.min(rank(a), rank(b))
-      assert list.is_empty(narrowings) == { rank(b) <= rank(a) }
+      case a, b {
+        // Loopback and proxy are incomparable, so their meet is off.
+        policy.NetworkLoopback, policy.NetworkProxy(..)
+        | policy.NetworkProxy(..), policy.NetworkLoopback
+        -> {
+          assert composed.network == policy.NetworkOff
+          assert !list.is_empty(narrowings)
+        }
+        _, _ -> {
+          assert rank(composed.network) == int.min(rank(a), rank(b))
+          assert list.is_empty(narrowings) == { rank(b) <= rank(a) }
+        }
+      }
     })
   })
 }
@@ -1310,4 +1321,15 @@ pub fn loopback_does_not_exceed_a_loopback_grant_test() {
   let #(_, narrowings) =
     policy.compose(base: wants, requirements: wants, grants: [])
   assert narrowings == []
+}
+
+pub fn a_proxy_base_never_yields_loopback_without_a_grant_test() {
+  let proxy = policy.NetworkProxy(allow: ["r.example"], proxy: "p")
+  let proxied = policy.SandboxPolicy(..base(), network: proxy)
+  let wants = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let #(composed, narrowings) =
+    policy.compose(base: proxied, requirements: wants, grants: [])
+  assert composed.network == policy.NetworkOff
+  assert policy.wanted_grants(narrowings)
+    == [policy.GrantNetwork(policy.NetworkLoopback)]
 }

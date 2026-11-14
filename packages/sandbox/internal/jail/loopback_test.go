@@ -29,6 +29,10 @@ func TestStartRefusesLoopbackWithoutAFreshNetworkNamespace(t *testing.T) {
 			Platform: PlatformFor("linux"), BwrapPath: "/usr/bin/bwrap",
 			LoopbackReason: "bwrap does not know --disable-userns",
 		}},
+		{"bwrap and probe ready but no seccomp filtering", Features{
+			Platform: PlatformFor("linux"), BwrapPath: "/usr/bin/bwrap",
+			LoopbackReady: true,
+		}},
 		{"darwin seatbelt", Features{
 			Platform: PlatformFor("darwin"), SeatbeltPath: SeatbeltExecutable,
 		}},

@@ -299,6 +299,18 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 			"provides; refusing to run it on this platform or in degraded mode")
 	}
 
+	// The loopback filter is the only thing that limits the sockets the
+	// jail may open, and stage 2 skips a missing seccomp filter and execs
+	// anyway. Without filtering the mode would hand out every socket.
+	if req.Policy.Network.Mode == policy.NetworkLoopback && !feat.Seccomp {
+		policyR.Close()
+		reportR.Close()
+		reportW.Close()
+		return nil, fmt.Errorf("jail: network mode loopback needs seccomp " +
+			"filtering, which is not available here; refusing to run it " +
+			"without the socket filter")
+	}
+
 	switch {
 	case feat.Platform.GOOS == "linux" && feat.BwrapPath != "":
 		// The mount plan is built from a policy whose protected paths
