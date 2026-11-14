@@ -7526,7 +7526,18 @@ fn serve(
 /// the subject its client messages arrive on, encoding each as it is received.
 /// `admits` says which browser frames reach it. The page has no image reader
 /// until `serve` makes one, and the home never does.
-fn launch(
+///
+/// It is public for the test of a component whose start runs past Lustre's
+/// budget, which needs an application whose `init` blocks. A page's own
+/// application cannot be made to: it connects its transport after it starts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.launch(component.app(), start, fn(_frame) { False })
+/// ```
+@internal
+pub fn launch(
   app: lustre.App(arguments, model, message),
   start: arguments,
   admits: fn(String) -> Bool,

@@ -83,7 +83,9 @@ page keys and nonces, and the relay into the session's gateway.
   its frame, 340 px until the reader drags the panel's grip, `0px` while closed). A usage
   row inside the 30 s pacing window is deferred to the window's end
   (`context_view.State.deferred_until_ms`), and `rearm` wakes the page for it.
-- `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
+- `component.Msg(socket)`: `Opened`, `Refused`, `Listening` (dispatched by the
+  effect that selected the transport's subjects; `update` connects the
+  transport on it), `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
   read), `FocusRequested(strand)` (a strip chip, a change of what the page
@@ -1356,9 +1358,11 @@ page keys and nonces, and the relay into the session's gateway.
   `server_component.select` from `init`, so its subjects belong to the
   component's process. Lustre discards a message that reaches a selected
   subject before the runtime has taken the selector, which it installs by a
-  message to itself after the effect returns. A transport may answer the open
-  from inside `connect` (the relayed page's feed does), so `open` takes an
-  answer that is already in the mailbox and dispatches it (`delivery_test`). Every message reaches the shared step as
+  message to itself after the effect returns. So `open` dispatches `Listening`
+  before it returns its selector, and `update` calls the transport's `connect`
+  when it takes `Listening`: the selector is then queued ahead of anything the
+  transport sends, from inside `connect` (as the relayed page's feed answers)
+  or from another process (`delivery_test`). Every message reaches the shared step as
   `step.update`: `Arrived` is `msg.Arrived` then a tick, `Ticked` and
   `Opened` are a tick, and a command is `Acted`. The step folds each lane
   update into `shared` (captures, history pages, usage and the cache

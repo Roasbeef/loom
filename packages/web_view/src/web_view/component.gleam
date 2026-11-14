@@ -51,7 +51,10 @@
 //// whatever the test hands in. Opening it may take as long as the gateway's
 //// attach, which is longer than Lustre's one-second start budget, so the
 //// transport opens asynchronously: `connect` returns at once and answers on
-//// a subject the component selects. The interpreter for the step's effects
+//// a subject the component selects. The answer may be sent from inside
+//// `connect` or later from another process: `open` selects the subject and
+//// only then has `update` call `connect`, so nothing the transport sends
+//// arrives before the runtime is listening for it. The interpreter for the step's effects
 //// has the terminal's shape: `Transmit` writes a frame through the
 //// transport and `Shut` closes it, in the order the step decided them, in
 //// one effect. The component has no recorder, so its recorder type is `Nil`
@@ -112,8 +115,10 @@
 //// `init` → `update` → `stepping` → `finished` → `refreshed` → `view`
 ////
 //// 1. `app` names the Lustre application; `init` builds the model with `new`,
-////    then `open` starts the transport and `arm` the deadline timer.
-//// 2. `update` receives one `Msg`. `Opened` starts the lane through
+////    then `open` selects the transport's subjects and `arm` the deadline
+////    timer.
+//// 2. `update` receives one `Msg`. `Listening` has `connect` start the
+////    transport. `Opened` starts the lane through
 ////    `session_channel.start`, `Arrived` and `Ticked` run the shared step, and
 ////    `OlderRequested` and `FocusRequested` go to `older_at` and `focus_at`,
 ////    which hands a remote child's card to `peek_at` (protocol-change/090)
@@ -1281,6 +1286,14 @@ pub type Msg(socket) {
   /// The transport refused to open.
   Refused(reason: String)
 
+  /// The selector over the transport's two subjects was handed to the runtime,
+  /// so the transport may be connected. The effect that made the subjects
+  /// dispatches this, and no handler carries it.
+  Listening(
+    inbox: Subject(connection_event.Message),
+    opened: Subject(Result(socket, String)),
+  )
+
   /// The deadline timer's selector is armed on this subject.
   TimerArmed(timer: Subject(Nil))
 
@@ -1568,53 +1581,58 @@ pub fn new(start: Start(socket)) -> Model(socket) {
 /// ```
 pub fn init(start: Start(socket)) -> #(Model(socket), Effect(Msg(socket))) {
   let model = new(start)
-  #(model, effect.batch([open(start.transport), arm()]))
+  #(model, effect.batch([open(), arm()]))
 }
 
-/// Opens the transport inside the component's process, once. The inbox and
-/// the subject the outcome arrives on are both created here, in the
-/// component's process, so every frame and the open's answer are read by
-/// the process that owns them. `connect` returns at once; the answer is a
-/// message, so a slow gateway attach cannot hold the component's start.
+/// Makes the transport's two subjects inside the component's process, once,
+/// and selects them. Both are created here, so every frame and the open's
+/// answer are read by the process that owns them.
 ///
-/// A transport may also answer from inside `connect`: the relayed page's feed
-/// has already attached by then, and its refusals need no call at all. Lustre
-/// installs the selector returned here by a message the runtime sends itself
-/// after this function returns, and until it takes that message it discards
-/// anything sent to these subjects. An answer sent from inside `connect` is
-/// in the mailbox ahead of that message, so it would be discarded and the page
-/// would stay connecting for good. It is taken here instead and dispatched,
-/// which the runtime always reads. An answer that comes later, from another
-/// process, is read by the selector as before.
+/// The transport is not connected here. Lustre installs the selector this
+/// returns by a message the runtime sends itself after this function has
+/// returned, and until it takes that message it discards anything sent to
+/// these subjects. A transport that was connected here could have its answer,
+/// or its first frame, arrive ahead of the selector and be discarded, and the
+/// page would stay connecting for good. The relayed page's feed did exactly
+/// that: it answers the open from inside `connect`.
+///
+/// So this dispatches `Listening` before it returns. The runtime's mailbox then
+/// holds `Listening` and, behind it, the selector, both sent by this process to
+/// itself and so kept in that order. `update` connects the transport when it
+/// takes `Listening`, by which time the selector is already queued ahead of
+/// anything the transport can send, from inside `connect` or from another
+/// process.
 ///
 /// A frame's mapping drains the inbox behind it, so a burst that is already
 /// waiting becomes one message and one render. Neither mapping reads the
 /// clock: `update` does, once, when it takes the message.
-fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
+fn open() -> Effect(Msg(socket)) {
   use dispatch, opened <- server_component.select
   let inbox = process.new_subject()
-  transport.connect(inbox, opened)
-
-  // This process sent any answer that is already here, so it is in the
-  // mailbox now and a wait of zero finds it.
-  case process.receive(opened, 0) {
-    Ok(outcome) -> dispatch(answered(outcome))
-    Error(Nil) -> Nil
-  }
+  dispatch(Listening(inbox:, opened:))
 
   process.new_selector()
-  |> process.select_map(opened, answered)
+  |> process.select_map(opened, fn(outcome) {
+    case outcome {
+      Ok(socket) -> Opened(socket)
+      Error(reason) -> Refused(reason)
+    }
+  })
   |> process.select_map(inbox, fn(first) {
     Arrived([first, ..waiting(inbox, arrival_batch - 1, [])])
   })
 }
 
-/// The message for the transport's answer to the open.
-fn answered(outcome: Result(socket, String)) -> Msg(socket) {
-  case outcome {
-    Ok(socket) -> Opened(socket)
-    Error(reason) -> Refused(reason)
-  }
+/// Connects the transport to the subjects `open` selected. `connect` returns at
+/// once and answers on `opened`, then or later: the selector for it was queued
+/// before this ran, so no answer and no frame can be early.
+fn connect(
+  transport: Transport(socket),
+  inbox: Subject(connection_event.Message),
+  opened: Subject(Result(socket, String)),
+) -> Effect(Msg(socket)) {
+  use _dispatch <- effect.from
+  transport.connect(inbox, opened)
 }
 
 /// Up to `room` messages already in the inbox, oldest first, without waiting
@@ -1695,9 +1713,15 @@ pub fn update(
       effect.none(),
     )
 
-    // The timer's subject can be ready after the lane opened, since the
-    // open's answer comes from another process, so the first arming may
-    // happen here.
+    // The selector over these two subjects is already in the mailbox behind
+    // this message, so nothing the transport sends can arrive ahead of it.
+    Listening(inbox:, opened:) -> #(
+      model,
+      connect(model.view.transport, inbox, opened),
+    )
+
+    // The timer's subject can be ready after the lane opened, so the first
+    // arming may happen here.
     TimerArmed(timer:) -> #(
       rearm(Model(..model, view: View(..model.view, timer: Some(timer))), at),
       effect.none(),

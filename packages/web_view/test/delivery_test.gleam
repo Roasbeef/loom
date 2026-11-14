@@ -93,9 +93,9 @@ fn start_with(
 // A transport may answer the open from inside `connect`, as the relayed
 // page's feed does once its attach has already happened. Lustre installs a
 // selector only after the effect that made it has returned, and discards a
-// message that reaches the subject before then, so the component takes an
-// answer that is already there before it returns its selector. The lane's
-// first frame is written only when the component took the answer.
+// message that reaches the subject before then, so the component connects
+// the transport only after its selector is queued. The lane's first frame
+// is written only when the component took the answer.
 pub fn an_open_answered_inside_connect_is_heard_test() {
   let wire = process.new_subject()
   let connect = fn(_inbox, opened) { process.send(opened, Ok(wire)) }
