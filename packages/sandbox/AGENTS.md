@@ -308,7 +308,7 @@ only Go module.
   unless a startup probe of bwrap with those flags ran
   (`Features.LoopbackReady`). The off program's bytes are pinned by a test. Both
   programs also fail the io_uring system calls (425 to 427) with `EPERM`.
-  [protocol-change/112](../../protocol-change/112-network-loopback-mode.md).
+  [protocol-change/115](../../protocol-change/115-network-loopback-mode.md).
 - **Landlock has no deny rules, and the layering contract is: strictly
   weaker than the mounts, never independent of them.** Landlock's grants
   union — RWDirs, RWFiles, and RODirs only ever add access, and nothing

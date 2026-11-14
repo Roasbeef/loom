@@ -657,7 +657,7 @@ Installation uses `SECCOMP_FILTER_FLAG_TSYNC` so the filter binds *every*
 thread of the Go runtime; without it, another thread could make the
 blocked call. A partial sync is an error, not a success.
 
-**Network mode `loopback`** ([protocol-change/112](../../protocol-change/112-network-loopback-mode.md))
+**Network mode `loopback`** ([protocol-change/115](../../protocol-change/115-network-loopback-mode.md))
 sits between off and proxy in the lattice. It is the same fresh namespace
 with a second seccomp program, and nothing else changes. It exists for an
 embedding host that has decided, for one kind of run, that processes of

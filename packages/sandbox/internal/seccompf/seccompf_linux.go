@@ -168,7 +168,7 @@ func NetworkOffProgram(goarch string) ([]bpf.Instruction, error) {
 }
 
 // NetworkLoopbackProgram returns the cBPF program for network mode
-// loopback (protocol-change/112). It is NetworkOffProgram's program with
+// loopback (protocol-change/115). It is NetworkOffProgram's program with
 // two additions, and the same architecture check and x32 kill:
 //
 //  1. socket(2) also allows AF_INET with a type of SOCK_STREAM (after

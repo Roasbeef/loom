@@ -1,4 +1,4 @@
-# protocol-change/112: a loopback-only network mode for the jail
+# protocol-change/115: a loopback-only network mode for the jail
 
 **Status**: PROPOSED 2026-11-12, built in the PR that adds this file.
 **Affects**: the `network.mode` vocabulary of `SandboxPolicyV1` (Part 1.4),

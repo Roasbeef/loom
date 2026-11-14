@@ -95,7 +95,7 @@ pub type NetworkPolicy {
   /// brings up, with a seccomp program that also allows IPv4 TCP
   /// sockets, so the processes of one execution can reach each other on
   /// `127.0.0.1` and nothing else. The host's TCP code becomes reachable
-  /// from jailed code, which is the cost (`protocol-change/112`). Linux
+  /// from jailed code, which is the cost (`protocol-change/115`). Linux
   /// only: the helper refuses it on Darwin and without bwrap. No tool,
   /// profile or configuration in Loom selects it; an embedding host asks
   /// for it.

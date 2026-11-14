@@ -39,7 +39,7 @@ const (
 	NetworkOff NetworkMode = "off"
 	// NetworkLoopback is the same fresh network namespace as NetworkOff,
 	// whose `lo` interface bubblewrap brings up, with a seccomp program
-	// that additionally allows IPv4 TCP sockets (protocol-change/112).
+	// that additionally allows IPv4 TCP sockets (protocol-change/115).
 	// Processes of one execution can then talk to each other over
 	// 127.0.0.1 and nothing else is reachable. It is enforced only on
 	// Linux under bubblewrap; every other path refuses it.

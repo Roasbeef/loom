@@ -10,7 +10,7 @@
 // be smuggled in. AF_UNIX is allowed: it reaches only the filesystem
 // view, which bwrap/Landlock already confine.
 //
-// Network mode "loopback" (protocol-change/112) uses a second program
+// Network mode "loopback" (protocol-change/115) uses a second program
 // that also allows IPv4 TCP sockets, for processes of one execution that
 // talk to each other over the jail's own `lo`. It is sound only inside a
 // fresh network namespace, which the jail guarantees by refusing the mode
