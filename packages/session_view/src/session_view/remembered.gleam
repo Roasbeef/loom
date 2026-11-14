@@ -106,6 +106,19 @@ pub type Provenance {
     at_ms: Int,
   )
 
+  /// A spawner's operator approved it, through the page of another
+  /// orchestrator (protocol-change/089 and 108). The spawner is named as plain
+  /// data and the principal is the one the page of that orchestrator said it
+  /// had, so neither authenticates anything.
+  Spawner(
+    /// The `[spawners.<name>]` key that approved it.
+    spawner: String,
+    /// The principal's identity as the other orchestrator's page gave it.
+    principal: Option(String),
+    /// When it was approved, in Unix milliseconds.
+    at_ms: Int,
+  )
+
   /// Nothing was recorded: the permission was remembered before approvals
   /// were attributed.
   Unknown
@@ -205,6 +218,62 @@ fn decode_consent(value: json.JsonValue) -> Result(Consent, String) {
 
 /// Extracts and decodes provenance metadata from a remembered record's fields.
 fn provenance(fields: List(#(String, json.JsonValue))) -> Provenance {
+  case spawner_approval(fields) {
+    Ok(spawned) -> spawned
+    Error(Nil) -> login_approval(fields)
+  }
+}
+
+/// A provenance a spawner's operator left: the spawner's name, the principal its
+/// page named and the time. A record without the name is not one.
+fn spawner_approval(
+  fields: List(#(String, json.JsonValue)),
+) -> Result(Provenance, Nil) {
+  use record <- result.try(member_object(fields, "provenance"))
+  use spawner <- result.try(member_text(record, "spawner"))
+  use at_ms <- result.map(member_time(record, "at_ms"))
+
+  // The principal the other page named is plain data and may be missing.
+  let by = result.unwrap(member_object(record, "by"), [])
+  Spawner(spawner:, principal: optional_text(by, "principal"), at_ms:)
+}
+
+/// An object member, or `Nil` when it is missing or is not an object.
+fn member_object(
+  fields: List(#(String, json.JsonValue)),
+  key: String,
+) -> Result(List(#(String, json.JsonValue)), Nil) {
+  case list.key_find(fields, key) {
+    Ok(json.Object(record)) -> Ok(record)
+    _ -> Error(Nil)
+  }
+}
+
+/// A text member, or `Nil` when it is missing or is not text.
+fn member_text(
+  fields: List(#(String, json.JsonValue)),
+  key: String,
+) -> Result(String, Nil) {
+  case list.key_find(fields, key) {
+    Ok(json.String(text)) -> Ok(text)
+    _ -> Error(Nil)
+  }
+}
+
+/// A non-negative integer member, or `Nil` when it is missing or is not one.
+fn member_time(
+  fields: List(#(String, json.JsonValue)),
+  key: String,
+) -> Result(Int, Nil) {
+  case list.key_find(fields, key) {
+    Ok(json.Int(at)) if at >= 0 -> Ok(at)
+    _ -> Error(Nil)
+  }
+}
+
+/// A provenance a browser sign-in or a terminal left, or `Unknown` when the
+/// record has neither.
+fn login_approval(fields: List(#(String, json.JsonValue))) -> Provenance {
   let decoded = {
     // Decode the provenance object when present.
     use record <- result.try(case list.key_find(fields, "provenance") {
@@ -277,7 +346,23 @@ pub fn login(provenance: Provenance) -> Option(#(String, String)) {
   case provenance {
     Approved(principal: Some(principal), via: Login(fingerprint:), ..) ->
       Some(#(principal, fingerprint))
-    Approved(..) | Unknown -> None
+    Approved(..) | Spawner(..) | Unknown -> None
+  }
+}
+
+/// Whether a grant was approved through the page of the principal `page`, as
+/// the other orchestrator's spawner recorded it. A relayed page offers Forget
+/// on these alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !remembered.by_page(remembered.Unknown, "page-1")
+/// ```
+pub fn by_page(provenance: Provenance, page: String) -> Bool {
+  case provenance {
+    Spawner(principal: Some(principal), ..) -> principal == page
+    Spawner(principal: None, ..) | Approved(..) | Unknown -> False
   }
 }
 
@@ -338,6 +423,9 @@ pub fn who(provenance: Provenance) -> String {
   // Distinguish unrecorded approvals from approved provenance details.
   case provenance {
     Unknown -> "Approved before approvals were recorded"
+    Spawner(spawner:, ..) ->
+      "Approved from the page of the orchestrator "
+      <> text_hygiene.single_line(spawner)
     Approved(name:, principal:, via:, ..) -> {
       // Determine the principal name or identifier of the approver.
       let person = case name, principal {
@@ -369,7 +457,7 @@ pub fn who(provenance: Provenance) -> String {
 /// ```
 pub fn when(provenance: Provenance) -> Option(Int) {
   case provenance {
-    Approved(at_ms:, ..) -> Some(at_ms)
+    Approved(at_ms:, ..) | Spawner(at_ms:, ..) -> Some(at_ms)
     Unknown -> None
   }
 }

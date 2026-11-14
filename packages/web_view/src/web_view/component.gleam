@@ -51,7 +51,10 @@
 //// whatever the test hands in. Opening it may take as long as the gateway's
 //// attach, which is longer than Lustre's one-second start budget, so the
 //// transport opens asynchronously: `connect` returns at once and answers on
-//// a subject the component selects. The interpreter for the step's effects
+//// a subject the component selects. The answer may be sent from inside
+//// `connect` or later from another process: `open` selects the subject and
+//// only then has `update` call `connect`, so nothing the transport sends
+//// arrives before the runtime is listening for it. The interpreter for the step's effects
 //// has the terminal's shape: `Transmit` writes a frame through the
 //// transport and `Shut` closes it, in the order the step decided them, in
 //// one effect. The component has no recorder, so its recorder type is `Nil`
@@ -112,8 +115,10 @@
 //// `init` → `update` → `stepping` → `finished` → `refreshed` → `view`
 ////
 //// 1. `app` names the Lustre application; `init` builds the model with `new`,
-////    then `open` starts the transport and `arm` the deadline timer.
-//// 2. `update` receives one `Msg`. `Opened` starts the lane through
+////    then `open` selects the transport's subjects and `arm` the deadline
+////    timer.
+//// 2. `update` receives one `Msg`. `Listening` has `connect` start the
+////    transport. `Opened` starts the lane through
 ////    `session_channel.start`, `Arrived` and `Ticked` run the shared step, and
 ////    `OlderRequested` and `FocusRequested` go to `older_at` and `focus_at`,
 ////    which hands a remote child's card to `peek_at` (protocol-change/090)
@@ -559,6 +564,28 @@ pub type Standing {
     /// runs on it. It is text the operator wrote, drawn as a text node and never
     /// an attribute, a class or a key.
     machine: String,
+    /// Where the session the page shows runs. A page of a session on another
+    /// orchestrator draws no control for a command that orchestrator refuses
+    /// (protocol-change/108, "The laptop's socket adapter").
+    route: Route,
+  )
+}
+
+/// Where the session a page shows runs, which decides what the page offers.
+pub type Route {
+  /// On the daemon that serves the page. Every control the page's role allows is
+  /// drawn.
+  Local
+
+  /// On another orchestrator, which serves the session through a live feed. The
+  /// other orchestrator refuses the owner's controls (a model or profile change,
+  /// Compact, the goal's mutations, a fork, proposals, memory, evolution and
+  /// schedules), so the page does not draw them and does not ask for them. That
+  /// orchestrator's refusal is the authority, and this is only the offer.
+  Relayed(
+    /// The principal the page attached with, which the other orchestrator keeps
+    /// on every grant this page approves. The page offers Forget only on those.
+    page: String,
   )
 }
 
@@ -587,7 +614,13 @@ pub type Reader {
 /// A standing that says nothing: a member, and a session whose sharing was not
 /// read. Fixtures and hosts with no catalogue start from it.
 pub const unplaced =
-  Standing(reader: Participant, sharing: None, opening: FromLink, machine: "")
+  Standing(
+    reader: Participant,
+    sharing: None,
+    opening: FromLink,
+    machine: "",
+    route: Local,
+  )
 
 /// What the daemon's catalogue says about a session, for the page's
 /// heading. Neither field comes from the session's transcript: the name is
@@ -1009,6 +1042,8 @@ type View(socket) {
     reader: Reader,
     /// The serving daemon's name (`Standing.machine`).
     machine: String,
+    /// Where the session runs (`Standing.route`).
+    route: Route,
     transport: Transport(socket),
     completion_models: List(String),
     completion_profiles: List(String),
@@ -1251,6 +1286,14 @@ pub type Msg(socket) {
   /// The transport refused to open.
   Refused(reason: String)
 
+  /// The selector over the transport's two subjects was handed to the runtime,
+  /// so the transport may be connected. The effect that made the subjects
+  /// dispatches this, and no handler carries it.
+  Listening(
+    inbox: Subject(connection_event.Message),
+    opened: Subject(Result(socket, String)),
+  )
+
   /// The deadline timer's selector is armed on this subject.
   TimerArmed(timer: Subject(Nil))
 
@@ -1432,6 +1475,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       expected: start.expected,
       reader: start.standing.reader,
       machine: start.standing.machine,
+      route: start.standing.route,
       transport: start.transport,
       completion_models: start.completion_models,
       completion_profiles: start.completion_profiles,
@@ -1537,22 +1581,36 @@ pub fn new(start: Start(socket)) -> Model(socket) {
 /// ```
 pub fn init(start: Start(socket)) -> #(Model(socket), Effect(Msg(socket))) {
   let model = new(start)
-  #(model, effect.batch([open(start.transport), arm()]))
+  #(model, effect.batch([open(), arm()]))
 }
 
-/// Opens the transport inside the component's process, once. The inbox and
-/// the subject the outcome arrives on are both created here, in the
-/// component's process, so every frame and the open's answer are read by
-/// the process that owns them. `connect` returns at once; the answer is a
-/// message, so a slow gateway attach cannot hold the component's start.
+/// Makes the transport's two subjects inside the component's process, once,
+/// and selects them. Both are created here, so every frame and the open's
+/// answer are read by the process that owns them.
+///
+/// The transport is not connected here. Lustre installs the selector this
+/// returns by a message the runtime sends itself after this function has
+/// returned, and until it takes that message it discards anything sent to
+/// these subjects. A transport that was connected here could have its answer,
+/// or its first frame, arrive ahead of the selector and be discarded, and the
+/// page would stay connecting for good. The relayed page's feed did exactly
+/// that: it answers the open from inside `connect`.
+///
+/// So this dispatches `Listening` before it returns. The runtime's mailbox then
+/// holds `Listening` and, behind it, the selector, both sent by this process to
+/// itself and so kept in that order. `update` connects the transport when it
+/// takes `Listening`, by which time the selector is already queued ahead of
+/// anything the transport can send, from inside `connect` or from another
+/// process.
 ///
 /// A frame's mapping drains the inbox behind it, so a burst that is already
 /// waiting becomes one message and one render. Neither mapping reads the
 /// clock: `update` does, once, when it takes the message.
-fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
-  use _dispatch, opened <- server_component.select
+fn open() -> Effect(Msg(socket)) {
+  use dispatch, opened <- server_component.select
   let inbox = process.new_subject()
-  transport.connect(inbox, opened)
+  dispatch(Listening(inbox:, opened:))
+
   process.new_selector()
   |> process.select_map(opened, fn(outcome) {
     case outcome {
@@ -1563,6 +1621,18 @@ fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
   |> process.select_map(inbox, fn(first) {
     Arrived([first, ..waiting(inbox, arrival_batch - 1, [])])
   })
+}
+
+/// Connects the transport to the subjects `open` selected. `connect` returns at
+/// once and answers on `opened`, then or later: the selector for it was queued
+/// before this ran, so no answer and no frame can be early.
+fn connect(
+  transport: Transport(socket),
+  inbox: Subject(connection_event.Message),
+  opened: Subject(Result(socket, String)),
+) -> Effect(Msg(socket)) {
+  use _dispatch <- effect.from
+  transport.connect(inbox, opened)
 }
 
 /// Up to `room` messages already in the inbox, oldest first, without waiting
@@ -1643,9 +1713,15 @@ pub fn update(
       effect.none(),
     )
 
-    // The timer's subject can be ready after the lane opened, since the
-    // open's answer comes from another process, so the first arming may
-    // happen here.
+    // The selector over these two subjects is already in the mailbox behind
+    // this message, so nothing the transport sends can arrive ahead of it.
+    Listening(inbox:, opened:) -> #(
+      model,
+      connect(model.view.transport, inbox, opened),
+    )
+
+    // The timer's subject can be ready after the lane opened, so the first
+    // arming may happen here.
     TimerArmed(timer:) -> #(
       rearm(Model(..model, view: View(..model.view, timer: Some(timer))), at),
       effect.none(),
@@ -4233,6 +4309,24 @@ fn chips(strip: strip.Strip) -> List(strip.Chip) {
   }
 }
 
+/// What a lane that failed with a reason that names no ending stands for. On a
+/// relayed page a lane that failed because a reply did not come in time
+/// (`session_channel.timed_out`) has only the link to the other orchestrator in the
+/// way, which the page cannot tell down from slow, so it says it is waiting and the
+/// browser reconnects (protocol-change/108, "When the link drops, and what the page
+/// shows"). Any other failure is a failed connection on either route. A reason that
+/// does name an ending, such as the feed's own, is drawn as that ending.
+fn lane_failure(model: Model(socket), reason: String) -> Ending {
+  case model.view.route, reason == session_channel.timed_out {
+    Relayed(..), True -> ending.PeerUnreachable
+
+    // A frame that does not decode, a cut that names another incarnation and a
+    // server error are not a wait. They end the page as a failed connection,
+    // which on a relayed page is worded as reconnecting.
+    Relayed(..), False | Local, _ -> ending.ConnectionFailed
+  }
+}
+
 /// The connection's status follows the lane. A cut makes a connecting page
 /// follow, a lane that ended makes it disconnected, and a disconnected page
 /// stays so: the last drawn cut is what it keeps showing.
@@ -4245,7 +4339,7 @@ fn statused(model: Model(socket)) -> Model(socket) {
   {
     Ended(_), _, _ -> model.view.status
     _, Some(reason), _ ->
-      Ended(ending.from_reason(reason, otherwise: ending.ConnectionFailed))
+      Ended(ending.from_reason(reason, otherwise: lane_failure(model, reason)))
     Connecting, None, Some(_) -> Connected
     Connecting, None, None | Connected, None, _ -> model.view.status
   }
@@ -4634,7 +4728,7 @@ fn judging(
 /// // component.ask_forget(model, armed)
 /// ```
 pub fn ask_forget(model: Model(socket), armed: holding.Armed) -> Model(socket) {
-  case may_remember(model) {
+  case may_remember(model) && forgettable(model, armed.forget) {
     True ->
       Model(
         ..model,
@@ -4675,8 +4769,31 @@ pub fn confirm_forget(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case model.view.holding.armed, may_remember(model) {
     None, _ | _, False -> #(model, effect.none())
+
+    // The choice is checked again against the list as it stands now, so a list
+    // that moved between the question and its confirm sends nothing the page did
+    // not offer.
     Some(open), True ->
-      commanded(cancel_forget(model), msg.Forget(forget: open.forget))
+      case forgettable(model, open.forget) {
+        True -> commanded(cancel_forget(model), msg.Forget(forget: open.forget))
+        False -> #(cancel_forget(model), effect.none())
+      }
+  }
+}
+
+/// Whether the page offers this forget. A local page offers every row. A relayed
+/// page offers one permission at a time and only a grant this page approved,
+/// because the other orchestrator withdraws no other: a consent, everything, and
+/// a grant that orchestrator's owner or another page approved are refused there,
+/// so the page never offers them (protocol-change/108).
+fn forgettable(model: Model(socket), forget: kept.Forget) -> Bool {
+  case model.view.route, permissions_kept(model), forget {
+    Local, _, _ -> True
+    Relayed(page:), Some(board), kept.ForgetPermission(wire:, ..) ->
+      list.any(board.grants, fn(grant) {
+        grant.wire == wire && kept.by_page(grant.provenance, page)
+      })
+    Relayed(..), _, _ -> False
   }
 }
 
@@ -4692,10 +4809,39 @@ pub fn confirm_forget(
 /// // component.may_review_proposals(model)
 /// ```
 pub fn may_review_proposals(model: Model(socket)) -> Bool {
-  case model.view.reader {
-    DaemonOwner -> True
-    Participant -> False
+  case model.view.route, model.view.reader {
+    // Proposals and memory are the box owner's, at the box.
+    Relayed(..), _ | Local, Participant -> False
+    Local, DaemonOwner -> True
   }
+}
+
+/// Whether the lane draws the links to a tool result's whole text. A relayed
+/// page does not: the box serves no result page for a feed, and the link would
+/// be a dead address on this daemon (protocol-change/108).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.result_links(model) == lane.Linked
+/// ```
+pub fn result_links(model: Model(socket)) -> lane.Links {
+  case model.view.route {
+    Local -> lane.Linked
+    Relayed(..) -> lane.Unlinked
+  }
+}
+
+/// Where the page's session runs, for the views that draw only what that place
+/// offers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.route(model) == component.Local
+/// ```
+pub fn route(model: Model(socket)) -> Route {
+  model.view.route
 }
 
 /// Marks the memory overview as wanted and watched on the owner's page.
@@ -4996,6 +5142,15 @@ pub fn evolution_reach(model: Model(socket)) -> evolving.Reach {
 /// // component.want_evolution(model)
 /// ```
 pub fn want_evolution(model: Model(socket)) -> Model(socket) {
+  case model.view.route {
+    // The other orchestrator refuses evolution, so the page never asks.
+    Relayed(..) -> model
+    Local -> wanting_evolution(model)
+  }
+}
+
+/// Marks the evolution board as wanted on a page whose session runs here.
+fn wanting_evolution(model: Model(socket)) -> Model(socket) {
   let watching =
     shared_set.evolution_watch(model.shared, session_model.WatchingEvolution)
 
@@ -5239,9 +5394,10 @@ pub fn read_evolution(
 pub fn read_core_status(
   model: Model(socket),
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  case model.view.reader {
-    DaemonOwner -> commanded(model, msg.Evolve(request: evolution.CoreStatus))
-    Participant -> #(model, effect.none())
+  case model.view.route, model.view.reader {
+    Local, DaemonOwner ->
+      commanded(model, msg.Evolve(request: evolution.CoreStatus))
+    Local, Participant | Relayed(..), _ -> #(model, effect.none())
   }
 }
 
@@ -7996,6 +8152,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         marks(model),
         lane.Folds(FoldToggled, MessageToggled, expanded(model)),
         session_id(model),
+        result_links(model),
       ),
       plan(model),
       html.p([attribute.class("observer-bar")], [
@@ -8384,7 +8541,13 @@ pub fn heading(
     ),
     cost: transcript_lines.cost_words(model.shared.usage),
     rate: session_model.output_rate_tps(model.shared),
-    notice: ended.view(ended_ending(model.view.status), model.shared.session),
+    notice: case model.view.route {
+      Local -> ended.view(ended_ending(model.view.status), model.shared.session)
+
+      // The session's identity on the other orchestrator is not one this
+      // daemon holds, so a command naming it would mint nothing.
+      Relayed(..) -> ended.relayed(ended_ending(model.view.status))
+    },
     placement: placement.view(model.view.machine, current_code(model)),
   )
 }

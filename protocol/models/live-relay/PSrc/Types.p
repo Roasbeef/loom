@@ -12,6 +12,10 @@ enum tCmd { CMD_FORWARD, CMD_APPROVE, CMD_FORBID }
 // same keep-then-forget treatment as the other endings.
 enum tEnded { EN_NONE, EN_LAPSED, EN_STOPPED, EN_REVOKED, EN_DETACHED }
 
+// What the page shows when the adapter closes it: a failure, or a waiting state
+// for a link that is only down.
+enum tShown { SH_FAILED, SH_WAITING }
+
 enum tFrameKind { FK_REPLY, FK_PUSH }
 enum tReqKind { RQ_POLL, RQ_SEND, RQ_DETACH }
 enum tAnsKind { AN_POLL, AN_SEND, AN_DETACH, AN_REFUSED }
@@ -54,6 +58,8 @@ type tLaneCmd = (cmd: tCmd, pieces: int);
 fun Lease(): int { return 10; }
 fun Wait(): int { return 2; }
 fun PollTimeout(): int { return 3; }
+// How many ticks the adapter waits after an answer that carried no frame.
+fun IdlePause(): int { return 1; }
 fun SendTimeout(): int { return 3; }
 fun MaxFrames(): int { return 3; }
 fun MaxBytes(): int { return 4; }
@@ -91,6 +97,7 @@ event eLocalApprove: machine;
 event eLaneCmd: tLaneCmd;
 event eOpen;
 event eClose;
+event eLaneShut;
 event eBreak;
 event eHeal;
 
@@ -132,6 +139,16 @@ event eRepeatPiece;
 event eForgotten;
 event eRefusedForgotten;
 event eLinkDropped;
+event eCut;
+event eHealed;
+event eDroppedEnded;
+event eUiTick;
+event ePollSent;
+event ePieceOut;
+event eEmptyAnswer;
+// The adapter ended; the number is how many lane frames its outbox still held.
+event eFeedDone: int;
+event eShown: tShown;
 event eGwDetached;
 event eAttachRefused;
 // A poll whose `after` is ahead of the queue (0) or behind what was acknowledged (1).

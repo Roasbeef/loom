@@ -157,6 +157,9 @@ pub type State {
     /// How many replies have landed, which keys the reply form so that it is
     /// rebuilt empty after one lands and left as typed after any other outcome.
     sent: Int,
+    /// Why this page is the transcript and not the live session page, which
+    /// the heading's sentence says.
+    fallback: relayed.Fallback,
   )
 }
 
@@ -244,7 +247,21 @@ pub fn open(orchestrator: String, session: String) -> State {
     decided: None,
     notice: None,
     sent: 0,
+    fallback: relayed.Unsaid,
   )
+}
+
+/// The state with the reason the page is the transcript, which the daemon knows
+/// from the attach it tried before it chose this page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = relayed_session.open("box", id) |> relayed_session.falling_back(relayed.Served)
+/// assert state.fallback == relayed.Served
+/// ```
+pub fn falling_back(state: State, fallback: relayed.Fallback) -> State {
+  State(..state, fallback:)
 }
 
 /// Applies a read of the box. A complete read replaces the row and transcript,
