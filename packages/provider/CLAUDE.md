@@ -1,5 +1,18 @@
 # provider
 
+## Account pool ledger
+
+`provider/pool` is the pure standing ledger for the account pool proposed in
+`docs/design-notes/account-pool.md`: an ordered list of labels, each
+`Available`, `Exhausted(until_ms)` or `Unusable(cause)`, moved by `step` over
+`Pick`, `Refused`, `Observed` and `Reinstated` events that carry their own
+time. Selection is the first available member. An exhausted member returns by
+comparing its reset time with the next event's time, never by timer, and a
+gauge reading can only close a member early, never reopen one. The module holds
+no process, clock or credential, only labels and integers, so nothing secret
+can reach it. Nothing calls it yet; the bridge, the owning actor and the
+configuration key are described in the note and not built.
+
 ## Responses disconnect diagnostics
 
 `provider/adapter/responses` adds bounded structural context to

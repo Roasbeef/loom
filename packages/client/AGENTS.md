@@ -2348,6 +2348,17 @@ cannot read `states/`.
   are saved,
   including grants without a refresh token, while plan inference requires
   `resource.invoke` and `chatgpt.tokens.use.direct`.
+- `client/seat_usage` and `client/seat_usage_cli` are `loomd seat-usage`: seats
+  (`{"label","provider","token"}` per line) arrive on standard input only,
+  each token lives in an opaque closure so `string.inspect` cannot print it,
+  and refusals are closed reason codes carrying a line number and a valid
+  label, never line text. Each seat is asked one read-only usage endpoint (no
+  model request, so no `--probe`) through `codex/network.fetch_adopted` with
+  a per-request timeout, a 256 KiB body bound and `weft.limit` concurrency.
+  `seat_usage.to_pool_events` maps a reading onto `provider/pool` events and
+  nothing calls the pool from a request path. The module doc cites where each
+  endpoint and field was verified. `ffi_os.read_stdin_line` is the one shim:
+  no stdlib reads standard input.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
