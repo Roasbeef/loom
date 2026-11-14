@@ -18,6 +18,7 @@ import page_fixture
 import session_view/connection_event
 import session_view/remembered
 import web_view/component
+import web_view/invites
 import web_view/operator_page
 import web_view/remembered as holding
 
@@ -201,4 +202,70 @@ pub fn a_forget_the_page_did_not_offer_is_not_armed_test() {
   assert component.ask_forget(model, owner) == model
   assert component.ask_forget(model, everything) == model
   assert component.ask_forget(model, consent) == model
+}
+
+fn placed(label: component.Label) -> String {
+  let start = relayed_start()
+  component.new(component.Start(..start, label: Some(label)))
+  |> operator_page.view
+  |> element.to_string
+}
+
+// A relayed session is in no list this daemon reads, so the strip's second half
+// comes from the label the orchestrator's attach answered, for each of the
+// three places a session can run.
+pub fn a_relayed_page_says_where_its_commands_run_test() {
+  let folder =
+    placed(component.Label(
+      name: "docs",
+      workspace: "/srv/work/proj",
+      executor: "",
+      pool: "",
+    ))
+  assert string.contains(folder, "Agent on")
+  assert string.contains(folder, "Commands on")
+  assert string.contains(folder, "box · …/work/proj")
+
+  let registered =
+    placed(component.Label(
+      name: "docs",
+      workspace: "repo",
+      executor: "exec",
+      pool: "",
+    ))
+  assert string.contains(registered, "exec · repo")
+
+  let pooled =
+    placed(component.Label(
+      name: "docs",
+      workspace: "repo",
+      executor: "",
+      pool: "linux",
+    ))
+  assert string.contains(pooled, "linux pool · repo")
+}
+
+// A page whose orchestrator has not answered has no place in its label, and the
+// strip says where the agent runs and no more.
+pub fn a_relayed_page_without_a_place_names_no_commands_test() {
+  let html =
+    placed(component.Label(name: "", workspace: "", executor: "", pool: ""))
+  assert string.contains(html, "Agent on")
+  assert !string.contains(html, "Commands on")
+}
+
+// The daemon cannot mint access to a session it does not hold, so the Session
+// tab says where the session is invited to, in place of the bookmark's advice,
+// which is about how this page was opened.
+pub fn a_relayed_page_says_invitations_are_made_on_its_orchestrator_test() {
+  let model = opened()
+  assert component.share(model) == invites.Elsewhere(machine: "box")
+
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "This session runs on box, so invitations are made from its own page there.",
+  )
+  assert !string.contains(html, "opened from a bookmark")
+  assert !string.contains(html, "Run loom ui")
 }

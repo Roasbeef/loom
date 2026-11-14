@@ -36,7 +36,11 @@ page keys and nonces, and the relay into the session's gateway.
   daemon reads it with the members read the admin page makes, no new frame;
   and `opening`, `FromBookmark` for an owner's page a bookmark opened, which is
   handed neither invitation nor make-shareable capability and draws
-  `invites.Bookmarked`'s sentence; `component.unplaced` for fixtures), and a `Transport(socket)`. The heading shows the name (or
+  `invites.Bookmarked`'s sentence, except on a `Relayed` route, where the page draws
+  `invites.Elsewhere(machine)`'s sentence, since a session on another orchestrator is invited
+  to from that orchestrator's page, and its strip's commands half comes from the attach's
+  label (`component.relayed_code`) because the session is in no list this daemon reads;
+  `component.unplaced` for fixtures), and a `Transport(socket)`. The heading shows the name (or
   `Session` and the ID's first eight characters) with the whole ID in a
   `title`, and the workspace's last segment with the whole path in a
   `title`.
