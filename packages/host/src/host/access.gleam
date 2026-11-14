@@ -894,7 +894,17 @@ fn transact_over(
     |> result.replace_error("control connection failed; request not sent"),
   )
   let outcome = transact(socket, inbox, address, epoch, request)
-  websocket.close(socket)
+
+  // A daemon that acknowledged its shutdown closes the connection itself. Asking
+  // the socket to close as well races that close: the client library then fails
+  // to write its close frame to a socket that is gone and logs the failure to
+  // the terminal as an error report, although nothing went wrong. The socket's
+  // process ends with the connection, so nothing is left to stop.
+  case request.command, outcome {
+    "daemon.shutdown", Ok(_) -> Nil
+    _, _ -> websocket.close(socket)
+  }
+
   outcome
 }
 

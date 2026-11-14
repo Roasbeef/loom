@@ -42,7 +42,7 @@ pub fn up_takes_its_defaults_test() {
   assert options.memory_mib == 2048
   assert options.cpus == 4
   assert options.config == None
-  assert options.github == vm_spec.GitHubFromGh
+  assert options.github == None
   assert options.freshness == vm_spec.Resume
   assert options.allow == []
   assert options.provision == None
@@ -51,12 +51,12 @@ pub fn up_takes_its_defaults_test() {
 pub fn up_reads_github_access_and_fresh_test() {
   let assert Ok(vm_spec.Up(options)) =
     vm_spec.parse(["up", "--github", "off", "--fresh", "--name", "dev"])
-  assert options.github == vm_spec.GitHubOff
+  assert options.github == Some(vm_spec.GitHubOff)
   assert options.freshness == vm_spec.Fresh
   assert options.name == "dev"
 
   let assert Ok(vm_spec.Up(options)) = vm_spec.parse(["up", "--github", "env"])
-  assert options.github == vm_spec.GitHubFromEnv
+  assert options.github == Some(vm_spec.GitHubFromEnv)
 
   let assert Error(reason) = vm_spec.parse(["up", "--github", "ssh"])
   assert string.contains(reason, "gh, env or off")
@@ -85,7 +85,7 @@ pub fn down_and_status_take_only_a_name_test() {
 pub fn a_bad_command_line_is_refused_with_its_reason_test() {
   assert vm_spec.parse([])
     == Error(
-      "loom vm needs a command: setup, up, down, status, logs, list, rm or sync",
+      "loom vm needs a command: setup, up, ensure, down, status, logs, list, rm or sync",
     )
   assert vm_spec.parse(["shell"]) == Error("unknown loom vm command shell")
   assert vm_spec.parse(["up", "--bogus", "1"])
@@ -376,6 +376,7 @@ fn launch(firmware: option.Option(String)) -> vm_spec.Launch {
     state_disk: "/vm/dev/state.img",
     github: vm_spec.GitHubOff,
     allow: [],
+    reach: vm_spec.Publish,
   )
 }
 
@@ -479,7 +480,7 @@ pub fn up_reads_each_allowed_host_in_order_without_repeats_test() {
       "deb.debian.org", "--github", "off",
     ])
   assert options.allow == ["deb.debian.org", "*.golang.org"]
-  assert options.github == vm_spec.GitHubOff
+  assert options.github == Some(vm_spec.GitHubOff)
 }
 
 pub fn an_allowed_host_follows_the_rule_machine_spec_applies_test() {
