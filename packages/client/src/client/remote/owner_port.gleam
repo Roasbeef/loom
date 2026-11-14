@@ -40,6 +40,19 @@
 //// `StopExecution`. That repeats a stop a partition lost, and it stops a
 //// program an orchestrator that restarted left running.
 ////
+//// ## The executor's broker, behind a stable subject
+////
+//// The orchestrator sends some broker calls straight to the executor's broker
+//// actor: imported hooks, goal checks, the worktree observations and an
+//// operator's abort. A subject names one process, and an executor that restarts
+//// builds a new broker, so a handle taken at open would address a dead process
+//// for the rest of the session. The port therefore owns the subject those
+//// callers use (`broker`) and forwards each message to the executor's current
+//// broker, which `retarget` replaces when an attach answers. A forwarded
+//// message carries its own reply subject, so the answer returns to the caller
+//// directly. Before the first attach there is no target and a message is
+//// dropped, and no caller exists then.
+////
 //// ## Background executions
 ////
 //// An executor's `code_mode` tool launches and interacts with a background
@@ -49,6 +62,7 @@
 //// through, which is how the record's worker reaches the executor to start the
 //// program.
 
+import broker/broker
 import client/escalate
 import client/git_identity
 import client/owner_services.{type ExecutionTerms, type OwnerServices}
@@ -166,7 +180,11 @@ pub type Config {
 
 /// A running port.
 pub opaque type Port {
-  Port(inbox: Subject(OwnerMessage), control: Subject(Event))
+  Port(
+    inbox: Subject(OwnerMessage),
+    control: Subject(Event),
+    relay: Subject(broker.Msg),
+  )
 }
 
 /// The default reconciliation period: one minute.
@@ -177,6 +195,8 @@ pub const default_reconcile_every_ms = 60_000
 type Event {
   FromExecutor(message: OwnerMessage)
   Bind(link: HostLink, unacked: Unacked)
+  Relay(message: broker.Msg)
+  Retarget(to: Subject(broker.Msg), done: Subject(Nil))
   Tick
   Stop
 }
@@ -186,6 +206,7 @@ type State {
     config: Config,
     link: Option(HostLink),
     reconciling: Option(weft.Witnessed),
+    broker: Option(Subject(broker.Msg)),
   )
 }
 
@@ -230,6 +251,31 @@ pub fn bind(port: Port, link: HostLink, unacked: Unacked) -> Nil {
   process.send(port.control, Bind(link:, unacked:))
 }
 
+/// The subject the session's non-tool broker callers use in place of the
+/// executor's own. Wrap it with `broker.over`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // broker.over(owner_port.broker(port), executor_clock)
+/// ```
+pub fn broker(port: Port) -> Subject(broker.Msg) {
+  port.relay
+}
+
+/// Points the port's broker subject at the executor's current broker, and
+/// returns once the port has taken it, so a message sent afterwards by the
+/// caller is forwarded to `to`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_port.retarget(port, attached.census.broker)
+/// ```
+pub fn retarget(port: Port, to: Subject(broker.Msg)) -> Nil {
+  process.call(port.control, 5000, fn(done) { Retarget(to:, done:) })
+}
+
 /// Ends the port. Its requests in flight end with it, because their runs are
 /// linked to the port, and the executor's callbacks that were waiting on them
 /// settle through the host's monitor of the port.
@@ -260,13 +306,15 @@ fn initialise(
   control: Subject(Event),
 ) -> Result(actor.Initialised(State, Event, Port), String) {
   let inbox = process.new_subject()
+  let relay = process.new_subject()
   let selector =
     process.new_selector()
     |> process.select(control)
     |> process.select_map(inbox, FromExecutor)
-  actor.initialised(State(config:, link: None, reconciling: None))
+    |> process.select_map(relay, Relay)
+  actor.initialised(State(config:, link: None, reconciling: None, broker: None))
   |> actor.selecting(selector)
-  |> actor.returning(Port(inbox:, control:))
+  |> actor.returning(Port(inbox:, control:, relay:))
   |> Ok
 }
 
@@ -298,6 +346,21 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
       let _pass =
         detached(fn() { acknowledge_settled(state.config, link, unacked) })
       actor.continue(State(..state, link: Some(link)))
+    }
+    Relay(message:) -> {
+      // The target is the executor's broker as of the last attach. A message
+      // for a broker that has since gone is lost with it, as it would be
+      // without the relay.
+      case state.broker {
+        Some(target) -> process.send(target, message)
+        None -> Nil
+      }
+
+      actor.continue(state)
+    }
+    Retarget(to:, done:) -> {
+      process.send(done, Nil)
+      actor.continue(State(..state, broker: Some(to)))
     }
     Tick -> actor.continue(tick(state))
     Stop -> actor.stop()

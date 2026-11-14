@@ -1289,7 +1289,7 @@ session closes and the executor cannot prove that every process of the scope has
 exited, the scope records unknown cleanup and the executor refuses every later
 open of that session. The executor never decides on its own that those processes
 are gone. After an executor daemon restarts this happens to every session that
-closes, because the new daemon has no workspace for the scope to retire. A daemon
+closes before its next tool call, because the new daemon has no workspace for the scope to retire. A daemon
 that ends in the middle of a close leaves the scope closing, which is refused in
 the same way. Each such scope holds one of the executor's sixteen slots for scopes
 that are not cleanly closed.

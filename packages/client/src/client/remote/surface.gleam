@@ -8,14 +8,15 @@
 //// it adds over a local call is a story for every way the network can fail
 //// between the send and the answer.
 ////
-//// ## Attach first, once per session open
+//// ## Attach first, with one token per session open
 ////
 //// `attach` mints a fresh random token and sends it with the incarnation. The
-//// host makes that token the scope's only valid one. A session open attaches
-//// once, before its first call, and every strand and every runtime restart
+//// host makes that token the scope's only valid one. A session open mints one
+//// token, before its first call, and every strand and every runtime restart
 //// inside that open shares the one surface and its token (see
-//// `client/remote/workspace`). Attaching again would rotate the token and make
-//// the host refuse another strand's live `Run`.
+//// `client/remote/workspace`). Attaching with a new token would rotate it and
+//// make the host refuse another strand's live `Run`. The only later attach is
+//// the repair below, which repeats the token.
 ////
 //// The token fences an earlier open. An orchestrator that crashed, or an open
 //// that was closed, may leave `Run` messages in flight, and Erlang orders
@@ -28,9 +29,37 @@
 //// building the scope's workspace, uses a new reply subject for each send. A
 //// reply to an earlier send that arrives later, such as the `Attached` of the
 //// build the first send started, stays unread in the mailbox of the process
-//// that called `attach`. There is at most one per send that went unanswered, and
-//// the process is the session open, which ends soon after, so the surface does
-//// not collect them.
+//// that sent the attach: the session open, or for a repair the effect process
+//// of the call that needed it. There is at most one per send that went
+//// unanswered, and either process ends soon after, so the surface does not
+//// collect them.
+////
+//// ## A restarted executor is attached again, under the same token
+////
+//// The executor keeps a scope's row, incarnation and token on its state disk
+//// and keeps its workspace plane in memory. When the executor restarts under an
+//// open session the scope is still open and still this surface's, but the new
+//// host holds no plane, and it refuses a `Run` or a `StartExecution` for a key it
+//// has no row for with `NoPlane`. That refusal is given before anything is
+//// admitted, so it proves nothing started. `with_plane` answers it by sending
+//// the same attach again (`reattach`) and then the request once more. The attach
+//// repeats the token this surface already holds, so it is the ledger's rebind,
+//// not a rotation, and another strand's live `Run` is not refused by it. The
+//// repair is tried once for each request. A request whose repair is refused
+//// answers with that refusal, and one that meets `NoPlane` a second time answers
+//// with it.
+////
+//// The new plane has a new broker, and `Config.attached` is told each
+//// attach's answer so the session can point its broker subject at it
+//// (`owner_port.retarget`). The repair does not bind the owner port again: the
+//// port's link to the host is made of the host's address and this surface, and
+//// neither changed, so the port's periodic reconciliation reaches the new host.
+////
+//// Concurrent calls after a restart each repair. The first attach starts the
+//// build. A `Run` that arrives while it is under way is refused `PlaneBuilding`,
+//// which `with_plane` treats like `NoPlane`, and its attach is answered
+//// `PlaneBuilding` until the build lands (`send_attach` asks again). Each call
+//// is then answered by the rebound scope, so one build serves them all.
 ////
 //// ## Lost connections are repaired by sending again
 ////
@@ -83,6 +112,7 @@ import client/wiring.{type Authority}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/result
 import machine/operation
 import runtime/effects.{type Recovery, type ToolOutcome, type ToolRun}
 import weft/poll
@@ -114,6 +144,11 @@ pub type Config(census) {
     /// Mints an attach token: thirty-two bytes from a strong source in
     /// production (`strong_token`), a fixed value in a test.
     mint_token: fn() -> BitArray,
+    /// Told what each successful attach answered, the repair's included, before
+    /// the attach returns. A restarted executor answers with the census of the
+    /// plane it built, so this is how the session learns the executor's new
+    /// broker.
+    attached: fn(Attached(census)) -> Nil,
   )
 }
 
@@ -206,6 +241,26 @@ pub fn strong_token() -> BitArray {
 /// ```
 pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
   let token = config.mint_token()
+  use attached <- result.map(send_attach(config, token))
+  let surface = Surface(config:, token:)
+  owner_port.bind(config.port, host_link(surface), attached.unacked)
+  Attachment(surface:, attached:)
+}
+
+/// Sends the attach for `token` and waits for the scope to be ready, sending it
+/// again while the host is still building.
+///
+/// It is the one place an attach is sent: for the open's first attach and for
+/// the repair of a scope whose plane the executor lost (`reattach`). A host that
+/// is still building this scope's workspace answers `PlaneBuilding` and changes
+/// nothing, which includes the attach whose reply is on its way to a send the
+/// link has since dropped. The same attach is sent again within what is left of
+/// `attach_within_ms`; the token is the same each time, so a build that lands
+/// between two sends is simply rebound.
+fn send_attach(
+  config: Config(census),
+  token: BitArray,
+) -> Result(Attached(census), Refusal) {
   let owner = owner_port.inbox(config.port)
   let make = fn(reply) {
     protocol.Attach(
@@ -219,11 +274,6 @@ pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
     )
   }
 
-  // A host that is still building this scope's workspace answers
-  // `PlaneBuilding` and changes nothing, which includes the attach whose reply
-  // is on its way to a send the link has since dropped. The same attach is sent
-  // again within what is left of `attach_within_ms`; the token is the same
-  // each time, so a build that lands between two sends is simply rebound.
   let clock = poll.monotonic()
   let deadline = clock.now() + config.attach_within_ms
   let sent =
@@ -249,9 +299,8 @@ pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
   // This match resolves sent before the enclosing validation continues.
   case sent {
     poll.Answer(value: Ok(attached)) -> {
-      let surface = Surface(config:, token:)
-      owner_port.bind(config.port, host_link(surface), attached.unacked)
-      Ok(Attachment(surface:, attached:))
+      config.attached(attached)
+      Ok(attached)
     }
     poll.Answer(value: Error(refusal)) -> Error(refusal)
 
@@ -265,6 +314,22 @@ pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
     // Every send in the time allowed met a build in progress.
     poll.RanOut(state: Nil) -> Error(protocol.PlaneBuilding)
   }
+}
+
+/// Asks the executor to build this scope's workspace plane again, under the
+/// token the surface already holds.
+///
+/// An executor that restarted keeps the scope's row, its incarnation and the
+/// token on its state disk, and loses every plane, which is memory. The scope is
+/// therefore still open and still ours, and an attach with the same incarnation
+/// and the same token is the ledger's rebind: it changes no row, rotates no
+/// token, and so cannot make the executor refuse another strand's live `Run`.
+/// The host builds the plane because it has none, and answers when the build
+/// lands. An executor that did not restart already holds the plane and answers
+/// at once, so the repair is idempotent.
+fn reattach(surface: Surface(census)) -> Result(Nil, Refusal) {
+  send_attach(surface.config, surface.token)
+  |> result.replace(Nil)
 }
 
 /// The `run` and `recover` functions to compose into a `ToolSurface`.
@@ -394,7 +459,7 @@ pub fn start_execution(
   remaining_ms: Int,
 ) -> ExecutionAnswer {
   let config = surface.config
-  let sent =
+  let send = fn() {
     exchange(config, Forever, fn(reply) {
       protocol.StartExecution(
         key:,
@@ -405,6 +470,19 @@ pub fn start_execution(
         reply:,
       )
     })
+  }
+  let sent =
+    with_plane(
+      surface,
+      send,
+      fn(answer) {
+        case answer {
+          protocol.ExecutionRefused(refusal:) -> plane_missing(refusal)
+          _ -> False
+        }
+      },
+      protocol.ExecutionRefused,
+    )
 
   // This match resolves sent before the surrounding protocol step continues.
   // This match resolves sent before the enclosing validation continues.
@@ -562,7 +640,15 @@ fn await_live(surface: Surface(census), run: ToolRun) -> Recovery {
   }
 }
 
-/// Sent run keeps this client operation’s decoding or state decision in one place.
+/// Sends one `Run` and waits for its answer, building the scope's plane again
+/// once when the executor says it has none.
+///
+/// The refusal `NoPlane` is what a restarted executor answers for a key it has
+/// no row for, and it is given before anything is admitted, so it proves the
+/// call did not start. The `Run` is also keyed, so a send after the repair
+/// joins a call that did start and reads one that finished. Either way the repair
+/// cannot run the call twice. A repair that fails is the answer: the call was
+/// refused, and the refusal says why the scope cannot be served.
 fn sent_run(
   surface: Surface(census),
   run: ToolRun,
@@ -570,16 +656,72 @@ fn sent_run(
 ) -> Result(RunAnswer, Nil) {
   let config = surface.config
   let key = protocol.key_of(config.session, run)
-  exchange(config, Forever, fn(reply) {
-    protocol.Run(
-      key:,
-      incarnation: config.incarnation,
-      token: surface.token,
-      run:,
-      authority:,
-      reply:,
-    )
-  })
+  let send = fn() {
+    exchange(config, Forever, fn(reply) {
+      protocol.Run(
+        key:,
+        incarnation: config.incarnation,
+        token: surface.token,
+        run:,
+        authority:,
+        reply:,
+      )
+    })
+  }
+
+  with_plane(
+    surface,
+    send,
+    fn(answer) {
+      case answer {
+        protocol.RunRefused(refusal:) -> plane_missing(refusal)
+        _ -> False
+      }
+    },
+    protocol.RunRefused,
+  )
+}
+
+/// Whether a refusal says the scope has no usable plane yet: it has none
+/// (`NoPlane`) or another request is building it (`PlaneBuilding`). The host
+/// gives either before it admits anything, so neither means a call started.
+fn plane_missing(refusal: Refusal) -> Bool {
+  case refusal {
+    protocol.NoPlane(..) | protocol.PlaneBuilding -> True
+    _ -> False
+  }
+}
+
+/// Sends a keyed request and, when the executor answers that the scope has no
+/// plane, builds the plane again with `reattach` and sends the request once
+/// more.
+///
+/// This is the whole repair for an executor that restarted under an open
+/// session: the scope row survived on its state disk and the plane did not. It
+/// is attempted once. A second `NoPlane` is returned as the answer, because a
+/// plane that vanished again between the repair and the send is a different
+/// fault, and the next call attempts its own repair. The request must be one
+/// the host answers the same way twice, as for `ask`. `lacks_plane` says
+/// whether an answer is the missing-plane refusal, and `refuse` makes the answer
+/// for a repair the executor refused.
+fn with_plane(
+  surface: Surface(census),
+  send: fn() -> Result(answer, Nil),
+  lacks_plane: fn(answer) -> Bool,
+  refuse: fn(Refusal) -> answer,
+) -> Result(answer, Nil) {
+  use first <- result.try(send())
+
+  // This match resolves lacks_plane(first) before the surrounding protocol step continues.
+  case lacks_plane(first) {
+    False -> Ok(first)
+    True ->
+      // This match resolves reattach(surface) before the surrounding protocol step continues.
+      case reattach(surface) {
+        Ok(Nil) -> send()
+        Error(refusal) -> Ok(refuse(refusal))
+      }
+  }
 }
 
 // The reconciler's way to the same host: list what it holds, and acknowledge.

@@ -89,6 +89,12 @@ func (b *Backend) Probe(_ context.Context) machine.Probe {
 		return machine.Probe{Available: machine.Unusable, Reason: reason}
 	}
 
+	if runtime.GOOS == "linux" {
+		if _, _, err := checkNofile(); err != nil {
+			return machine.Probe{Available: machine.Unusable, Reason: err.Error()}
+		}
+	}
+
 	if b.cfg.RunnerPath == "" {
 		return machine.Probe{
 			Available: machine.Unusable,
@@ -127,15 +133,26 @@ func hostHasHypervisor() (bool, string) {
 		return true, ""
 
 	case "linux":
-		if _, err := os.Stat("/dev/kvm"); err != nil {
-			return false, "libkrun on Linux needs /dev/kvm: " + err.Error()
-		}
-
-		return true, ""
+		return kvmUsable("/dev/kvm")
 
 	default:
 		return false, "libkrun does not run on " + runtime.GOOS
 	}
+}
+
+// kvmUsable reports whether the caller can open the KVM device. Opening it,
+// and not only finding it, is the check: a device that exists but is closed to
+// the user (the user is not in the kvm group) would otherwise pass the probe
+// and fail inside the runner at the first boot.
+func kvmUsable(path string) (bool, string) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return false, "libkrun on Linux needs a usable " + path + ": " + err.Error()
+	}
+
+	_ = f.Close()
+
+	return true, ""
 }
 
 // Start boots spec and returns the running guest. microvm.Run stages the
@@ -143,6 +160,10 @@ func hostHasHypervisor() (bool, string) {
 // so a returned Machine is already booted.
 func (b *Backend) Start(ctx context.Context, spec machine.Spec) (machine.Machine, error) {
 	if err := spec.Validate(); err != nil {
+		return nil, err
+	}
+
+	if err := raiseNofile(); err != nil {
 		return nil, err
 	}
 
@@ -284,7 +305,9 @@ func (b *Backend) hypervisor() *mvlibkrun.Backend {
 		return nil
 	}
 
-	opts := []mvlibkrun.Option{mvlibkrun.WithRunnerPath(b.cfg.RunnerPath)}
+	opts := []mvlibkrun.Option{
+		mvlibkrun.WithRunnerPath(resolveRunner(b.cfg.RunnerPath)),
+	}
 
 	libDir := libraryPath(b.cfg)
 	if libDir != "" {
@@ -292,6 +315,21 @@ func (b *Backend) hypervisor() *mvlibkrun.Backend {
 	}
 
 	return mvlibkrun.NewBackend(opts...)
+}
+
+// resolveRunner returns the runner's path with symlinks resolved. go-microvm
+// decides whether a pid is still its runner by comparing /proc/PID/exe, which
+// the kernel resolves, with the path it was given. A path through a symlink
+// never matches, so on Linux a guest's Stop saw no runner, sent no signal and
+// left the runner holding the root and the state disk. A path that cannot be
+// resolved is passed on unchanged, and the boot reports that the runner is
+// missing.
+func resolveRunner(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+
+	return path
 }
 
 // libraryPath joins the firmware and library directories in the order the

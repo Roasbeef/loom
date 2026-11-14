@@ -210,6 +210,7 @@ fn config(
     remote_tools: ["fs_write", "fs_read", "bash", "code_mode"],
     attach_within_ms: 60_000,
     mint_token: surface.strong_token,
+    attached: fn(_attached) { Nil },
   )
 }
 
@@ -745,6 +746,7 @@ fn attached_census(rig: Rig) -> RemoteCensus {
       surface.Config(
         ..config(rig, "s1", "proj", 0),
         mint_token: evolution_token,
+        attached: fn(_attached) { Nil },
       ),
     )
     as "the attach succeeds"

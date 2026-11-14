@@ -113,28 +113,28 @@ The steps that need root run before the drop, in this order:
 
 1. **State root.** `loom-guest-executor` mounts the state device on
    `NODE_DIR/state` as ext4, formatting it on the first boot
-   (`packages/vmm/guest/loom-guest-executor:104`). `vm_spec.launch_arguments`
+   (`packages/vmm/guest/loom-guest-executor:108`). `vm_spec.launch_arguments`
    passes `--state-device /dev/vda`, the `state.img` that `loom vm up` keeps, so
    the state survives `down` and `up`. Only with no device does the script mount
-   a 512 MiB tmpfs (`:107`) that starts empty on every boot. The guest root is a
+   a 512 MiB tmpfs (`:111`) that starts empty on every boot. The guest root is a
    virtio-fs share, and the executor's SQLite ledger and code mode's AF_UNIX
    socket need a local filesystem.
 2. **Ownership.** It gives `NODE_DIR` and every `/srv/workspaces/*` to `loom`
-   (`packages/vmm/guest/loom-guest-executor:92`). Staged files arrive owned by
+   (`packages/vmm/guest/loom-guest-executor:115`). Staged files arrive owned by
    root, and the daemon's credential checks require a 0600 file it can read.
 3. **Network.** `loom-guest-init` sets `192.168.127.2/24` with a default route
-   via `192.168.127.1` (`packages/vmm/guest/loom-guest-init:26`). go-microvm
+   via `192.168.127.1` (`packages/vmm/guest/loom-guest-init:70`). go-microvm
    v0.0.43 serves no DHCP lease, so the address is static.
 4. **Cgroups.** It builds `/sys/fs/cgroup/loom/{init,work,exec}`, enables
    `+pids +memory` from the top down
-   (`packages/vmm/guest/loom-guest-init:91`), and hands the subtree to `loom`.
+   (`packages/vmm/guest/loom-guest-init:160`), and hands the subtree to `loom`.
    The workload runs in `loom/work` and `LOOM_CGROUP_BASE` names `loom/exec`,
    which holds no process.
 5. **Drop.** `setpriv` runs the second phase as uid 10000
-   (`packages/vmm/guest/loom-guest-init:122`).
+   (`packages/vmm/guest/loom-guest-init:191`).
 6. **Options.** The second phase renders the TLS options file with the guest's
    own `loomd distribution options`
-   (`packages/vmm/guest/loom-guest-executor:47`). `distribution.start` compares
+   (`packages/vmm/guest/loom-guest-executor:49`). `distribution.start` compares
    that file with what the configuration renders, paths included, so a file
    rendered on the host would refuse the boot.
 
@@ -173,7 +173,7 @@ and the last three are the ordinary distributed path.
    the entry while the registering connection stays open, so the entry lives
    exactly as long as `loom-vm`.
 2. **Forward.** `Spec.Forwards` becomes `microvm.WithPorts`
-   (`packages/vmm/machine/libkrun/libkrun.go:255`). The hosted provider listens
+   (`packages/vmm/machine/libkrun/libkrun.go:284`). The hosted provider listens
    on host `127.0.0.1:HOST` only and opens a connection to the guest port,
    admitting it through the guest firewall's ingress rules.
 3. **Listen.** The guest daemon's listener binds every interface, because the
@@ -235,9 +235,9 @@ filesystem layout is not.
    builds.
 4. **Network.** The guest's only interface is a virtio-net device whose other
    end is the hosted provider in `loom-vm`. `libkrun.Backend.Start` always
-   creates that provider (`packages/vmm/machine/libkrun/libkrun.go:156`) and
+   creates that provider (`packages/vmm/machine/libkrun/libkrun.go:172`) and
    always passes a non-nil egress policy
-   (`packages/vmm/machine/libkrun/libkrun.go:239`), which makes the firewall
+   (`packages/vmm/machine/libkrun/libkrun.go:255`), which makes the firewall
    deny by default. A virtio-net device also turns off libkrun's TSI mode,
    under which guest sockets run on the host and reach host loopback.
 
@@ -276,7 +276,7 @@ flowchart LR
 **How the guest reaches it.** `ghproxy.Proxy` is an `http.Handler`.
 `machine.Spec.HostServices` carries it to the libkrun backend, which registers it
 with `hosted.Provider.AddService` before the provider starts
-(`packages/vmm/machine/libkrun/libkrun.go:156`). go-microvm serves a hosted
+(`packages/vmm/machine/libkrun/libkrun.go:172`). go-microvm serves a hosted
 service with an `http.Server` listening on the gateway, 192.168.127.1, inside
 the launcher's own gVisor stack, and it adds a firewall rule that admits the
 guest's egress to that port. No host socket is bound, so nothing but this guest
@@ -325,7 +325,14 @@ use and cached.
 | --- | --- | --- |
 | `/usr/local/share/ca-certificates/loom-vm-proxy.crt` | the CA certificate | `loom-guest-init` runs `update-ca-certificates` when this file exists, before it drops privileges |
 | `/etc/loom-vm/github.env` | `HTTPS_PROXY`, `https_proxy`, `NO_PROXY`, `no_proxy`, and `GH_TOKEN` and `GITHUB_TOKEN` set to the placeholder | `loom-guest-init` exports it (`set -a`) into the workload, so `loomd` inherits it |
-| `/etc/gitconfig` | `http.proxy`, and for each injection host a credential helper answering `username=x-access-token` and `password=${GH_TOKEN:-<placeholder>}` | git, as the system configuration, in any shell |
+| `/etc/gitconfig` | `http.proxy`, for each injection host a credential helper answering `username=x-access-token` and `password=${GH_TOKEN:-<placeholder>}`, and a `url."https://<host>/".insteadOf` rewrite of `git@<host>:` and `ssh://git@<host>/` | git, as the system configuration, in any shell |
+
+The rewrite exists because a developer's checkout usually names its origin
+as `git@github.com:owner/repo`, and the copy in the guest keeps that URL. The
+guest has no ssh client, no key and no route to port 22, so `git push` to
+such a remote failed with "cannot run ssh". With the rewrite the same remote
+resolves to HTTPS on the same host and goes through the proxy like any other
+request; the rewrite adds no credential and reaches no new host.
 
 The credential helper falls back to the placeholder so a jailed call whose
 environment omits `GH_TOKEN` still authenticates through the proxy.
@@ -417,14 +424,14 @@ stateDiagram-v2
     Stopped --> [*]
 ```
 
-`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:420`) is the one exit
+`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:508`) is the one exit
 and it is idempotent. It stops the hosted provider first, so no packet leaves
 the guest while the VMM shuts down, then branches on who owns the root. An
 `extractedRoot`, which go-microvm unpacked from an image for this guest, goes
 through `VM.Remove`. A `callerRoot`, given as `Spec.Root.Dir`, goes through
 `VM.Stop` only, because `VM.Remove` deletes any rootfs outside go-microvm's
 image cache and would delete the caller's directory
-(`packages/vmm/machine/libkrun/libkrun.go:359`). Teardown runs under its own
+(`packages/vmm/machine/libkrun/libkrun.go:525`). Teardown runs under its own
 30 s context, so a cancelled caller still releases the VMM.
 
 The launcher defers its teardown (`packages/vmm/cmd/loom-vm/main.go:220`), and
@@ -435,24 +442,31 @@ SIGTERM is a clean exit; a timeout (default 10 minutes) exits 1.
 
 ## The guest image and firmware
 
-The guest needs three artifacts besides `loom-vm` itself. A developer builds
-them with make targets; a release publishes them, and `loom-vm setup` installs
-either kind (see "Installing the artifacts" below).
+The guest needs three artifacts besides `loom-vm` itself, and a Linux host
+needs a fourth, libkrun. A developer builds them with make targets; a release
+publishes them, and `loom-vm setup` installs either kind (see "Installing the
+artifacts" below).
 
 | Make target | Produces | Built where | Why it is separate |
 | --- | --- | --- | --- |
+| `vmm-libkrun` | `packages/vmm/build/libkrun` (`lib64/libkrun.so.1`, header, `libkrun.pc`) | Linux only, from libkrun v1.19.7 source with cargo | Homebrew has libkrun for macOS and Ubuntu has none; the runner links it through pkg-config. |
 | `vmm-runner` | `packages/vmm/build/go-microvm-runner`, codesigned with `packages/vmm/runner.entitlements` on macOS | the host, with cgo against libkrun | The runner and the go-microvm library are version-locked; Hypervisor.framework refuses an unsigned runner. |
-| `vmm-firmware` | `packages/vmm/build/firmware/libkrunfw.5.dylib` | the kernel in an arm64 podman machine, the dylib on the host | Adds `CONFIG_SECURITY_LANDLOCK` and `CONFIG_SECURITYFS` to libkrunfw v5.5.0 (Linux 6.12.91). macOS only. |
-| `vmm-guest-root` | `packages/vmm/build/guest-root` | natively in the arm64 podman machine `loom-build` | `make release` cannot cross-compile. The image builds from `erlang:29.0.5` and runs on `debian:trixie-slim`. |
+| `vmm-firmware` | `packages/vmm/build/firmware/libkrunfw.5.dylib` on macOS, `libkrunfw.so.5` on Linux | macOS: the kernel in an arm64 podman machine, the dylib on the host. Linux: both natively, for the machine's architecture | Adds `CONFIG_SECURITY_LANDLOCK` and `CONFIG_SECURITYFS` to libkrunfw v5.5.0 (Linux 6.12.91). |
+| `vmm-guest-root` | `packages/vmm/build/guest-root` | natively: in the arm64 podman machine `loom-build` on macOS, with the local podman as linux/amd64 or linux/arm64 on Linux | `make release` cannot cross-compile. The image builds from `erlang:29.0.5` and runs on `debian:trixie-slim`. |
 
 `--firmware-dir` puts the custom libkrunfw ahead of the stock one on the
 runner's library path (`libraryPath`,
-`packages/vmm/machine/libkrun/libkrun.go:285`). The firmware script pins the
+`packages/vmm/machine/libkrun/libkrun.go:331`). The firmware script pins the
 libkrunfw tag to a commit and the kernel tarball to a SHA-256
-(`packages/vmm/guest/build-libkrunfw.sh:37`). It has a mode for each half of
+(`packages/vmm/guest/build-libkrunfw.sh:57`). It has a mode for each half of
 the build, so that the release workflow can run the kernel on a Linux runner
 (`--kernel`) and the link on a macOS one (`--link`); with neither flag it runs
-both through podman, as `make vmm-firmware` does.
+both, through podman on macOS and natively on Linux, as `make vmm-firmware`
+does. The link reads the kernel's architecture from the load-address footer
+of `kernel.c` and refuses a kernel built for another architecture than the
+library serves (aarch64 for the macOS dylib, the host's own on Linux), because
+an x86_64 kernel inside the arm64 dylib links without complaint and fails only
+when a guest boots.
 
 ### Installing the artifacts
 
@@ -491,6 +505,86 @@ guest the paths are these:
 | `/srv/workspaces/<name>` | the checkout the executor serves | staged per boot, owned by `loom` |
 | `/sys/fs/cgroup/loom/{init,work,exec}` | the delegated cgroup subtree | built by `loom-guest-init` each boot |
 
+### A Linux host
+
+A Linux x86_64 host boots a guest. It was brought up on an Ubuntu 24.04 box with
+two cores, 4 GB of RAM and `/dev/kvm`, and `daemon_shipped_microvm_test` passes
+there (207 s; the live GitHub steps, `LOOM_VM_GITHUB_LIVE`, were not run). The
+steps, from a checkout:
+
+```sh
+sudo usermod -aG kvm "$USER"                 # once, then log in again
+make vmm-libkrun vmm vmm-runner vmm-firmware # libkrun, loom-vm, runner, kernel
+make vmm-guest-root VMM_PODMAN_FLAGS='--runtime crun'
+make vmm-install-dev                         # writes the manifest
+```
+
+`vmm-libkrun` takes about four minutes including rustup, `vmm-firmware` about
+ten (a native kernel build), and `vmm-guest-root` about twenty on two cores,
+because the image builds Gleam from source and then the server release. The
+build host needs `pkg-config` and podman; `vmm-libkrun` and `vmm-firmware`
+install their other dependencies with `apt-get`. `loom-vm probe` opens `/dev/kvm` for reading and writing, so a user outside
+the `kvm` group is told so by the probe and not by the first boot.
+
+What differs from macOS, each of which was found by booting:
+
+- **The share's ownership.** libkrun's virtio-fs passthrough emulates ownership
+  with extended attributes only on macOS. On Linux a runner without CAP_CHOWN
+  and CAP_SETUID shows every file as owned by its own user, refuses a chown, and
+  refuses a write by any uid but root's and its own. `loom-guest-init` tries to
+  hand `/work` to uid 10000 and, when that fails, makes the loom user the host
+  user's uid and gid by rewriting its passwd and group entries (the `--identity`
+  mode, which `loom-guest-executor` also calls before it chowns by name). A
+  consequence: on such a host every file in the guest root belongs to the loom
+  user, system files included, so uid separation inside the guest is gone and
+  the jail is the only boundary between model code and the guest's own files.
+  That includes `loom-guest-init` and `loom-guest-executor`, which run as root
+  at every boot, `/opt/loom` and `/etc/loom-vm`: a jail escape becomes guest
+  root at the next boot and lasts until the root is replaced (`--fresh`). A
+  runner with the capabilities, or one run as root, keeps uid 10000. The init
+  settles the ids before anything else, and stops with one sentence when the
+  share belongs to root, because the loom user would then be root.
+  go-microvm's `WithUserNamespaceUID` was tried in place of this and refuted:
+  in a single-id user namespace every file on the share still shows as the one
+  mapped id, so the loom user owns everything exactly as here, and a chown to
+  root fails with EINVAL. It also needs unprivileged user namespaces with
+  capabilities, which Ubuntu's AppArmor restriction can withhold, and the test
+  box's kernel has no such setting to check that against.
+- **Setuid files.** On the share a setuid-root binary runs as the host user, so
+  `mount` refused to mount for the init. The image strips setuid and setgid
+  bits.
+- **Open files.** The passthrough keeps one descriptor open in the runner per
+  guest inode. A root of 17,700 files held 4,261 after the executor was ready,
+  over the 1,024 soft limit of a login and the 4,096 hard limit of the test
+  box. `Start` raises the soft limit to the hard one and refuses a hard limit
+  under 65,536, in `Start` and in `probe` and `doctor`, naming the routes that
+  work: `sudo prlimit --pid $$ --nofile=65536:65536`, a `hard nofile` line in
+  `/etc/security/limits.conf` with a new login, or `LimitNOFILE=` for a systemd
+  unit (`packages/vmm/machine/libkrun/nofile.go`). The test box ran the
+  launcher after `prlimit` on its own shell.
+- **A symlinked runner.** go-microvm compares `/proc/PID/exe`, which the kernel
+  resolves, with the runner path before it signals a pid. A runner reached through
+  a symlink was never found, and `down` left it holding the root. The backend
+  resolves the path first, and `loom vm` resolves the manifest's runner path
+  the same way (`vm_cli.running_as`) before it looks for a runner that
+  outlived its launcher, because the runner's command line now begins with the
+  resolved path.
+- **Podman.** Ubuntu 24.04's podman 4.9 with runc 1.3 rejects the Dockerfile's
+  cache mounts; crun accepts them (`VMM_PODMAN_FLAGS`). The build stage removes
+  its checkout so that its layer does not fill a 25 GB disk.
+- **Reflinks.** `cp -a --reflink=auto` on ext4 is a full copy, so each guest
+  root costs 387 MB of disk and a clone takes a few seconds.
+- **A host Erlang release is not the guest's.** The server release in the guest
+  root was built on Debian trixie and its crypto NIF needs OpenSSL 3.4, which
+  Ubuntu 24.04 lacks, so the orchestrator on the host must be a shipment built
+  on the host (`make server-shipment`), not the guest's `/opt/loom`. The
+  executor protocol is exact-revision, so build it with `BUILD_COMMIT` set to the
+  revision the guest image carries.
+- **`vm sync` needs git 2.45.1, or a patched point release.** Ubuntu 24.04's
+  `2.43.0` is refused by the version check although the distribution backports
+  the fixes it is guarding against; the test box built git 2.47.3 into a private
+  prefix.
+
 ## Concurrency
 
 Every piece of state in the tier has one owning process, and the owners
@@ -521,6 +615,14 @@ Four rules follow from that table:
 - **Readiness is read from the console, never from the port.** A forward
   accepts a connection on the host side even when nothing listens in the
   guest; the hosted provider then closes it.
+- **A guest that dies before it has a console ends the run.** The runner
+  creates `console.log` only once the kernel starts, so a firmware the host
+  cannot boot (an x86_64 kernel in an arm64 library exits the runner with
+  status 2) leaves no file. `follow` starts `Wait` before it opens the
+  console and stops retrying the missing file when the runner is gone:
+  `loom-vm` exits 1 with "the guest exited before it wrote a console", and
+  `loom vm up` reports that line with the launcher's log in about four
+  seconds instead of waiting out its boot budget.
 - **The test stops the guest from outside its deadline.**
   `daemon_shipped_microvm_test` boots its guest with `loom vm up` inside a
   deadline-bounded body, and runs `loom vm down` after that body, whether it
@@ -626,7 +728,9 @@ the refusal names `loom vm setup`. It then:
    port as before. The guest's `loom.toml` and its `creds/` hold no
    authority key, and neither does any bundle that goes there, and
    copies the workspace, with its `.git` directory, to
-   `<root>/srv/workspaces/<directory name>` unless that copy exists. A linked
+   `<root>/srv/workspaces/<directory name>` unless that copy exists. The copy
+   is made beside the root, as `<vm home>/<name>/workspace.building`, and
+   renamed into the root once it is whole and scrubbed. A linked
    worktree, whose `.git` is a file that points outside the directory, is copied
    the same way and then given a repository of its own. `git clone --no-checkout
    --no-local <worktree>` runs into `<root>/srv/loom-node/git-staging`
@@ -772,8 +876,9 @@ recorded birth marker, and waits for it to exit. It leaves the root and the
 deployment, so the guest's checkout can be read afterwards. `status` reports
 the process, the host port the host epmd lists for the executor's node name,
 the manifest's revision, the root and the guest's workspaces. A daemon that
-was running before `up` must be restarted to read the new `[distribution]`
-table. When the guest's deployment is in the exact default `loom.toml` (a first
+was running before an `up` that installed the `[distribution]` table must be
+restarted to read it. A resume installs nothing, so its note says the daemon
+needs no restart on its account and does not offer the command that stops it. When the guest's deployment is in the exact default `loom.toml` (a first
 `up` or a resume: a first `up` that failed at boot leaves the daemon unread), `up` asks that daemon, through the owner control connection
 (`host/access`, command `status`), how many sessions it holds (`occupied`:
 resident, opening, stopping and blocked). With none, it sends `daemon.shutdown`,
@@ -816,9 +921,14 @@ behaviour: the root is booted as it is, whatever it was cloned from. The
 upgrade replaces everything in the old root except the workspaces and the
 state disk, such as `/home/loom`, `/work` and tools installed by hand. The steps:
 
-1. checks that `srv/workspaces` and every parent of it in the old root is a real
-   directory, and otherwise refuses with a line naming `--fresh`, because a link
-   there would be carried into the new root;
+1. decides what the old root carries over (`vm_spec.carry_over`). When
+   `srv/workspaces` and every parent of it is a real directory, the workspaces
+   move. A link or a file there is refused with a line naming `--fresh`,
+   because it would be carried into the new root. A root with no
+   `srv/workspaces` whose host-owned `checkouts` record names no copy carries
+   nothing and is cloned again as a first root is (see "A first `up` that was
+   interrupted" below); with a record that names a copy, the missing directory
+   is refused;
 2. clones the manifest's guest root into `<vm home>/<name>/root.building`, a
    name `up` does not read, removing a leftover `root.next` and `root.building`
    first, makes `srv` in it and removes any `srv/workspaces` the clone brought
@@ -848,6 +958,51 @@ record only makes the next `up` upgrade once more, and the provisioning of that
 old root, which the swap may have partly deleted. A root with neither marker nor
 script but a host copy of the script is a stop between the clone and the
 staging, and the script is staged again.
+
+#### A first `up` that was interrupted
+
+A first `up` clones the export, stages the node, records the revision and
+then copies the workspace in. The clone is made as `root.building` and
+renamed to `root` (`replace_root`), so a `root` that exists is a whole clone:
+a stop during the copy leaves only `root.building`, which the next `up`
+removes before it clones again. The clone used to be copied in place. A stop
+during it left part of a root with no record, which the next `up` read as a
+root from an older loom and tried to upgrade, and the upgrade refused it for
+having no `srv/workspaces`, naming `--fresh` and warning of lost workspaces
+that never existed. Under a `dev` manifest the partial root was kept and
+booted. A stop after the clone and before the workspace copy had the same
+refusal, because the export ships an empty `srv`.
+
+Such a root holds nothing of the developer's, and the host can tell: `up`
+writes the `checkouts` record only after it copied a workspace into the root,
+and removes it when it replaces the root. So a root with no `srv/workspaces`
+and no recorded copy is cloned again by `replace_root`, as a first root is,
+and `up` prints `unfinished_line` in place of the upgrade line. The record is
+the host's, so a guest cannot make its workspaces look absent by editing it,
+and it is read only when the directory is missing, so a damaged record never
+blocks the move of workspaces that are there (`old_workspaces`,
+`carried_workspaces`).
+
+Two more writes followed the same pattern and are made the same way now.
+`--fresh` deleted the old root in place, so a stop during the delete left
+part of a root under a revision record that still matched, and a plain `up`
+kept and booted it. `remove_root` now renames the old root to `root.building`
+and deletes it under that name. And the workspace copy was made at its final
+name, `root/srv/workspaces/<name>`, where a later `up` keeps any copy it
+finds: a stop during the copy left half of one, and a stop after the copy and
+before `scrub_config` left one whose `.git/config` still held the host's
+credentials in the guest's read scope. `copy_workspace` now makes the copy as
+`<vm home>/<name>/workspace.building`, gives it its own repository, scrubs
+it, and renames it into the root last. The rule in all three cases: a name
+that a later `up` trusts is given by one rename to something already whole.
+
+The TLA+ model [`protocol/models/vm-root-upgrade`](../../protocol/models/vm-root-upgrade/README.md)
+checks the upgrade, the first run and `--fresh` under a stop of `up` at any
+step: the workspaces are never lost, a guest boots only on a whole root that
+holds a whole copy of them, and `up` finishes once it stops being
+interrupted. Nine mutants each remove one rule and must fail; four of them
+are the code as it was before the writes above were made aside and the
+carry-over rule existed.
 
 Provisioning needs the script, and the root is untrusted, so the script is never
 read back out of it. `up` keeps a host-owned copy at `<vm home>/<name>/provision`
@@ -1138,9 +1293,13 @@ the host are not in it.
 - There is no `loom vm shell`. A guest has no exec channel: its executor serves
   the orchestrator over the distribution link and nothing else, so a command in
   the guest runs only through a session's tools.
-- Only macOS with Hypervisor.framework has booted a guest. The Linux/KVM path
-  compiles and is untested, and `build-libkrunfw.sh` links only the macOS
-  dylib.
+- macOS with Hypervisor.framework and Linux x86_64 with KVM have booted a
+  guest. Linux arm64 has not, and the Linux x86_64 runs were rootless on one
+  two-core box with a hard open-file limit raised by `prlimit` (see "A Linux
+  host"). On Linux without privilege the guest's system files are owned by the
+  loom user, and a `--provision` script that installs packages as root is not
+  expected to work, because dpkg's chown to root is refused; neither a
+  privileged runner nor that script has been run.
 - `loom-vm setup --release` has never run against a published release: none
   exists yet. Its download, checksum, signing and extraction steps are covered
   by tests against a local HTTP server and registry, and the extraction was
@@ -1150,8 +1309,9 @@ the host are not in it.
   `release.yml`'s `gh release create`, and the permissions the called jobs
   receive are checked by `actionlint` and by reading only. A nightly whose
   `vmm-release.yml` run failed is published without artifacts and stays
-  without them. A Linux host has no download, because Ubuntu
-  ships no libkrun for the runner to link; it uses `--from-build`.
+  without them. A Linux host has no download: a release publishes no Linux
+  runner, no `libkrunfw.so.5`, and no libkrun, which Ubuntu does not ship and
+  the runner links; it uses `--from-build`.
 - Sessions local to an orchestrator do not yet mask the node's key and cookie.
 - The behaviour on the stock kernel is inferred: a turn does not complete,
   which matches the broker's `landlock` demand, but the exact refusal was not
@@ -1159,14 +1319,18 @@ the host are not in it.
 - The host epmd entry assumes the node name's host part is `127.0.0.1`. A
   guest executor reached from another machine would need a different
   transport.
-- The credential proxy is driven end to end only with a made-up token.
+- The automated test drives the credential proxy only with a made-up token.
   `daemon_shipped_microvm_test` boots a guest with `loom vm up --github env`
   and a fake `LOOM_VM_GITHUB_TOKEN`, and a jailed `bash` call shows the
   placeholder in `GH_TOKEN`, the fake token nowhere under the guest's files, and
   (with `LOOM_VM_GITHUB_LIVE=1`) `api.github.com/zen` answering 200 and
-  `/user` answering 401 through the proxy. A real push, which needs a real
-  token with write access, has not been run. The test needs a guest root with
-  `curl`; the one it was run with also has `gh`.
+  `/user` answering 401 through the proxy. A real push was run once by hand,
+  on 2026-11-13 against the nightly of commit `ebae32cf2`: a model session in
+  a guest pushed a branch to a private repository whose origin is an SSH URL,
+  with a real token given through `--github env`, and the token was found
+  nowhere under the guest's directory. No test repeats it, because it needs a
+  token with write access. The test needs a guest root with `curl`; the one it
+  was run with also has `gh`.
 - Firecracker, the second backend ADR-022 names, has no implementation.
 - This document was written from the code directly rather than from
   per-subsystem reader summaries; go-microvm's internals (`microvm.Run`, the

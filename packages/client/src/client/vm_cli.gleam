@@ -1353,8 +1353,13 @@ type Enrolled {
 
 // Whether the guest's `[executors.<name>]` row is in the file or derived.
 type Row {
-  // The orchestrator's bundle wrote it, and a daemon reads it at start.
+  // The orchestrator's bundle wrote it in this `up`, and a daemon reads it at
+  // start.
   Written
+
+  // A resume: an earlier `up` wrote it and it is still in the file. This `up`
+  // changed nothing the daemon reads.
+  Retained
 
   // The ledger gives the daemon the row when the guest is a member, and the
   // file was not touched.
@@ -1439,7 +1444,7 @@ fn still_enrolled(
   // only the row it needs is checked, and a missing one is the operator's to
   // restore, since reinstalling would be refused as an existing deployment.
   case string.contains(text, row) {
-    True -> Ok(Enrolled(config:, file:, row: Written))
+    True -> Ok(Enrolled(config:, file:, row: Retained))
     False ->
       Error(
         config
@@ -1554,7 +1559,7 @@ fn stage(
       record_root_revision(guest, manifest)
   })
 
-  use copy <- result.try(copy_workspace(guest.root, workspace, platform))
+  use copy <- result.try(copy_workspace(guest, workspace, platform))
   record_checkout(guest, workspace, copy)
 }
 
@@ -1647,15 +1652,30 @@ fn prepare_root(
     }
 
     vm_spec.UpgradeRoot(recorded) -> {
+      // What the old root carries over is settled first, so an unsafe root
+      // is refused before anything is said or changed.
+      use workspaces <- result.try(carried_workspaces(guest))
+
       // The line comes after every refusal of `up` and before the first
-      // change; `build_next_root`'s own refusal of an unsafe root follows it.
-      io.println_error(vm_spec.upgrade_line(
-        options.name,
-        recorded,
-        manifest.revision,
-      ))
-      use Nil <- result.try(build_next_root(manifest, guest, platform))
-      swap_roots(guest)
+      // change. A root that never received a workspace copy is an unfinished
+      // first `up`, and calling that an upgrade would mislead.
+      case workspaces {
+        Some(old) -> {
+          io.println_error(vm_spec.upgrade_line(
+            options.name,
+            recorded,
+            manifest.revision,
+          ))
+          use Nil <- result.try(build_next_root(manifest, guest, platform, old))
+          swap_roots(guest)
+        }
+
+        // Nothing to move, so this is the first clone done again.
+        None -> {
+          io.println_error(vm_spec.unfinished_line(options.name))
+          replace_root(manifest, guest, platform)
+        }
+      }
     }
 
     vm_spec.FinishUpgrade -> swap_roots(guest)
@@ -1781,18 +1801,14 @@ fn record_provision_copy(
 /// moved, and what remains is `swap_roots`, which `up` finds by that `root.next`
 /// beside a root with no workspaces (`vm_spec.root_step`, `FinishUpgrade`). The
 /// directory moves as one `rename`, so a link inside it stays a link and nothing
-/// is followed.
+/// is followed. `workspaces` is what `carried_workspaces` found: the old root's
+/// `srv/workspaces`, checked to be a real directory under real directories.
 fn build_next_root(
   manifest: Manifest,
   guest: Instance,
   platform: vm_spec.Platform,
+  workspaces: String,
 ) -> Result(Nil, String) {
-  // The directory and every parent of it must be real directories, or the
-  // rename would carry a link the guest left into the new root.
-  use workspaces <- result.try(
-    plain_chain(guest.root, ["srv", "workspaces"])
-    |> result.map_error(vm_spec.upgrade_refusal),
-  )
   use export <- result.try(
     bootstrap.canonical_directory(manifest.guest_root)
     |> result.map_error(fn(reason) {
@@ -1810,6 +1826,62 @@ fn build_next_root(
     within: copy_budget_ms,
   ))
   move_into_place(workspaces, guest.building_root, guest.next_root)
+}
+
+/// The old root's `srv/workspaces` when the upgrade moves it, `None` when
+/// the root holds no workspace copy, or the refusal (`vm_spec.carry_over`).
+fn carried_workspaces(
+  guest: Instance,
+) -> Result(option.Option(String), String) {
+  let found = old_workspaces(guest.root)
+
+  // The record matters only when the directory is missing, so a damaged
+  // record never blocks the move of workspaces that are there. The record is
+  // the host's, so a guest cannot make its workspaces look absent with it.
+  use recorded <- result.try(case found {
+    vm_spec.Missing -> read_checkouts(guest)
+    vm_spec.Movable | vm_spec.Unsafe(_) -> Ok([])
+  })
+
+  // The decision is the pure table's; this only names the directory to move.
+  case vm_spec.carry_over(recorded, found) {
+    vm_spec.CarryWorkspaces -> Ok(Some(guest.root <> vm_spec.workspaces_dir))
+    vm_spec.CarryNothing -> Ok(None)
+    vm_spec.RefuseCarry(reason) -> Error(vm_spec.upgrade_refusal(reason))
+  }
+}
+
+/// What `root/srv/workspaces` is, entry by entry and never through a link.
+/// `srv` is read first, because nothing below a missing directory exists and
+/// a link there must not be looked through.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.old_workspaces("/vm/dev/root")
+/// ```
+@internal
+pub fn old_workspaces(root: String) -> vm_spec.OldWorkspaces {
+  let srv = root <> "/srv"
+
+  // Only a missing entry is `Missing`; anything else is judged by the walk
+  // that refuses a link or a file.
+  case
+    no_entry(srv)
+    || { is_plain_directory(srv) && no_entry(srv <> "/workspaces") }
+  {
+    True -> vm_spec.Missing
+    False ->
+      case plain_chain(root, ["srv", "workspaces"]) {
+        Ok(_) -> vm_spec.Movable
+        Error(reason) -> vm_spec.Unsafe(reason)
+      }
+  }
+}
+
+/// Whether nothing is at `path`, a link counting as something.
+fn no_entry(path: String) -> Bool {
+  simplifile.link_info(path) == Error(simplifile.Enoent)
 }
 
 /// The steps that put an upgrade's new root in place, in order. The clone of
@@ -1907,8 +1979,25 @@ fn stranded_in(
   let listing =
     tool("ps", ["-axww", "-o", "pid=,ppid=,command="], within: quick_ms)
     |> result.unwrap("")
-  let pids =
+
+  // A runner's command line begins with the path it was started under. That is
+  // the manifest's text for a runner an older `loom-vm` started, and the
+  // resolved path for one the current `loom-vm` started. `realpath` also
+  // rewrites a path's letter case on macOS, which Go's resolution does not, so
+  // neither spelling is always the other's equal; a runner under either counts.
+  let as_written =
     vm_spec.stranded_runners(listing, guest.root, guest.state_disk, runner)
+  let as_resolved =
+    vm_spec.stranded_runners(
+      listing,
+      guest.root,
+      guest.state_disk,
+      option.map(runner, running_as),
+    )
+  let pids =
+    list.append(as_written, as_resolved)
+    |> list.unique
+    |> list.sort(int.compare)
   #(pids, vm_spec.certainty_of(runner))
 }
 
@@ -1919,6 +2008,23 @@ fn manifest_runner(vm_home: String) -> option.Option(String) {
     Ok(Some(manifest)) -> Some(manifest.runner)
     _ -> None
   }
+}
+
+/// The path a runner's command line begins with, given the manifest's path to
+/// it. `loom-vm` resolves symbolic links in the runner path before it starts
+/// the runner, because go-microvm recognises its process by the path the
+/// kernel reports, so a runner installed through a link runs under the link's
+/// target and `stranded_runners` must look for that. A path that cannot be
+/// resolved is returned as written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.running_as("/usr/local/bin/go-microvm-runner")
+/// ```
+@internal
+pub fn running_as(runner: String) -> String {
+  bootstrap.canonical_path(runner) |> result.unwrap(runner)
 }
 
 /// Refuses a command that would use the guest's root and state disk when a
@@ -1978,37 +2084,52 @@ fn replace_root(
       manifest.guest_root <> " is not a directory: " <> reason
     }),
   )
-  use Nil <- result.try(remove_root(guest))
   use Nil <- result.try(remove_tree_if_present(guest.next_root))
   use Nil <- result.try(remove_tree_if_present(guest.building_root))
 
+  // The old root is renamed away before it is deleted. A delete in place can
+  // be stopped partway, and what is left would still be called `root`, which
+  // the next `up` keeps and boots when its revision record matches.
+  use Nil <- result.try(remove_root(guest))
+
   // A record names a copy in this root, and the new root has none.
   use Nil <- result.try(remove_checkouts(guest))
-  tool(
+  use _ <- result.try(tool(
     "cp",
-    vm_spec.copy_arguments(platform, export, guest.root),
+    vm_spec.copy_arguments(platform, export, guest.building_root),
     within: copy_budget_ms,
-  )
-  |> result.replace(Nil)
+  ))
+
+  // The clone takes the name `root` in one rename, so a `root` that exists is
+  // a whole clone. A stop during the copy leaves `root.building`, which the
+  // next `up` removes above, where a copy made in place left part of a root
+  // that the next `up` took for a guest to keep or upgrade.
+  simplifile.rename(guest.building_root, guest.root)
+  |> result.map_error(fn(error) {
+    guest.root
+    <> " cannot be put in place: "
+    <> simplifile.describe_error(error)
+  })
 }
 
-/// Removes this guest's old root, when it has one.
+/// Removes this guest's old root, when it has one. The root is first renamed
+/// to `root.building`, which the caller has just cleared, so the name `root`
+/// is gone in one step and a stop during the delete leaves only a directory
+/// every later `up` removes.
 fn remove_root(guest: Instance) -> Result(Nil, String) {
   // A first `up` has no root to remove.
-  case bootstrap.path_exists(guest.root) {
-    False -> Ok(Nil)
-    True -> {
-      use _ <- result.try(tool(
-        "chmod",
-        ["-R", "u+w", guest.root],
-        within: copy_budget_ms,
-      ))
-      simplifile.delete_all([guest.root])
-      |> result.map_error(fn(error) {
-        guest.root
-        <> " cannot be replaced: "
-        <> simplifile.describe_error(error)
-      })
+  case presence_of(guest.root) {
+    vm_spec.Absent -> Ok(Nil)
+    vm_spec.Present -> {
+      use Nil <- result.try(
+        simplifile.rename(guest.root, guest.building_root)
+        |> result.map_error(fn(error) {
+          guest.root
+          <> " cannot be replaced: "
+          <> simplifile.describe_error(error)
+        }),
+      )
+      remove_tree(guest.building_root)
     }
   }
 }
@@ -2158,39 +2279,49 @@ fn write_private(path: String, contents: String) -> Result(Nil, String) {
 /// fails on a file the host user cannot write. Making the copy owner-writable
 /// first is what lets the init finish.
 fn copy_workspace(
-  root: String,
+  guest: Instance,
   workspace: Workspace,
   platform: vm_spec.Platform,
 ) -> Result(Copy, String) {
-  let parent = root <> vm_spec.workspaces_dir
-  let copy = parent <> "/" <> workspace.name
+  let root = guest.root
+  let copy = root <> vm_spec.workspaces_dir <> "/" <> workspace.name
   use Nil <- result.try(make_inside(root, vm_spec.workspaces_dir))
 
   // A resumed guest's copy is the one the agent has been editing; copying
   // the host's checkout over it would discard that work.
   use <- bool.guard(bootstrap.path_exists(copy), Ok(Kept))
-  let copied = {
+
+  // A later `up` keeps a copy that exists, so the copy is made beside the
+  // root and takes its name only once it is whole, owns its repository and
+  // has lost its credentials. Made in place, a stop of `up` left a copy
+  // that was half written, or whose `.git/config` still held the host's
+  // credentials where model code reads them, and the next `up` kept it.
+  let building = guest.directory <> "/" <> vm_spec.building_workspace_dir
+  use Nil <- result.try(remove_tree_if_present(building))
+  let made = {
     use _ <- result.try(tool(
       "cp",
-      vm_spec.copy_arguments(platform, workspace.path, copy),
+      vm_spec.copy_arguments(platform, workspace.path, building),
       within: copy_budget_ms,
     ))
     use _ <- result.try(tool(
       "chmod",
-      ["-R", "u+w", copy],
+      ["-R", "u+w", building],
       within: copy_budget_ms,
     ))
-    use Nil <- result.try(own_repository(root, workspace, copy))
-    scrub_config(copy <> "/.git/config")
+    use Nil <- result.try(own_repository(root, workspace, building))
+    use Nil <- result.try(scrub_config(building <> "/.git/config"))
+    simplifile.rename(building, copy)
+    |> result.map_error(fn(error) {
+      copy <> " cannot be put in place: " <> simplifile.describe_error(error)
+    })
   }
 
-  // A later `up` keeps a copy that exists, so a copy that a step failed on
-  // (half copied, with a `.git` that still points at the host, or with the
-  // credentials unscrubbed) is removed and the next `up` makes it again.
-  case copied {
+  // A step that failed leaves nothing at either name.
+  case made {
     Ok(Nil) -> Ok(Copied)
     Error(reason) -> {
-      let _ = remove_tree(copy)
+      let _ = remove_tree_if_present(building)
       Error(reason)
     }
   }
@@ -2602,7 +2733,8 @@ fn report(
         "",
       ],
       case enrolled.row {
-        Written -> daemon_lines(enrolled.file)
+        Written -> daemon_lines(enrolled.file, vm_spec.Installed)
+        Retained -> daemon_lines(enrolled.file, vm_spec.AlreadyThere)
         Derived -> []
       },
       ["Stop it with: loom vm down --name " <> options.name],
@@ -2614,7 +2746,7 @@ fn report(
 /// The line that says how the daemon comes to know the guest.
 fn enrolled_line(options: UpOptions, enrolled: Enrolled) -> String {
   case enrolled.row {
-    Written ->
+    Written | Retained ->
       "Enrolled it as [executors."
       <> options.name
       <> "] in "
@@ -2630,12 +2762,17 @@ fn enrolled_line(options: UpOptions, enrolled: Enrolled) -> String {
 }
 
 /// The lines about daemons, after doing what this `up` calls for.
-fn daemon_lines(file: ConfigFile) -> List(String) {
+fn daemon_lines(file: ConfigFile, table: vm_spec.Table) -> List(String) {
   // Only the default daemon is ever observed or stopped.
-  case file {
-    DefaultConfigFile -> daemon_note()
-    OtherConfigFile -> [
+  case file, table {
+    DefaultConfigFile, _ -> daemon_note(table)
+    OtherConfigFile, vm_spec.Installed -> [
       "A daemon already running with that file must restart to use the guest.",
+      "",
+    ]
+    OtherConfigFile, vm_spec.AlreadyThere -> [
+      "This `up` resumed the guest and installed nothing, so a daemon already "
+        <> "running with that file needs no restart on its account.",
       "",
     ]
   }
@@ -2649,7 +2786,7 @@ fn daemon_lines(file: ConfigFile) -> List(String) {
 /// in effect: the `loom` client renders the TLS options file whenever it starts
 /// a daemon whose configuration has `[distribution]` (protocol-change/106). A
 /// daemon that holds any session is never stopped; the note names the command.
-fn daemon_note() -> List(String) {
+fn daemon_note(table: vm_spec.Table) -> List(String) {
   // No daemon needs no action. A running one is decided on what it said about
   // its sessions, in `vm_spec.daemon_step`, which is the only place that
   // chooses to stop it.
@@ -2662,7 +2799,7 @@ fn daemon_note() -> List(String) {
       }
   }
 
-  vm_spec.daemon_note(outcome)
+  vm_spec.daemon_note(outcome, table)
 }
 
 /// The daemon the default state directory's endpoint record names, if its

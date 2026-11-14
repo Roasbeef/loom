@@ -14,6 +14,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -624,6 +627,52 @@ func TestGuestFilesHoldNoToken(t *testing.T) {
 
 	if !bytes.Equal([]byte(targets[CAPath]), h.proxy.CACertPEM()) {
 		t.Fatal("staged CA differs from the proxy's")
+	}
+}
+
+// TestGitConfigSendsSSHRemotesThroughHTTPS checks the rewrite with git
+// itself: a remote written in either SSH form for an injection host resolves
+// to the HTTPS URL the proxy can carry, and a host that gets no credential is
+// left as written.
+func TestGitConfigSendsSSHRemotesThroughHTTPS(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+
+	h := newHarness(t, nil)
+
+	var cfg []byte
+	for _, f := range h.proxy.GuestFiles(3128) {
+		if f.Target == GitConfigPath {
+			cfg = f.Content
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(path, cfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for remote, want := range map[string]string{
+		"git@github.com:owner/repo.git":       "https://github.com/owner/repo.git",
+		"ssh://git@github.com/owner/repo.git": "https://github.com/owner/repo.git",
+		"https://github.com/owner/repo.git":   "https://github.com/owner/repo.git",
+		"git@gitlab.com:owner/repo.git":       "git@gitlab.com:owner/repo.git",
+	} {
+		cmd := exec.Command("git", "ls-remote", "--get-url", remote)
+		cmd.Dir = t.TempDir()
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL="+path, "GIT_CONFIG_SYSTEM="+os.DevNull,
+			"GIT_CONFIG_NOSYSTEM=1")
+
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git ls-remote --get-url %s: %v: %s", remote, err, out)
+		}
+
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Fatalf("%s resolves to %s, want %s", remote, got, want)
+		}
 	}
 }
 

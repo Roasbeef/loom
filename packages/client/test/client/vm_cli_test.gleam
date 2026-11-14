@@ -29,6 +29,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/timestamp
+import host/bootstrap
 import simplifile
 import tom
 
@@ -976,7 +977,8 @@ pub fn a_daemon_that_said_nothing_is_never_stopped_test() {
 }
 
 pub fn a_stopped_daemon_is_said_to_restart_with_the_next_loom_test() {
-  let text = string.join(vm_spec.daemon_note(vm_spec.Stopped), "\n")
+  let text =
+    string.join(vm_spec.daemon_note(vm_spec.Stopped, vm_spec.Installed), "\n")
   assert string.contains(text, "was stopped")
   assert string.contains(text, "next `loom` command starts it")
   assert !string.contains(text, "kill")
@@ -984,7 +986,10 @@ pub fn a_stopped_daemon_is_said_to_restart_with_the_next_loom_test() {
 
 pub fn an_idle_daemon_that_would_not_stop_gets_the_command_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.NotStopped(7, "still running"))
+    vm_spec.daemon_note(
+      vm_spec.NotStopped(7, "still running"),
+      vm_spec.Installed,
+    )
     |> string.join("\n")
   assert string.contains(text, "still running")
   assert string.contains(text, "kill -TERM 7")
@@ -992,20 +997,23 @@ pub fn an_idle_daemon_that_would_not_stop_gets_the_command_test() {
 
 pub fn a_daemon_with_sessions_gets_the_command_and_a_count_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.Holding(7, 2))
+    vm_spec.daemon_note(vm_spec.Holding(7, 2), vm_spec.Installed)
     |> string.join("\n")
   assert string.contains(text, "holds 2 sessions")
   assert string.contains(text, "left running")
   assert string.contains(text, "kill -TERM 7")
   assert string.contains(
-    string.join(vm_spec.daemon_note(vm_spec.Holding(7, 1)), ""),
+    string.join(
+      vm_spec.daemon_note(vm_spec.Holding(7, 1), vm_spec.Installed),
+      "",
+    ),
     "holds 1 session,",
   )
 }
 
 pub fn a_daemon_that_said_nothing_is_left_running_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.Unasked(9))
+    vm_spec.daemon_note(vm_spec.Unasked(9), vm_spec.Installed)
     |> string.join("\n")
   assert string.contains(text, "left running")
   assert string.contains(text, "kill -TERM 9")
@@ -1013,10 +1021,49 @@ pub fn a_daemon_that_said_nothing_is_left_running_test() {
 
 pub fn no_daemon_means_the_next_loom_starts_one_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.NoDaemon)
+    vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.Installed)
     |> string.join("\n")
   assert string.contains(text, "next `loom` command starts the daemon")
   assert !string.contains(text, "kill")
+}
+
+pub fn a_resumed_up_does_not_tell_a_holding_daemon_to_restart_test() {
+  // The table was installed by an earlier `up`, so this one changed nothing the
+  // daemon reads. It must not say the daemon read its configuration before the
+  // table existed, and it must not offer the command that stops it.
+  let text =
+    vm_spec.daemon_note(vm_spec.Holding(7, 1), vm_spec.AlreadyThere)
+    |> string.join("\n")
+  assert string.contains(text, "holds 1 session, so it was left running")
+  assert string.contains(text, "needs no restart")
+  assert !string.contains(text, "must restart")
+  assert !string.contains(text, "read its configuration")
+  assert !string.contains(text, "kill")
+}
+
+pub fn a_resumed_up_says_the_same_of_a_daemon_that_would_not_stop_or_answer_test() {
+  let stuck =
+    vm_spec.daemon_note(
+      vm_spec.NotStopped(7, "still running"),
+      vm_spec.AlreadyThere,
+    )
+    |> string.join("\n")
+  let silent =
+    vm_spec.daemon_note(vm_spec.Unasked(9), vm_spec.AlreadyThere)
+    |> string.join("\n")
+
+  assert string.contains(stuck, "still running")
+  assert string.contains(stuck, "needs no restart")
+  assert string.contains(silent, "needs no restart")
+  assert !string.contains(stuck <> silent, "kill")
+}
+
+pub fn an_installing_up_still_tells_a_holding_daemon_to_restart_test() {
+  let text =
+    vm_spec.daemon_note(vm_spec.Holding(7, 1), vm_spec.Installed)
+    |> string.join("\n")
+  assert string.contains(text, "must restart to use the guest")
+  assert string.contains(text, "kill -TERM 7")
 }
 
 // --- links in the guest root ---------------------------------------------------
@@ -1651,9 +1698,9 @@ fn upgrade_stopped_after(count: Int) -> #(Bool, Bool, vm_spec.RootStep) {
     simplifile.is_directory(next <> "/srv/workspaces/real") == Ok(True)
 
   // What `up` reads: the layout is the evidence that the workspaces moved.
-  let moved = case simplifile.is_directory(next <> "/srv/workspaces") {
-    Ok(True) -> vm_spec.Present
-    _ -> vm_spec.Absent
+  let moved = case simplifile.link_info(next <> "/srv/workspaces") {
+    Ok(_) -> vm_spec.Present
+    Error(_) -> vm_spec.Absent
   }
   let step =
     vm_spec.root_step(
@@ -1691,6 +1738,74 @@ pub fn a_stop_after_the_clone_is_an_upgrade_again_not_a_finish_test() {
   let moved = vm_spec.RootLayout(vm_spec.Present, vm_spec.Present)
   assert vm_spec.root_step(vm_spec.Resume, moved, Some("aaaaaaa"), "bbbbbbb")
     == vm_spec.FinishUpgrade
+}
+
+pub fn a_root_with_no_workspace_copy_carries_nothing_test() {
+  // A first `up` that stopped between the clone and the workspace copy left
+  // no record and no directory, and that root is replaced without a move.
+  assert vm_spec.carry_over([], vm_spec.Missing) == vm_spec.CarryNothing
+
+  // Workspaces that are there always move, whatever the record says.
+  assert vm_spec.carry_over([], vm_spec.Movable) == vm_spec.CarryWorkspaces
+  assert vm_spec.carry_over(["app"], vm_spec.Movable) == vm_spec.CarryWorkspaces
+}
+
+pub fn an_unfinished_root_is_not_announced_as_an_upgrade_test() {
+  // The upgrade line promises that workspaces are kept, which says the wrong
+  // thing about a root that never had any.
+  let line = vm_spec.unfinished_line("dev")
+  assert string.contains(line, "guest dev")
+  assert string.contains(line, "nothing to keep")
+  assert !string.contains(line, "Upgrading")
+}
+
+pub fn recorded_workspaces_that_are_gone_refuse_the_upgrade_test() {
+  // The host's record says a copy was made, so a missing directory is not a
+  // first run: the upgrade would delete a root something already emptied.
+  let assert vm_spec.RefuseCarry(reason) =
+    vm_spec.carry_over(["app"], vm_spec.Missing)
+  assert string.contains(reason, "srv/workspaces is gone")
+
+  // A link or a file is refused with its own reason under either record.
+  assert vm_spec.carry_over(["app"], vm_spec.Unsafe("x is a link"))
+    == vm_spec.RefuseCarry("x is a link")
+  assert vm_spec.carry_over([], vm_spec.Unsafe("x is a link"))
+    == vm_spec.RefuseCarry("x is a link")
+}
+
+pub fn the_old_roots_workspaces_are_read_without_following_a_link_test() {
+  let #(scratch, root, outside) = scratch_root()
+
+  // No `srv` at all, and an `srv` with nothing in it: both are a root the
+  // host never copied a workspace into.
+  assert vm_cli.old_workspaces(root) == vm_spec.Missing
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/srv")
+  assert vm_cli.old_workspaces(root) == vm_spec.Missing
+
+  // A file where the directory belongs is not a missing directory.
+  let assert Ok(Nil) = simplifile.write(root <> "/srv/workspaces", "x")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is not a directory")
+  let assert Ok(Nil) = simplifile.delete(root <> "/srv/workspaces")
+
+  // A real directory moves.
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(root <> "/srv/workspaces")
+  assert vm_cli.old_workspaces(root) == vm_spec.Movable
+
+  // A link there is refused, whatever it points at, and so is a link at
+  // `srv` even when its target holds a real `workspaces`.
+  let assert Ok(Nil) = simplifile.delete_all([root <> "/srv/workspaces"])
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside, root <> "/srv/workspaces")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is a link")
+  let assert Ok(Nil) = simplifile.delete_all([root <> "/srv"])
+  let assert Ok(Nil) = simplifile.create_directory_all(outside <> "/workspaces")
+  let assert Ok(Nil) = simplifile.create_symlink(outside, root <> "/srv")
+  let assert vm_spec.Unsafe(reason) = vm_cli.old_workspaces(root)
+  assert string.contains(reason, "is a link")
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
 
 pub fn a_host_copy_with_no_staged_script_is_staged_again_test() {
@@ -2263,6 +2378,33 @@ pub fn a_process_that_is_not_the_manifests_runner_is_not_stranded_test() {
       None,
     )
     == [500, 501, 502]
+}
+
+pub fn a_runner_installed_through_a_link_is_found_by_its_target_test() {
+  // `loom-vm` starts the runner under its resolved path, so that is what the
+  // process listing shows, whatever path the manifest records.
+  let #(scratch, root, _) = scratch_root()
+  let assert Ok(real) = bootstrap.canonical_path(root)
+  let target = real <> "/go-microvm-runner"
+  let link = real <> "/linked-runner"
+  let assert Ok(Nil) = simplifile.write(target, "")
+  let assert Ok(Nil) = simplifile.create_symlink(target, link)
+
+  let listing = "  700     1 " <> target <> " {\"root_path\":\"/vm/m/root\"}\n"
+  assert vm_cli.running_as(link) == target
+  assert vm_cli.running_as(target) == target
+  assert vm_spec.stranded_runners(
+      listing,
+      "/vm/m/root",
+      "/vm/m/state.img",
+      Some(vm_cli.running_as(link)),
+    )
+    == [700]
+
+  // A path that is not there stays as written, so a manifest naming a missing
+  // runner still gets the refusal's own words.
+  assert vm_cli.running_as(real <> "/absent") == real <> "/absent"
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
 
 pub fn stranded_refusal_names_the_pid_and_how_to_stop_it_test() {
