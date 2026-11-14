@@ -91,6 +91,7 @@ pub fn view(
     invites.Withheld -> element.none()
     invites.Unshareable -> private(moving, presses)
     invites.Bookmarked -> bookmarked(element.none())
+    invites.Elsewhere(machine:) -> elsewhere(machine)
     invites.BookmarkedPrivate ->
       bookmarked(
         html.p([attribute.class("share-lead")], [html.text(private_words)]),
@@ -112,6 +113,29 @@ pub const private_words =
 /// draws no handler, so the region keeps its path.
 pub const bookmark_words =
   "This page was opened from a bookmark, so it cannot invite people or make a session shareable. Run loom ui for a page that can."
+
+/// The control of a page whose session runs on another orchestrator: the
+/// heading and one sentence that names the orchestrator and says that the
+/// session is invited to and shared from its own page. `machine` is the
+/// operator's configured name, drawn as a text node. The region draws no
+/// handler, so it keeps its path.
+fn elsewhere(machine: String) -> Element(message) {
+  html.section(
+    [attribute.class("share"), attribute.aria_label("Invite to this session")],
+    [
+      html.h3([attribute.class("share-title")], [
+        html.text("Invite to this session"),
+      ]),
+      html.p([attribute.class("share-lead")], [
+        html.text(
+          "This session runs on "
+          <> machine
+          <> ", so invitations are made from its own page there.",
+        ),
+      ]),
+    ],
+  )
+}
 
 /// The control of a bookmark's page: the heading, the session's private sentence
 /// when it has one, and `bookmark_words`.
@@ -283,6 +307,7 @@ fn button(
     | invites.Unshareable
     | invites.Bookmarked
     | invites.BookmarkedPrivate
+    | invites.Elsewhere(..)
     | invites.Ready
     | invites.Showing(..)
     | invites.Refused(..) ->
@@ -301,6 +326,7 @@ fn status(share: Share) -> Element(message) {
     | invites.Unshareable
     | invites.Bookmarked
     | invites.BookmarkedPrivate
+    | invites.Elsewhere(..)
     | invites.Ready
     | invites.Asking
     | invites.Showing(..) ->

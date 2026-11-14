@@ -1492,7 +1492,7 @@ pub fn tick(
     Closed -> #(channel, [])
     AwaitingBegin | Receiving(..) | AwaitingReply(..) ->
       case now >= channel.deadline {
-        True -> fail(channel, "conversation request timed out")
+        True -> fail(channel, timed_out)
         False -> #(channel, [])
       }
     Ready ->
@@ -1505,6 +1505,12 @@ pub fn tick(
       }
   }
 }
+
+/// The reason a lane fails with when a request passes its deadline. A host that
+/// must tell a reply that did not come from a lane that broke some other way
+/// compares with it: a relayed page draws the first as a wait and the rest as a
+/// failed connection.
+pub const timed_out = "conversation request timed out"
 
 /// The earliest reading at which `tick` would act on this lane, or `None`
 /// when no tick can act until something else happens to it.

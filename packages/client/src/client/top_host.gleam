@@ -1335,8 +1335,10 @@ fn runs_as(
   }
 }
 
-/// What a feed's heading says of its session: the name, with the first prompt
-/// once it has one, and where the session's tools run.
+/// What a feed's heading says of its session: the name the session's own page
+/// heads itself with, and where the session's tools run. The first prompt is not
+/// the name here, though a listing row shows it, because the box's own page of
+/// the session shows the name and a relayed page is to read the same.
 fn heading_of(
   context: Context(instance),
   session: String,
@@ -1348,9 +1350,8 @@ fn heading_of(
     }),
   )
   let registration = view.registration
-  let name = option.unwrap(registration.subtitle, registration.name)
   remote_feed.Label(
-    name: remote_top.clip(name),
+    name: remote_top.clip(registration.name),
     placement: placement_in(
       registration.pool,
       registration.executor,

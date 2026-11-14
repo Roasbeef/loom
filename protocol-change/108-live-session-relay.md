@@ -837,6 +837,108 @@ slice 2 builds neither.
   `ui_relay` does, so a laptop that sends faster than the gateway answers waits behind
   its own frame. The send's answer is written before the frame reaches the gateway.
 
+## Addendum: slice 3, the laptop half (2026-11-13)
+
+Slice 3 built the feed client `client/daemon/ui_feed`, the `peer_client.call_at`
+entry point, the feed calls in `top_relay`, the socket's choice between the live
+page and the transcript, `Standing.route`, the `PeerUnreachable` ending, the
+fallback's mode sentence and the `spawner` provenance in
+`session_view/remembered`. The laptop's rules were written into the P model
+(`protocol/models/live-relay/README.md`, "The rules `ui_feed` follows") before the
+process was written. Building them settled four questions the text above leaves
+open and changed two places in it.
+
+**Settled in the build.**
+
+- The cursor and the outbox are pure modules, `client/remote/feed_cursor` and
+  `client/remote/feed_outbox`, and `ui_feed` only carries out what they say. Each
+  poll and each piece is a weft run of its own that reports to a sink the process
+  selects, which is how "a poll answer that arrives after `ui_feed` stopped waiting
+  for it" is a stray: the reply subject belongs to a task that has exited.
+- An answer that reports the feed ended hands on no frame, whatever it carries. The
+  text above allows frames written before the end to arrive in such an answer. An
+  honest box never sends both, and a box that does is not believed; the model has a
+  hostile case for it (`tcHostileEnd`, mutant `M8`).
+- What the page shows when the lane shuts the transport depends on whether the box
+  was heard last. A feed whose last poll went unanswered ends with `PeerUnreachable`,
+  which draws the waiting page and is `Retry`, and a feed that last heard the box
+  ends with `ConnectionFailed`. The text above gives `ConnectionFailed` for both. A
+  link that is only down never shows a failure (`DownShowsWaiting`, mutant `M9`).
+- A refusal of the attach at the box's feed cap (`cap_reached` with `feeds`) is the
+  same waiting page as a box that does not answer, because the cap counts an ended
+  feed until the box forgets it, one lease after it ended, so a reconnect right after
+  an ending can meet it.
+
+**Corrections.**
+
+- The attach is made in the HTTP request's process, before the socket upgrades,
+  and not "at upgrade" inside the socket. It runs within `call_ms`, holds the
+  request's permit for that long, and chooses the component before any is started.
+  `server.Ui.home` gained one argument, the function that registers the page's image
+  reader, because only the live page has images.
+- `Standing.route` hides the controls the box refuses that are drawn by the page's own
+  modules: Compact, the goal bar and the Session pane's goal and fork controls,
+  proposals, memory and evolution, and Forget on a grant the box's spawner did not
+  approve. The model chip, `btw` and the decision buttons on a remote child's request
+  are not yet hidden: the composer still parses them, the box answers `forbidden` or
+  `bad_request`, and the page draws that answer. Hiding them is left to slice 4.
+
+**Bounds the laptop holds.** One answer carries at most 512 frames and 1,048,576
+bytes, and one poll is in flight, so at most that much is handed to the component's
+inbox per round trip. The outbox holds at most 32 frames and 25,165,824 bytes of
+frame text, and refuses an empty frame or one over 12,582,912 bytes. A pause between
+polls or resends is 250 ms doubling to 2,000 ms. The feed's token is never logged.
+
+## Addendum: slice 3 after review (2026-11-13)
+
+Review of the first build of slice 3 found places where the page is not what the
+proposal says. This addendum corrects the first slice 3 addendum above, which stays as
+written.
+
+**Corrections to the first slice 3 addendum.**
+
+- What a dropped link shows is decided by the component and not by `ui_feed`. The
+  lane fails itself at its deadline and the component ends it in the same update, so a
+  close the feed client sends afterwards reaches a lane that has ended and is dropped.
+  A lane that fails with a reason that names no ending ends as `PeerUnreachable` on a
+  relayed route and as `ConnectionFailed` on a local one (`component.lane_failure`). The
+  feed client ends with `ConnectionFailed` on a shut, which only picks the socket's retry
+  close code. The first addendum's rule that `ui_feed` ends with `PeerUnreachable` when
+  the last poll went unanswered is withdrawn. The model's `DownShowsWaiting` is checked at
+  the adapter and at the component, by a rendered test.
+- A box at its feed cap is `PeerCrowded`, a waiting ending with its own words, and not
+  `PeerUnreachable`. `cap_reached` is retried by the choice even though
+  `remote_top.retryable` is false for it, because an ended feed counts toward the cap
+  until the box forgets it.
+- The choice maps every attach outcome (`ui_socket.chosen`). A retryable refusal is the
+  live page waiting. An answer that does not read, an oversized exchange or a box without
+  the revisions is the transcript page, so a retry does not leave a feed on the box for
+  every try.
+
+**Settled in review.**
+
+- An answer with no frame is followed by the next poll one pause later, 100 ms, and not at
+  once. An honest box answers empty only after its five second hold, so this costs
+  nothing, and a box that answers empty at once cannot drive a tight loop of a registry
+  call and three processes (`EmptyAnswerPauses`, mutant `M10`).
+- A feed's outbox ends with its process. A frame the lane queued when the feed ended is
+  not sent by it or by the next feed, and the lane learns that from the end of the feed
+  (`NothingSentAfterEnd`, mutant `M11`; `ui_feed_box_test`).
+- A feed's polls are numbered from a range of its own, so a reply that belongs to an earlier
+  feed never names a poll of a later one.
+- The longest gap between two polls arriving at the box is about 5.2 s when the link is
+  healthy and at most 9 s when it fails (a 7 s call, then a pause of at most 2 s), against
+  a lease of 15 s.
+- A relayed route holds the `PageOperator` permit, since the live page's socket has the
+  operator's frame limit. Its images are served at the relayed document's own address
+  (`ui_http.RelayedImage`), checked with the home grant and `admitted_visit`. Tool-result
+  links are not drawn on a relayed page, because result pages are not relayed yet.
+- On a relayed page, Evolution is not drawn, the ended notice gives the home's advice and
+  not `loom ui --session`, and Forget is offered only on a permission whose grant this page
+  approved, found by the principal the other orchestrator recorded with it
+  (`Standing.route = Relayed(page)`). A confirm re-checks the choice against the list as it
+  stands.
+
 ### Follow-up to the slice 2 addendum (2026-11-13)
 
 The re-check of the box half corrected three figures and one lookup, and this
@@ -860,3 +962,65 @@ section is the record of them. The text above stays as it was written.
   `not_yet_open`, as a feed that does not answer is, and the laptop asks again. A
   detach is no longer answered `null` when the directory was silent and the feed
   was never detached.
+
+## Addendum: slice 3, second review (2026-11-13)
+
+This corrects the addendum above in four places and records one cost.
+
+- A failed connection on a relayed page reads as reconnecting. `ConnectionFailed` is
+  reached on a relayed page by a lapse after the laptop slept, a box that restarted, a
+  gap or an outbox overflow, and the browser reconnects from each, so its advice is
+  "Reconnecting automatically" and names no session and not "reload this page".
+- Only the lane's own timeout draws the waiting page on a relayed route
+  (`session_channel.timed_out`). A frame that does not decode, a cut that names another
+  incarnation and a server error end as `ConnectionFailed`.
+- The image reader of a relayed tab is kept under the tab's own orchestrator and session
+  (`ui_sessions.register_images_for`). Tabs of one home share a cookie, and a reader kept
+  by the cookie alone was replaced by the newest tab's, so an older tab's images came from
+  another tab's lane. A request for a session no open tab draws is a 404.
+- A send refused `not_yet_open` is sent again unchanged, as an attach and a poll refused
+  that way are retried. A detach so refused is not asked again, and the box lapses the
+  feed after its lease. The longest gap between two polls arriving at the box is 10.5 s
+  when the link fails, including a 1.5 s dial, against the 15 s lease.
+
+**What it costs.** A relayed route takes the `PageOperator` permit before the attach is
+made, so a page that then falls back to the transcript is charged 64 MiB where the home
+page it is was charged about 8 MiB. Eight live relayed tabs take the laptop's whole
+default budget, the same arithmetic as eight local operator pages.
+
+## Addendum: the relayed page's parity with the box's own page (2026-11-14)
+
+A live drive of the relayed page against the box's own page of the same session
+(`docs/review/distributed-1137.md`, "Exit criterion 4") found five differences. No frame
+or body changed. Three are closed and two are left, and the reasons are recorded here.
+
+- **The attach's `label.name` is the session's name, as this proposal says, and not its
+  first prompt.** `top_host.heading_of` sent the subtitle where one existed, so the
+  relayed page's heading and title read the first prompt where the box's page reads the
+  name. It sends `registration.name`. A listing row (`TopSessions`) still shows the first
+  prompt. A box that has not been updated sends the first prompt, which a laptop draws as
+  it receives it.
+- **The placement strip's commands half** is read from the label on a `Relayed` route
+  (`component.relayed_code`). A local page reads it from the sidebar's list, which has the
+  session in it. The laptop's list never has a session that runs on a box. One difference
+  remains: for a session created into a pool the label names the pool, so the relayed
+  page draws the pool where the box's own page draws the executor that took the session.
+- **The Session tab's invitation control** draws `invites.Elsewhere(machine)` on a `Relayed`
+  route: "This session runs on <box>, so invitations are made from its own page there."
+  The bookmark sentence, which is about how a page was opened, no longer shows. The laptop
+  cannot mint access to a session it does not hold, and the box offers no invitation over
+  the feed, so no control is drawn.
+- **Left: the Changes tab.** A local page's tab is the workspace's Git diff, read by the
+  daemon that serves the page (`Transport.worktree`). The laptop cannot read the box's
+  workspace, so the relayed tab lists the session's own edits and says so. Matching the box
+  needs a feed body that carries the box's observation of the workspace, for example
+  `108.worktree.1` with request `{feed}` and answer the `web_view/worktrees` observation
+  (repository state, branch, files, bounded diff text), which is a new revision of this
+  protocol and a new box-side read the 108 rules do not yet cover.
+- **Left: the session sidebar.** The page lists the laptop's own catalogue, as every session
+  page does, and a session page draws no other orchestrator's sessions: only the home's
+  sidebar has sections "On <name>". A laptop with no local session therefore draws no
+  sidebar. Drawing the relayed sessions on a session page needs the orchestrators read in
+  the component's `Transport`, a timer and the home's relayed-section state in the
+  component, and an open that departs for the relayed address. That is component
+  machinery, not a wire change, and is not done here.

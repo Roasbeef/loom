@@ -18,6 +18,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import lustre
+import lustre/effect
+import lustre/element
 import session_view/snapshot
 import storage/access
 import storage/catalogue
@@ -95,20 +98,23 @@ pub fn an_observer_gets_the_observers_page_test() {
 // A blocked initializer must end within Lustre's existing start budget, and
 // its component must be gone before a fresh admission can own that transport.
 // The startup log records the fixed timeout category, never the callback data.
+// The page's own application connects its transport after it has started, so
+// nothing a transport does can hold its start. The start is held here by an
+// application whose `init` blocks, through the function every page starts by.
 pub fn a_timed_out_component_retires_its_initializer_test() {
   let reached = process.new_subject()
-  let initial = start()
   let blocked =
-    component.Start(
-      ..initial,
-      transport: component.Transport(..initial.transport, connect: fn(_, _) {
+    lustre.application(
+      fn(_start: Nil) {
         let gate = process.new_subject()
         process.send(reached, process.self())
         let _ = process.receive(gate, patience_ms)
-        Nil
-      }),
+        #(Nil, effect.none())
+      },
+      fn(model: Nil, _message: Nil) { #(model, effect.none()) },
+      fn(_model: Nil) { element.none() },
     )
-  let assert Error(Nil) = ui_socket.start_page(ui_socket.Observing, blocked)
+  let assert Error(Nil) = ui_socket.launch(blocked, Nil, fn(_frame) { False })
     as "the component keeps its bounded initializer"
   let assert Ok(pid) = process.receive(reached, patience_ms)
     as "the component reached the deliberately blocked initializer"

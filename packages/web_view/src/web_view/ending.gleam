@@ -66,6 +66,18 @@ pub type Ending {
 
   /// The connection failed for a reason the page does not name.
   ConnectionFailed
+
+  /// The orchestrator that runs the session is not answering: the link to it is
+  /// down, so the page waits and the browser reconnects. It is a state of the
+  /// link and never a failure of the session (protocol-change/108, "When the
+  /// link drops, and what the page shows").
+  PeerUnreachable
+
+  /// The orchestrator that runs the session holds as many live pages for this
+  /// machine as it allows. An ended page counts until the box forgets it, a few
+  /// seconds after it closed, so a reload can meet the limit and clear on its
+  /// own. It is a wait and not a failure, so the browser retries.
+  PeerCrowded
 }
 
 /// How the page's WebSocket should end, for the client runtime that reads
@@ -96,6 +108,8 @@ pub fn all() -> List(Ending) {
     DaemonNotReady,
     LinkExpired,
     ConnectionFailed,
+    PeerUnreachable,
+    PeerCrowded,
   ]
 }
 
@@ -118,6 +132,8 @@ pub fn reason(ending: Ending) -> String {
     DaemonNotReady -> "the daemon was not ready"
     LinkExpired -> "the link expired"
     ConnectionFailed -> "the connection failed"
+    PeerUnreachable -> "the orchestrator is not answering"
+    PeerCrowded -> "the orchestrator has no room for another page"
   }
 }
 
@@ -155,7 +171,11 @@ pub fn from_reason(given: String, otherwise otherwise: Ending) -> Ending {
 /// ```
 pub fn close(ending: Ending) -> Close {
   case ending {
-    NotOpen | DaemonNotReady | ConnectionFailed -> Retry
+    NotOpen
+    | DaemonNotReady
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded -> Retry
     PageEnded | AccessRevoked | SessionStopped | LinkExpired -> Final
   }
 }
@@ -176,6 +196,10 @@ pub fn headline(ending: Ending) -> String {
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
     ConnectionFailed -> "The connection to the session failed."
+    PeerUnreachable ->
+      "The orchestrator that runs this session is not answering."
+    PeerCrowded ->
+      "The orchestrator that runs this session has all the live pages it allows."
   }
 }
 
@@ -247,6 +271,12 @@ pub fn advised(ending: Ending, session_id: String) -> Advice {
           <> "will not be sent again.",
         None,
       )
+    PeerUnreachable -> Advice("This page will reconnect.", None)
+    PeerCrowded ->
+      Advice(
+        "This machine has the most live pages that the orchestrator running this session allows it, across all its sessions. One frees within a few seconds of closing, and this page keeps trying.",
+        None,
+      )
   }
 }
 
@@ -290,8 +320,11 @@ pub fn home_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
-    SessionStopped | NotOpen | ConnectionFailed ->
-      "The connection to the daemon failed."
+    SessionStopped
+    | NotOpen
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded -> "The connection to the daemon failed."
   }
 }
 
@@ -324,11 +357,40 @@ pub fn home_advised(ending: Ending) -> Advice {
         command,
       )
     LinkExpired -> Advice("A link works once, within 60 seconds.", command)
-    SessionStopped | NotOpen | ConnectionFailed ->
+    SessionStopped
+    | NotOpen
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded ->
       Advice(
         "Reload this page. If it fails again, it needs a new link.",
         command,
       )
+  }
+}
+
+/// The advice for a page of a session on another orchestrator. Its session
+/// identity is not one this daemon holds, so a command naming it would mint
+/// nothing: it is the home's advice, except for the endings the browser retries by
+/// itself, which say so. A failed connection on a relayed page is reached by a lapse
+/// after the laptop slept, a box that restarted or a broken answer, and the page
+/// reconnects from each, so its words are not "reload this page".
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ending.relayed_advice(ending.PeerUnreachable) == "This page will reconnect."
+/// ```
+pub fn relayed_advice(ending: Ending) -> String {
+  case ending {
+    PeerUnreachable -> "This page will reconnect."
+    PeerCrowded | ConnectionFailed -> sentence(advised(ending, ""))
+    PageEnded
+    | AccessRevoked
+    | SessionStopped
+    | NotOpen
+    | DaemonNotReady
+    | LinkExpired -> home_advice(ending)
   }
 }
 
@@ -347,8 +409,11 @@ pub fn admin_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
-    SessionStopped | NotOpen | ConnectionFailed ->
-      "The connection to the daemon failed."
+    SessionStopped
+    | NotOpen
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded -> "The connection to the daemon failed."
   }
 }
 
@@ -385,7 +450,11 @@ pub fn admin_advised(ending: Ending) -> Advice {
       )
     LinkExpired ->
       Advice("A link works once, within 60 seconds." <> fresh, command)
-    SessionStopped | NotOpen | ConnectionFailed ->
+    SessionStopped
+    | NotOpen
+    | ConnectionFailed
+    | PeerUnreachable
+    | PeerCrowded ->
       Advice(
         "Reload this page. If it fails again, it needs a new link." <> fresh,
         command,

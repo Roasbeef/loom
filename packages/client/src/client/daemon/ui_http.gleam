@@ -21,6 +21,18 @@
 //// cookie or be checked against a loopback origin. No `X-Forwarded-*` or
 //// `Forwarded` header is read anywhere, because the daemon cannot tell a
 //// proxy's header from one any local process wrote.
+////
+//// ## Flow
+////
+//// `page_origin` → `route` → `navigation_allowed` → `secured`
+////
+//// 1. `page_origin` resolves the request's `Host` to the one origin every later
+////    rule reads.
+//// 2. `route` reads the method and path into a `Route`, whose names the server
+////    then checks.
+//// 3. `navigation_allowed` and its siblings are the check that belongs to the
+////    route's kind of request.
+//// 4. `secured` puts the view's headers on whatever answer the server chose.
 
 import client/daemon/ui_origin
 import client/daemon/ui_sessions
@@ -90,6 +102,19 @@ pub type Route {
   /// in the row (protocol-change/051, the addendum on images). Neither is
   /// trusted: the page answers for a name and place it drew and no other.
   Image(key: String, session_id: String, ref: String, position: Int)
+
+  /// `GET /ui/p/<key>/orchestrators/<name>/sessions/<id>/image/<ref>/<position>`:
+  /// one image of a relayed session's live page (protocol-change/108). It is the
+  /// local route's address under the relayed document, which is where the page's
+  /// relative image address resolves. The checks are the relayed page's own, and
+  /// the bounds are the local route's.
+  RelayedImage(
+    key: String,
+    orchestrator: String,
+    session_id: String,
+    ref: String,
+    position: Int,
+  )
 
   /// One bounded text page of an immutable result, behind its page grant.
   ResultPage(key: String, session_id: String, ref: ids.EntryId, index: Int)
@@ -271,6 +296,32 @@ pub fn route(request: Request(body)) -> Route {
       case relayed_target(name, id) {
         True -> RelayedPage(key, name, id)
         False -> Unknown
+      }
+
+    http.Get,
+      [
+        "ui",
+        "p",
+        key,
+        "orchestrators",
+        name,
+        "sessions",
+        id,
+        "image",
+        ref,
+        position,
+      ]
+    ->
+      // The relayed page's image has the local route's bounds on the reference
+      // and the place, and the relayed page's grammar on the names.
+      case
+        relayed_target(name, id),
+        image.plausible_ref(ref),
+        int.parse(position)
+      {
+        True, True, Ok(place) if place >= 0 && place < max_position ->
+          RelayedImage(key, name, id, ref, place)
+        _, _, _ -> Unknown
       }
 
     http.Get, ["ui", "p", key, "orchestrators", name, "sessions", id, "ws"] ->

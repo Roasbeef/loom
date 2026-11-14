@@ -96,6 +96,7 @@ fn visit(
     orchestrator: "box",
     session: identity,
     refresh_ms: 5,
+    fallback: relayed.Unsaid,
     read: fn(deliver) {
       process.send(log, Read)
       deliver(read)
@@ -453,4 +454,34 @@ pub fn a_tick_after_the_page_ended_or_was_left_asks_nothing_test() {
     run(model, home.Refreshed(home.reads(model), home.Closed(ending.PageEnded)))
   let _ = run(ended, home.RelayTicked)
   assert asked(log) == []
+}
+
+// The transcript page says which mode it is in with one fixed sentence, and the
+// orchestrator's name inside it is a text node (protocol-change/108).
+pub fn the_transcript_page_says_why_it_is_not_the_live_page_test() {
+  let presses =
+    relayed_view.Presses(
+      replied: fn(_) { Nil },
+      stopped: Nil,
+      archive_asked: Nil,
+      archive_confirmed: Nil,
+      archive_cancelled: Nil,
+      decided: fn(_, _, _) { Nil },
+    )
+  let drawn = fn(fallback) {
+    relayed_session.open("box", identity)
+    |> relayed_session.falling_back(fallback)
+    |> relayed_session.heard(heard([]), 1000)
+    |> relayed_view.view(presses)
+    |> element.to_string
+  }
+  assert string.contains(
+    drawn(relayed.Absent),
+    "Showing the transcript only, because box runs a Loom without the live session page.",
+  )
+  assert string.contains(
+    drawn(relayed.Served),
+    "Showing the transcript only, because box serves this session as a transcript.",
+  )
+  assert !string.contains(drawn(relayed.Unsaid), "Showing the transcript only")
 }
