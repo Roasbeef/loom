@@ -342,7 +342,7 @@ nothing.
 | `person/check` and Recheck | paused `project/visible-failures` | NEW beyond substrate (needs that branch) |
 | Post a request, create a project | web slice, unbuilt | NEW beyond substrate |
 | Delegate roster and settled state | §2.9 `agent_roster`, strand status | PARTIAL |
-| Delegate roll-up line | §1.5 `strands` and `working` counts, dropped at `server.gleam:6356` | PARTIAL |
+| Delegate roll-up line | §1.5 `strands` and `working` counts, dropped at `client/daemon/server.gleam:6344` | PARTIAL |
 | Status line from the agent's last message | §1.5 `last_message`, dropped at the same closure | PARTIAL |
 | PR line and nudge on a plain session (#1261) | §0.5: PR awareness only inside project mode | NEW beyond substrate |
 | Peer message as context on an approval | §2.10 `PeerMessage` rows; "unanswered" is not a state | PARTIAL |
@@ -457,7 +457,7 @@ delegate is invisible to it. Sessions are classified from the
 `sessions.activity` words: `needs_you` with approvals is Your move,
 `needs_you` without (a failed main) is Blocked, `working` is Working, `idle`
 is Quiet. The daemon stops reducing each row to `#(id, state)` at
-`client/daemon/server.gleam:6356`, a type change through `activity_states`,
+`client/daemon/server.gleam:6344`, a type change through `activity_states`,
 `listed_sessions` and `Transport.sessions`. The status line is the clipped
 `last_message`, except an approval's, which is "Approval pending" with a link
 to the session's own card; the roll-up is "3 strands, 1 working". There are no

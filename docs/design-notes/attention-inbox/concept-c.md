@@ -346,7 +346,7 @@ waiting, and are small once the project view exists.
 | Receipts | §2.10 peer receipt; approval seq | EXISTS (durable admission) |
 | Need-you rank and band | classifier | substrate addition |
 | Folded Moving and Quiet | `sessions.activity` words | EXISTS |
-| Tab title and count | `wc/title_rule.gleam` | EXISTS for one session; the feed extends it |
+| Tab title and count | `web_client/title_rule.gleam` | EXISTS for one session; the feed extends it |
 
 **What the concept needs beyond the three substrate pieces.** Three small things
 and no new record kind. First, `waiting_since` and per-strand status on the

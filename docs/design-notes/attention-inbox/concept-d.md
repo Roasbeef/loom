@@ -236,7 +236,7 @@ dock card. The project mode section says how tickets themselves draw.
 | Approval, another session: row and count | §1.5 `approvals` | EXISTS as a count; content needs a per-record read |
 | Queue ranking by wait | none | **NEW**: `waiting_since` on the activity row and a raised time on the escalation record |
 | Ask | §3 | **substrate** (records) |
-| Idle session's last message in *Ready to look at* | §1.5 `last_message` | EXISTS on the wire, dropped at `server.gleam:6356`; shown as a quiet excerpt, never as "asking" |
+| Idle session's last message in *Ready to look at* | §1.5 `last_message` | EXISTS on the wire, dropped at `client/daemon/server.gleam:6344`; shown as a quiet excerpt, never as "asking" |
 | Stopped session | §1.5 `Failed` | EXISTS |
 | Stopped delegate | §2.2, §2.9 | **substrate** (classifier with per-strand status); main-only today |
 | Review | §2.11, §1.5 | **substrate** (classifier: run ended, diff non-empty, nothing pending); *reviewed* is a close mark |
@@ -271,7 +271,7 @@ group for the queue and adds *Ready to look at*; `view/since` draws the card;
 bar. New region paths are added to `component`'s constants with the tree-path
 tests, and observer pages draw none of the controls.
 
-**The daemon.** In phase 0 the reduction at `client/daemon/server.gleam:6356-6390`
+**The daemon.** In phase 0 the reduction at `client/daemon/server.gleam:6344-6390`
 (`activity_states`, an `@internal pub` function returning `#(id, state)`)
 returns a richer `Activity`. That is a type change that runs through every
 caller up to `listed_sessions` and the `Transport.sessions` capability, small
@@ -354,7 +354,7 @@ transcript text.
 **Phase 0: existing signals only.** `phase0.png` is this phase.
 
 1. Widen `activity_states` to carry `approvals`, `last_message` (at most 280
-   bytes) and `last_outcome`, and extend `wv/sessions.activity_from`.
+   bytes) and `last_outcome`, and extend `web_view/sessions.activity_from`.
 2. `session_view/attention`: classify a row as *approval waiting* (needs you with
    approvals above zero), *failed* (needs you with none) or *quiet*. Ranking is
    approvals first, then the catalogue's order. No ages are claimed.

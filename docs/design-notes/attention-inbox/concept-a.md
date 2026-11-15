@@ -263,7 +263,7 @@ further rule. Routing changes who may answer a record, which is a consent
 matter, so it is a field and not a display preference. Second, **a delegate that
 is stuck bubbles on its own**, because a stuck delegate is not an ask: the
 classifier reads "blocked" from the failed turn with no retry and no current
-operation (`sv/strand_card.gleam` statuses, fact sheet §2.2), and the row says
+operation (`session_view/strand_card.gleam` statuses, fact sheet §2.2), and the row says
 "Stopped". The coordinator may well retry it itself, which is why the
 second action on that item's pane is "Leave it to the coordinator". Third,
 **a project ticket is an item in the same queue.** Project mode's stages
@@ -317,7 +317,7 @@ the goal type does not carry (§2.4).
 classifier is a pure function from a session's state to one of *you*, *agent*,
 *blocked*, *ready to review*, *quiet*, and it is the brief's S2. The inbox
 model is a second pure module beside it, and the name is the first
-decision, because `sv/inbox.gleam` is already a message buffer (fact sheet §0
+decision, because `session_view/inbox.gleam` is already a message buffer (fact sheet §0
 item 7). This concept calls the new module `attention` and asks for the old
 one to be renamed if it is in the way. It takes the feed's records and the
 classifier's words and returns the grouped, ranked page: the groups, each
@@ -330,7 +330,7 @@ by drawing it, as a client, with no new rule.
 **`web_view`** gains a page. It is a Lustre server component for the home
 route that draws the model above and holds nothing else: row identity comes
 from daemon ids, the pane is an open id, the arm state is one id and a
-timestamp (the same shape as `wv/proposals.gleam`), and no session text is
+timestamp (the same shape as `web_view/proposals.gleam`), and no session text is
 ever a class, a key or a handler. It replaces the home page as the route's
 first view. The existing home sections (sessions, projects, folders) move
 under the rail's other views and are not rewritten.
@@ -413,7 +413,7 @@ whose **main** failed (the only failure the row judges; a stopped delegate
 is invisible until phase 1). Project tickets with a `person/` stage appear as
 Question, Review or Stopped rows with the ticket's answer box in the pane.
 The row shows `last_message`, the one line the wire already carries and the
-page drops at `server.gleam:6356`; keeping it widens the return type of
+page drops at `client/daemon/server.gleam:6344`; keeping it widens the return type of
 `activity_states` through `listed_sessions` and the `Transport.sessions`
 capability, a type change across `client` and `web_view` and not a one-line
 edit. **Phase 0 has no wait times.** The row has no timestamp and an
