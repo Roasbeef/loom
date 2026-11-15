@@ -648,6 +648,34 @@ pub fn detach(
   acknowledged(value, "detach")
 }
 
+/// Asks the box for its observation of the session's workspace, the one its own
+/// page's Changes tab draws (`108.worktree.1`). It dispatches against the epoch
+/// the attach observed, within `call_ms`, and is asked once: the page asks again
+/// for a newer tool result, and a refusal or silence is not retried here. A box
+/// that does not advertise the revision answers `Unsupported`, which the page
+/// reads as a box with nothing to show and does not ask again about. The box
+/// decides whether this feed may read the workspace, so an `Observed` board has
+/// been judged there, and its text is read only by the page's own decoder.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // top_relay.worktree(relay, "box", attached)
+/// ```
+pub fn worktree(
+  relay: Relay,
+  name: String,
+  attached: remote_feed.Attached,
+) -> Result(remote_feed.Observation, Failure) {
+  use value <- result.try(fenced(
+    relay,
+    name,
+    attached.epoch,
+    remote_feed.WorktreeRequest(attached.feed),
+  ))
+  remote_feed.decode_observation(value) |> result.map_error(Unreadable)
+}
+
 /// An acknowledgement carries nothing, and anything else does not read.
 fn acknowledged(value: json.JsonValue, what: String) -> Result(Nil, Failure) {
   case value {

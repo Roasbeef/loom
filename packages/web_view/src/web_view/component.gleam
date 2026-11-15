@@ -2188,9 +2188,13 @@ fn observed(
     worktrees.Out -> since >= worktrees.lost_ms
   }
 
-  // Check whether to initiate a new worktree observation request.
+  // Check whether to initiate a new worktree observation request. An answer of
+  // `Withheld` is final: the daemon said the page holds no read, as a box does
+  // that has none to give a relayed page, so asking again would only learn it
+  // again.
+  let final = view.worktree == worktrees.Withheld
   case view.transport.worktree, free, view.worktree_seen {
-    Some(ask), True, seen if seen != view.latest_result -> #(
+    Some(ask), True, seen if seen != view.latest_result && !final -> #(
       Model(
         ..model,
         view: View(

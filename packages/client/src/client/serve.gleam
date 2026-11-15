@@ -5581,6 +5581,7 @@ fn assemble_in(
           }
         })
       },
+      observe_worktree,
     ),
     runtime:,
     storage_owner:,

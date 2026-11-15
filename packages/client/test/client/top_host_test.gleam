@@ -249,6 +249,10 @@ fn endpoint_for(world: Subject(World), id: String) -> Endpoint {
       )
       Ok(remote_escalation.Forgotten)
     },
+    worktree: fn() {
+      process.send(world, Note("worktree " <> id))
+      Error("no observation in this fixture")
+    },
   )
 }
 

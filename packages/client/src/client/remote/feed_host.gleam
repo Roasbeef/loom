@@ -25,6 +25,18 @@
 //// `approval_ceiling`, the door `TopResolve` uses, and the hub judges it with
 //// `remote_decision.admit_relayed`.
 ////
+//// ## The workspace observation
+////
+//// A feed hands out one more thing, the box's observation of the session's
+//// workspace (`108.worktree.1`), and does not run it. Git can take longer than
+//// the feed may be away from its polls, so this process only says whether the
+//// feed is live and hands the caller `Settings.observe`, a closure the daemon
+//// built over the feed's own standing and the session's own observation. The
+//// caller is the exchange's request task, which the peer service already runs
+//// in a process of its own and cancels when the laptop stops waiting, so the
+//// observation holds neither this mailbox nor the lease. Asking changes no
+//// state: it is not a poll and renews nothing.
+////
 //// ## What ends a feed
 ////
 //// A feed ends in one of three ways, and keeps the first. It **lapses** when the
@@ -51,7 +63,7 @@
 //// ## Flow
 ////
 //// `start` → `initialise` → `handle` → `poll_live` → `released` → `piece_live` →
-//// `dispatch` → `finish`
+//// `dispatch` → `observation` → `finish`
 ////
 //// 1. `start` runs `initialise` in the new process: it takes the connection
 ////    permit's custody and attaches to the gateway, so a refusal of either is
@@ -66,16 +78,17 @@
 //// 4. `piece_live` admits one piece of the lane's frame and, when the frame is
 ////    whole, answers the send and hands the frame to `dispatch`.
 //// 5. `dispatch` applies the filter's verdict and queues the reply frame.
-//// 6. `finish` ends the feed.
+//// 6. `observation` says whether the feed is live and hands out the observer.
+//// 7. `finish` ends the feed.
 ////
 //// ## Transitions
 ////
 //// <!-- transitions: feed_host.Phase -->
 ////
-//// | state | `Poll` | `Piece` | `Detach` | `Pushed` | gateway ended | timers |
-//// | --- | --- | --- | --- | --- | --- | --- |
-//// | `Live` | answers or holds; supersedes a held poll; renews the lease | admits the piece; a whole frame is dispatched | detaches from the gateway, answers and exits | queues the frame, or lapses the feed when the queue is over its bound | `finish` with `stopped`, or `revoked` when the check refuses | the poll timer releases a held poll; the lease timer lapses the feed |
-//// | `Ended` | answers the ending and no frames | refused with the ending | answers and exits | dropped, because nothing reads it | ignored, already ended | the forget timer exits one lease after the ending |
+//// | state | `Poll` | `Piece` | `Detach` | `Observe` | `Pushed` | gateway ended | timers |
+//// | --- | --- | --- | --- | --- | --- | --- | --- |
+//// | `Live` | answers or holds; supersedes a held poll; renews the lease | admits the piece; a whole frame is dispatched | detaches from the gateway, answers and exits | hands out the observer and changes nothing | queues the frame, or lapses the feed when the queue is over its bound | `finish` with `stopped`, or `revoked` when the check refuses | the poll timer releases a held poll; the lease timer lapses the feed |
+//// | `Ended` | answers the ending and no frames | refused with the ending | answers and exits | refused with the ending | dropped, because nothing reads it | ignored, already ended | the forget timer exits one lease after the ending |
 
 import broker/internal/call
 import client/approval_ceiling.{type Ceiling}
@@ -85,7 +98,7 @@ import client/remote/feed_filter
 import client/remote/feed_pieces
 import client/remote/feed_queue
 import client/remote_escalation.{type Decider}
-import client/remote_feed.{type Answer, type Piece, type Poll}
+import client/remote_feed.{type Answer, type Observation, type Piece, type Poll}
 import client/remote_top.{type FeedEnd, type Refusal}
 import core/json
 import gleam/erlang/process.{type Pid, type Subject}
@@ -149,6 +162,11 @@ pub type Settings {
     /// How long a feed lives with no poll, and how long an ended feed is kept,
     /// in milliseconds. `remote_feed.lease_ms` in the daemon.
     lease_ms: Int,
+    /// The box's observation of the session's workspace for this feed: it
+    /// re-runs the feed's check, withholds from a standing that may not read,
+    /// and otherwise runs the session's own observation. It may run Git, so it
+    /// is called by the exchange's request task and never by this process.
+    observe: fn() -> Observation,
   )
 }
 
@@ -184,6 +202,10 @@ type Message {
 
   /// The laptop ends the feed.
   Detach(reply: Subject(Nil))
+
+  /// The laptop asks for the box's observation of the workspace. The answer is
+  /// the closure that makes it, for the caller to run.
+  Observe(reply: Subject(Result(fn() -> Observation, Refusal)))
 
   /// One frame the gateway pushed. The sink runs on a gateway process and only
   /// hands the frame over, because a sink must not block.
@@ -369,6 +391,21 @@ pub fn detach(feed: Feed) -> Nil {
   }
 }
 
+/// The closure that observes the session's workspace for this feed, for the
+/// caller to run in its own process. A feed that has ended is refused with its
+/// ending, as a send is, and a feed that is merely slow is `NotYetOpen`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(observe) = feed_host.observation(feed)
+/// ```
+pub fn observation(feed: Feed) -> Result(fn() -> Observation, Refusal) {
+  call.try_call(feed.subject, waiting: answer_ms, sending: Observe)
+  |> result.map_error(unanswered)
+  |> result.flatten
+}
+
 /// What a call that got no answer means to the laptop. A feed that is gone ended,
 /// and one that is merely slow is asked again.
 fn unanswered(fault: call.CallFault) -> Refusal {
@@ -418,6 +455,18 @@ fn handle(
       detached(data)
       process.send(reply, Nil)
       sm.stop()
+    }
+
+    // Handing out the observer reads the phase and nothing else: no poll was
+    // acknowledged, so the lease is not renewed, and the queue, the cursor and
+    // the pieces are as they were.
+    Live, Observe(reply:) -> {
+      process.send(reply, Ok(data.settings.observe))
+      sm.keep(data)
+    }
+    Ended(why), Observe(reply:) -> {
+      process.send(reply, Error(remote_top.FeedEnded(why)))
+      sm.keep(data)
     }
 
     Live, Pushed(frame:) -> queued(data, frame)
