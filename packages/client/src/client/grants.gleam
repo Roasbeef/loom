@@ -273,6 +273,7 @@ pub fn first_unwanted(
 fn encode_network(network: policy.NetworkPolicy) -> JsonValue {
   case network {
     policy.NetworkOff -> json.Object([#("mode", json.String("off"))])
+    policy.NetworkLoopback -> json.Object([#("mode", json.String("loopback"))])
     policy.NetworkFull -> json.Object([#("mode", json.String("full"))])
     policy.NetworkProxy(allow:, proxy:) ->
       json.Object([
@@ -311,6 +312,7 @@ fn decode_network(
   // Match the network policy mode discriminator string.
   case mode {
     "off" -> Ok(policy.NetworkOff)
+    "loopback" -> Ok(policy.NetworkLoopback)
     "full" -> Ok(policy.NetworkFull)
     "proxy" -> {
       // Decode optional host allowlist patterns for proxy mode.

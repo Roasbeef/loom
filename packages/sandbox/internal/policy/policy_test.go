@@ -86,9 +86,27 @@ func TestDecodeProxyMode(t *testing.T) {
 	}
 }
 
-func TestEncodeDecodeRoundtrip(t *testing.T) {
+func TestDecodeLoopbackMode(t *testing.T) {
 	m := validMap()
-	m["network"] = map[string]any{"mode": "full"}
+	m["network"] = map[string]any{"mode": "loopback"}
+	p, err := Decode(mustPack(t, m))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if !reflect.DeepEqual(p.Network, Network{Mode: NetworkLoopback}) {
+		t.Fatalf("loopback network mismatch: %#v", p.Network)
+	}
+}
+
+func TestEncodeDecodeRoundtrip(t *testing.T) {
+	for _, mode := range []string{"off", "loopback", "full"} {
+		t.Run(mode, func(t *testing.T) { roundtripMode(t, mode) })
+	}
+}
+
+func roundtripMode(t *testing.T, mode string) {
+	m := validMap()
+	m["network"] = map[string]any{"mode": mode}
 	p1, err := Decode(mustPack(t, m))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
@@ -147,6 +165,7 @@ func TestDecodeAdversarial(t *testing.T) {
 		{"relative path", mustPack(t, set("writable_roots", []any{"work"})), "not absolute"},
 		{"network wrong type", mustPack(t, set("network", "off")), "expected map"},
 		{"unknown network mode", mustPack(t, set("network", map[string]any{"mode": "sometimes"})), "unknown network mode"},
+		{"loopback with stray keys", mustPack(t, set("network", map[string]any{"mode": "loopback", "allow": []any{}})), "unexpected key"},
 		{"off with stray keys", mustPack(t, set("network", map[string]any{"mode": "off", "allow": []any{}})), "unexpected key"},
 		{"limits wrong type", mustPack(t, set("limits", []any{})), "expected map"},
 		{"limits missing key", mustPack(t, set("limits", map[string]any{"cpu_s": 1})), "missing key"},

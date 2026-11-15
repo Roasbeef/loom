@@ -183,6 +183,7 @@ pub fn grant_label(grant: Grant) -> String {
 fn network_label(network: policy.NetworkPolicy) -> String {
   case network {
     policy.NetworkOff -> "off"
+    policy.NetworkLoopback -> "loopback"
     policy.NetworkFull -> "full"
     policy.NetworkProxy(allow:, proxy: _) ->
       "proxy(" <> string.join(allow, ",") <> ")"
