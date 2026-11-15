@@ -8,14 +8,9 @@
 import broker/broker
 import broker/budget
 import broker/exec
-import broker/executor
 import broker/policy
-import client/catalog
 import client/daemon/transfer
-import client/host_git
-import client/serve
 import client/session_git
-import client/workspace_policy
 import client/worktree_diff
 import core/clock
 import core/ids
@@ -32,7 +27,7 @@ import host/bootstrap
 import session/session
 import simplifile
 import storage/storage
-import support/enforcement
+import support/worktree_wiring
 import tools/tool
 
 pub fn porcelain_keeps_whitespace_and_newline_identity_test() {
@@ -92,7 +87,7 @@ pub fn read_policy_preserves_granted_metadata_and_masks_test() {
 }
 
 pub fn jailed_git_reports_real_net_changes_and_repository_states_test() {
-  use wiring <- with_fixture("states")
+  use wiring <- worktree_wiring.with_fixture("states")
   let assert Ok(outside) = worktree_diff.capture(wiring)
     as "a directory outside Git has a distinct observation"
   assert outside.repository == worktree_diff.NotRepository
@@ -153,7 +148,7 @@ pub fn jailed_git_reports_real_net_changes_and_repository_states_test() {
 }
 
 pub fn detached_head_keeps_peer_repository_identity_test() {
-  use wiring <- with_fixture("detached-peer")
+  use wiring <- worktree_wiring.with_fixture("detached-peer")
   setup(wiring, ["init", "--quiet", "--initial-branch=main"])
   write(wiring, "tracked.txt", "body\n")
   commit_fixture(wiring, "baseline")
@@ -173,7 +168,7 @@ pub fn detached_head_keeps_peer_repository_identity_test() {
 
 // The baseline is durable before a model can turn a dirty tree into commits.
 pub fn committed_history_survives_clean_worktree_and_baseline_reuse_test() {
-  use wiring <- with_fixture("committed")
+  use wiring <- worktree_wiring.with_fixture("committed")
   setup(wiring, ["init", "--quiet"])
   write(wiring, "tracked.txt", "before\n")
   commit_fixture(wiring, "before session")
@@ -213,7 +208,7 @@ pub fn committed_history_survives_clean_worktree_and_baseline_reuse_test() {
 }
 
 pub fn unborn_session_commits_are_bounded_and_keep_the_initial_commit_test() {
-  use wiring <- with_fixture("unborn-committed")
+  use wiring <- worktree_wiring.with_fixture("unborn-committed")
   setup(wiring, ["init", "--quiet"])
   let start = worktree_diff.starting_revision(wiring)
   assert start == worktree_diff.Empty
@@ -234,7 +229,7 @@ pub fn unborn_session_commits_are_bounded_and_keep_the_initial_commit_test() {
 }
 
 pub fn committed_history_includes_merge_resolution_bytes_test() {
-  use wiring <- with_fixture("merge-committed")
+  use wiring <- worktree_wiring.with_fixture("merge-committed")
   setup(wiring, ["init", "--quiet", "--initial-branch=main"])
   write(wiring, "tracked.txt", "before\n")
   commit_fixture(wiring, "before session")
@@ -310,7 +305,7 @@ fn commit_fixture(wiring, message) {
 }
 
 pub fn jailed_git_marks_patch_and_file_limits_test() {
-  use wiring <- with_fixture("limits")
+  use wiring <- worktree_wiring.with_fixture("limits")
   setup(wiring, ["init", "--quiet"])
   write(wiring, "00-large.txt", string.repeat("line\n", 10_000))
   int.range(from: 1, to: 26, with: Nil, run: fn(_, index) {
@@ -338,7 +333,7 @@ pub fn jailed_git_marks_patch_and_file_limits_test() {
 // patch meets the deadline. Real time barely moves, so each executed call
 // still has at least two seconds of wall clock under a loaded host.
 pub fn patches_past_the_deadline_are_omitted_from_the_census_test() {
-  use wiring <- with_fixture("deadline")
+  use wiring <- worktree_wiring.with_fixture("deadline")
   setup(wiring, ["init", "--quiet"])
   write(wiring, "a.txt", "first\n")
   write(wiring, "b.txt", "second\n")
@@ -368,7 +363,7 @@ pub fn patches_past_the_deadline_are_omitted_from_the_census_test() {
 // `unreached` accepts. No fixture clock reaches it: the broker would have
 // to share the capture's counted clock, so only real time covers it.
 pub fn broker_deadline_refusal_is_the_capture_deadline_test() {
-  use wiring <- with_fixture("broker-deadline")
+  use wiring <- worktree_wiring.with_fixture("broker-deadline")
   setup(wiring, ["init", "--quiet"])
   let behind =
     worktree_diff.Wiring(
@@ -379,7 +374,7 @@ pub fn broker_deadline_refusal_is_the_capture_deadline_test() {
 }
 
 pub fn jailed_git_subtree_and_read_only_capture_test() {
-  use wiring <- with_fixture("subtree")
+  use wiring <- worktree_wiring.with_fixture("subtree")
   setup(wiring, ["init", "--quiet"])
   let assert Ok(Nil) =
     simplifile.create_directory_all(wiring.workspace <> "/sub dir")
@@ -465,100 +460,10 @@ fn invoke(
   collected
 }
 
-fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
-  let assert Ok(here) = simplifile.current_directory()
-    as "the test runner has a package working directory"
-  let assert Ok(repository) = bootstrap.canonical_directory(here <> "/../..")
-    as "the source repository locates the built helper"
-  case enforcement.probe(repository <> "/bin/loom", "worktree observation") {
-    enforcement.EnforcementAbsent -> Nil
-    enforcement.EnforcementLive -> {
-      // A non-repository fixture must have no ancestor Git metadata. Denying
-      // reads of the source checkout's metadata instead produces a genuine
-      // permission failure on macOS. The jail replaces /tmp with scratch, so
-      // /var/tmp retains the fixture's path inside both enforcement backends.
-      let directory =
-        "/var/tmp/loom-worktree-observation-"
-        <> int.to_string(bootstrap.current_process_id())
-        <> "-"
-        <> label
-        <> "-"
-        <> int.to_string(bootstrap.system_time_ms())
-      let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
-        as "the fixture owns a workspace"
-      let assert Ok(workspace) = bootstrap.canonical_directory(directory)
-        as "the fixture policy uses absolute paths"
-      serve_workspace(repository, workspace, run)
-    }
-  }
-}
-
-// Starts the production broker and pool over `workspace` and runs the test
-// with the wiring a session would capture with. A linked worktree's metadata
-// directories are admitted as `serve.boot` admits them
-// (`workspace_policy.widening_linked_worktree`), so a workspace whose `.git` is a file
-// is observed as it is in production.
-fn serve_workspace(
-  repository: String,
-  workspace: String,
-  run: fn(worktree_diff.Wiring) -> Nil,
-) -> Nil {
-  // Keep ancestor repositories outside this fixture's readable scope.
-  // Host reads would let the empty workspace discover the CI checkout.
-  let base = workspace_policy.base_policy_for(workspace, catalog.WorkspaceReads)
-
-  // Apple ships the real Git executable with Xcode; /usr/bin/git is a
-  // launcher whose discovery needs unrelated host preferences. Admit only
-  // the installed developer usr tree and put its real binary first.
-  let developer_usr = "/Applications/Xcode.app/Contents/Developer/usr"
-  let #(base, path) = case simplifile.is_directory(developer_usr) {
-    Ok(True) -> #(
-      policy.SandboxPolicy(..base, readable_roots: [
-        developer_usr,
-      ]),
-      developer_usr <> "/bin:/usr/bin:/bin:/usr/local/bin",
-    )
-    Ok(False) | Error(_) -> #(base, "/usr/local/bin:/usr/bin:/bin")
-  }
-  let base = workspace_policy.widening_linked_worktree(base, workspace)
-  let clock = clock.from_function(bootstrap.system_time_ms)
-  let assert Ok(#(_pool, broker, service)) =
-    serve.start_effect_plane(
-      helper: repository <> "/bin/loom-exec",
-      base_policy: base,
-      tmp_dir: workspace <> "/.helper",
-      size: 1,
-      clock:,
-    )
-    as "the fixture starts the production broker and pool"
-  run(worktree_diff.Wiring(
-    workspace:,
-    broker:,
-    base_policy: base,
-    clock:,
-    demand: exec.PlatformEnforcement,
-    env: [
-      #("PATH", path),
-      #("HOME", "/nonexistent"),
-    ],
-    entropy: fn() { bootstrap.system_time_ms() },
-    git: host_git.program(),
-  ))
-
-  // The pool's original helper witnesses, not a stop request, prove drain.
-  broker.stop(broker)
-  assert executor.close(
-      service,
-      draining: executor.drain_ms,
-      helpers: executor.helpers_ms,
-    )
-    == Ok(Nil)
-}
-
 // Generated caches must not spend the worktree's file or byte budget. A user
 // who deliberately tracks a file in the same directory still sees its edits.
 pub fn untracked_runtime_caches_do_not_hide_tracked_changes_test() {
-  use wiring <- with_fixture("runtime-caches")
+  use wiring <- worktree_wiring.with_fixture("runtime-caches")
   setup(wiring, ["init", "--quiet"])
   let assert Ok(Nil) =
     simplifile.create_directory_all(wiring.workspace <> "/.codemode/cache")
@@ -601,7 +506,7 @@ pub fn untracked_runtime_caches_do_not_hide_tracked_changes_test() {
 // made at, through the same jailed Git, with the metadata directories admitted
 // the way the daemon admits them.
 pub fn a_linked_worktree_under_a_hidden_directory_is_observed_test() {
-  use main <- with_fixture("linked-main")
+  use main <- worktree_wiring.with_fixture("linked-main")
   setup(main, ["init", "--quiet"])
   write(main, "tracked.txt", "original\n")
   setup(main, ["add", "--", "."])
@@ -621,7 +526,7 @@ pub fn a_linked_worktree_under_a_hidden_directory_is_observed_test() {
     as "the test runner has a package working directory"
   let assert Ok(repository) = bootstrap.canonical_directory(here <> "/../..")
     as "the source repository locates the built helper"
-  serve_workspace(repository, linked, fn(wiring) {
+  worktree_wiring.serve_workspace(repository, linked, fn(wiring) {
     write(wiring, "tracked.txt", "edited by a shell command\n")
     write(wiring, "added.txt", "new\n")
 
