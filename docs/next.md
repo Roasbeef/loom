@@ -4,6 +4,35 @@ The session hot-path section is re-baselined on November 13 against source
 `3e28c16f4` and its recorded local gates. Other sections retain their upstream
 baselines; this scoped update does not revalidate their hosted CI or live status.
 
+## The attention inbox: a design bracket, and the owner's direction
+
+The owner wants the web view to surface what needs them instead of making them
+read transcripts, in the manner of a coordinator and an inbox.
+[`design-notes/attention-inbox/`](design-notes/attention-inbox/README.md) is the
+bracket that answered it. It holds four concepts drawn from one brief and one
+shared scenario, two critiques, one revision each and a final ranking, all with
+static mockups and screenshots. Its draft PR carries the open questions.
+
+- **Ranking:** A (the inbox is the home), then D, C and B. It recommends A's
+  queue as the home page, with D's returned-state session page as where a
+  Review press lands.
+- **Owner's direction (2026-11-15):** keep C's threads for review, because
+  they carry the context to decide, and add an in-session mode for close
+  monitoring. In that mode the live stream stays, with overlays that lift out
+  insights and action points. No mockup draws that mode yet.
+- **Rulings the bracket reached, whichever direction wins:**
+  - An approval is decided only on its own session's page. It echoes the
+    full action text, grants and seq (`echo_matches`) and has no undo.
+  - The feed carries identities and heads, never decision content.
+  - Every count says what it read, because `sessions.activity` never reads
+    saved sessions.
+- **Not done:**
+  - The README's section 3 questions are unanswered.
+  - The project meta layer (router, Mandate, `observe`, verdicts and `auto`,
+    publishing inferred work, the attention budget, settings proposals; see
+    #1168) has no design.
+  - Nothing is built.
+
 ## Platform-selected JSON decoding
 
 [The fixed compatibility and storage replay](review/platform-json-2026-11-09.md)
@@ -186,7 +215,15 @@ observed abnormal exits remain faults. Sequential and concurrent retirement
 are covered in the storage tests. The concurrent test exercises competing
 callers but does not force the original check-to-monitor scheduling window.
 
-## Project mode (draft PR #1164)
+## Project mode (#1164, merged; first-class work paused on #1167)
+
+#1164 merged on 2026-11-02, so project mode is on `main` as an opt-in feature.
+The work to make it first class (#1167, with #1168 for its GitHub controls on
+the page) is paused by the owner. Three stacked branches are pushed and
+unreviewed: `project/warm-template`, `project/visible-failures` and
+`project/project-settings`. The attention-inbox bracket below plans to take only
+the pure half of `visible-failures`. The bullets that follow describe #1164 as
+it landed.
 
 One router session decides what becomes work for a repository, and each piece
 of work runs in its own session. Read
