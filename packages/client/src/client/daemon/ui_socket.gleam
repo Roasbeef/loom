@@ -1409,6 +1409,7 @@ fn admit_live(
       })
     Waiting | Crowded -> None
   }
+
   let transport =
     component.Transport(
       connect: fn(inbox, opened) {
