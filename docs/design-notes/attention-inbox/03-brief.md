@@ -165,3 +165,37 @@ hedge toward the others, which exist so you need not.
   pinned "since you last looked" card above the transcript that lists what
   happened and what is asked, and items answerable in place in the dock.
   Win on cost and continuity.
+
+## 7. Addendum (2026-11-15): project mode is unfinished, and it is part of this work
+
+The ruling in section 3 that "the coordinator already exists: it is project
+mode" was written from a stale handoff line calling it draft PR #1164. The
+owner corrected the framing after the concepts were drawn: project mode is the
+other half of this work, and it was started and not finished. Verified state:
+
+- **#1164 merged on 2026-11-02.** Project mode is on `main`, opt-in through
+  `loom project init`, and driven live on macOS with publishing off.
+- **#1167, "make project mode first class", is paused by the owner** (since
+  2026-11-05) on a concern that it was over-engineered. Three stacked branches
+  are pushed and unreviewed: `project/warm-template` (a per-project template
+  so a check can find its toolchain), `project/visible-failures` (a
+  `person/check` stage, failures classified as environment or code, retry and
+  recheck), and `project/project-settings` (settings held per project). The
+  issue's open question, whether the template earns its cost or the owner's
+  own tickets should simply check with network on, is the owner's to answer.
+- **The web-page slice was never pushed.** Its first goal is "one project per
+  major repo, run from the web page": create a project, post a request, and a
+  ticket page with the diff, the check result and its failure output, and
+  answer, recheck, retry, stop, close and publish.
+- **Draft PR #1158** (`docs/web-ui-redesign`, unmerged) is an earlier web
+  redesign proposal that also leads with a ranked queue of what needs a person,
+  plus a restart receipt and a per-session digest. The project design note
+  waited on it for its web navigation.
+
+So the revision round must treat project mode as an unfinished surface this
+work completes, not a finished one it leans on. Each revised concept says
+where a project, its board and a ticket page live in its design; what of
+#1167's web slice it absorbs and in which phase; and what it needs from the
+paused stack (likely `visible-failures`, whose `person/check` stage is the
+"stuck" signal a coordinator inbox needs). Concepts should not depend on
+resolving the template question.
