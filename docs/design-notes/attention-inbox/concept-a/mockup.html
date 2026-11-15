@@ -69,7 +69,9 @@ h1 .amber{color:var(--signal-text)}
 .list{list-style:none;margin:0;padding:0;background:var(--raised);border:1px solid var(--divider);border-radius:10px;overflow:hidden}
 .sec.asks .list{border-color:color-mix(in srgb,var(--signal) 40%,var(--divider))}
 .row{display:grid;grid-template-columns:78px minmax(0,1fr) auto;gap:4px 14px;align-items:center;padding:10px 14px;border-top:1px solid var(--divider);cursor:default}
+.row{position:relative}
 .row:first-child{border-top:0}
+.phases .row[data-phase]::after{content:'phase ' attr(data-phase);position:absolute;left:14px;bottom:5px;font-size:10px;color:var(--faint);border:1px solid var(--divider);border-radius:6px;padding:0 5px;background:var(--bg)}
 .row:hover{background:color-mix(in srgb,var(--fg) 3%,transparent)}
 .row.sel{background:color-mix(in srgb,var(--signal) 8%,var(--raised))}
 .word{font-size:12px;color:var(--quiet);align-self:start;padding-top:2px}
@@ -77,6 +79,7 @@ h1 .amber{color:var(--signal-text)}
 .word.bad{color:var(--danger-text);font-weight:600}
 .title{font-size:14px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .meta{font-size:12.5px;color:var(--quiet);margin-top:2px}
+.why{font-size:12.5px;color:var(--quiet);margin-top:2px}
 .meta b{font-weight:500;color:var(--fg)}
 .act{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
 .rec{font-size:11px;color:var(--quiet)}
@@ -176,9 +179,9 @@ h1 .amber{color:var(--signal-text)}
 
 <div class="app" id="app">
   <nav class="rail" aria-label="Views">
-    <a href="#" class="on">Inbox <span class="n" id="rail-count">8</span></a>
+    <a href="#" class="on" id="nav-inbox">Inbox <span class="n" id="rail-count">8</span></a>
     <a href="#">Sessions <span class="n">6</span></a>
-    <a href="#">Projects <span class="n">1</span></a>
+    <a href="#" id="nav-projects">Projects <span class="n">1</span></a>
     <h6>WORKSPACES</h6>
     <a href="#">loom <span class="n" id="ws-loom">7</span></a>
     <a href="#">aegis <span class="n" id="ws-aegis">1</span></a>
@@ -200,42 +203,45 @@ h1 .amber{color:var(--signal-text)}
     </div>
 
     <section class="sec asks" data-sec="asks">
-      <div class="sec-h"><h2>Needs you</h2><span class="n">longest waiting first</span><span class="sp"></span>
+      <div class="sec-h"><h2>Needs you</h2><span class="n">approvals first, then longest waiting</span><span class="sp"></span>
         <button class="link" id="batch-open" type="button">Send the recommended answer to 2 questions…</button></div>
       <div class="batch" id="batch" hidden>
-        <p><b>Send exactly these two answers.</b> Each goes to its own session as your message.</p>
+        <p><b>Send exactly these two answers.</b> Each is the agent’s recommendation, with what it does. Each goes to its own session as your message, held 8 s so you can undo.</p>
         <ol>
-          <li><span class="mono">runner/pod-reach</span> — “Use the scratch tmpfs”</li>
-          <li><span class="mono">coord/web-inbox</span> — “Fold under open”</li>
+          <li><span class="mono">runner/pod-reach</span> — “Use the scratch tmpfs” <span class="q">· writes vanish with the pod</span></li>
+          <li><span class="mono">coord/web-inbox</span> — “Fold under open” <span class="q">· keeps context; closed rows stay one line</span></li>
         </ol>
         <div class="btns" style="margin-top:0"><button class="btn primary" id="batch-send" type="button" data-batch="runner,coord">Send both answers</button>
         <button class="btn" id="batch-cancel" type="button">Cancel</button></div>
         <p class="meta">Approvals are never in a batch. Only questions that carry a recommendation are.</p>
       </div>
       <ul class="list" id="asks-list">
-        <li class="row" data-id="runner" data-kind="ask" tabindex="0">
-          <span class="word need">Question</span>
-          <div><p class="title">The runner pod has no /tmp write. Use the scratch tmpfs, mount an emptyDir, or skip the cache?</p>
-            <p class="meta"><span class="mono">runner/pod-reach</span> · aegis · asked 11:20 · <b>waiting 3h 00m</b></p></div>
-          <div class="act"><button class="btn primary arm" type="button" data-confirm="Send “scratch tmpfs”" data-complete="runner" data-ended="Answered “Use the scratch tmpfs” · delivered to runner/pod-reach · main, 14:21">Use scratch tmpfs</button><span class="rec">recommended</span></div>
-        </li>
-        <li class="row" data-id="approval" data-kind="ask" tabindex="0">
+        <li class="row" data-id="approval" data-phase="0" data-kind="ask" tabindex="0">
           <span class="word need">Approval</span>
           <div><p class="title">Run <span class="mono">sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</span> with a write grant to <span class="mono">~/.loom</span></p>
-            <p class="meta"><span class="mono">storage/branch-index-repair</span> · loom · since 12:58 · <b>waiting 1h 22m</b> · Bob is on this session</p></div>
+            <p class="meta"><span class="mono">storage/branch-index-repair</span> · loom · since 12:58 · <b>waiting 1h 22m</b> · Bob is on this session</p>
+            <p class="why">Also: <span class="mono">runner/pod-reach</span> messaged this session at 13:15 about the same grant.</p></div>
           <div class="act"><button class="btn" type="button" data-open="approval">Review</button></div>
         </li>
-        <li class="row" data-id="coord" data-kind="ask" tabindex="0">
+        <li class="row" data-id="runner" data-phase="1" data-kind="ask" tabindex="0">
+          <span class="word need">Question</span>
+          <div><p class="title">The runner pod has no /tmp write. Use the scratch tmpfs, mount an emptyDir, or skip the cache?</p>
+            <p class="meta"><span class="mono">runner/pod-reach</span> · aegis · asked 11:20 · <b>waiting 3h 00m</b></p>
+            <p class="why">Scratch tmpfs: writes vanish with the pod; nothing to change in the manifest.</p></div>
+          <div class="act"><button class="btn primary arm" type="button" data-confirm="Send “scratch tmpfs”" data-complete="runner" data-ended="Answered “Use the scratch tmpfs” · delivered to runner/pod-reach · main, 14:21">Use scratch tmpfs</button><span class="rec">recommended</span></div>
+        </li>
+        <li class="row" data-id="coord" data-phase="1" data-kind="ask" tabindex="0">
           <span class="word need">Question</span>
           <div><p class="title">Should closed items fold under open ones, or move to a separate “Done” list?</p>
-            <p class="meta"><span class="mono">coord/web-inbox</span> · loom · asked 13:40 · <b>waiting 40m</b></p></div>
+            <p class="meta"><span class="mono">coord/web-inbox</span> · loom · asked 13:40 · <b>waiting 40m</b></p>
+            <p class="why">Fold under open: keeps context, as the Inbox plugin does; closed rows stay one line.</p></div>
           <div class="act"><button class="btn primary arm" type="button" data-confirm="Send “fold under open”" data-complete="coord" data-ended="Answered “Fold under open” · delivered to coord/web-inbox · main, 14:21">Fold under open</button><span class="rec">recommended</span></div>
         </li>
-        <li class="row" data-id="stuck" data-kind="ask" tabindex="0">
+        <li class="row" data-id="stuck" data-phase="1" data-kind="ask" tabindex="0">
           <span class="word bad">Stopped</span>
           <div><p class="title">sub:mockup-b stopped on a provider rate limit at 13:52 and has not retried.</p>
             <p class="meta"><span class="mono">coord/web-inbox › sub:mockup-b</span> · loom · <b>stopped 28m</b></p></div>
-          <div class="act"><button class="btn primary" type="button" data-complete="stuck" data-ended="Retried by you · sub:mockup-b resumed 14:21">Retry</button></div>
+          <div class="act"><button class="btn primary" type="button" data-noundo="1" data-complete="stuck" data-ended="Retried by you · sub:mockup-b resumed 14:21">Retry</button></div>
         </li>
       </ul>
     </section>
@@ -243,13 +249,13 @@ h1 .amber{color:var(--signal-text)}
     <section class="sec" data-sec="reviews">
       <div class="sec-h"><h2>Ready to review</h2><span class="n">a session and a pull request</span></div>
       <ul class="list" id="reviews-list">
-        <li class="row" data-id="review" data-kind="review" tabindex="0">
+        <li class="row" data-id="review" data-phase="1" data-kind="review" tabindex="0">
           <span class="word">Review</span>
           <div><p class="title">fix/hashline-replay finished: +412 −88 across 7 files. The agent reports make check-core exit 0.</p>
             <p class="meta"><span class="mono">fix/hashline-replay</span> · loom · finished 12:31 · 2 finds below</p></div>
           <div class="act"><button class="btn" type="button" data-open="review">Open review</button></div>
         </li>
-        <li class="row" data-id="pr" data-kind="review" tabindex="0">
+        <li class="row" data-id="pr" data-phase="3" data-kind="review" tabindex="0">
           <span class="word">PR #1261</span>
           <div><p class="title">1 failing check, <span class="mono">lint (R11)</span>, and 2 unresolved comments from Bob.</p>
             <p class="meta"><span class="mono">wp-j/vetting-lint</span> · loom · the agent is working, 3m into a turn</p></div>
@@ -261,19 +267,19 @@ h1 .amber{color:var(--signal-text)}
     <section class="sec" data-sec="finds">
       <div class="sec-h"><h2>Finds</h2><span class="n">noticed outside the task</span></div>
       <ul class="list" id="finds-list">
-        <li class="row group-row" id="finds-group" data-kind="group">
+        <li class="row group-row" data-phase="1" id="finds-group" data-kind="group">
           <span class="word">2 finds</span>
           <div><p class="title">From <span class="mono">fix/hashline-replay</span>: one risk, one idea.</p>
             <p class="meta">Risk: replay skips entries with an empty digest.</p></div>
           <div class="act"><button class="btn" id="finds-toggle" type="button">Show</button></div>
         </li>
-        <li class="row nested" data-id="risk" data-kind="find" tabindex="0" hidden>
+        <li class="row nested" data-id="risk" data-phase="1" data-kind="find" tabindex="0" hidden>
           <span class="word need">Risk · medium</span>
           <div><p class="title">hashline.replay silently skips entries whose digest is empty; a truncated store would replay short with no error.</p>
             <p class="meta"><span class="mono">fix/hashline-replay</span> · noticed 12:19</p></div>
           <div class="act"><button class="btn primary arm" type="button" data-confirm="Send to the agent" data-complete="risk" data-ended="Fix requested · delivered to fix/hashline-replay · main, 14:22 (session woken)">Fix it</button></div>
         </li>
-        <li class="row nested" data-id="idea" data-kind="find" tabindex="0" hidden>
+        <li class="row nested" data-id="idea" data-phase="1" data-kind="find" tabindex="0" hidden>
           <span class="word">Idea</span>
           <div><p class="title">The replay loop could reuse machine/codec’s first-match walk and drop a closure per entry.</p>
             <p class="meta"><span class="mono">fix/hashline-replay</span> · noticed 12:24</p></div>
@@ -298,7 +304,33 @@ h1 .amber{color:var(--signal-text)}
       </div>
     </section>
 
-    <details class="closed" id="closed"><summary>Closed today · <span id="closed-n">0</span></summary><ul id="closed-list"></ul></details>
+    <p class="closed" style="margin-top:22px">Checked 14:20 · 6 sessions read, 0 saved sessions with open items. “Nothing needs you” is only said after every session, saved ones included, has been read.</p>
+    <details class="closed" id="closed" style="margin-top:10px"><summary>Closed today · <span id="closed-n">0</span></summary><ul id="closed-list"></ul></details>
+   </div>
+  </main>
+
+
+  <main class="main" id="main-projects" hidden>
+   <div class="col">
+    <h1><span style="color:var(--signal-text)">2 tickets need you</span></h1>
+    <p class="totals">Project <span class="mono">loom</span> · origin pinned to github.com · 1 working · 1 ended</p>
+    <div class="batch" style="margin-top:16px;background:var(--raised);border-color:var(--divider)">
+      <p><b>Post a request</b> <span class="q">to the router; it opens a ticket and a worker.</span></p>
+      <input class="free" type="text" style="margin:8px 0" placeholder="What should this project do next?" aria-label="Request">
+      <div class="btns" style="margin-top:0"><button class="btn primary" type="button">Post request</button><button class="btn" type="button">New project…</button></div>
+    </div>
+    <section class="sec"><div class="sec-h"><h2>Needs you</h2><span class="n">by stage: check, review</span></div>
+      <ul class="list" style="border-color:color-mix(in srgb,var(--signal) 40%,var(--divider))">
+        <li class="row" data-id="t14" data-phase="2" tabindex="0"><span class="word bad">Check failed</span>
+          <div><p class="title">T-14 “Add R11 tests to the lint”: the check could not run its toolchain.</p><p class="meta"><span class="mono">person/check</span> · cause <b>environment</b> · worker idle at the same commit · 41m</p></div>
+          <div class="act"><button class="btn primary" type="button" data-open="t14">Open ticket</button></div></li>
+        <li class="row" data-id="t12" data-phase="1" tabindex="0"><span class="word">Review</span>
+          <div><p class="title">T-12 “Rename the inbox module”: pull request open on <span class="mono">project/T-12</span>.</p><p class="meta"><span class="mono">person/review</span> · check passed · +88 −12 across 3 files · 2h 05m</p></div>
+          <div class="act"><button class="btn" type="button" data-open="t12">Open ticket</button></div></li>
+      </ul></section>
+    <section class="sec"><div class="sec-h"><h2>Working</h2><span class="n">nothing here needs you</span></div>
+      <div class="statusline"><p><span class="mono">T-15</span> “Docs for the attention feed” · worker on it, 22m in</p><p class="q"><b style="color:var(--fg);font-weight:500">Ended</b> · <span class="mono">T-11</span> merged yesterday</p></div></section>
+    <p class="closed" style="margin-top:18px">Tickets here are illustrative; the scenario has none. The stages are the ones project mode computes.</p>
    </div>
   </main>
 
@@ -310,6 +342,24 @@ h1 .amber{color:var(--signal-text)}
       <p class="ok" id="receipt-text"></p>
       <div class="btns"><button class="btn" id="undo" type="button">Undo (<span id="undo-s">8</span>s)</button><button class="btn" id="receipt-next" type="button">Next item ›</button></div>
     </div>
+
+
+    <section class="detail" id="d-t14" hidden>
+      <p class="word bad">Check failed</p><h3>T-14 failed its check at 9c1e4b7, and the cause is the environment</h3>
+      <dl class="kv"><dt>Project</dt><dd><span class="mono">loom</span> · stage <span class="mono">person/check</span></dd><dt>Cause</dt><dd><span class="pill bad">environment</span> not the worker’s to mend, so the worker was not told</dd><dt>Worker</dt><dd>idle at this commit; the same commit is not checked again by itself</dd></dl>
+      <p class="sech">CHECK OUTPUT, LAST LINES</p>
+      <div class="code">$ bash -o pipefail -c 'make check-lint'
+gleam: command not found
+exit 127 · network off · the tree is the only writable root</div>
+      <div class="btns"><button class="btn primary" type="button">Recheck</button><button class="btn arm" type="button" data-confirm="Press again: retry the worker" data-complete="t14" data-ended="Worker asked to retry T-14, 14:22">Retry the worker</button><button class="btn arm danger" type="button" data-confirm="Press again to stop" data-complete="t14" data-ended="T-14 stopped by you, 14:22">Stop</button><button class="btn arm" type="button" data-confirm="Press again to publish past it" data-complete="t14" data-ended="T-14 published past a failed check by you, 14:22">Publish past it…</button></div>
+      <p class="q" style="font-size:12.5px;margin-top:8px">Recheck re-runs the same check on the same commit, so it takes one press. Stopping, retrying and publishing past a failed check each take two.</p>
+    </section>
+
+    <section class="detail" id="d-t12" hidden>
+      <p class="word">Review</p><h3>T-12 is ready: pull request open on project/T-12</h3>
+      <dl class="kv"><dt>Project</dt><dd><span class="mono">loom</span> · stage <span class="mono">person/review</span></dd><dt>Diff</dt><dd><span class="add">+88</span> <span class="rm">−12</span> across 3 files</dd><dt>Check</dt><dd><span class="pill ok">passed</span> recorded at the head</dd></dl>
+      <div class="btns"><button class="btn" type="button">Open the diff ›</button><button class="btn arm" type="button" data-confirm="Press again to publish" data-complete="t12" data-ended="T-12 published, 14:22">Publish</button><button class="btn arm" type="button" data-confirm="Press again to close" data-complete="t12" data-ended="T-12 closed by you, 14:22">Close</button></div>
+    </section>
 
     <section class="detail" id="d-runner" hidden>
       <p class="word need">Question</p><h3>The runner pod has no /tmp write. Use the scratch tmpfs, mount an emptyDir, or skip the cache?</h3>
@@ -332,12 +382,12 @@ h1 .amber{color:var(--signal-text)}
       <div class="card approve">
         <p class="word bad" style="margin-bottom:6px">code_mode · proc.run</p>
         <div class="code">sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</div>
-        <dl class="kv"><dt>Network</dt><dd>off</dd><dt>Wants</dt><dd>write to <span class="mono">~/.loom</span> — outside the workspace</dd><dt>Digest</dt><dd><span class="mono">sha256:7f3a…c19e</span> · seq 3</dd></dl>
-        <p class="q" style="font-size:12.5px">This card is drawn from the stored request. Your decision names this digest and this sequence; if the request changes, the buttons go stale.</p>
-        <div class="btns"><button class="btn danger arm decide" type="button" data-confirm="Press again to deny" data-complete="approval" data-ended="Denied by you · sent to storage/branch-index-repair, 14:22">Deny</button><button class="btn primary arm decide" type="button" data-confirm="Press again to approve once" data-complete="approval" data-ended="Approved once by you · sent to storage/branch-index-repair, 14:22">Approve once</button><button class="btn arm decide" type="button" data-confirm="Press again: for this session" data-complete="approval" data-ended="Approved for the session by you · 14:22">For this session</button></div>
+        <dl class="kv"><dt>Network</dt><dd>off</dd><dt>Wants</dt><dd>write to <span class="mono">~/.loom</span> — outside the workspace</dd><dt>Binds</dt><dd>this exact action text, the grant above and seq 3</dd></dl>
+        <p class="q" style="font-size:12.5px">This card is read from the stored request. Your decision echoes the action text shown, the wanted grant and seq 3; if any of them changes, the buttons go stale. No undo: a decision is not held.</p>
+        <div class="btns"><button class="btn danger arm decide" type="button" data-confirm="Press again to deny" data-noundo="1" data-complete="approval" data-ended="Denied by you · sent to storage/branch-index-repair, 14:22">Deny</button><button class="btn primary arm decide" type="button" data-confirm="Press again to approve once" data-noundo="1" data-complete="approval" data-ended="Approved once by you · sent to storage/branch-index-repair, 14:22">Approve once</button><button class="btn arm decide" type="button" data-confirm="Press again: for this session" data-noundo="1" data-complete="approval" data-ended="Approved for the session by you · 14:22">For this session</button></div>
       </div>
-      <p class="sech">RELATED, FROM ANOTHER SESSION</p>
-      <div class="ctx card"><p class="who peer">13:15 · peer message from <span class="mono">runner/pod-reach · main</span>, not answered</p><p>“Does the integrity check need the write grant, or can it run read-only?”</p></div>
+      <p class="sech">PEER MESSAGES RECEIVED WHILE THIS WAITED</p>
+      <div class="ctx card"><p class="who peer">13:15 · from <span class="mono">runner/pod-reach · main</span></p><p>“Does the integrity check need the write grant, or can it run read-only?”</p></div>
       <div class="btns"><button class="btn" type="button">Read in the session ›</button></div>
     </section>
 
@@ -355,7 +405,7 @@ h1 .amber{color:var(--signal-text)}
     <section class="detail" id="d-stuck" hidden>
       <p class="word bad">Stopped</p><h3>sub:mockup-b stopped on a provider rate limit</h3>
       <dl class="kv"><dt>From</dt><dd><span class="mono">coord/web-inbox › sub:mockup-b</span> · loom</dd><dt>Failed</dt><dd>13:52 · no retry scheduled</dd><dt>Error</dt><dd>provider rate limit, last turn failed</dd></dl>
-      <div class="btns"><button class="btn primary" type="button" data-complete="stuck" data-ended="Retried by you · sub:mockup-b resumed 14:21">Retry now</button><button class="btn" type="button">Leave it to the coordinator</button></div>
+      <div class="btns"><button class="btn primary" type="button" data-noundo="1" data-complete="stuck" data-ended="Retried by you · sub:mockup-b resumed 14:21">Retry now</button><button class="btn" type="button">Leave it to the coordinator</button></div>
       <p class="q" style="font-size:12.5px;margin-top:8px">Retry re-runs the turn you already authorised, so it takes one press.</p>
     </section>
 
@@ -401,10 +451,11 @@ h1 .amber{color:var(--signal-text)}
 (function(){
   var q=new URLSearchParams(location.search), root=document.documentElement;
   var t=q.get('theme'); if(t==='dark'||t==='light'){root.setAttribute('data-theme',t);}
+  if(q.get('phases')){root.classList.add('phases');}
   if(q.get('frame')==='phone'||window.innerWidth<700){root.classList.add('phone');}
   function $(s,r){return (r||document).querySelector(s);} function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s));}
   var app=$('#app'), current=null, lastEnded={}, undoTimer=null;
-  var order=['runner','approval','coord','stuck','review','pr','risk','idea'];
+  var order=['approval','runner','coord','stuck','review','pr','risk','idea'];
   var closedIds=[];
 
   $('#theme').onclick=function(){var d=root.getAttribute('data-theme');var dark=d?d==='dark':matchMedia('(prefers-color-scheme:dark)').matches;root.setAttribute('data-theme',dark?'light':'dark');};
@@ -448,10 +499,10 @@ h1 .amber{color:var(--signal-text)}
     var nm=row?$('.mono',row):null; li.textContent=(nm?nm.textContent+' — ':'')+ended; $('#closed-list').appendChild(li);
     lastEnded[id]=ended; recount();
   }
-  function showReceipt(id,ended){
+  function showReceipt(id,ended,noundo){
     $$('.detail').forEach(function(d){d.hidden=true;});
     $('#receipt-text').textContent='✓ '+ended; $('#receipt').hidden=false;
-    var s=8; $('#undo-s').textContent=s; $('#undo').hidden=false; clearInterval(undoTimer);
+    var s=8; $('#undo-s').textContent=s; $('#undo').hidden=!!noundo; clearInterval(undoTimer);
     undoTimer=setInterval(function(){s--;$('#undo-s').textContent=s;if(s<=0){clearInterval(undoTimer);$('#undo').hidden=true;}},1000);
     $('#undo').onclick=function(){clearInterval(undoTimer);undo(id);};
   }
@@ -466,7 +517,7 @@ h1 .amber{color:var(--signal-text)}
   document.addEventListener('click',function(e){
     var b=e.target.closest('button'); 
     if(b&&b.classList.contains('arm')){ e.stopPropagation(); handleArm(b); return; }
-    if(b&&b.hasAttribute('data-complete')){ e.stopPropagation(); var id=b.getAttribute('data-complete'),end=b.getAttribute('data-ended'); complete(id,end); if(current===id||$('#app').classList.contains('pane-open')&&current===id){showReceipt(id,end);} return; }
+    if(b&&b.hasAttribute('data-complete')){ e.stopPropagation(); var id=b.getAttribute('data-complete'),end=b.getAttribute('data-ended'); complete(id,end); if(current===id){showReceipt(id,end,b.hasAttribute('data-noundo'));} return; }
     if(b&&b.hasAttribute('data-open')){ e.stopPropagation(); openRow(b.getAttribute('data-open')); return; }
     if(b){return;}
     var row=e.target.closest('.row[data-id]'); if(row){openRow(row.getAttribute('data-id'));}
@@ -487,7 +538,7 @@ h1 .amber{color:var(--signal-text)}
       $('#batch').hidden=true; reset(b); return;
     }
     var id=b.getAttribute('data-complete'),end=b.getAttribute('data-ended'); var inPane=!!b.closest('#pane');
-    reset(b); complete(id,end); if(inPane){showReceipt(id,end);}
+    reset(b); complete(id,end); if(inPane){showReceipt(id,end,b.hasAttribute('data-noundo'));}
   }
   $('#batch-send').onclick=function(e){e.stopPropagation();['runner','coord'].forEach(function(i){complete(i,i==='runner'?'Answered “Use the scratch tmpfs” · delivered to runner/pod-reach · main, 14:21':'Answered “Fold under open” · delivered to coord/web-inbox · main, 14:21');});$('#batch').hidden=true;};
   $('#batch-open').onclick=function(){$('#batch').hidden=false;};
@@ -503,6 +554,12 @@ h1 .amber{color:var(--signal-text)}
   };});
   document.addEventListener('keydown',function(e){if(e.key==='Escape'){closePane();}});
 
+
+  function view(v){var pr=v==='projects';$('#main').hidden=pr;$('#main-projects').hidden=!pr;$('#nav-inbox').classList.toggle('on',!pr);$('#nav-projects').classList.toggle('on',pr);closePane();}
+  $('#nav-inbox').onclick=function(e){e.preventDefault();view('inbox');};
+  $('#nav-projects').onclick=function(e){e.preventDefault();view('projects');};
+  $$('.nav a').forEach(function(a,i){a.onclick=function(e){e.preventDefault();view(i===2?'projects':'inbox');};});
+  if(q.get('view')==='projects'){view('projects');}
   var o=q.get('open'); if(o){ if(o==='risk'||o==='idea'){$('#finds-toggle').click();} openRow(o);}
   if(q.get('tab')){var tb=$('.tab[data-tab="'+q.get('tab')+'"]'); if(tb){tb.click();}}
 })();
