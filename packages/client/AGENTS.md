@@ -10910,13 +10910,27 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
 `gateway_peer_door_test`. The model is `protocol/models/live-relay`.
 
 - **The vocabulary** is `client/remote_feed`, with no process in it, as
-  `remote_top` has none: the bodies of `108.attach.1`, `108.feed.1`, `108.send.1`
-  and `108.detach.1`, the answers, the bounds both ends hold and a total decoder
-  for each. `peer_codec.revisions` advertises the four and `peer_top.dispatch`
-  decodes a body with `remote_feed.decode_request` and calls
-  `TopHost.feeds`, a `remote_feed.Host` of four closures. `remote_top` gained
+  `remote_top` has none: the bodies of `108.attach.1`, `108.feed.1`, `108.send.1`,
+  `108.detach.1` and `108.worktree.1`, the answers, the bounds both ends hold and a
+  total decoder for each. `peer_codec.revisions` advertises the five and
+  `peer_top.dispatch` decodes a body with `remote_feed.decode_request` and calls
+  `TopHost.feeds`, a `remote_feed.Host` of five closures. `remote_top` gained
   `FeedEnded(lapsed | stopped | revoked)`, `CapReached(MaxFeeds, _)` and
   `NotOffered(OfferedPage, "live")`.
+- **The workspace observation** (`108.worktree.1`, the last addendum of
+  protocol-change/108) is a read-only request that touches no queue, cursor, piece
+  or lease. The box's feed carries `feed_host.Settings.observe`, built in
+  `top_host.started_feed` over the feed's own check and the session's own
+  `relayed_session.Endpoint.worktree` (`serve.observe_worktree`). `feed_host.observation`
+  hands the closure to the request task, which runs it
+  (`top_host.worktree_observation`: the check again, capped by
+  `ui_relay.may_read_workspace`, then `remote_feed.observed` for the bound).
+  The laptop's `top_relay.worktree` asks once, and `ui_socket.relayed_worktree_answer`
+  turns the answer into a `worktrees.Read` through `worktree_view.decode`; an
+  `Unsupported` box is `Withheld`, which the component never asks about again.
+  Tests: `remote_feed_test`, `peer_feed_test`, `feed_host_test`, `top_host_test`,
+  `worktree_page_test` and `relayed_changes_test` (a real repository through the
+  relay).
 - **The pure parts** are `remote/feed_queue` (the numbered queue: unacknowledged
   frames bounded at 512 and 1,048,576 bytes, a poll's `after` acknowledges, a
   bound passed lapses the whole feed and never one frame; the lease is not here,
