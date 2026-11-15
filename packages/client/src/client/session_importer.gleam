@@ -36,18 +36,22 @@
 //// 2. Otherwise the sender's node is one of this daemon's
 ////    `[orchestrators.<name>]`. Without that there is no name to record as the
 ////    session's origin, and no standing to tell this daemon about sessions.
-//// 3. The copy's SHA-256 is the digest the sender took when it cut the file.
+//// 3. The session is not one that this daemon gave away from a directory on
+////    this machine and that now arrives from an executor or a pool. Its kept
+////    registration would reopen it in that directory, without the work done on
+////    the executor, and the return checkout is not built.
+//// 4. The copy's SHA-256 is the digest the sender took when it cut the file.
 ////    A different digest means the copy is not what was cut, and the sender
 ////    sends the whole file again.
-//// 4. The copy's scope cell reads a clean close at the incarnation the sender
+//// 5. The copy's scope cell reads a clean close at the incarnation the sender
 ////    claims. This is what makes the session safe to open on a different
 ////    machine: the executor holds nothing the old orchestrator can still use,
 ////    and the next attach is for the next incarnation. The cell is read from a
 ////    scratch copy, so opening the file, which rewrites a header and a lease,
 ////    never changes the bytes whose digest was just checked.
-//// 5. This daemon has an `[executors.<name>]` for the executor the cell names.
+//// 6. This daemon has an `[executors.<name>]` for the executor the cell names.
 ////    Without one the session could be registered and never opened.
-//// 6. The registry commits the registration, its mapping and the `imported` row
+//// 7. The registry commits the registration, its mapping and the `imported` row
 ////    together and moves the copy into place in the same turn.
 ////
 //// Every refusal is final for the sender, and it says why. A fault that is not
@@ -66,6 +70,7 @@ import client/daemon/manager
 import client/directory/ownership.{type Ownership}
 import client/directory/store
 import client/executors.{type Executor}
+import client/move_checkout
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port
 import client/remote/protocol
@@ -380,9 +385,75 @@ fn activated(
     Some(catalogue.Moved(..)) | None ->
       kept_if_owned(context, activation, {
         use source <- result.try(listed(context, activation))
+        use Nil <- result.try(not_back_to_a_directory(
+          context,
+          activation,
+          found,
+        ))
         verified(context, activation, source)
       })
   }
+}
+
+// A session this daemon gave away keeps its registration, and the import of a
+// returning session keeps it too: only the move row changes. When that
+// registration is a directory on this machine, the session reopens in it, and
+// the work it did on the executor is not there, because the return checkout is
+// not built (protocol-change/107). The manifest says where the work is, so the
+// refusal is made here, from the two registrations, before the copy is placed.
+// A session that was never here has no registration to keep, and one that was
+// here on an executor reopens on an executor, so neither is refused. The
+// refusal is a `Malformed` one because a new variant would be a change to what
+// crosses the node boundary.
+
+/// Refuses the return of a session whose work is on an executor or in a pool to
+/// a registration that is a directory on this machine.
+fn not_back_to_a_directory(
+  context: Context(instance),
+  activation: Activation,
+  held: Option(catalogue.Custody),
+) -> Result(Nil, Verdict) {
+  case held {
+    Some(catalogue.Moved(..)) ->
+      case manager.get(context.registry, activation.session) {
+        Ok(view) ->
+          case
+            move_checkout.is_local(view.registration),
+            activation.manifest.executor,
+            activation.manifest.pool
+          {
+            True, "", "" -> Ok(Nil)
+            True, executor, pool ->
+              Error(
+                Refused(
+                  session_move.Malformed(returning_to_a_directory(
+                    executor,
+                    pool,
+                  )),
+                ),
+              )
+            False, _, _ -> Ok(Nil)
+          }
+        Error(error) -> Error(Failed(string.inspect(error)))
+      }
+    Some(catalogue.Resident)
+    | Some(catalogue.Moving(..))
+    | Some(catalogue.Imported(..))
+    | None -> Ok(Nil)
+  }
+}
+
+/// The sentence for a session that would go back to a directory: where its work
+/// is, and that moving it back is not supported yet.
+fn returning_to_a_directory(executor: String, pool: String) -> String {
+  let place = case executor {
+    "" -> "the pool `" <> pool <> "`"
+    name -> "the executor `" <> name <> "`"
+  }
+  "this session's work is on "
+  <> place
+  <> ", and moving it back to the directory it came from on this machine is "
+  <> "not supported yet"
 }
 
 // The orchestrator this daemon lists for the activation's node.
