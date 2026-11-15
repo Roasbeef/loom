@@ -8962,6 +8962,24 @@ the protocol-change/078 addendum on moving a session have the protocol.
   and `server.departure_for` judges the place, the listed executor and a primary
   checkout before it. Tests: `session_move_checkout_test` (the real host, plane and
   stores), `daemon_move_test`, `orchestrators_test`.
+- A move back is refused by the receiver, not built (protocol-change/107, addendum of
+  2026-11-14). `session_importer.not_back_to_a_directory` runs after the sender is
+  known to be listed and before the copy is verified: a session whose custody here is
+  `Moved`, whose kept registration is local (`move_checkout.is_local`) and whose manifest
+  names an executor or a pool is `Refused(Malformed(..))` with the sentence that its
+  work is on the executor and that moving it back is not supported yet. The import keeps
+  a registration it already holds and replaces only the move row, so without the check
+  the session reopens in the old directory without the executor's commits. A variant of
+  `session_move.Refusal` would cross the node boundary, so none was added.
+- `remote/host.close_unserved` closes an attach's scope as retired when the build finds
+  the workspace unserved, for a created, reopened or rebound scope alike, provided
+  `holds_nothing`: a rebound scope with a tree record, or with results the attach
+  reported unacknowledged or lost, stays open, because it is a session's own and an
+  executor restarted with the workspace dropped must not close it. This is what frees the
+  open scope that a source dying in the attach leaves, since the retry is a rebound
+  attach. `workspace.refused_attempt` still closes only a scope its record shows it
+  opened, so after the host's close the corrected name is refused once for the bound
+  name, and setting the name back records the close.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
   linked to the process that starts the daemon's services. `Control` carries the
   listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;

@@ -1508,11 +1508,18 @@ left the scope bound to that workspace, so a move with the corrected
 `checkout_workspace` stalled. The README has the traces. The first is fixed on its
 own branch. The second is fixed too: the executor's ledger rebinds a closed scope
 that holds nothing, a failed attach leaves a closed scope, and a refusal that will not
-change abandons the move. A scope left open by a source that died in the landing is
-refused with the workspace named and stays open. `loomd executor release` refuses an
-open scope, so the way out is the one the refusal gives: set `checkout_workspace` back
-to the bound name, move again so that the move ends and closes the scope, then correct
-the name and move.
+change abandons the move. A scope left open by a source that died in the landing for a
+`shared` workspace is refused with the workspace named and stays open. `loomd executor
+release` refuses an open scope, so the way out is the one the refusal gives: set
+`checkout_workspace` back to the bound name, move again so that the move ends and closes
+the scope, then correct the name and move. A scope left open for a name the executor does
+not serve, because the source died while the attach was handled, is closed by the retry,
+which finds the name unserved, so the same recovery works for it.
+
+A session that came from a laptop directory is not moved back to it. The checkout lives on
+the executor, the laptop's registration still names the old directory, and the return
+checkout is not built, so the laptop's activation refuses the session with a sentence that
+says its work is on the executor and that moving it back is not supported yet.
 
 ### The executor fence
 
