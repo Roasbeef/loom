@@ -187,6 +187,17 @@ pub fn context(
 /// A rig whose spawner table is `table`, over a registry that holds one relayed
 /// session and a real gateway for it. `lease_ms` is the feed lease.
 pub fn rig(label: String, table: String, lease_ms: Int) -> Rig {
+  observing(label, table, lease_ms, relayed_session.refusing())
+}
+
+/// A rig whose session publishes `endpoint`, so a test chooses what the
+/// session's own workspace observation answers.
+pub fn observing(
+  label: String,
+  table: String,
+  lease_ms: Int,
+  endpoint: Endpoint,
+) -> Rig {
   let directory = scratch(label)
   let text = configuration <> table
   let configuration_path = directory <> "/loom.toml"
@@ -203,7 +214,7 @@ pub fn rig(label: String, table: String, lease_ms: Int) -> Rig {
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(_record, _domain, _services, _owner, _registry) {
-          Ok(relayed_session.refusing())
+          Ok(endpoint)
         },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },

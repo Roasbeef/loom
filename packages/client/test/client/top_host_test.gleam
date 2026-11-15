@@ -1642,3 +1642,78 @@ pub fn a_negotiated_stop_still_refuses_an_unconfigured_spawner_test() {
     string.starts_with(line, "stop ")
   })
 }
+
+// --- the box's answer to a feed's workspace request (108.worktree.1) -------------
+
+fn standing(
+  authority: access.Authority,
+) -> fn() -> Result(#(access.Principal, access.Authority), String) {
+  fn() {
+    Ok(#(
+      access.Principal(
+        id: "owner-1",
+        display_name: "Owner",
+        kind: access.OwnerPrincipal,
+      ),
+      authority,
+    ))
+  }
+}
+
+// The box decides for the standing the feed was admitted with: an operator's or
+// an owner's feed is answered the session's observation, and an observer's, or one
+// whose check no longer passes, is withheld it and the observation never runs.
+pub fn an_operator_feed_is_answered_and_an_observer_feed_is_withheld_test() {
+  let ran = process.new_subject()
+  let board = json.Object([#("source", json.String("git"))])
+  let observe = fn() {
+    process.send(ran, Nil)
+    Ok(board)
+  }
+  assert top_host.worktree_observation(
+      standing(access.Participant(access.Operator)),
+      observe,
+    )
+    == remote_feed.Observed(board)
+  assert top_host.worktree_observation(standing(access.Owner), observe)
+    == remote_feed.Observed(board)
+  assert process.receive(ran, 0) == Ok(Nil)
+  assert process.receive(ran, 0) == Ok(Nil)
+
+  assert top_host.worktree_observation(
+      standing(access.Participant(access.Observer)),
+      observe,
+    )
+    == remote_feed.Withheld
+  assert top_host.worktree_observation(
+      fn() { Error("the page's access to this session ended") },
+      observe,
+    )
+    == remote_feed.Withheld
+  assert process.receive(ran, 0) == Error(Nil)
+}
+
+// A failed observation says only that it failed: the repository's own words in
+// the failure never reach the laptop. A board over the bound is not cut.
+pub fn a_failed_or_oversized_observation_is_unreadable_and_carries_no_words_test() {
+  let operator = standing(access.Participant(access.Operator))
+  let failed =
+    top_host.worktree_observation(operator, fn() {
+      Error("fatal: not a git repository: /secret/path")
+    })
+  assert failed == remote_feed.Unreadable
+  assert !string.contains(
+    json.to_string(remote_feed.encode_observation(failed)),
+    "secret",
+  )
+
+  let over =
+    json.Object([
+      #(
+        "patch",
+        json.String(string.repeat("x", remote_feed.max_worktree_bytes)),
+      ),
+    ])
+  assert top_host.worktree_observation(operator, fn() { Ok(over) })
+    == remote_feed.Unreadable
+}
