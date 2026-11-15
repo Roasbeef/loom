@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concept D: an attention layer on A2</title>
+<style>
+/* Tokens: web_client.css @theme (dark) and the two light blocks. */
+:root{
+  --bg:#141517;--bg-raised:#1b1c1f;--bg-sunk:#111214;--code:#212226;
+  --fg:#e8e6e1;--fg-quiet:#9a978f;--fg-faint:#66645e;--divider:#2b2d31;
+  --current:#7c96ff;--signal:#f0a24f;--signal-text:#f0a24f;--peer:#a78bfa;--peer-text:#a78bfa;
+  --danger:#f06595;--danger-text:#f06595;--on-danger:#141517;--added:#51cf66;--added-text:#51cf66;
+  --added-bg:#1f4d2e;--removed-bg:#4a1a29;
+  --s2:#3cc9b4;--s3:#a3b85a;--s4:#4fb3e8;--s5:#d873c8;
+  --pill-wait:color-mix(in srgb,var(--signal) 14%,transparent);
+  --pill-bad:color-mix(in srgb,var(--danger) 12%,transparent);
+  --pill-ok:color-mix(in srgb,var(--added) 12%,transparent);
+  --shadow-float:0 1px 2px rgba(0,0,0,.4);
+  --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --bg:#f6f5f2;--bg-raised:#ffffff;--bg-sunk:#efede8;--code:#f1efe9;
+  --fg:#1d1c1a;--fg-quiet:#6f6b63;--fg-faint:#a29d92;--divider:#e2dfd8;
+  --current:#3b5bdb;--signal:#d9822b;--signal-text:#975a1e;--peer:#8b5cf6;--peer-text:#764ed1;
+  --danger:#d6336c;--danger-text:#c02d61;--on-danger:#ffffff;--added:#2f9e44;--added-text:#237833;
+  --added-bg:#d3efda;--removed-bg:#fce6ec;
+  --s2:#0f9d8a;--s3:#7a8a3a;--s4:#1a8fc4;--s5:#b0429f;
+  --shadow-float:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.05);color-scheme:light;}}
+:root[data-theme="light"]{
+  --bg:#f6f5f2;--bg-raised:#ffffff;--bg-sunk:#efede8;--code:#f1efe9;
+  --fg:#1d1c1a;--fg-quiet:#6f6b63;--fg-faint:#a29d92;--divider:#e2dfd8;
+  --current:#3b5bdb;--signal:#d9822b;--signal-text:#975a1e;--peer:#8b5cf6;--peer-text:#764ed1;
+  --danger:#d6336c;--danger-text:#c02d61;--on-danger:#ffffff;--added:#2f9e44;--added-text:#237833;
+  --added-bg:#d3efda;--removed-bg:#fce6ec;
+  --s2:#0f9d8a;--s3:#7a8a3a;--s4:#1a8fc4;--s5:#b0429f;
+  --shadow-float:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.05);color-scheme:light;}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:14px/1.45 var(--font-sans)}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible{outline:2px solid var(--current);outline-offset:1px}
+
+/* Frame: top bar 44, sidebar 232, centre, panel 340. */
+.app{display:grid;grid-template-columns:232px minmax(0,1fr) 340px;grid-template-rows:44px minmax(0,1fr);height:100vh;overflow:hidden}
+.bar{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;border-bottom:1px solid var(--divider);background:var(--bg)}
+.tog{position:relative;width:32px;height:32px;border:0;border-radius:6px;background:transparent;color:var(--fg-quiet);font-size:16px}
+.tog:hover{background:color-mix(in srgb,var(--fg) 8%,transparent)}
+.badge{position:absolute;top:2px;right:0;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--signal);color:var(--on-danger);font:700 10.5px/16px var(--font-sans);text-align:center}
+.brand{font-weight:600}
+.loc{color:var(--fg-quiet);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.loc b{color:var(--fg);font-weight:500}
+.sp{flex:1}
+.conn{display:inline-flex;align-items:center;gap:6px;color:var(--fg-quiet);font-size:12.5px}
+.dot-ok{width:8px;height:8px;border-radius:50%;background:var(--added);display:inline-block}
+.figs{color:var(--fg-quiet);font-size:12.5px;white-space:nowrap}
+
+/* Sidebar */
+aside.side{background:var(--bg-sunk);border-right:1px solid var(--divider);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.side-top{padding:12px 10px 4px}
+.new{display:flex;align-items:center;gap:10px;width:100%;height:36px;padding:0 10px;border:0;border-radius:8px;background:color-mix(in srgb,var(--fg) 8%,transparent);font-size:13.5px;text-align:left}
+.side-scroll{flex:1;min-height:0;overflow-y:auto;padding:2px 10px 8px;scrollbar-width:thin}
+.grp{margin:12px 0 0}
+.grp-h{display:flex;align-items:baseline;gap:6px;padding:4px 10px;color:var(--fg-quiet);font-size:12.5px}
+.grp-h .n{margin-left:auto;font-variant-numeric:tabular-nums}
+.grp-h.queue{color:var(--fg);font-weight:600}
+.grp-h.queue .n{color:var(--signal-text);font-weight:600}
+ul{list-style:none;margin:0;padding:0}
+
+/* The queue: the one new region in the sidebar. A row is two lines, like a session row. */
+.q-row{display:flex;flex-direction:column;gap:1px;width:100%;min-height:44px;padding:6px 10px;border:0;border-radius:8px;background:transparent;text-align:left}
+.q-row:hover{background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.q-row.sel{background:color-mix(in srgb,var(--fg) 9%,transparent)}
+.q-l1{display:flex;gap:6px;align-items:baseline;min-width:0;font-size:13.5px}
+.q-kind{flex:0 0 auto;font-size:11.5px;font-weight:600;color:var(--signal-text)}
+.q-kind.bad{color:var(--danger-text)}
+.q-kind.calm{color:var(--fg-quiet);font-weight:500}
+.q-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.q-meta{color:var(--fg-quiet);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.q-row.done .q-title{color:var(--fg-quiet);text-decoration:none}
+.q-row.done .q-kind{color:var(--added-text)}
+.q-row .q-title{font-size:13.5px}
+.rule{border-top:1px solid var(--divider);margin:10px 4px 0}
+.sess{display:flex;gap:9px;padding:6px 10px;border-radius:8px;min-height:44px;font-size:13.5px}
+.sess .g{margin-top:5px;font-size:10px;color:var(--fg-quiet)}
+.sess.work .g{color:var(--current)}
+.sess .t{display:flex;flex-direction:column;min-width:0}
+.sess .tag{color:var(--fg-quiet);font-size:11.5px}
+.saved{padding:3px 7px;color:var(--fg-quiet);font-size:12px}
+.pr-pill{font-size:11.5px;color:var(--fg-quiet)}
+
+/* Centre */
+main.centre{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
+.crumb{display:none}
+.col{width:100%;max-width:780px;margin:0 auto;padding:0 20px}
+.scroll{flex:1;min-height:0;overflow-y:auto}
+
+/* The pinned "since you last looked" card. Border and tint only, no shadow, no bar. */
+.since{position:sticky;top:0;z-index:2;background:var(--bg);padding:12px 0 6px}
+.since-card{border:1px solid var(--divider);border-radius:10px;background:var(--bg-raised);padding:10px 12px}
+.since-h{display:flex;align-items:baseline;gap:8px}
+.since-h h2{margin:0;font-size:13.5px;font-weight:600}
+.since-h .span{color:var(--fg-quiet);font-size:12.5px}
+.since-h .caught{margin-left:auto;border:1px solid var(--divider);background:transparent;border-radius:6px;padding:2px 10px;font-size:12px;color:var(--fg-quiet)}
+.since-h .chev{border:0;background:transparent;color:var(--fg-quiet);font-size:12px;padding:2px 4px}
+.since-goal{margin:2px 0 8px;color:var(--fg-quiet);font-size:12.5px}
+.sg{margin:6px 0 0}
+.sg-l{font-size:11.5px;font-weight:600;letter-spacing:.02em;color:var(--fg-quiet)}
+.sg-l.ask{color:var(--signal-text)}
+.sr{display:flex;gap:8px;padding:3px 0;font-size:13px;align-items:baseline}
+.sr time{flex:0 0 38px;color:var(--fg-quiet);font:12px var(--font-mono)}
+.sr .x{min-width:0;flex:1}
+.sr .go{flex:0 0 auto;color:var(--current);font-size:12px;border:0;background:transparent;padding:0}
+.sr .bad{color:var(--danger-text)}
+.sr .amb{color:var(--signal-text)}
+.since.collapsed .sg,.since.collapsed .since-goal{display:none}
+.since-sum{display:none;color:var(--fg-quiet);font-size:12.5px;margin-top:2px}
+.since.collapsed .since-sum{display:block}
+.else{margin-top:8px;padding-top:6px;border-top:1px solid var(--divider);color:var(--fg-quiet);font-size:12.5px}
+.else b{color:var(--signal-text);font-weight:600}
+
+/* Transcript, the A2 timeline. */
+.tl{position:relative;margin:8px 0 0 0;padding:0 0 12px 22px}
+.tl::before{content:"";position:absolute;left:5px;top:6px;bottom:0;width:1px;background:var(--divider)}
+.row{position:relative;padding:5px 0;font-size:14px}
+.row::before{content:"";position:absolute;left:-21px;top:11px;width:9px;height:9px;border:2px solid var(--bg);border-radius:50%;background:var(--hue,var(--current));box-sizing:content-box;margin:-2px}
+.row .who{font-size:12px;color:var(--fg-quiet);margin-right:6px}
+.row .quiet{color:var(--fg-quiet)}
+.row.user .body{display:inline-block;border:1px solid var(--divider);background:var(--bg-raised);border-radius:10px;padding:6px 10px}
+.row .rs{color:var(--danger-text)}
+.chip{display:inline-block;font:12px var(--font-sans);padding:0 8px;border-radius:999px;border:1px solid var(--divider);color:var(--fg-quiet)}
+.chip.bad{background:var(--pill-bad);color:var(--danger-text);border-color:transparent}
+.chip.ok{background:var(--pill-ok);color:var(--added-text);border-color:transparent}
+.chip.wait{background:var(--pill-wait);color:var(--signal-text);border-color:transparent}
+
+/* Dock: items sit above the composer, as approval cards do today. */
+footer.dock{flex:0 0 auto;background:var(--bg);padding:8px 0 12px}
+.stepper{display:flex;align-items:baseline;gap:8px;padding:0 4px 6px;font-size:12.5px;color:var(--fg-quiet)}
+.stepper b{color:var(--fg);font-weight:600}
+.stepper .next{margin-left:auto;border:0;background:transparent;color:var(--current);font-size:12.5px;padding:0;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card{background:var(--bg-raised);border:1px solid var(--signal);border-radius:10px;padding:10px 12px;max-height:35vh;overflow-y:auto}
+.card.bad{border-color:var(--danger)}
+.card.calm{border-color:var(--divider)}
+.card.closed{border-color:var(--divider)}
+.card-h{display:flex;gap:6px;align-items:baseline;font-size:12.5px;color:var(--fg-quiet)}
+.card-h .k{font-weight:600;color:var(--signal-text)}
+.card-h .k.bad{color:var(--danger-text)}
+.card-h .k.calm{color:var(--fg-quiet)}
+.card-h .rt{margin-left:auto}
+.card-q{margin:4px 0 8px;font-size:14px}
+.card-sub{margin:0 0 6px;color:var(--fg-quiet);font-size:13px}
+pre.act{margin:0 0 6px;padding:6px 8px;background:var(--code);border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.4 var(--font-mono)}
+ul.gr{margin:0 0 6px;padding-left:20px;list-style:disc;color:var(--fg-quiet);font:12px/1.5 var(--font-mono)}
+.ctx{margin:0 0 8px;padding:6px 8px;border:1px solid var(--divider);border-radius:6px;font-size:12.5px;color:var(--fg-quiet)}
+.ctx .pl{color:var(--peer-text);font-weight:600}
+.opts{display:flex;flex-direction:column;gap:6px;margin:0 0 8px}
+.opt{display:flex;gap:8px;align-items:baseline;text-align:left;width:100%;border:1px solid var(--divider);background:transparent;border-radius:8px;padding:6px 10px;min-height:36px}
+.opt:hover{background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.opt .no{color:var(--fg-quiet);font:12px var(--font-mono)}
+.opt .why{color:var(--fg-quiet);font-size:12.5px}
+.opt .rec{margin-left:auto;font-size:11.5px;color:var(--added-text);flex:0 0 auto}
+.opt.armed{border-color:var(--fg);background:color-mix(in srgb,var(--fg) 8%,transparent)}
+.acts{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{border:1px solid var(--divider);background:transparent;border-radius:6px;padding:5px 12px;min-height:32px;font-size:13px}
+.btn:hover{background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.btn.deny{border-color:var(--danger);color:var(--danger-text)}
+.btn.allow{border-color:var(--added);color:var(--added-text)}
+.btn.armed{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.btn.armed.deny{background:var(--danger);color:var(--on-danger);border-color:var(--danger)}
+.btn.armed.allow{background:var(--added);color:var(--on-danger);border-color:var(--added)}
+.btn[disabled]{opacity:.5;cursor:default}
+.btn.link{border-color:transparent;color:var(--current)}
+.armnote{color:var(--fg-quiet);font-size:12px}
+.receipt{display:flex;gap:10px;align-items:baseline;padding:10px 12px;border:1px solid var(--divider);border-radius:10px;background:var(--bg-raised);font-size:13px}
+.receipt .ok{color:var(--added-text);font-weight:600}
+.receipt .undo{margin-left:auto;border:0;background:transparent;color:var(--current)}
+.comp{margin-top:8px;border:1px solid var(--divider);border-radius:10px;background:var(--bg-raised);padding:8px 10px}
+.comp .to{font-size:12px;color:var(--fg-quiet)}
+.comp .ed{color:var(--fg-quiet);padding:4px 0 6px}
+.comp .ar{display:flex;gap:8px;justify-content:flex-end}
+
+/* Right panel: six tabs as today; Strands shown. */
+aside.panel{border-left:1px solid var(--divider);background:var(--bg);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.tabs{display:flex;gap:2px;padding:8px 10px 0;border-bottom:1px solid var(--divider);overflow-x:auto;scrollbar-width:none}
+.tab{border:0;background:transparent;color:var(--fg-quiet);padding:6px 8px;font-size:13px;border-bottom:2px solid transparent;white-space:nowrap}
+.tab[aria-selected=true]{color:var(--fg);border-bottom-color:var(--fg)}
+.pane{padding:10px;overflow-y:auto;flex:1}
+.pane[hidden]{display:none}
+.pane-h{display:flex;justify-content:space-between;color:var(--fg-quiet);font-size:12.5px;margin:2px 4px 8px}
+.sc{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--divider);border-radius:10px;margin-bottom:8px;background:var(--bg-raised)}
+.sc.cur{background:color-mix(in srgb,var(--fg) 6%,var(--bg-raised))}
+.ring{width:14px;height:14px;border-radius:50%;border:2px solid var(--hue);flex:0 0 auto}
+.sc .n{font-weight:500;font-size:13.5px}
+.sc .st{font-size:12.5px;color:var(--fg-quiet)}
+.sc .st.amb{color:var(--signal-text)}
+.sc .st.bad{color:var(--danger-text)}
+.kv{display:grid;grid-template-columns:96px 1fr;gap:6px 8px;font-size:13px;margin:4px}
+.kv dt{color:var(--fg-quiet)}.kv dd{margin:0}
+.fl{display:flex;justify-content:space-between;padding:6px 4px;border-bottom:1px solid var(--divider);font:12.5px var(--font-mono)}
+.add{color:var(--added-text)}.rem{color:var(--danger-text)}
+
+/* Overlay used for the phone drawer. */
+.scrim{display:none}
+
+/* Annotation: ?notes=1 numbers the additions. */
+.note{display:none}
+body.notes .note{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--current);color:var(--bg);font:700 11px/1 var(--font-sans);margin-left:6px}
+
+/* Phase 0 view: ?phase=0 removes what needs the substrate. */
+body.p0 #dockitem,body.p0 #stepper,body.p0 #readysec{display:none!important}
+.p0only{display:none}body.p0 .p0only{display:block}
+body.p0 [data-p="1"],body.p0 [data-p="2"],body.p0 [data-p="3"]{display:none!important}
+
+/* Phone: 390px, one column, sidebar is the drawer, panel a hidden sheet. */
+body.phone .app{grid-template-columns:minmax(0,1fr);width:390px;height:844px;margin:0 auto;border:1px solid var(--divider);position:relative}
+body.phone aside.panel{display:none}
+body.phone aside.side{position:absolute;z-index:20;top:44px;bottom:0;left:0;width:300px;max-width:calc(100% - 48px);box-shadow:var(--shadow-float);transform:translateX(-102%);transition:transform .15s}
+body.phone.drawer aside.side{transform:none}
+body.phone.drawer .scrim{display:block;position:absolute;z-index:10;inset:44px 0 0 0;background:color-mix(in srgb,var(--bg) 60%,transparent)}
+body.phone .col{padding:0 12px}
+body.phone .figs,body.phone .conn span.w{display:none}
+body.phone .since-goal{display:none}
+body.phone .brand{display:none}
+body.phone .since .sg .sr.opt-hide{display:none}
+body.phone .card{max-height:48vh}
+body.phone .stepper .next{max-width:200px}
+@media (max-width:760px){
+  body:not(.phone) .app{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:1211px) and (min-width:761px){
+  body:not(.phone) .app{grid-template-columns:minmax(0,1fr) 340px}
+  body:not(.phone) aside.side{display:none}
+}
+</style>
+</head>
+<body>
+<script>
+(function(){
+  var q=new URLSearchParams(location.search),r=document.documentElement,b=document.body;
+  var t=q.get('theme');if(t==='dark'||t==='light'){r.setAttribute('data-theme',t)}
+  if(q.get('frame')==='phone')b.classList.add('phone');
+  if(q.get('phase')==='0')b.classList.add('p0');
+  if(q.get('notes')==='1')b.classList.add('notes');
+})();
+</script>
+
+<div class="app">
+  <header class="bar">
+    <button class="tog" id="menu" aria-label="Sessions, 4 need you">&#9776;<span class="badge" id="menubadge">4</span></button>
+    <span class="brand">Loom</span>
+    <span class="loc"><b>loom</b> ~/src/loom / coord/web-inbox</span>
+    <span class="sp"></span>
+    <span class="conn"><span class="dot-ok"></span><span class="w">connected</span></span>
+    <span class="figs">ctx ~38% &middot; est $14.20 session</span>
+    <button class="tog" aria-label="Panel">&#9707;</button>
+  </header>
+
+  <!-- LEFT: today's sidebar, with the Needs you group promoted into a queue. -->
+  <aside class="side" aria-label="Sessions">
+    <div class="side-top"><button class="new">+ &nbsp;New session</button></div>
+    <div class="side-scroll">
+      <section class="grp" style="margin-top:8px" aria-label="Needs you">
+        <div class="grp-h queue">Needs you<span class="note">1</span><span class="n" id="qcount">4</span></div>
+        <ul id="queue"></ul>
+      </section>
+
+      <section class="grp" id="readysec" aria-label="Ready to look at">
+        <div class="grp-h">Ready to look at <span class="n" id="rcount">2</span></div>
+        <ul id="ready"></ul>
+      </section>
+
+      <div class="rule"></div>
+      <section class="grp" style="margin-top:8px">
+        <div class="grp-h">Working <span class="n">1</span></div>
+        <ul><li class="sess work"><span class="g">&#9679;</span><span class="t"><span>wp-j/vetting-lint</span><span class="tag">loom &middot; working 3 min</span></span></li></ul>
+      </section>
+      <section class="grp">
+        <div class="grp-h">Idle <span class="n">1</span></div>
+        <ul><li class="sess"><span class="g">&#9679;</span><span class="t"><span>docs/threat-model</span><span class="tag">aegis &middot; yesterday</span></span></li></ul>
+      </section>
+      <div class="rule"></div>
+      <div class="saved" style="margin-top:8px">&rsaquo; 0 saved</div>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- CENTRE: the transcript, with the pinned card above it and items in the dock. -->
+  <main class="centre">
+    <div class="scroll">
+      <div class="col">
+        <section class="since" id="since" aria-label="Since you last looked">
+          <div class="since-card">
+            <div class="since-h">
+              <h2>Since you last looked</h2><span class="note">2</span>
+              <span class="span">11:05 &rarr; 14:20</span>
+              <button class="caught" id="caught">Caught up</button>
+              <button class="chev" id="chev" aria-label="Fold the card" aria-expanded="true">&#9662;</button>
+            </div>
+            <div class="since-sum">1 asked of you &middot; 1 stopped &middot; 2 happened</div>
+            <p class="since-goal">Ship the attention inbox &middot; phase build &middot; 3 of 5 done &middot; 412k of 1.2M tokens</p>
+            <div class="sg p0only"><div class="sg-l">LAST SAID BY main &middot; 13:40</div><div class="sr"><span class="x">&ldquo;Before I wire the list: should closed items fold under the open ones, or move to a separate Done list? I lean towards&hellip;&rdquo;</span></div><div class="sr"><span class="x"><span class="bad">1 strand failed</span> &middot; sub:mockup-b (from the lane)</span></div></div>
+            <div class="sg" data-p="1">
+              <div class="sg-l ask">ASKED OF YOU</div>
+              <div class="sr"><time>13:40</time><span class="x">The coordinator asks: fold closed items under open ones, or a separate Done list?</span><button class="go" data-open="2">answer &darr;</button></div>
+              <div class="sr"><time>13:52</time><span class="x"><span class="bad">sub:mockup-b stopped</span>: provider rate limit, not retried</span><button class="go" data-open="3">retry &darr;</button></div>
+            </div>
+            <div class="sg">
+              <div class="sg-l">HAPPENED</div>
+              <div class="sr"><time>12:20</time><span class="x">sub:fact-sheet settled, result returned</span><button class="go">row &rsaquo;</button></div>
+              <div class="sr"><time>14:06</time><span class="x">sub:mockup-a working, editing <span style="font-family:var(--font-mono);font-size:12px">web_view/inbox.gleam</span></span><button class="go">row &rsaquo;</button></div>
+            </div>
+            <div class="else" data-p="1"><b>Elsewhere</b> &middot; 2 more asks and 1 approval need you, 1 session is ready to review. They are in the queue.</div>
+          </div>
+        </section>
+
+        <div class="tl" aria-label="Transcript">
+          <div class="row user" style="--hue:var(--fg-faint)"><span class="body">Ship the attention inbox. Fan out the design work and keep me posted.</span></div>
+          <div class="row" style="--hue:var(--current)"><span class="who">main</span><span class="quiet">Reasoning &middot; 9s</span></div>
+          <div class="row" style="--hue:var(--s2)"><span class="who">main</span>Spawned <b>sub:fact-sheet</b> <span class="chip ok">settled 12:20</span></div>
+          <div class="row" style="--hue:var(--s3)"><span class="who">main</span>Spawned <b>sub:mockup-a</b> <span class="chip">working</span></div>
+          <div class="row" style="--hue:var(--s4)"><span class="who">main</span>Spawned <b>sub:mockup-b</b> <span class="chip bad">failed 13:52</span></div>
+          <div class="row" style="--hue:var(--current)"><span class="who">main &middot; 13:40</span>Before I wire the list: should closed items fold under the open ones, or move to a separate Done list? I lean towards folding.</div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="dock">
+      <div class="col">
+        <div id="stepper" class="stepper" data-p="1"></div>
+        <div id="dockitem"></div>
+        <div class="comp">
+          <div class="to">To <b style="color:var(--fg)">main</b></div>
+          <div class="ed">Reply in your own words&hellip;</div>
+          <div class="ar"><button class="btn">Send</button></div>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <!-- RIGHT: today's panel, unchanged apart from the status words records would give. -->
+  <aside class="panel" aria-label="Panel">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-t="strands">Strands <span class="chip bad" style="padding:0 6px">1</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-t="changes">Changes</button>
+      <button class="tab" role="tab" aria-selected="false" data-t="session">Session</button>
+      <button class="tab" role="tab" aria-selected="false" data-t="trace">Trace</button>
+      <button class="tab" role="tab" aria-selected="false" data-t="notes">Notes</button>
+      <button class="tab" role="tab" aria-selected="false" data-t="evo">Evolution</button>
+    </div>
+    <div class="pane" data-pane="strands">
+      <div class="pane-h"><span>Strands &middot; 4</span><span>cache hit</span></div>
+      <div class="sc cur" style="--hue:var(--current)"><span class="ring"></span><div><div class="n">main</div><div class="st amb" data-p="1">Asked 1 question</div><div class="st" data-pz style="display:none">Idle</div></div></div>
+      <div class="sc" style="--hue:var(--s3)"><span class="ring"></span><div><div class="n">sub:mockup-a</div><div class="st">Working &middot; fs_edit &middot; 14 min</div></div></div>
+      <div class="sc" style="--hue:var(--s4)"><span class="ring"></span><div><div class="n">sub:mockup-b</div><div class="st bad">Failed &middot; rate limit</div></div></div>
+      <div class="sc" style="--hue:var(--s2)"><span class="ring"></span><div><div class="n">sub:fact-sheet</div><div class="st">Finished</div></div></div>
+    </div>
+    <div class="pane" data-pane="changes" hidden>
+      <div class="pane-h"><span>Changes &middot; 2 files</span><span><span class="add">+31</span> <span class="rem">&minus;4</span></span></div>
+      <div class="fl"><span>web_view/inbox.gleam</span><span><span class="add">+27</span> <span class="rem">&minus;4</span></span></div>
+      <div class="fl"><span>session_view/attention.gleam</span><span><span class="add">+4</span> <span class="rem">&minus;0</span></span></div>
+    </div>
+    <div class="pane" data-pane="session" hidden>
+      <dl class="kv"><dt>Goal</dt><dd>Ship the attention inbox</dd><dt>Project</dt><dd>build, 3 of 5 done</dd><dt>Tokens</dt><dd>412k of 1.2M</dd><dt>Viewers</dt><dd>you</dd><dt>Cost</dt><dd>est $14.20</dd></dl>
+    </div>
+    <div class="pane" data-pane="trace" hidden><div class="pane-h">No code_mode program in this session.</div></div>
+    <div class="pane" data-pane="notes" hidden><div class="pane-h">Notes &middot; 3 keys</div></div>
+    <div class="pane" data-pane="evo" hidden><div class="pane-h">No candidates.</div></div>
+  </aside>
+</div>
+
+<script>
+(function(){
+  /* The items. `p` is the first build phase in which the item is real. */
+  var items=[
+    {id:'ap',kind:'approval',tag:'Approval',cls:'',title:'proc.run sqlite3 integrity_check',sess:'storage/branch-index-repair',age:'1h 22m',since:'12:58',p:2},
+    {id:'q2',kind:'ask',tag:'Ask',cls:'',title:'Scratch tmpfs, emptyDir, or no cache?',sess:'runner/pod-reach',age:'3h 00m',since:'11:20',p:1},
+    {id:'q1',kind:'ask',tag:'Ask',cls:'',title:'Fold closed items, or a Done list?',sess:'coord/web-inbox',age:'40m',since:'13:40',here:1,p:1},
+    {id:'st',kind:'stuck',tag:'Stopped',cls:'bad',title:'sub:mockup-b hit a rate limit',sess:'coord/web-inbox',age:'28m',since:'13:52',here:1,p:1},
+    {id:'rv',kind:'review',tag:'Review',cls:'calm',title:'+412 −88, 7 files, tests green',sess:'fix/hashline-replay',age:'1h 49m',since:'12:31',p:2},
+    {id:'rk',kind:'risk',tag:'Risk',cls:'calm',title:'replay skips empty digests',sess:'fix/hashline-replay',age:'1h 49m',since:'12:31',p:1},
+    {id:'id',kind:'idea',tag:'Idea',cls:'calm',title:'reuse codec first-match walk',sess:'fix/hashline-replay',age:'1h 49m',since:'12:31',p:1},
+    {id:'pr',kind:'pr',tag:'PR #1261',cls:'calm',title:'1 check failing, 2 comments',sess:'wp-j/vetting-lint',age:'',since:'',p:3}
+  ];
+  var order=['q1','st','ap','q2','rv','rk','id'];     /* "here" first, then queue order */
+  var state={}; items.forEach(function(i){state[i.id]={open:false,armed:null,done:null}});
+  var cur='q1', qdiv=document.getElementById('queue'), rdiv=document.getElementById('ready');
+  var by={};items.forEach(function(i){by[i.id]=i});
+  function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+  var receipts={
+    q1:'Answered “Fold under open”. Delivered to main of coord/web-inbox, 14:24.',
+    st:'Retried. sub:mockup-b is working again, 14:24.',
+    ap:'Allowed once. Delivered to storage/branch-index-repair, 14:25. Bound to the sqlite3 call you saw.',
+    q2:'Answered “Scratch tmpfs”. Delivered to main of runner/pod-reach, 14:26.',
+    rv:'Marked reviewed. fix/hashline-replay moves to Quiet, 14:27.',
+    rk:'Sent to fix/hashline-replay: fix the empty-digest skip. Delivered to main, 14:28.',
+    id:'Dismissed. Reopen is kept for this session, 14:28.'
+  };
+  var closedText={q1:'Fold under open',st:'Retried',ap:'Allowed once',q2:'Scratch tmpfs',rv:'Reviewed',rk:'Fix sent',id:'Dismissed'};
+
+  function rowHtml(i){
+    var st=state[i.id], d=st.done;
+    var meta=esc(i.sess)+(i.age&&!d?' · '+i.age:'');
+    if(d)meta=esc(i.sess)+' · delivered';
+    var kind=d?'Done':i.tag;
+    var kc=d?'':i.cls;
+    var p=i.p>=1?' data-p="'+i.p+'"':'';
+    var ago=(i.age&&!d)?i.age:'';
+    return '<li'+p+'><button class="q-row'+(cur===i.id?' sel':'')+(d?' done':'')+'" data-id="'+i.id+'"><span class="q-title">'+esc(d?closedText[i.id]:i.title)+'</span><span class="q-meta"><span class="q-kind '+kc+'">'+esc(kind)+'</span> \u00b7 '+esc(i.sess)+(ago?' \u00b7 '+ago:'')+'</span></button></li>';
+  }
+  function renderQueueP0(){
+    var rows=[['storage/branch-index-repair','Approval','1 approval waiting',''],['runner/pod-reach','Probably asking','\u201cThe runner pod has no /tmp write. Use the scratch tmpfs (recommended), mount an emptyDir, or skip the cache?\u201d','calm'],['coord/web-inbox','Probably asking','\u201cBefore I wire the list: should closed items fold under the open ones\u2026\u201d','calm']];
+    qdiv.innerHTML=rows.map(function(r,n){return '<li><button class="q-row'+(n===2?' sel':'')+'" data-p0="1"><span class="q-title" style="white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">'+esc(r[2])+'</span><span class="q-meta"><span class="q-kind '+r[3]+'">'+r[1]+'</span> \u00b7 '+r[0]+'</span></button></li>'}).join('');
+    document.getElementById('qcount').textContent=3;
+    document.getElementById('menubadge').textContent=3;
+  }
+  function renderQueue(){
+    if(document.body.classList.contains('p0'))return renderQueueP0();
+    var needs=['ap','q2','q1','st'], ready=['rv','rk','id','pr'];
+    var open=needs.filter(function(k){return !state[k]||!state[k].done}), closed=needs.filter(function(k){return state[k]&&state[k].done});
+    var h=open.map(function(k){return rowHtml(by[k])}).join('');
+    if(closed.length)h+=closed.map(function(k){return rowHtml(by[k])}).join('');
+    qdiv.innerHTML=h;
+    var h2='';
+    /* the review and its two finds read as one row in the sidebar: one session, one line */
+    var rvDone=state.rv.done, finds=['rk','id'].filter(function(k){return !state[k].done}).length;
+    var rowRv=items[4];
+    h2+='<li data-p="2"><button class="q-row'+(['rv','rk','id'].indexOf(cur)>=0?' sel':'')+(rvDone&&!finds?' done':'')+'" data-id="'+(!rvDone?'rv':(state.rk.done?'id':'rk'))+'"><span class="q-l1"><span class="q-kind '+(rvDone&&!finds?'':'calm')+'">'+(rvDone&&!finds?'Done':'Review')+'</span><span class="q-title">fix/hashline-replay</span></span><span class="q-meta">'+(rvDone&&!finds?'reviewed, finds closed':'+412 −88 · '+(finds)+' finds · 1h 49m')+'</span></button></li>';
+    h2+='<li data-p="3"><button class="q-row" data-id="pr"><span class="q-l1"><span class="q-kind calm">PR #1261</span><span class="q-title">wp-j/vetting-lint</span></span><span class="q-meta">1 check failing · 2 comments</span></button></li>';
+    rdiv.innerHTML=h2;
+    var nOpen=open.length; document.getElementById('qcount').textContent=nOpen;
+    var mb=document.getElementById('menubadge'); mb.textContent=nOpen; mb.style.display=nOpen?'':'none';
+    document.getElementById('rcount').textContent=(rvDone&&!finds?0:1)+1;
+  }
+
+  function opt(n,label,why,rec){
+    return '<button class="opt" data-opt="'+n+'"><span class="no">'+n+'</span><span><span>'+esc(label)+'</span> <span class="why">'+esc(why)+'</span></span>'+(rec?'<span class="rec">recommended</span>':'')+'</button>';
+  }
+  function btn(id,key,label,confirm,cls){
+    var a=state[id].armed===key;
+    return '<button class="btn '+(cls||'')+(a?' armed':'')+'" data-act="'+key+'">'+esc(a?confirm:label)+'</button>';
+  }
+  function renderDock(){
+    var i=by[cur], st=state[cur], box=document.getElementById('dockitem');
+    var pos=order.indexOf(cur)+1, remaining=order.filter(function(k){return !state[k].done}).length;
+    var nextId=order.filter(function(k){return !state[k].done&&k!==cur})[0];
+    var step=document.getElementById('stepper');
+    if(remaining){
+      var hot=order.filter(function(k){return !state[k].done&&['q1','st','ap','q2'].indexOf(k)>=0}).length;
+      step.innerHTML='<span><b>'+hot+'</b> need you'+(remaining-hot?' \u00b7 '+(remaining-hot)+' to review':'')+'</span><button class="next" id="next">'+(nextId?'Next: '+esc(by[nextId].tag.toLowerCase())+' from '+esc(by[nextId].sess)+' &rsaquo;':'')+'</button>';
+    }else{step.innerHTML='<span><b>Nothing waits on you.</b></span>'}
+    if(st.done){
+      box.innerHTML='<div class="receipt"><span class="ok">Done</span><span>'+esc(receipts[cur])+'</span><button class="undo" data-undo="1">'+(cur==='ap'?'':'Undo')+'</button></div>';
+      return;
+    }
+    var h='';
+    if(cur==='q1'){
+      h='<div class="card"><div class="card-h"><span class="k">Ask</span><span>coord/web-inbox &middot; main &middot; 13:40</span></div>'+
+      '<p class="card-q">Should closed items fold under open ones, or move to a separate “Done” list?</p>'+
+      '<div class="opts">'+opt(1,'Fold under open','matches the Inbox plugin and keeps context',1)+opt(2,'Separate Done list','')+opt(3,'Hide after 24h','')+'</div>'+
+      '<div class="acts" id="acts"></div></div>';
+    }else if(cur==='q2'){
+      h='<div class="card"><div class="card-h"><span class="k">Ask</span><span>runner/pod-reach &middot; main &middot; 11:20 &middot; aegis</span></div>'+
+      '<p class="card-q">The runner pod has no /tmp write. Use the scratch tmpfs, mount an emptyDir, or skip the cache?</p>'+
+      '<div class="opts">'+opt(1,'Use the scratch tmpfs','',1)+opt(2,'Mount an emptyDir','')+opt(3,'Skip the cache','')+'</div>'+
+      '<div class="acts" id="acts"></div></div>';
+    }else if(cur==='st'){
+      h='<div class="card bad"><div class="card-h"><span class="k bad">Stopped</span><span>coord/web-inbox &rsaquo; sub:mockup-b &middot; 13:52</span></div>'+
+      '<p class="card-q">The last turn failed with a provider rate limit and has not been retried.</p>'+
+      '<p class="card-sub">Working copy untouched. 14 minutes into the turn when it stopped.</p>'+
+      '<div class="acts" id="acts"></div></div>';
+    }else if(cur==='ap'){
+      h='<div class="card"><div class="card-h"><span class="k">Approval</span><span>storage/branch-index-repair &middot; waiting since 12:58</span></div>'+
+      '<p class="card-q">A code_mode program wants to run</p>'+
+      '<pre class="act">sqlite3 ~/.loom/store.db \'PRAGMA integrity_check\'</pre>'+
+      '<ul class="gr"><li>network: off</li><li>write grant: ~/.loom (outside the workspace)</li><li>policy: workspace-write &middot; network off</li></ul>'+
+      '<div class="ctx" data-p="2"><span class="pl">peer</span> 13:15 runner/pod-reach asked this session: “Does the integrity check need the write grant, or can it run read-only?” Stored, not answered. &middot; Bob is viewing and has not decided.</div>'+
+      '<div class="acts" id="acts"></div></div>';
+    }else if(cur==='rv'){
+      h='<div class="card calm"><div class="card-h"><span class="k calm">Review</span><span>fix/hashline-replay &middot; finished 12:31 &middot; loom</span></div>'+
+      '<p class="card-q">Replay now walks entries by position and re-anchors edits after a moved line. 14 tests added.</p>'+
+      '<p class="card-sub"><span class="add">+412</span> <span class="rem">&minus;88</span> across 7 files &middot; <code style="font-family:var(--font-mono);font-size:12px">make check-core</code> exit 0 (reported by the agent). 2 finds follow.</p>'+
+      '<div class="acts" id="acts"></div></div>';
+    }else if(cur==='rk'){
+      h='<div class="card calm"><div class="card-h"><span class="k calm">Risk &middot; medium</span><span>fix/hashline-replay &middot; found 12:20 while working</span></div>'+
+      '<p class="card-q">hashline.replay silently skips entries whose digest is empty; a truncated store would replay short with no error.</p>'+
+      '<div class="acts" id="acts"></div></div>';
+    }else if(cur==='id'){
+      h='<div class="card calm"><div class="card-h"><span class="k calm">Idea &middot; low</span><span>fix/hashline-replay &middot; found 12:24</span></div>'+
+      '<p class="card-q">The replay loop could reuse machine/codec’s first-match walk and drop a closure per entry.</p>'+
+      '<div class="acts" id="acts"></div></div>';
+    }else{
+      h='<div class="card calm"><div class="card-h"><span class="k calm">PR #1261</span><span>wp-j/vetting-lint</span></div><p class="card-q">1 failing check (lint R11) and 2 unresolved review comments from Bob.</p></div>';
+    }
+    box.innerHTML=h; renderActs();
+  }
+  function renderActs(){
+    var a=document.getElementById('acts'); if(!a)return;
+    var st=state[cur], h='';
+    if(cur==='q1'||cur==='q2'){
+      var armedOpt=st.armed;
+      var labs={q1:{1:'Fold under open',2:'Separate Done list',3:'Hide after 24h'},q2:{1:'Use the scratch tmpfs',2:'Mount an emptyDir',3:'Skip the cache'}}[cur];
+      document.querySelectorAll('.opt').forEach(function(o){o.classList.toggle('armed',String(armedOpt)===o.getAttribute('data-opt'))});
+      h=armedOpt?'<button class="btn armed" data-act="send">Send “'+esc(labs[armedOpt])+'”</button><span class="armnote">Delivered after a 5 s hold, with Undo.</span>':
+        '<span class="armnote">Press an option to arm it. A second press sends.</span><button class="btn link" data-act="explain">Explain</button>';
+    }else if(cur==='st'){
+      h=btn('st','retry','Retry','Confirm: retry sub:mockup-b')+'<button class="btn link" data-act="open">Open strand &rsaquo;</button>';
+    }else if(cur==='ap'){
+      h=btn('ap','deny','Deny','Confirm: deny','deny')+btn('ap','once','Allow once','Confirm: allow once','allow')+btn('ap','sess','Allow for session','Confirm: allow for session','allow');
+    }else if(cur==='rv'){
+      h=btn('rv','rev','Mark reviewed','Confirm: mark reviewed')+'<button class="btn link" data-act="open">Open changes &rsaquo;</button>';
+    }else if(cur==='rk'){
+      h=btn('rk','fix','Fix it','Confirm: send to the agent')+btn('rk','dis','Dismiss','Confirm: dismiss')+'<button class="btn link" data-act="explain">Reply</button>';
+    }else if(cur==='id'){
+      h=btn('id','do','Do it','Confirm: send to the agent')+btn('id','dis','Dismiss','Confirm: dismiss');
+    }
+    if(!by[cur].here&&cur!=='pr')h+='<button class="btn link" data-act="open" style="margin-left:auto">Open '+esc(by[cur].sess)+' &rsaquo;</button>';
+    a.innerHTML=h;
+    if(cur==='ap'||cur==='st'||cur==='rv'||cur==='rk'||cur==='id'){
+      if(st.armed)a.insertAdjacentHTML('beforeend','<span class="armnote">Press again to send exactly this.</span>');
+    }
+  }
+
+  function select(id){cur=id;renderAll()}
+  function finish(){
+    state[cur].done=true; state[cur].armed=null; renderAll();
+    var n=order.filter(function(k){return !state[k].done&&k!==cur})[0];
+    if(n){setTimeout(function(){if(state[cur].done&&!autoHold){cur=n;renderAll();var b=document.querySelectorAll('#acts .btn,.opt');b.forEach(function(x){x.disabled=true;setTimeout(function(){x.disabled=false},600)})}},1600)}
+  }
+  var autoHold=false;
+  function renderAll(){renderQueue();renderDock()}
+
+  document.addEventListener('click',function(e){
+    var t=e.target.closest('button'); if(!t)return;
+    if(t.id==='menu'){document.body.classList.toggle('drawer');return}
+    if(t.id==='chev'){var s=document.getElementById('since');var c=s.classList.toggle('collapsed');t.setAttribute('aria-expanded',!c);t.innerHTML=c?'&#9656;':'&#9662;';return}
+    if(t.id==='caught'){document.getElementById('since').style.display='none';return}
+    if(t.id==='next'){var n=order.filter(function(k){return !state[k].done&&k!==cur})[0];if(n)select(n);return}
+    if(t.hasAttribute('data-open')){select(['q1','q2','q1','st'][+t.getAttribute('data-open')]);return}
+    if(t.classList.contains('tab')){
+      document.querySelectorAll('.tab').forEach(function(x){x.setAttribute('aria-selected',x===t)});
+      document.querySelectorAll('.pane').forEach(function(p){p.hidden=p.getAttribute('data-pane')!==t.getAttribute('data-t')});return}
+    if(t.hasAttribute('data-id')){document.body.classList.remove('drawer');select(t.getAttribute('data-id'));return}
+    if(t.hasAttribute('data-opt')){state[cur].armed=t.getAttribute('data-opt');renderActs();return}
+    if(t.hasAttribute('data-act')){
+      var k=t.getAttribute('data-act');
+      if(k==='send'){finish();return}
+      if(k==='explain'||k==='open')return;
+      if(state[cur].armed===k){finish()}else{state[cur].armed=k;renderActs()}
+      return;
+    }
+    if(t.hasAttribute('data-undo')){state[cur].done=null;state[cur].armed=null;renderAll()}
+  });
+  document.getElementById('scrim').addEventListener('click',function(){document.body.classList.remove('drawer')});
+  /* ?open=<id> opens an item; ?drawer=1 opens the phone drawer */
+  var qp=new URLSearchParams(location.search);
+  if(qp.get('open')&&by[qp.get('open')])cur=qp.get('open');
+  if(qp.get('drawer')==='1')document.body.classList.add('drawer');
+  if(qp.get('fold')==='1'){document.getElementById('since').classList.add('collapsed')}
+  if(document.body.classList.contains('p0')){
+    /* phase 0: the queue is the old Needs you group with excerpts, answered by replying in the session */
+    document.getElementById('rcount').textContent='1';
+  }
+  if(document.body.classList.contains('phone')&&qp.get('fold')!=='0'){document.getElementById('since').classList.add('collapsed');document.getElementById('chev').innerHTML='&#9656;'}
+  renderAll();
+  var sc=document.querySelector('.scroll');sc.scrollTop=sc.scrollHeight;
+})();
+</script>
+</body>
+</html>
