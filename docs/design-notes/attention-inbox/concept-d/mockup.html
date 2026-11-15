@@ -39,6 +39,7 @@
   --shadow-float:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.05);color-scheme:light;}
 
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:14px/1.45 var(--font-sans)}
 button{font:inherit;color:inherit;cursor:pointer}
 button:focus-visible{outline:2px solid var(--current);outline-offset:1px}
@@ -141,6 +142,9 @@ footer.dock{flex:0 0 auto;background:var(--bg);padding:8px 0 12px}
 .stepper b{color:var(--fg);font-weight:600}
 .stepper .next{margin-left:auto;border:0;background:transparent;color:var(--current);font-size:12.5px;padding:0;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card{background:var(--bg-raised);border:1px solid var(--signal);border-radius:10px;padding:10px 12px;max-height:35vh;overflow-y:auto}
+.card.tall{max-height:58vh}
+.view-ticket .q-row.sel{background:transparent}
+.view-ticket .figs{display:none}
 .card.bad{border-color:var(--danger)}
 .card.calm{border-color:var(--divider)}
 .card.closed{border-color:var(--divider)}
@@ -209,7 +213,7 @@ aside.panel{border-left:1px solid var(--divider);background:var(--bg);display:fl
 body.notes .note{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--current);color:var(--bg);font:700 11px/1 var(--font-sans);margin-left:6px}
 
 /* Phase 0 view: ?phase=0 removes what needs the substrate. */
-body.p0 #dockitem,body.p0 #stepper,body.p0 #readysec{display:none!important}
+body.p0 #stepper{display:none!important}
 .p0only{display:none}body.p0 .p0only{display:block}
 body.p0 [data-p="1"],body.p0 [data-p="2"],body.p0 [data-p="3"]{display:none!important}
 
@@ -233,16 +237,61 @@ body.phone .stepper .next{max-width:200px}
   body:not(.phone) .app{grid-template-columns:minmax(0,1fr) 340px}
   body:not(.phone) aside.side{display:none}
 }
+
+
+/* Revision: the return state, single-line queue rows, folded transcript, ticket page. */
+.q-row.one{min-height:40px;flex-direction:column;align-items:flex-start;gap:0;padding:4px 10px}
+.q-row.one .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+.q-row.one .tg{flex:0 0 auto;font-size:11.5px;color:var(--fg-quiet)}
+.q-row.one .tg b{font-weight:600;color:var(--signal-text)}
+.q-row.one .tg b.bad{color:var(--danger-text)}
+.q-row.one .tg b.calm{color:var(--fg-quiet);font-weight:500}
+.q-row.one .tg b.ok{color:var(--added-text)}
+.q-sub{padding:0 10px 4px;color:var(--fg-quiet);font-size:11.5px}
+.q-more{padding:3px 10px;color:var(--fg-quiet);font-size:12px}
+.q-ex{display:block;color:var(--fg-quiet);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%}
+.fold-bar{display:flex;gap:8px;align-items:baseline;width:100%;margin:6px 0 0;padding:8px 10px;border:1px solid var(--divider);border-radius:10px;background:transparent;color:var(--fg-quiet);font-size:13px;text-align:left}
+.fold-bar:hover{background:color-mix(in srgb,var(--fg) 5%,transparent)}
+.fold-bar .a{color:var(--fg)}
+.tl[hidden]{display:none}
+body.nopanel .app{grid-template-columns:232px minmax(0,1fr)}
+body.nopanel aside.panel{display:none}
+.receipt1{display:flex;gap:8px;align-items:baseline;padding:0 4px 6px;font-size:12.5px;color:var(--fg-quiet)}
+.receipt1 .ok{color:var(--added-text);font-weight:600}
+.receipt1 .undo{margin-left:auto;border:0;background:transparent;color:var(--current);padding:0;font-size:12.5px}
+.sec{border-top:1px solid var(--divider);margin-top:8px;padding-top:8px}
+.sec:first-of-type{border-top:0;margin-top:0;padding-top:0}
+.sec.fin{opacity:.7}
+.sec .fin-l{color:var(--added-text);font-size:12.5px;font-weight:600}
+.files{margin:0 0 6px;padding:0;font:12px/1.6 var(--font-mono);color:var(--fg-quiet)}
+.files span{display:inline-block;margin-right:12px}
+/* ticket page */
+.view-ticket .scroll{padding-top:12px}
+.tk{padding:4px 0 24px}
+.tk .crumbs{color:var(--fg-quiet);font-size:12.5px;margin:6px 0 10px}
+.tk h1{margin:0 0 4px;font-size:18px;font-weight:600}
+.tk .stage{display:inline-block;font-size:12px;padding:0 8px;border-radius:999px;background:var(--pill-wait);color:var(--signal-text)}
+.tk .stage.calm{background:transparent;border:1px solid var(--divider);color:var(--fg-quiet)}
+.tk h2{margin:16px 0 4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:var(--fg-quiet);text-transform:uppercase}
+.tk p{margin:0 0 6px}
+.tk pre.out{margin:6px 0;padding:8px 10px;max-height:14rem;overflow:auto;border:1px solid var(--divider);border-radius:6px;background:var(--bg-raised);font:12px/1.4 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.tk .warn{color:var(--signal-text)}
+.tk .meta{color:var(--fg-quiet);font-size:13px}
+.tk .acts{margin-top:10px}
+.tk .refusal{color:var(--fg-quiet);font-size:12.5px}
+.projrow{display:flex;gap:8px;padding:6px 10px;font-size:13px;color:var(--fg-quiet)}
+body.phone.nopanel .app{grid-template-columns:minmax(0,1fr)}
 </style>
-</head>
-<body>
+</head><body>
 <script>
 (function(){
   var q=new URLSearchParams(location.search),r=document.documentElement,b=document.body;
   var t=q.get('theme');if(t==='dark'||t==='light'){r.setAttribute('data-theme',t)}
   if(q.get('frame')==='phone')b.classList.add('phone');
   if(q.get('phase')==='0')b.classList.add('p0');
-  if(q.get('notes')==='1')b.classList.add('notes');
+  if(q.get('view')==='ticket')b.classList.add('view-ticket');
+  /* The return state hides the right panel; ?panel=1 shows it. */
+  if(q.get('panel')!=='1')b.classList.add('nopanel');
 })();
 </script>
 
@@ -250,27 +299,25 @@ body.phone .stepper .next{max-width:200px}
   <header class="bar">
     <button class="tog" id="menu" aria-label="Sessions, 4 need you">&#9776;<span class="badge" id="menubadge">4</span></button>
     <span class="brand">Loom</span>
-    <span class="loc"><b>loom</b> ~/src/loom / coord/web-inbox</span>
+    <span class="loc" id="loc"><b>loom</b> ~/src/loom / storage/branch-index-repair</span>
     <span class="sp"></span>
     <span class="conn"><span class="dot-ok"></span><span class="w">connected</span></span>
-    <span class="figs">ctx ~38% &middot; est $14.20 session</span>
-    <button class="tog" aria-label="Panel">&#9707;</button>
+    <span class="figs" id="figs">ctx ~22% &middot; est $3.10 session</span>
+    <button class="tog" id="ptog" aria-label="Panel">&#9707;</button>
   </header>
 
-  <!-- LEFT: today's sidebar, with the Needs you group promoted into a queue. -->
   <aside class="side" aria-label="Sessions">
     <div class="side-top"><button class="new">+ &nbsp;New session</button></div>
     <div class="side-scroll">
       <section class="grp" style="margin-top:8px" aria-label="Needs you">
-        <div class="grp-h queue">Needs you<span class="note">1</span><span class="n" id="qcount">4</span></div>
+        <div class="grp-h queue">Needs you<span class="n" id="qcount">4</span></div>
+        <div class="q-sub" data-p="1">approvals first, then longest waiting</div>
         <ul id="queue"></ul>
       </section>
-
       <section class="grp" id="readysec" aria-label="Ready to look at">
         <div class="grp-h">Ready to look at <span class="n" id="rcount">2</span></div>
         <ul id="ready"></ul>
       </section>
-
       <div class="rule"></div>
       <section class="grp" style="margin-top:8px">
         <div class="grp-h">Working <span class="n">1</span></div>
@@ -286,52 +333,49 @@ body.phone .stepper .next{max-width:200px}
   </aside>
   <div class="scrim" id="scrim"></div>
 
-  <!-- CENTRE: the transcript, with the pinned card above it and items in the dock. -->
-  <main class="centre">
+  <main class="centre" id="sessionview">
     <div class="scroll">
       <div class="col">
         <section class="since" id="since" aria-label="Since you last looked">
           <div class="since-card">
             <div class="since-h">
-              <h2>Since you last looked</h2><span class="note">2</span>
-              <span class="span">11:05 &rarr; 14:20</span>
-              <button class="caught" id="caught">Caught up</button>
+              <h2>Since you last looked</h2>
+              <span class="span" data-p="3">11:05 &rarr; 14:20</span>
+              <span class="span p0only" style="display:none">since your last message, 10:58</span>
+              <button class="caught" id="caught" data-p="3">Caught up</button>
               <button class="chev" id="chev" aria-label="Fold the card" aria-expanded="true">&#9662;</button>
             </div>
-            <div class="since-sum">1 asked of you &middot; 1 stopped &middot; 2 happened</div>
-            <p class="since-goal">Ship the attention inbox &middot; phase build &middot; 3 of 5 done &middot; 412k of 1.2M tokens</p>
-            <div class="sg p0only"><div class="sg-l">LAST SAID BY main &middot; 13:40</div><div class="sr"><span class="x">&ldquo;Before I wire the list: should closed items fold under the open ones, or move to a separate Done list? I lean towards&hellip;&rdquo;</span></div><div class="sr"><span class="x"><span class="bad">1 strand failed</span> &middot; sub:mockup-b (from the lane)</span></div></div>
-            <div class="sg" data-p="1">
+            <div class="since-sum">1 asked of you &middot; 1 happened &middot; 1 peer message</div>
+            <p class="since-goal">workspace-write &middot; network off &middot; Bob is viewing this session</p>
+            <div class="sg">
               <div class="sg-l ask">ASKED OF YOU</div>
-              <div class="sr"><time>13:40</time><span class="x">The coordinator asks: fold closed items under open ones, or a separate Done list?</span><button class="go" data-open="2">answer &darr;</button></div>
-              <div class="sr"><time>13:52</time><span class="x"><span class="bad">sub:mockup-b stopped</span>: provider rate limit, not retried</span><button class="go" data-open="3">retry &darr;</button></div>
+              <div class="sr"><time>12:58</time><span class="x"><span class="amb">Approval</span>: a code_mode program wants to run <span style="font-family:var(--font-mono);font-size:12px">sqlite3 &hellip; integrity_check</span> with a write grant to <span style="font-family:var(--font-mono);font-size:12px">~/.loom</span></span><button class="go">below &darr;</button></div>
             </div>
             <div class="sg">
               <div class="sg-l">HAPPENED</div>
-              <div class="sr"><time>12:20</time><span class="x">sub:fact-sheet settled, result returned</span><button class="go">row &rsaquo;</button></div>
-              <div class="sr"><time>14:06</time><span class="x">sub:mockup-a working, editing <span style="font-family:var(--font-mono);font-size:12px">web_view/inbox.gleam</span></span><button class="go">row &rsaquo;</button></div>
+              <div class="sr"><time>13:15</time><span class="x"><span style="color:var(--peer-text);font-weight:600">peer</span> runner/pod-reach &middot; main asked: &ldquo;Does the integrity check need the write grant, or can it run read-only?&rdquo; Stored, not answered.</span><button class="go">row &rsaquo;</button></div>
             </div>
-            <div class="else" data-p="1"><b>Elsewhere</b> &middot; 2 more asks and 1 approval need you, 1 session is ready to review. They are in the queue.</div>
+            <div class="else" data-p="1"><b>Elsewhere</b> &middot; 2 asks and 1 stopped delegate need you, 1 session is ready to review. They are in the queue.</div>
           </div>
         </section>
 
-        <div class="tl" aria-label="Transcript">
-          <div class="row user" style="--hue:var(--fg-faint)"><span class="body">Ship the attention inbox. Fan out the design work and keep me posted.</span></div>
-          <div class="row" style="--hue:var(--current)"><span class="who">main</span><span class="quiet">Reasoning &middot; 9s</span></div>
-          <div class="row" style="--hue:var(--s2)"><span class="who">main</span>Spawned <b>sub:fact-sheet</b> <span class="chip ok">settled 12:20</span></div>
-          <div class="row" style="--hue:var(--s3)"><span class="who">main</span>Spawned <b>sub:mockup-a</b> <span class="chip">working</span></div>
-          <div class="row" style="--hue:var(--s4)"><span class="who">main</span>Spawned <b>sub:mockup-b</b> <span class="chip bad">failed 13:52</span></div>
-          <div class="row" style="--hue:var(--current)"><span class="who">main &middot; 13:40</span>Before I wire the list: should closed items fold under the open ones, or move to a separate Done list? I lean towards folding.</div>
+        <button class="fold-bar" id="foldbar" aria-expanded="false"><span>&rsaquo;</span><span><span class="a">Transcript</span> &middot; storage/branch-index-repair &middot; 3 rows since 11:05, read only if you want the reasons</span></button>
+        <div class="tl" id="tl" hidden aria-label="Transcript">
+          <div class="row user" style="--hue:var(--fg-faint)"><span class="body">Run an integrity check on the branch index store and report what you find.</span></div>
+          <div class="row" style="--hue:var(--current)"><span class="who">main</span><span class="quiet">Reasoning &middot; 11s</span></div>
+          <div class="row" style="--hue:var(--current)"><span class="who">main &middot; 12:58</span>code_mode &middot; proc.run sqlite3 <span class="chip wait">waiting for approval</span></div>
+          <div class="row" style="--hue:var(--peer)"><span class="who" style="color:var(--peer-text)">peer &middot; 13:15</span>runner/pod-reach &middot; main: Does the integrity check need the write grant, or can it run read-only?</div>
         </div>
       </div>
     </div>
 
     <footer class="dock">
       <div class="col">
+        <div id="receipt1"></div>
         <div id="stepper" class="stepper" data-p="1"></div>
         <div id="dockitem"></div>
         <div class="comp">
-          <div class="to">To <b style="color:var(--fg)">main</b></div>
+          <div class="to">To <b style="color:var(--fg)">main</b> of storage/branch-index-repair</div>
           <div class="ed">Reply in your own words&hellip;</div>
           <div class="ar"><button class="btn">Send</button></div>
         </div>
@@ -339,10 +383,13 @@ body.phone .stepper .next{max-width:200px}
     </footer>
   </main>
 
-  <!-- RIGHT: today's panel, unchanged apart from the status words records would give. -->
+  <main class="centre" id="ticketview" hidden>
+    <div class="scroll"><div class="col tk" id="tkbody"></div></div>
+  </main>
+
   <aside class="panel" aria-label="Panel">
     <div class="tabs" role="tablist">
-      <button class="tab" role="tab" aria-selected="true" data-t="strands">Strands <span class="chip bad" style="padding:0 6px">1</span></button>
+      <button class="tab" role="tab" aria-selected="true" data-t="strands">Strands</button>
       <button class="tab" role="tab" aria-selected="false" data-t="changes">Changes</button>
       <button class="tab" role="tab" aria-selected="false" data-t="session">Session</button>
       <button class="tab" role="tab" aria-selected="false" data-t="trace">Trace</button>
@@ -350,222 +397,194 @@ body.phone .stepper .next{max-width:200px}
       <button class="tab" role="tab" aria-selected="false" data-t="evo">Evolution</button>
     </div>
     <div class="pane" data-pane="strands">
-      <div class="pane-h"><span>Strands &middot; 4</span><span>cache hit</span></div>
-      <div class="sc cur" style="--hue:var(--current)"><span class="ring"></span><div><div class="n">main</div><div class="st amb" data-p="1">Asked 1 question</div><div class="st" data-pz style="display:none">Idle</div></div></div>
-      <div class="sc" style="--hue:var(--s3)"><span class="ring"></span><div><div class="n">sub:mockup-a</div><div class="st">Working &middot; fs_edit &middot; 14 min</div></div></div>
-      <div class="sc" style="--hue:var(--s4)"><span class="ring"></span><div><div class="n">sub:mockup-b</div><div class="st bad">Failed &middot; rate limit</div></div></div>
-      <div class="sc" style="--hue:var(--s2)"><span class="ring"></span><div><div class="n">sub:fact-sheet</div><div class="st">Finished</div></div></div>
+      <div class="pane-h"><span>Strands &middot; 1</span><span>cache hit</span></div>
+      <div class="sc cur" style="--hue:var(--current)"><span class="ring"></span><div><div class="n">main</div><div class="st amb">Needs approval</div></div></div>
     </div>
-    <div class="pane" data-pane="changes" hidden>
-      <div class="pane-h"><span>Changes &middot; 2 files</span><span><span class="add">+31</span> <span class="rem">&minus;4</span></span></div>
-      <div class="fl"><span>web_view/inbox.gleam</span><span><span class="add">+27</span> <span class="rem">&minus;4</span></span></div>
-      <div class="fl"><span>session_view/attention.gleam</span><span><span class="add">+4</span> <span class="rem">&minus;0</span></span></div>
-    </div>
-    <div class="pane" data-pane="session" hidden>
-      <dl class="kv"><dt>Goal</dt><dd>Ship the attention inbox</dd><dt>Project</dt><dd>build, 3 of 5 done</dd><dt>Tokens</dt><dd>412k of 1.2M</dd><dt>Viewers</dt><dd>you</dd><dt>Cost</dt><dd>est $14.20</dd></dl>
-    </div>
-    <div class="pane" data-pane="trace" hidden><div class="pane-h">No code_mode program in this session.</div></div>
-    <div class="pane" data-pane="notes" hidden><div class="pane-h">Notes &middot; 3 keys</div></div>
+    <div class="pane" data-pane="changes" hidden><div class="pane-h">No changes.</div></div>
+    <div class="pane" data-pane="session" hidden><dl class="kv"><dt>Policy</dt><dd>workspace-write &middot; network off</dd><dt>Viewers</dt><dd>you, Bob</dd><dt>Cost</dt><dd>est $3.10</dd></dl></div>
+    <div class="pane" data-pane="trace" hidden><div class="pane-h">1 program, waiting.</div></div>
+    <div class="pane" data-pane="notes" hidden><div class="pane-h">No notes.</div></div>
     <div class="pane" data-pane="evo" hidden><div class="pane-h">No candidates.</div></div>
   </aside>
 </div>
 
 <script>
 (function(){
-  /* The items. `p` is the first build phase in which the item is real. */
+  /* p = first build phase in which the item is real. here = the session on screen. */
   var items=[
-    {id:'ap',kind:'approval',tag:'Approval',cls:'',title:'proc.run sqlite3 integrity_check',sess:'storage/branch-index-repair',age:'1h 22m',since:'12:58',p:2},
-    {id:'q2',kind:'ask',tag:'Ask',cls:'',title:'Scratch tmpfs, emptyDir, or no cache?',sess:'runner/pod-reach',age:'3h 00m',since:'11:20',p:1},
-    {id:'q1',kind:'ask',tag:'Ask',cls:'',title:'Fold closed items, or a Done list?',sess:'coord/web-inbox',age:'40m',since:'13:40',here:1,p:1},
-    {id:'st',kind:'stuck',tag:'Stopped',cls:'bad',title:'sub:mockup-b hit a rate limit',sess:'coord/web-inbox',age:'28m',since:'13:52',here:1,p:1},
-    {id:'rv',kind:'review',tag:'Review',cls:'calm',title:'+412 −88, 7 files, tests green',sess:'fix/hashline-replay',age:'1h 49m',since:'12:31',p:2},
-    {id:'rk',kind:'risk',tag:'Risk',cls:'calm',title:'replay skips empty digests',sess:'fix/hashline-replay',age:'1h 49m',since:'12:31',p:1},
-    {id:'id',kind:'idea',tag:'Idea',cls:'calm',title:'reuse codec first-match walk',sess:'fix/hashline-replay',age:'1h 49m',since:'12:31',p:1},
-    {id:'pr',kind:'pr',tag:'PR #1261',cls:'calm',title:'1 check failing, 2 comments',sess:'wp-j/vetting-lint',age:'',since:'',p:3}
+    {id:'ap',tag:'approval',sess:'storage/branch-index-repair',here:1,p:0},
+    {id:'q2',tag:'ask',sess:'runner/pod-reach',p:1},
+    {id:'q1',tag:'ask',sess:'coord/web-inbox',p:1},
+    {id:'st',tag:'stopped',sess:'coord/web-inbox',p:2},
+    {id:'rv',tag:'review',sess:'fix/hashline-replay',p:2},
+    {id:'rk',tag:'risk',sess:'fix/hashline-replay',p:1},
+    {id:'id',tag:'idea',sess:'fix/hashline-replay',p:1},
+    {id:'tk',tag:'check',sess:'wp-j/vetting-lint',p:3}
   ];
-  var order=['q1','st','ap','q2','rv','rk','id'];     /* "here" first, then queue order */
-  var state={}; items.forEach(function(i){state[i.id]={open:false,armed:null,done:null}});
-  var cur='q1', qdiv=document.getElementById('queue'), rdiv=document.getElementById('ready');
   var by={};items.forEach(function(i){by[i.id]=i});
+  var order=['ap','q2','q1','st','rv','tk'];
+  var state={};items.forEach(function(i){state[i.id]={armed:null,done:null}});
+  var cur='ap',lastReceipt=null,opened=false;
+  var qdiv=document.getElementById('queue'),rdiv=document.getElementById('ready');
   function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+  var P0=document.body.classList.contains('p0');
 
   var receipts={
-    q1:'Answered “Fold under open”. Delivered to main of coord/web-inbox, 14:24.',
-    st:'Retried. sub:mockup-b is working again, 14:24.',
-    ap:'Allowed once. Delivered to storage/branch-index-repair, 14:25. Bound to the sqlite3 call you saw.',
-    q2:'Answered “Scratch tmpfs”. Delivered to main of runner/pod-reach, 14:26.',
-    rv:'Marked reviewed. fix/hashline-replay moves to Quiet, 14:27.',
-    rk:'Sent to fix/hashline-replay: fix the empty-digest skip. Delivered to main, 14:28.',
-    id:'Dismissed. Reopen is kept for this session, 14:28.'
+    ap:['Allowed once. Delivered to storage/branch-index-repair, 14:21. Bound to the action text you saw.',0],
+    q2:['Answered “Use the scratch tmpfs”. Delivered to main of runner/pod-reach, 14:22.',1],
+    q1:['Answered “Fold under open”. Delivered to main of coord/web-inbox, 14:22.',1],
+    st:['Retry sent. sub:mockup-b is working again, 14:23.',1],
+    rv:['Accepted after opening the changes. fix/hashline-replay moves to Quiet.',0],
+    rk:['Fix sent to fix/hashline-replay, delivered to main, 14:25.',1],
+    id:['Dismissed. Reopen kept for this session.',1]
   };
-  var closedText={q1:'Fold under open',st:'Retried',ap:'Allowed once',q2:'Scratch tmpfs',rv:'Reviewed',rk:'Fix sent',id:'Dismissed'};
-
-  function rowHtml(i){
-    var st=state[i.id], d=st.done;
-    var meta=esc(i.sess)+(i.age&&!d?' · '+i.age:'');
-    if(d)meta=esc(i.sess)+' · delivered';
-    var kind=d?'Done':i.tag;
-    var kc=d?'':i.cls;
-    var p=i.p>=1?' data-p="'+i.p+'"':'';
-    var ago=(i.age&&!d)?i.age:'';
-    return '<li'+p+'><button class="q-row'+(cur===i.id?' sel':'')+(d?' done':'')+'" data-id="'+i.id+'"><span class="q-title">'+esc(d?closedText[i.id]:i.title)+'</span><span class="q-meta"><span class="q-kind '+kc+'">'+esc(kind)+'</span> \u00b7 '+esc(i.sess)+(ago?' \u00b7 '+ago:'')+'</span></button></li>';
+  function sessDone(sess){return items.filter(function(i){return i.sess===sess&&['pr'].indexOf(i.id)<0&&i.id!=='tk'}).every(function(i){return state[i.id].done})}
+  function tagsFor(sess){
+    var t=items.filter(function(i){return i.sess===sess&&!state[i.id].done&&i.id!=='tk'&&i.id!=='rk'&&i.id!=='id'});
+    return t;
   }
-  function renderQueueP0(){
-    var rows=[['storage/branch-index-repair','Approval','1 approval waiting',''],['runner/pod-reach','Probably asking','\u201cThe runner pod has no /tmp write. Use the scratch tmpfs (recommended), mount an emptyDir, or skip the cache?\u201d','calm'],['coord/web-inbox','Probably asking','\u201cBefore I wire the list: should closed items fold under the open ones\u2026\u201d','calm']];
-    qdiv.innerHTML=rows.map(function(r,n){return '<li><button class="q-row'+(n===2?' sel':'')+'" data-p0="1"><span class="q-title" style="white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">'+esc(r[2])+'</span><span class="q-meta"><span class="q-kind '+r[3]+'">'+r[1]+'</span> \u00b7 '+r[0]+'</span></button></li>'}).join('');
-    document.getElementById('qcount').textContent=3;
-    document.getElementById('menubadge').textContent=3;
+  function row(sess,kinds,sel,cls){
+    var done=sessDone(sess);
+    var tg=done?'<b class="ok">done</b>':kinds;
+    return '<li><button class="q-row one'+(sel?' sel':'')+(done?' done':'')+'" data-sess="'+esc(sess)+'"><span class="nm">'+esc(sess)+'</span><span class="tg">'+tg+'</span></button></li>';
   }
   function renderQueue(){
-    if(document.body.classList.contains('p0'))return renderQueueP0();
-    var needs=['ap','q2','q1','st'], ready=['rv','rk','id','pr'];
-    var open=needs.filter(function(k){return !state[k]||!state[k].done}), closed=needs.filter(function(k){return state[k]&&state[k].done});
-    var h=open.map(function(k){return rowHtml(by[k])}).join('');
-    if(closed.length)h+=closed.map(function(k){return rowHtml(by[k])}).join('');
-    qdiv.innerHTML=h;
-    var h2='';
-    /* the review and its two finds read as one row in the sidebar: one session, one line */
-    var rvDone=state.rv.done, finds=['rk','id'].filter(function(k){return !state[k].done}).length;
-    var rowRv=items[4];
-    h2+='<li data-p="2"><button class="q-row'+(['rv','rk','id'].indexOf(cur)>=0?' sel':'')+(rvDone&&!finds?' done':'')+'" data-id="'+(!rvDone?'rv':(state.rk.done?'id':'rk'))+'"><span class="q-l1"><span class="q-kind '+(rvDone&&!finds?'':'calm')+'">'+(rvDone&&!finds?'Done':'Review')+'</span><span class="q-title">fix/hashline-replay</span></span><span class="q-meta">'+(rvDone&&!finds?'reviewed, finds closed':'+412 −88 · '+(finds)+' finds · 1h 49m')+'</span></button></li>';
-    h2+='<li data-p="3"><button class="q-row" data-id="pr"><span class="q-l1"><span class="q-kind calm">PR #1261</span><span class="q-title">wp-j/vetting-lint</span></span><span class="q-meta">1 check failing · 2 comments</span></button></li>';
-    rdiv.innerHTML=h2;
-    var nOpen=open.length; document.getElementById('qcount').textContent=nOpen;
-    var mb=document.getElementById('menubadge'); mb.textContent=nOpen; mb.style.display=nOpen?'':'none';
-    document.getElementById('rcount').textContent=(rvDone&&!finds?0:1)+1;
-  }
-
-  function opt(n,label,why,rec){
-    return '<button class="opt" data-opt="'+n+'"><span class="no">'+n+'</span><span><span>'+esc(label)+'</span> <span class="why">'+esc(why)+'</span></span>'+(rec?'<span class="rec">recommended</span>':'')+'</button>';
-  }
-  function btn(id,key,label,confirm,cls){
-    var a=state[id].armed===key;
-    return '<button class="btn '+(cls||'')+(a?' armed':'')+'" data-act="'+key+'">'+esc(a?confirm:label)+'</button>';
-  }
-  function renderDock(){
-    var i=by[cur], st=state[cur], box=document.getElementById('dockitem');
-    var pos=order.indexOf(cur)+1, remaining=order.filter(function(k){return !state[k].done}).length;
-    var nextId=order.filter(function(k){return !state[k].done&&k!==cur})[0];
-    var step=document.getElementById('stepper');
-    if(remaining){
-      var hot=order.filter(function(k){return !state[k].done&&['q1','st','ap','q2'].indexOf(k)>=0}).length;
-      step.innerHTML='<span><b>'+hot+'</b> need you'+(remaining-hot?' \u00b7 '+(remaining-hot)+' to review':'')+'</span><button class="next" id="next">'+(nextId?'Next: '+esc(by[nextId].tag.toLowerCase())+' from '+esc(by[nextId].sess)+' &rsaquo;':'')+'</button>';
-    }else{step.innerHTML='<span><b>Nothing waits on you.</b></span>'}
-    if(st.done){
-      box.innerHTML='<div class="receipt"><span class="ok">Done</span><span>'+esc(receipts[cur])+'</span><button class="undo" data-undo="1">'+(cur==='ap'?'':'Undo')+'</button></div>';
-      return;
+    if(P0){
+      qdiv.innerHTML=row('storage/branch-index-repair','<b>approval</b>',true)+'';
+      rdiv.innerHTML=[['runner/pod-reach','The runner pod has no /tmp write. Use the scratch tmpfs…'],['coord/web-inbox','Before I wire the list: should closed items fold…'],['fix/hashline-replay','Done. Replay now walks entries by position…']].map(function(r){return '<li><button class="q-row"><span class="q-l1" style="display:flex"><span class="q-title" style="font-size:13.5px">'+r[0]+'</span></span><span class="q-ex">idle &middot; “'+esc(r[1])+'”</span></button></li>'}).join('');
+      document.getElementById('qcount').textContent=1;document.getElementById('rcount').textContent=3;document.getElementById('menubadge').textContent=1;return;
     }
     var h='';
-    if(cur==='q1'){
-      h='<div class="card"><div class="card-h"><span class="k">Ask</span><span>coord/web-inbox &middot; main &middot; 13:40</span></div>'+
-      '<p class="card-q">Should closed items fold under open ones, or move to a separate “Done” list?</p>'+
-      '<div class="opts">'+opt(1,'Fold under open','matches the Inbox plugin and keeps context',1)+opt(2,'Separate Done list','')+opt(3,'Hide after 24h','')+'</div>'+
-      '<div class="acts" id="acts"></div></div>';
-    }else if(cur==='q2'){
-      h='<div class="card"><div class="card-h"><span class="k">Ask</span><span>runner/pod-reach &middot; main &middot; 11:20 &middot; aegis</span></div>'+
-      '<p class="card-q">The runner pod has no /tmp write. Use the scratch tmpfs, mount an emptyDir, or skip the cache?</p>'+
-      '<div class="opts">'+opt(1,'Use the scratch tmpfs','',1)+opt(2,'Mount an emptyDir','')+opt(3,'Skip the cache','')+'</div>'+
-      '<div class="acts" id="acts"></div></div>';
-    }else if(cur==='st'){
-      h='<div class="card bad"><div class="card-h"><span class="k bad">Stopped</span><span>coord/web-inbox &rsaquo; sub:mockup-b &middot; 13:52</span></div>'+
-      '<p class="card-q">The last turn failed with a provider rate limit and has not been retried.</p>'+
-      '<p class="card-sub">Working copy untouched. 14 minutes into the turn when it stopped.</p>'+
-      '<div class="acts" id="acts"></div></div>';
-    }else if(cur==='ap'){
-      h='<div class="card"><div class="card-h"><span class="k">Approval</span><span>storage/branch-index-repair &middot; waiting since 12:58</span></div>'+
-      '<p class="card-q">A code_mode program wants to run</p>'+
-      '<pre class="act">sqlite3 ~/.loom/store.db \'PRAGMA integrity_check\'</pre>'+
-      '<ul class="gr"><li>network: off</li><li>write grant: ~/.loom (outside the workspace)</li><li>policy: workspace-write &middot; network off</li></ul>'+
-      '<div class="ctx" data-p="2"><span class="pl">peer</span> 13:15 runner/pod-reach asked this session: “Does the integrity check need the write grant, or can it run read-only?” Stored, not answered. &middot; Bob is viewing and has not decided.</div>'+
-      '<div class="acts" id="acts"></div></div>';
-    }else if(cur==='rv'){
-      h='<div class="card calm"><div class="card-h"><span class="k calm">Review</span><span>fix/hashline-replay &middot; finished 12:31 &middot; loom</span></div>'+
-      '<p class="card-q">Replay now walks entries by position and re-anchors edits after a moved line. 14 tests added.</p>'+
-      '<p class="card-sub"><span class="add">+412</span> <span class="rem">&minus;88</span> across 7 files &middot; <code style="font-family:var(--font-mono);font-size:12px">make check-core</code> exit 0 (reported by the agent). 2 finds follow.</p>'+
-      '<div class="acts" id="acts"></div></div>';
-    }else if(cur==='rk'){
-      h='<div class="card calm"><div class="card-h"><span class="k calm">Risk &middot; medium</span><span>fix/hashline-replay &middot; found 12:20 while working</span></div>'+
-      '<p class="card-q">hashline.replay silently skips entries whose digest is empty; a truncated store would replay short with no error.</p>'+
-      '<div class="acts" id="acts"></div></div>';
-    }else if(cur==='id'){
-      h='<div class="card calm"><div class="card-h"><span class="k calm">Idea &middot; low</span><span>fix/hashline-replay &middot; found 12:24</span></div>'+
-      '<p class="card-q">The replay loop could reuse machine/codec’s first-match walk and drop a closure per entry.</p>'+
-      '<div class="acts" id="acts"></div></div>';
-    }else{
-      h='<div class="card calm"><div class="card-h"><span class="k calm">PR #1261</span><span>wp-j/vetting-lint</span></div><p class="card-q">1 failing check (lint R11) and 2 unresolved review comments from Bob.</p></div>';
-    }
-    box.innerHTML=h; renderActs();
-  }
-  function renderActs(){
-    var a=document.getElementById('acts'); if(!a)return;
-    var st=state[cur], h='';
-    if(cur==='q1'||cur==='q2'){
-      var armedOpt=st.armed;
-      var labs={q1:{1:'Fold under open',2:'Separate Done list',3:'Hide after 24h'},q2:{1:'Use the scratch tmpfs',2:'Mount an emptyDir',3:'Skip the cache'}}[cur];
-      document.querySelectorAll('.opt').forEach(function(o){o.classList.toggle('armed',String(armedOpt)===o.getAttribute('data-opt'))});
-      h=armedOpt?'<button class="btn armed" data-act="send">Send “'+esc(labs[armedOpt])+'”</button><span class="armnote">Delivered after a 5 s hold, with Undo.</span>':
-        '<span class="armnote">Press an option to arm it. A second press sends.</span><button class="btn link" data-act="explain">Explain</button>';
-    }else if(cur==='st'){
-      h=btn('st','retry','Retry','Confirm: retry sub:mockup-b')+'<button class="btn link" data-act="open">Open strand &rsaquo;</button>';
-    }else if(cur==='ap'){
-      h=btn('ap','deny','Deny','Confirm: deny','deny')+btn('ap','once','Allow once','Confirm: allow once','allow')+btn('ap','sess','Allow for session','Confirm: allow for session','allow');
-    }else if(cur==='rv'){
-      h=btn('rv','rev','Mark reviewed','Confirm: mark reviewed')+'<button class="btn link" data-act="open">Open changes &rsaquo;</button>';
-    }else if(cur==='rk'){
-      h=btn('rk','fix','Fix it','Confirm: send to the agent')+btn('rk','dis','Dismiss','Confirm: dismiss')+'<button class="btn link" data-act="explain">Reply</button>';
-    }else if(cur==='id'){
-      h=btn('id','do','Do it','Confirm: send to the agent')+btn('id','dis','Dismiss','Confirm: dismiss');
-    }
-    if(!by[cur].here&&cur!=='pr')h+='<button class="btn link" data-act="open" style="margin-left:auto">Open '+esc(by[cur].sess)+' &rsaquo;</button>';
-    a.innerHTML=h;
-    if(cur==='ap'||cur==='st'||cur==='rv'||cur==='rk'||cur==='id'){
-      if(st.armed)a.insertAdjacentHTML('beforeend','<span class="armnote">Press again to send exactly this.</span>');
-    }
+    h+=row('storage/branch-index-repair','<b>approval</b>',by[cur].sess==='storage/branch-index-repair')+'';
+    h+=row('runner/pod-reach','<b>ask</b>',by[cur].sess==='runner/pod-reach');
+    h+=row('coord/web-inbox','<b>ask</b> · <b class="bad">stopped</b>',by[cur].sess==='coord/web-inbox');
+    qdiv.innerHTML=h;
+    var open=['ap','q2','q1','st'].filter(function(k){return !state[k].done}).length;
+    document.getElementById('qcount').textContent=open;
+    var mb=document.getElementById('menubadge');mb.textContent=open;mb.style.display=open?'':'none';
+    var fin=state.rv.done&&state.rk.done&&state.id.done;
+    rdiv.innerHTML='<li><button class="q-row one'+(['rv','rk','id'].indexOf(cur)>=0?' sel':'')+'" data-sess="fix/hashline-replay"><span class="nm">fix/hashline-replay</span><span class="tg">'+(fin?'<b class="ok">done</b>':'<b class="calm">review</b> · 2 finds')+'</span></button></li>'+
+      '<li data-p="3"><button class="q-row one'+(cur==='tk'?' sel':'')+'" data-id="tk"><span class="nm">wp-j/vetting-lint</span><span class="tg"><b class="calm">lint failing</b> · ticket</span></button></li>';
+    document.getElementById('rcount').textContent=(fin?0:1)+1;
   }
 
-  function select(id){cur=id;renderAll()}
-  function finish(){
-    state[cur].done=true; state[cur].armed=null; renderAll();
-    var n=order.filter(function(k){return !state[k].done&&k!==cur})[0];
-    if(n){setTimeout(function(){if(state[cur].done&&!autoHold){cur=n;renderAll();var b=document.querySelectorAll('#acts .btn,.opt');b.forEach(function(x){x.disabled=true;setTimeout(function(){x.disabled=false},600)})}},1600)}
+  function opt(n,label,why,rec){return '<button class="opt" data-opt="'+n+'"><span class="no">'+n+'</span><span><span>'+esc(label)+'</span> <span class="why">'+esc(why)+'</span></span>'+(rec?'<span class="rec">recommended</span>':'')+'</button>'}
+  function btn(id,key,label,confirm,cls){var a=state[id].armed===key;return '<button class="btn '+(cls||'')+(a?' armed':'')+'" data-id2="'+id+'" data-act="'+key+'">'+esc(a?confirm:label)+'</button>'}
+  function head(k,label,where,kc){return '<div class="card-h"><span class="k '+(kc||'')+'">'+label+'</span><span>'+where+'</span></div>'}
+
+  function render(){
+    renderQueue();
+    var box=document.getElementById('dockitem'),i=by[cur];
+    var rem=order.filter(function(k){return !state[k].done&&!(k==='rv'&&state.rv.done&&state.rk.done&&state.id.done)});
+    var hot=rem.filter(function(k){return ['ap','q2','q1','st'].indexOf(k)>=0}).length;
+    var me=(['rk','id'].indexOf(cur)>=0?'rv':cur),ix=order.indexOf(me),after=order.slice(ix+1).concat(order.slice(0,ix)),nxt=after.filter(function(k){return rem.indexOf(k)>=0})[0];
+    var step=document.getElementById('stepper');
+    step.innerHTML=rem.length?('<span><b>'+hot+'</b> need you'+(rem.length-hot?' · '+(rem.length-hot)+' to look at':'')+'</span>'+(nxt?'<button class="next" id="next">Next: '+esc(by[nxt].tag)+' from '+esc(by[nxt].sess)+' &rsaquo;</button>':'')):'<span><b>Nothing waits on you.</b></span>';
+    var rc=document.getElementById('receipt1');
+    rc.innerHTML=lastReceipt?'<div class="receipt1"><span class="ok">Done</span><span>'+esc(lastReceipt.t)+'</span>'+(lastReceipt.u?'<button class="undo" data-undo="1">Undo (5 s hold)</button>':'')+'</div>':'';
+    var h='';
+    if(cur==='ap'){
+      h='<div class="card">'+head(0,'Approval','storage/branch-index-repair &middot; waiting since 12:58 &middot; this session')+
+      '<p class="card-q">A code_mode program wants to run</p><pre class="act">sqlite3 ~/.loom/store.db \'PRAGMA integrity_check\'</pre>'+
+      '<ul class="gr"><li>network: off</li><li>write grant: ~/.loom (outside the workspace)</li><li>policy: workspace-write &middot; network off</li></ul>'+
+      '<div class="acts">'+btn('ap','deny','Deny','Confirm: deny','deny')+btn('ap','once','Allow once','Confirm: allow once','allow')+btn('ap','sess','Allow for session','Confirm: allow for session','allow')+(state.ap.armed?'<span class="armnote">Press again to send exactly this action text.</span>':'<span class="armnote">Decides here only. Bob may also decide; the first wins.</span>')+'</div></div>';
+    }else if(cur==='q2'||cur==='q1'){
+      var q=cur==='q2'?['runner/pod-reach · main · aegis','The runner pod has no /tmp write. Use the scratch tmpfs, mount an emptyDir, or skip the cache?',[['Use the scratch tmpfs','',1],['Mount an emptyDir','',0],['Skip the cache','',0]],'11:20']:['coord/web-inbox · main','Should closed items fold under open ones, or move to a separate “Done” list?',[['Fold under open','matches the Inbox plugin and keeps context',1],['Separate Done list','',0],['Hide after 24h','',0]],'13:40'];
+      var st=state[cur],labs=q[2].map(function(o){return o[0]});
+      h='<div class="card">'+head(0,'Ask',q[0]+' &middot; <span data-p="1">'+q[3]+' &middot; </span>from another session')+'<p class="card-q">'+esc(q[1])+'</p><div class="opts">'+q[2].map(function(o,n){return opt(n+1,o[0],o[1],o[2])}).join('')+'</div><div class="acts">'+
+      (st.armed?'<button class="btn armed" data-act="send">Send “'+esc(labs[st.armed-1])+'”</button><span class="armnote">Held 5 s so you can undo, then delivered.</span>':'<span class="armnote">Press an option to arm it. A second press sends.</span>')+'<button class="btn link" data-go="'+esc(by[cur].sess)+'" style="margin-left:auto">Open '+esc(by[cur].sess)+' &rsaquo;</button></div></div>';
+    }else if(cur==='st'){
+      h='<div class="card bad">'+head(0,'Stopped','coord/web-inbox &rsaquo; sub:mockup-b &middot; <span data-p="2">13:52 &middot; </span>from another session','bad')+
+      '<p class="card-q">The last turn failed with a provider rate limit and has not been retried.</p><p class="card-sub">The failure text, as the strand recorded it: &ldquo;rate limit exceeded, retry after 60 s&rdquo;.</p>'+
+      '<div class="acts">'+btn('st','retry','Retry','Confirm: retry sub:mockup-b')+'<button class="btn link" data-go="coord/web-inbox" style="margin-left:auto">Open coord/web-inbox &rsaquo;</button></div></div>';
+    }else if(['rv','rk','id'].indexOf(cur)>=0){
+      var rvd=state.rv.done;
+      h='<div class="card calm tall">'+head(0,'Review','fix/hashline-replay &middot; finished 12:31 &middot; loom &middot; from another session','calm')+
+      '<div class="sec'+(rvd?' fin':'')+'"><p class="card-q" style="margin-top:0">Replay now walks entries by position and re-anchors edits after a moved line. 14 tests added.</p>'+
+      '<div class="files"><span><b class="add">+412</b> <b class="rem">&minus;88</b></span><span>7 files</span><span>make check-core exit 0, as reported by the agent</span></div>'+
+      (rvd?'<span class="fin-l">Accepted</span>':'<div class="acts">'+(opened?btn('rv','acc','Accept','Confirm: accept the reviewed changes'):'<button class="btn" data-go="fix/hashline-replay">Open changes &rsaquo;</button><button class="btn link" data-act="unread" title="">Accept without opening the changes</button>')+'</div>')+'</div>'+
+      '<div class="sec'+(state.rk.done?' fin':'')+'"><div class="card-h"><span class="k calm">Risk &middot; medium</span><span>found 12:20</span></div><p class="card-sub" style="margin:2px 0 6px">hashline.replay silently skips entries whose digest is empty; a truncated store would replay short with no error.</p>'+(state.rk.done?'<span class="fin-l">Fix sent</span>':'<div class="acts">'+btn('rk','fix','Fix it','Confirm: send to the agent')+btn('rk','dis','Dismiss','Confirm: dismiss')+'</div>')+'</div>'+
+      '<div class="sec'+(state.id.done?' fin':'')+'"><div class="card-h"><span class="k calm">Idea &middot; low</span><span>found 12:24</span></div><p class="card-sub" style="margin:2px 0 6px">The replay loop could reuse machine/codec’s first-match walk and drop a closure per entry.</p>'+(state.id.done?'<span class="fin-l">Dismissed</span>':'<div class="acts">'+btn('id','do','Do it','Confirm: send to the agent')+btn('id','dis','Dismiss','Confirm: dismiss')+'</div>')+'</div></div>';
+    }else if(cur==='tk'){
+      h='<div class="card calm">'+head(0,'Ticket','wp-j/vetting-lint &middot; project loom &middot; working, check failed and the worker was told','calm')+
+      '<p class="card-q">make lint failed at the head: <span style="font-family:var(--font-mono);font-size:12.5px">lint (R11)</span>. The worker has the failure note and is 3 minutes into its turn. PR #1261.</p><p class="card-sub">Nothing is asked of you. It will move to <b>Needs you</b> if the check fails for the environment or a fourth head fails.</p><div class="acts"><button class="btn link" data-ticket="1">Open the ticket &rsaquo;</button></div></div>';
+    }
+    box.innerHTML=h;
+    document.querySelectorAll('.opt').forEach(function(o){o.classList.toggle('armed',String(state[cur].armed)===o.getAttribute('data-opt'))});
+    document.querySelectorAll('.undo').forEach(function(){});
   }
-  var autoHold=false;
-  function renderAll(){renderQueue();renderDock()}
+
+  function disarmNew(){document.querySelectorAll('#dockitem .btn,#dockitem .opt').forEach(function(x){x.disabled=true;setTimeout(function(){x.disabled=false},600)})}
+  function finish(id){
+    state[id].done=true;state[id].armed=null;
+    var r=receipts[id];lastReceipt={t:r[0],u:r[1]};
+    var rem=order.filter(function(k){return !state[k].done});
+    var stay=['rv','rk','id'].indexOf(id)>=0&&!(state.rv.done&&state.rk.done&&state.id.done);
+    if(!stay&&rem.length){cur=rem[0];if(cur==='rv'){}}
+    render();if(!stay)disarmNew();
+  }
+  function goto(sess){
+    var m=items.filter(function(i){return i.sess===sess&&!state[i.id].done&&i.id!=='tk'})[0]||items.filter(function(i){return i.sess===sess})[0];
+    cur=m.id;render();
+  }
+  function setSession(name){
+    document.getElementById('loc').innerHTML='<b>'+(name==='runner/pod-reach'?'aegis':'loom')+'</b> '+(name==='runner/pod-reach'?'~/src/aegis':'~/src/loom')+' / '+name;
+  }
+  function showTicket(){
+    document.getElementById('sessionview').hidden=true;document.getElementById('ticketview').hidden=false;
+    var env=new URLSearchParams(location.search).get('stage')==='check';
+    document.getElementById('loc').innerHTML='<b>Projects</b> loom / ticket vetting-lint';
+    document.getElementById('tkbody').innerHTML=ticketHtml(env);
+  }
+  function ticketHtml(env){
+    var out=env?'exit 127\nmake: gleam: command not found\nmake: *** [check] Error 127':'exit 2\nlint R11: web_view/inbox.gleam:212 a body runs 12 statements without a break\nlint R11: web_view/inbox.gleam:388 a body runs 11 statements without a break\n2 errors';
+    var stage=env?['person/check','Needs you']:['working','Quiet'];
+    return '<div class="crumbs">Projects &rsaquo; loom &rsaquo; ticket</div><h1>vetting-lint</h1>'+(env?'<p class="meta" style="margin:0 0 6px">Variant drawn: the scenario\u2019s ticket is <i>working</i> (the worker was told). This is the same ticket if the check had failed for the environment.</p>':'')+'<span class="stage'+(env?'':' calm')+'">'+stage[0]+'</span> <span class="meta">&middot; worker wp-j/vetting-lint &middot; PR #1261 &middot; opened 11:38</span>'+
+    '<h2>Request</h2><p>Vet the lint rules that gate the build and report any that fire on web_view.</p>'+
+    '<h2>Check</h2><p class="'+(env?'warn':'')+'">'+(env?'The check failed for the environment at the head, 14:12, and nobody is handling it. The worker was not told.':'The check failed at the head, 14:17. It looks like the code, and the worker was told.')+'</p>'+
+    '<div class="meta">cause: '+(env?'environment':'test')+' &middot; handling: '+(env?'a person':'the worker')+' &middot; command: make lint</div><pre class="out">'+esc(out)+'</pre>'+
+    '<h2>Changes</h2><p><b class="add">+88</b> <b class="rem">&minus;12</b> across 3 files. <button class="btn link" style="padding:0;min-height:0">Open the changes in the worker session &rsaquo;</button></p>'+
+    '<h2>Review</h2><p>2 unresolved comments from Bob on PR #1261 <span class="meta">(from the GitHub source; shown only where the source is on)</span></p>'+
+    '<div class="acts">'+(env?'<button class="btn" data-tk="recheck">Recheck</button>':'')+'<button class="btn" data-tk="retry">Retry</button><button class="btn" data-tk="stop">Stop</button><button class="btn" data-tk="close">Close</button><button class="btn" disabled>Publish</button></div>'+
+    '<p class="refusal">Publish says: &ldquo;publishing is off for this project&rdquo;. Each button arms first and sends on the second press, as every deciding control does.</p>';
+  }
 
   document.addEventListener('click',function(e){
-    var t=e.target.closest('button'); if(!t)return;
+    var t=e.target.closest('button');if(!t)return;
     if(t.id==='menu'){document.body.classList.toggle('drawer');return}
+    if(t.id==='ptog'){document.body.classList.toggle('nopanel');return}
     if(t.id==='chev'){var s=document.getElementById('since');var c=s.classList.toggle('collapsed');t.setAttribute('aria-expanded',!c);t.innerHTML=c?'&#9656;':'&#9662;';return}
     if(t.id==='caught'){document.getElementById('since').style.display='none';return}
-    if(t.id==='next'){var n=order.filter(function(k){return !state[k].done&&k!==cur})[0];if(n)select(n);return}
-    if(t.hasAttribute('data-open')){select(['q1','q2','q1','st'][+t.getAttribute('data-open')]);return}
-    if(t.classList.contains('tab')){
-      document.querySelectorAll('.tab').forEach(function(x){x.setAttribute('aria-selected',x===t)});
-      document.querySelectorAll('.pane').forEach(function(p){p.hidden=p.getAttribute('data-pane')!==t.getAttribute('data-t')});return}
-    if(t.hasAttribute('data-id')){document.body.classList.remove('drawer');select(t.getAttribute('data-id'));return}
-    if(t.hasAttribute('data-opt')){state[cur].armed=t.getAttribute('data-opt');renderActs();return}
+    if(t.id==='foldbar'){var tl=document.getElementById('tl');tl.hidden=!tl.hidden;t.setAttribute('aria-expanded',!tl.hidden);t.firstChild.innerHTML=tl.hidden?'&rsaquo;':'&#9662;';return}
+    if(t.id==='next'){var me=(['rk','id'].indexOf(cur)>=0?'rv':cur),ix=order.indexOf(me),after=order.slice(ix+1).concat(order.slice(0,ix)),rem=after.filter(function(k){return !state[k].done});if(rem[0]){cur=rem[0];lastReceipt=null;render();disarmNew()}return}
+    if(t.hasAttribute('data-sess')){document.body.classList.remove('drawer');lastReceipt=null;goto(t.getAttribute('data-sess'));return}
+    if(t.hasAttribute('data-id')&&!t.hasAttribute('data-id2')){document.body.classList.remove('drawer');cur=t.getAttribute('data-id');lastReceipt=null;render();return}
+    if(t.hasAttribute('data-ticket')){showTicket();return}
+    if(t.hasAttribute('data-go')){if(t.getAttribute('data-go')==='fix/hashline-replay'){opened=true;}render();return}
+    if(t.classList.contains('tab')){document.querySelectorAll('.tab').forEach(function(x){x.setAttribute('aria-selected',x===t)});document.querySelectorAll('.pane').forEach(function(p){p.hidden=p.getAttribute('data-pane')!==t.getAttribute('data-t')});return}
+    if(t.hasAttribute('data-opt')){state[cur].armed=t.getAttribute('data-opt');render();return}
+    if(t.hasAttribute('data-tk')){t.classList.toggle('armed');t.textContent=t.classList.contains('armed')?'Confirm: '+t.getAttribute('data-tk'):t.getAttribute('data-tk').charAt(0).toUpperCase()+t.getAttribute('data-tk').slice(1);return}
     if(t.hasAttribute('data-act')){
-      var k=t.getAttribute('data-act');
-      if(k==='send'){finish();return}
-      if(k==='explain'||k==='open')return;
-      if(state[cur].armed===k){finish()}else{state[cur].armed=k;renderActs()}
-      return;
-    }
-    if(t.hasAttribute('data-undo')){state[cur].done=null;state[cur].armed=null;renderAll()}
+      var k=t.getAttribute('data-act'),id=t.getAttribute('data-id2')||cur;
+      if(k==='send'){finish(cur);return}
+      if(k==='unread'){state.rv.armed=state.rv.armed==='unread'?null:'unread';if(state.rv.armed==='unread'){t.classList.add('armed');t.textContent='Confirm: accept without opening';}else{finish('rv')}return}
+      if(state[id].armed===k){finish(id)}else{state[id].armed=k;render()}return}
+    if(t.hasAttribute('data-undo')){lastReceipt=null;render()}
   });
   document.getElementById('scrim').addEventListener('click',function(){document.body.classList.remove('drawer')});
-  /* ?open=<id> opens an item; ?drawer=1 opens the phone drawer */
+
   var qp=new URLSearchParams(location.search);
   if(qp.get('open')&&by[qp.get('open')])cur=qp.get('open');
+  if(qp.get('opened')==='1')opened=true;
   if(qp.get('drawer')==='1')document.body.classList.add('drawer');
-  if(qp.get('fold')==='1'){document.getElementById('since').classList.add('collapsed')}
-  if(document.body.classList.contains('p0')){
-    /* phase 0: the queue is the old Needs you group with excerpts, answered by replying in the session */
-    document.getElementById('rcount').textContent='1';
+  if(qp.get('fold')==='0'||qp.get('unfold')==='1'){document.getElementById('foldbar').click()}
+  if(P0){
+    document.querySelector('.p0only').style.display='';
+    document.getElementById('since').querySelector('.since-sum').textContent='1 asked of you · 1 peer message';
   }
-  if(document.body.classList.contains('phone')&&qp.get('fold')!=='0'){document.getElementById('since').classList.add('collapsed');document.getElementById('chev').innerHTML='&#9656;'}
-  renderAll();
-  var sc=document.querySelector('.scroll');sc.scrollTop=sc.scrollHeight;
+  if(document.body.classList.contains('phone')){document.getElementById('since').classList.add('collapsed');document.getElementById('chev').innerHTML='&#9656;'}
+  if(qp.get('view')==='ticket'){showTicket()}
+  render();
 })();
 </script>
 </body>
