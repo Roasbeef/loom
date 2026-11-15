@@ -174,8 +174,15 @@ func NetworkOffProgram(goarch string) ([]bpf.Instruction, error) {
 //  1. socket(2) also allows AF_INET with a type of SOCK_STREAM (after
 //     masking SOCK_NONBLOCK and SOCK_CLOEXEC off) and a protocol of 0 or
 //     IPPROTO_TCP. Every other AF_INET socket (datagram, raw, SCTP,
-//     MPTCP), AF_INET6, AF_PACKET and every netlink family stay EPERM.
-//     socketpair(2) stays AF_UNIX only;
+//     MPTCP), AF_INET6 and AF_PACKET stay EPERM. socketpair(2) stays
+//     AF_UNIX only;
+//     1b. socket(2) also allows AF_NETLINK with a type of SOCK_RAW or
+//     SOCK_DGRAM (masked the same way) and a protocol of exactly 0,
+//     which is NETLINK_ROUTE: Go's net.InterfaceAddrs opens one. Every
+//     other netlink protocol and type stays EPERM. The allowance leans
+//     on the loopback preconditions: a user namespace with no
+//     capabilities, so no rtnetlink request can mutate state, and a
+//     fresh network namespace whose only interface is lo;
 //  2. setsockopt(2) with level IPPROTO_TCP and option TCP_ULP is EPERM,
 //     which keeps the kernel TLS upgrade out of reach.
 //
@@ -221,7 +228,7 @@ func NetworkLoopbackProgram(goarch string) ([]bpf.Instruction, error) {
 		// p0..p3: dispatch on the syscall number.
 		bpf.JumpIf{Cond: bpf.JumpEqual, Val: spec.socket, SkipTrue: 7},      // p0 -> p8
 		bpf.JumpIf{Cond: bpf.JumpEqual, Val: spec.socketpair, SkipTrue: 2},  // p1 -> p4
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: spec.setsockopt, SkipTrue: 16}, // p2 -> p19
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: spec.setsockopt, SkipTrue: 24}, // p2 -> p27
 		bpf.RetConstant{Val: retAllow},                                      // p3
 
 		// p4..p7: socketpair allows AF_UNIX only.
@@ -230,21 +237,35 @@ func NetworkLoopbackProgram(goarch string) ([]bpf.Instruction, error) {
 		bpf.RetConstant{Val: eperm},                                     // p6
 		bpf.RetConstant{Val: retAllow},                                  // p7
 
-		// p8..p18: socket allows AF_UNIX, and AF_INET SOCK_STREAM with
-		// protocol 0 or IPPROTO_TCP.
-		bpf.LoadAbsolute{Off: offArgs0Lo, Size: 4},                           // p8
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.AF_UNIX, SkipTrue: 8},      // p9 -> p18
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.AF_INET, SkipFalse: 6},     // p10 -> p17
-		bpf.LoadAbsolute{Off: offArgs1Lo, Size: 4},                           // p11
-		bpf.ALUOpConstant{Op: bpf.ALUOpAnd, Val: sockTypeMask},               // p12
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.SOCK_STREAM, SkipFalse: 3}, // p13 -> p17
-		bpf.LoadAbsolute{Off: offArgs2Lo, Size: 4},                           // p14
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: 0, SkipTrue: 2},                 // p15 -> p18
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.IPPROTO_TCP, SkipTrue: 1},  // p16 -> p18
-		bpf.RetConstant{Val: eperm},                                          // p17
-		bpf.RetConstant{Val: retAllow},                                       // p18
+		// p8..p26: socket allows AF_UNIX; AF_INET SOCK_STREAM with
+		// protocol 0 or IPPROTO_TCP; and AF_NETLINK with a type of
+		// SOCK_RAW or SOCK_DGRAM and protocol 0 (NETLINK_ROUTE).
+		// Everything else falls to the shared EPERM at p26. Jumps only
+		// go forward, so the netlink arm sits after the first ALLOW.
+		bpf.LoadAbsolute{Off: offArgs0Lo, Size: 4},                            // p8
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.AF_UNIX, SkipTrue: 8},       // p9 -> p18
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.AF_NETLINK, SkipTrue: 8},    // p10 -> p19
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.AF_INET, SkipFalse: 14},     // p11 -> p26
+		bpf.LoadAbsolute{Off: offArgs1Lo, Size: 4},                            // p12
+		bpf.ALUOpConstant{Op: bpf.ALUOpAnd, Val: sockTypeMask},                // p13
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.SOCK_STREAM, SkipFalse: 11}, // p14 -> p26
+		bpf.LoadAbsolute{Off: offArgs2Lo, Size: 4},                            // p15
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: 0, SkipTrue: 1},                  // p16 -> p18
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.IPPROTO_TCP, SkipFalse: 8},  // p17 -> p26
+		bpf.RetConstant{Val: retAllow},                                        // p18
 
-		// p19..p24: setsockopt refuses TCP_ULP at level IPPROTO_TCP.
+		// The netlink arm: type RAW or DGRAM after masking flags, then
+		// protocol exactly 0.
+		bpf.LoadAbsolute{Off: offArgs1Lo, Size: 4},                             // p19
+		bpf.ALUOpConstant{Op: bpf.ALUOpAnd, Val: sockTypeMask},                 // p20
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.SOCK_RAW, SkipTrue: 1},       // p21 -> p23
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.SOCK_DGRAM, SkipFalse: 3},    // p22 -> p26
+		bpf.LoadAbsolute{Off: offArgs2Lo, Size: 4},                             // p23
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.NETLINK_ROUTE, SkipFalse: 1}, // p24 -> p26
+		bpf.RetConstant{Val: retAllow},                                         // p25
+		bpf.RetConstant{Val: eperm},                                            // p26
+
+		// p27..p32: setsockopt refuses TCP_ULP at level IPPROTO_TCP.
 		bpf.LoadAbsolute{Off: offArgs1Lo, Size: 4},                           // p19
 		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.IPPROTO_TCP, SkipFalse: 2}, // p20 -> p23
 		bpf.LoadAbsolute{Off: offArgs2Lo, Size: 4},                           // p21

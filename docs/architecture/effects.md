@@ -671,7 +671,9 @@ profile or configuration, and `permissions.network` still accepts only
 | `socket(AF_UNIX, ...)`, `socketpair(AF_UNIX, ...)` | allowed | allowed |
 | `socket(AF_INET, SOCK_STREAM, 0 or IPPROTO_TCP)` | `EPERM` | allowed |
 | `socket(AF_INET, ...)` with any other type or protocol (UDP, raw, SCTP, MPTCP) | `EPERM` | `EPERM` |
-| `socket(AF_INET6, ...)`, `AF_PACKET`, every `AF_NETLINK` family, anything else | `EPERM` | `EPERM` |
+| `socket(AF_NETLINK, SOCK_RAW or SOCK_DGRAM, NETLINK_ROUTE)` | `EPERM` | allowed |
+| `socket(AF_NETLINK, ...)` with any other type or protocol | `EPERM` | `EPERM` |
+| `socket(AF_INET6, ...)`, `AF_PACKET`, anything else | `EPERM` | `EPERM` |
 | `socketpair` outside `AF_UNIX` | `EPERM` | `EPERM` |
 | `setsockopt(IPPROTO_TCP, TCP_ULP)` | n/a, no TCP socket | `EPERM` |
 
@@ -688,8 +690,11 @@ unreachable because each jail has its own namespace.
 *What it costs.* The host kernel's TCP code becomes reachable from jailed
 code, through `socket`, `bind`, `listen`, `connect`, `accept`, `sendmsg`
 and `setsockopt` on IPv4 stream sockets. That is new kernel attack
-surface for model-influenced code. Netlink, raw and packet sockets, UDP,
-SCTP, MPTCP and the kernel TLS upgrade stay closed. A host should ask for
+surface for model-influenced code. Raw and packet sockets, UDP,
+SCTP, MPTCP, every netlink protocol but `NETLINK_ROUTE` and the kernel TLS
+upgrade stay closed. The route socket is bounded by the capability-less
+user namespace and the fresh network namespace (only `lo`), so it can read
+`lo` and mutate nothing. A host should ask for
 this mode only for a kind of run where it has accepted that surface.
 
 *Preconditions.* Loopback mode runs only in a jail that holds no

@@ -97,17 +97,26 @@ func TestLoopbackJailAllowsOnlyIPv4TCPOnLo(t *testing.T) {
 		"connect-doc-range": "ENETUNREACH",
 		"connect-private":   "ENETUNREACH",
 
-		"socket-inet6-stream":    "EPERM",
-		"socket-inet-dgram":      "EPERM",
-		"socket-inet-raw":        "EPERM",
-		"socket-inet-sctp":       "EPERM",
-		"socket-inet-mptcp":      "EPERM",
-		"socket-packet":          "EPERM",
-		"socket-netlink-route":   "EPERM",
-		"socket-netlink-generic": "EPERM",
-		"io-uring-setup":         "EPERM",
-		"socketpair-inet":        "EPERM",
-		"socketpair-unix":        "ok",
+		"socket-inet6-stream":      "EPERM",
+		"socket-inet-dgram":        "EPERM",
+		"socket-inet-raw":          "EPERM",
+		"socket-inet-sctp":         "EPERM",
+		"socket-inet-mptcp":        "EPERM",
+		"socket-packet":            "EPERM",
+		"socket-netlink-generic":   "EPERM",
+		"socket-netlink-audit":     "EPERM",
+		"socket-netlink-uevent":    "EPERM",
+		"socket-netlink-netfilter": "EPERM",
+		"socket-netlink-stream":    "EPERM",
+
+		// The one netlink socket the mode admits, and the Go call that
+		// needs it.
+		"socket-netlink-route-raw":   "ok",
+		"socket-netlink-route-dgram": "ok",
+		"interface-addrs":            "ok",
+		"io-uring-setup":             "EPERM",
+		"socketpair-inet":            "EPERM",
+		"socketpair-unix":            "ok",
 
 		"setsockopt-tcp-nodelay": "ok",
 		"setsockopt-tcp-ulp":     "EPERM",
@@ -162,12 +171,15 @@ func TestOffJailStillRefusesTCPSockets(t *testing.T) {
 	}
 	got := probeLines(t, testPolicy(t), "battery")
 	expect(t, got, map[string]string{
-		"listen":               "EPERM",
-		"socket-inet-dgram":    "EPERM",
-		"socket-inet6-stream":  "EPERM",
-		"socket-netlink-route": "EPERM",
-		"socketpair-unix":      "ok",
-		"setsockopt-tcp-ulp":   "no-socket:EPERM",
+		"listen":                     "EPERM",
+		"socket-inet-dgram":          "EPERM",
+		"socket-inet6-stream":        "EPERM",
+		"socket-netlink-route-raw":   "EPERM",
+		"socket-netlink-route-dgram": "EPERM",
+		"socket-netlink-audit":       "EPERM",
+		"interface-addrs":            "EPERM",
+		"socketpair-unix":            "ok",
+		"setsockopt-tcp-ulp":         "no-socket:EPERM",
 	})
 }
 
