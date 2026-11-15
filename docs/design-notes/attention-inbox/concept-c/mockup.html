@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loom inbox: threads</title>
+<style>
+:root{
+  --bg:#141517;--raised:#1b1c1f;--sunk:#111214;--code:#212226;--fg:#e8e6e1;--quiet:#9a978f;--faint:#66645e;
+  --divider:#2b2d31;--current:#7c96ff;--signal:#f0a24f;--signal-text:#f0a24f;--peer:#a78bfa;--peer-text:#a78bfa;
+  --danger:#f06595;--danger-text:#f06595;--on-danger:#141517;--on-current:#141517;--added:#51cf66;--added-text:#51cf66;
+  --added-bg:#1f4d2e;--removed-bg:#4a1a29;
+  --pill-ok:color-mix(in srgb,var(--added) 12%,transparent);--pill-wait:color-mix(in srgb,var(--signal) 14%,transparent);
+  --pill-bad:color-mix(in srgb,var(--danger) 12%,transparent);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --bg:#f6f5f2;--raised:#ffffff;--sunk:#efede8;--code:#f1efe9;--fg:#1d1c1a;--quiet:#6f6b63;--faint:#a29d92;
+  --divider:#e2dfd8;--current:#3b5bdb;--signal:#d9822b;--signal-text:#975a1e;--peer:#8b5cf6;--peer-text:#764ed1;
+  --danger:#d6336c;--danger-text:#c02d61;--on-danger:#ffffff;--on-current:#ffffff;--added:#2f9e44;--added-text:#237833;
+  --added-bg:#d3efda;--removed-bg:#fce6ec;}}
+:root[data-theme="light"]{
+  --bg:#f6f5f2;--raised:#ffffff;--sunk:#efede8;--code:#f1efe9;--fg:#1d1c1a;--quiet:#6f6b63;--faint:#a29d92;
+  --divider:#e2dfd8;--current:#3b5bdb;--signal:#d9822b;--signal-text:#975a1e;--peer:#8b5cf6;--peer-text:#764ed1;
+  --danger:#d6336c;--danger-text:#c02d61;--on-danger:#ffffff;--on-current:#ffffff;--added:#2f9e44;--added-text:#237833;
+  --added-bg:#d3efda;--removed-bg:#fce6ec;}
+:root[data-theme="dark"]{color-scheme:dark}
+:root[data-theme="light"]{color-scheme:light}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+button:focus-visible,textarea:focus-visible{outline:2px solid var(--current);outline-offset:1px}
+code,.mono{font-family:var(--mono);font-size:12px}
+[hidden]{display:none!important}
+
+#app{height:100vh;display:grid;grid-template-rows:44px 1fr;min-width:0}
+.bar{display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--divider);background:var(--bg);min-width:0}
+.brand{font-weight:650;letter-spacing:.01em}
+.bar .where{color:var(--quiet)}
+.bar .totals{display:flex;gap:6px;flex:1;min-width:0;overflow:hidden;white-space:nowrap}
+.tot{font-size:12px;color:var(--quiet);padding:2px 8px;border-radius:10px;border:1px solid var(--divider)}
+.tot.need{color:var(--signal-text);background:var(--pill-wait);border-color:color-mix(in srgb,var(--signal) 40%,transparent);font-weight:600}
+.chip{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--divider);color:var(--quiet);white-space:nowrap}
+.btn-ghost{font-size:12px;color:var(--quiet);padding:3px 9px;border:1px solid var(--divider);border-radius:6px}
+
+main{display:grid;grid-template-columns:200px 388px 1fr;min-height:0}
+.rail{background:var(--sunk);border-right:1px solid var(--divider);padding:14px 10px;overflow:auto}
+.rail h4{margin:16px 8px 6px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--quiet)}
+.away{margin:0 8px 12px;font-size:12px;color:var(--quiet)}
+.away b{color:var(--fg);font-weight:600}
+.folder{display:flex;justify-content:space-between;align-items:center;width:100%;padding:6px 8px;border-radius:6px;color:var(--fg);font-size:13.5px}
+.folder:hover{background:var(--raised)}
+.folder.on{background:var(--raised);border:1px solid var(--divider);padding:5px 7px}
+.folder .n{font-size:12px;color:var(--quiet);min-width:20px;text-align:center}
+.folder.need .n{background:var(--signal);color:#141517;border-radius:10px;font-weight:700;padding:0 6px}
+.folder.muted{color:var(--quiet)}
+.rail .note{margin:14px 8px 0;font-size:12px;color:var(--quiet);line-height:1.5}
+
+.list{border-right:1px solid var(--divider);overflow:auto;min-height:0;position:relative}
+.ghead{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:baseline;padding:8px 14px;background:var(--bg);border-bottom:1px solid var(--divider);font-size:12px;color:var(--quiet);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.ghead small{font-weight:400;letter-spacing:0;text-transform:none;color:var(--quiet)}
+.ghead.need{background:color-mix(in srgb,var(--signal) 14%,var(--bg));color:var(--signal-text);border-bottom-color:color-mix(in srgb,var(--signal) 45%,transparent)}
+.row{display:block;width:100%;padding:10px 14px 10px 28px;border-bottom:1px solid var(--divider);position:relative}
+.row:hover{background:var(--raised)}
+.row.sel{background:var(--raised);box-shadow:inset 0 0 0 1px var(--divider)}
+.row .r1{display:flex;justify-content:space-between;gap:8px}
+.row .nm{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .age{color:var(--quiet);font-size:12px;white-space:nowrap}
+.row .age.long{color:var(--signal-text);font-weight:600}
+.row .r2{display:flex;gap:8px;align-items:baseline;margin-top:2px;min-width:0}
+.row .sj{color:var(--quiet);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.row .unread{position:absolute;left:12px;top:15px;width:8px;height:8px;border-radius:50%;background:var(--current)}
+.row.seen .unread{background:transparent;border:1px solid var(--faint)}
+.row.seen .nm{font-weight:500}
+.row.done{opacity:.62}
+.row.done .nm{text-decoration:line-through;text-decoration-color:var(--faint)}
+.row .rcpt{display:none;font-size:12px;color:var(--added-text);margin-top:2px}
+.row.done .rcpt{display:block}
+.row.done .r2{display:none}
+.kind{font-size:11px;font-weight:600;padding:0 6px;border-radius:6px;border:1px solid var(--divider);color:var(--quiet);white-space:nowrap;line-height:18px}
+.kind.k-appr{background:var(--pill-bad);color:var(--danger-text);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
+.kind.k-ask,.kind.k-stuck{background:var(--pill-wait);color:var(--signal-text);border-color:color-mix(in srgb,var(--signal) 40%,transparent)}
+.kind.k-stuck{background:var(--pill-bad);color:var(--danger-text);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
+.kind.k-rev{background:var(--pill-ok);color:var(--added-text);border-color:color-mix(in srgb,var(--added) 40%,transparent)}
+.folded{display:flex;width:100%;gap:10px;align-items:baseline;padding:9px 14px;color:var(--quiet);font-size:13px;border-bottom:1px solid var(--divider)}
+.folded:hover{background:var(--raised)}
+.folded b{color:var(--fg);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.folded span.t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.read{overflow:auto;min-height:0;position:relative;display:flex;flex-direction:column}
+.thread{display:flex;flex-direction:column;min-height:100%}
+.thread-body{padding:22px 32px 20px;max-width:820px;width:100%}
+.back{display:none}
+.eyebrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--quiet);font-size:12.5px}
+.thread h1{font-size:20px;line-height:1.3;margin:8px 0 6px;font-weight:620;letter-spacing:-.005em}
+.meta{color:var(--quiet);font-size:13px}
+.meta b{color:var(--fg);font-weight:550}
+h2{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--quiet);margin:22px 0 8px}
+.card{background:var(--raised);border:1px solid var(--divider);border-radius:10px;padding:12px 14px}
+.card.danger{border-color:color-mix(in srgb,var(--danger) 45%,var(--divider));background:color-mix(in srgb,var(--danger) 5%,var(--raised))}
+.card.amber{border-color:color-mix(in srgb,var(--signal) 40%,var(--divider));background:color-mix(in srgb,var(--signal) 6%,var(--raised))}
+table.kv{border-collapse:collapse;width:100%}
+table.kv td{padding:4px 0;vertical-align:top;font-size:13px}
+table.kv td:first-child{width:128px;color:var(--quiet)}
+.quote{border:1px dashed var(--divider);border-radius:8px;padding:9px 12px;color:var(--fg);font-size:13px;background:var(--bg)}
+.quote .src{display:block;color:var(--quiet);font-size:11.5px;margin-bottom:3px}
+.peer{border-color:color-mix(in srgb,var(--peer) 45%,var(--divider))}
+.peer .src b{color:var(--peer-text)}
+.opt{display:block;width:100%;padding:10px 14px;border:1px solid var(--divider);border-radius:10px;background:var(--raised);margin-bottom:8px}
+.opt:hover{border-color:var(--faint)}
+.opt .top{display:flex;gap:8px;align-items:baseline}
+.opt .num{font-family:var(--mono);font-size:12px;color:var(--quiet)}
+.opt .lbl{font-weight:600}
+.opt .why{color:var(--quiet);font-size:13px;margin-top:2px;padding-left:20px}
+.opt .rec{margin-left:auto;font-size:11px;font-weight:600;color:var(--added-text);background:var(--pill-ok);padding:0 7px;border-radius:8px;line-height:18px}
+.opt.staged{border-color:var(--current);background:color-mix(in srgb,var(--current) 8%,var(--raised))}
+.opt.staged .num::before{content:"\25CF  ";color:var(--current)}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.b{padding:6px 12px;border:1px solid var(--divider);border-radius:6px;background:var(--raised);font-size:13px;font-weight:550}
+.b:hover{border-color:var(--faint)}
+.b.staged{border-color:var(--current);background:color-mix(in srgb,var(--current) 10%,var(--raised));color:var(--fg)}
+.b.staged::before{content:"\2713  ";color:var(--current)}
+.b.sm{padding:3px 9px;font-size:12px}
+.b.deny.staged{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,var(--raised))}
+.b.deny.staged::before{color:var(--danger)}
+.b:disabled{opacity:.45;cursor:default}
+.ta{width:100%;min-height:54px;resize:vertical;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--divider);border-radius:8px;padding:8px 10px}
+.hint{color:var(--quiet);font-size:12.5px}
+
+.outbox{position:sticky;bottom:0;margin-top:auto;background:var(--bg);border-top:1px solid var(--divider);padding:10px 32px;display:flex;gap:14px;align-items:center;min-height:56px}
+.outbox .to{flex:1;min-width:0;font-size:13px;color:var(--quiet)}
+.outbox .to b{color:var(--fg);font-weight:600}
+.outbox .items{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px}
+.stg{font-size:12px;border:1px solid color-mix(in srgb,var(--current) 50%,var(--divider));background:color-mix(in srgb,var(--current) 8%,var(--raised));border-radius:10px;padding:0 8px;color:var(--fg)}
+.send{padding:8px 16px;border-radius:6px;border:1px solid var(--current);background:var(--current);color:var(--on-current);font-weight:600}
+.send:disabled{background:transparent;border-color:var(--divider);color:var(--quiet);opacity:.7;cursor:default}
+.send.armed{background:var(--signal);border-color:var(--signal);color:#141517}
+.outbox .state{display:none}
+.sent .outbox .compose{display:none}
+.sent .outbox .state{display:flex;flex:1;gap:12px;align-items:center}
+.receipt{color:var(--added-text);font-weight:600}
+.link{color:var(--current);font-size:13px;text-decoration:underline;text-underline-offset:2px}
+.sending .receipt{color:var(--signal-text)}
+
+.summary{font-size:14px}
+.stats{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.pill{font-size:12px;padding:0 8px;border-radius:10px;border:1px solid var(--divider);color:var(--quiet);line-height:20px}
+.pill.ok{background:var(--pill-ok);color:var(--added-text)}
+.pill.bad{background:var(--pill-bad);color:var(--danger-text)}
+.find{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px solid var(--divider)}
+.find:first-child{border-top:0}
+.find .tx{flex:1;font-size:13px}
+.find .tx b{font-weight:600}
+.sec{border:1px solid var(--divider);border-radius:10px;background:var(--raised);margin-bottom:8px;overflow:hidden}
+.sec>.sh{display:flex;gap:10px;align-items:baseline;width:100%;padding:9px 14px}
+.sec .sn{font-family:var(--mono);font-size:12px;color:var(--quiet)}
+.sec .st{font-weight:600;flex:1}
+.sec .sd{font-family:var(--mono);font-size:12px;color:var(--quiet)}
+.sec .add{color:var(--added-text)}.sec .del{color:var(--danger-text)}
+.sec .sb{border-top:1px solid var(--divider);padding:10px 14px 12px}
+.agent{font-size:13px;margin:0 0 10px}
+.agent i{font-style:normal;color:var(--quiet);font-size:11.5px;display:block}
+.hunk{background:var(--code);border-radius:8px;overflow:hidden;font-family:var(--mono);font-size:12px}
+.hunk .fn{padding:5px 10px;color:var(--quiet);border-bottom:1px solid var(--divider)}
+.ln{display:grid;grid-template-columns:34px 22px 1fr;white-space:pre;line-height:1.55}
+.ln .no{color:var(--faint);text-align:right;padding-right:8px;user-select:none}
+.ln .pin{display:flex;align-items:center;justify-content:center}
+.ln.a{background:var(--added-bg)}.ln.d{background:var(--removed-bg)}
+.ln.mark{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--signal) 55%,transparent)}
+.num-pin{width:16px;height:16px;border-radius:50%;background:var(--current);color:var(--on-current);font:600 10px/16px var(--sans);text-align:center;display:inline-block}
+.num-pin.pf{background:var(--signal);color:#141517}
+.cm{white-space:normal;margin:6px 0 2px 56px;font-family:var(--sans);background:var(--raised);border:1px solid color-mix(in srgb,var(--current) 50%,var(--divider));border-radius:8px;padding:7px 10px;font:13px/1.45 var(--sans);white-space:normal}
+.cm .who{color:var(--quiet);font-size:11.5px;display:block}
+.cm.agentnote{border-color:color-mix(in srgb,var(--signal) 50%,var(--divider))}
+.addc{opacity:0;border-radius:3px;font:600 11px var(--sans);color:var(--current);cursor:pointer}
+.ln:hover .addc{opacity:1}
+.ctx{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.ctx div{font-size:12.5px}.ctx b{display:block;font-size:13.5px;font-weight:600}
+.dlg{margin-top:10px;display:flex;flex-direction:column;gap:5px;font-size:13px}
+.dlg div{display:flex;gap:8px;align-items:baseline}
+.dlg .s{min-width:104px;font-family:var(--mono);font-size:12px}
+
+/* phone: one column; the class is set by script for ?frame=phone and for narrow viewports */
+html.phone body{background:var(--sunk)}
+html.phone #app{width:390px;max-width:100%;margin:0 auto;height:100vh;background:var(--bg);border-left:1px solid var(--divider);border-right:1px solid var(--divider)}
+html.phone .bar{padding:0 12px;gap:8px}
+html.phone .bar .where,html.phone .bar .role,html.phone .btn-ghost.hide-p{display:none}
+html.phone main{display:block;position:relative;overflow:hidden}
+html.phone .rail{display:none}
+html.phone .list{height:100%;border-right:0}
+html.phone .read{position:absolute;inset:0;background:var(--bg);display:none;z-index:5}
+html.phone .has-open .read{display:flex}
+html.phone .back{display:inline-block;color:var(--current);font-size:13px;margin-bottom:6px}
+html.phone .thread-body{padding:14px 16px}
+html.phone .outbox{padding:10px 16px;flex-wrap:wrap}
+html.phone .ctx{grid-template-columns:1fr 1fr}
+html.phone .thread h1{font-size:17px}
+html.phone table.kv td:first-child{width:90px}
+html.phone .totrow{display:flex}
+.totrow{display:none}
+html.phone .totrow{display:flex;gap:6px;padding:8px 14px;border-bottom:1px solid var(--divider);flex-wrap:wrap}
+html.phone .bar .totals{display:none}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="bar">
+    <span class="brand">loom</span>
+    <span class="where">Inbox · all workspaces</span>
+    <div class="totals" id="totals"></div>
+    <span class="chip role">owner · operating</span>
+    <button class="btn-ghost" id="theme">Theme</button>
+  </header>
+  <main id="main">
+    <nav class="rail" aria-label="Folders">
+      <p class="away">Back at <b>14:20</b>. Away since 11:05, three hours fifteen.</p>
+      <button class="folder on"><span>Everything, by need</span><span class="n" id="n-all">8</span></button>
+      <button class="folder need"><span>Needs you</span><span class="n" id="n-need">4</span></button>
+      <button class="folder"><span>To review</span><span class="n" id="n-rev">2</span></button>
+      <button class="folder"><span>Finds</span><span class="n" id="n-find">2</span></button>
+      <button class="folder muted"><span>Moving without you</span><span class="n">2</span></button>
+      <button class="folder muted"><span>Quiet</span><span class="n">2</span></button>
+      <h4>Mail</h4>
+      <button class="folder"><span>Sent</span><span class="n" id="n-sent">0</span></button>
+      <button class="folder muted"><span>Closed</span><span class="n" id="n-closed">0</span></button>
+      <h4>Workspaces</h4>
+      <button class="folder"><span>loom</span><span class="n">4</span></button>
+      <button class="folder"><span>aegis</span><span class="n">2</span></button>
+      <p class="note">Reading a thread does not clear it. A thread leaves Needs you only when you send, or when the agent no longer needs you.</p>
+    </nav>
+
+    <section class="list" id="list" aria-label="Threads">
+      <div class="ghead need"><span>Needs you · <span id="c-need">4</span></span><small>agents stopped for you</small></div>
+      <button class="row" data-open="appr" data-g="need"><span class="unread"></span>
+        <span class="r1"><span class="nm">storage/branch-index-repair</span><span class="age long">1h 22m</span></span>
+        <span class="r2"><span class="kind k-appr">Approval</span><span class="sj">proc.run sqlite3 integrity_check, write to ~/.loom</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="pod" data-g="need"><span class="unread"></span>
+        <span class="r1"><span class="nm">aegis · runner/pod-reach</span><span class="age long">3h 00m</span></span>
+        <span class="r2"><span class="kind k-ask">Ask</span><span class="sj">The runner pod has no /tmp write. Use the scratch tmpfs…</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="coord" data-g="need"><span class="unread"></span>
+        <span class="r1"><span class="nm">coord/web-inbox</span><span class="age">40m</span></span>
+        <span class="r2"><span class="kind k-ask">Ask</span><span class="sj">Should closed items fold under open ones, or move to a…</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="stuck" data-g="need"><span class="unread"></span>
+        <span class="r1"><span class="nm">sub:mockup-b</span><span class="age">28m</span></span>
+        <span class="r2"><span class="kind k-stuck">Stuck</span><span class="sj">Rate-limited at 13:52, has not retried</span></span><span class="rcpt"></span></button>
+
+      <div class="ghead"><span>To review · <span id="c-rev">2</span></span><small>finished, waiting on your read</small></div>
+      <button class="row" data-open="hash" data-g="rev"><span class="unread"></span>
+        <span class="r1"><span class="nm">fix/hashline-replay</span><span class="age">1h 49m</span></span>
+        <span class="r2"><span class="kind k-rev">Review</span><span class="sj">+412 −88, 7 files, 4 sections · 2 finds attached</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="pr" data-g="rev"><span class="unread"></span>
+        <span class="r1"><span class="nm">wp-j/vetting-lint · #1261</span><span class="age">today</span></span>
+        <span class="r2"><span class="kind k-rev">PR</span><span class="sj">1 failing check, 2 unresolved comments from Bob</span></span><span class="rcpt"></span></button>
+
+      <div class="ghead"><span>Finds · <span id="c-find">2</span></span><small>noticed outside the task</small></div>
+      <button class="row" data-open="hash#risk" data-g="find"><span class="unread"></span>
+        <span class="r1"><span class="nm">fix/hashline-replay</span><span class="age">2h 20m</span></span>
+        <span class="r2"><span class="kind">Risk</span><span class="sj">replay silently skips entries with an empty digest</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="hash#idea" data-g="find"><span class="unread"></span>
+        <span class="r1"><span class="nm">fix/hashline-replay</span><span class="age">2h 24m</span></span>
+        <span class="r2"><span class="kind">Idea</span><span class="sj">reuse machine/codec first-match walk, drop a closure</span></span><span class="rcpt"></span></button>
+
+      <div class="ghead" style="position:static"><span>Folded</span><small>no one is waiting on you</small></div>
+      <button class="folded"><b>Moving</b><span class="t">sub:mockup-a editing inbox.gleam, 14m · wp-j/vetting-lint, 3m</span><span>2</span></button>
+      <button class="folded"><b>Quiet</b><span class="t">docs/threat-model, yesterday · sub:fact-sheet settled 2h ago</span><span>2</span></button>
+    </section>
+
+    <section class="read" id="read" aria-label="Thread">
+
+<!-- 1. approval -->
+<article class="thread" id="t-appr" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind k-appr">Approval</span><span>storage/branch-index-repair · main · loom</span><span>· waiting since 12:58 (1h 22m)</span></div>
+    <h1>May this program run <code>sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</code> with write access to <code>~/.loom</code>?</h1>
+    <div class="meta"><b>Bob</b> (operator) is on this session and has seen it. He has not decided. First decision wins.</div>
+    <h2>What it asks for</h2>
+    <div class="card danger"><table class="kv">
+      <tr><td>Tool</td><td><code>code_mode</code> program, call <code>proc.run</code></td></tr>
+      <tr><td>Command</td><td><code>sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</code></td></tr>
+      <tr><td>Network</td><td>off</td></tr>
+      <tr><td>Wants a write grant</td><td><b><code>~/.loom</code></b>, outside the workspace</td></tr>
+      <tr><td>Policy today</td><td><code>workspace-write · network off</code></td></tr>
+      <tr><td>Bound to</td><td class="mono">escalation e-7f2 · seq 41 · digest 9f3c…a1</td></tr>
+    </table></div>
+    <h2>In this thread</h2>
+    <div class="quote peer"><span class="src"><b>Peer message</b> · runner/pod-reach · main → this session · 13:15 · origin checked · stored, not answered</span>“Does the integrity check need the write grant, or can it run read-only?”</div>
+    <div class="hint" style="margin-top:6px">It is a fair question for this approval: SQLite can check a database read-only. You can deny with that reason and the agent sees it.</div>
+    <h2>Your decision</h2>
+    <div class="acts" data-group="appr">
+      <button class="b deny" data-stage="appr" data-key="d" data-label="Deny">Deny</button>
+      <button class="b" data-stage="appr" data-key="o" data-label="Allow once">Allow once</button>
+      <button class="b" data-stage="appr" data-key="s" data-label="Allow for this session">Allow for this session</button>
+    </div>
+    <p class="hint" style="margin-top:10px">The decision names the escalation, its seq and the digest above. If the agent changes what it asks before you send, the send is refused as stale and the card redraws. Send stays disabled for 600 ms after you choose.</p>
+  </div>
+  <div class="outbox" data-thread="appr" data-to="storage/branch-index-repair · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a decision. Nothing reaches the agent until you send.</span><div class="items"></div></div><button class="send" disabled>Send decision</button></div>
+    <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
+  </div>
+</article>
+
+<!-- 2. pod-reach ask -->
+<article class="thread" id="t-pod" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind k-ask">Ask</span><span>runner/pod-reach · main · aegis</span><span>· idle since 11:20 (3h 00m)</span></div>
+    <h1>The runner pod has no <code>/tmp</code> write. Which way?</h1>
+    <h2>Where it stopped</h2>
+    <div class="quote"><span class="src">The agent's last message, untrusted text · 11:20</span>The cache step writes under <code>/tmp/runner-cache</code>, and the pod's root filesystem is read-only, so the first write fails. Three ways out are below. I stopped before touching the chart.</div>
+    <div class="hint" style="margin-top:6px"><button class="link">Open the transcript at this point</button> · 14 messages · you should rarely need it</div>
+    <h2>Options</h2>
+    <button class="opt" data-stage="pod" data-key="1" data-label="Use the scratch tmpfs"><span class="top"><span class="num">1</span><span class="lbl">Use the scratch tmpfs</span><span class="rec">recommended</span></span><span class="why">The jail already mounts one; no chart change and nothing persists past the run.</span></button>
+    <button class="opt" data-stage="pod" data-key="2" data-label="Mount an emptyDir"><span class="top"><span class="num">2</span><span class="lbl">Mount an emptyDir</span></span><span class="why">Survives a container restart, adds a volume to the chart.</span></button>
+    <button class="opt" data-stage="pod" data-key="3" data-label="Skip the cache"><span class="top"><span class="num">3</span><span class="lbl">Skip the cache</span></span><span class="why">Simplest; every run pays the full download.</span></button>
+    <h2>Or in your own words</h2>
+    <textarea class="ta" placeholder="Reply to the agent… (Explain first, Compare, or free text)"></textarea>
+  </div>
+  <div class="outbox" data-thread="pod" data-to="runner/pod-reach · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option or write a reply.</span><div class="items"></div></div><button class="send" disabled>Send answer</button></div>
+    <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
+  </div>
+</article>
+
+<!-- 3. coordinator ask -->
+<article class="thread" id="t-coord" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind k-ask">Ask</span><span>coord/web-inbox · main · loom</span><span>· asked 13:40 (40m)</span></div>
+    <h1>Should closed items fold under open ones, or move to a separate “Done” list?</h1>
+    <h2>The coordinator</h2>
+    <div class="card"><div class="ctx">
+      <div><span class="hint">Goal</span><b>Ship the attention inbox</b>phase build</div>
+      <div><span class="hint">Milestones</span><b>3 of 5 done</b></div>
+      <div><span class="hint">Tokens</span><b>412k of 1.2M</b></div></div>
+      <div class="dlg">
+        <div><span class="s">sub:fact-sheet</span><span>settled 2h ago, result returned</span></div>
+        <div><span class="s">sub:mockup-a</span><span>working, 14 min into a turn</span></div>
+        <div><span class="s" style="color:var(--danger-text)">sub:mockup-b</span><span>stuck, rate-limited 13:52 · <button class="link" data-goto="stuck">its own thread</button></span></div>
+      </div></div>
+    <h2>Options</h2>
+    <button class="opt" data-stage="coord" data-key="1" data-label="Fold under open"><span class="top"><span class="num">1</span><span class="lbl">Fold under open</span><span class="rec">recommended</span></span><span class="why">Matches the Inbox plugin and keeps context.</span></button>
+    <button class="opt" data-stage="coord" data-key="2" data-label="Separate Done list"><span class="top"><span class="num">2</span><span class="lbl">Separate Done list</span></span></button>
+    <button class="opt" data-stage="coord" data-key="3" data-label="Hide after 24h"><span class="top"><span class="num">3</span><span class="lbl">Hide after 24h</span></span></button>
+  </div>
+  <div class="outbox" data-thread="coord" data-to="coord/web-inbox · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option.</span><div class="items"></div></div><button class="send" disabled>Send answer</button></div>
+    <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
+  </div>
+</article>
+
+<!-- 4. stuck delegate -->
+<article class="thread" id="t-stuck" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind k-stuck">Stuck</span><span>sub:mockup-b · under coord/web-inbox · loom</span><span>· failed 13:52 (28m)</span></div>
+    <h1>The last turn failed on a provider rate limit, and nothing has retried.</h1>
+    <h2>What the page knows</h2>
+    <div class="card amber"><table class="kv">
+      <tr><td>Strand status</td><td>Failed at 13:52, no retry since</td></tr>
+      <tr><td>Parent</td><td>coord/web-inbox is not waiting on it; its question is yours first</td></tr>
+      <tr><td>Rate-limit end</td><td>not reported by the provider</td></tr></table></div>
+    <h2>Send it a nudge</h2>
+    <button class="opt" data-stage="stuck" data-key="1" data-label="“Retry the last step.”"><span class="top"><span class="num">1</span><span class="lbl">Retry the last step</span><span class="rec">recommended</span></span><span class="why">Sends exactly: “Retry the last step.” Reaches the strand as a held input.</span></button>
+    <button class="opt" data-stage="stuck" data-key="2" data-label="Tell coord/web-inbox to take it back"><span class="top"><span class="num">2</span><span class="lbl">Tell the coordinator to take it back</span></span><span class="why">Posts to coord/web-inbox so it can reassign or wait.</span></button>
+  </div>
+  <div class="outbox" data-thread="stuck" data-to="sub:mockup-b">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a nudge.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
+    <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
+  </div>
+</article>
+
+<!-- 5. the review -->
+<article class="thread" id="t-hash" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind k-rev">Review</span><span>fix/hashline-replay · main · loom</span><span>· finished 12:31</span></div>
+    <h1>Replay now stops at the first bad entry and says which one it was</h1>
+    <div class="summary">
+      <div class="stats"><span class="pill ok">+412</span><span class="pill bad">−88</span><span class="pill">7 files</span><span class="pill">4 sections</span><span class="pill ok">make check-core exit 0, as the agent reports</span></div>
+    </div>
+    <h2>Noticed along the way · 2</h2>
+    <div class="card" id="finds">
+      <div class="find"><span class="num-pin pf">!</span><div class="tx"><b>Risk.</b> <code>hashline.replay</code> silently skips entries whose digest is empty; a truncated store would replay short with no error. <span class="hint">Pinned in §2.</span></div>
+        <div class="acts"><button class="b sm" data-stage="hash" data-key="risk-fix" data-excl="risk" data-label="Fix the risk first">Fix in this branch</button><button class="b sm" data-stage="hash" data-key="risk-issue" data-excl="risk" data-label="File an issue for the risk">File issue</button></div></div>
+      <div class="find"><span class="num-pin pf">i</span><div class="tx"><b>Idea.</b> The replay loop could reuse <code>machine/codec</code>'s first-match walk and drop a closure per entry.</div>
+        <div class="acts"><button class="b sm" data-stage="hash" data-key="idea-dismiss" data-excl="idea" data-label="Dismiss the idea">Dismiss</button></div></div>
+    </div>
+    <h2>Sections, in the order to read them</h2>
+    <div class="sec" id="s1"><button class="sh" data-toggle="s1b"><span class="sn">§1</span><span class="st">Entries know their position</span><span class="sd"><span class="add">+38</span> <span class="del">−9</span> · 1 file</span></button>
+      <div class="sb" id="s1b" hidden><p class="agent"><i>The agent's summary</i>An entry now carries its index so a failure can name it. Nothing else about decoding changed.</p><span class="mono hint">core/hashline/entry.gleam</span></div></div>
+    <div class="sec" id="s2"><button class="sh" data-toggle="s2b"><span class="sn">§2</span><span class="st">Replay stops at the first mismatch</span><span class="sd"><span class="add">+193</span> <span class="del">−63</span> · 2 files</span></button>
+      <div class="sb" id="s2b"><p class="agent"><i>The agent's summary</i>Replay folds over entries in order and returns <code>Error(Mismatch(index))</code> at the first digest that does not match, instead of continuing. This is the behaviour change.</p>
+        <div class="hunk"><div class="fn">core/hashline.gleam · replay_from</div>
+          <div class="ln"><span class="no">96</span><span class="pin"></span><span>  case entries {</span></div>
+          <div class="ln"><span class="no">97</span><span class="pin"></span><span>    [] -&gt; Ok(state)</span></div>
+          <div class="ln d"><span class="no">98</span><span class="pin"></span><span>-   [e, ..rest] -&gt; replay_from(rest, apply(state, e))</span></div>
+          <div class="ln a"><span class="no">98</span><span class="pin"></span><span>+   [e, ..rest] -&gt; {</span></div>
+          <div class="ln mark"><span class="no">99</span><span class="pin"><span class="num-pin pf">!</span></span><span>      use <span style="color:var(--quiet)">&lt;-</span> skip_if_empty(e.digest)  <span style="color:var(--quiet)">// unchanged</span></span></div>
+          <div class="cm agentnote" style="margin:4px 8px 6px 56px"><span class="who">The agent, pinned to line 99 as a find</span>This line existed before my change and skips an empty digest without an error. I left it alone because it is outside the task.</div>
+          <div class="ln a"><span class="no">100</span><span class="pin" id="pin-c1"></span><span>+     use state &lt;- result.try(check_and_apply(state, e))</span></div>
+          <div class="cm" id="c1" hidden style="margin:4px 8px 6px 56px"><span class="who">Your comment 1 · line 100 · travels with Send</span>Name the entry's index in <code>Mismatch</code>'s message too, not only the value.</div>
+          <div class="ln a"><span class="no">101</span><span class="pin"></span><span>+     replay_from(rest, state)</span></div>
+          <div class="ln a"><span class="no">102</span><span class="pin"></span><span>+   }</span></div>
+          <div class="ln"><span class="no">103</span><span class="pin"></span><span>  }</span></div>
+        </div>
+        <p class="hint" style="margin:8px 0 0">Click a line number to comment on that line. Comments travel with the next Send.</p>
+      </div></div>
+    <div class="sec" id="s3"><button class="sh" data-toggle="s3b"><span class="sn">§3</span><span class="st">Tests</span><span class="sd"><span class="add">+146</span> <span class="del">−9</span> · 2 files</span></button>
+      <div class="sb" id="s3b" hidden><p class="agent"><i>The agent's summary</i>A property says replaying any prefix equals the state at that prefix. A new case reorders two entries and expects <code>Mismatch(1)</code>.</p><span class="mono hint">core/test/hashline_replay_test.gleam · core/test/hashline_property_test.gleam</span></div></div>
+    <div class="sec" id="s4"><button class="sh" data-toggle="s4b"><span class="sn">§4</span><span class="st">Docs</span><span class="sd"><span class="add">+35</span> <span class="del">−7</span> · 2 files</span></button>
+      <div class="sb" id="s4b" hidden><p class="agent"><i>The agent's summary</i>The durability note now says replay is strict about order, and the core package guide lists the new error.</p><span class="mono hint">docs/architecture/durability.md · packages/core/CLAUDE.md</span></div></div>
+    <h2>Your verdict</h2>
+    <div class="acts"><button class="b" data-stage="hash" data-key="approve" data-excl="verdict" data-label="Approve">Approve</button><button class="b" data-stage="hash" data-key="changes" data-excl="verdict" data-label="Request changes">Request changes</button></div>
+    <p class="hint" style="margin-top:10px">Everything you stage goes in one message to the agent's main strand. Approval records that you read the diff as listed here; the section list is fixed when you open it, and a later edit by the agent shows as a revision.</p>
+  </div>
+  <div class="outbox" data-thread="hash" data-to="fix/hashline-replay · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Stage a verdict, answer a find, or comment on a line.</span><div class="items"></div></div><button class="send" disabled>Send to main</button></div>
+    <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
+  </div>
+</article>
+
+<!-- 6. PR -->
+<article class="thread" id="t-pr" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind k-rev">PR</span><span>wp-j/vetting-lint · #1261 · loom</span><span>· its session is working, 3 min into a turn</span></div>
+    <h1>One check is failing and two review comments are unresolved.</h1>
+    <h2>Blockers</h2>
+    <div class="card">
+      <div class="find"><span class="pill bad">failing</span><div class="tx"><code>lint (R11)</code> · a body written as one undivided block</div></div>
+      <div class="find"><span class="pill">Bob</span><div class="tx">Unresolved comment 1 on the lint rule's message wording.</div></div>
+      <div class="find"><span class="pill">Bob</span><div class="tx">Unresolved comment 2 on one test name.</div></div>
+    </div>
+    <h2>Send</h2>
+    <button class="opt" data-stage="pr" data-key="all" data-label="Address all three"><span class="top"><span class="num">1</span><span class="lbl">Address all three</span><span class="rec">recommended</span></span><span class="why">Queued behind its current turn as a held input. No merge.</span></button>
+  </div>
+  <div class="outbox" data-thread="pr" data-to="wp-j/vetting-lint · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an action.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
+    <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
+  </div>
+</article>
+    </section>
+  </main>
+</div>
+
+<script>
+(function(){
+  var q = new URLSearchParams(location.search), root = document.documentElement;
+  var th = q.get('theme'); if (th === 'dark' || th === 'light') root.setAttribute('data-theme', th);
+  document.getElementById('theme').addEventListener('click', function(){
+    var cur = root.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+  function phone(){ var on = q.get('frame') === 'phone' || (q.get('frame') !== 'desktop' && innerWidth < 700); root.classList.toggle('phone', on); return on; }
+  phone(); addEventListener('resize', phone);
+
+  var order = ['appr','pod','coord','stuck','hash','pr'], closed = {}, sentN = 0, clock = 21;
+  var main = document.getElementById('main');
+  var rows = [].slice.call(document.querySelectorAll('.row'));
+  function show(id, focusKey){
+    order.forEach(function(k){ document.getElementById('t-'+k).hidden = (k !== id); });
+    rows.forEach(function(r){ r.classList.toggle('sel', r.dataset.open.split('#')[0] === id && !r.classList.contains('read') || r.dataset.open === id + '#' + (focusKey||'') ); });
+    main.classList.add('has-open');
+    rows.forEach(function(r){ if (r.dataset.open.split('#')[0] === id) { var u = r.querySelector('.unread'); if (u) r.classList.add("seen"); } });
+    document.getElementById('read').scrollTop = 0;
+  }
+  rows.forEach(function(r){ r.addEventListener('click', function(){ var p = r.dataset.open.split('#'); show(p[0], p[1]); }); });
+  [].forEach.call(document.querySelectorAll('.back'), function(b){ b.addEventListener('click', function(){ main.classList.remove('has-open'); }); });
+  [].forEach.call(document.querySelectorAll('[data-goto]'), function(b){ b.addEventListener('click', function(){ show(b.dataset.goto); }); });
+  [].forEach.call(document.querySelectorAll('[data-toggle]'), function(b){ b.addEventListener('click', function(){ var e = document.getElementById(b.dataset.toggle); e.hidden = !e.hidden; }); });
+
+  // Staging holds exactly what was drawn; Send is the second press.
+  var staged = {}; order.forEach(function(k){ staged[k] = {}; });
+  function render(id){
+    var box = document.querySelector('.outbox[data-thread="'+id+'"]'), els = document.querySelectorAll('#t-'+id+' [data-stage]');
+    [].forEach.call(els, function(e){ e.classList.toggle('staged', !!staged[id][e.dataset.key]); });
+    var labels = []; Object.keys(staged[id]).forEach(function(k){ labels.push(staged[id][k]); });
+    var c = (id === 'hash' && staged.hash.c1) ? 1 : 0;
+    var items = box.querySelector('.items'); items.innerHTML = '';
+    labels.forEach(function(l){ var s = document.createElement('span'); s.className = 'stg'; s.textContent = l; items.appendChild(s); });
+    var n = labels.length;
+    box.querySelector('.empty').hidden = n > 0;
+    box.querySelector('.to b').textContent = n ? 'To ' + box.dataset.to + ' · ' + n + ' staged.' : 'Not sent.';
+    var btn = box.querySelector('.send'); btn.disabled = n === 0; btn.classList.remove('armed');
+    if (id === 'appr' && n){ btn.disabled = true; setTimeout(function(){ btn.disabled = false; }, 600); }
+  }
+  [].forEach.call(document.querySelectorAll('[data-stage]'), function(e){
+    e.addEventListener('click', function(){
+      var id = e.dataset.stage, k = e.dataset.key, g = staged[id];
+      if (g[k]) { delete g[k]; } else {
+        var ex = e.dataset.excl;
+        [].forEach.call(document.querySelectorAll('#t-'+id+' [data-stage]'), function(o){
+          var same = ex ? o.dataset.excl === ex : (o.classList.contains('opt') || o.parentNode.dataset.group);
+          if (same && o !== e) delete g[o.dataset.key];
+        });
+        g[k] = e.dataset.label;
+      }
+      render(id);
+    });
+  });
+  // A line comment is staged like anything else.
+  var pin = document.getElementById('pin-c1'), c1 = document.getElementById('c1');
+  var lineno = pin.parentNode.querySelector('.no');
+  function setComment(on){
+    c1.hidden = !on; pin.innerHTML = on ? '<span class="num-pin">1</span>' : '';
+    if (on) staged.hash.c1 = 'Comment 1 on line 100'; else delete staged.hash.c1;
+    render('hash');
+  }
+  lineno.style.cursor = 'pointer'; lineno.title = 'Comment on this line';
+  lineno.addEventListener('click', function(){ setComment(c1.hidden); });
+
+  function stamp(){ var s = 8 + sentN * 23; return '14:' + clock + ':' + (s < 10 ? '0' + s : s % 60); }
+  [].forEach.call(document.querySelectorAll('.send'), function(btn){
+    var armed = false, timer;
+    btn.addEventListener('click', function(){
+      var art = btn.closest('.thread'), id = art.id.slice(2), box = btn.closest('.outbox');
+      if (!armed){ armed = true; btn.classList.add('armed'); btn.dataset.t = btn.textContent; btn.textContent = 'Press again to send'; setTimeout(function(){ if (armed){ armed = false; btn.classList.remove('armed'); btn.textContent = btn.dataset.t; } }, 4000); return; }
+      armed = false; btn.textContent = btn.dataset.t; btn.classList.remove('armed');
+      art.classList.add('sent','sending');
+      var r = box.querySelector('.receipt'); r.textContent = 'Sending to ' + box.dataset.to + '…';
+      var u = box.querySelector('.undo'); u.hidden = false;
+      timer = setTimeout(function(){
+        art.classList.remove('sending'); sentN++; var t = stamp();
+        r.textContent = '✓ Delivered to ' + box.dataset.to + ' · ' + t; u.hidden = true;
+        finish(id, t); advance(id);
+      }, 5000);
+      u.onclick = function(){ clearTimeout(timer); art.classList.remove('sent','sending'); };
+    });
+  });
+  function finish(id, t){
+    closed[id] = 1;
+    var targets = id === 'hash' ? ['hash','hash#risk','hash#idea'] : [id];
+    rows.forEach(function(r){ if (targets.indexOf(r.dataset.open) > -1){ r.classList.add('done'); r.querySelector('.rcpt').textContent = '✓ Delivered ' + t; } });
+    count();
+  }
+  function advance(id){ var i = order.indexOf(id); for (var k = i + 1; k < order.length; k++){ if (!closed[order[k]]) { show(order[k]); return; } } }
+  function count(){
+    var g = {need:0, rev:0, find:0};
+    rows.forEach(function(r){ if (!r.classList.contains('done')) g[r.dataset.g]++; });
+    ['need','rev','find'].forEach(function(k){ document.getElementById('c-'+k).textContent = g[k]; document.getElementById('n-'+k).textContent = g[k]; });
+    document.getElementById('n-all').textContent = g.need + g.rev + g.find;
+    document.getElementById('n-sent').textContent = sentN;
+    var tt = document.getElementById('totals');
+    tt.innerHTML = '';
+    [['need','' + g.need + ' need you'],['','' + g.rev + ' to review'],['','' + g.find + ' finds'],['','2 working'],['','2 quiet']].forEach(function(p){
+      var s = document.createElement('span'); s.className = 'tot ' + p[0]; s.textContent = p[1]; tt.appendChild(s); });
+    document.title = (g.need ? '(' + g.need + ') ' : '') + 'Loom inbox: threads';
+  }
+  count();
+
+  var open = q.get('open') || (phone() ? '' : 'appr');
+  if (q.get('demo') === 'staged'){
+    staged.hash = {approve:'Approve', 'risk-fix':'Fix the risk first', 'idea-dismiss':'Dismiss the idea'};
+    setComment(true);
+  }
+  order.forEach(render);
+  if (open) show(open);
+})();
+</script>
+</body>
+</html>
