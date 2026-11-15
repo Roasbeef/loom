@@ -1458,7 +1458,15 @@ fn plane_built(
   // This match resolves built before the enclosing validation continues.
   case built {
     Error(failure) -> {
-      close_unserved(state, session, workspace, incarnation, how, failure)
+      close_unserved(
+        state,
+        session,
+        workspace,
+        incarnation,
+        how,
+        unacked,
+        failure,
+      )
       build_failed(state, session, link, reply, failure)
     }
     Ok(plane) ->
@@ -1516,33 +1524,39 @@ fn refusal_of_failure(failure: PlaneFailure) -> Refusal {
   }
 }
 
-// An attach for a workspace the executor does not serve that created or reopened
-// the scope made the ledger bind it to the name, and no plane was ever built for
-// it, so no call was admitted and nothing runs. The scope is closed here as
-// cleanly closed, which a scope with no plane would otherwise record as unproven,
-// so that the attach for the corrected workspace meets a closed scope that holds
-// nothing (the ledger rebinds it) and not an open one bound to a name nobody
-// serves. A rebound scope is not touched: it is a session's own scope from before,
-// which has a tree and earlier calls, and an executor restarted with the
-// workspace dropped from its configuration must leave it as the operator finds
-// it. Any other build failure leaves the scope open for the next attach to build
-// again, as before.
-/// Closes the scope an attach for an unserved workspace opened, as retired.
+// An attach for a workspace the executor does not serve binds the scope to the
+// name in the ledger, and no plane is ever built for it, so no call was admitted
+// and nothing runs. The scope is closed here as cleanly closed, which a scope
+// with no plane would otherwise record as unproven, so that the attach for the
+// corrected workspace meets a closed scope that holds nothing (the ledger rebinds
+// it) and not an open one bound to a name nobody serves. That holds whatever the
+// attach did to the ledger: a scope created or reopened by this attach is
+// closed, and so is one it rebound, which is how a retry meets the open scope an
+// earlier attach left when its build failed before the workspace was checked.
+// A scope that holds a tree record, or results nobody has acknowledged, is not
+// touched. It is a session's own, with a tree and earlier calls, and an executor
+// restarted with the workspace dropped from its configuration must leave it as
+// the operator finds it. Any other build
+// failure leaves the scope open for the next attach to build again, as before.
+/// Closes the scope an attach for an unserved workspace left, as retired, when
+/// the scope holds no tree and no unacknowledged call.
 fn close_unserved(
   state: State(census),
   session: String,
   workspace: String,
   incarnation: Int,
   how: exec_ledger.Attachment,
+  unacked: protocol.Unacked,
   failure: PlaneFailure,
 ) -> Nil {
-  case how, failure {
-    exec_ledger.Rebound, _ -> Nil
-    exec_ledger.Created, NoPlaneBuilt(reason:)
-    | exec_ledger.Reopened, NoPlaneBuilt(reason:)
-    ->
-      case protocol.is_unserved_workspace(reason) {
-        True -> {
+  case failure {
+    WorktreeNotMade(..) -> Nil
+    NoPlaneBuilt(reason:) ->
+      case
+        protocol.is_unserved_workspace(reason),
+        holds_nothing(state, session, how, unacked)
+      {
+        True, True -> {
           let _begun =
             exec_ledger.begin_close(
               state.ledger,
@@ -1560,11 +1574,32 @@ fn close_unserved(
             )
           Nil
         }
-        False -> Nil
+        True, False | False, _ -> Nil
       }
-    exec_ledger.Created, WorktreeNotMade(..)
-    | exec_ledger.Reopened, WorktreeNotMade(..)
-    -> Nil
+  }
+}
+
+// Whether an attach left a scope that holds nothing of the session. One this
+// attach created or reopened has no tree and no call by construction. A rebound
+// scope is judged by its tree record and by the results the attach reported as
+// unacknowledged or lost: closing as retired forgets those acknowledgements, and
+// a session that ran there before the executor restarted may still need them.
+// A ledger that cannot be read counts as holding something, so that an
+// unreadable record never closes a scope.
+/// Whether the scope the attach left has no tree record and no call to answer for.
+fn holds_nothing(
+  state: State(census),
+  session: String,
+  how: exec_ledger.Attachment,
+  unacked: protocol.Unacked,
+) -> Bool {
+  case how {
+    exec_ledger.Created | exec_ledger.Reopened -> True
+    exec_ledger.Rebound ->
+      case exec_ledger.tree(state.ledger, session), unacked {
+        Ok(None), protocol.Unacked(terminal: [], unknown: [], ..) -> True
+        Ok(None), protocol.Unacked(..) | Ok(Some(_)), _ | Error(_), _ -> False
+      }
   }
 }
 

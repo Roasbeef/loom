@@ -586,6 +586,11 @@ fn begin_as(rig: Rig, operation: String) -> catalogue.Pending {
 // A second operation, for a move asked for again.
 const second_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9f"
 
+// A third and a fourth, for a move asked for again after each of two abandons.
+const third_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8da0"
+
+const fourth_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8da1"
+
 // --- what a finished move leaves ---------------------------------------------------------
 
 fn assert_moved(rig: Rig) -> Nil {
@@ -1233,16 +1238,69 @@ pub fn an_attach_refused_for_the_scopes_workspace_abandons_the_move_test() {
 
 // An executor restarted with a workspace dropped from its configuration answers
 // the attach of a session that is bound to it with a scope that is rebound and a
-// plane that cannot be built. The scope is a session's own, so the host leaves it
-// open, and the source, whose record shows no close, does not close it either.
-pub fn a_rebound_scope_for_an_unserved_workspace_is_left_open_test() {
-  let rig = start("rebound-unserved", InWorktrees, 0)
+// plane that cannot be built. A scope that holds a tree is a session's own, so the
+// host leaves it open, and the source, whose record shows no close, does not
+// close it either.
+pub fn a_rebound_scope_that_holds_a_tree_keeps_its_unserved_workspace_test() {
+  let rig = start("rebound-unserved-tree", InWorktrees, 0)
   let move = begin(rig)
   open_scope_in(rig, "nosuch")
+  let assert Ok(Nil) =
+    exec_ledger.record_tree(
+      executor_ledger(rig),
+      exec_ledger.Tree(
+        session: rig.session,
+        workspace: "nosuch",
+        path: "/elsewhere/tree",
+        branch: "loom/" <> rig.session,
+        state: exec_ledger.Present,
+      ),
+    )
   unclosed_record(rig)
   let assert Aborted(reason) = session_mover.drive(named(rig, "nosuch"), move)
   assert string.contains(reason, "nosuch")
   assert executor_scope(rig).state == exec_ledger.Open
+  finish(rig)
+}
+
+// A scope that an attach for an unserved name left open, because the source died
+// while the executor handled the attach and the build failed at the owner link,
+// holds nothing: no plane was built and no tree was made. The retry is a rebound
+// attach, which the host used to leave open, so the scope could not be freed and
+// the refusal's recovery went round in a circle. The host closes it now, on the
+// path that finds the name unserved, so the move ends with a closed scope, and
+// the recovery the refusal gives works: name the bound workspace again, then
+// correct the name.
+pub fn an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test() {
+  let rig = start("open-unserved", InWorktrees, 0)
+  let move = begin(rig)
+  open_scope_in(rig, "nosuch")
+  unclosed_record(rig)
+
+  // The retry under the same name meets the unserved workspace and ends the move.
+  let assert Aborted(reason) = session_mover.drive(named(rig, "nosuch"), move)
+  assert string.contains(reason, "nosuch")
+  assert executor_scope(rig).state == exec_ledger.Closed(exec_ledger.AllRetired)
+
+  // The record still shows no close, so the corrected name is asked about the
+  // close under a workspace the scope is not bound to, and is refused with the
+  // workspace to set back.
+  let corrected = begin_as(rig, second_op)
+  let assert Aborted(refusal) = session_mover.drive(plain(rig), corrected)
+  assert string.contains(refusal, "bound to the workspace `nosuch`")
+
+  // Setting it back is the recovery the refusal gives. The close is learned and
+  // recorded, and the move ends again with the scope closed.
+  let set_back = begin_as(rig, third_op)
+  let assert Aborted(_) = session_mover.drive(named(rig, "nosuch"), set_back)
+  let assert Ok(Some(cell)) =
+    scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
+  assert cell.closed == Some(protocol.AllRetired)
+
+  // The corrected name then lands the checkout at the next incarnation.
+  let landing = begin_as(rig, fourth_op)
+  assert session_mover.drive(plain(rig), landing) == Finished
+  assert_moved_as(rig, fourth_op)
   finish(rig)
 }
 

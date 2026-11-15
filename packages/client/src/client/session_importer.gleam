@@ -446,10 +446,13 @@ fn not_back_to_a_directory(
 /// The sentence for a session that would go back to a directory: where its work
 /// is, and that moving it back is not supported yet.
 fn returning_to_a_directory(executor: String, pool: String) -> String {
+  // A session in a pool that has not attached names no executor, and the pool
+  // is then the only place its work can be.
   let place = case executor {
     "" -> "the pool `" <> pool <> "`"
     name -> "the executor `" <> name <> "`"
   }
+
   "this session's work is on "
   <> place
   <> ", and moving it back to the directory it came from on this machine is "
