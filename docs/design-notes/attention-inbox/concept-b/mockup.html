@@ -147,6 +147,18 @@ code,.mono{font-family:var(--mono);font-size:12px}
 .receipt .btn.link{color:var(--current)}
 .foot{margin-top:36px;color:var(--faint);font-size:12px}
 
+.ctx{margin:3px 0 0;font-size:12.5px;color:var(--quiet)}
+.row .armed{grid-column:1/-1}
+.hold{color:var(--quiet)}
+.view-project{display:none}
+.show-project .view-board{display:none}
+.show-project .view-project{display:block}
+.tkt .stage{font-family:var(--mono);font-size:12px;color:var(--quiet)}
+pre.out{margin:6px 0 0;padding:8px 10px;background:var(--code);border-radius:8px;font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg)}
+.post{display:flex;gap:8px;margin-top:14px}
+.post input{flex:1;font:inherit;padding:7px 10px;border:1px solid var(--divider);border-radius:6px;background:var(--raised);color:var(--fg);min-width:0}
+.crumbs{font-size:12px;color:var(--quiet);margin:0 0 6px}
+.crumbs a{color:var(--current);text-decoration:none}
 /* Phone */
 .phone .shell{display:block}
 .phone .rail{display:none}
@@ -179,32 +191,55 @@ code,.mono{font-family:var(--mono);font-size:12px}
 <div class="shell">
   <nav class="rail" aria-label="Workspaces">
     <h3>Board</h3>
-    <a class="on" href="#top"><span>All agents</span><span class="c hot" id="rail-all">4 need you</span></a>
+    <a class="on" href="?view=board" data-view="board"><span>All agents</span><span class="c hot" id="rail-all">4 need you</span></a>
     <h3>Workspaces</h3>
     <a href="#top"><span>loom</span><span class="c hot" id="rail-loom">3 need you</span></a>
     <a href="#top"><span>aegis</span><span class="c hot" id="rail-aegis">1 needs you</span></a>
+    <h3>Projects</h3>
+    <a href="?view=project" data-view="project"><span>web-inbox</span><span class="c hot">1 needs you</span></a>
     <h3>Elsewhere</h3>
     <a href="#top"><span>Saved sessions</span><span class="c">14</span></a>
   </nav>
 
-  <main class="board" id="top">
+  <main class="board view-board" id="top">
     <section class="mast" aria-labelledby="mast-h">
       <h1 id="mast-h"><span id="need-n">4</span> <span id="need-w">agents need you</span></h1>
-      <p class="sub">Whose move it is, across <span class="mono">loom</span> and <span class="mono">aegis</span>. Updated 14:20.</p>
-      <div class="tally">
-        <a class="you" href="#you"><b id="t-you">3</b> to answer</a>
-        <a class="blk" href="#blk"><b>1</b> stuck</a>
-        <a href="#rev"><b>1</b> to review</a>
-        <a href="#rev"><b id="t-finds">2</b> finds</a>
-        <a href="#wrk"><b>1</b> PR with a failing check</a>
-        <a href="#wrk"><b>2</b> working</a>
-        <a href="#qui"><b>2</b> quiet</a>
-      </div>
+      <p class="sub"><span id="sub-a">3 to answer, 1 stopped.</span> Read 6 live sessions at 14:20; 14 saved sessions are not read.</p>
     </section>
 
     <!-- Band 1: Your move. Oldest first. -->
     <section class="band you" id="you" aria-labelledby="you-h">
-      <h2 id="you-h">Your move <span class="n" id="you-n">3</span><span class="rule">oldest first</span></h2>
+      <h2 id="you-h">Your move <span class="n" id="you-n">3</span><span class="rule">approvals first, then oldest first</span></h2>
+
+      <article class="card" data-agent="storage" data-kind="approval">
+        <button class="head" type="button" aria-expanded="false">
+          <span class="name">storage/branch-index-repair</span><span class="ws">loom</span>
+          <span class="age">waiting since 12:58 · 1h 22m</span>
+        </button>
+        <p class="status"><span class="word you">Approval</span><code>proc.run</code> wants a write grant to <code>~/.loom</code> &middot; network off</p>
+        <p class="ctx"><span class="word" style="color:var(--peer)">Peer</span>13:15, <code>runner/pod-reach</code> asked: does the check need the write grant, or can it run read-only? Not answered.</p>
+        <div class="acts" data-acts>
+          <button class="btn pri" type="button" data-more>Review and decide</button>
+        </div>
+        <div class="detail">
+          <h4>The request, as recorded</h4>
+          <p class="quote mono" style="white-space:pre-wrap;overflow-wrap:anywhere">proc.run  sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</p>
+          <dl class="facts" style="margin-top:8px">
+            <dt>Grants wanted</dt><dd>write <code>~/.loom</code>, outside the workspace</dd>
+            <dt>Network</dt><dd>off</dd>
+            <dt>Policy</dt><dd>workspace-write &middot; network off</dd>
+            <dt>Request</dt><dd>seq 41 &middot; Bob is viewing, has not decided</dd>
+          </dl>
+          <p class="meta" style="margin-top:8px">Your decision names this exact action text, these grants and this seq. If the request changes, it asks again.</p>
+          <h4>The peer message in full</h4>
+          <p class="quote">&ldquo;Does the integrity check need the write grant, or can it run read-only?&rdquo; <span class="meta">13:15, from runner/pod-reach &middot; main. Stored, not answered.</span></p>
+          <div class="acts" data-acts>
+            <button class="btn pri" type="button" data-choose="Approve" data-to="storage/branch-index-repair" data-approval="1">Approve</button>
+            <button class="btn danger" type="button" data-choose="Reject" data-to="storage/branch-index-repair" data-approval="1">Reject</button>
+          </div>
+          <p style="margin:10px 0 0"><a class="link" href="#">Open the transcript at this request &rarr;</a></p>
+        </div>
+      </article>
 
       <article class="card" data-agent="runner" data-kind="ask">
         <button class="head" type="button" aria-expanded="false">
@@ -259,33 +294,7 @@ code,.mono{font-family:var(--mono);font-size:12px}
         </div>
       </article>
 
-      <article class="card" data-agent="storage" data-kind="approval">
-        <button class="head" type="button" aria-expanded="false">
-          <span class="name">storage/branch-index-repair</span><span class="ws">loom</span>
-          <span class="age">waiting since 12:58 · 1h 22m</span>
-        </button>
-        <p class="status"><span class="word you">Approval</span>Run <code>sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</code> with a write grant to <code>~/.loom</code></p>
-        <p class="meta">workspace-write &middot; network off &middot; Bob is viewing</p>
-        <div class="acts" data-acts>
-          <button class="btn pri" type="button" data-choose="Approve" data-to="storage/branch-index-repair · main" data-grant="write grant to ~/.loom, network off">Approve</button>
-          <button class="btn danger" type="button" data-choose="Reject" data-to="storage/branch-index-repair · main">Reject</button>
-          <button class="btn link" type="button" data-more>Why it needs this</button>
-        </div>
-        <div class="detail">
-          <h4>What you would be deciding</h4>
-          <dl class="facts">
-            <dt>Program</dt><dd><code>proc.run sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</code></dd>
-            <dt>Grant</dt><dd>write to <code>~/.loom</code>, outside the workspace</dd>
-            <dt>Network</dt><dd>off</dd>
-            <dt>Policy</dt><dd>workspace-write &middot; network off</dd>
-          </dl>
-          <p class="meta" style="margin-top:8px">The decision binds to this request as drawn; a changed request asks again.</p>
-          <h4>Related</h4>
-          <p class="quote"><span class="word" style="color:var(--peer)">Peer</span>13:15, from <code>runner/pod-reach &middot; main</code>: &ldquo;Does the integrity check need the write grant, or can it run read-only?&rdquo; Stored, not answered.</p>
-          <p style="margin:10px 0 0"><a class="link" href="#">Open the transcript at this request &rarr;</a></p>
-        </div>
-      </article>
-    </section>
+      </section>
 
     <!-- Band 2: Stuck -->
     <section class="band blk" id="blk" aria-labelledby="blk-h">
@@ -310,7 +319,7 @@ code,.mono{font-family:var(--mono);font-size:12px}
 
     <!-- Band 3: Ready to review -->
     <section class="band" id="rev" aria-labelledby="rev-h">
-      <h2 id="rev-h">Ready to review <span class="n">1</span></h2>
+      <h2 id="rev-h">Ready to review <span class="n">1</span><span class="rule"><span id="t-finds">2</span> finds waiting</span></h2>
       <article class="card" data-agent="hashline" data-kind="review">
         <button class="head" type="button" aria-expanded="false">
           <span class="name">fix/hashline-replay</span><span class="ws">loom</span>
@@ -318,7 +327,7 @@ code,.mono{font-family:var(--mono);font-size:12px}
         </button>
         <p class="status"><span class="word rev">Done</span><span class="mono">+412 &minus;88</span> across 7 files &middot; <code>make check-core</code> exit 0, as reported by the agent</p>
         <div class="chipline">
-          <span class="chip risk">2 finds &middot; 1 risk</span>
+          <span class="chip risk">1 risk &middot; 1 idea</span>
         </div>
         <div class="acts" data-acts>
           <button class="btn pri" type="button" data-more>Review</button>
@@ -348,10 +357,13 @@ code,.mono{font-family:var(--mono);font-size:12px}
           <span class="age">14 min into a turn</span>
           <span class="line">Editing <code>packages/web_view/src/web_view/inbox.gleam</code></span>
         </div>
-        <div class="row">
+        <div class="row" data-kind="nudge">
           <span class="nm"><span class="name">wp-j/vetting-lint</span> <span class="crumb">&nbsp;loom</span></span>
           <span class="age">3 min into a turn</span>
           <span class="line">PR #1261: <span style="color:var(--signal-text)">lint (R11) failing</span> &middot; 2 unresolved comments from Bob</span>
+          <div class="acts" data-acts style="grid-column:1/-1;margin-top:6px">
+            <button class="btn" type="button" data-choose="Fix the failing check and both comments" data-to="wp-j/vetting-lint · main" data-nudge="1">Tell it to fix both</button>
+          </div>
         </div>
       </div>
     </section>
@@ -368,7 +380,59 @@ code,.mono{font-family:var(--mono);font-size:12px}
       </div>
     </section>
 
-    <p class="foot">Observers see this page with the same counts and cards but no buttons that decide.</p>
+    <p class="foot">Observers see this page with the same counts and cards but no buttons that decide. Ages need a new <code>waiting_since</code> field and the PR line needs PR polling outside project mode; phase 0 draws neither.</p>
+  </main>
+
+  <main class="board view-project" id="project">
+    <p class="crumbs"><a href="?view=board" data-view="board">All agents</a> / Projects / web-inbox</p>
+    <section class="mast">
+      <h1>web-inbox <span class="ws" style="font-size:14px;font-weight:400">project &middot; loom &middot; router <code>coord/web-inbox</code></span></h1>
+      <p class="sub">1 ticket needs you. Same bands as the board, scoped to this project. Tickets below are illustrative; the scenario names none.</p>
+      <div class="post"><input type="text" aria-label="Post a request to the router" placeholder="Post a request to this project&hellip;" value="Add a Done filter to the inbox list"><button class="btn pri" type="button" data-choose="Post request" data-to="the router" data-post="1">Post</button></div>
+    </section>
+
+    <section class="band blk" aria-labelledby="pb-h">
+      <h2 id="pb-h">Blocked <span class="n">1</span><span class="rule">a check failed; nobody is asking you anything</span></h2>
+      <article class="card open tkt" data-agent="t14" data-kind="stuck">
+        <button class="head" type="button" aria-expanded="true">
+          <span class="name">T-14 Inbox board component</span><span class="stage">person/check</span>
+          <span class="age">check failed 14:02 · 18m</span>
+        </button>
+        <p class="status"><span class="word blk">Check failed</span>Code, not environment: 2 tests fail in <code>web_view/board_test</code></p>
+        <div class="acts" data-acts>
+          <button class="btn pri" type="button" data-choose="Recheck" data-to="T-14's worker">Recheck</button>
+          <button class="btn" type="button" data-choose="Retry" data-to="T-14's worker">Retry</button>
+          <button class="btn" type="button" data-choose="Stop" data-to="T-14's worker">Stop</button>
+          <button class="btn" type="button" data-choose="Close" data-to="the ticket">Close</button>
+          <button class="btn" type="button" disabled title="Publishing is off for this project">Publish</button>
+        </div>
+        <div class="detail">
+          <h4>Check result</h4>
+          <dl class="facts"><dt>Command</dt><dd><code>make check-web_view</code></dd><dt>Outcome</dt><dd>exit 2 at 14:02 &middot; classified <b>code</b></dd><dt>Worker</dt><dd><code>proj/web-inbox/T-14</code> &middot; <a class="link" href="#">open its session</a></dd></dl>
+          <h4>Failure output <span style="font-weight:400">&middot; last 6 lines</span></h4>
+          <pre class="out">board_test.every_agent_has_one_band ... FAILED
+  expected: Blocked
+       got: YourMove
+board_test.delegate_crumb_names_parent ... FAILED
+  expected: "of coord/web-inbox"
+       got: ""
+2 failed, 41 passed</pre>
+          <h4>Diff</h4>
+          <dl class="facts"><dt>Worktree</dt><dd><span class="mono">+188 &minus;12</span> &middot; 4 files &middot; <a class="link" href="#">open in Changes</a></dd></dl>
+        </div>
+      </article>
+    </section>
+
+    <section class="band" aria-labelledby="pw-h">
+      <h2 id="pw-h">Working <span class="n">1</span></h2>
+      <div class="rows"><div class="row"><span class="nm"><span class="name">T-15 Feed wiring</span> <span class="crumb">&nbsp;working</span></span><span class="age">6 min into a turn</span><span class="line">Editing <code>client/daemon/server.gleam</code></span></div></div>
+    </section>
+
+    <section class="band" aria-labelledby="pq-h">
+      <h2 id="pq-h">Quiet <span class="n">1</span></h2>
+      <button class="fold" type="button"><span><b>T-13 Fact sheet</b> (ended, delivered yesterday)</span></button>
+    </section>
+    <p class="foot">The ticket page is a card held open. Publish is greyed because publishing is off for this project.</p>
   </main>
 </div>
 
@@ -379,18 +443,23 @@ code,.mono{font-family:var(--mono);font-size:12px}
   var th=q.get('theme');
   if(th==='dark'||th==='light') root.setAttribute('data-theme',th);
   if(q.get('frame')==='phone') root.classList.add('phone');
+  function view(v){ root.classList.toggle('show-project',v==='project'); }
+  view(q.get('view'));
+  document.querySelectorAll('[data-view]').forEach(function(a){
+    a.addEventListener('click',function(e){ e.preventDefault(); view(a.getAttribute('data-view')); });
+  });
   document.getElementById('themebtn').addEventListener('click',function(){
     var cur=root.getAttribute('data-theme');
     var dark=cur?cur==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;
     root.setAttribute('data-theme',dark?'light':'dark');
   });
 
-  var need=4,you=3;
+  var need=4,you=3,stuck=1;
   function recount(){
     document.getElementById('need-n').textContent=need;
-    document.getElementById('need-w').textContent=need===1?'agent needs you':need===0?'agents need you, none right now':'agents need you';
+    document.getElementById('need-w').textContent=need===1?'agent needs you':need===0?'agents need you: none right now':'agents need you';
     document.getElementById('you-n').textContent=you;
-    document.getElementById('t-you').textContent=you;
+    document.getElementById('sub-a').textContent=you+' to answer, '+stuck+' stopped.';
   }
 
   document.querySelectorAll('.card').forEach(function(card){
@@ -402,52 +471,76 @@ code,.mono{font-family:var(--mono);font-size:12px}
     head.addEventListener('click',toggle);
     var roll=card.querySelector('[data-roll]'); if(roll) roll.addEventListener('click',toggle);
     card.querySelectorAll('[data-more]').forEach(function(b){
-      b.addEventListener('click',function(){ if(!card.classList.contains('open')) toggle(); else if(b.textContent!=='Review') toggle(); });
+      b.addEventListener('click',function(){ if(!card.classList.contains('open')) toggle(); else if(!/^(Review|Review and decide)$/.test(b.textContent)) toggle(); });
     });
-    card.addEventListener('click',function(ev){
-      var b=ev.target.closest('[data-choose]');
-      if(b&&card.contains(b)) arm(card,b);
-    });
+  });
+  document.addEventListener('click',function(ev){
+    var b=ev.target.closest('[data-choose]');
+    if(b&&!b.disabled) arm(b.closest('[data-kind]'),b);
   });
 
   var ARM_MS=600;
-  function arm(card,btn){
+  function arm(unit,btn){
     var holder=btn.closest('.opt')||btn.closest('[data-acts]');
-    var host=btn.closest('[data-acts]')||holder;
-    var old=card.querySelector('.armed'); if(old) old.remove();
-    var what=btn.getAttribute('data-choose'), to=btn.getAttribute('data-to'), g=btn.getAttribute('data-grant');
+    var old=unit.querySelector('.armed'); if(old) old.remove();
+    var what=btn.getAttribute('data-choose'), to=btn.getAttribute('data-to');
     var box=document.createElement('div'); box.className='armed'; box.setAttribute('role','group');
     var say=document.createElement('span'); say.className='say';
-    say.textContent='Press again to send “'+what+'” to '+to+(g?' with '+g:'')+'.';
-    var go=document.createElement('button'); go.type='button'; go.className='btn go'; go.textContent='Send'; go.disabled=true;
+    if(btn.hasAttribute('data-approval')){
+      say.textContent=what+' exactly this: proc.run sqlite3 ~/.loom/store.db \u2018PRAGMA integrity_check\u2019, grant write ~/.loom, network off, request seq 41. Recorded at once; an approval cannot be undone.';
+    } else {
+      say.textContent='Nothing is sent until you press Send. \u201C'+what+'\u201D goes to '+to+', held 8 s so you can undo.';
+    }
+    var go=document.createElement('button'); go.type='button'; go.className='btn go'; go.textContent='Send'; if(btn.hasAttribute('data-approval')) go.textContent=what; go.disabled=true;
     var no=document.createElement('button'); no.type='button'; no.className='btn'; no.textContent='Cancel';
     box.appendChild(say); box.appendChild(go); box.appendChild(no);
     holder.insertAdjacentElement('afterend',box);
     setTimeout(function(){go.disabled=false},ARM_MS);
     no.addEventListener('click',function(){box.remove()});
-    go.addEventListener('click',function(){ send(card,btn,box,what,to); });
+    go.addEventListener('click',function(){ send(unit,btn,box,what,to); });
   }
-  function send(card,btn,box,what,to){
-    var kind=card.getAttribute('data-kind');
+  function send(unit,btn,box,what,to){
+    var kind=unit.getAttribute('data-kind');
     var isFind=btn.hasAttribute('data-find');
+    var isApproval=btn.hasAttribute('data-approval');
+    var leaves=!isFind&&(kind==='ask'||kind==='approval'||kind==='stuck');
     var rc=document.createElement('div'); rc.className='receipt';
-    var t=document.createElement('span');
-    t.textContent='✓ '+what+' · delivered to '+to+' at 14:21';
-    var undo=document.createElement('button'); undo.type='button'; undo.className='btn link'; undo.textContent='Undo (8 s)';
-    rc.appendChild(t); rc.appendChild(undo);
+    var t=document.createElement('span'); rc.appendChild(t);
     box.replaceWith(rc);
-    var holder=btn.closest('.opt');
-    if(isFind){
-      btn.disabled=true; btn.textContent='✓ '+what;
-      var f=document.getElementById('t-finds'); f.textContent=Math.max(0,+f.textContent-1);
+    function apply(){
+      if(isFind){ btn.disabled=true; btn.textContent='\u2713 '+what; var f=document.getElementById('t-finds'); f.textContent=Math.max(0,+f.textContent-1); }
+      if(leaves){
+        unit.querySelectorAll('[data-acts]').forEach(function(a){a.style.display='none'});
+        unit.querySelectorAll('.opt .btn').forEach(function(b){b.disabled=true});
+        need=Math.max(0,need-1); if(kind==='stuck') stuck=Math.max(0,stuck-1); else you=Math.max(0,you-1);
+        recount();
+      }
     }
-    if(!isFind && (kind==='ask'||kind==='approval'||kind==='stuck')){
-      card.querySelectorAll('[data-acts]').forEach(function(a){a.style.display='none'});
-      card.querySelectorAll('.opt .btn').forEach(function(b){b.disabled=true});
-      if(kind==='stuck') need=Math.max(0,need-1); else {need=Math.max(0,need-1); you=Math.max(0,you-1);}
-      recount();
+    function revert(){
+      if(isFind){ btn.disabled=false; btn.textContent=what; var f=document.getElementById('t-finds'); f.textContent=+f.textContent+1; }
+      if(leaves){
+        unit.querySelectorAll('[data-acts]').forEach(function(a){a.style.display=''});
+        unit.querySelectorAll('.opt .btn').forEach(function(b){b.disabled=false});
+        need++; if(kind==='stuck') stuck++; else you++;
+        recount();
+      }
     }
-    var secs=8, iv=setInterval(function(){secs--; undo.textContent='Undo ('+secs+' s)'; if(secs<=0){clearInterval(iv); undo.remove();}},1000);
+    apply();
+    if(isApproval){
+      t.textContent='\u2713 '+what+'d at 14:21 \u00B7 recorded for '+to+' \u00B7 no undo for approvals';
+      return;
+    }
+    var secs=8;
+    var undo=document.createElement('button'); undo.type='button'; undo.className='btn link'; undo.textContent='Undo';
+    rc.appendChild(undo);
+    function line(){ t.textContent='Holding \u201C'+what+'\u201D for '+to+', sending in '+secs+' s'; t.className='hold'; }
+    line();
+    var iv=setInterval(function(){
+      secs--;
+      if(secs<=0){ clearInterval(iv); undo.remove(); t.className=''; t.textContent='\u2713 Delivered to '+to+' at 14:21'; return; }
+      line();
+    },1000);
+    undo.addEventListener('click',function(){ clearInterval(iv); rc.remove(); revert(); });
   }
 
   var qb=document.getElementById('quietbtn'), ql=document.getElementById('quietlist');
