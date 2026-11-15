@@ -1,430 +1,549 @@
 # Concept C: threads you answer like mail
 
 **Status: one entry in the attention-inbox bracket, written from
-`03-brief.md` under thesis C.** It is a proposal for the owner to compare, not
-a commitment. The mockup is `concept-c/mockup.html`; open it with
-`?theme=dark`, `?frame=phone`, `?open=hash&demo=staged` (the review with a
-reply half-written) or `?open=pod` (an ask).
+`03-brief.md` under thesis C and revised once after the two critiques.** It is
+a proposal for the owner to compare, not a commitment. The mockup is
+`concept-c/mockup.html`; open it with `?theme=dark`, `?frame=phone`,
+`?open=hash&demo=staged` (the review with a reply half-written), `?open=pod`
+(an ask) or `?view=projects&open=pr` (a project ticket). The last section,
+*Revision*, says what the second pass changed.
 
 ## 1. Thesis
 
-The person looks first at a list that is the same list every time they come
+The person looks first at one list that is the same list every time they come
 back: a pinned amber band, **Needs you**, with one row per thread in which an
 agent has stopped for a decision; below it, **To review** and **Finds**; and
 below those, one folded line each for what is moving and what is quiet. Each
 row is a thread, and opening it puts the whole question and the evidence for
-it in a reading pane: the approval's exact command and digest, the ask's
-options with the recommended one first, the finished session's diff cut into
-ordered sections with the agent's own summary above each. Nothing reaches an
-agent until the person presses Send, and a send ends in a receipt, "Delivered
-to `fix/hashline-replay · main`", so the person can leave the page. The bet is
-that the drag the owner named comes from *reconstructing* a question out of a
-transcript, and that a thread which arrives already reconstructed, with its
-context attached and an answer that can be composed in one place, is cheaper
-than any amount of transcript navigation made faster. Mail's weakness is that
-reading is not handling; this design therefore breaks the mail metaphor in
-exactly one place, which section 3 argues: reading a thread never clears it.
+it in a reading pane: the approval's exact command and the grant it wants, the
+ask's options with the recommended one first, a finished session's diff with
+the agent's own last message above it, a project ticket's check output beside
+its diff. Nothing reaches an agent until the person presses Send, and a send
+ends in a receipt, "Delivered to `fix/hashline-replay · main`", so the person
+can leave the page. The bet is that the drag the owner named comes from
+*reconstructing* a question out of a transcript, and that a thread which
+arrives already reconstructed, with its context attached and an answer that
+can be composed in one place, is cheaper than any amount of transcript
+navigation made faster. Mail's weakness is that reading is not handling; the
+design therefore breaks the mail metaphor in one place, which section 3
+argues: reading a thread never clears it.
 
 ## 2. The owner's return
 
-It is 14:20. The owner opens the page. It is one URL, not bound to a session;
-the daemon's attention feed (substrate 3) has told it everything that changed
-since the page last held a connection, and the rail says so in its first line:
-"Back at 14:20. Away since 11:05, three hours fifteen."
+It is 14:20. The owner opens the inbox. It is a region of Home, which is bound
+to no session, so the page needs no session ticket; section 10 explains why
+that choice is the honest phase 0. The rail's first line says "Back at 14:20.
+Last seen 11:05." That line is the one thing in the first screen that needs a
+seen cursor, and phase 0 does not draw it (section 10).
 
-**What they see, in order.** The top bar carries five counts, the first one
-amber and the only one that is: *4 need you · 2 to review · 2 finds · 2
-working · 2 quiet*. The browser tab reads `(4) Loom inbox`. The list's first
-band is amber and sticky, so it stays pinned to the top of the list pane
-however far the list scrolls. Under it sit four rows, ranked: the approval on
+**What they see, in order.** The top bar carries one count, amber: *4 need
+you*. The browser tab reads `(4) Loom inbox`. The list's first band is amber
+and sticky, so it stays pinned to the top of the list pane however far the list
+scrolls. Under it sit four rows, ranked: the approval on
 `storage/branch-index-repair` (1 h 22 m), the ask on `runner/pod-reach`
 (3 h 00 m), the coordinator's ask on `coord/web-inbox` (40 m) and the stuck
-delegate `sub:mockup-b` (28 m). The ranking rule is stated once and printed
-in the band's hint: a parked run that holds an operator slot comes first,
-because it is the one whose decision can go stale under someone else's hand
-(Bob is on that session); then idle asks by how long they have waited; then
-failures. The reading pane has already opened the first thread, so the first
-thing on screen is not an empty pane but the question.
+delegate `sub:mockup-b` (28 m). The ranking rule is printed once, in the
+band's hint, and it has two parts: a parked run holding an operator slot
+comes first, because its decision can go stale under someone else's hand (Bob
+is on that session); then idle asks and failures by how long they have waited.
+The second part needs a time that no signal carries today, and section 7 names
+the field. The reading pane has already opened the first thread, so the first
+thing on screen is a question and not an empty pane. The pane is drawn quietly
+on purpose: one neutral card and one row of buttons, no coloured box, so the
+eye returns to the list.
 
 **The walk.** The approval thread shows the command, the network setting, the
-write grant outside the workspace, the policy in force, and the digest the
-decision will bind to. Under the heading "In this thread" it also shows the
-13:15 peer message from `runner/pod-reach` asking whether the integrity check
-needs the write grant at all, because that message is about this very
-approval and a reader who sees only one of the two will answer wrongly. The
-owner presses **Deny** (press 1, which stages it and holds what was drawn),
-then **Send decision** (press 2; the button is disabled for 600 ms after a
-choice, which is the existing arming delay). A five second Undo runs, the
-receipt appears, and the pane advances by itself to the next row in the band.
+write grant outside the workspace, the policy in force, and what the decision
+binds to: the full action text as shown, the wanted grant and the register
+seq, which is what the gateway compares (`echo_matches`). Under "In this
+thread" it also lists the 13:15 peer message from `runner/pod-reach`, because
+the daemon returns, with an approval, the recent peer messages sent to that
+strand; the page makes no claim that the message is relevant, but the reader
+sees it, and here it is: it asks whether the check needs the write grant at
+all. The owner presses **Deny** (press 1, which stages it and holds what was
+drawn) and then **Send decision** (press 2; the button is disabled for 600 ms
+after a choice, the existing arming delay). A decision has no undo and no hold:
+it is delivered at once and the receipt names the seq it bound to. Because an
+approval must never move the page under the pointer, the pane stays put and
+offers **Next thread** as a third, explicit press.
 
 The ask on `pod-reach` is next: the agent's last message, quoted as untrusted
-text, three options with option 1 recommended. One press on the option, one on
-Send. The coordinator's ask is the same, with the coordinator's goal,
-milestones (3 of 5), tokens (412k of 1.2M) and its three delegates drawn
-above the options so the question can be answered with the project in view.
-The stuck delegate offers two staged messages, "Retry the last step" and "Tell
-the coordinator to take it back"; the exact words are printed on the option,
-because what the owner is about to put in a strand's mouth must be readable
-before it is sent. One press, one Send.
+text, and three options with option 1 recommended. One press on the option,
+then **Send & next**, whose label names its consequence: the answer is held
+five seconds on the daemon, the pane opens the next thread, and the row shows
+"Sending, held 5 s" with Undo until it becomes "Delivered 14:2x". The
+coordinator's ask is the same, with the coordinator's goal, token use and its
+three delegates drawn above the options. The stuck delegate offers two staged
+messages whose exact words are printed on the option, because what the owner is
+about to put in a strand's mouth must be readable before it is sent.
 
-**The review.** The `fix/hashline-replay` thread is the design's main surface
-and `open-item.png` shows it. At its head are the stat pills (+412, −88, 7
-files, 4 sections) and the agent's claim that `make check-core` exited 0,
-labelled as the agent's report rather than a fact the page verified. Next, a
-compact card, "Noticed along the way", holds the two finds with their
-actions. Below it come the four sections in the order the agent says to read
-them, each a one-line header with its own stat and one file count, folded
-except the section that carries the behaviour change. An opened section shows
-the agent's summary of it in a paragraph, then the hunk. The Risk find is
-*pinned in place*, at line 99, the unchanged line that skips an empty digest,
-with the agent's note beside it; so the person reading §2 meets the risk at
-the line it is about, and not only in a list. A click on a line number
-opens a comment on that line. The owner's one comment, "Name the entry's
-index in the message too", is drawn under line 100 and joins the outbox. At
-the bottom the outbox always says what will be sent and to whom: *To
-`fix/hashline-replay · main` · 4 staged: Approve · Fix the risk first ·
-Dismiss the idea · Comment 1 on line 100*. Nothing has gone yet.
+**The review.** `fix/hashline-replay` is the design's showpiece and
+`open-item.png` shows it. At the head are the stat pills (+412, −88, 7 files),
+the agent's claim that `make check-core` exited 0, labelled as the agent's
+report and not a fact the page verified, and the agent's last message, quoted.
+**Approve** sits directly under them, above every long read, so reading the
+diff is a choice and not a toll. Next, "Noticed along the way" holds the two
+finds with their actions. Then come the seven files, ordered source, then
+tests, then docs, by a rule that is a pure function of the paths. The one file
+that carries the behaviour change is open: its hunk, with the Risk find marked
+at the unchanged line 99 that skips an empty digest, so the owner meets the
+risk at the line it is about. Under the hunk is one comment field for the
+file. The owner's comment, "Name the entry index in the error message too", is
+typed there and joins the outbox. The outbox always says what will be sent and
+to whom: *To `fix/hashline-replay · main` · 3 staged: Approve, after the fix ·
+Dismiss the idea · Comment on core/hashline.gleam*.
 
-The owner presses **Approve** (1), **Fix in this branch** on the Risk (2) and
-**Dismiss** on the Idea (3), then **Send to main** (4). One message goes to the
-agent's main strand carrying the verdict, the comment, the instruction and the
-dismissal, which is how Plannotator's annotations travel, and the receipt
-reads "Delivered to `fix/hashline-replay · main` · 14:2x". All three records
-close together: the review as approved, the Risk as "sent to fix", the Idea as
-"dismissed", each keeping how it ended.
+The first revision let the owner stage "Approve" beside "Fix the risk first",
+which tells the agent two things. They are now one: if both are staged the
+outbox shows the single thing the agent will do, "Approve, after the fix".
+Approve alone, "Request changes" and "Fix in this branch" are the other legal
+combinations, and Request changes cannot be staged with Approve.
 
-**The count.** Eight items in the scenario's own terms (four that need the
-owner, the review, the two finds, and no more) clear in **12 presses**: eight
-for the four urgent threads (stage, send, each), and four for the review with
-both finds. Including PR `#1261`, whose one action "Address all three"
-is stage and send, the total is **14**. The owner never leaves the page, so
-there is one screen throughout, and none of those presses is a navigation:
-after each send the pane advances to the next unhandled thread in rank order.
-That figure is the best case in two ways. Taking threads out of rank order
-costs one press each, since a row must then be opened; and typing the comment
-in the review is not a press. It is also honest to say that the two presses
-per ask are the two-press arming rule, not slowness: the first press holds the
-words exactly as drawn, the second sends exactly those.
+The owner presses **Fix in this branch** (1), **Approve** (2) and **Dismiss**
+on the Idea (3), then **Send & next** (4). One message goes to the agent's main
+strand, composed by the daemon from the staged items as inert fields, never by
+the page from session text, and the receipt reads "Delivered to
+`fix/hashline-replay · main`". All three records close together: the review as
+approved, the Risk as "sent to fix", the Idea as "dismissed".
 
-**The phone.** The 390 px layout drops the rail and the reading pane's
-second column. It is the list, full height, with the amber band first, so
-that all four urgent rows are above the fold of the first screen and need no
-scroll. A tap opens a thread over the list with a back arrow; the thread is
-the same content in one column, and the outbox is sticky at the bottom of the
-screen, with its Send within the thumb's reach. This is Plannotator's point:
-the owner sits on the sofa at 14:30, reads the review slowly, comments on two
-lines and sends, and the receipt is the evidence it landed.
+**The count.** In scenario terms, the four urgent items, the review and the two
+finds clear in **13 presses**: the approval takes 3 (choose, Send decision,
+Next thread), each of the three asks and the stuck delegate takes 2, so 3 + 2 +
+2 + 2 = 9, and the review takes 4, which makes 13. Including PR `#1261`, whose
+thread is now a project ticket and whose one action "Send back to the worker"
+is choose and send, the total is **15**. The owner never leaves the page, so
+there is one screen throughout. Taking threads out of rank order costs one
+press each, and typing the comment is not a press. The two presses per ask are
+the two-press arming rule, not slowness: the first holds the words exactly as
+drawn, the second sends exactly those.
+
+
+
+**The phone.** The 390 px layout drops the rail. It is the list, full height,
+with the amber band first, so all four urgent rows are above the fold of the
+first screen. A tap opens a thread over the list with a back arrow; the thread
+is the same content in one column and the outbox is sticky at the bottom with
+its Send under the thumb. This is Plannotator's point: the owner reads the
+review on the sofa at 14:30, comments on one file and sends, and the receipt is
+the evidence it landed.
 
 ## 3. Information architecture
 
-The page has three columns and no fourth. The **rail** (200 px) lists folders
-with counts; the **list** (388 px) holds threads; the **reading pane** takes
-the rest and is the only place that decides anything. The rail's job is
-filtering, not navigation: "Everything, by need" is the default and the only
-view in which the four urgent rows are guaranteed, and the other folders
-(Needs you, To review, Finds, Moving, Quiet, Sent, Closed, and the two
-workspaces) are narrowings of it. This is the calm ruling applied: the
-default shows eight rows and two folded lines, not twenty-four sessions.
+The page has three columns and no fourth. The **rail** (176 px) holds five
+entries: Everything by need, Needs you, To review, Finds and Projects. The
+**list** (388 px) holds threads; the **reading pane** takes the rest and is the
+only place that decides anything. The rail narrows the list and nothing more.
+"Everything, by need" is the default and the only view in which the four urgent
+rows are guaranteed. The first version also drew a Mail group (Sent, Closed), a
+Workspaces group, a paragraph of help, five chips in the top bar and four tints
+of kind tag. The owner's critique called that the most on screen of the four,
+which the brief ruled out, and all of it is cut: one count in the bar, one tint
+(amber, for need), and kind tags that are a word in a hairline outline. Sent and
+Closed hold nothing until the person has sent something, and they appear then
+as one line in the list's fold, not as folders.
 
 **Rank, and what folds.** The list is grouped by *what each thread needs from
-the person*, which is the classifier's answer for its source session or
-strand: *you* gives Needs you, *ready to review* gives To review, finds
-form their own group, and *agent* and *quiet* fold into one line each at the
-bottom ("Moving", "Quiet"), each naming its members in one sentence, so that
-the owner can see that nothing is hidden and need not be shown it. A group
-header says in four words who is stopped: "agents stopped for you". Folded
-lines are not rows; they cannot be selected, they carry no unread mark, and
-they exist only so the totals in the top bar can be audited against
-something.
+the person*, which is the classifier's answer for its source session or strand:
+*you* gives Needs you, *ready to review* gives To review, finds form their own
+group, and *agent* and *quiet* fold into one line each at the bottom, each
+naming its members so the owner can see that nothing is hidden and need not be
+shown it. Folded lines are not rows; they cannot be selected and carry no unread
+mark.
 
-**The hardest requirement: urgent items must be impossible to miss in a
-medium whose point is reading at your own pace.** Mail fails at this because
-mail's urgent and ordinary messages differ only in their sender. Five rules
-hold it.
+**The hardest requirement: urgent items must be impossible to miss in a medium
+whose point is reading at your own pace.** Mail fails at this because mail's
+urgent and ordinary messages differ only in their sender. Five rules hold it.
 
-1. *Needs you is a pinned group, not a filter.* It sits first, is sticky at
-   the top of the list while the list scrolls, and cannot be folded. The only
-   way a row leaves it is to be answered, or for the agent to stop needing the
-   person.
-2. *Reading is not handling.* A thread has two independent marks. The blue
-   dot is mail's: unread. The amber band is need: unsent. Opening a thread
-   clears the dot and does nothing to the band. The rail says so in a line of
-   its own, "Reading a thread does not clear it", because the mail habit of
-   opening and walking away is the very failure to prevent. A row that has
-   been read but not answered keeps its hollow dot and its age, and its age
-   turns amber and heavy once it passes an hour.
-3. *The page opens on the first urgent thread*, not on a blank pane or the
-   last thing read. A person who only glances sees a question.
-4. *The count lives outside the page.* The tab title, the top bar's amber
-   count, and the rail's amber badge all say 4; the first two are visible
-   from a different tab, and the existing `waiting` and title mechanisms
-   (`wc/title_rule.gleam`) are what carry them, extended from one session to
-   the feed.
-5. *Other folders keep the band.* If the person narrows the view to Finds
-   at 14:25, the top bar still shows the amber count. The count is not part of
-   the list, so a filter cannot hide it.
+1. *Needs you is a pinned group, not a filter.* It sits first, is sticky at the
+   top of the list, and cannot be folded. A row leaves it only when answered or
+   when the agent stops needing the person.
+2. *Reading is not handling.* A thread has two independent marks: the blue dot
+   is mail's, unread; the amber band is need, unsent. Opening a thread clears
+   the dot and does nothing to the band. A read but unanswered row keeps a
+   hollow dot and an age that turns heavy amber after an hour.
+3. *The page opens on the first urgent thread*, not on a blank pane or the last
+   thing read. The critique noted that the large pane then draws the eye before
+   the list does; the answer is not to open nothing but to draw the pane in the
+   same neutral tones as the list.
+4. *The count lives outside the page.* The tab title and the one top-bar chip
+   say 4; they are the existing `title_rule` mechanism extended from one session
+   to the feed.
+5. *Other folders keep the count.* Narrowing the list to Finds does not remove
+   the bar's chip, since the chip is not part of the list.
+
+**A count that is honest.** The number 4 is a claim about everything the person
+may see, and today `sessions.activity` never reads saved sessions, so an
+approval parked in a saved session, after a daemon restart for example, is in
+no count (fact sheet §4, item 2). The design does not hide this. In phase 0 the
+chip reads "4 need you in running sessions" whenever the catalogue holds saved
+sessions, with "N saved, not checked" beside it, and the count is a lower bound
+by its own words. From phase 1 the source of truth is a durable catalogue
+summary written on change: per session, the number of pending approvals and the
+oldest open record's creation time, so a saved session is counted without being
+woken. The first test of phase 1 is a restart: stop the daemon with an approval
+pending, start it, and compare the count against the escalation register.
 
 **Where the transcript went.** It is a drill-down from a thread's context,
 never a place to read first. The ask thread carries the agent's last message,
-quoted as untrusted text, and a single link, "Open the transcript at this
-point", which opens the session page at the message the quote came from. The
-review carries the diff and the agent's summary, which replace the
-transcript for the question "was this done well". For an approval the
-transcript is not offered at all, since the record, not the text around it,
-is what the decision binds to. The measure of the design is how seldom that
-link is pressed.
+quoted as untrusted text, and one link, "Open the transcript at this point",
+which uses the transcript anchor on the record. For an approval the transcript
+is not offered, since the record, not the text around it, is what the decision
+binds to.
 
 ## 4. Item anatomy and lifecycle
 
-**A row** is two lines in a 388 px pane: the session name (bold while unread)
-and the time it has waited; then a kind chip (*Approval*, *Ask*, *Stuck*,
-*Review*, *PR*, *Risk*, *Idea*) and a one-line subject cut by the page, not
-by the agent. No colour bar and no shadow: the selected row takes the raised
-background and a hairline border, and the amber band's tint is a background
-on the group header only. The chip pairs a word with a tint, so colour never
-carries state alone.
+**A row** is two lines: the session name (bold while unread) and the time it has
+waited; then a kind word in a hairline outline (*Approval*, *Ask*, *Stuck*,
+*Review*, *Ticket*, *Risk*, *Idea*) and a one-line subject cut by the page, not
+by the agent. No coloured bar and no shadow: the selected row takes the raised
+background and a hairline border.
 
 **A thread** has one shape for every kind: an eyebrow (kind, session, strand,
 workspace, since when), a title that is the question in the agent's words
-(drawn as text, never as markup), then *what it asks for or shows*, then *in
-this thread* (related items: the peer message on the approval, the delegates on
-the coordinator's ask, the finds on the review), then *your response*, and a
-sticky **outbox** that is always visible. The outbox has exactly three states:
-*not sent* (names the staged items and the destination), *sending*, with an
-Undo for five seconds, and *delivered*, which carries the receipt.
-
-**Actions per kind.**
+(drawn as text, never as markup), then what it asks for or shows, then "in this
+thread" (related items), then the person's response, and a sticky **outbox**
+with three states: *not sent* (naming the staged items and the destination),
+*sending*, with an Undo, and *delivered*, which carries the receipt.
 
 | Kind | Staged by | Sent with | Closes as |
 |---|---|---|---|
-| Approval | Deny (first), Allow once, Allow for this session (owner's page only) | Send decision, bound to escalation id, seq and digest | approved, rejected, consumed |
-| Ask | an option (recommended first), or free text, or Explain | Send answer | answered, with the option's text |
-| Stuck | a drafted nudge, text shown in full | Send | sent, then the strand's own state takes over |
-| Review | Approve, Request changes, per-line comments, per-find actions | Send to main | approved, changes requested |
-| Find | Fix in this branch, File issue, Dismiss (Idea: Dismiss) | rides the thread's send, or its own | fixed, filed, dismissed |
-| PR | Address all, or per blocker | Send | follows GitHub: a fix button disappears when the blocker does |
+| Approval | Deny (first), Allow once, Allow for this session (owner's page only) | Send decision, echoing action text, grants and seq; no hold | approved, rejected, consumed |
+| Ask | an option (recommended first), or free text | Send & next | answered, with the option's text |
+| Stuck | a drafted nudge, text shown in full | Send & next | sent; the strand's own state takes over |
+| Review | Approve, Request changes, Fix, File issue, Dismiss, a comment per file | Send & next | approved, changes requested |
+| Find | Fix in this branch, File issue, Dismiss | rides the review's send | fixed, filed, dismissed |
+| Ticket | Send back to the worker, Recheck, Retry, Stop, Close | Send | follows the ticket's stage |
 
-**Receipts and what they claim.** "Delivered" means what the store says it
-means: the message was admitted durably to the target strand, which is exactly
-what the existing peer receipt proves (`async-collaboration.md`, "Peers have
-separate authority"). It does not mean the agent has read it. The page says
-*Delivered*, never *Read* or *Received by the agent*, and when the target is
-mid-turn it says *Queued behind the current turn*, which is what a held input
-is. An approval's receipt is stronger and says so: it names the decision, the
-seq and the digest it bound to, since the gateway checked them.
+**Receipts and what they claim.** "Delivered" means what the store proves: the
+message was admitted durably to the target strand, which is what the peer
+receipt proves (`async-collaboration.md`, "Peers have separate authority"). It
+does not mean read. The page says *Delivered*, never *Read*, and when the target
+is mid-turn it says *Queued behind the current turn*. An approval's receipt is
+stronger, and says so: it names the decision and the seq the gateway checked.
 
-**Undo.** A five-second hold between Send and the wire, shown in the outbox,
-lets a person recall a message. It is a hold, not a retraction: after the
-window the send is final, and the page then says "Delivered".
+**Undo.** For everything except an approval, Send starts a hold of five seconds
+that lives on the daemon, as a weft timer whose handler checks for a stale
+fire, so closing the tab neither loses nor doubles the message. The hold delays
+delivery; it is not a retraction, and after it the page says "Delivered". An
+approval is never held: its decision is delivered on Send, because a decision
+that can be recalled for five seconds is a decision a second operator could
+race, and the first decision wins.
 
-**Nothing reaches the agent until you send** has a cost that must be stated:
-a staged reply that sits overnight is stale, and a staged approval is the
-hazard. The page therefore keeps drafts only in the browser's local storage as
-per-viewer convenience; and when the feed says a thread's subject has changed
-(the agent edited a plan it had sent, an approval's digest moved, the delegate
-retried on its own), the outbox shows *Changed since you opened it* and
-disables Send until the pane is redrawn. This is Plannotator's rule, that the
-inbox opens the version that was sent, and it is Loom's rule, that consent
-binds what was shown.
+**Nothing reaches the agent until you send** has a cost: a staged reply that
+sits overnight is stale. The page does not keep drafts in the browser; a staged
+item lives in the page's server-side state and goes when the page does. And
+when a thread's subject changes under the person (an approval's action text
+moved, a delegate retried on its own), the send names the revision the thread
+was drawn at and is refused with a word, "changed since you opened it", exactly
+as `stale_approval` is today, and the pane redraws. This revision rule is the
+design's best borrowing from Plannotator, which opens the version that was sent,
+and it is Loom's own rule that consent binds what was shown.
 
-**Closure** keeps the row where it was, struck through, with its receipt line
-in place of its subject, and moves it to *Closed* on the next visit; the
-folding is Inbox's, and it keeps context at no cost.
+**Closure** keeps the row struck through with its receipt line, and folds it on
+the next visit.
 
 ## 5. The coordinator story
 
 The coordinator is project mode and sub-agent strands; this concept adds no
-third mechanism. A coordinator's delegates are strands (`sub:*`) or, in
-project mode, worker sessions per ticket. A delegate's ask, failure or
-finished work becomes an attention record on that strand, and the feed carries
-it to the page with the strand's parent chain attached. The page then does two
-things with that chain.
+third mechanism. A coordinator's delegates are strands (`sub:*`) or, in project
+mode, worker sessions per ticket. A delegate's ask, failure or finished work
+becomes an attention record on that strand, and the feed carries it to the page
+with the strand's parent chain.
 
-First, each delegate item is a thread in its own right, in the same list,
-ranked with every other, with its parent named in the eyebrow (`sub:mockup-b ·
-under coord/web-inbox`). The owner can answer a delegate without opening the
-coordinator, which is the point of the surface. Second, the coordinator's own
-thread carries its delegates: the ask at 13:40 shows the coordinator's goal,
-milestones and tokens (project mode's ledger and, once built, the goal's
-milestones), and a three-line table of its delegates, the stuck one linked to
-its own thread. That is the one place the page draws a parent and its
-children together, and it draws them as context for a question, never as a
-board.
+Each delegate item is a thread in its own right, in the same list, ranked with
+every other, with its parent in the eyebrow (`sub:mockup-b · under
+coord/web-inbox`), so the owner answers a delegate without opening the
+coordinator. The coordinator's own thread carries its delegates: the 13:40 ask
+shows its goal, its token use and a three-line table of delegates, the stuck one
+linked to its own thread. That is the one place the page draws a parent with its
+children, and it draws them as context for a question, never as a board. The
+"3 of 5 milestones" line of the scenario is drawn only if project mode's ledger
+supplies it; goals have no milestones (§2.4), so otherwise the card says
+"tickets ended: 6".
 
-Two rules keep this from becoming a fleet view. A delegate that is working or
-settled does not appear in the list at all, only on the coordinator's thread
-and in the folded lines; and when the coordinator has received a delegate's
-question and will ask the person itself, the person sees only the coordinator's
-ask. That is Coordinator's decision policy: small, reversible choices stay
-below, and what changes what gets built, costs money or is a matter of taste
-reaches the person.
+A delegate that is working or settled does not appear as a row, only on the
+coordinator's thread and in the folded lines; and when the coordinator has
+received a delegate's question and will ask the person itself, the person sees
+only the coordinator's ask. That is Coordinator's decision policy: small,
+reversible choices stay below, and what changes what gets built, costs money or
+is a matter of taste reaches the person.
 
-For project mode the mapping is direct, since a ticket's stage already says
-whose move it is: `person/answer` is an ask thread, `person/review` a review
-thread with the ticket's pull request as its subject, `person/blocked` a stuck
-thread and `person/failed` a failed thread. The board that exists today
-(`wv/view/projects.gleam`) remains the project's own page; the inbox draws the
-same tickets as threads so the person need not visit it.
+## 6. Project mode
 
-## 6. Mapping to signals
+Project mode is the coordinator the brief asked for, and it is unfinished. This
+concept gives it a home and absorbs the web slice that #1167 never pushed, so the
+ticket page is the inbox's review surface and not a second page.
+
+**Where things live.** The rail's **Projects** entry opens a *project view* in
+the same list pane: the project's name, a "New request" button (owner only), then
+its tickets grouped by stage, those that need a person first, working next, ended
+folded. A ticket opens in the same reading pane as every other thread, so a
+ticket is a thread with a different body, and a ticket that needs a person also
+appears in the main list under its group (a `person/review` or `person/check`
+ticket under To review, a `person/answer` ticket under Needs you). There is no
+separate project page and no board of cards; the Projects section of Home goes
+on working until the inbox region replaces it, and is deleted only then. The
+mockup's `project.png` draws it.
+
+**The ticket thread** is the review surface for work that has a worktree and a
+branch, which is every project ticket. It shows the stage and its reason, the
+diff stat and the diff (read from the ticket's worktree, as the Changes tab
+does), the check result with its failure output, the unresolved review comments
+(project mode's GitHub source already reads comments), and the moves the ticket
+offers. The moves are the actions the board already carries (`CanAnswer`,
+`CanClose`, `CanRetry`, `CanPublish`, `CanStop`) plus recheck and "send back to
+the worker", staged and sent like any thread. A move the ticket does not offer
+is not drawn; Publish is drawn disabled with its reason while publishing is off.
+
+**`person/check`.** On the paused `project/visible-failures` branch this stage
+means a ticket's check failed and a person must look; failures are classified as
+environment or code, with retry and recheck. The inbox draws it as a thread whose
+title says the class: "The check failed on the code" or "The check could not run
+here". For *code* the recommended move is "Send back to the worker" and Recheck
+is offered but not recommended; for *environment* Recheck is recommended and
+sending back is not. The failure output is the check's own text, drawn as text in
+a bounded block and labelled untrusted. Until that branch lands, a stage the
+page does not know is decoded as `UnknownStage` (as the board already does) and
+drawn as a thread whose title is the stage word and whose moves are those the
+ticket's `actions` list names; so the page needs no change when the branch
+merges, only a mapping row. The design does not depend on the template
+question: it draws whatever failure the check reports, in an environment where a
+template exists or where the owner checks with network on.
+
+**Which of #1167's web-slice items are absorbed, and when.**
+
+| Item | Phase | Note |
+|---|---|---|
+| ticket thread with answer and close | 1 | exists on the board today; moves into the thread |
+| retry, stop, recheck | 1 | `CanRetry` and `CanStop` exist; recheck arrives with `visible-failures` |
+| ticket diff, check result, failure output | 2 | the ticket's worktree read plus the check record |
+| publish | 2 | behind the project's own publishing setting; two-press, owner only |
+| post a request | 3 | a form in the project view, owner only, creates a ticket through the existing router path |
+| create a project | 3 | the same form kind; refused for observers and operators |
+
+Create and post-request come last: they decide nothing for an agent that is
+waiting, and are small once the project view exists.
+
+## 7. Mapping to signals
 
 | Item kind | Source (fact sheet) | Status |
 |---|---|---|
-| Approval thread | §2.1 escalation register, digest-bound card | EXISTS per session; **a cross-session read of its content is new** (only a count crosses sessions today, §4 item 3) |
-| Peer message in an approval thread | §2.10 `PeerMessage` row, `origin_checked` | PARTIAL: stored text; "unanswered" is derived by the page's classifier, and the pairing with an approval is new |
-| Ask (options, recommended) | §3, §8 | substrate addition (attention records); the project worker's `options` field exists but is always empty (§2.5) |
-| Ask free-text reply, Explain | §2.5 answer box; held inputs §2.12 | EXISTS (a message to a strand) |
-| Stuck delegate | §2.2 strand `Failed`/`Waiting`, §2.9 | PARTIAL: status exists; no rate-limit or "has not retried" signal (§2.2); classifier addition |
-| Stuck nudge ("Retry the last step") | §2.12, `agent_send` | EXISTS as a message; **"Resume" as a command is not assumed** |
-| Coordinator context (goal, tokens) | §2.4 goal, §2.5 ledger | PARTIAL: one objective and a budget exist; **milestones are ABSENT** (§2.4), so "3 of 5" needs project mode's ledger or a goal field |
-| Delegate table | §2.9 `agent_roster`, strands tab | PARTIAL |
-| Review thread (diff, files, stats) | §2.11 worktree read | PARTIAL: working tree and commits exist for owner and operator only (not observers); **ordered sections and per-section summaries are NEW** |
-| Agent summary and "tests green" | agent's final message; goal check §2.4 | PARTIAL: the final text exists; a structured summary per section is a new field on a review record |
-| Line comments, verdict | none | NEW beyond substrate (a review record that accepts annotations as inert data) |
-| Find: Risk, Idea | §3 | substrate addition (attention records, kind *find*) |
-| PR thread | §2.5, §2.11 | PARTIAL: project mode only; CI and review state are ABSENT as data outside it |
-| Receipts | §2.10 peer receipt; approval seq | EXISTS (durable admission); "queued behind the turn" is derived |
-| Needs-you ranking, band | §1.4, §6; classifier | substrate addition (classifier) |
-| Folded Moving and Quiet lines | `sessions.activity` words | EXISTS |
+| Approval thread | §2.1 escalation register; decision echoes the full `action` string, wanted grants and seq (`echo_matches`) | EXISTS per session; **a per-record read of its content from a page bound to no session is new**; the feed carries identity and head only |
+| Peer message in an approval thread | §2.10 `PeerMessage`, `origin_checked` | PARTIAL: stored text; the per-record read lists recent peer messages to that strand, with no claim of relevance |
+| Ask (options, recommended) | §3, §8 | substrate addition (attention records) |
+| Ask free text, Explain | §2.5 answer box; §2.12 held inputs | EXISTS (a message to a strand) |
+| Stuck delegate | §2.2, §2.9 strand `Failed` | PARTIAL: **main-only today** (`needs_you` judges failure from main), so a failed delegate is invisible until the classifier reads per-strand status |
+| Stuck nudge | §2.12, `agent_send` | EXISTS as a message; "resume" as a command is not assumed |
+| Wait time ("1h 22m", "3h 00m") | none | **NEW field**: `waiting_since` on the activity row (the oldest open record's creation, or for an escalation a new `asked_at`; its `asked` is a count) |
+| Review thread: stats, files, hunks | §2.11 worktree read | PARTIAL: owner and operator only; not for observers |
+| Review ordering (source, tests, docs) | none | classifier-side pure function over paths; no record |
+| Agent's last message on a review | final assistant text | EXISTS (cut to 280 bytes in the activity row; full text by per-record read) |
+| Review verdict, per-file comment | none | NEW beyond substrate, small: part of the thread-send command, no new record kind |
+| Find: Risk, Idea | §3 | substrate addition; carries an optional path and line for the in-place mark |
+| Ticket thread: stage, diff, check, output | §2.5, §2.11 | PARTIAL: stage and actions exist; diff and check output are the paused web slice |
+| `person/check` | `project/visible-failures` | paused branch; drawn as UnknownStage until it lands |
+| PR comments on a ticket | project mode's GitHub source | PARTIAL: owner only, project mode only |
+| Receipts | §2.10 peer receipt; approval seq | EXISTS (durable admission) |
+| Need-you rank and band | classifier | substrate addition |
+| Folded Moving and Quiet | `sessions.activity` words | EXISTS |
 | Tab title and count | `wc/title_rule.gleam` | EXISTS for one session; the feed extends it |
 
-**What the concept needs beyond the three substrate pieces.** One thing: a
-**review record**, a fourth attention kind next to ask, task and find. It is
-inert data with a total decoder, written by the agent when it finishes and
-carrying an ordered list of sections, each with a title, a bounded summary, and
-file paths with line ranges, and referring to the diff by revision and not by
-copy. The diff itself is read from the worktree on demand, as the Changes tab
-does today. The cost is stated in section 7; without the record, the review
-thread degrades to the worktree's file list plus the agent's last message,
-which is still better than the transcript but is not the thesis.
+**What the concept needs beyond the three substrate pieces.** Three small things
+and no new record kind. First, `waiting_since` and per-strand status on the
+classifier's inputs. Second, a **per-record read at a revision** and a **thread
+send** command that takes the revision. Third, an optional path and line on a find
+for the in-place mark. The first version also proposed a *review record* with
+ordered sections and agent summaries per section; it is cut from phases 0 to 2 and
+kept only as a candidate for phase 4, to be prototyped first (section 10).
 
-## 7. What changes where
+## 8. What changes where
 
 **`session_view`** gains the attention classifier (pure; *you, agent, blocked,
-ready to review, quiet*) and a thread projection, `thread.gleam`: from a
-record and its related records to the eyebrow, the title, the sections and the
-outbox's state. The outbox state machine, *not sent, sending, delivered,
-changed since opened*, is a pure function here, so the terminal can read the
-same answer, in the portable subset (R6): no `@external`, no process. The
-rank rule is also here, one function, so both hosts rank identically.
+ready to review, quiet*, with *ready to review* a function of "run ended, diff
+non-empty, nothing pending") and a thread projection: from a record and its
+related records to the eyebrow, the title, the staged items and the outbox
+state. The outbox state machine and the rank rule are pure functions here, so the
+terminal reads the same answers, in the portable subset (R6).
 
-**`web_view`** gains `inbox_page.gleam` (a new page kind, bound to no
-session, beside Home), with the list, the reading pane and the outbox as three
-regions at fixed tree paths. Because a region's path is load-bearing, the click
-paths for staging, sending and undo are added to `ui_socket`'s admitted set
-for owner and operator pages only and, as for every deciding control, to no
-observer path. Staged text is held in the page's own state and sent as one
-command; no handler is built from session content.
+**`web_view`** gains an inbox region of Home with the list, the reading pane
+and the outbox at fixed tree paths. Click paths for staging and sending are added
+to `ui_socket`'s admitted set for owner and operator only, by region prefix and
+keyed by daemon identities, and to no observer path. Staged text is held in the
+page's state and sent as one command. The first version also wanted line-anchored
+comments, drafts in local storage and a pane that advanced by itself; a server
+component pays for each (a handler per diff line, a message per keystroke,
+a card appearing under the pointer), so they are cut: one comment field per file
+(one handler per file), anchored by the revision and path the daemon issued; no
+local drafts; and advance only on the explicit "Send & next" or "Next thread"
+press.
 
-**Daemon.** The attention feed (substrate 3), plus two things it implies: a
-*thread read* that returns one record with its related records and its digest,
-so the page does not assemble context from per-session lanes, and a *send*
-command that takes a thread id, the revision the thread was drawn at and the
-staged items, and returns a receipt. The send's revision is the page's proof
-that it is answering what it showed.
+**Daemon.** The attention feed, which carries **identities, kind, state and a
+bounded head, never content**; the per-record read; the thread-send command; the
+hold timer; and the durable catalogue summary of section 3.
 
-**Wire and protocol changes.**
+**Protocol changes.**
 
-- `protocol-change/NNN-attention-feed.md` (substrate 3). It must decide: the
-  subscription's scope and per-principal filtering (a member sees held
-  sessions only); whether it carries records or only a "this thread changed"
-  hint with a read behind it; resumption after a gap (a cursor, or a full
-  re-read); the maximum rate and row bounds beside the 2,400 B per row in
-  `050`; and how an observer's view of an approval is redacted.
-- `protocol-change/NNN-thread-send.md`. It must decide: the send command's
-  shape (one message carrying a verdict, comments and per-find actions, or
-  several commands under one receipt); what "delivered" is allowed to claim;
-  the stale-revision refusal and its error word; and the undo hold, either
-  client-side or a short-lived pending state on the daemon.
-- `protocol-change/NNN-review-record.md`. It must decide: the section schema
-  and its bounds; whether a revision of a review is a new record or a version
-  of one; and how comments are bounded and attached to a revision rather than
-  to text.
+- `protocol-change/NNN-attention-feed.md` (substrate 3). It must decide: scope and
+  per-principal filtering; that rows carry heads and content is read per record at
+  a seq; resumption after a gap; row and rate bounds beside `050`'s 2,400 B; the
+  durable catalogue summary and its restart behaviour; and the observer's
+  redaction.
+- `protocol-change/NNN-thread-send.md`. It must decide: the command's shape, one
+  message composed by the daemon from staged fields; what "delivered" may claim;
+  the stale-revision refusal; the five-second hold, which is daemon-side and never
+  applies to an approval; and the approval path, which stays the gateway's
+  `decide`, judged in the target session's own hub, with a cross-session path
+  needing its own proposal before the inbox can decide a local session's request.
+- The review record of the first version is not proposed.
 
-These are three documents because they have three different owners and
-lifetimes; a reader of the feed protocol need not decide how comments are
-stored.
+## 9. Roles
 
-## 8. Roles
+An **operator or owner** sees everything above: staging controls, the outbox and
+Send, Undo. "Allow for this session" is drawn on the owner's page only. Every
+deciding control uses two presses: the first stages and holds what was drawn,
+the second sends exactly that; the approval's Send also waits 600 ms and never
+takes focus.
 
-An **operator or owner** sees everything above: staging controls, the outbox
-and its Send, Undo. "Allow for this session" is drawn on the owner's page only,
-as `approval.rememberable` has it today. Every deciding control uses the
-two-press pattern: the first press stages and holds what was drawn, and the
-second, on Send, sends exactly that; the approval's Send also waits 600 ms and
-never takes focus, and Enter never sends.
+An **observer** sees the same list, counts and threads for the sessions they
+hold, and none of the three things that act: no staging buttons, no outbox, no
+comment field. Where the outbox is, one line: "An owner or operator decides
+this." Approval content is redacted to the tool name and the fact that a decision
+is pending, because today's observer page draws no approval cards. A review's
+hunks are withheld from observers (§2.11), so an observer sees the stats, the
+agent's last message and the finds, and the file list without diffs. Bob, an
+operator on `storage/branch-index-repair`, sees the same approval and the same
+band; when either of them decides, the other's thread becomes "Decided by Bob,
+14:23" and its outbox goes quiet, because the first decision wins.
 
-An **observer** sees the same list, the same counts and the same threads for
-the sessions they hold, and none of the three things that act: no staging
-buttons, no outbox, no comment affordance. Where an operator's page has the
-outbox, the observer's has one line: "An owner or operator decides this."
-Approval content is redacted for an observer to the tool name and the fact
-that a decision is pending, because today's observer page draws no approval
-cards at all and this concept does not widen that; an observer reads a review
-in full, since the Changes tab's worktree read is the one that is withheld
-from observers, and this is stated as a dependency rather than glossed (§2.11:
-the worktree read is owner and operator only), so an observer's review thread
-shows the agent's summaries and stats but not the hunks until that ruling
-changes. Bob, an operator on `storage/branch-index-repair`, sees the same
-approval and the same band; when either of them decides, the other's thread
-becomes *Decided by Bob, 14:23* and its outbox goes quiet, because the first
-decision wins.
+## 10. Cut list
 
-## 9. Cut list
+1. **No unified timeline or "since you last looked" digest.** The inbox lists what
+   is asked, not what happened; the folded lines carry the rest.
+2. **No plan or prototype documents in the first build.** Loom has no
+   plan-submission tool in the tree; a plan thread waits for one.
+3. **No bulk actions.** No approve-all or select-many.
+4. **No snooze, assignment or hand reordering.** Rank is a function of need and
+   age.
+5. **No transcript preview in the list or the pane, and no read receipts.**
+   One quoted message and a link; "Delivered" is all the store can prove.
+6. **No merge button.** A ticket can be published or sent back; merging stays in
+   GitHub.
+7. **No line-anchored comments, no local drafts and no automatic advance.** The
+   first two cost a client component the size of the composer; the third moves a
+   different card under the pointer after a press.
+8. **No review record and no per-section agent summaries** until a prototype
+   shows an agent can write them and an owner prefers them to the diff.
 
-1. **No unified timeline or "since you last looked" digest of everything.**
-   The inbox lists what is asked, not what happened; the Moving and Quiet
-   lines carry the rest in one sentence each.
-2. **No plan or prototype documents in the first build.** The thesis names
-   plans annotated in place, and the review's annotation machinery is that
-   machinery; but Loom has no plan-submission tool in the tree, and a plan
-   thread is cut until a tool exists to produce one.
-3. **No bulk actions.** No "approve all", no select-many and no keyboard-only
-   mass answer. Two presses per thread is the price of each decision having
-   been seen.
-4. **No snooze, no assignment, no reordering by hand.** Rank is a function
-   of need and age. A thread the owner is not ready for stays where it is and
-   stays amber.
-5. **No transcript preview in the list or the pane.** A thread has one quoted
-   message and a link. A reading surface that included the transcript would
-   rebuild the drag it exists to remove.
-6. **No read receipts and no typing indicators from agents.** "Delivered" is
-   all the store can prove.
-7. **No merge button.** A PR thread can send a fix to the session; merging
-   stays in GitHub or project mode, whose ticket stage owns it.
+## 11. Build phases
 
-## 10. Build phases
+**Phase 0, existing signals, and honest about it.** A region of Home, which is
+bound to no session, owner-only and already admitted by `ui_socket`; it needs no
+new page kind and no session ticket, and its added click paths are a small
+addendum to protocol-change/051 (listed here, not hidden). It reads
+`sessions.activity` (5 s, 24 sessions) and, for the owner, the project board.
+What it can show is less than the scenario: the amber band holds the sessions
+whose word is *needs you*, which today is a pending escalation (so
+`storage/branch-index-repair`) or main failed while idle. The stuck delegate is
+invisible, because failure is judged from main only; the two idle asks are
+`idle` sessions with a `last_message`, which the page throws away today and now
+shows, so they appear in a "Waiting" group as sessions, not as asks with options,
+and are not ranked above anything. **There is no waiting time**, since the row has
+none; rows are ordered needs-you word first, then name, and the band's hint says
+"agents stopped for you" with no age. The headline therefore reads "1 session
+needs you", not 4, with "3 idle with a question" beside it, and the chip says "in
+running sessions" because saved sessions are not read. Project tickets with a
+stage that needs a person are real, answerable rows with the existing answer box.
+The value is that the owner reads one list instead of opening six sessions, and
+sees each idle session's last message without opening it. The "Back at 14:20" line
+is not drawn.
 
-**Phase 0, existing signals only.** The inbox page exists and is built from
-what is on the wire today: a new bound-to-nothing page kind that polls
-`sessions.activity` (five seconds, 24 sessions) and reads, for owner pages,
-the project board. It already shows the amber **Needs you** band, because
-today's word *needs you* (a pending escalation, or main failed while idle) is
-the classifier's seed; it already shows the rank, the folded Moving and Quiet
-lines, the tab count, and a thread for each row with the data the row already
-has: `last_message` (the 280 bytes the page throws away today, §0 item 2),
-the approval count, the `last_outcome`. Approval content is not available
-across sessions, so an approval thread in phase 0 opens as a row with the
-session link and "Decide in the session", which is today's behaviour with a
-better front door; project tickets already carry a real answer box and so are
-fully answerable in place. The value delivered is that the owner reads one
-list of eight things rather than opening six sessions, and every thread's
-context is the agent's own last message instead of a scroll. No new
-interfaces and no protocol change.
+**Phase 1, the substrate and the first threads.** Attention records (ask, task,
+find, with a routing field, a transcript anchor, the parent chain and an optional
+path and line), the classifier with per-strand status, `waiting_since`, the feed
+with its protocol change and the durable catalogue summary, and the thread-send
+command with the hold. Asks and finds become real threads, ranking by wait time
+works, the stuck delegate appears, and approvals are decidable in place through
+the per-record read. Project tickets' answer, close, retry and stop move into
+tickets-as-threads. The restart test runs.
 
-**Phase 1, the substrate.** Attention records (ask, task, find) with their
-decoders; the classifier in `session_view`; the feed with its protocol change.
-The list stops polling. Asks and finds become real threads with options and a
-recommendation. The outbox, staging, Send and the receipt arrive with the
-thread-send change, so every ask and every approval is answerable in place.
+**Phase 2, the review surface.** The review thread for finished sessions (stats,
+the agent's last message, the file list and hunks from the worktree read, finds
+pinned, verdict, per-file comment), and for tickets the diff, check result,
+failure output, recheck and publish. The ticket thread is built first, since the
+web slice is owed anyway, and the session review reuses its body.
 
-**Phase 2, the review surface.** The review record, section rendering with
-agent summaries, line comments, the verdict, and the revision rule (open the
-version that was sent). The review row moves from "worktree files and the last
-message" to the full thread. This is the phase that carries the thesis; it is
-third because it is the largest new schema and because phases 0 and 1 already
-clear six of the eight scenario items.
+**Phase 3.** The project view with "New request" and "Create project";
+`person/check` mapping when its branch lands; the coordinator's context card;
+drafts and reconnect hardening on the phone. **Phase 4, optionally:** a review
+record with ordered sections, if the prototype in section 12 passes; then plans.
 
-**Phase 3.** Project-mode and strand parentage in the eyebrow and the
-coordinator's context card; PR threads for project tickets; drafts and
-reconnect hardening on the phone; then plans, if a plan tool has appeared.
+## 12. Risks, and the cheapest test that would prove the thesis wrong
+
+**Risk: the pane is a second transcript.** *Cheapest test:* in phase 0, count how
+often the owner opens the session from a thread. If more than about one thread in
+three needs the transcript link to be answered, the context attached to an ask is
+not sufficient, and the thesis is wrong for asks.
+
+**Risk: the review is not worth reading.** The owner's critique put it plainly:
+a diff reviewed file by file is a long read for one item in eight. The design
+answers by lifting Approve above the long read; the test is whether owners press
+Approve without opening any file, in which case the review is a signature on the
+agent's own message and the pane should say so on the button ("Accept the agent's
+account").
+
+**Risk: the mail metaphor makes the owner relax.** Section 3's five rules are the
+defence. *Cheapest test:* leave the page open with four urgent rows; if the
+median wait is longer than under today's counting sidebar, urgent items belong
+in the tab's foreground, not in the list.
+
+## Revision
+
+**What changed.** Seven things, in order of consequence.
+
+1. *The page is calmer.* The top bar's five chips became one; the rail's Mail,
+   Workspaces and help text were removed and a Projects entry added; the kind
+   tags, the pink approval box and the purple peer box became one neutral
+   treatment. The reading pane is drawn quietly so the list still leads.
+2. *The review can no longer contradict itself.* "Approve" and "Fix the risk"
+   merge into the single staged line "Approve, after the fix"; Approve moved above
+   the sections so a long read is optional.
+3. *The review record is gone.* Ordered, agent-summarised sections and line
+   comments were the thesis's costliest piece and the critique's most severe
+   finding. The review now reads the worktree (stats, the agent's last message,
+   files ordered by path, hunks) with one comment field per file. The ticket
+   thread, whose diff and check output are owed by #1167's web slice anyway, is
+   built first and the session review reuses its body.
+4. *Phase 0 is honest.* It is a region of Home, not a new page kind; it shows 1
+   session in the amber band and not 4; it has no waiting time, no stuck delegate
+   and no "away since" line; and the saved-session blind spot is stated in the
+   chip and fixed by a durable catalogue summary in phase 1.
+5. *Binding and feed are corrected.* A decision echoes the full action text, the
+   wanted grants and the seq, not a digest; the feed carries identities and heads
+   and content comes from a per-record read; ranking by wait needs a new
+   `waiting_since` field; undo is a daemon-side hold and never applies to an
+   approval.
+6. *Project mode has a home.* A Projects view in the same panes; the ticket thread
+   with diff, check result and failure output; a table of #1167's web-slice items
+   by phase; and `person/check` drawn with its environment-or-code recommendation,
+   falling back to `UnknownStage` until the branch lands.
+7. *Auto-advance became an explicit press.* "Send & next" names its consequence;
+   an approval never advances and offers "Next thread" instead.
+
+**What I rejected.** Opening on nothing instead of the first urgent thread: the
+fix is a quieter pane. Shipping the review record with a prototype in the same
+pass: it is cut instead. Keeping line comments while dropping drafts: both cost
+a client component. Another concept's board or row buttons: the thread with its
+outbox and receipt is what this option offers.
+
+**New press count, like for like, including PR #1261.** **15** (the first version
+said 14). The approval 3 (choose, Send decision, Next thread); the pod-reach ask,
+the coordinator's ask and the stuck delegate 2 each; the review 4 (Fix, Approve,
+Dismiss, Send & next); the ticket for PR #1261 2 (Send back, Send). Without the
+ticket it is 13. The cost over the first version is the explicit Next press after
+the approval, which is the price of never moving the page after a decision.
+
+**Needed beyond the substrate.** `waiting_since` and per-strand status on the
+classifier's inputs; the per-record read at a revision and the thread-send command
+with its daemon-side hold; an optional path and line on a find; the durable
+catalogue summary for saved sessions; and, from the paused stack, the
+`person/check` stage and the check record, which the ticket thread draws.

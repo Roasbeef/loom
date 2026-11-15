@@ -45,7 +45,7 @@ code,.mono{font-family:var(--mono);font-size:12px}
 .chip{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--divider);color:var(--quiet);white-space:nowrap}
 .btn-ghost{font-size:12px;color:var(--quiet);padding:3px 9px;border:1px solid var(--divider);border-radius:6px}
 
-main{display:grid;grid-template-columns:200px 388px 1fr;min-height:0}
+main{display:grid;grid-template-columns:176px 388px 1fr;min-height:0}
 .rail{background:var(--sunk);border-right:1px solid var(--divider);padding:14px 10px;overflow:auto}
 .rail h4{margin:16px 8px 6px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--quiet)}
 .away{margin:0 8px 12px;font-size:12px;color:var(--quiet)}
@@ -202,33 +202,50 @@ html.phone .totrow{display:flex}
 .totrow{display:none}
 html.phone .totrow{display:flex;gap:6px;padding:8px 14px;border-bottom:1px solid var(--divider);flex-wrap:wrap}
 html.phone .bar .totals{display:none}
+
+.kind[class*="k-"]{background:none;color:var(--quiet);border-color:var(--divider)}
+.card.danger,.card.amber{border-color:var(--divider);background:var(--raised)}
+.quote.peer{border-color:var(--divider)}
+.peer .src b{color:var(--fg)}
+.pill.ok,.pill.bad{background:none}
+.pill.ok{color:var(--added-text)}.pill.bad{color:var(--danger-text)}
+.b.deny.staged{border-color:var(--current);background:color-mix(in srgb,var(--current) 10%,var(--raised))}
+.b.deny.staged::before{color:var(--current)}
+.b.dis{opacity:.5;cursor:default}
+.fl{display:flex;gap:10px;align-items:baseline;width:100%;padding:8px 14px;border-top:1px solid var(--divider)}
+.fl:first-child{border-top:0}
+.fl .p{flex:1;font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fl .sd{font-family:var(--mono);font-size:12px;color:var(--quiet)}
+.fl .add{color:var(--added-text)}.fl .del{color:var(--danger-text)}
+.fbody{border-top:1px solid var(--divider);padding:10px 14px 12px;background:var(--raised)}
+.files{padding:0;overflow:hidden}
+.out{background:var(--code);border-radius:8px;padding:9px 12px;font:12px/1.55 var(--mono);white-space:pre-wrap;overflow:hidden}
+.next{display:none}
+.sent .next{display:inline-block}
+.view-projects #list{display:none}
+#plist{display:none;border-right:1px solid var(--divider);overflow:auto;min-height:0}
+.view-projects #plist{display:block}
+html.phone #plist{height:100%;border-right:0}
+.note-small{font-size:12px;color:var(--quiet)}
 </style>
 </head>
 <body>
 <div id="app">
   <header class="bar">
     <span class="brand">loom</span>
-    <span class="where">Inbox · all workspaces</span>
+    <span class="where">Inbox</span>
     <div class="totals" id="totals"></div>
     <span class="chip role">owner · operating</span>
     <button class="btn-ghost" id="theme">Theme</button>
   </header>
   <main id="main">
     <nav class="rail" aria-label="Folders">
-      <p class="away">Back at <b>14:20</b>. Away since 11:05, three hours fifteen.</p>
-      <button class="folder on"><span>Everything, by need</span><span class="n" id="n-all">8</span></button>
-      <button class="folder need"><span>Needs you</span><span class="n" id="n-need">4</span></button>
-      <button class="folder"><span>To review</span><span class="n" id="n-rev">2</span></button>
-      <button class="folder"><span>Finds</span><span class="n" id="n-find">2</span></button>
-      <button class="folder muted"><span>Moving without you</span><span class="n">2</span></button>
-      <button class="folder muted"><span>Quiet</span><span class="n">2</span></button>
-      <h4>Mail</h4>
-      <button class="folder"><span>Sent</span><span class="n" id="n-sent">0</span></button>
-      <button class="folder muted"><span>Closed</span><span class="n" id="n-closed">0</span></button>
-      <h4>Workspaces</h4>
-      <button class="folder"><span>loom</span><span class="n">4</span></button>
-      <button class="folder"><span>aegis</span><span class="n">2</span></button>
-      <p class="note">Reading a thread does not clear it. A thread leaves Needs you only when you send, or when the agent no longer needs you.</p>
+      <p class="away">Back at <b>14:20</b>. Last seen 11:05.</p>
+      <button class="folder on" data-view="inbox"><span>Everything, by need</span></button>
+      <button class="folder need" data-view="inbox"><span>Needs you</span><span class="n" id="n-need">4</span></button>
+      <button class="folder" data-view="inbox"><span>To review</span><span class="n" id="n-rev">2</span></button>
+      <button class="folder" data-view="inbox"><span>Finds</span><span class="n" id="n-find">2</span></button>
+      <button class="folder" data-view="projects" id="f-proj"><span>Projects</span><span class="n">1</span></button>
     </nav>
 
     <section class="list" id="list" aria-label="Threads">
@@ -249,10 +266,10 @@ html.phone .bar .totals{display:none}
       <div class="ghead"><span>To review · <span id="c-rev">2</span></span><small>finished, waiting on your read</small></div>
       <button class="row" data-open="hash" data-g="rev"><span class="unread"></span>
         <span class="r1"><span class="nm">fix/hashline-replay</span><span class="age">1h 49m</span></span>
-        <span class="r2"><span class="kind k-rev">Review</span><span class="sj">+412 −88, 7 files, 4 sections · 2 finds attached</span></span><span class="rcpt"></span></button>
+        <span class="r2"><span class="kind k-rev">Review</span><span class="sj">+412 −88, 7 files · 2 finds attached</span></span><span class="rcpt"></span></button>
       <button class="row" data-open="pr" data-g="rev"><span class="unread"></span>
         <span class="r1"><span class="nm">wp-j/vetting-lint · #1261</span><span class="age">today</span></span>
-        <span class="r2"><span class="kind k-rev">PR</span><span class="sj">1 failing check, 2 unresolved comments from Bob</span></span><span class="rcpt"></span></button>
+        <span class="r2"><span class="kind k-rev">Ticket</span><span class="sj">check failed (lint R11), 2 unresolved comments</span></span><span class="rcpt"></span></button>
 
       <div class="ghead"><span>Finds · <span id="c-find">2</span></span><small>noticed outside the task</small></div>
       <button class="row" data-open="hash#risk" data-g="find"><span class="unread"></span>
@@ -267,6 +284,17 @@ html.phone .bar .totals{display:none}
       <button class="folded"><b>Quiet</b><span class="t">docs/threat-model, yesterday · sub:fact-sheet settled 2h ago</span><span>2</span></button>
     </section>
 
+    <section id="plist" aria-label="Projects">
+      <div class="ghead" style="position:static"><span>Project · loom</span><small>owner</small></div>
+      <div style="padding:10px 14px;border-bottom:1px solid var(--divider);display:flex;gap:8px;align-items:center"><button class="b sm" data-note="request">New request</button><span class="note-small">Publishing is off for this project.</span></div>
+      <div class="ghead need" style="position:static"><span>Needs you · 1</span><small>stage person/check</small></div>
+      <button class="row" data-open="pr" data-g="proj"><span class="unread"></span>
+        <span class="r1"><span class="nm">T-41 · Vetting lint</span><span class="age">today</span></span>
+        <span class="r2"><span class="kind">Check</span><span class="sj">lint (R11) failed: code, not environment</span></span><span class="rcpt"></span></button>
+      <div class="ghead" style="position:static"><span>Working · 1</span></div>
+      <div class="folded"><b>T-40</b><span class="t">Hashline replay, worker is running</span></div>
+      <div class="ghead" style="position:static"><span>Ended · 6</span><small>folded</small></div>
+    </section>
     <section class="read" id="read" aria-label="Thread">
 
 <!-- 1. approval -->
@@ -283,7 +311,7 @@ html.phone .bar .totals{display:none}
       <tr><td>Network</td><td>off</td></tr>
       <tr><td>Wants a write grant</td><td><b><code>~/.loom</code></b>, outside the workspace</td></tr>
       <tr><td>Policy today</td><td><code>workspace-write · network off</code></td></tr>
-      <tr><td>Bound to</td><td class="mono">escalation e-7f2 · seq 41 · digest 9f3c…a1</td></tr>
+      <tr><td>Decision binds</td><td class="mono">the action text above, as shown · wanted grant ~/.loom · seq 41</td></tr>
     </table></div>
     <h2>In this thread</h2>
     <div class="quote peer"><span class="src"><b>Peer message</b> · runner/pod-reach · main → this session · 13:15 · origin checked · stored, not answered</span>“Does the integrity check need the write grant, or can it run read-only?”</div>
@@ -294,11 +322,11 @@ html.phone .bar .totals{display:none}
       <button class="b" data-stage="appr" data-key="o" data-label="Allow once">Allow once</button>
       <button class="b" data-stage="appr" data-key="s" data-label="Allow for this session">Allow for this session</button>
     </div>
-    <p class="hint" style="margin-top:10px">The decision names the escalation, its seq and the digest above. If the agent changes what it asks before you send, the send is refused as stale and the card redraws. Send stays disabled for 600 ms after you choose.</p>
+    <p class="hint" style="margin-top:10px">The decision echoes the full action text, the grant and the seq you were shown; if the record moved, the send is refused as stale and this card redraws. Send waits 600 ms after you choose. There is no undo for a decision.</p>
   </div>
-  <div class="outbox" data-thread="appr" data-to="storage/branch-index-repair · main">
+  <div class="outbox" data-thread="appr" data-hold="none" data-to="storage/branch-index-repair · main">
     <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a decision. Nothing reaches the agent until you send.</span><div class="items"></div></div><button class="send" disabled>Send decision</button></div>
-    <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
+    <div class="state"><span class="receipt"></span><button class="b next" data-next="1">Next thread ›</button></div>
   </div>
 </article>
 
@@ -319,7 +347,7 @@ html.phone .bar .totals{display:none}
     <textarea class="ta" placeholder="Reply to the agent… (Explain first, Compare, or free text)"></textarea>
   </div>
   <div class="outbox" data-thread="pod" data-to="runner/pod-reach · main">
-    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option or write a reply.</span><div class="items"></div></div><button class="send" disabled>Send answer</button></div>
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option or write a reply.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
     <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
   </div>
 </article>
@@ -346,7 +374,7 @@ html.phone .bar .totals{display:none}
     <button class="opt" data-stage="coord" data-key="3" data-label="Hide after 24h"><span class="top"><span class="num">3</span><span class="lbl">Hide after 24h</span></span></button>
   </div>
   <div class="outbox" data-thread="coord" data-to="coord/web-inbox · main">
-    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option.</span><div class="items"></div></div><button class="send" disabled>Send answer</button></div>
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
     <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
   </div>
 </article>
@@ -367,7 +395,7 @@ html.phone .bar .totals{display:none}
     <button class="opt" data-stage="stuck" data-key="2" data-label="Tell coord/web-inbox to take it back"><span class="top"><span class="num">2</span><span class="lbl">Tell the coordinator to take it back</span></span><span class="why">Posts to coord/web-inbox so it can reassign or wait.</span></button>
   </div>
   <div class="outbox" data-thread="stuck" data-to="sub:mockup-b">
-    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a nudge.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a nudge.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
     <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
   </div>
 </article>
@@ -377,68 +405,71 @@ html.phone .bar .totals{display:none}
   <div class="thread-body">
     <button class="back">‹ Inbox</button>
     <div class="eyebrow"><span class="kind k-rev">Review</span><span>fix/hashline-replay · main · loom</span><span>· finished 12:31</span></div>
-    <h1>Replay now stops at the first bad entry and says which one it was</h1>
-    <div class="summary">
-      <div class="stats"><span class="pill ok">+412</span><span class="pill bad">−88</span><span class="pill">7 files</span><span class="pill">4 sections</span><span class="pill ok">make check-core exit 0, as the agent reports</span></div>
-    </div>
+    <h1>Ready to review: +412 −88 across 7 files</h1>
+    <div class="stats"><span class="pill ok">+412</span><span class="pill bad">−88</span><span class="pill">7 files</span><span class="pill">make check-core exit 0, as the agent reports</span></div>
+    <div class="quote" style="margin-top:12px"><span class="src">The agent's last message, untrusted text · 12:31</span>Replay now stops at the first entry whose digest does not match and returns an error naming that entry. Entries carry their index for that reason. Tests cover a reordered entry and replay of any prefix.</div>
+    <h2>Your verdict</h2>
+    <div class="acts"><button class="b" data-stage="hash" data-key="approve" data-excl="verdict" data-label="Approve">Approve</button><button class="b" data-stage="hash" data-key="changes" data-excl="verdict" data-label="Request changes">Request changes</button></div>
     <h2>Noticed along the way · 2</h2>
     <div class="card" id="finds">
-      <div class="find"><span class="num-pin pf">!</span><div class="tx"><b>Risk.</b> <code>hashline.replay</code> silently skips entries whose digest is empty; a truncated store would replay short with no error. <span class="hint">Pinned in §2.</span></div>
-        <div class="acts"><button class="b sm" data-stage="hash" data-key="risk-fix" data-excl="risk" data-label="Fix the risk first">Fix in this branch</button><button class="b sm" data-stage="hash" data-key="risk-issue" data-excl="risk" data-label="File an issue for the risk">File issue</button></div></div>
+      <div class="find"><span class="num-pin pf">!</span><div class="tx"><b>Risk.</b> <code>hashline.replay</code> silently skips entries whose digest is empty; a truncated store would replay short with no error. <span class="hint">Marked at core/hashline.gleam:99.</span></div>
+        <div class="acts"><button class="b sm" data-stage="hash" data-key="risk-fix" data-excl="risk" data-label="Fix the risk">Fix in this branch</button><button class="b sm" data-stage="hash" data-key="risk-issue" data-excl="risk" data-label="File an issue for the risk">File issue</button></div></div>
       <div class="find"><span class="num-pin pf">i</span><div class="tx"><b>Idea.</b> The replay loop could reuse <code>machine/codec</code>'s first-match walk and drop a closure per entry.</div>
         <div class="acts"><button class="b sm" data-stage="hash" data-key="idea-dismiss" data-excl="idea" data-label="Dismiss the idea">Dismiss</button></div></div>
     </div>
-    <h2>Sections, in the order to read them</h2>
-    <div class="sec" id="s1"><button class="sh" data-toggle="s1b"><span class="sn">§1</span><span class="st">Entries know their position</span><span class="sd"><span class="add">+38</span> <span class="del">−9</span> · 1 file</span></button>
-      <div class="sb" id="s1b" hidden><p class="agent"><i>The agent's summary</i>An entry now carries its index so a failure can name it. Nothing else about decoding changed.</p><span class="mono hint">core/hashline/entry.gleam</span></div></div>
-    <div class="sec" id="s2"><button class="sh" data-toggle="s2b"><span class="sn">§2</span><span class="st">Replay stops at the first mismatch</span><span class="sd"><span class="add">+193</span> <span class="del">−63</span> · 2 files</span></button>
-      <div class="sb" id="s2b"><p class="agent"><i>The agent's summary</i>Replay folds over entries in order and returns <code>Error(Mismatch(index))</code> at the first digest that does not match, instead of continuing. This is the behaviour change.</p>
-        <div class="hunk"><div class="fn">core/hashline.gleam · replay_from</div>
+    <h2>Files · source, then tests, then docs</h2>
+    <div class="card files">
+      <div class="fl" style="padding:0"><button class="fl" style="border-top:0" data-toggle="f1b"><span class="p">core/hashline.gleam</span><span class="sd"><span class="add">+171</span> <span class="del">−52</span></span></button></div>
+      <div class="fbody" id="f1b"><div class="hunk"><div class="fn">replay_from</div>
           <div class="ln"><span class="no">96</span><span class="pin"></span><span>  case entries {</span></div>
           <div class="ln"><span class="no">97</span><span class="pin"></span><span>    [] -&gt; Ok(state)</span></div>
           <div class="ln d"><span class="no">98</span><span class="pin"></span><span>-   [e, ..rest] -&gt; replay_from(rest, apply(state, e))</span></div>
           <div class="ln a"><span class="no">98</span><span class="pin"></span><span>+   [e, ..rest] -&gt; {</span></div>
-          <div class="ln mark"><span class="no">99</span><span class="pin"><span class="num-pin pf">!</span></span><span>      use <span style="color:var(--quiet)">&lt;-</span> skip_if_empty(e.digest)  <span style="color:var(--quiet)">// unchanged</span></span></div>
-          <div class="cm agentnote" style="margin:4px 8px 6px 56px"><span class="who">The agent, pinned to line 99 as a find</span>This line existed before my change and skips an empty digest without an error. I left it alone because it is outside the task.</div>
-          <div class="ln a"><span class="no">100</span><span class="pin" id="pin-c1"></span><span>+     use state &lt;- result.try(check_and_apply(state, e))</span></div>
-          <div class="cm" id="c1" hidden style="margin:4px 8px 6px 56px"><span class="who">Your comment 1 · line 100 · travels with Send</span>Name the entry's index in <code>Mismatch</code>'s message too, not only the value.</div>
+          <div class="ln mark"><span class="no">99</span><span class="pin"><span class="num-pin pf">!</span></span><span>      use &lt;- skip_if_empty(e.digest)  // unchanged</span></div>
+          <div class="ln a"><span class="no">100</span><span class="pin"></span><span>+     use state &lt;- result.try(check_and_apply(state, e))</span></div>
           <div class="ln a"><span class="no">101</span><span class="pin"></span><span>+     replay_from(rest, state)</span></div>
           <div class="ln a"><span class="no">102</span><span class="pin"></span><span>+   }</span></div>
-          <div class="ln"><span class="no">103</span><span class="pin"></span><span>  }</span></div>
         </div>
-        <p class="hint" style="margin:8px 0 0">Click a line number to comment on that line. Comments travel with the next Send.</p>
-      </div></div>
-    <div class="sec" id="s3"><button class="sh" data-toggle="s3b"><span class="sn">§3</span><span class="st">Tests</span><span class="sd"><span class="add">+146</span> <span class="del">−9</span> · 2 files</span></button>
-      <div class="sb" id="s3b" hidden><p class="agent"><i>The agent's summary</i>A property says replaying any prefix equals the state at that prefix. A new case reorders two entries and expects <code>Mismatch(1)</code>.</p><span class="mono hint">core/test/hashline_replay_test.gleam · core/test/hashline_property_test.gleam</span></div></div>
-    <div class="sec" id="s4"><button class="sh" data-toggle="s4b"><span class="sn">§4</span><span class="st">Docs</span><span class="sd"><span class="add">+35</span> <span class="del">−7</span> · 2 files</span></button>
-      <div class="sb" id="s4b" hidden><p class="agent"><i>The agent's summary</i>The durability note now says replay is strict about order, and the core package guide lists the new error.</p><span class="mono hint">docs/architecture/durability.md · packages/core/CLAUDE.md</span></div></div>
-    <h2>Your verdict</h2>
-    <div class="acts"><button class="b" data-stage="hash" data-key="approve" data-excl="verdict" data-label="Approve">Approve</button><button class="b" data-stage="hash" data-key="changes" data-excl="verdict" data-label="Request changes">Request changes</button></div>
-    <p class="hint" style="margin-top:10px">Everything you stage goes in one message to the agent's main strand. Approval records that you read the diff as listed here; the section list is fixed when you open it, and a later edit by the agent shows as a revision.</p>
+        <div class="cm agentnote" style="margin:8px 0 0"><span class="who">The Risk above, marked at this line</span>An unchanged line skips an empty digest without an error. Left alone: outside the task.</div>
+        <textarea class="ta" id="fc1" style="margin-top:8px;min-height:44px" placeholder="Comment on this file. It goes with Send."></textarea>
+      </div>
+      <button class="fl" data-toggle="f2b"><span class="p">core/hashline/entry.gleam</span><span class="sd"><span class="add">+38</span> <span class="del">−9</span></span></button>
+      <div class="fbody" id="f2b" hidden><span class="hint">Diff opens here, read from the worktree.</span></div>
+      <button class="fl"><span class="p">core/edit.gleam</span><span class="sd"><span class="add">+22</span> <span class="del">−11</span></span></button>
+      <button class="fl"><span class="p">core/test/hashline_replay_test.gleam</span><span class="sd"><span class="add">+112</span> <span class="del">−0</span></span></button>
+      <button class="fl"><span class="p">core/test/hashline_property_test.gleam</span><span class="sd"><span class="add">+34</span> <span class="del">−9</span></span></button>
+      <button class="fl"><span class="p">docs/architecture/durability.md</span><span class="sd"><span class="add">+21</span> <span class="del">−5</span></span></button>
+      <button class="fl"><span class="p">packages/core/CHANGELOG.md</span><span class="sd"><span class="add">+14</span> <span class="del">−2</span></span></button>
+    </div>
   </div>
-  <div class="outbox" data-thread="hash" data-to="fix/hashline-replay · main">
-    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Stage a verdict, answer a find, or comment on a line.</span><div class="items"></div></div><button class="send" disabled>Send to main</button></div>
+  <div class="outbox" data-thread="hash" data-to="fix/hashline-replay · main" data-next="runner">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Stage a verdict, answer a find, or comment on a file.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
     <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
   </div>
 </article>
 
-<!-- 6. PR -->
+<!-- 6. ticket -->
 <article class="thread" id="t-pr" hidden>
   <div class="thread-body">
     <button class="back">‹ Inbox</button>
-    <div class="eyebrow"><span class="kind k-rev">PR</span><span>wp-j/vetting-lint · #1261 · loom</span><span>· its session is working, 3 min into a turn</span></div>
-    <h1>One check is failing and two review comments are unresolved.</h1>
-    <h2>Blockers</h2>
-    <div class="card">
-      <div class="find"><span class="pill bad">failing</span><div class="tx"><code>lint (R11)</code> · a body written as one undivided block</div></div>
-      <div class="find"><span class="pill">Bob</span><div class="tx">Unresolved comment 1 on the lint rule's message wording.</div></div>
-      <div class="find"><span class="pill">Bob</span><div class="tx">Unresolved comment 2 on one test name.</div></div>
-    </div>
-    <h2>Send</h2>
-    <button class="opt" data-stage="pr" data-key="all" data-label="Address all three"><span class="top"><span class="num">1</span><span class="lbl">Address all three</span><span class="rec">recommended</span></span><span class="why">Queued behind its current turn as a held input. No merge.</span></button>
+    <div class="eyebrow"><span class="kind k-rev">Ticket</span><span>T-41 · project loom · worker wp-j/vetting-lint</span><span>· PR #1261 · stage person/check</span></div>
+    <h1>The check failed on the code: <code>lint (R11)</code></h1>
+    <div class="meta">The worker's session is running, 3 min into a turn. The failure is classed <b>code</b>, so a recheck would fail the same way.</div>
+    <h2>Diff</h2>
+    <div class="card"><div class="stats" style="margin:0"><span class="pill ok">+142</span><span class="pill bad">−31</span><span class="pill">5 files</span><span class="pill">read from the ticket's worktree</span></div></div>
+    <h2>Check result · exit 2</h2>
+    <div class="out"><span class="hint" style="font:11.5px var(--sans)">The check's output, untrusted text</span>
+lint: packages/lint/src/lint/rules/r11.gleam
+  error[R11] fn classify_body runs 11 statements without a break
+make: *** [lint] Error 2</div>
+    <h2>Review comments · 2 unresolved</h2>
+    <div class="card"><div class="find"><span class="pill">Bob</span><div class="tx">On the rule's message wording.</div></div><div class="find"><span class="pill">Bob</span><div class="tx">On one test name.</div></div></div>
+    <h2>Your move</h2>
+    <button class="opt" data-stage="pr" data-key="back" data-label="Send back to the worker: fix the check and both comments"><span class="top"><span class="num">1</span><span class="lbl">Send back to the worker</span><span class="rec">recommended</span></span><span class="why">Fix the check and both comments. It is a code failure.</span></button>
+    <div class="acts" style="margin-top:4px" data-group="pr"><button class="b" data-stage="pr" data-key="recheck" data-label="Recheck">Recheck</button><button class="b" data-stage="pr" data-key="retry" data-label="Retry the ticket">Retry</button><button class="b" data-stage="pr" data-key="stop" data-label="Stop the ticket">Stop</button><button class="b" data-stage="pr" data-key="close" data-label="Close the ticket">Close</button><button class="b dis" disabled title="Publishing is off for this project">Publish</button></div>
   </div>
-  <div class="outbox" data-thread="pr" data-to="wp-j/vetting-lint · main">
-    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an action.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
+  <div class="outbox" data-thread="pr" data-to="T-41 · wp-j/vetting-lint" data-next="none">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a move.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
     <div class="state"><span class="receipt"></span><button class="link undo">Undo</button></div>
   </div>
 </article>
@@ -457,35 +488,47 @@ html.phone .bar .totals{display:none}
   function phone(){ var on = q.get('frame') === 'phone' || (q.get('frame') !== 'desktop' && innerWidth < 700); root.classList.toggle('phone', on); return on; }
   phone(); addEventListener('resize', phone);
 
-  var order = ['appr','pod','coord','stuck','hash','pr'], closed = {}, sentN = 0, clock = 21;
+  var order = ['appr','pod','coord','stuck','hash','pr'], closed = {}, sentN = 0;
   var main = document.getElementById('main');
   var rows = [].slice.call(document.querySelectorAll('.row'));
-  function show(id, focusKey){
+  function show(id){
     order.forEach(function(k){ document.getElementById('t-'+k).hidden = (k !== id); });
-    rows.forEach(function(r){ r.classList.toggle('sel', r.dataset.open.split('#')[0] === id && !r.classList.contains('read') || r.dataset.open === id + '#' + (focusKey||'') ); });
+    rows.forEach(function(r){
+      var mine = r.dataset.open.split('#')[0] === id;
+      r.classList.toggle('sel', mine && r.dataset.open.indexOf('#') < 0);
+      if (mine) r.classList.add('seen');
+    });
     main.classList.add('has-open');
-    rows.forEach(function(r){ if (r.dataset.open.split('#')[0] === id) { var u = r.querySelector('.unread'); if (u) r.classList.add("seen"); } });
     document.getElementById('read').scrollTop = 0;
   }
-  rows.forEach(function(r){ r.addEventListener('click', function(){ var p = r.dataset.open.split('#'); show(p[0], p[1]); }); });
+  rows.forEach(function(r){ r.addEventListener('click', function(){ show(r.dataset.open.split('#')[0]); }); });
   [].forEach.call(document.querySelectorAll('.back'), function(b){ b.addEventListener('click', function(){ main.classList.remove('has-open'); }); });
   [].forEach.call(document.querySelectorAll('[data-goto]'), function(b){ b.addEventListener('click', function(){ show(b.dataset.goto); }); });
   [].forEach.call(document.querySelectorAll('[data-toggle]'), function(b){ b.addEventListener('click', function(){ var e = document.getElementById(b.dataset.toggle); e.hidden = !e.hidden; }); });
+  [].forEach.call(document.querySelectorAll('[data-view]'), function(b){ b.addEventListener('click', function(){ main.classList.remove('view-projects'); [].forEach.call(document.querySelectorAll('.folder'), function(f){ f.classList.remove('on'); }); b.classList.add('on'); }); });
+  document.getElementById('f-proj').addEventListener('click', function(){ main.classList.add('view-projects'); [].forEach.call(document.querySelectorAll('.folder'), function(f){ f.classList.remove('on'); }); this.classList.add('on'); });
 
   // Staging holds exactly what was drawn; Send is the second press.
   var staged = {}; order.forEach(function(k){ staged[k] = {}; });
+  function labels(id){
+    var g = staged[id], out = [];
+    Object.keys(g).forEach(function(k){ out.push([k, g[k]]); });
+    if (id === 'hash' && g.approve && g['risk-fix']) {
+      // Approve and Fix-first would tell the agent two things; the outbox says the one thing it will do.
+      out = out.filter(function(p){ return p[0] !== 'approve' && p[0] !== 'risk-fix'; });
+      out.unshift(['av', 'Approve, after the fix']);
+    }
+    return out.map(function(p){ return p[1]; });
+  }
   function render(id){
-    var box = document.querySelector('.outbox[data-thread="'+id+'"]'), els = document.querySelectorAll('#t-'+id+' [data-stage]');
-    [].forEach.call(els, function(e){ e.classList.toggle('staged', !!staged[id][e.dataset.key]); });
-    var labels = []; Object.keys(staged[id]).forEach(function(k){ labels.push(staged[id][k]); });
-    var c = (id === 'hash' && staged.hash.c1) ? 1 : 0;
-    var items = box.querySelector('.items'); items.innerHTML = '';
-    labels.forEach(function(l){ var s = document.createElement('span'); s.className = 'stg'; s.textContent = l; items.appendChild(s); });
-    var n = labels.length;
-    box.querySelector('.empty').hidden = n > 0;
-    box.querySelector('.to b').textContent = n ? 'To ' + box.dataset.to + ' · ' + n + ' staged.' : 'Not sent.';
-    var btn = box.querySelector('.send'); btn.disabled = n === 0; btn.classList.remove('armed');
-    if (id === 'appr' && n){ btn.disabled = true; setTimeout(function(){ btn.disabled = false; }, 600); }
+    var box = document.querySelector('.outbox[data-thread="'+id+'"]');
+    [].forEach.call(document.querySelectorAll('#t-'+id+' [data-stage]'), function(e){ e.classList.toggle('staged', !!staged[id][e.dataset.key]); });
+    var ls = labels(id), items = box.querySelector('.items'); items.innerHTML = '';
+    ls.forEach(function(l){ var s = document.createElement('span'); s.className = 'stg'; s.textContent = l; items.appendChild(s); });
+    box.querySelector('.empty').hidden = ls.length > 0;
+    box.querySelector('.to b').textContent = ls.length ? 'To ' + box.dataset.to + ' · ' + ls.length + ' staged.' : 'Not sent.';
+    var btn = box.querySelector('.send'); btn.disabled = ls.length === 0;
+    if (id === 'appr' && ls.length){ btn.disabled = true; setTimeout(function(){ btn.disabled = false; }, 600); }
   }
   [].forEach.call(document.querySelectorAll('[data-stage]'), function(e){
     e.addEventListener('click', function(){
@@ -501,60 +544,50 @@ html.phone .bar .totals{display:none}
       render(id);
     });
   });
-  // A line comment is staged like anything else.
-  var pin = document.getElementById('pin-c1'), c1 = document.getElementById('c1');
-  var lineno = pin.parentNode.querySelector('.no');
-  function setComment(on){
-    c1.hidden = !on; pin.innerHTML = on ? '<span class="num-pin">1</span>' : '';
-    if (on) staged.hash.c1 = 'Comment 1 on line 100'; else delete staged.hash.c1;
-    render('hash');
-  }
-  lineno.style.cursor = 'pointer'; lineno.title = 'Comment on this line';
-  lineno.addEventListener('click', function(){ setComment(c1.hidden); });
+  var fc = document.getElementById('fc1');
+  fc.addEventListener('input', function(){ if (fc.value.trim()) staged.hash.cm = 'Comment on core/hashline.gleam'; else delete staged.hash.cm; render('hash'); });
 
-  function stamp(){ var s = 8 + sentN * 23; return '14:' + clock + ':' + (s < 10 ? '0' + s : s % 60); }
+  function stamp(){ var m = 21 + Math.floor(sentN / 2); var sec = (8 + sentN * 23) % 60; return '14:' + m + ':' + (sec < 10 ? '0' : '') + sec; }
   [].forEach.call(document.querySelectorAll('.send'), function(btn){
-    var armed = false, timer;
     btn.addEventListener('click', function(){
       var art = btn.closest('.thread'), id = art.id.slice(2), box = btn.closest('.outbox');
-      if (!armed){ armed = true; btn.classList.add('armed'); btn.dataset.t = btn.textContent; btn.textContent = 'Press again to send'; setTimeout(function(){ if (armed){ armed = false; btn.classList.remove('armed'); btn.textContent = btn.dataset.t; } }, 4000); return; }
-      armed = false; btn.textContent = btn.dataset.t; btn.classList.remove('armed');
-      art.classList.add('sent','sending');
-      var r = box.querySelector('.receipt'); r.textContent = 'Sending to ' + box.dataset.to + '…';
-      var u = box.querySelector('.undo'); u.hidden = false;
-      timer = setTimeout(function(){
-        art.classList.remove('sending'); sentN++; var t = stamp();
-        r.textContent = '✓ Delivered to ' + box.dataset.to + ' · ' + t; u.hidden = true;
-        finish(id, t); advance(id);
-      }, 5000);
-      u.onclick = function(){ clearTimeout(timer); art.classList.remove('sent','sending'); };
+      var hold = box.dataset.hold !== 'none', nxt = next(id), r = box.querySelector('.receipt');
+      art.classList.add('sent');
+      sentN++; var t = stamp();
+      closed[id] = 1;
+      var targets = id === 'hash' ? ['hash','hash#risk','hash#idea'] : [id];
+      var mark = rows.filter(function(x){ return targets.indexOf(x.dataset.open) > -1; });
+      function done(){ r.textContent = '\u2713 Delivered to ' + box.dataset.to + ' \u00b7 ' + t; mark.forEach(function(x){ x.querySelector('.rcpt').textContent = '\u2713 Delivered ' + t; }); var u0 = box.querySelector('.undo'); if (u0) u0.hidden = true; }
+      mark.forEach(function(x){ x.classList.add('done'); x.querySelector('.rcpt').textContent = hold ? 'Sending\u2026 held 5 s' : ''; });
+      count();
+      if (!hold){ done(); return; }
+      r.textContent = 'Sending to ' + box.dataset.to + '\u2026 held for 5 s on the daemon';
+      var timer = setTimeout(done, 5000);
+      box.querySelector('.undo').onclick = function(){ clearTimeout(timer); closed[id] = 0; art.classList.remove('sent'); mark.forEach(function(x){ x.classList.remove('done'); }); count(); };
+      if (nxt) show(nxt);
     });
   });
-  function finish(id, t){
-    closed[id] = 1;
-    var targets = id === 'hash' ? ['hash','hash#risk','hash#idea'] : [id];
-    rows.forEach(function(r){ if (targets.indexOf(r.dataset.open) > -1){ r.classList.add('done'); r.querySelector('.rcpt').textContent = '✓ Delivered ' + t; } });
-    count();
-  }
-  function advance(id){ var i = order.indexOf(id); for (var k = i + 1; k < order.length; k++){ if (!closed[order[k]]) { show(order[k]); return; } } }
+  [].forEach.call(document.querySelectorAll('.next'), function(b){ b.addEventListener('click', function(){ var n = next('appr'); if (n) show(n); }); });
+  function next(id){ var i = order.indexOf(id); for (var k = i + 1; k < order.length; k++){ if (!closed[order[k]]) return order[k]; } return null; }
   function count(){
-    var g = {need:0, rev:0, find:0};
+    var g = {need:0, rev:0, find:0, proj:0};
     rows.forEach(function(r){ if (!r.classList.contains('done')) g[r.dataset.g]++; });
-    ['need','rev','find'].forEach(function(k){ document.getElementById('c-'+k).textContent = g[k]; document.getElementById('n-'+k).textContent = g[k]; });
-    document.getElementById('n-all').textContent = g.need + g.rev + g.find;
-    document.getElementById('n-sent').textContent = sentN;
-    var tt = document.getElementById('totals');
-    tt.innerHTML = '';
-    [['need','' + g.need + ' need you'],['','' + g.rev + ' to review'],['','' + g.find + ' finds'],['','2 working'],['','2 quiet']].forEach(function(p){
-      var s = document.createElement('span'); s.className = 'tot ' + p[0]; s.textContent = p[1]; tt.appendChild(s); });
-    document.title = (g.need ? '(' + g.need + ') ' : '') + 'Loom inbox: threads';
+    var rev = g.rev, need = g.need;
+    var el = {need: need, rev: rev, find: g.find};
+    ['need','rev','find'].forEach(function(k){
+      [].forEach.call(document.querySelectorAll('#c-'+k+', #n-'+k), function(e){ e.textContent = el[k]; });
+    });
+    var tt = document.getElementById('totals'); tt.innerHTML = '';
+    var s = document.createElement('span'); s.className = 'tot need'; s.textContent = need + ' need you'; tt.appendChild(s);
+    document.title = (need ? '(' + need + ') ' : '') + 'Loom inbox: threads';
   }
   count();
 
   var open = q.get('open') || (phone() ? '' : 'appr');
+  if (q.get('view') === 'projects') document.getElementById('f-proj').click();
   if (q.get('demo') === 'staged'){
-    staged.hash = {approve:'Approve', 'risk-fix':'Fix the risk first', 'idea-dismiss':'Dismiss the idea'};
-    setComment(true);
+    staged.hash = {'risk-fix':'Fix the risk', approve:'Approve', 'idea-dismiss':'Dismiss the idea', cm:'Comment on core/hashline.gleam'};
+    fc.value = 'Name the entry index in the error message too, not only the digest.';
   }
   order.forEach(render);
   if (open) show(open);
