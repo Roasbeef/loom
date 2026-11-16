@@ -299,7 +299,7 @@ mechanism ledger mode uses for rows that change while the daemon runs, a
 `Roster` read at each use (`client/roster.gleam:51` (`reading`)), and the
 precedent of an owner-only control command that changes rows without a
 restart, `ledger.append`, whose owner check is in
-`ledger_command` (`client/daemon/server.gleam:3724`).
+`ledger_command` (`client/daemon/server.gleam:3826`).
 
 Three options:
 
