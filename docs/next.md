@@ -4,34 +4,44 @@ The session hot-path section is re-baselined on November 13 against source
 `3e28c16f4` and its recorded local gates. Other sections retain their upstream
 baselines; this scoped update does not revalidate their hosted CI or live status.
 
-## The attention inbox: a design bracket, and the owner's direction
+## The attention inbox: the final design is chosen
 
 The owner wants the web view to surface what needs them instead of making them
 read transcripts, in the manner of a coordinator and an inbox.
-[`design-notes/attention-inbox/`](design-notes/attention-inbox/README.md) is the
-bracket that answered it. It holds four concepts drawn from one brief and one
-shared scenario, two critiques, one revision each and a final ranking, all with
-static mockups and screenshots. Its draft PR carries the open questions.
+[`design-notes/attention-inbox/`](design-notes/attention-inbox/README.md) holds
+the bracket that answered it (four concepts, two critiques, a ranking) and the
+final design the owner chose on 2026-11-16. Its section 2 describes it, and
+[`final/mockup.html`](design-notes/attention-inbox/final/mockup.html) draws it.
 
-- **Ranking:** A (the inbox is the home), then D, C and B. It recommends A's
-  queue as the home page, with D's returned-state session page as where a
-  Review press lands.
-- **Owner's direction (2026-11-15):** keep C's threads for review, because
-  they carry the context to decide, and add an in-session mode for close
-  monitoring. In that mode the live stream stays, with overlays that lift out
-  insights and action points. No mockup draws that mode yet.
-- **Rulings the bracket reached, whichever direction wins:**
-  - An approval is decided only on its own session's page. It echoes the
-    full action text, grants and seq (`echo_matches`) and has no undo.
+- **The inbox is the landing page.** It is concept C's thread list, grouped by
+  need, with a reading pane that carries the evidence: the agent's last
+  message, worktree hunks with finds at their lines, and one outbox that names
+  what goes to whom. It replaces the home form only when something waits or
+  runs.
+- **Every thread can message its session.** The message stages into the same
+  outbox and is delivered as a prompt, or as a queue or steer entry when the
+  session is busy. An Updates group lists working sessions for this.
+- **The live mode is for watching one session.** The stream stays live and
+  central, and a rail beside it lifts out asks, approvals and stuck strands
+  (pinned until answered) and finds, checks, sub-agent results, errors and peer
+  messages (folded once read).
+- **Rulings:**
+  - An approval is decided only from the dock on its own session's page. It
+    echoes the full action text, grants and seq (`echo_matches`) and has no
+    undo.
   - The feed carries identities and heads, never decision content.
   - Every count says what it read, because `sessions.activity` never reads
     saved sessions.
+- **Next:** phase 0 of the README's section 4. Stop dropping `last_message` and
+  `glances` at `state_of` in `client/daemon/server.gleam`. Add the inbox region
+  of Home and the live rail's classifier over lane entries in `session_view`.
+  Propose the thread-send command and the inbox's addendum to
+  protocol-change/051.
 - **Not done:**
-  - The README's section 3 questions are unanswered.
+  - Nothing is built.
   - The project meta layer (router, Mandate, `observe`, verdicts and `auto`,
     publishing inferred work, the attention budget, settings proposals; see
     #1168) has no design.
-  - Nothing is built.
 
 ## Platform-selected JSON decoding
 

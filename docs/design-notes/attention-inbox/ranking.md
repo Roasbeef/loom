@@ -7,6 +7,12 @@ revised notes and their screenshots, and after checking against the tree the
 claims the ranking turns on. Section 7 can be started on before the owner
 chooses, because it holds whichever concept wins.
 
+**Superseded on the landing page and the review pane (2026-11-16).** The owner
+chose C's thread list as the landing page and pulled C's review pane into
+phase 1, which this ranking had placed third and deferred. Section 7 and the
+approval stance stand. The addendum at the end records the choice;
+[`README.md`](README.md) section 2 is the final design.
+
 ## 1. The ranking in one paragraph
 
 **A, then D, then C, then B.** The owner should choose between three options:
@@ -334,3 +340,27 @@ owner marks each with what they would have needed to act.
 | the row, or the row and a short paragraph of attached context | seven or more of ten | the ranking holds |
 | a page of evidence: a diff, check output, the options argued | four or more of ten | C belongs first, and question 4 is "yes" |
 | the transcript itself | four or more of ten | the session is the unit, D belongs first, and the queue is only a doorbell |
+
+## Addendum (2026-11-16): the owner's choice
+
+The owner did not take option 1. On the questions of section 6 they ruled:
+
+1. They land on C's thread list, a queue grouped by need with a reading pane,
+   rather than on A's queue. Answering from evidence outweighed A's denser
+   first screen.
+2. The inbox replaces the home form only when something waits or runs, as
+   recommended.
+3. Approvals are decided only on their own session's page, as recommended. The
+   live mode that the owner added (README section 2.3) is that page.
+4. Reviewing a diff is part of this work, in phase 1, reading worktree hunks.
+   This is (b), taken without first running section 8's test. The ranking had
+   recommended (a) for the first three phases.
+5. Question 5 was not ruled on. The build follows the recommendation.
+
+The owner added two things that no concept drew: a live mode that keeps the
+stream and lifts out items in a rail beside it, and a message field on every
+thread, including an Updates group for sessions that are working with nothing
+asked. Neither changes section 7. The message field needs a thread-send
+command that carries free text and a delivery mode (queue or steer). That
+command is the same one section 7 already ties to the feed.
+
