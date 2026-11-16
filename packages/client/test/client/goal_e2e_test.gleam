@@ -316,12 +316,22 @@ pub fn an_aborted_continuation_pauses_the_goal_test_() -> EunitTest {
     exec.checkin(local_workspace.pool(instance), helper)
     let assert Some(goal_commands) = instance.goal
       as "an instance with a routed advisor must expose the goal seam"
+
+    // The operator's turn settles before the goal is pinned. The script
+    // holds the second primary request it sees, so the turn has to be the
+    // first one: a goal pinned onto an idle primary starts its first review
+    // at once, and a review that continues wakes the primary before any
+    // prompt sent afterwards is admitted. That prompt would then be held in
+    // place of the continuation, or refused as busy behind it, and the
+    // fixture would wait on a turn that cannot end. `complete` returns only
+    // once the turn's result is recorded, so the primary is idle, and the
+    // continuation the pin starts is the one run the script holds.
+    complete(instance, "work on the migration")
     let assert Ok(Nil) = goal_commands.set(objective, 100_000_000, None)
       as "the goal must pin through the operator's own command door"
-    complete(instance, "work on the migration")
-    // The first continuation wakes the primary; wait for its frame in a
-    // request body — the body is what was sent, so the run is live — and
-    // then abort the way the terminal's abort command does.
+    // The pin's first review wakes the primary; wait for the continuation's
+    // frame in a request body — the body is what was sent, so the run is
+    // live — and then abort the way the terminal's abort command does.
     let _carrying = await_primary(script, advisorslice.continuation_header)
 
     // The abort, through the two steps the gateway's abort handler

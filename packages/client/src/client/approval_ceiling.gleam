@@ -187,6 +187,11 @@ fn admits_network(
     policy.NetworkOff, _ -> True
     _, AnyNetwork -> True
     policy.NetworkFull, NoNetwork | policy.NetworkFull, Hosts(..) -> False
+
+    // Loopback reaches no host, so a host allowlist does not bound it; it
+    // is admitted only where any network is, like full.
+    policy.NetworkLoopback, NoNetwork | policy.NetworkLoopback, Hosts(..) ->
+      False
     policy.NetworkProxy(allow:, ..), Hosts(allow: listed) ->
       list.all(allow, list.contains(listed, _))
     policy.NetworkProxy(..), NoNetwork -> False

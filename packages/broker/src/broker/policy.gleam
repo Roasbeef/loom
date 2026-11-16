@@ -84,12 +84,22 @@ import gleam/string
 /// filesystem reach explicitly.
 pub const version = 2
 
-/// The network policy lattice, ordered `Off < Proxy < Full` for
+/// The network policy lattice, ordered `Off < Loopback < Proxy < Full` for
 /// composition purposes.
 pub type NetworkPolicy {
   /// No network. bwrap unshares the net namespace and seccomp denies
   /// non-AF_UNIX socket creation.
   NetworkOff
+
+  /// The same fresh network namespace as `NetworkOff`, whose `lo` bwrap
+  /// brings up, with a seccomp program that also allows IPv4 TCP
+  /// sockets, so the processes of one execution can reach each other on
+  /// `127.0.0.1` and nothing else. The host's TCP code becomes reachable
+  /// from jailed code, which is the cost (`protocol-change/115`). Linux
+  /// only: the helper refuses it on Darwin and without bwrap. No tool,
+  /// profile or configuration in Loom selects it; an embedding host asks
+  /// for it.
+  NetworkLoopback
 
   /// Egress only through a harness-owned proxy. Invariants: `allow`
   /// holds host globs; `proxy` is the proxy address.
@@ -674,7 +684,10 @@ pub fn narrow_unenforceable(
   policy: SandboxPolicy,
 ) -> #(SandboxPolicy, List(Narrowing)) {
   case policy.network {
-    NetworkOff | NetworkFull -> #(policy, [])
+    // Loopback is enforceable where the helper can enforce it (Linux
+    // under bwrap) and the helper refuses it everywhere else, so there
+    // is no narrower form to fall back to here.
+    NetworkOff | NetworkLoopback | NetworkFull -> #(policy, [])
     NetworkProxy(allow: _, proxy: _) as wanted -> #(
       SandboxPolicy(..policy, network: NetworkOff),
       [NarrowedNetwork(wanted:, granted: NetworkOff)],
@@ -804,6 +817,15 @@ fn meet_network(
     NetworkOff, _ | _, NetworkOff -> NetworkOff
     NetworkFull, other -> other
     other, NetworkFull -> other
+
+    // Loopback and proxy are incomparable: a proxy grant is bounded by a
+    // host allowlist and loopback is a host TCP stack, so neither covers
+    // the other. A meet must never hand out what the base did not grant,
+    // so the pair yields off, which reports a narrowing and leads to an
+    // explicit grant.
+    NetworkLoopback, NetworkProxy(..) | NetworkProxy(..), NetworkLoopback ->
+      NetworkOff
+    NetworkLoopback, NetworkLoopback -> NetworkLoopback
     NetworkProxy(allow: base_allow, proxy: base_proxy),
       NetworkProxy(allow: requested_allow, proxy: _)
     ->
@@ -826,6 +848,8 @@ fn join_network(
     NetworkFull, _ | _, NetworkFull -> NetworkFull
     NetworkOff, other -> other
     other, NetworkOff -> other
+    NetworkLoopback, other -> other
+    other, NetworkLoopback -> other
     NetworkProxy(allow: current_allow, proxy: current_proxy),
       NetworkProxy(allow: granted_allow, proxy: granted_proxy)
     -> {
@@ -968,7 +992,14 @@ fn network_exceeds(wanted: NetworkPolicy, granted: NetworkPolicy) -> Bool {
     NetworkOff, _ -> False
     _, NetworkFull -> False
     NetworkFull, _ -> True
+
+    // A host allowlist does not bound loopback, and proxy is enforced as
+    // off, so a loopback request exceeds a proxy grant, in step with the
+    // approval ceiling.
+    NetworkLoopback, NetworkOff | NetworkLoopback, NetworkProxy(..) -> True
+    NetworkLoopback, NetworkLoopback -> False
     NetworkProxy(allow: _, proxy: _), NetworkOff -> True
+    NetworkProxy(allow: _, proxy: _), NetworkLoopback -> True
     NetworkProxy(allow: wanted_allow, proxy: _),
       NetworkProxy(allow: granted_allow, proxy: _)
     -> list.any(wanted_allow, fn(host) { !list.contains(granted_allow, host) })
@@ -1247,6 +1278,10 @@ fn network_to_msgpack(network: NetworkPolicy) -> MsgPackValue {
       msgpack.MapValue([
         #(msgpack.StringValue("mode"), msgpack.StringValue("off")),
       ])
+    NetworkLoopback ->
+      msgpack.MapValue([
+        #(msgpack.StringValue("mode"), msgpack.StringValue("loopback")),
+      ])
     NetworkFull ->
       msgpack.MapValue([
         #(msgpack.StringValue("mode"), msgpack.StringValue("full")),
@@ -1277,6 +1312,14 @@ fn network_from_msgpack(
       ))
       Ok(NetworkOff)
     }
+    "loopback" -> {
+      use Nil <- result.try(reject_unknown_keys(
+        entries,
+        ["mode"],
+        "policy.network",
+      ))
+      Ok(NetworkLoopback)
+    }
     "full" -> {
       use Nil <- result.try(reject_unknown_keys(
         entries,
@@ -1302,7 +1345,8 @@ fn network_from_msgpack(
       ))
       Ok(NetworkProxy(allow:, proxy:))
     }
-    _ -> Error(fail("policy.network.mode", "off, proxy, or full", mode))
+    _ ->
+      Error(fail("policy.network.mode", "off, loopback, proxy, or full", mode))
   }
 }
 

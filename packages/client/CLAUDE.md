@@ -2516,6 +2516,17 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   are saved,
   including grants without a refresh token, while plan inference requires
   `resource.invoke` and `chatgpt.tokens.use.direct`.
+- `client/seat_usage` and `client/seat_usage_cli` are `loomd seat-usage`: seats
+  (`{"label","provider","token"}` per line) arrive on standard input only,
+  each token lives in an opaque closure so `string.inspect` cannot print it,
+  and refusals are closed reason codes carrying a line number and a valid
+  label, never line text. Each seat is asked one read-only usage endpoint (no
+  model request, so no `--probe`) through `codex/network.fetch_adopted` with
+  a per-request timeout, a 256 KiB body bound and `weft.limit` concurrency.
+  `seat_usage.to_pool_events` maps a reading onto `provider/pool` events and
+  nothing calls the pool from a request path. The module doc cites where each
+  endpoint and field was verified. `ffi_os.read_stdin_line` is the one shim:
+  no stdlib reads standard input.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -9411,6 +9422,9 @@ The box's deadline and retention (slice S4):
   store failure, and a released parent still wins before either descriptor.
   The held-cleanup regressions in `delegate_host_test` cover both Closing entry
   paths, reuse of the durable pair, blocked cleanup and release priority.
+  An ask refused `NotInitialized` (a reservation whose first start failed) reads
+  the kept failure in `delegate_host.reserved_refusal`: a no-room failure ends
+  the row and answers `NotYetOpen`, any other keeps the `StoreFailure`.
   `remote_release_test` and the shipped remote subagents test cover the sender
   and the box restart.
 - Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`

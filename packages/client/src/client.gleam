@@ -16,7 +16,8 @@
 //// `loomd ext install …` reaches the installer, `loomd vm up …` boots the
 //// standing microVM executor, `loomd access …` reaches
 //// the one-shot owner control client, `loomd codex …` reaches the
-//// subscription helper, and other arguments reach the daemon.
+//// subscription helper, `loomd seat-usage` reads seat allowance from standard
+//// input, and other arguments reach the daemon.
 //// This note
 //// is here so the next reader does not "fix" it back into a cycle.
 
@@ -32,6 +33,7 @@ import client/daemon/peer_cli
 import client/evolution/cli as evolution_cli
 import client/extension/cli
 import client/mcp/cli as mcp_cli
+import client/seat_usage_cli
 import client/vm_cli
 import gleam/io
 import gleam/list
@@ -67,6 +69,7 @@ pub fn main() -> Nil {
         ["peer", ..rest] -> peer_cli.main(rest)
         ["codex", ..rest] -> codex_cli.main(rest)
         ["mcp", ..rest] -> mcp_cli.main(rest)
+        ["seat-usage", ..rest] -> seat_usage_cli.main(rest)
         ["ext", ..rest] -> cli.main(rest)
         ["distribution", ..rest] | ["dist", ..rest] ->
           distribution_cli.main(rest)
@@ -113,6 +116,7 @@ pub fn help_for(arguments: List(String)) -> Option(String) {
         Ok("peer") -> Some(peer_cli.usage)
         Ok("codex") -> Some(codex_cli.usage)
         Ok("mcp") -> Some(mcp_cli.usage)
+        Ok("seat-usage") -> Some(seat_usage_cli.usage)
         Ok("ext") -> Some(cli.usage)
         Ok("distribution") | Ok("dist") -> Some(distribution_cli.usage)
         Ok("executor") -> Some(executor_cli.usage)
@@ -131,6 +135,7 @@ fn is_topic(word: String) -> Bool {
     | "peer"
     | "codex"
     | "mcp"
+    | "seat-usage"
     | "ext"
     | "evolution"
     | "distribution"
@@ -143,4 +148,4 @@ fn is_topic(word: String) -> Bool {
 }
 
 const usage =
-  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  codex <command>     Manage Codex subscription profiles.\n  mcp <command>       Manage remote MCP server OAuth credentials.\n  ext <command>       Manage extensions.\n  evolution <action>  Govern resident-session candidates.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n  executor <command>  Release a scope an executor will not reopen itself.\n  vm <command>        Run a standing microVM executor: setup, up, down, status.\n  directory bootstrap\n                      Create the session directory's cluster, once.\n\nRun `loomd help <command>` for command usage."
+  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  codex <command>     Manage Codex subscription profiles.\n  mcp <command>       Manage remote MCP server OAuth credentials.\n  seat-usage          Read each subscription seat's remaining allowance.\n  ext <command>       Manage extensions.\n  evolution <action>  Govern resident-session candidates.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n  executor <command>  Release a scope an executor will not reopen itself.\n  vm <command>        Run a standing microVM executor: setup, up, down, status.\n  directory bootstrap\n                      Create the session directory's cluster, once.\n\nRun `loomd help <command>` for command usage."
