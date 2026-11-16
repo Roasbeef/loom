@@ -4578,8 +4578,10 @@ pub fn worktree_task(
 /// once, and delivers what `answer` made from that run. Both pages' reads go
 /// through it, so a read of the daemon's own workspace and a read the box makes
 /// for a relayed page have the same run, the same link to the page's runtime
-/// and the same deadline: it covers the observation's execution deadline and the
-/// broker's cleanup grace, and the relayed read's call and page check.
+/// and the same deadline. It is 14 s, which covers the observation's execution
+/// deadline and the broker's cleanup grace (13 s together), and so the relayed
+/// read's call, which waits that long (`top_relay.worktree_ms`), and its page
+/// check.
 fn reading(
   deliver: fn(worktrees.Read) -> Nil,
   answer: fn() -> worktrees.Read,

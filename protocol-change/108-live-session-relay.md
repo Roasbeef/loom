@@ -1041,7 +1041,7 @@ four.
 
 | Revision | Body | Answer |
 |---|---|---|
-| `108.worktree.1` | `[attach]` | `{read, board}` |
+| `108.worktree.1` | `[attach]` | `{read, board?}`, `board` present only for `seen` |
 
 The body is a JSON array of one token, read by `remote_feed.decode_request`, so a
 body of any other arity or with a malformed token is refused whole with `malformed`
@@ -1084,8 +1084,13 @@ is needed. No unclippable case was found.
 reads its phase and returns the closure, and the request task runs the observation.
 That task is the one `peer_service` already starts for every request and cancels when
 the laptop's call ends, so no process is added, the feed's mailbox is not held by Git,
-and the laptop's call budget (`call_ms`, 7 s) bounds how long the box works for it.
-The laptop's half is the weft run `ui_socket.reading`, which returns at once as the
+and the laptop's call budget bounds how long the box works for it. That budget is
+`top_relay.worktree_ms`, 13 s, which is the observation's execution deadline (8 s,
+`worktree_diff.capture_timeout_ms`) plus the broker's cleanup grace (5 s,
+`worktree_diff.settlement_grace_ms`), and not the 7 s `call_ms` of the other
+operations: a 7 s wait would cut off a slow observation and read it as `unreadable`,
+where the box's own page draws a clipped board. The `reading` run that wraps the call
+is 14 s, so it outlasts the call. The laptop's half is the weft run `ui_socket.reading`, which returns at once as the
 local page's run does and is the same code. A relayed page asks no more often than a
 local one: the component asks after a new tool result, at most once in `refresh_ms`,
 with one read out. The box adds no per-credential allowance, as the local page's
