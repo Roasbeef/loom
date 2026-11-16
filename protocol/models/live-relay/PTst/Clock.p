@@ -27,7 +27,7 @@ type tCmdAt = (at: int, cmd: tCmd, pieces: int);
 // behind what the box acknowledged once a poll has acknowledged a frame. The
 // honest adapter sends neither, and a delayed copy of an old poll is the same
 // poll as `behindAt` sends.
-type tPlan = (ticks: int, settle: int, emits: seq[tEmit], cmds: seq[tCmdAt], breakAt: int, healAt: int, closeAt: int, stopAt: int, revokeAt: int, ownerAt: int, aheadAt: int, behindAt: int, laneDeadline: int, loses: int, dups: int, delays: int, short: int);
+type tPlan = (ticks: int, settle: int, emits: seq[tEmit], cmds: seq[tCmdAt], breakAt: int, healAt: int, closeAt: int, stopAt: int, revokeAt: int, ownerAt: int, aheadAt: int, behindAt: int, laneDeadline: int, loses: int, dups: int, delays: int, short: int, hostile: int);
 
 // `extra` are the machines of the further feeds of one spawner, which the Clock
 // ticks too, and `cuts` their links, which a partition cuts with the first.
@@ -176,7 +176,7 @@ machine Harness {
       var lane: machine;
       gateway = new Gateway();
       link = new Link((loses = plan.loses, dups = plan.dups, delays = plan.delays));
-      host = new FeedHost((link = link, gateway = gateway, directory = default(machine), attachAt = 0));
+      host = new FeedHost((link = link, gateway = gateway, directory = default(machine), attachAt = 0, hostile = plan.hostile));
       send gateway, eGwWire, host;
       ui = new UiFeed(link);
       lane = new Lane((ui = ui, deadline = plan.laneDeadline));
@@ -216,7 +216,7 @@ machine CapHarness {
       while (i < sizeof(p.attach)) {
         gateway = new Gateway();
         link = new Link((loses = 0, dups = 0, delays = 0));
-        host = new FeedHost((link = link, gateway = gateway, directory = directory, attachAt = p.attach[i]));
+        host = new FeedHost((link = link, gateway = gateway, directory = directory, attachAt = p.attach[i], hostile = 0));
         send gateway, eGwWire, host;
         ui = new UiFeed(link);
         lane = new Lane((ui = ui, deadline = p.plan.laneDeadline));
