@@ -224,6 +224,7 @@ fn delegate_of(slot: Int, binding: Binding) -> catalogue.Delegate {
   catalogue.Delegate(
     spawner: spawner_name(binding.spawner),
     parent_session: parent(binding.parent),
+    child: "",
     session_id: session(slot),
     last_contact_ms: binding.contact,
     state: state_of(binding.state),

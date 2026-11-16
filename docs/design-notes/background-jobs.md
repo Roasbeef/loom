@@ -118,7 +118,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:5314`), bound to a
+beside `extension_hosts` (`client/serve.gleam:5320`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule
@@ -217,7 +217,7 @@ The deadline is fixed at start and never renewed. Four enforcers agree on
 it by construction because they all read the same number: the token, the
 relay's receive deadline, the helper's own wall timer, and the budget
 ledger. Renewal at runtime would need the helper's timer to move, and
-that timer is armed once from the request's own `WallSeconds` (`sandbox/internal/jail/run.go:611`),
+that timer is armed once from the request's own `WallSeconds` (`sandbox/internal/jail/run.go:652`),
 so extending it is a new frame and a protocol change. Long-lived servers
 are covered the other way round: the clamp is an operator knob, a
 `[jobs]` table in `loom.toml` with `max_wall` (parsed beside the known

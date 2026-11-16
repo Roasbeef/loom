@@ -2662,6 +2662,7 @@ fn delegate_request(
   manager.DelegateRequest(
     spawner:,
     parent_session:,
+    child: "",
     creation: manager.Creation(
       request_key: "delegate:" <> spawner <> ":" <> parent_session,
       workspace: "repo",

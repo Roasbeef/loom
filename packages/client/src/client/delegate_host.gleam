@@ -60,10 +60,24 @@
 //// session that is closed holds no running child and is not opened to be
 //// read: the parent sees its result through a join.
 ////
+//// ## A session for one child
+////
+//// A seeded child on an executor or a pool is started from a copy of its
+//// parent's workspace, and a session has one workspace, so the child needs a
+//// session of its own (protocol-change/107, slice 4b). It is the delegate session
+//// of a (spawner, parent session, child) triple. `children` returns the four
+//// functions that serve it: `resolve` creates or opens the session for a spawn,
+//// `open` opens one that exists and creates nothing, for a join and a return,
+//// `live` lists the resident ones of a parent, for the end of a run, and
+//// `release` ends one when its child has settled. The parent's own release walks
+//// the pair's session and every child's, so a deleted parent leaves none behind.
+//// A child's session counts against the spawner's `max_sessions` like any other,
+//// which is why a settled child's is released and does not wait for the sweep.
+////
 //// ## Flow
 ////
 //// `resolver` → `creation` → `terms_of` → `resolve_existing` →
-//// `existing_endpoint` → `releaser`
+//// `existing_endpoint` → `releaser` → `children`
 ////
 //// 1. `resolver` returns the function the spawn host calls for every message.
 //// 2. `creation` builds the registration a first spawn makes, from the
@@ -76,15 +90,20 @@
 ////    about a child that exists or a read of its transcript, and creates and
 ////    opens no session.
 //// 6. `releaser` returns the function the spawn host calls for a `Release`.
+//// 7. `children` returns the functions that serve the sessions of seeded
+////    children.
 
 import client/agency
 import client/daemon/manager
+import client/delegate_key
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/spawners.{type Spawner, InDirectory, InPool, OnExecutor}
 import core/agency_limits
 import core/ids
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import host/bootstrap
 import storage/catalogue
 import weft/poll
@@ -150,6 +169,25 @@ pub fn creation(
   spawner: Spawner,
   parent: Parent,
 ) -> Result(manager.Creation, SpawnRefusal) {
+  creation_for(spawner, parent, "")
+}
+
+/// `creation` for one named child of the pair: the same placement and profile,
+/// and a request key and label that name the child, so that a creation retried
+/// after a crash lands on the registration it reserved and no other child's.
+/// The empty `child` is the pair's own session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // delegate_host.creation_for(spawner, parent, "seed-0123456789abcdef").request_key
+/// // == "delegate:laptop:0198c0de-0000-7000-8000-000000000001:seed-0123456789abcdef"
+/// ```
+pub fn creation_for(
+  spawner: Spawner,
+  parent: Parent,
+  child: String,
+) -> Result(manager.Creation, SpawnRefusal) {
   // Map spawner placement configuration into directory, executor, or pool parameters.
   use #(workspace, executor, pool) <- result.map(case spawner.placement {
     OnExecutor(executor:, workspace:) -> Ok(#(workspace, executor, ""))
@@ -162,10 +200,24 @@ pub fn creation(
       ))
   })
 
+  // The child's name follows the parent's, so no child's key is the pair's.
+  let suffix = case child {
+    "" -> ""
+    named -> ":" <> named
+  }
+
   manager.Creation(
-    request_key: "delegate:" <> spawner.name <> ":" <> parent.session,
+    request_key: delegate_key.key(delegate_key.Key(
+      spawner: spawner.name,
+      parent: parent.session,
+      child:,
+    )),
     workspace:,
-    name: "delegate " <> spawner.name <> " " <> parent.session,
+    name: "delegate "
+      <> spawner.name
+      <> " "
+      <> parent.session
+      <> string.replace(suffix, ":", " "),
     configuration: "",
     profile: Some(spawner.profile),
     model: None,
@@ -191,14 +243,33 @@ pub fn creation(
 pub fn resolver(
   context: Context(instance),
 ) -> fn(Spawner, Parent) -> Result(agency.DelegateEndpoint, SpawnRefusal) {
-  fn(spawner, parent) {
-    use made <- result.try(creation(spawner, parent))
+  let resolve = child_resolver(context)
+  fn(spawner, parent) { resolve(spawner, parent, "") }
+}
+
+/// `resolver` for the session of one named child of a pair, which is created on
+/// the child's first spawn and opened on every later one. The empty child is the
+/// pair's own session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let resolve = delegate_host.child_resolver(context)
+/// // resolve(spawner, parent, "seed-0123456789abcdef") -> Ok(agency.DelegateEndpoint(..))
+/// ```
+pub fn child_resolver(
+  context: Context(instance),
+) -> fn(Spawner, Parent, String) ->
+  Result(agency.DelegateEndpoint, SpawnRefusal) {
+  fn(spawner, parent, child) {
+    use made <- result.try(creation_for(spawner, parent, child))
     use delegated <- result.try(
       manager.delegate_session(
         context.registry,
         manager.DelegateRequest(
           spawner: spawner.name,
           parent_session: parent.session,
+          child:,
           creation: made,
           directory: context.sessions_directory,
           generator: context.generator(),
@@ -209,7 +280,24 @@ pub fn resolver(
       )
       |> result.map_error(refused),
     )
-    resident(context, delegated.session_id)
+    let opened = resident(context, delegated.session_id)
+
+    // A session whose executor had no room is ended, so its slot and its failed
+    // row are not held while the spawn is asked again, which makes a new one.
+    case opened {
+      Error(remote_spawn.NotYetOpen(reason:)) if reason == no_room_reason -> {
+        let _ended =
+          manager.release_delegate_child(
+            context.registry,
+            spawner.name,
+            parent.session,
+            child,
+            context.sessions_directory,
+          )
+        opened
+      }
+      _ -> opened
+    }
   }
 }
 
@@ -245,15 +333,36 @@ pub type Existing {
 pub fn resolve_existing(
   context: Context(instance),
 ) -> fn(Spawner, Parent) -> Result(Existing, SpawnRefusal) {
-  fn(spawner: Spawner, parent: Parent) {
+  let find = resolve_existing_child(context)
+  fn(spawner, parent) { find(spawner, parent, "") }
+}
+
+/// `resolve_existing` for one named child of a pair. It creates nothing, so a
+/// child that settled and was released is `NoSession`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let find = delegate_host.resolve_existing_child(context)
+/// // find(spawner, parent, "seed-0123456789abcdef") == Ok(delegate_host.NoSession)
+/// ```
+pub fn resolve_existing_child(
+  context: Context(instance),
+) -> fn(Spawner, Parent, String) -> Result(Existing, SpawnRefusal) {
+  fn(spawner: Spawner, parent: Parent, child: String) {
     use found <- result.try(
-      manager.delegate_pair(context.registry, spawner.name, parent.session)
+      manager.delegate_child(
+        context.registry,
+        spawner.name,
+        parent.session,
+        child,
+      )
       |> result.map_error(fn(error) {
         remote_spawn.StoreFailure(reason: describe(error))
       }),
     )
 
-    // Branch on whether the session pair exists in the registry.
+    // Branch on whether the session exists in the registry.
     case found {
       None -> Ok(NoSession)
       Some(row) -> {
@@ -319,11 +428,10 @@ pub fn existing_endpoint(
 /// and has the registry delete its session, answering how many children it
 /// stopped.
 ///
-/// A pair with no row answers `Ok(0)` and nothing is created. A pair whose row
-/// is already releasing or released also answers zero without asking the Agency
-/// again, and still hands the session to the registry, which finishes a deletion
-/// that failed. The stop comes before the hand-over, so every child is recorded
-/// stopped with its reason before the session can go.
+/// A deleted parent leaves a session for its pair and one for each seeded child
+/// it started, so the release walks all of them (`manager.delegate_family`). Each
+/// is released as `child_releaser` releases one, so a parent with none answers
+/// `Ok(0)` and nothing is created.
 ///
 /// ## Examples
 ///
@@ -334,13 +442,55 @@ pub fn existing_endpoint(
 pub fn releaser(
   context: Context(instance),
 ) -> fn(Spawner, Parent) -> Result(Int, SpawnRefusal) {
-  let find = resolve_existing(context)
+  let release = child_releaser(context)
+  fn(spawner: Spawner, parent: Parent) {
+    use family <- result.try(
+      manager.delegate_family(context.registry, spawner.name, parent.session)
+      |> result.map_error(fn(error) {
+        remote_spawn.StoreFailure(reason: describe(error))
+      }),
+    )
+
+    // The pair's own session is released even when its row is absent, which
+    // answers zero, and then every child that is listed, one after another.
+    let children = list.map(family, fn(row) { row.child })
+    list.try_fold(list.unique(["", ..children]), 0, fn(stopped, child) {
+      release(spawner, parent, child)
+      |> result.map(fn(more) { stopped + more })
+    })
+  }
+}
+
+/// The function the spawn host calls to end the session of one child, because
+/// the child has settled or its parent was deleted: stops the child's run and
+/// has the registry delete the session, answering how many children it stopped.
+///
+/// A child with no row answers zero and nothing is created, so a repeat, or a
+/// release that arrives after the sweep has deleted the session, is harmless.
+/// A row already releasing or released answers zero without asking the Agency
+/// again, and is still handed to the registry, which finishes a deletion that
+/// failed. The stop comes before the hand-over, so every child is recorded
+/// stopped with its reason before the session can go. The registry writes the
+/// releasing state before it stops the slot, so a daemon that dies after that
+/// leaves a row the sweep deletes, and one that dies before it leaves an open
+/// row that the parent's release or the sweep's silence window ends.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let release = delegate_host.child_releaser(context)
+/// // release(spawner, parent, "seed-0123456789abcdef") == Ok(0)
+/// ```
+pub fn child_releaser(
+  context: Context(instance),
+) -> fn(Spawner, Parent, String) -> Result(Int, SpawnRefusal) {
+  let find = resolve_existing_child(context)
   let registry = context.registry
   let sessions = context.sessions_directory
-  fn(spawner: Spawner, parent: Parent) {
-    use existing <- result.try(find(spawner, parent))
+  fn(spawner: Spawner, parent: Parent, child: String) {
+    use existing <- result.try(find(spawner, parent, child))
 
-    // Release the session pair or return zero if no session is registered.
+    // Release the session or return zero if no session is registered.
     case existing {
       NoSession -> Ok(0)
       Existing(state:, endpoint:, ..) -> {
@@ -354,10 +504,11 @@ pub fn releaser(
         })
 
         use Nil <- result.map(
-          manager.release_delegate(
+          manager.release_delegate_child(
             registry,
             spawner.name,
             parent.session,
+            child,
             sessions,
           )
           |> result.map_error(fn(error) {
@@ -367,6 +518,141 @@ pub fn releaser(
         stopped
       }
     }
+  }
+}
+
+/// The functions that serve the sessions of seeded children
+/// (protocol-change/107, slice 4b), each over one registry.
+pub type ChildSessions {
+  ChildSessions(
+    /// The session of a child, created on its first spawn and opened on every
+    /// later one, given the spawner, the parent and the child's name.
+    resolve: fn(Spawner, Parent, String) ->
+      Result(agency.DelegateEndpoint, SpawnRefusal),
+    /// The session of a child that already has one, opened if it is not
+    /// resident, and `None` for a child with none. It never creates: a child that
+    /// settled and was released has no session, and a join about it must not make
+    /// one.
+    open: fn(Spawner, Parent, String) ->
+      Result(Option(agency.DelegateEndpoint), SpawnRefusal),
+    /// The session of a child that is open and resident, and `None` for a child
+    /// whose session is closed, being released or gone. It opens and creates
+    /// nothing, as a read or a message about a child must not: a closed session
+    /// holds no running child, and a stale card answered after the session was
+    /// released must not attach an executor and make a worktree only to be
+    /// refused. A row that is releasing reads as no session.
+    resident: fn(Spawner, Parent, String) ->
+      Result(Option(agency.DelegateEndpoint), SpawnRefusal),
+    /// The resident sessions of a parent's seeded children, for the end of a
+    /// run. A session that is not resident holds no running child.
+    live: fn(Spawner, Parent) ->
+      Result(List(agency.DelegateEndpoint), SpawnRefusal),
+    /// Ends one child's session, answering how many children it stopped.
+    release: fn(Spawner, Parent, String) -> Result(Int, SpawnRefusal),
+  )
+}
+
+/// The functions that serve the sessions of seeded children over a registry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let sessions = delegate_host.children(context)
+/// // sessions.open(spawner, parent, "seed-0123456789abcdef")
+/// ```
+pub fn children(context: Context(instance)) -> ChildSessions {
+  ChildSessions(
+    resolve: child_resolver(context),
+    open: child_opener(context),
+    resident: child_resident(context),
+    live: live_children(context),
+    release: child_releaser(context),
+  )
+}
+
+/// A value for a daemon that starts no seeded child on an executor: nothing
+/// resolves or opens, nothing is live, and releasing any child stops none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_host.no_children().live(spawner, parent) == Ok([])
+/// ```
+pub fn no_children() -> ChildSessions {
+  let unused =
+    remote_spawn.InvalidArgument(
+      reason: "this orchestrator starts no seeded child on an executor",
+    )
+  ChildSessions(
+    resolve: fn(_spawner, _parent, _child) { Error(unused) },
+    open: fn(_spawner, _parent, _child) { Ok(None) },
+    resident: fn(_spawner, _parent, _child) { Ok(None) },
+    live: fn(_spawner, _parent) { Ok([]) },
+    release: fn(_spawner, _parent, _child) { Ok(0) },
+  )
+}
+
+/// Opens the session of a child that has one. A child with no row is `None`
+/// without a session being created, which a join about a settled child relies
+/// on; one with a row goes through the registry's ordinary admission, which opens
+/// a closed session and refuses a releasing one.
+fn child_opener(
+  context: Context(instance),
+) -> fn(Spawner, Parent, String) ->
+  Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
+  let find = resolve_existing_child(context)
+  let resolve = child_resolver(context)
+  fn(spawner, parent, child) {
+    use existing <- result.try(find(spawner, parent, child))
+
+    // A child with no session has none to open.
+    case existing {
+      NoSession -> Ok(None)
+      Existing(..) -> resolve(spawner, parent, child) |> result.map(Some)
+    }
+  }
+}
+
+/// The Agency of a child whose session is open and resident, and nothing for any
+/// other row. It looks and does not open: a session that is not resident holds no
+/// running child.
+fn child_resident(
+  context: Context(instance),
+) -> fn(Spawner, Parent, String) ->
+  Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
+  let find = resolve_existing_child(context)
+  fn(spawner, parent, child) {
+    use existing <- result.map(find(spawner, parent, child))
+
+    // Only an open row has a session that can hold a running child.
+    case existing {
+      Existing(state: catalogue.Open, endpoint:, ..) -> endpoint
+      Existing(state: catalogue.Releasing, ..)
+      | Existing(state: catalogue.Released, ..)
+      | NoSession -> None
+    }
+  }
+}
+
+/// The Agency of each of a parent's seeded children that is open and resident.
+fn live_children(
+  context: Context(instance),
+) -> fn(Spawner, Parent) -> Result(List(agency.DelegateEndpoint), SpawnRefusal) {
+  fn(spawner: Spawner, parent: Parent) {
+    use family <- result.try(
+      manager.delegate_family(context.registry, spawner.name, parent.session)
+      |> result.map_error(fn(error) {
+        remote_spawn.StoreFailure(reason: describe(error))
+      }),
+    )
+
+    // Only an open child session can have a run; the pair's own is not one.
+    let open =
+      list.filter(family, fn(row) {
+        row.child != "" && row.state == catalogue.Open
+      })
+    list.try_map(open, fn(row) { open_endpoint(context, row.session_id) })
+    |> result.map(option.values)
   }
 }
 
@@ -392,7 +678,10 @@ fn resident(
         Ok(manager.View(status: manager.Reserved, ..)) ->
           failed("the delegate session was reserved and never created")
         Ok(manager.View(status: manager.FailedStart(reason:, ..), ..)) ->
-          failed("the delegate session failed to start: " <> reason)
+          case no_room(reason) {
+            True -> poll.Fail(remote_spawn.NotYetOpen(reason: no_room_reason))
+            False -> failed("the delegate session failed to start: " <> reason)
+          }
         Ok(manager.View(status: manager.Saved, ..)) ->
           poll.Fail(remote_spawn.NotYetOpen(
             reason: "the delegate session did not open",
@@ -448,9 +737,39 @@ pub fn refused(error: manager.DelegateError) -> SpawnRefusal {
       remote_spawn.InvalidArgument(
         reason: "the parent session is not a session identity",
       )
+
+    // An executor with no room is a state of the executor, which passes.
+    manager.DelegateFailed(manager.StartFailed(reason:)) ->
+      case no_room(reason) {
+        True -> remote_spawn.NotYetOpen(reason: no_room_reason)
+        False ->
+          remote_spawn.StoreFailure(
+            reason: describe(manager.StartFailed(reason:)),
+          )
+      }
     manager.DelegateFailed(error:) ->
       remote_spawn.StoreFailure(reason: describe(error))
   }
+}
+
+/// What a spawner is told when the executor a session was to be placed on has no
+/// room for it yet.
+pub const no_room_reason = "the executor has no room for the session yet"
+
+/// Whether the reason a session failed to start is an executor with no room for
+/// it. Such a failure is a state of the executor, so the spawn is asked again and
+/// the sender does not take it for a refusal. The two fragments are the executor's
+/// own words for a full table of scopes and a full ledger
+/// (`remote/protocol.describe`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_host.no_room("the executor already holds 4 scopes that are not cleanly closed")
+/// ```
+pub fn no_room(reason: String) -> Bool {
+  string.contains(reason, "scopes that are not cleanly closed")
+  || string.contains(reason, "bytes of unacknowledged results")
 }
 
 /// What the registry's error says, in words for a spawner. A catalogue failure

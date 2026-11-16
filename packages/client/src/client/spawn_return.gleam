@@ -18,6 +18,21 @@
 //// some. The bundle is thin against the state the parent sent, which the parent
 //// still holds, so it carries only what the child added.
 ////
+//// ## A child on an executor
+////
+//// A child whose spawner is placed on an executor or a pool does not work in a
+//// directory of this machine. It works in the worktree of a session of its own
+//// (protocol-change/107, slice 4b), and its commits are on the executor. There
+//// the capture is a request to the executor, `StateCapture` of the committed
+//// content thin against the tip that was sent, through the session's record of
+//// what it can do (`client/session_states`). The executor keeps the bundle in its
+//// store, this node pulls it into its own, and the push to the parent's machine is
+//// the one every other child uses. Two steps that a directory child does not have
+//// can end in silence, the capture and the pull, and each is tried again at the
+//// next join like a transfer that did not finish. A tree that holds changes the
+//// child did not commit is not reported for such a child, because asking would
+//// need a message the executor's vocabulary does not have.
+////
 //// ## A return does not fail a child
 ////
 //// A child's result is the model's report, and nothing about the commits may take
@@ -35,8 +50,9 @@
 //// file in `<state root>/seed-returns`, a directory no session can read, so the
 //// next join answers from the file and neither repeats a capture nor repeats a
 //// failed one. A transfer that did not finish keeps the captured state and the
-//// count of tries, and resumes where the parent's store stands; after
-//// `max_attempts` it gives up with a refusal that says so.
+//// count of tries, and resumes where the parent's store stands. A child in a
+//// directory is given up on after `max_attempts`, and a child in a session of
+//// its own after `give_up_s`, each with a refusal that says so.
 ////
 //// ## Flow
 ////
@@ -45,7 +61,8 @@
 //// 1. `over` binds the node and the way to reach the parent's machine, and
 ////    `none` is the value for a node that returns nothing.
 //// 2. `remember` records, when a seeded child is started, which copy it works in
-////    and which commit it was given.
+////    and which commit it was given, or that it works in a session of its own
+////    on an executor.
 //// 3. `settle` is applied to each entry of a join. An entry for a child that has
 ////    a record and has finished is answered by `answered`, from its verdict or
 ////    by an attempt.
@@ -54,7 +71,11 @@
 //// 5. `amend` turns a verdict into the entry the parent reads.
 
 import client/internal/ffi_os
+import client/joined_record
+import client/outliving
 import client/remote_spawn.{type CallSite, type Joined, type Parent}
+import client/seed_landing
+import client/session_states.{type SessionStates}
 import client/spawn_seed
 import client/spawners.{type Spawner, InDirectory}
 import client/state_capture
@@ -64,7 +85,6 @@ import client/state_transfer.{type Link}
 import client/worktree_git
 import gleam/bit_array
 import gleam/dynamic/decode
-import gleam/erlang/process
 import gleam/int
 import gleam/json
 import gleam/list
@@ -103,9 +123,49 @@ pub type Returning {
     remember: fn(Spawner, Parent, CallSite, State, Handle) -> Nil,
     /// Answers one entry of a join: the entry itself for a child that was not
     /// seeded or has not finished, and otherwise the entry with the child's
-    /// commits returned or the reason they could not be.
-    settle: fn(Spawner, Parent, Joined) -> Joined,
+    /// commits returned or the reason they could not be. The last argument is the
+    /// record of the child's own session, which a child on an executor needs to
+    /// have its commits captured there, and `None` for every other.
+    settle: fn(Spawner, Parent, Joined, Option(SessionStates)) -> Joined,
+    /// Where a child's join is answered: in a session of its own when it was
+    /// seeded onto an executor or a pool, and in the pair's session when it was
+    /// not seeded or works in a directory. A record that cannot be read is its own
+    /// answer, because a child that cannot be placed is not a child that was not
+    /// seeded.
+    session_of: fn(Spawner, Parent, Handle) -> Whereabouts,
+    /// Keeps a settled entry, so that the join can be answered again after the
+    /// child's session has been ended. It is called before the session is ended.
+    keep: fn(Spawner, Parent, Joined) -> Result(Nil, Nil),
+    /// The entry `keep` kept for a child: none, the entry, or a file that is there
+    /// and does not read.
+    kept: fn(Spawner, Parent, Handle) -> Kept,
   )
+}
+
+/// What `kept` found for a child.
+pub type Kept {
+  /// Nothing was kept: the child never settled, or this node keeps no records.
+  NothingKept
+
+  /// The settled entry.
+  AnswerKept(entry: Joined)
+
+  /// A file that is there and cannot be read, which is not the same as none.
+  KeptUnreadable
+}
+
+/// Where a join about a child is answered.
+pub type Whereabouts {
+  /// The child was not seeded, or works in a directory: the pair's session
+  /// answers.
+  Unseeded
+
+  /// The child has a session of its own, with this name.
+  OwnSession(name: String)
+
+  /// The child's record exists and cannot be read. Nothing is known about where
+  /// the child is, and the join says the child has not finished.
+  Unreadable
 }
 
 /// The value for a node that returns nothing: nothing is remembered and every
@@ -114,12 +174,16 @@ pub type Returning {
 /// ## Examples
 ///
 /// ```gleam
-/// // spawn_return.none().settle(spawner, parent, entry) == entry
+/// // spawn_return.none().settle(spawner, parent, entry, option.None) == entry
 /// ```
 pub fn none() -> Returning {
-  Returning(remember: fn(_, _, _, _, _) { Nil }, settle: fn(_, _, entry) {
-    entry
-  })
+  Returning(
+    remember: fn(_, _, _, _, _) { Nil },
+    settle: fn(_, _, entry, _) { entry },
+    session_of: fn(_, _, _) { Unseeded },
+    keep: fn(_, _, _) { Ok(Nil) },
+    kept: fn(_, _, _) { NothingKept },
+  )
 }
 
 /// What a node reaches in order to return a child's commits: the way to the
@@ -156,49 +220,96 @@ pub fn over(
     remember: fn(spawner, parent, site, state, handle) {
       remember(node, spawner, parent, site, state, handle)
     },
-    settle: fn(spawner, parent, entry) {
-      settle(node, reach, spawner, parent, entry)
+    settle: fn(spawner, parent, entry, states) {
+      settle(node, reach, spawner, parent, entry, states)
     },
+    session_of: fn(spawner, parent, handle) {
+      session_of(node, spawner, parent, handle)
+    },
+    keep: fn(spawner, parent, entry) { keep(node, spawner, parent, entry) },
+    kept: fn(spawner, parent, handle) { kept(node, spawner, parent, handle) },
   )
 }
 
-/// Removes the claims a daemon that died left behind, when the next one starts.
-/// A claim names work in a process that no longer exists, and would otherwise make
-/// every join answer `Pending` until it aged out. Records and verdicts are kept:
-/// they are what a restarted daemon answers from.
+/// Removes the claims a daemon that died left behind, when the next one starts, and
+/// the files of children older than `retain_s`. A claim names work in a process that
+/// no longer exists, and would otherwise make every join answer `Pending` until it
+/// aged out. A record, a verdict and a kept answer are what a restarted daemon answers
+/// from, so they are kept for as long as anything can still ask about the child: the
+/// delegate session of a child is kept for the spawner's `retain_s` with no message,
+/// and the files are kept for the longest of them. The kept answer holds the child's
+/// whole report, and nothing else removes it, not even the deletion of the parent.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // spawn_return.sweep("/var/lib/loom")
+/// // spawn_return.sweep("/var/lib/loom", 604_800, 1_700_000_000)
 /// ```
-pub fn sweep(state_root: String) -> Nil {
+pub fn sweep(state_root: String, retain_s: Int, now_s: Int) -> Nil {
   let directory = state_root <> "/" <> directory_name
 
   // A directory that is not there has no claims.
   case simplifile.read_directory(directory) {
     Ok(names) ->
       list.each(names, fn(name) {
-        // Only a claim is removed; a record or a verdict is kept.
-        case string.ends_with(name, ".claim") {
-          True -> {
+        // A claim is removed, and a record, a verdict or a kept answer is removed
+        // when it is older than the retention.
+        case
+          string.ends_with(name, ".claim"),
+          aged(directory <> "/" <> name, retain_s, now_s)
+        {
+          True, _ | False, True -> {
             let _removed = simplifile.delete(directory <> "/" <> name)
             Nil
           }
-          False -> Nil
+          False, False -> Nil
         }
       })
     Error(_) -> Nil
   }
 }
 
+/// Whether a file of the three kinds a child keeps is older than the retention. Any
+/// other file, and a file whose age cannot be read, is not.
+fn aged(path: String, retain_s: Int, now_s: Int) -> Bool {
+  let kept_kind =
+    string.ends_with(path, ".copy")
+    || string.ends_with(path, ".verdict")
+    || string.ends_with(path, ".joined")
+
+  // Only a file of those kinds, whose age can be read, is old.
+  case kept_kind, simplifile.file_info(path) {
+    True, Ok(info) -> now_s - info.mtime_seconds > retain_s
+    _, _ -> False
+  }
+}
+
 // --- what is remembered -------------------------------------------------------
 
 /// What the receiver keeps of a seeded child: the name of its copy and the commit
-/// it was given. Nothing else is needed, and no path is kept, because the
-/// directory comes from the spawner's table when the record is used.
+/// it was given, and where the copy is. Nothing else is needed, and no path is
+/// kept, because the directory comes from the spawner's table when the record is
+/// used.
 type Copy {
-  Copy(name: String, tip: String)
+  Copy(name: String, tip: String, home: Home)
+}
+
+/// Where a seeded child works.
+type Home {
+  /// In a copy under the spawner's directory on this machine, which the child
+  /// shares its session with the pair's other children to reach.
+  Directory
+
+  /// In the worktree of a session of its own on an executor, named by `name`.
+  Session
+}
+
+/// The word a home is kept as in the record file.
+fn home_word(home: Home) -> String {
+  case home {
+    Directory -> "directory"
+    Session -> "session"
+  }
 }
 
 /// The key of a child's files: a digest of the spawner, the parent session and
@@ -245,7 +356,14 @@ fn remember(
   state: State,
   handle: Handle,
 ) -> Nil {
-  let copy = Copy(name: spawn_seed.name_of(site, state), tip: state.tip)
+  // A directory placement shares the pair's session and works in a copy under
+  // it, and an executor or pool placement works in a session of its own.
+  let home = case spawner.placement {
+    InDirectory(..) -> Directory
+    spawners.OnExecutor(..) | spawners.InPool(..) -> Session
+  }
+
+  let copy = Copy(name: spawn_seed.name_of(site, state), tip: state.tip, home:)
 
   // Failing to keep the record costs only that this child's commits are not
   // returned, and the spawn itself has been answered.
@@ -264,8 +382,18 @@ fn encode_copy(copy: Copy) -> String {
   json.object([
     #("name", json.string(copy.name)),
     #("tip", json.string(copy.tip)),
+    #("home", json.string(home_word(copy.home))),
   ])
   |> json.to_string
+}
+
+/// The home a record's word names. Anything but `session` is a directory, which
+/// is where a copy was before there was a word for it.
+fn home_of(word: String) -> Home {
+  case word {
+    "session" -> Session
+    _ -> Directory
+  }
 }
 
 /// Reads a record back, held to the shapes a path and a command are built from.
@@ -273,7 +401,11 @@ fn decode_copy(text: String) -> Result(Copy, Nil) {
   let decoder = {
     use name <- decode.field("name", decode.string)
     use tip <- decode.field("tip", decode.string)
-    decode.success(Copy(name:, tip:))
+
+    // A record written before a child could have a session of its own has no
+    // home, and its copy was in a directory.
+    use home <- decode.optional_field("home", "directory", decode.string)
+    decode.success(Copy(name:, tip:, home: home_of(home)))
   }
   use copy <- result.try(result.replace_error(json.parse(text, decoder), Nil))
   let usable =
@@ -293,9 +425,20 @@ type Outcome {
   /// The child committed nothing on top of what it was given.
   NoCommits
 
+  /// The executor the child worked on did not answer the request for its commits.
+  /// Nothing was captured, and the request is made again at the next join.
+  Waiting(
+    /// The second the executor was first not heard from, which bounds the waiting.
+    since: Int,
+  )
+
   /// The commits are captured into this node's store and are not yet in the
   /// parent's. The transfer resumes from here.
-  Captured(state: State)
+  Captured(
+    state: State,
+    /// The second the commits were first captured and not yet delivered.
+    since: Int,
+  )
 
   /// The commits are in the parent's store.
   Returned(state: State)
@@ -308,6 +451,10 @@ type Outcome {
 type Tree {
   Tidy
   Uncommitted
+
+  /// Nobody looked: the child's tree is on an executor, and asking would need a
+  /// message the executor's vocabulary does not have.
+  NotChecked
 }
 
 /// A child's verdict: what was found, whether it left uncommitted work, and how
@@ -321,7 +468,7 @@ type Verdict {
 fn is_final(verdict: Verdict) -> Bool {
   case verdict.outcome {
     NoCommits | Returned(..) | Refused(..) -> True
-    Captured(..) -> False
+    Waiting(..) | Captured(..) -> False
   }
 }
 
@@ -330,7 +477,8 @@ fn encode_verdict(verdict: Verdict) -> String {
   // Each outcome is a kind word, the state it carries and its reason.
   let #(kind, state, reason) = case verdict.outcome {
     NoCommits -> #("none", None, "")
-    Captured(state:) -> #("captured", Some(state), "")
+    Waiting(..) -> #("waiting", None, "")
+    Captured(state:, ..) -> #("captured", Some(state), "")
     Returned(state:) -> #("returned", Some(state), "")
     Refused(reason:) -> #("refused", None, reason)
   }
@@ -344,8 +492,18 @@ fn encode_verdict(verdict: Verdict) -> String {
     #("reason", json.string(reason)),
     #("uncommitted", json.string(tree_word(verdict.tree))),
     #("attempts", json.int(verdict.attempts)),
+    #("since", json.int(since_of_outcome(verdict.outcome))),
   ])
   |> json.to_string
+}
+
+/// The second a verdict that is not final was first made, or zero for one that is
+/// final or was not stamped.
+fn since_of_outcome(outcome: Outcome) -> Int {
+  case outcome {
+    Waiting(since:) | Captured(since:, ..) -> since
+    NoCommits | Returned(..) | Refused(..) -> 0
+  }
 }
 
 /// The word a tree is kept as in the verdict file.
@@ -353,6 +511,7 @@ fn tree_word(tree: Tree) -> String {
   case tree {
     Tidy -> "tidy"
     Uncommitted -> "uncommitted"
+    NotChecked -> "unchecked"
   }
 }
 
@@ -365,12 +524,14 @@ fn decode_verdict(text: String) -> Result(Verdict, Nil) {
     use reason <- decode.field("reason", decode.string)
     use tree <- decode.field("uncommitted", decode.string)
     use attempts <- decode.field("attempts", decode.int)
-    decode.success(#(kind, state, reason, tree, attempts))
+
+    // A verdict written before the waiting was bounded has no second.
+    use since <- decode.optional_field("since", 0, decode.int)
+    decode.success(#(kind, state, reason, tree, attempts, since))
   }
-  use #(kind, state, reason, tree, attempts) <- result.try(result.replace_error(
-    json.parse(text, decoder),
-    Nil,
-  ))
+  use #(kind, state, reason, tree, attempts, since) <- result.try(
+    result.replace_error(json.parse(text, decoder), Nil),
+  )
 
   // A state, when the file has one, is read with the total state decoder.
   use held <- result.try(case state {
@@ -382,15 +543,17 @@ fn decode_verdict(text: String) -> Result(Verdict, Nil) {
   // The outcome and the state it carries must agree.
   use outcome <- result.map(case kind, held {
     "none", None -> Ok(NoCommits)
-    "captured", Some(state) -> Ok(Captured(state:))
+    "waiting", None -> Ok(Waiting(since:))
+    "captured", Some(state) -> Ok(Captured(state:, since:))
     "returned", Some(state) -> Ok(Returned(state:))
     "refused", None -> Ok(Refused(reason:))
     _, _ -> Error(Nil)
   })
 
-  // Anything but the word for uncommitted is a tidy tree.
+  // Anything but the words for uncommitted and unchecked is a tidy tree.
   let tree = case tree {
     "uncommitted" -> Uncommitted
+    "unchecked" -> NotChecked
     _ -> Tidy
   }
 
@@ -406,11 +569,12 @@ fn settle(
   spawner: Spawner,
   parent: Parent,
   entry: Joined,
+  states: Option(SessionStates),
 ) -> Joined {
   // Only a finished child that carries no state yet can have commits to return.
   case entry {
     remote_spawn.Ready(handle:, state: None, ..) ->
-      settle_child(node, reach, spawner, parent, handle, entry)
+      settle_child(node, reach, spawner, parent, handle, entry, states)
     remote_spawn.Ready(state: Some(..), ..) | remote_spawn.Pending(..) -> entry
   }
 }
@@ -424,23 +588,39 @@ fn settle_child(
   parent: Parent,
   handle: Handle,
   entry: Joined,
+  states: Option(SessionStates),
 ) -> Joined {
   let key = key_of(spawner, parent, handle)
-  let settled = {
-    use directory <- result.try(result.replace_error(
-      returns_directory(node),
-      Nil,
-    ))
-    use text <- result.try(
-      simplifile.read(directory <> "/" <> key <> ".copy")
-      |> result.replace_error(Nil),
-    )
-    use copy <- result.map(decode_copy(text))
-    answered(node, reach, spawner, copy, directory, key, entry)
-  }
 
-  // A child with no readable record was not seeded, and is answered as it was.
-  result.unwrap(settled, entry)
+  // A node that keeps no records seeded nothing, and answers as it always did.
+  case node.state_root {
+    "" -> entry
+    _ ->
+      case returns_directory(node) {
+        // A directory that cannot be made or opened leaves the child unfinished.
+        Error(_) -> pending_of(entry)
+        Ok(directory) ->
+          case record_in(directory, key) {
+            // A child with no record was not seeded, and is answered as it was.
+            NoRecord -> entry
+
+            // A record that cannot be read is not the same as none: the child may
+            // have commits to return, so it is not reported finished.
+            Cannot -> pending_of(entry)
+            Record(copy:) ->
+              answered(
+                node,
+                reach,
+                spawner,
+                copy,
+                directory,
+                key,
+                entry,
+                states,
+              )
+          }
+      }
+  }
 }
 
 /// Answers the entry of a seeded child from its verdict, running the work when the
@@ -453,6 +633,7 @@ fn answered(
   directory: String,
   key: String,
   entry: Joined,
+  states: Option(SessionStates),
 ) -> Joined {
   let known = verdict_of(directory, key)
 
@@ -460,7 +641,16 @@ fn answered(
   // and a captured state that is not yet in the parent's store is not an answer.
   let verdict =
     option.lazy_or(final_of(known), fn() {
-      final_of(attempt(node, reach, spawner, copy, directory, key, known))
+      final_of(attempt(
+        node,
+        reach,
+        spawner,
+        copy,
+        directory,
+        key,
+        known,
+        states,
+      ))
     })
 
   // An answer amends the entry, and its absence leaves the child unfinished.
@@ -508,6 +698,7 @@ fn attempt(
   directory: String,
   key: String,
   known: Option(Verdict),
+  states: Option(SessionStates),
 ) -> Option(Verdict) {
   let now_s = ffi_os.system_time_ms() / 1000
 
@@ -517,17 +708,14 @@ fn attempt(
     Error(_) -> None
     Ok(spawn_seed.Busy) -> None
     Ok(spawn_seed.Claimed) -> {
-      let reply = process.new_subject()
-      let _working =
-        process.spawn_unlinked(fn() {
-          process.send(
-            reply,
-            working(node, reach, spawner, copy, directory, key, known),
-          )
-        })
-
       // A join that stops waiting leaves the work running.
-      option.from_result(process.receive(reply, wait_ms))
+      outliving.wait_for(
+        fn() {
+          working(node, reach, spawner, copy, directory, key, known, states)
+        },
+        wait_ms,
+      )
+      |> option.from_result
     }
   }
 }
@@ -542,9 +730,10 @@ fn working(
   directory: String,
   key: String,
   known: Option(Verdict),
+  states: Option(SessionStates),
 ) -> Verdict {
   let outcomes =
-    weft.new([fn() { Ok(found(node, reach, spawner, copy, known)) }])
+    weft.new([fn() { Ok(found(node, reach, spawner, copy, known, states)) }])
     |> weft.deadline(work_ms)
     |> weft.start
 
@@ -558,15 +747,10 @@ fn working(
     | [weft.DrainProofLost(..)]
     | [weft.CancellationUnconfirmed(..)]
     | []
-    | [_, _, ..] ->
-      Verdict(
-        outcome: Refused(
-          "the work of returning its commits did not finish in time",
-        ),
-        tree: Tidy,
-        attempts: 0,
-      )
+    | [_, _, ..] -> unanswered(copy.home, known)
   }
+
+  let verdict = bounded(verdict, known, copy.home, states)
 
   // The verdict is kept before the claim is let go, so no join finds the claim
   // free and the verdict missing.
@@ -576,9 +760,102 @@ fn working(
   verdict
 }
 
+/// How long a child in a session of its own may go unreturned, in seconds, before
+/// the join gives up on its commits and returns its report. It must be longer than
+/// an executor takes to restart and than a repaired link takes to be used again,
+/// which the surface bounds at a minute (`workspace.state_repair_ms`) and an
+/// executor's restart does in a few seconds, and short enough that a parent
+/// waiting on a child whose executor is gone for good is told within a coffee
+/// break and not left with a `Pending` every window. Ten minutes.
+pub const give_up_s = 600
+
+/// Stamps a verdict that is not final with the second the waiting began, which is
+/// the first verdict's, and turns it into a final refusal once the waiting is older
+/// than `give_up_s` for a child in a session of its own. Such a child is not given
+/// up on by count, because what costs the tries is often an answer that is not about
+/// the commits, but waiting for ever withholds its report, so it is bounded by time.
+/// The refusal says where the commits still are.
+fn bounded(
+  verdict: Verdict,
+  known: Option(Verdict),
+  home: Home,
+  states: Option(SessionStates),
+) -> Verdict {
+  let now = ffi_os.system_time_ms() / 1000
+
+  // The wait began at the first verdict that was not final, or begins now.
+  let began = case known {
+    Some(Verdict(outcome: Waiting(since:), ..))
+      | Some(Verdict(outcome: Captured(since:, ..), ..))
+      if since > 0
+    -> since
+    _ -> now
+  }
+
+  let expired = home == Session && now - began >= give_up_s
+
+  // The waiting began at the first verdict, and a wait that has run its course ends
+  // with the report and a notice of where the commits are.
+  case verdict.outcome, expired {
+    Waiting(..), False -> Verdict(..verdict, outcome: Waiting(since: began))
+    Captured(state:, ..), False ->
+      Verdict(..verdict, outcome: Captured(state:, since: began))
+    Waiting(..), True | Captured(..), True ->
+      Verdict(..verdict, outcome: Refused(gave_up(states)))
+    NoCommits, _ | Returned(..), _ | Refused(..), _ -> verdict
+  }
+}
+
+/// The sentence for commits given up on after `give_up_s`, with where they are.
+fn gave_up(states: Option(SessionStates)) -> String {
+  // The executor and the branch are named when the session's record is in hand.
+  let where = case states {
+    Some(held) ->
+      " on the executor `"
+      <> held.executor
+      <> "`, on the branch `"
+      <> held.branch
+      <> "`"
+    None -> " on the executor"
+  }
+
+  "the machine the child ran on could not return its commits within "
+  <> int.to_string(give_up_s / 60)
+  <> " minutes. They are still in the child's workspace"
+  <> where
+}
+
+/// The verdict for a run that did not finish in time. The deadline says nothing
+/// about the commits, so it is a reason to ask again that keeps whatever an earlier
+/// attempt captured.
+fn unanswered(home: Home, known: Option(Verdict)) -> Verdict {
+  case known {
+    Some(Verdict(outcome: Captured(state:, ..), tree:, attempts:)) ->
+      unfinished(home, state, tree, attempts + 1)
+    Some(Verdict(attempts:, ..)) -> waiting(home, attempts + 1)
+    None -> waiting(home, 1)
+  }
+}
+
 /// Captures the child's commits and sends them, resuming from what an earlier
-/// attempt kept.
+/// attempt kept. A child in a directory is captured on this machine, and a child
+/// in a session of its own is captured on its executor.
 fn found(
+  node: StateNode,
+  reach: Reach,
+  spawner: Spawner,
+  copy: Copy,
+  known: Option(Verdict),
+  states: Option(SessionStates),
+) -> Verdict {
+  case copy.home {
+    Directory -> found_in_directory(node, reach, spawner, copy, known)
+    Session -> found_in_session(node, reach, spawner, copy, known, states)
+  }
+}
+
+/// The work for a child whose copy is a directory of this machine.
+fn found_in_directory(
   node: StateNode,
   reach: Reach,
   spawner: Spawner,
@@ -603,10 +880,262 @@ fn found(
         tree: Tidy,
         attempts: 0,
       )
-    Ok(_), Some(Verdict(outcome: Captured(state:), tree:, attempts:)) ->
-      sent(node, reach, spawner, state, tree, attempts)
+    Ok(_), Some(Verdict(outcome: Captured(state:, ..), tree:, attempts:)) ->
+      sent(node, reach, spawner, Directory, state, tree, attempts)
     Ok(path), Some(_) | Ok(path), None ->
       captured(node, reach, spawner, copy, path)
+  }
+}
+
+/// The work for a child that has a session of its own on an executor: capture its
+/// commits there, bring the bundle to this machine's store, and send it on.
+///
+/// An earlier attempt that captured keeps the state, and this one goes on from the
+/// pull. A child's record that finds no open session is refused: the join opens the
+/// session before it settles an entry, so a missing one means it could not be
+/// opened.
+fn found_in_session(
+  node: StateNode,
+  reach: Reach,
+  spawner: Spawner,
+  copy: Copy,
+  known: Option(Verdict),
+  states: Option(SessionStates),
+) -> Verdict {
+  case states, known {
+    None, _ ->
+      Verdict(
+        outcome: Refused(
+          "the child's workspace on its executor is not reachable",
+        ),
+        tree: Tidy,
+        attempts: 0,
+      )
+    Some(states), Some(Verdict(outcome: Captured(state:, ..), tree:, attempts:))
+    -> pulled(node, reach, spawner, states, state, tree, attempts)
+    Some(states), Some(Verdict(attempts:, ..)) ->
+      committed(node, reach, spawner, copy, states, attempts)
+    Some(states), None -> committed(node, reach, spawner, copy, states, 0)
+  }
+}
+
+/// Asks the executor for the child's commits, thin against the tip it was handed,
+/// and brings them on. `tries` is how many times the executor has not answered.
+fn committed(
+  node: StateNode,
+  reach: Reach,
+  spawner: Spawner,
+  copy: Copy,
+  states: SessionStates,
+  tries: Int,
+) -> Verdict {
+  let made =
+    states.capture(state_object.Thin(copy.tip), state_object.CommittedOnly)
+
+  // Nothing committed is an answer, silence is another try, and a refusal is
+  // final: capturing again does not change what is wrong with the workspace.
+  case made {
+    Ok(None) -> Verdict(outcome: NoCommits, tree: NotChecked, attempts: 0)
+    Ok(Some(state)) ->
+      pulled(node, reach, spawner, states, state, NotChecked, 0)
+    Error(session_states.Later(..)) -> waiting(Session, tries + 1)
+    Error(session_states.Final(reason:)) -> {
+      // The detail can hold the executor's paths and Git's own words, so it stays
+      // in this machine's log and the parent is told a fixed sentence.
+      log.warn(reach.logger, "spawn_return.capture_refused", [
+        field.text("detail", clipped(reason)),
+      ])
+      Verdict(outcome: Refused(capture_refused), tree: NotChecked, attempts: 0)
+    }
+  }
+}
+
+/// Whether the tries have run out. A child in a session of its own is never given
+/// up on by count, because what costs the tries is often an answer that is not
+/// about the commits at all, such as an executor that restarted. It is given up
+/// on by time instead (`bounded`, after `give_up_s`), with a report that says
+/// where its commits still are. A child in a directory has no session to end and
+/// is given up on after `max_attempts`.
+fn tries_out(home: Home, attempts: Int) -> Bool {
+  case home {
+    Directory -> attempts >= max_attempts
+    Session -> False
+  }
+}
+
+/// The tree a verdict of a child's home carries when nothing was looked at.
+fn tree_for(home: Home) -> Tree {
+  case home {
+    Directory -> Tidy
+    Session -> NotChecked
+  }
+}
+
+/// The verdict for a request the executor has not answered: asked again at the
+/// next join, until `max_attempts` for a child that has no session to keep.
+fn waiting(home: Home, attempts: Int) -> Verdict {
+  // The last try gives the request up, and says where the commits are.
+  case tries_out(home, attempts) {
+    True ->
+      Verdict(
+        outcome: Refused(
+          "the machine the child ran on did not answer the request for its commits after "
+          <> int.to_string(max_attempts)
+          <> " tries. The commits are in the child's workspace there",
+        ),
+        tree: tree_for(home),
+        attempts:,
+      )
+    False ->
+      Verdict(outcome: Waiting(since: 0), tree: tree_for(home), attempts:)
+  }
+}
+
+/// Brings a state captured on the executor into this node's store, resuming at
+/// the bytes the store holds, and sends it on to the parent.
+fn pulled(
+  node: StateNode,
+  reach: Reach,
+  spawner: Spawner,
+  states: SessionStates,
+  state: State,
+  tree: Tree,
+  attempts: Int,
+) -> Verdict {
+  // Delivered is in this node's store whole. A refusal that the same bytes get
+  // again is final, and one that passes (no room, a piece out of place), a fault in
+  // a store that could not say, and silence are another try with the captured
+  // state kept.
+  case state_transfer.pull(node.endpoint, state.hash, from: states.link) {
+    state_transfer.Delivered ->
+      sent(node, reach, spawner, Session, state, tree, attempts)
+    state_transfer.Declined(refusal:) -> {
+      log.warn(reach.logger, "spawn_return.pull_declined", [
+        field.text("detail", clipped(state_transfer.describe(refusal))),
+      ])
+
+      // A refusal the same bytes get again ends the matter, and one that passes
+      // is tried again.
+      case declined_for_good(refusal) {
+        True -> Verdict(outcome: Refused(pull_failed), tree:, attempts:)
+        False -> unfinished(Session, state, tree, attempts + 1)
+      }
+    }
+    state_transfer.Faulted(reason:) -> {
+      log.warn(reach.logger, "spawn_return.pull_faulted", [
+        field.text("detail", clipped(reason)),
+      ])
+      unfinished(Session, state, tree, attempts + 1)
+    }
+    state_transfer.Silent | state_transfer.Stalled ->
+      unfinished(Session, state, tree, attempts + 1)
+  }
+}
+
+/// What a child's record says: there is none, there is this one, or it cannot be
+/// told. A file that is not there is no record, and one that is there and does not
+/// read is not the same thing.
+type Recorded {
+  NoRecord
+  Record(copy: Copy)
+  Cannot
+}
+
+/// Reads a child's record from its directory.
+fn record_in(directory: String, key: String) -> Recorded {
+  case simplifile.read(directory <> "/" <> key <> ".copy") {
+    Ok(text) ->
+      case decode_copy(text) {
+        Ok(copy) -> Record(copy:)
+        Error(Nil) -> Cannot
+      }
+    Error(simplifile.Enoent) -> NoRecord
+    Error(_) -> Cannot
+  }
+}
+
+/// Where a join about a child is answered, from its record. A node with no state
+/// root keeps no records, so every child is unseeded; a record that cannot be read
+/// leaves the question open.
+fn session_of(
+  node: StateNode,
+  spawner: Spawner,
+  parent: Parent,
+  handle: Handle,
+) -> Whereabouts {
+  case node.state_root {
+    "" -> Unseeded
+    root ->
+      case
+        record_in(
+          root <> "/" <> directory_name,
+          key_of(spawner, parent, handle),
+        )
+      {
+        NoRecord -> Unseeded
+        Cannot -> Unreadable
+
+        // Only a child with a session of its own has a name to find it by.
+        Record(copy:) ->
+          case copy.home {
+            Session -> OwnSession(name: copy.name)
+            Directory -> Unseeded
+          }
+      }
+  }
+}
+
+/// Keeps a settled entry beside the child's verdict, whole, so that a join asked
+/// again after the session is gone is answered as the first was. A failure is
+/// reported, because the session must not be ended without the entry kept.
+fn keep(
+  node: StateNode,
+  spawner: Spawner,
+  parent: Parent,
+  entry: Joined,
+) -> Result(Nil, Nil) {
+  // Both an answer to keep and a directory to keep it in are needed, and the
+  // caller ends the session only when the entry was kept.
+  case entry, joined_record.encode(entry), returns_directory(node) {
+    remote_spawn.Ready(handle:, ..), Ok(text), Ok(directory) -> {
+      let path =
+        directory <> "/" <> key_of(spawner, parent, handle) <> ".joined"
+      write_whole(path, text)
+    }
+    _, _, _ -> Error(Nil)
+  }
+}
+
+/// The entry `keep` kept for a child. A file that is not there is nothing kept, and
+/// any other failure to read it is not the same answer: the child settled, and the
+/// join is asked again.
+fn kept(
+  node: StateNode,
+  spawner: Spawner,
+  parent: Parent,
+  handle: Handle,
+) -> Kept {
+  case node.state_root {
+    "" -> NothingKept
+    root ->
+      case
+        simplifile.read(
+          root
+          <> "/"
+          <> directory_name
+          <> "/"
+          <> key_of(spawner, parent, handle)
+          <> ".joined",
+        )
+      {
+        Ok(text) ->
+          case joined_record.decode(text) {
+            Ok(entry) -> AnswerKept(entry:)
+            Error(Nil) -> KeptUnreadable
+          }
+        Error(simplifile.Enoent) -> NothingKept
+        Error(_) -> KeptUnreadable
+      }
   }
 }
 
@@ -639,7 +1168,7 @@ fn captured(
       ])
       Verdict(outcome: Refused(capture_refused), tree:, attempts: 0)
     }
-    Ok(Some(state)) -> sent(node, reach, spawner, state, tree, 0)
+    Ok(Some(state)) -> sent(node, reach, spawner, Directory, state, tree, 0)
   }
 }
 
@@ -649,6 +1178,7 @@ fn sent(
   node: StateNode,
   reach: Reach,
   spawner: Spawner,
+  home: Home,
   state: State,
   tree: Tree,
   attempts: Int,
@@ -667,32 +1197,40 @@ fn sent(
     Some(state_transfer.Delivered) ->
       Verdict(outcome: Returned(state:), tree:, attempts:)
     Some(state_transfer.Declined(refusal:)) ->
-      Verdict(
-        outcome: Refused(
-          "the parent's machine declined them: "
-          <> clipped(state_transfer.describe(refusal)),
-        ),
-        tree:,
-        attempts:,
-      )
+      case declined_for_good(refusal) {
+        True ->
+          Verdict(
+            outcome: Refused(
+              "the parent's machine declined them: "
+              <> clipped(state_transfer.describe(refusal)),
+            ),
+            tree:,
+            attempts:,
+          )
+
+        // A store with no room, or a piece out of place, is the parent's
+        // machine's state of the moment, and asking again can be answered.
+        False -> unfinished(home, state, tree, attempts + 1)
+      }
     Some(state_transfer.Faulted(reason:)) -> {
       // A fault in this machine's own store can name its paths, so the parent is
-      // told a fixed sentence and the detail stays in the log.
+      // told nothing of it and the detail stays in the log. A node that could not
+      // decide or read may pass, so the return is tried again.
       log.warn(reach.logger, "spawn_return.send_faulted", [
         field.text("detail", clipped(reason)),
       ])
-      Verdict(outcome: Refused(send_faulted), tree:, attempts:)
+      unfinished(home, state, tree, attempts + 1)
     }
     Some(state_transfer.Silent) | Some(state_transfer.Stalled) | None ->
-      unfinished(state, tree, attempts + 1)
+      unfinished(home, state, tree, attempts + 1)
   }
 }
 
 /// A transfer that did not finish: tried again by the next join, until
 /// `max_attempts`.
-fn unfinished(state: State, tree: Tree, attempts: Int) -> Verdict {
+fn unfinished(home: Home, state: State, tree: Tree, attempts: Int) -> Verdict {
   // The last try gives the commits up, and says where they are kept.
-  case attempts >= max_attempts {
+  case tries_out(home, attempts) {
     True ->
       Verdict(
         outcome: Refused(
@@ -704,8 +1242,14 @@ fn unfinished(state: State, tree: Tree, attempts: Int) -> Verdict {
         tree:,
         attempts:,
       )
-    False -> Verdict(outcome: Captured(state:), tree:, attempts:)
+    False -> Verdict(outcome: Captured(state:, since: 0), tree:, attempts:)
   }
+}
+
+/// Whether a refusal of the commits is one the same bytes get again. It is the
+/// classification the landing uses for a refusal of the seed.
+fn declined_for_good(refusal: state_transfer.Refusal) -> Bool {
+  seed_landing.keeps_verdict(seed_landing.of_declined(refusal))
 }
 
 /// Whether the child's copy has changes it did not commit. A failure to ask is
@@ -751,13 +1295,19 @@ fn clipped(text: String) -> String {
 pub const capture_refused =
   "the commits could not be captured on the machine the child ran on; its log has the detail"
 
-/// The reason a transfer that this machine's store could not serve is reported with.
-pub const send_faulted =
-  "this machine's state store could not serve the commits; its log has the detail"
+/// The reason a bundle that could not be brought into this machine's store is
+/// reported with. The detail is in this machine's log.
+pub const pull_failed =
+  "this machine's state store could not take the commits from the machine the child ran on; its log has the detail"
 
 /// The sentence for a child that left changes uncommitted.
 pub const uncommitted_note =
   "It left uncommitted changes in its copy of the workspace. They are not returned: only commits are."
+
+/// The sentence for a child whose workspace is on an executor, whose tree is not
+/// looked at.
+pub const session_tree_note =
+  "Only its commits are returned from its workspace on the executor. Any changes it left uncommitted there are not."
 
 /// The sentence for a child that committed nothing.
 pub const no_commits_note =
@@ -779,12 +1329,13 @@ fn amend(entry: Joined, verdict: Verdict) -> Joined {
           <> reason
           <> ".",
         ]
-        Captured(..) | Returned(..) -> []
+        Waiting(..) | Captured(..) | Returned(..) -> []
       }
 
       // Whether it left work behind that does not come back.
       let tree_notes = case verdict.tree {
         Uncommitted -> [uncommitted_note]
+        NotChecked -> [session_tree_note]
         Tidy -> []
       }
 
@@ -799,7 +1350,7 @@ fn amend(entry: Joined, verdict: Verdict) -> Joined {
       case verdict.outcome {
         Returned(state:) ->
           remote_spawn.Ready(..entry, report:, state: Some(state))
-        NoCommits | Refused(..) | Captured(..) ->
+        NoCommits | Refused(..) | Waiting(..) | Captured(..) ->
           remote_spawn.Ready(..entry, report:)
       }
     }

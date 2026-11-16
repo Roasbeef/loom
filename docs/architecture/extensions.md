@@ -873,7 +873,7 @@ deadline. `HookResult` (`broker/framing.gleam:232`) carries the
 `CapOutcome` that answers it, correlated by the same frame id. Spec
 §1.4's frozen `kinds` list gained both names. They cross the *capability*
 socket and nothing else. A helper on the exec channel that sends one is
-marked dead as a protocol violation (`framing.HookCall` at `broker/exec.gleam:2010`), because the two channels are two protocols,
+marked dead as a protocol violation (`framing.HookCall` at `broker/exec.gleam:2021`), because the two channels are two protocols,
 and a peer that confuses them is a peer whose next frame cannot be
 trusted either.
 
@@ -923,7 +923,7 @@ actor is alive, so a breach fails the next boot outright instead of
 silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:5268`).
+per session (`extension_hosts.supervised` at `client/serve.gleam:5274`).
 It holds at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first. That is
 sound because every extension call in a session runs under one workspace

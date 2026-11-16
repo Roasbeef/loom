@@ -12,11 +12,13 @@
 import broker/exec
 import client/agency
 import client/daemon/main
+import client/delegate_host
 import client/internal/ffi_os
 import client/remote/address.{Address}
 import client/remote/orchestrator_port
 import client/remote/remote_spawner
 import client/remote_spawn
+import client/session_states
 import client/spawn_return
 import client/spawn_seed
 import client/spawners.{type Spawner}
@@ -135,6 +137,8 @@ fn request(state: option.Option(State)) -> remote_spawn.Request {
 // What the delegate session's Agency was asked to start.
 fn recording(heard: Subject(remote_spawn.Request)) -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
+    fresh: fn() { session_states.Fresh },
+    states: None,
     spawn: fn(_delegation, _site, request) {
       process.send(heard, request)
       Ok(remote_spawn.Spawned(
@@ -177,8 +181,16 @@ fn port_for(
       fn(_spawner, _parent) { Ok(recording(heard)) },
       fn(_spawner, _parent) { Ok(0) },
       fn(_spawner, _parent) { Ok(None) },
-      fn(found, call_site, asked) {
-        spawn_seed.receive(receiver.node, found, call_site, asked)
+      delegate_host.no_children(),
+      fn(found, parent, call_site, asked) {
+        spawn_seed.land(
+          receiver.node,
+          delegate_host.no_children(),
+          found,
+          parent,
+          call_site,
+          asked,
+        )
       },
       spawn_return.none(),
       log.discard(),

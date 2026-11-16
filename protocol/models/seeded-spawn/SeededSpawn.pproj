@@ -1,0 +1,10 @@
+<!-- The seeded spawn protocol model. See README.md. -->
+<Project>
+<ProjectName>SeededSpawn</ProjectName>
+<InputFiles>
+	<PFile>./PSrc/</PFile>
+	<PFile>./PSpec/</PFile>
+	<PFile>./PTst/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+</Project>
