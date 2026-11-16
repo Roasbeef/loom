@@ -1629,7 +1629,7 @@ registration it already holds). The registration that was kept names the laptop 
   `session_move.Refusal` type has no variant for it, and a new variant would change what crosses the
   node boundary, so the refusal is a `Malformed` one and the report reads "the request is malformed:
   this session's work is on the executor `box`, and moving it back to the directory it came from on
-  this machine is not supported yet". The prefix is the wart of that choice. A variant of its own
+  that orchestrator is not supported yet". The prefix is the wart of that choice. A variant of its own
   is the cleaner shape if a later change takes a wire revision for another reason.
 - *Not built.* The return checkout. The addendum of slice 4c still lists it.
 

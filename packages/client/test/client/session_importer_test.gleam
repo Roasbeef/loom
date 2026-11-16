@@ -871,8 +871,11 @@ pub fn a_session_that_was_a_local_directory_here_is_not_taken_back_from_an_execu
   let assert session_move.Refused(session_move.Malformed(reason:)) =
     session_importer.activate(rig.context, activation(copy, other_op))
     as "the move back is refused"
-  assert string.contains(reason, "not supported yet")
-  assert string.contains(reason, "box")
+  assert string.contains(reason, "work is on the executor `box`")
+  assert string.contains(
+    reason,
+    "the directory it came from on that orchestrator is not supported yet",
+  )
 
   // Nothing changed: the tombstone stands and no file was placed.
   assert manager.custody(rig.registry, copy.session)

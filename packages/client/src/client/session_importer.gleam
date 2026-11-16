@@ -455,8 +455,8 @@ fn returning_to_a_directory(executor: String, pool: String) -> String {
 
   "this session's work is on "
   <> place
-  <> ", and moving it back to the directory it came from on this machine is "
-  <> "not supported yet"
+  <> ", and moving it back to the directory it came from on that orchestrator "
+  <> "is not supported yet"
 }
 
 // The orchestrator this daemon lists for the activation's node.
