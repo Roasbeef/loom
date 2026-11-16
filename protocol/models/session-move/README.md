@@ -516,6 +516,7 @@ scope's; and the cell naming a finished attempt. Dropping weak fairness of
 | An attach also rebinds an open scope | `RebindOpen = TRUE`, `CloseFailedAttach = FALSE`, `InitWs = {unknown}` | The scope a failed attach left open is rebound to the corrected workspace, so an open scope changes workspace. `OpenScopeKeepsWorkspace` breaks. |
 | A source that dies in the attach for an unserved name leaves an open scope, and the retry does not free it | `OwnerDiesInAttach = TRUE`, `CloseReboundUnserved = FALSE`, `InitWs = {unknown}` | The host before this rule. The retry is a rebound attach and the open scope stays; the corrected name is refused for it and the move is abandoned with the scope open. `NoLeak` breaks. |
 | What the ruled rules leave | the ruled rules, `InitWs = {shared}`, `MaxCrashes = 1` | Not a rule turned off. The source dies in the landing after the attach and before it closes the scope, the operator corrects the name, and the move is refused for the open scope's workspace and abandoned with the scope still open. `NoLeak` breaks. `MoveCheckoutAlsoWorkspaces.cfg` has `MaxCrashes = 0` for this reason and violates `NoLeak` with 1. |
+| The operator corrects the name before the dead source's retry | the ruled rules, `InitWs = {unknown}`, `OwnerDiesInAttach = TRUE` | Not a rule turned off, and not run: the `FixConfig` guard is keyed on `CloseReboundUnserved`, so the model assumes the name is corrected only after the scope is freed. The code takes the other order. The attach under the new name is `WorkspaceMismatch`, the move is abandoned and the scope stays open (`an_attach_refused_for_the_scopes_workspace_abandons_the_move_test` pins `Open`), and the refusal's advice is then followed twice. |
 
 ### Finding: `holds_tip` takes a stale tree for the state that was asked for (lines read at 024afdadf)
 
@@ -691,12 +692,19 @@ executor handles the attach.
 unserved name when the scope holds nothing, which is no tree record and no result that the
 attach reported unacknowledged or lost. The earlier rule closed every rebound scope, and
 with it the scope of a live session whose workspace an executor's restart had dropped from
-its configuration, which is the worse loss; the tree and unacknowledged-result conditions
-keep that. The model has a tree record (`exBranch`) and no unacknowledged results, so the
-second condition is checked by the code tests only. `OwnerDiesInAttach` is the fault,
+its configuration. The tree and unacknowledged-result conditions keep the scope of a
+session that has a tree or unacknowledged results. A live `shared` session whose calls
+were all acknowledged holds nothing by this rule, so its scope is closed by the retry and
+reopened by its next attach. The model has a tree record (`exBranch`) and no
+unacknowledged results, so the second condition is checked by the code tests only. The
+`exBranch = -1` conjunct of `FreesRebound` (`MoveCheckout.tla:333`) is implied by
+`bound = "unknown"` under the ruled rules, so "a scope with a tree is left open" is pinned
+only by the Gleam test and not by the model. `OwnerDiesInAttach` is the fault,
 `MoveCheckoutAlsoWorkspaces.cfg` runs it with the rule and passes, and
 `MoveCheckoutMutantOpenScopeUnserved.cfg` runs it without the rule and breaks `NoLeak`.
 After the retry closes the scope the source's record still shows an attach with no close,
-so the corrected name is refused once for the bound name, and setting the name back
-records the close. `FixConfig` is modelled as waiting for the scope to be freed, because
-that is what the refusal tells the operator to do.
+so the corrected name is refused once for the bound name, or twice when the name was
+corrected before the retry, and setting the name back records the close. `FixConfig` is
+modelled as waiting for the scope to be freed. That encodes the assumption that the
+operator does not correct the name before the dead source's retry; the guard is keyed on
+`CloseReboundUnserved`, the same constant as the freeing rule.

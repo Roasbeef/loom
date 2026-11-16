@@ -1655,7 +1655,7 @@ reached the same state, and `loom executor release` refuses an open scope.
   that the move ends and closes the scope, then correct the name, and it is now true for this case.
   After the retry closes the scope the source's record still shows an attach with no close, so the
   corrected name is asked about the close under a workspace the scope is not bound to and is refused
-  with that text once. Setting the name back learns the close, the move ends again with a recorded
+  with that text once, or twice when the name was corrected before the retry. Setting the name back learns the close, the move ends again with a recorded
   close, and the corrected name lands. `an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test`
   runs the whole sequence. The text says "open or holds a tree" for the first of these refusals, when
   the scope is closed and holds nothing, which is broad and not false in its advice.
@@ -1679,7 +1679,11 @@ open scope, and a failed `git worktree add` leaves a `Removed` tree row, as befo
 created before the owner link failed stays open until the retry, which is the retry's job. A live
 session in a `shared` workspace that ran calls, all of them acknowledged, on an executor restarted
 with the workspace dropped holds nothing by this rule and is closed by the retry. Its next attach
-reopens it at the next incarnation, so nothing is lost but the open scope. Nothing in this addendum
+reopens it at the next incarnation, so nothing is lost but the open scope. If the operator corrects the
+workspace name before the dead source's retry, the attach under the new name is refused for the open
+scope's workspace (`WorkspaceMismatch`), the move is abandoned and the scope stays open, and the advice
+above then has to be followed twice. The checkout model does not run this order: its `FixConfig` guard
+is keyed on `CloseReboundUnserved` and so assumes the name is corrected after the scope is freed. Nothing in this addendum
 was run over a real distribution link. The two live reproductions are the drive's `dfault2.sh` and
 `back.sh`, which were not re-run against these commits.
 
