@@ -717,6 +717,8 @@ fn fenced(
 ) -> Result(json.JsonValue, Failure) {
   use at <- result.try(relay.dial(name))
 
+  // Only the workspace observation takes the longer wait: the box runs Git for
+  // it, where every other operation is answered from the feed's own state.
   let wait_ms = case request {
     remote_feed.WorktreeRequest(..) -> worktree_ms()
     remote_feed.AttachRequest(..)
