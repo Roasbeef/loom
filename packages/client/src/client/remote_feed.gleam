@@ -684,7 +684,13 @@ pub fn decode_observation(value: JsonValue) -> Result(Observation, String) {
     }
     json.String("withheld") -> Ok(Withheld)
     json.String("unreadable") -> Ok(Unreadable)
-    _ -> Error("read is not a known word")
+    json.String(_)
+    | json.Null
+    | json.Bool(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Array(_)
+    | json.Object(_) -> Error("read is not a known word")
   }
 }
 
@@ -696,7 +702,12 @@ fn seen_board(board: JsonValue) -> Result(Observation, String) {
         True -> Ok(Observed(board:))
         False -> Error("the workspace board is over its bound")
       }
-    _ -> Error("the workspace board is not an object")
+    json.Null
+    | json.Bool(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.String(_)
+    | json.Array(_) -> Error("the workspace board is not an object")
   }
 }
 
