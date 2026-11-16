@@ -552,7 +552,11 @@ pub fn a_jail_built_after_the_start_step_cannot_read_the_vm_home_test() {
     enforcement.EnforcementAbsent -> Nil
     enforcement.EnforcementLive -> {
       let #(code, text) = read_vm_secret(StartStepRan)
-      assert code != 0 as "the secret is unreadable from the jail"
+
+      // A positive status is the command's own refusal. `drain` answers -1
+      // for a jail that never started, which would also keep the secret out
+      // and prove nothing about the mask.
+      assert code > 0 as { "the jailed read ran and was refused: " <> text }
       assert !string.contains(text, vm_secret)
         as "no byte of the secret reaches the jail"
     }
@@ -566,7 +570,7 @@ pub fn without_the_start_step_a_later_vm_home_is_readable_test() {
     enforcement.EnforcementAbsent -> Nil
     enforcement.EnforcementLive -> {
       let #(code, text) = read_vm_secret(StartStepSkipped)
-      assert code == 0 as "an unmasked directory is readable"
+      assert code == 0 as { "an unmasked directory is readable: " <> text }
       assert string.contains(text, vm_secret) as "the secret comes back"
     }
   }
