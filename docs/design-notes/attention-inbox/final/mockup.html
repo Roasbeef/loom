@@ -1,0 +1,849 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loom inbox: final</title>
+<!--
+  The final design of the attention-inbox bracket, for the owner's sign-off.
+  Two modes on one page. The inbox is concept C's thread list and reading
+  pane, which is where the owner lands when something waits. The live mode is
+  one session's stream kept live, with a rail beside it that lifts out what
+  needs the owner (pinned until answered) and what is worth knowing (folded
+  once read). Every thread can also message its session directly.
+
+  Query parameters: ?theme=dark|light, ?frame=phone, ?open=<thread>,
+  ?view=live&s=coord|repair, ?demo=staged (the review and an update with
+  staged sends), ?sheet=open (the phone's lifted sheet).
+-->
+<style>
+:root{
+  --bg:#141517;--raised:#1b1c1f;--sunk:#111214;--code:#212226;--fg:#e8e6e1;--quiet:#9a978f;--faint:#66645e;
+  --divider:#2b2d31;--current:#7c96ff;--signal:#f0a24f;--signal-text:#f0a24f;--peer:#a78bfa;--peer-text:#a78bfa;
+  --danger:#f06595;--danger-text:#f06595;--on-current:#141517;--added:#51cf66;--added-text:#51cf66;
+  --added-bg:#1f4d2e;--removed-bg:#4a1a29;
+  --pill-ok:color-mix(in srgb,var(--added) 12%,transparent);--pill-wait:color-mix(in srgb,var(--signal) 14%,transparent);
+  --pill-bad:color-mix(in srgb,var(--danger) 12%,transparent);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --bg:#f6f5f2;--raised:#ffffff;--sunk:#efede8;--code:#f1efe9;--fg:#1d1c1a;--quiet:#6f6b63;--faint:#a29d92;
+  --divider:#e2dfd8;--current:#3b5bdb;--signal:#d9822b;--signal-text:#975a1e;--peer:#8b5cf6;--peer-text:#764ed1;
+  --danger:#d6336c;--danger-text:#c02d61;--on-current:#ffffff;--added:#2f9e44;--added-text:#237833;
+  --added-bg:#d3efda;--removed-bg:#fce6ec;}}
+:root[data-theme="light"]{
+  --bg:#f6f5f2;--raised:#ffffff;--sunk:#efede8;--code:#f1efe9;--fg:#1d1c1a;--quiet:#6f6b63;--faint:#a29d92;
+  --divider:#e2dfd8;--current:#3b5bdb;--signal:#d9822b;--signal-text:#975a1e;--peer:#8b5cf6;--peer-text:#764ed1;
+  --danger:#d6336c;--danger-text:#c02d61;--on-current:#ffffff;--added:#2f9e44;--added-text:#237833;
+  --added-bg:#d3efda;--removed-bg:#fce6ec;}
+:root[data-theme="dark"]{color-scheme:dark}
+:root[data-theme="light"]{color-scheme:light}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+button:focus-visible,textarea:focus-visible{outline:2px solid var(--current);outline-offset:1px}
+code,.mono{font-family:var(--mono);font-size:12px}
+[hidden]{display:none!important}
+
+/* The frame: one bar, then a rail and whichever mode is open. */
+#app{height:100vh;display:grid;grid-template-rows:44px 1fr;min-width:0}
+.bar{display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--divider);background:var(--bg);min-width:0}
+.brand{font-weight:650;letter-spacing:.01em}
+.crumb{color:var(--quiet);display:flex;gap:8px;align-items:center;white-space:nowrap;overflow:hidden;min-width:0}
+.crumb .up{color:var(--current)}
+.crumb b{color:var(--fg);font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--faint);flex:none}
+.dot.run{background:var(--current)}
+.dot.wait{background:var(--signal)}
+.dot.bad{background:var(--danger)}
+.totals{display:flex;gap:6px;flex:1;min-width:0;justify-content:flex-start}
+.tot{font-size:12px;color:var(--signal-text);background:var(--pill-wait);border:1px solid color-mix(in srgb,var(--signal) 40%,transparent);padding:2px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.chip{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--divider);color:var(--quiet);white-space:nowrap}
+.btn-ghost{font-size:12px;color:var(--quiet);padding:3px 9px;border:1px solid var(--divider);border-radius:6px}
+
+main{display:grid;grid-template-columns:184px 388px 1fr;min-height:0}
+main.mode-live{grid-template-columns:184px 1fr}
+.rail{background:var(--sunk);border-right:1px solid var(--divider);padding:14px 10px;overflow:auto}
+.rail h4{margin:18px 8px 6px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--quiet)}
+.away{margin:0 8px 12px;font-size:12px;color:var(--quiet)}
+.away b{color:var(--fg);font-weight:600}
+.folder{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;padding:6px 8px;border-radius:6px;color:var(--fg);font-size:13.5px;border:1px solid transparent}
+.folder:hover{background:var(--raised)}
+.folder.on{background:var(--raised);border-color:var(--divider)}
+.folder .n{font-size:12px;color:var(--quiet);min-width:20px;text-align:center}
+.folder.need .n{background:var(--signal);color:#141517;border-radius:10px;font-weight:700;padding:0 6px}
+.folder .nm{display:flex;gap:8px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.folder .w{font-size:11.5px;color:var(--quiet);white-space:nowrap}
+.sess{display:grid;grid-template-columns:8px 1fr;column-gap:8px;align-items:center;width:100%;padding:5px 8px;border-radius:6px;border:1px solid transparent;font-size:13px}
+.sess:hover{background:var(--raised)}
+.sess.on{background:var(--raised);border-color:var(--divider)}
+.sess .sn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess .w{grid-column:2;font-size:11.5px;color:var(--quiet)}
+.rail .note{margin:16px 8px 0;font-size:12px;color:var(--quiet);line-height:1.5}
+.newsess{display:block;width:calc(100% - 16px);margin:16px 8px 0;padding:6px 10px;border:1px solid var(--divider);border-radius:6px;font-size:13px;color:var(--quiet)}
+
+/* The inbox: concept C's list, grouped by need. */
+.list{border-right:1px solid var(--divider);overflow:auto;min-height:0;position:relative}
+.ghead{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:baseline;padding:8px 14px;background:var(--bg);border-bottom:1px solid var(--divider);font-size:12px;color:var(--quiet);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.ghead small{font-weight:400;letter-spacing:0;text-transform:none;color:var(--quiet)}
+.ghead.need{background:color-mix(in srgb,var(--signal) 14%,var(--bg));color:var(--signal-text);border-bottom-color:color-mix(in srgb,var(--signal) 45%,transparent)}
+.row{display:block;width:100%;padding:10px 14px 10px 28px;border-bottom:1px solid var(--divider);position:relative}
+.row:hover{background:var(--raised)}
+.row.sel{background:var(--raised);box-shadow:inset 0 0 0 1px var(--divider)}
+.row .r1{display:flex;justify-content:space-between;gap:8px}
+.row .nm{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .age{color:var(--quiet);font-size:12px;white-space:nowrap}
+.row .age.long{color:var(--signal-text);font-weight:600}
+.row .r2{display:flex;gap:8px;align-items:baseline;margin-top:2px;min-width:0}
+.row .sj{color:var(--quiet);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.row .unread{position:absolute;left:12px;top:15px;width:8px;height:8px;border-radius:50%;background:var(--current)}
+.row.seen .unread{background:transparent;border:1px solid var(--faint)}
+.row.seen .nm{font-weight:500}
+.row.done{opacity:.62}
+.row.done .nm{text-decoration:line-through;text-decoration-color:var(--faint)}
+.row .rcpt{display:none;font-size:12px;color:var(--added-text);margin-top:2px}
+.row.done .rcpt{display:block}
+.row.done .r2{display:none}
+.kind{font-size:11px;font-weight:600;padding:0 6px;border-radius:6px;border:1px solid var(--divider);color:var(--quiet);white-space:nowrap;line-height:18px}
+.folded{display:flex;width:100%;gap:10px;align-items:baseline;padding:9px 14px;color:var(--quiet);font-size:13px;border-bottom:1px solid var(--divider)}
+.folded b{color:var(--fg);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.folded span.t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* The reading pane: one thread with its evidence, and an outbox. */
+.read{overflow:auto;min-height:0;position:relative;display:flex;flex-direction:column}
+.thread{display:flex;flex-direction:column;min-height:100%}
+.thread-body{padding:22px 32px 20px;max-width:820px;width:100%}
+.back{display:none}
+.eyebrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--quiet);font-size:12.5px}
+.thread h1{font-size:20px;line-height:1.3;margin:8px 0 6px;font-weight:620;letter-spacing:-.005em}
+.meta{color:var(--quiet);font-size:13px}
+.meta b{color:var(--fg);font-weight:550}
+h2{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--quiet);margin:22px 0 8px}
+.card{background:var(--raised);border:1px solid var(--divider);border-radius:10px;padding:12px 14px}
+table.kv{border-collapse:collapse;width:100%}
+table.kv td{padding:4px 0;vertical-align:top;font-size:13px}
+table.kv td:first-child{width:128px;color:var(--quiet)}
+.quote{border:1px dashed var(--divider);border-radius:8px;padding:9px 12px;color:var(--fg);font-size:13px;background:var(--bg)}
+.quote .src{display:block;color:var(--quiet);font-size:11.5px;margin-bottom:3px}
+.quote .src b{color:var(--fg);font-weight:600}
+.opt{display:block;width:100%;padding:10px 14px;border:1px solid var(--divider);border-radius:10px;background:var(--raised);margin-bottom:8px}
+.opt:hover{border-color:var(--faint)}
+.opt .top{display:flex;gap:8px;align-items:baseline}
+.opt .num{font-family:var(--mono);font-size:12px;color:var(--quiet)}
+.opt .lbl{font-weight:600}
+.opt .why{color:var(--quiet);font-size:13px;margin-top:2px;padding-left:20px}
+.opt .rec{margin-left:auto;font-size:11px;font-weight:600;color:var(--added-text);background:var(--pill-ok);padding:0 7px;border-radius:8px;line-height:18px}
+.opt.staged{border-color:var(--current);background:color-mix(in srgb,var(--current) 8%,var(--raised))}
+.opt.staged .num::before{content:"\25CF  ";color:var(--current)}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.b{padding:6px 12px;border:1px solid var(--divider);border-radius:6px;background:var(--raised);font-size:13px;font-weight:550}
+.b:hover{border-color:var(--faint)}
+.b.staged{border-color:var(--current);background:color-mix(in srgb,var(--current) 10%,var(--raised))}
+.b.staged::before{content:"\2713  ";color:var(--current)}
+.b.sm{padding:3px 9px;font-size:12px}
+.b.primary{border-color:var(--current);color:var(--current)}
+.b.dis{opacity:.5;cursor:default}
+.b.deny{color:var(--danger-text);border-color:color-mix(in srgb,var(--danger) 55%,var(--divider))}
+.b.allow{color:var(--added-text);border-color:color-mix(in srgb,var(--added) 55%,var(--divider))}
+.ta{width:100%;min-height:54px;resize:vertical;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--divider);border-radius:8px;padding:8px 10px}
+.hint{color:var(--quiet);font-size:12.5px}
+.link{color:var(--current);font-size:13px;text-decoration:underline;text-underline-offset:2px}
+
+/* A direct message: every thread can talk to its session, not only answer it. */
+.msg{margin-top:22px;border-top:1px solid var(--divider);padding-top:4px}
+.msg .how{display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap}
+
+.outbox{position:sticky;bottom:0;margin-top:auto;background:var(--bg);border-top:1px solid var(--divider);padding:10px 32px;display:flex;gap:14px;align-items:center;min-height:56px}
+.outbox .to{flex:1;min-width:0;font-size:13px;color:var(--quiet)}
+.outbox .to b{color:var(--fg);font-weight:600}
+.outbox .items{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px}
+.stg{font-size:12px;border:1px solid color-mix(in srgb,var(--current) 50%,var(--divider));background:color-mix(in srgb,var(--current) 8%,var(--raised));border-radius:10px;padding:0 8px;color:var(--fg)}
+.send{padding:8px 16px;border-radius:6px;border:1px solid var(--current);background:var(--current);color:var(--on-current);font-weight:600;white-space:nowrap}
+.send:disabled{background:transparent;border-color:var(--divider);color:var(--quiet);opacity:.7;cursor:default}
+.outbox .state{display:none}
+.sent .outbox .compose{display:none}
+.sent .outbox .state{display:flex;flex:1;gap:12px;align-items:center}
+.receipt{color:var(--added-text);font-weight:600}
+
+/* The review body, unchanged from concept C. */
+.stats{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.pill{font-size:12px;padding:0 8px;border-radius:10px;border:1px solid var(--divider);color:var(--quiet);line-height:20px}
+.pill.ok{color:var(--added-text)}.pill.bad{color:var(--danger-text)}
+.find{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px solid var(--divider)}
+.find:first-child{border-top:0}
+.find .ft{flex:1;font-size:13px}
+.find .ft b{font-weight:600}
+.hunk{background:var(--code);border-radius:8px;overflow:hidden;font-family:var(--mono);font-size:12px}
+.hunk .fn{padding:5px 10px;color:var(--quiet);border-bottom:1px solid var(--divider)}
+.ln{display:grid;grid-template-columns:34px 22px 1fr;white-space:pre;line-height:1.55}
+.ln .no{color:var(--faint);text-align:right;padding-right:8px;user-select:none}
+.ln .pin{display:flex;align-items:center;justify-content:center}
+.ln.a{background:var(--added-bg)}.ln.d{background:var(--removed-bg)}
+.ln.mark{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--signal) 55%,transparent)}
+.num-pin{width:16px;height:16px;border-radius:50%;background:var(--signal);color:#141517;font:600 10px/16px var(--sans);text-align:center;display:inline-block;flex:none}
+.cm{margin:8px 0 0;background:var(--raised);border:1px solid color-mix(in srgb,var(--signal) 50%,var(--divider));border-radius:8px;padding:7px 10px;font:13px/1.45 var(--sans)}
+.cm .who{color:var(--quiet);font-size:11.5px;display:block}
+.files{padding:0;overflow:hidden}
+.fl{display:flex;gap:10px;align-items:baseline;width:100%;padding:8px 14px;border-top:1px solid var(--divider)}
+.fl:first-child{border-top:0}
+.fl .p{flex:1;font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fl .sd{font-family:var(--mono);font-size:12px;color:var(--quiet)}
+.add{color:var(--added-text)}.del{color:var(--danger-text)}
+.fbody{border-top:1px solid var(--divider);padding:10px 14px 12px;background:var(--raised)}
+.out{background:var(--code);border-radius:8px;padding:9px 12px;font:12px/1.55 var(--mono);white-space:pre-wrap;overflow:hidden}
+.tail{font:12px/1.7 var(--mono);color:var(--quiet)}
+.tail b{color:var(--fg);font-weight:500}
+.ctx{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.ctx div{font-size:12.5px}.ctx b{display:block;font-size:13.5px;font-weight:600}
+.dlg{margin-top:10px;display:flex;flex-direction:column;gap:5px;font-size:13px}
+.dlg div{display:flex;gap:8px;align-items:baseline}
+.dlg .s{min-width:104px;font-family:var(--mono);font-size:12px}
+
+/* The live mode: the stream stays live and central; the rail lifts things out. */
+.live{display:none;min-height:0}
+main.mode-live .list,main.mode-live .read{display:none}
+main.mode-live .live.on{display:grid;grid-template-columns:1fr 344px;min-height:0}
+.stream{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--divider)}
+.shead{padding:10px 24px;border-bottom:1px solid var(--divider);display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;font-size:12.5px;color:var(--quiet)}
+.shead b{color:var(--fg);font-weight:600;font-size:13.5px}
+.strm{flex:1;overflow:auto;padding:10px 24px 16px}
+.tr{display:grid;grid-template-columns:44px 1fr;gap:10px;padding:5px 0;border-radius:8px}
+.tr .t{color:var(--faint);font:11.5px var(--mono);padding-top:3px}
+.tr .bd{min-width:0;font-size:13.5px}
+.tr .who{font-size:11.5px;color:var(--quiet);display:block}
+.tr.user .bd>div{background:var(--raised);border:1px solid var(--divider);border-radius:10px;padding:8px 12px}
+.tool{display:flex;gap:8px;align-items:baseline;font:12px var(--mono);color:var(--quiet);border:1px solid var(--divider);border-radius:8px;padding:4px 10px;background:var(--raised);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.tool .st{margin-left:auto;white-space:nowrap}
+.tool .st.bad{color:var(--danger-text)}.tool .st.ok{color:var(--added-text)}.tool .st.wait{color:var(--signal-text)}
+.strand{font:11.5px var(--mono);color:var(--quiet)}
+.tr.anch{background:color-mix(in srgb,var(--signal) 9%,transparent);margin:0 -8px;padding:5px 8px}
+.tr.ins .mk{color:var(--quiet)}
+.tr.flash{background:color-mix(in srgb,var(--current) 14%,transparent);margin:0 -8px;padding:5px 8px;transition:background .6s}
+.mk{font:600 10.5px var(--sans);color:var(--signal-text);margin-left:6px;white-space:nowrap}
+.caret{display:inline-block;width:7px;height:14px;background:var(--current);vertical-align:-2px;margin-left:2px;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+.gen{font-size:12px;color:var(--quiet);margin-top:4px}
+.dockcard{margin:0 24px 8px;border:1px solid color-mix(in srgb,var(--signal) 55%,var(--divider));background:color-mix(in srgb,var(--signal) 5%,var(--raised));border-radius:10px;padding:10px 14px}
+.dockcard .hd{font-size:12.5px;color:var(--quiet)}
+.dockcard .hd b{color:var(--signal-text)}
+.dockcard pre{margin:6px 0;background:var(--code);border-radius:6px;padding:6px 10px;font:12px var(--mono);white-space:pre-wrap}
+.dockcard ul{margin:4px 0 8px;padding-left:18px;font:12px/1.6 var(--mono);color:var(--quiet)}
+.lcompose{border-top:1px solid var(--divider);padding:10px 24px 12px}
+.lcompose .to{font-size:12px;color:var(--quiet);margin-bottom:4px}
+.lcompose .to b{color:var(--fg)}
+.lcompose .row2{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:6px}
+.lcompose .row2 .hint{flex:1}
+.liftbar{display:none}
+
+.lift{overflow:auto;background:var(--sunk);padding:12px 12px 20px;min-height:0}
+.lift h3{display:flex;justify-content:space-between;margin:6px 4px 8px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--quiet)}
+.lift h3.need{color:var(--signal-text)}
+.lift h3 small{font-weight:400;letter-spacing:0;text-transform:none}
+.li{display:block;width:100%;background:var(--raised);border:1px solid var(--divider);border-radius:10px;padding:9px 12px;margin-bottom:8px}
+.li.need{border-color:color-mix(in srgb,var(--signal) 45%,var(--divider))}
+.li .lh{display:flex;gap:8px;align-items:baseline;font-size:12px;color:var(--quiet)}
+.li .lh .jump{margin-left:auto;color:var(--current);font-size:12px;white-space:nowrap}
+.li .q{font-size:13.5px;margin:4px 0 8px;font-weight:550}
+.li .p{font-size:13px;margin:4px 0 6px}
+.li .opt{padding:6px 10px;margin-bottom:6px}
+.li .opt .why{padding-left:0;font-size:12px}
+.li.seen{background:transparent}
+.li.seen .p,.li.seen .acts{display:none}
+.li.seen .lh{color:var(--faint)}
+.li .sum{display:none;font-size:12.5px;color:var(--quiet);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li.seen .sum{display:block}
+.sheethd{display:none}
+html.phone .sheethd{display:flex;justify-content:space-between;width:100%;padding:2px 4px 10px;font-size:13px;color:var(--quiet)}
+html.phone .sheethd b{color:var(--fg)}
+.lift .rule{font-size:12px;color:var(--quiet);margin:14px 4px 0;line-height:1.5}
+
+/* The phone: one column. Rows open threads; the live rail becomes a sheet. */
+html.phone body{background:var(--sunk)}
+html.phone #app{width:390px;max-width:100%;margin:0 auto;height:100vh;background:var(--bg);border-left:1px solid var(--divider);border-right:1px solid var(--divider)}
+html.phone .bar{padding:0 12px;gap:8px}
+html.phone .bar .role,html.phone .btn-ghost{display:none}
+html.phone main{display:block;position:relative;overflow:hidden}
+html.phone .rail{display:none}
+html.phone .list{height:100%;border-right:0}
+html.phone .read{position:absolute;inset:0;background:var(--bg);display:none;z-index:5}
+html.phone main.has-open .read{display:flex}
+html.phone main.mode-live .read{display:none}
+html.phone .back{display:inline-block;color:var(--current);font-size:13px;margin-bottom:6px}
+html.phone .thread-body{padding:14px 16px}
+html.phone .outbox{padding:10px 16px;flex-wrap:wrap}
+html.phone .thread h1{font-size:17px}
+html.phone table.kv td:first-child{width:90px}
+html.phone .ctx{grid-template-columns:1fr 1fr}
+html.phone main.mode-live .live.on{display:flex;flex-direction:column;height:100%;position:relative}
+html.phone .stream{border-right:0;flex:1}
+html.phone .shead,html.phone .strm,html.phone .lcompose{padding-left:14px;padding-right:14px}
+html.phone .dockcard{margin:0 14px 8px}
+html.phone .lift{display:none}
+html.phone .sheet-open .lift{display:block;position:absolute;left:0;right:0;bottom:0;top:30%;z-index:6;border-top:1px solid var(--divider);border-radius:14px 14px 0 0;background:var(--sunk)}
+html.phone .liftbar{display:flex;gap:8px;align-items:center;width:100%;padding:8px 14px;border-top:1px solid var(--divider);font-size:13px;background:color-mix(in srgb,var(--signal) 10%,var(--bg))}
+html.phone .liftbar b{color:var(--signal-text)}
+html.phone .liftbar .more{margin-left:auto;color:var(--current)}
+html.phone .crumb .ws{display:none}
+html.phone .totals{flex:none}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="bar">
+    <span class="brand">loom</span>
+    <span class="crumb" id="crumb"></span>
+    <div class="totals"><span class="tot" id="tot">4 need you</span></div>
+    <span class="chip role">owner · operating</span>
+    <button class="btn-ghost" id="theme">Theme</button>
+  </header>
+  <main id="main">
+    <nav class="rail" aria-label="Inbox and sessions">
+      <p class="away">Back at <b>14:20</b>. Last seen 11:05.</p>
+      <button class="folder on" data-inbox><span>Everything, by need</span></button>
+      <button class="folder need" data-inbox><span>Needs you</span><span class="n" id="n-need">4</span></button>
+      <button class="folder" data-inbox><span>To review</span><span class="n" id="n-rev">2</span></button>
+      <button class="folder" data-inbox><span>Finds</span><span class="n" id="n-find">2</span></button>
+      <button class="folder" data-inbox><span>Updates</span><span class="n" id="n-upd">2</span></button>
+      <button class="folder" data-inbox><span>Projects</span><span class="n">1</span></button>
+
+      <h4>Watch live</h4>
+      <button class="sess" data-live="coord"><span class="dot run"></span><span class="sn">coord/web-inbox</span><span class="w">running · 2 lifted</span></button>
+      <button class="sess" data-live="repair"><span class="dot wait"></span><span class="sn">storage/branch-index-repair</span><span class="w">approval · 1 lifted</span></button>
+      <button class="sess" data-open="lint"><span class="dot run"></span><span class="sn">wp-j/vetting-lint</span><span class="w">working</span></button>
+      <button class="sess" data-open="pod"><span class="dot wait"></span><span class="sn">runner/pod-reach</span><span class="w">aegis · asked</span></button>
+      <button class="sess" data-open="hash"><span class="dot"></span><span class="sn">fix/hashline-replay</span><span class="w">ended · to review</span></button>
+      <button class="sess"><span class="dot"></span><span class="sn">docs/threat-model</span><span class="w">aegis · quiet</span></button>
+
+      <p class="note">Counts read 6 running sessions. Saved sessions are not checked.</p>
+      <button class="newsess">+ New session</button>
+    </nav>
+
+    <section class="list" id="list" aria-label="Threads">
+      <div class="ghead need"><span>Needs you · <span id="c-need">4</span></span><small>agents stopped for you</small></div>
+      <button class="row" data-open="appr" data-g="need"><span class="unread"></span>
+        <span class="r1"><span class="nm">storage/branch-index-repair</span><span class="age long">1h 22m</span></span>
+        <span class="r2"><span class="kind">Approval</span><span class="sj">proc.run sqlite3 integrity_check, write to ~/.loom</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="pod" data-g="need"><span class="unread"></span>
+        <span class="r1"><span class="nm">aegis · runner/pod-reach</span><span class="age long">3h 00m</span></span>
+        <span class="r2"><span class="kind">Ask</span><span class="sj">The runner pod has no /tmp write. Which way?</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="coord" data-g="need"><span class="unread"></span>
+        <span class="r1"><span class="nm">coord/web-inbox</span><span class="age">40m</span></span>
+        <span class="r2"><span class="kind">Ask</span><span class="sj">Should closed items fold under open ones, or move to a…</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="stuck" data-g="need"><span class="unread"></span>
+        <span class="r1"><span class="nm">sub:mockup-b</span><span class="age">28m</span></span>
+        <span class="r2"><span class="kind">Stuck</span><span class="sj">Rate-limited at 13:52, has not retried</span></span><span class="rcpt"></span></button>
+
+      <div class="ghead"><span>To review · <span id="c-rev">2</span></span><small>finished, waiting on your read</small></div>
+      <button class="row" data-open="hash" data-g="rev"><span class="unread"></span>
+        <span class="r1"><span class="nm">fix/hashline-replay</span><span class="age">1h 49m</span></span>
+        <span class="r2"><span class="kind">Review</span><span class="sj">+412 −88, 7 files · 2 finds attached</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="pr" data-g="rev"><span class="unread"></span>
+        <span class="r1"><span class="nm">T-41 · wp-j/vetting-lint</span><span class="age">today</span></span>
+        <span class="r2"><span class="kind">Ticket</span><span class="sj">check failed (lint R11), 2 unresolved comments</span></span><span class="rcpt"></span></button>
+
+      <div class="ghead"><span>Finds · <span id="c-find">2</span></span><small>noticed outside the task</small></div>
+      <button class="row" data-open="hash" data-g="find"><span class="unread"></span>
+        <span class="r1"><span class="nm">fix/hashline-replay</span><span class="age">2h 20m</span></span>
+        <span class="r2"><span class="kind">Risk</span><span class="sj">replay silently skips entries with an empty digest</span></span><span class="rcpt"></span></button>
+      <button class="row" data-open="hash" data-g="find"><span class="unread"></span>
+        <span class="r1"><span class="nm">fix/hashline-replay</span><span class="age">2h 24m</span></span>
+        <span class="r2"><span class="kind">Idea</span><span class="sj">reuse machine/codec first-match walk, drop a closure</span></span><span class="rcpt"></span></button>
+
+      <div class="ghead"><span>Updates · <span id="c-upd">2</span></span><small>working, nothing asked; message them here</small></div>
+      <button class="row seen" data-open="upa" data-g="upd"><span class="unread"></span>
+        <span class="r1"><span class="nm">sub:mockup-a</span><span class="age">14m</span></span>
+        <span class="r2"><span class="kind">Update</span><span class="sj">List region renders; fold-order test waits on your answer</span></span><span class="rcpt"></span></button>
+      <button class="row seen" data-open="lint" data-g="upd"><span class="unread"></span>
+        <span class="r1"><span class="nm">wp-j/vetting-lint</span><span class="age">3m</span></span>
+        <span class="r2"><span class="kind">Update</span><span class="sj">Splitting classify_body for R11, then Bob's comments</span></span><span class="rcpt"></span></button>
+
+      <div class="ghead" style="position:static"><span>Folded</span><small>no one is waiting on you</small></div>
+      <div class="folded"><b>Quiet</b><span class="t">docs/threat-model, yesterday · sub:fact-sheet settled 2h ago</span><span>2</span></div>
+    </section>
+
+    <section class="read" id="read" aria-label="Thread">
+
+<!-- 1. The approval. Evidence is here; the decision is on the session's own page. -->
+<article class="thread" id="t-appr" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind">Approval</span><span>storage/branch-index-repair · main · loom</span><span>· waiting since 12:58</span></div>
+    <h1>May this program run <code>sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</code> with write access to <code>~/.loom</code>?</h1>
+    <div class="meta"><b>Bob</b> (operator) is viewing this session. First decision wins.</div>
+    <h2>What it asks for</h2>
+    <div class="card"><table class="kv">
+      <tr><td>Tool</td><td><code>code_mode</code> program, call <code>proc.run</code></td></tr>
+      <tr><td>Command</td><td><code>sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</code></td></tr>
+      <tr><td>Network</td><td>off</td></tr>
+      <tr><td>Wants a write grant</td><td><b><code>~/.loom</code></b>, outside the workspace</td></tr>
+      <tr><td>Policy today</td><td><code>workspace-write · network off</code></td></tr>
+    </table></div>
+    <h2>In this session since it asked</h2>
+    <div class="quote"><span class="src"><b>Peer message</b> · runner/pod-reach · main messaged this session at 13:15 · untrusted text</span>“Does the integrity check need the write grant, or can it run read-only?”</div>
+    <h2>Decide</h2>
+    <div class="acts"><button class="b primary" data-live="repair">Decide on the session's page ›</button><span class="hint">Its card echoes the action text, the grant and the sequence you read there.</span></div>
+  </div>
+  <div class="msg thread-body" style="padding-top:0;margin-top:0">
+    <h2>Or message storage/branch-index-repair</h2>
+    <textarea class="ta msgta" data-thread="appr" placeholder="It is waiting on the approval, so this is queued behind it…"></textarea>
+  </div>
+  <div class="outbox" data-thread="appr" data-to="storage/branch-index-repair · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">A message here is queued. The approval itself is decided on its page.</span><div class="items"></div></div><button class="send" disabled>Queue</button></div>
+    <div class="state"><span class="receipt"></span></div>
+  </div>
+</article>
+
+<!-- 2. The pod-reach ask. -->
+<article class="thread" id="t-pod" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind">Ask</span><span>runner/pod-reach · main · aegis</span><span>· idle since 11:20</span></div>
+    <h1>The runner pod has no <code>/tmp</code> write. Which way?</h1>
+    <h2>Where it stopped</h2>
+    <div class="quote"><span class="src">The agent's last message, untrusted text · 11:20</span>The cache step writes under <code>/tmp/runner-cache</code>, and the pod's root filesystem is read-only, so the first write fails. Three ways out are below. I stopped before touching the chart.</div>
+    <div class="hint" style="margin-top:6px"><button class="link">Open the stream at this point</button> · 14 messages</div>
+    <h2>Options</h2>
+    <button class="opt" data-stage="pod" data-key="1" data-excl="ans" data-label="Use the scratch tmpfs"><span class="top"><span class="num">1</span><span class="lbl">Use the scratch tmpfs</span><span class="rec">recommended</span></span><span class="why">The jail already mounts one; no chart change and nothing persists past the run.</span></button>
+    <button class="opt" data-stage="pod" data-key="2" data-excl="ans" data-label="Mount an emptyDir"><span class="top"><span class="num">2</span><span class="lbl">Mount an emptyDir</span></span><span class="why">Survives a container restart, adds a volume to the chart.</span></button>
+    <button class="opt" data-stage="pod" data-key="3" data-excl="ans" data-label="Skip the cache"><span class="top"><span class="num">3</span><span class="lbl">Skip the cache</span></span><span class="why">Simplest; every run pays the full download.</span></button>
+    <div class="msg"><h2>Add a message to runner/pod-reach</h2>
+    <textarea class="ta msgta" data-thread="pod" placeholder="Goes with the answer, or alone…"></textarea></div>
+  </div>
+  <div class="outbox" data-thread="pod" data-to="runner/pod-reach · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option or write a message.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
+    <div class="state"><span class="receipt"></span></div>
+  </div>
+</article>
+
+<!-- 3. The coordinator's ask. -->
+<article class="thread" id="t-coord" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind">Ask</span><span>coord/web-inbox · main · loom</span><span>· asked 13:40 · running</span></div>
+    <h1>Should closed items fold under open ones, or move to a separate “Done” list?</h1>
+    <h2>The coordinator</h2>
+    <div class="card"><div class="ctx">
+      <div><span class="hint">Goal</span><b>Ship the attention inbox</b>phase build</div>
+      <div><span class="hint">Delegates</span><b>1 working, 1 stuck</b>1 settled</div>
+      <div><span class="hint">Tokens</span><b>412k of 1.2M</b></div></div>
+      <div class="dlg">
+        <div><span class="s">sub:fact-sheet</span><span>settled 2h ago, result returned</span></div>
+        <div><span class="s">sub:mockup-a</span><span>working, 14 min into a turn · <button class="link" data-open="upa">its update</button></span></div>
+        <div><span class="s" style="color:var(--danger-text)">sub:mockup-b</span><span>stuck, rate-limited 13:52 · <button class="link" data-open="stuck">its thread</button></span></div>
+      </div></div>
+    <div class="acts" style="margin-top:10px"><button class="b sm" data-live="coord">Watch coord/web-inbox live ›</button></div>
+    <h2>Options</h2>
+    <button class="opt" data-stage="coord" data-key="1" data-excl="ans" data-label="Fold under open"><span class="top"><span class="num">1</span><span class="lbl">Fold under open</span><span class="rec">recommended</span></span><span class="why">Matches the Inbox plugin and keeps context.</span></button>
+    <button class="opt" data-stage="coord" data-key="2" data-excl="ans" data-label="Separate Done list"><span class="top"><span class="num">2</span><span class="lbl">Separate Done list</span></span></button>
+    <button class="opt" data-stage="coord" data-key="3" data-excl="ans" data-label="Hide after 24h"><span class="top"><span class="num">3</span><span class="lbl">Hide after 24h</span></span></button>
+    <div class="msg"><h2>Add a message to coord/web-inbox</h2>
+    <textarea class="ta msgta" data-thread="coord" placeholder="It is running: a message here is a steer or a queued prompt…"></textarea></div>
+  </div>
+  <div class="outbox" data-thread="coord" data-to="coord/web-inbox · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option or write a message.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
+    <div class="state"><span class="receipt"></span></div>
+  </div>
+</article>
+
+<!-- 4. The stuck delegate. -->
+<article class="thread" id="t-stuck" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind">Stuck</span><span>sub:mockup-b · under coord/web-inbox · loom</span><span>· failed 13:52</span></div>
+    <h1>The last turn failed on a provider rate limit, and nothing has retried.</h1>
+    <h2>What the page knows</h2>
+    <div class="card"><table class="kv">
+      <tr><td>Strand status</td><td>Failed at 13:52, no retry since</td></tr>
+      <tr><td>Parent</td><td>coord/web-inbox, running</td></tr>
+      <tr><td>Rate-limit end</td><td>not reported by the provider</td></tr></table></div>
+    <h2>Send it a nudge</h2>
+    <button class="opt" data-stage="stuck" data-key="1" data-excl="ans" data-label="“Retry the last step.”"><span class="top"><span class="num">1</span><span class="lbl">Retry the last step</span><span class="rec">recommended</span></span><span class="why">Sends exactly: “Retry the last step.”</span></button>
+    <button class="opt" data-stage="stuck" data-key="2" data-excl="ans" data-label="Tell coord/web-inbox to take it back"><span class="top"><span class="num">2</span><span class="lbl">Tell the coordinator to take it back</span></span><span class="why">Posts to coord/web-inbox so it can reassign or wait.</span></button>
+    <div class="msg"><h2>Or message sub:mockup-b</h2>
+    <textarea class="ta msgta" data-thread="stuck" placeholder="In your own words…"></textarea></div>
+  </div>
+  <div class="outbox" data-thread="stuck" data-to="sub:mockup-b">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a nudge or write a message.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
+    <div class="state"><span class="receipt"></span></div>
+  </div>
+</article>
+
+<!-- 5. The review: concept C's pane, reading worktree hunks. -->
+<article class="thread" id="t-hash" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind">Review</span><span>fix/hashline-replay · main · loom</span><span>· finished 12:31</span></div>
+    <h1>Ready to review: +412 −88 across 7 files</h1>
+    <div class="stats"><span class="pill ok">+412</span><span class="pill bad">−88</span><span class="pill">7 files</span><span class="pill">make check-core exit 0, as the agent reports</span></div>
+    <div class="quote" style="margin-top:12px"><span class="src">The agent's last message, untrusted text · 12:31</span>Replay now stops at the first entry whose digest does not match and returns an error naming that entry. Entries carry their index for that reason. Tests cover a reordered entry and replay of any prefix.</div>
+    <h2>Your verdict</h2>
+    <div class="acts"><button class="b" data-stage="hash" data-key="approve" data-excl="verdict" data-label="Approve">Approve</button><button class="b" data-stage="hash" data-key="changes" data-excl="verdict" data-label="Request changes">Request changes</button></div>
+    <h2>Noticed along the way · 2</h2>
+    <div class="card">
+      <div class="find"><span class="num-pin">!</span><div class="ft"><b>Risk.</b> <code>hashline.replay</code> silently skips entries whose digest is empty; a truncated store would replay short with no error. <span class="hint">Marked at core/hashline.gleam:99.</span></div>
+        <div class="acts"><button class="b sm" data-stage="hash" data-key="risk-fix" data-excl="risk" data-label="Fix the risk">Fix in this branch</button><button class="b sm" data-stage="hash" data-key="risk-issue" data-excl="risk" data-label="File an issue for the risk">File issue</button></div></div>
+      <div class="find"><span class="num-pin">i</span><div class="ft"><b>Idea.</b> The replay loop could reuse <code>machine/codec</code>'s first-match walk and drop a closure per entry.</div>
+        <div class="acts"><button class="b sm" data-stage="hash" data-key="idea-dismiss" data-excl="idea" data-label="Dismiss the idea">Dismiss</button></div></div>
+    </div>
+    <h2>Files · source, then tests, then docs</h2>
+    <div class="card files">
+      <button class="fl" data-toggle="f1b"><span class="p">core/hashline.gleam</span><span class="sd"><span class="add">+171</span> <span class="del">−52</span></span></button>
+      <div class="fbody" id="f1b"><div class="hunk"><div class="fn">replay_from</div>
+          <div class="ln"><span class="no">96</span><span class="pin"></span><span>  case entries {</span></div>
+          <div class="ln"><span class="no">97</span><span class="pin"></span><span>    [] -&gt; Ok(state)</span></div>
+          <div class="ln d"><span class="no">98</span><span class="pin"></span><span>-   [e, ..rest] -&gt; replay_from(rest, apply(state, e))</span></div>
+          <div class="ln a"><span class="no">98</span><span class="pin"></span><span>+   [e, ..rest] -&gt; {</span></div>
+          <div class="ln mark"><span class="no">99</span><span class="pin"><span class="num-pin">!</span></span><span>      use &lt;- skip_if_empty(e.digest)  // unchanged</span></div>
+          <div class="ln a"><span class="no">100</span><span class="pin"></span><span>+     use state &lt;- result.try(check_and_apply(state, e))</span></div>
+          <div class="ln a"><span class="no">101</span><span class="pin"></span><span>+     replay_from(rest, state)</span></div>
+          <div class="ln a"><span class="no">102</span><span class="pin"></span><span>+   }</span></div>
+        </div>
+        <div class="cm"><span class="who">The Risk above, marked at this line</span>An unchanged line skips an empty digest without an error. Left alone: outside the task.</div>
+        <textarea class="ta" id="fc1" style="margin-top:8px;min-height:44px" placeholder="Comment on this file. It goes with Send."></textarea>
+      </div>
+      <button class="fl" data-toggle="f2b"><span class="p">core/hashline/entry.gleam</span><span class="sd"><span class="add">+38</span> <span class="del">−9</span></span></button>
+      <div class="fbody" id="f2b" hidden><span class="hint">Diff opens here, read from the worktree.</span></div>
+      <button class="fl"><span class="p">core/edit.gleam</span><span class="sd"><span class="add">+22</span> <span class="del">−11</span></span></button>
+      <button class="fl"><span class="p">core/test/hashline_replay_test.gleam</span><span class="sd"><span class="add">+112</span> <span class="del">−0</span></span></button>
+      <button class="fl"><span class="p">core/test/hashline_property_test.gleam</span><span class="sd"><span class="add">+34</span> <span class="del">−9</span></span></button>
+      <button class="fl"><span class="p">docs/architecture/durability.md</span><span class="sd"><span class="add">+21</span> <span class="del">−5</span></span></button>
+      <button class="fl"><span class="p">packages/core/CHANGELOG.md</span><span class="sd"><span class="add">+14</span> <span class="del">−2</span></span></button>
+    </div>
+  </div>
+  <div class="outbox" data-thread="hash" data-to="fix/hashline-replay · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Stage a verdict, answer a find, or comment on a file.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
+    <div class="state"><span class="receipt"></span></div>
+  </div>
+</article>
+
+<!-- 6. The project ticket. -->
+<article class="thread" id="t-pr" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind">Ticket</span><span>T-41 · project loom · worker wp-j/vetting-lint</span><span>· PR #1261 · stage person/check</span></div>
+    <h1>The check failed on the code: <code>lint (R11)</code></h1>
+    <div class="meta">The worker's session is running, 3 min into a turn. The failure is classed <b>code</b>, so a recheck would fail the same way.</div>
+    <h2>Check result · exit 2</h2>
+    <div class="out"><span class="hint" style="font:11.5px var(--sans)">The check's output, untrusted text</span>
+lint: packages/lint/src/lint/rules/r11.gleam
+  error[R11] fn classify_body runs 11 statements without a break
+make: *** [lint] Error 2</div>
+    <h2>Your move</h2>
+    <button class="opt" data-stage="pr" data-key="back" data-excl="ans" data-label="Send back: fix the check and both comments"><span class="top"><span class="num">1</span><span class="lbl">Send back to the worker</span><span class="rec">recommended</span></span><span class="why">Fix the check and both of Bob's comments. It is a code failure.</span></button>
+    <div class="acts" style="margin-top:4px"><button class="b" data-stage="pr" data-key="recheck" data-excl="ans" data-label="Recheck">Recheck</button><button class="b" data-stage="pr" data-key="stop" data-excl="ans" data-label="Stop the ticket">Stop</button><button class="b" data-stage="pr" data-key="close" data-excl="ans" data-label="Close the ticket">Close</button><button class="b dis" disabled title="Publishing is off for this project">Publish</button></div>
+    <div class="msg"><h2>Or message wp-j/vetting-lint</h2>
+    <textarea class="ta msgta" data-thread="pr" placeholder="It is running: a message here is a steer or a queued prompt…"></textarea></div>
+  </div>
+  <div class="outbox" data-thread="pr" data-to="T-41 · wp-j/vetting-lint">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a move or write a message.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
+    <div class="state"><span class="receipt"></span></div>
+  </div>
+</article>
+
+<!-- 7. An update: a working agent's latest account, answerable directly. -->
+<article class="thread" id="t-upa" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind">Update</span><span>sub:mockup-a · under coord/web-inbox · loom</span><span>· working, 14 min into a turn</span></div>
+    <h1>The list region renders; the fold-order test waits on your answer</h1>
+    <div class="quote" style="margin-top:10px"><span class="src">The agent's latest message, untrusted text · 14:15</span>The list region renders from the feed and is keyed by record id. <code>fold_order_test</code> fails because the order for closed items is not decided; coord/web-inbox has asked you. I am moving on to the reading pane meanwhile.</div>
+    <h2>Last few steps</h2>
+    <div class="card tail">
+      <div>14:06 <b>fs_edit</b> web_view/inbox.gleam <span class="add">+84</span></div>
+      <div>14:08 <b>lsp.diagnostics</b> 0 errors</div>
+      <div>14:12 <b>bash</b> make check-web_view <span class="del">exit 2</span> · 1 failing</div>
+      <div>14:16 <b>fs_read</b> web_view/view/thread.gleam</div>
+    </div>
+    <div class="acts" style="margin-top:10px"><button class="b sm" data-live="coord">Watch it live, under coord/web-inbox ›</button><button class="b sm" data-open="coord">The coordinator's ask ›</button></div>
+    <div class="msg"><h2>Message sub:mockup-a</h2>
+    <textarea class="ta msgta" id="upa-ta" data-thread="upa" placeholder="Talk to it directly…"></textarea>
+    <div class="how"><span class="hint">Deliver as</span>
+      <button class="b sm staged" data-stage="upa" data-key="queue" data-excl="how" data-label="as a queued prompt">Queue</button>
+      <button class="b sm" data-stage="upa" data-key="steer" data-excl="how" data-label="as a steer">Steer</button>
+      <span class="hint">Queue waits for this turn to end. Steer stops the current step and runs first.</span></div></div>
+  </div>
+  <div class="outbox" data-thread="upa" data-to="sub:mockup-a">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Write a message.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
+    <div class="state"><span class="receipt"></span></div>
+  </div>
+</article>
+
+<article class="thread" id="t-lint" hidden>
+  <div class="thread-body">
+    <button class="back">‹ Inbox</button>
+    <div class="eyebrow"><span class="kind">Update</span><span>wp-j/vetting-lint · main · loom · ticket T-41</span><span>· working, 3 min into a turn</span></div>
+    <h1>Splitting <code>classify_body</code> for R11, then Bob's two comments</h1>
+    <div class="quote" style="margin-top:10px"><span class="src">The agent's latest message, untrusted text · 14:17</span>R11 flags <code>classify_body</code>: eleven statements with no break. I am splitting the decision table from the fallback walk, then I will rename the test Bob pointed at and reword the rule's message.</div>
+    <h2>Last few steps</h2>
+    <div class="card tail">
+      <div>14:17 <b>fs_read</b> lint/rules/r11.gleam</div>
+      <div>14:18 <b>fs_edit</b> lint/rules/r11.gleam <span class="add">+19</span> <span class="del">−11</span></div>
+      <div>14:19 <b>bash</b> make lint-lint · running</div>
+    </div>
+    <div class="acts" style="margin-top:10px"><button class="b sm">Watch wp-j/vetting-lint live ›</button><button class="b sm" data-open="pr">Ticket T-41 ›</button></div>
+    <div class="msg"><h2>Message wp-j/vetting-lint</h2>
+    <textarea class="ta msgta" data-thread="lint" placeholder="Talk to it directly…"></textarea>
+    <div class="how"><span class="hint">Deliver as</span>
+      <button class="b sm staged" data-stage="lint" data-key="queue" data-excl="how" data-label="as a queued prompt">Queue</button>
+      <button class="b sm" data-stage="lint" data-key="steer" data-excl="how" data-label="as a steer">Steer</button>
+      <span class="hint">Queue waits for this turn to end. Steer stops the current step and runs first.</span></div></div>
+  </div>
+  <div class="outbox" data-thread="lint" data-to="wp-j/vetting-lint · main">
+    <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Write a message.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
+    <div class="state"><span class="receipt"></span></div>
+  </div>
+</article>
+    </section>
+
+<!-- Live: the coordinator, watched closely. -->
+<section class="live" id="l-coord" aria-label="coord/web-inbox, live">
+  <div class="stream">
+    <div class="shead"><span class="dot run"></span><b>coord/web-inbox</b><span>main · loom</span><span>· running, turn 14m</span><span>· goal: Ship the attention inbox · build · 412k of 1.2M tokens</span></div>
+    <div class="strm" id="s-coord">
+      <div class="tr ins" id="a-c-1220"><span class="t">12:20</span><div class="bd"><div class="tool"><span class="strand">sub:fact-sheet</span> delegate result returned · 510 lines <span class="st ok">settled</span></div><span class="mk" style="margin-left:0">lifted · Result</span></div></div>
+      <div class="tr"><span class="t">13:31</span><div class="bd"><span class="who">coord/web-inbox</span>The fact sheet is in. I'm sending mockup-a to the list region and mockup-b to draw concept B against the same scenario.</div></div>
+      <div class="tr"><span class="t">13:32</span><div class="bd"><div class="tool"><span class="strand">sub:mockup-b</span> delegate · draw concept B <span class="st">started</span></div></div></div>
+      <div class="tr anch" id="a-c-1340"><span class="t">13:40</span><div class="bd"><span class="who">coord/web-inbox <span class="mk">lifted · Ask</span></span>Before mockup-a builds the fold logic I need one call from you: should closed items fold under open ones, or move to a separate “Done” list? I'll keep the parts that don't depend on it moving.</div></div>
+      <div class="tr anch" id="a-c-1352"><span class="t">13:52</span><div class="bd"><div class="tool"><span class="strand">sub:mockup-b</span> turn failed · provider 429 rate limit <span class="st bad">stuck</span></div><span class="mk" style="margin-left:0">lifted · Stuck</span></div></div>
+      <div class="tr"><span class="t">14:06</span><div class="bd"><div class="tool"><span class="strand">sub:mockup-a</span> fs_edit web_view/inbox.gleam <span class="add">+84</span> <span class="st ok">ok</span></div></div></div>
+      <div class="tr ins" id="a-c-1212"><span class="t">14:12</span><div class="bd"><div class="tool"><span class="strand">sub:mockup-a</span> bash make check-web_view · 1 failing: fold_order_test <span class="st bad">exit 2</span></div><span class="mk" style="margin-left:0">lifted · Check</span></div></div>
+      <div class="tr ins" id="a-c-1415"><span class="t">14:15</span><div class="bd"><span class="who">sub:mockup-a <span class="mk">lifted · Find</span></span>Noted while here: <code>list_region</code> rebuilds every row on each feed tick. Keying the rows by record id would let Lustre skip the unchanged ones. Outside this task, so I left it.</div></div>
+      <div class="tr"><span class="t">14:19</span><div class="bd"><span class="who">coord/web-inbox · writing</span>mockup-a's failing test is the fold-order fixture, which waits on your answer about closed items. I'm holding that file and letting it start the reading pane, which does not depend on the order<span class="caret"></span><div class="gen">generating · 8 s · request 3 of this turn</div></div></div>
+    </div>
+    <button class="liftbar" data-sheet><b>2 need you</b><span>· 3 insights</span><span class="more">Lifted ▴</span></button>
+    <div class="lcompose">
+      <div class="to">To <b>coord/web-inbox · main</b> · running</div>
+      <textarea class="ta" placeholder="Message the coordinator…"></textarea>
+      <div class="row2"><span class="hint">Queue waits for this turn to end. Steer stops the current step and runs first.</span><button class="b">Queue</button><button class="b">Steer</button></div>
+    </div>
+  </div>
+  <aside class="lift" aria-label="Lifted from this session">
+    <button class="sheethd" data-sheet><b>Lifted from this session</b><span>Close ▾</span></button>
+    <h3 class="need"><span>Needs you · 2</span><small>pinned until answered</small></h3>
+    <div class="li need">
+      <div class="lh"><span class="kind">Ask</span><span>13:40 · coord/web-inbox</span><button class="jump" data-jump="a-c-1340">↑ in stream</button></div>
+      <div class="q">Closed items: fold under open ones, or a separate “Done” list?</div>
+      <button class="opt lopt"><span class="top"><span class="num">1</span><span class="lbl">Fold under open</span><span class="rec">recommended</span></span><span class="why">Matches the Inbox plugin and keeps context.</span></button>
+      <button class="opt lopt"><span class="top"><span class="num">2</span><span class="lbl">Separate Done list</span></span></button>
+      <button class="opt lopt"><span class="top"><span class="num">3</span><span class="lbl">Hide after 24h</span></span></button>
+      <div class="acts"><button class="b sm primary">Send answer</button></div>
+    </div>
+    <div class="li need">
+      <div class="lh"><span class="kind">Stuck</span><span>13:52 · sub:mockup-b</span><button class="jump" data-jump="a-c-1352">↑ in stream</button></div>
+      <div class="p">Rate-limited at 13:52; nothing has retried. The provider gave no reset time.</div>
+      <div class="acts"><button class="b sm">Retry the last step</button><button class="b sm">Tell coord to take it back</button></div>
+    </div>
+    <h3><span>Insights · 3</span><small>fold once read</small></h3>
+    <button class="li" data-fold>
+      <div class="lh"><span class="kind">Find</span><span>14:15 · sub:mockup-a</span><span class="jump" data-jump="a-c-1415">↑ in stream</span></div>
+      <div class="p"><b>Idea.</b> <code>list_region</code> rebuilds every row on each feed tick; keyed rows would skip the unchanged ones.</div>
+      <div class="sum">Idea: keyed rows in list_region</div>
+      <div class="acts"><span class="b sm">File issue</span><span class="b sm">Dismiss</span></div>
+    </button>
+    <button class="li" data-fold>
+      <div class="lh"><span class="kind">Check</span><span>14:12 · sub:mockup-a</span><span class="jump" data-jump="a-c-1212">↑ in stream</span></div>
+      <div class="p"><code>make check-web_view</code> exit 2: <code>fold_order_test</code> fails. The coordinator links it to your open ask.</div>
+      <div class="sum">check-web_view exit 2 · fold_order_test</div>
+    </button>
+    <button class="li seen" data-fold>
+      <div class="lh"><span class="kind">Result</span><span>12:20 · sub:fact-sheet</span><span class="jump" data-jump="a-c-1220">↑ in stream</span></div>
+      <div class="p">Settled; returned a 510-line fact sheet.</div>
+      <div class="sum">Settled, fact sheet returned (510 lines)</div>
+    </button>
+    <p class="rule">Asks, approvals and stuck strands stay pinned here until they are answered. Finds, check results, sub-agent results and errors fold to one line once read. Each opens its place in the stream.</p>
+  </aside>
+</section>
+
+<!-- Live: the session with the approval. The card stays in the dock, as A2 draws it. -->
+<section class="live" id="l-repair" aria-label="storage/branch-index-repair, live">
+  <div class="stream">
+    <div class="shead"><span class="dot wait"></span><b>storage/branch-index-repair</b><span>main · loom</span><span>· stopped for an approval since 12:58</span><span>· Bob is viewing</span></div>
+    <div class="strm" id="s-repair">
+      <div class="tr user"><span class="t">12:40</span><div class="bd"><span class="who">you</span><div>Repair the branch index after this morning's crash. Verify the store before and after.</div></div></div>
+      <div class="tr"><span class="t">12:44</span><div class="bd"><div class="tool">code_mode · storage.branch_index.rebuild · 1,284 branches <span class="st ok">ok</span></div></div></div>
+      <div class="tr"><span class="t">12:52</span><div class="bd"><span class="who">storage/branch-index-repair</span>The rebuild is done and every branch head resolves. Before I report, I want SQLite's own integrity check on the store.</div></div>
+      <div class="tr anch" id="a-r-1258"><span class="t">12:58</span><div class="bd"><div class="tool">code_mode · proc.run sqlite3 ~/.loom/store.db 'PRAGMA integrity_check' <span class="st wait">needs approval</span></div><span class="mk" style="margin-left:0">lifted · Approval</span></div></div>
+      <div class="tr ins" id="a-r-1315"><span class="t">13:15</span><div class="bd"><span class="who" style="color:var(--peer-text)">peer · runner/pod-reach · main <span class="mk">lifted · Peer</span></span>“Does the integrity check need the write grant, or can it run read-only?”</div></div>
+    </div>
+    <div class="dockcard" id="dock">
+      <div class="hd"><b>Approval</b> · waiting since 12:58 · this session</div>
+      <div style="margin-top:4px">A code_mode program wants to run</div>
+      <pre>sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</pre>
+      <ul><li>network: off</li><li>write grant: ~/.loom (outside the workspace)</li><li>policy: workspace-write · network off</li></ul>
+      <div class="acts"><button class="b sm deny">Deny proc.run</button><button class="b sm allow">Allow proc.run once</button><button class="b sm allow">Allow proc.run for this session</button><span class="hint">Bob may also decide; the first wins.</span></div>
+    </div>
+    <button class="liftbar" data-sheet><b>1 needs you</b><span>· 1 insight</span><span class="more">Lifted ▴</span></button>
+    <div class="lcompose">
+      <div class="to">To <b>storage/branch-index-repair · main</b> · waiting on the approval</div>
+      <textarea class="ta" placeholder="Message it; this is queued behind the approval…"></textarea>
+      <div class="row2"><span class="hint">A prompt now is held until the approval is decided.</span><button class="b">Queue</button></div>
+    </div>
+  </div>
+  <aside class="lift" aria-label="Lifted from this session">
+    <button class="sheethd" data-sheet><b>Lifted from this session</b><span>Close ▾</span></button>
+    <h3 class="need"><span>Needs you · 1</span><small>pinned until answered</small></h3>
+    <div class="li need">
+      <div class="lh"><span class="kind">Approval</span><span>12:58</span><button class="jump" data-jump="a-r-1258">↑ in stream</button></div>
+      <div class="p"><code>proc.run</code> with a write grant to <code>~/.loom</code>, outside the workspace.</div>
+      <div class="acts"><button class="b sm primary" data-dock>Decide in the dock ↓</button></div>
+    </div>
+    <h3><span>Insights · 1</span><small>fold once read</small></h3>
+    <button class="li" data-fold>
+      <div class="lh"><span class="kind">Peer</span><span>13:15 · runner/pod-reach</span><span class="jump" data-jump="a-r-1315">↑ in stream</span></div>
+      <div class="p">runner/pod-reach · main messaged this session at 13:15.</div>
+      <div class="sum">runner/pod-reach messaged at 13:15</div>
+    </button>
+    <p class="rule">An approval is decided only from the dock on this page, whose press echoes the action text, the grant and the sequence. The rail points at it and never decides.</p>
+  </aside>
+</section>
+  </main>
+</div>
+
+<script>
+(function(){
+  var q = new URLSearchParams(location.search), root = document.documentElement;
+  var th = q.get('theme'); if (th === 'dark' || th === 'light') root.setAttribute('data-theme', th);
+  document.getElementById('theme').addEventListener('click', function(){
+    var cur = root.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+  function phone(){ var on = q.get('frame') === 'phone' || (q.get('frame') !== 'desktop' && innerWidth < 700); root.classList.toggle('phone', on); return on; }
+  phone(); addEventListener('resize', phone);
+
+  var main = document.getElementById('main'), crumb = document.getElementById('crumb');
+  var order = ['appr','pod','coord','stuck','hash','pr','upa','lint'], closed = {};
+  var rows = [].slice.call(document.querySelectorAll('.row'));
+  var names = {coord: ['coord/web-inbox', 'loom', 'run'], repair: ['storage/branch-index-repair', 'loom', 'wait']};
+
+  // The two modes share the rail. The crumb says which one is open.
+  function mark(sel){ [].forEach.call(document.querySelectorAll('.folder, .sess'), function(f){ f.classList.remove('on'); }); if (sel) sel.classList.add('on'); }
+  function inbox(){
+    if (main.classList.contains('mode-live')) mark(document.querySelector('[data-inbox]'));
+    main.classList.remove('mode-live');
+    [].forEach.call(document.querySelectorAll('.live'), function(l){ l.classList.remove('on'); });
+    crumb.innerHTML = '<span>Inbox</span>';
+  }
+  function live(s){
+    main.classList.add('mode-live'); main.classList.remove('has-open'); mark(document.querySelector('.sess[data-live="' + s + '"]'));
+    [].forEach.call(document.querySelectorAll('.live'), function(l){ l.classList.toggle('on', l.id === 'l-' + s); });
+    var n = names[s];
+    crumb.innerHTML = '<button class="up" data-back>‹ Inbox</button><span class="ws">' + n[1] + ' /</span><b>' + n[0] + '</b><span class="dot ' + n[2] + '"></span><span>live</span>';
+    crumb.querySelector('[data-back]').addEventListener('click', function(){ inbox(); });
+    var st = document.getElementById('s-' + s); st.scrollTop = st.scrollHeight;
+  }
+  function show(id){
+    inbox();
+    order.forEach(function(k){ document.getElementById('t-' + k).hidden = (k !== id); });
+    rows.forEach(function(r){ var mine = r.dataset.open === id; r.classList.toggle('sel', mine && r.dataset.g !== 'find'); if (mine) r.classList.add('seen'); });
+    main.classList.add('has-open');
+    document.getElementById('read').scrollTop = 0;
+  }
+  [].forEach.call(document.querySelectorAll('[data-open]'), function(b){ b.addEventListener('click', function(){ show(b.dataset.open); }); });
+  [].forEach.call(document.querySelectorAll('[data-live]'), function(b){ b.addEventListener('click', function(){ live(b.dataset.live); }); });
+  [].forEach.call(document.querySelectorAll('[data-inbox]'), function(b){ b.addEventListener('click', function(){ inbox(); }); });
+  [].forEach.call(document.querySelectorAll('.back'), function(b){ b.addEventListener('click', function(){ main.classList.remove('has-open'); }); });
+  [].forEach.call(document.querySelectorAll('[data-toggle]'), function(b){ b.addEventListener('click', function(){ var e = document.getElementById(b.dataset.toggle); e.hidden = !e.hidden; }); });
+
+  // A lifted item opens its place in the stream; an insight folds once read.
+  [].forEach.call(document.querySelectorAll('[data-jump]'), function(b){
+    b.addEventListener('click', function(ev){
+      ev.stopPropagation();
+      var t = document.getElementById(b.dataset.jump); t.scrollIntoView({block: 'center', behavior: 'smooth'});
+      t.classList.add('flash'); setTimeout(function(){ t.classList.remove('flash'); }, 900);
+      main.classList.remove('sheet-open');
+    });
+  });
+  [].forEach.call(document.querySelectorAll('[data-fold]'), function(b){ b.addEventListener('click', function(){ b.classList.toggle('seen'); }); });
+  [].forEach.call(document.querySelectorAll('.lopt'), function(b){ b.addEventListener('click', function(){ [].forEach.call(b.parentNode.querySelectorAll('.lopt'), function(o){ o.classList.toggle('staged', o === b); }); }); });
+  [].forEach.call(document.querySelectorAll('[data-dock]'), function(b){ b.addEventListener('click', function(){ document.getElementById('dock').scrollIntoView({block: 'end'}); main.classList.remove('sheet-open'); }); });
+  [].forEach.call(document.querySelectorAll('[data-sheet]'), function(b){ b.addEventListener('click', function(){ main.classList.toggle('sheet-open'); }); });
+
+  // Staging holds exactly what was drawn; Send is the second press.
+  var staged = {}; order.forEach(function(k){ staged[k] = {}; });
+  staged.upa.queue = 'as a queued prompt'; staged.lint.queue = 'as a queued prompt';
+  function labels(id){
+    var g = staged[id], out = [];
+    Object.keys(g).forEach(function(k){ out.push([k, g[k]]); });
+    if (id === 'hash' && g.approve && g['risk-fix']) {
+      // Approve and Fix-first would tell the agent two things; the outbox says the one thing it will do.
+      out = out.filter(function(p){ return p[0] !== 'approve' && p[0] !== 'risk-fix'; });
+      out.unshift(['av', 'Approve, after the fix']);
+    }
+    if ((id === 'upa' || id === 'lint') && !g.msg) return [];
+    if (id === 'upa' || id === 'lint') {
+      // The delivery mode qualifies the message rather than standing as an item of its own.
+      var how = g.steer ? 'as a steer' : 'as a queued prompt';
+      return [g.msg + ', ' + how];
+    }
+    return out.map(function(p){ return p[1]; });
+  }
+  function render(id){
+    var box = document.querySelector('.outbox[data-thread="' + id + '"]');
+    [].forEach.call(document.querySelectorAll('#t-' + id + ' [data-stage]'), function(e){ e.classList.toggle('staged', !!staged[id][e.dataset.key]); });
+    var ls = labels(id), items = box.querySelector('.items'); items.innerHTML = '';
+    ls.forEach(function(l){ var s = document.createElement('span'); s.className = 'stg'; s.textContent = l; items.appendChild(s); });
+    box.querySelector('.empty').hidden = ls.length > 0;
+    box.querySelector('.to b').textContent = ls.length ? 'To ' + box.dataset.to + ' · ' + ls.length + ' staged.' : 'Not sent.';
+    box.querySelector('.send').disabled = ls.length === 0;
+  }
+  [].forEach.call(document.querySelectorAll('[data-stage]'), function(e){
+    e.addEventListener('click', function(){
+      var id = e.dataset.stage, k = e.dataset.key, g = staged[id], ex = e.dataset.excl;
+      if (g[k] && ex !== 'how') { delete g[k]; } else {
+        [].forEach.call(document.querySelectorAll('#t-' + id + ' [data-stage]'), function(o){ if (o.dataset.excl === ex && o !== e) delete g[o.dataset.key]; });
+        g[k] = e.dataset.label;
+      }
+      render(id);
+    });
+  });
+  function excerpt(v){ v = v.trim(); return 'Message: “' + (v.length > 34 ? v.slice(0, 34) + '…' : v) + '”'; }
+  [].forEach.call(document.querySelectorAll('.msgta'), function(ta){
+    ta.addEventListener('input', function(){ var id = ta.dataset.thread; if (ta.value.trim()) staged[id].msg = excerpt(ta.value); else delete staged[id].msg; render(id); });
+  });
+  var fc = document.getElementById('fc1');
+  fc.addEventListener('input', function(){ if (fc.value.trim()) staged.hash.cm = 'Comment on core/hashline.gleam'; else delete staged.hash.cm; render('hash'); });
+
+  // A send closes the thread's rows and records what the store can prove.
+  var sentN = 0;
+  [].forEach.call(document.querySelectorAll('.send'), function(btn){
+    btn.addEventListener('click', function(){
+      var art = btn.closest('.thread'), id = art.id.slice(2), box = btn.closest('.outbox');
+      art.classList.add('sent'); sentN++; closed[id] = 1;
+      var t = '14:2' + sentN, r = box.querySelector('.receipt');
+      r.textContent = '✓ Delivered to ' + box.dataset.to + ' · ' + t;
+      rows.filter(function(x){ return x.dataset.open === id && x.dataset.g !== 'upd'; }).forEach(function(x){ x.classList.add('done'); x.querySelector('.rcpt').textContent = '✓ Delivered ' + t; });
+      count();
+      var i = order.indexOf(id);
+      for (var k = i + 1; k < order.length; k++){ if (!closed[order[k]]) { show(order[k]); return; } }
+    });
+  });
+  function count(){
+    var g = {need: 0, rev: 0, find: 0, upd: 0};
+    rows.forEach(function(r){ if (!r.classList.contains('done')) g[r.dataset.g]++; });
+    ['need','rev','find','upd'].forEach(function(k){ [].forEach.call(document.querySelectorAll('#c-' + k + ', #n-' + k), function(e){ e.textContent = g[k]; }); });
+    document.getElementById('tot').textContent = g.need + ' need you';
+    document.title = (g.need ? '(' + g.need + ') ' : '') + 'Loom inbox';
+  }
+  count();
+
+  if (q.get('demo') === 'staged'){
+    staged.hash = {'risk-fix': 'Fix the risk', approve: 'Approve', 'idea-dismiss': 'Dismiss the idea', cm: 'Comment on core/hashline.gleam'};
+    fc.value = 'Name the entry index in the error message too, not only the digest.';
+    var ta = document.getElementById('upa-ta');
+    ta.value = 'Leave fold_order_test for now and start the reading pane; the answer is coming.';
+    staged.upa = {steer: 'as a steer', msg: excerpt(ta.value)};
+  }
+  order.forEach(render);
+  if (q.get('sheet') === 'open') main.classList.add('sheet-open');
+  if (q.get('view') === 'live') { live(q.get('s') === 'repair' ? 'repair' : 'coord'); }
+  else {
+    inbox();
+    var open = q.get('open') || (phone() ? '' : 'appr');
+    if (open) show(open);
+  }
+})();
+</script>
+</body>
+</html>
