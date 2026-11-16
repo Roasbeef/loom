@@ -27,6 +27,7 @@
 import broker/exec
 import broker/policy
 import client/catalog
+import client/codemode as codemode_wiring
 import client/daemon/main as entrypoint
 import client/memory
 import client/owned_assembly_test
@@ -365,6 +366,11 @@ fn fake_state_root(label: String) -> String {
       "repository-snapshots",
       "states",
       ".tmp",
+
+      // Masked unconditionally, as `sessions` is. A jail that can create
+      // files beside it builds the mask over a missing path; a jail whose
+      // workspace is elsewhere cannot, and then no command in it starts.
+      codemode_wiring.runtime_directory,
     ],
     fn(name) {
       let assert Ok(Nil) = native.ensure_private_directory(root <> "/" <> name)
