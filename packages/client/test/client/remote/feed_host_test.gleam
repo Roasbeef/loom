@@ -1119,3 +1119,30 @@ pub fn asking_for_the_workspace_renews_no_lease_test() {
     as "a feed that is only asked about its workspace lapses"
   assert gateway.attached(rig.harness.hub) == rig.baseline
 }
+
+// The authority check is part of the wiring `top_host` builds for each feed, not
+// of the request's own fences: a feed the session no longer runs for is refused
+// the workspace, and the session's observation does not run for it.
+pub fn a_feed_the_session_no_longer_serves_is_refused_the_workspace_test() {
+  let ran = process.new_subject()
+  let rig =
+    feed_rig.observing(
+      "worktree-stopped",
+      deciding,
+      remote_feed.lease_ms,
+      relayed_session.Endpoint(..relayed_session.refusing(), worktree: fn() {
+        process.send(ran, Nil)
+        Ok(board())
+      }),
+    )
+  let attached = attach(rig)
+  let assert Ok(_) = manager.stop_session(rig.registry, rig.session)
+    as "the session stops under the feed"
+
+  let refused = case ask_worktree(rig, attached) {
+    Ok(remote_feed.Withheld) | Error(remote_top.FeedEnded(_)) -> True
+    Ok(_) | Error(_) -> False
+  }
+  assert refused
+  assert process.receive(ran, 0) == Error(Nil)
+}
