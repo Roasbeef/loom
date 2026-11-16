@@ -9429,6 +9429,9 @@ The box's deadline and retention (slice S4):
   store failure, and a released parent still wins before either descriptor.
   The held-cleanup regressions in `delegate_host_test` cover both Closing entry
   paths, reuse of the durable pair, blocked cleanup and release priority.
+  An ask refused `NotInitialized` (a reservation whose first start failed) reads
+  the kept failure in `delegate_host.reserved_refusal`: a no-room failure ends
+  the row and answers `NotYetOpen`, any other keeps the `StoreFailure`.
   `remote_release_test` and the shipped remote subagents test cover the sender
   and the box restart.
 - Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`

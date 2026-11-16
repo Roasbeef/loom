@@ -1715,3 +1715,58 @@ pub fn an_executor_with_no_room_is_a_request_to_ask_again_and_not_a_refusal_test
       manager.DelegateFailed(manager.StartFailed(reason: "no git")),
     )
 }
+
+// The failed first build of a pool's child on a full pool is still draining when
+// the sender's first ask polls, so that ask is answered `NotYetOpen` for a
+// stopping session and the failed row is not ended. The ask after it finds the
+// reservation with its failure kept. That is the same full pool, so it must be
+// answered "no room yet" and end the row so the child is placed afresh. It was
+// refused as a store fault, which the sender takes as final, although the room
+// freed seconds later.
+pub fn a_full_pool_stays_a_request_to_ask_again_after_the_failed_start_drains_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let builds = process.new_subject()
+  let registry = gated_registry(store, builds)
+  let here = context(registry, "/delegate-host/sessions")
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(32)
+  let full = protocol.describe(protocol.CapacityExhausted(limit: 1))
+
+  // Hold cleanup of the failed build so the first ask polls a stopping session.
+  let first = resolving(here, laptop, remote)
+  let assert Ok(#(owner, answer)) = process.receive(builds, 2000)
+    as "the first build begins"
+  let draining = process.new_subject()
+  assert custody.publish(owner, custody.Storage, fn() {
+      let release = process.new_subject()
+      process.send(draining, release)
+      process.receive_forever(release)
+      Ok(Nil)
+    })
+    == Ok(Nil)
+  process.send(answer, Error(full))
+  let assert Ok(release) = process.receive(draining, 2000)
+    as "the failed build has entered retained cleanup"
+  let assert Error(remote_spawn.NotYetOpen(_)) = resolved(first)
+    as "a stopping session asks the sender to come again"
+  assert catalogue.delegates_held(store, laptop.name) == Ok(1)
+
+  // Once the drain completes the reservation carries the full pool's failure.
+  process.send(release, Nil)
+  let assert Ok(Some(row)) =
+    catalogue.delegate_for(store, laptop.name, remote.session)
+    as "the pair keeps its reserved session"
+  assert eventually(fn() {
+    case manager.get(registry, row.session_id) {
+      Ok(manager.View(status: manager.FailedStart(..), ..)) -> True
+      Ok(_) | Error(_) -> False
+    }
+  })
+
+  // The next ask is the same full pool and is not a refusal.
+  assert delegate_host.resolver(here)(laptop, remote)
+    == Error(remote_spawn.NotYetOpen(reason: delegate_host.no_room_reason))
+  assert catalogue.delegates_held(store, laptop.name) == Ok(0)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
