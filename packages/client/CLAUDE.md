@@ -2564,6 +2564,17 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   are saved,
   including grants without a refresh token, while plan inference requires
   `resource.invoke` and `chatgpt.tokens.use.direct`.
+- `client/seat_usage` and `client/seat_usage_cli` are `loomd seat-usage`: seats
+  (`{"label","provider","token"}` per line) arrive on standard input only,
+  each token lives in an opaque closure so `string.inspect` cannot print it,
+  and refusals are closed reason codes carrying a line number and a valid
+  label, never line text. Each seat is asked one read-only usage endpoint (no
+  model request, so no `--probe`) through `codex/network.fetch_adopted` with
+  a per-request timeout, a 256 KiB body bound and `weft.limit` concurrency.
+  `seat_usage.to_pool_events` maps a reading onto `provider/pool` events and
+  nothing calls the pool from a request path. The module doc cites where each
+  endpoint and field was verified. `ffi_os.read_stdin_line` is the one shim:
+  no stdlib reads standard input.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -9459,6 +9470,9 @@ The box's deadline and retention (slice S4):
   store failure, and a released parent still wins before either descriptor.
   The held-cleanup regressions in `delegate_host_test` cover both Closing entry
   paths, reuse of the durable pair, blocked cleanup and release priority.
+  An ask refused `NotInitialized` (a reservation whose first start failed) reads
+  the kept failure in `delegate_host.reserved_refusal`: a no-room failure ends
+  the row and answers `NotYetOpen`, any other keeps the `StoreFailure`.
   `remote_release_test` and the shipped remote subagents test cover the sender
   and the box restart.
 - Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`
@@ -10998,6 +11012,62 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
   frame. A poll that supersedes a held poll releases it at once. A token is looked
   up only among the sender's spawner's feeds. The feed host blocks on a gateway
   call, for at most the gateway's six seconds, and never on the laptop.
+
+## The live session feed, the laptop half (protocol-change/108, slice 3)
+
+The laptop's page for a session on another orchestrator is the session component
+with `daemon/ui_feed` as its transport. `ui_feed` plays the part `ui_relay` plays
+for a local session: it keeps one long poll open on the feed the socket attached,
+hands each frame to the component's inbox as `connection_event.Incoming`, sends the
+lane's frames to the box in pieces and ends with one of `web_view/ending`'s fixed
+reasons. Tests: `feed_cursor_test` and `feed_outbox_test` (fixed-seed `statem`
+properties, seeds 1084 to 1086), `ui_feed_test` (the process against a scripted box
+and a hostile one), `ui_feed_box_test` (the process against the box's real feed host
+and gateway in one VM, with a link a test cuts and restores) and `top_relay_test`.
+The model is `protocol/models/live-relay` (`UiFeed.p`, `Lane.p`), whose README lists
+the rules the code follows and the specs, mutants and probes that guard them.
+
+- **The pure parts** are `remote/feed_cursor` (the laptop's place in the feed: `after`
+  is the last frame handed on and moves one frame at a time; only the reply to the
+  poll in flight is read; a frame numbered `after` or less is dropped; a skipped
+  frame ends the feed; an answer that reports an ending hands on no frame; a poll
+  with no answer is asked again after 250 ms doubling to 2 s) and `remote/feed_outbox`
+  (the lane's frames queued and cut into pieces of at most `piece_bytes` ending on a
+  character boundary, one piece in flight, a piece with no answer sent again
+  unchanged; at most 32 frames and 25,165,824 bytes). Neither holds a process or reads
+  a clock.
+- **The process** is `daemon/ui_feed`, one `weft/state_machine` with a single phase.
+  Each poll and each piece is a weft run of its own that reports to a sink the
+  process selects, so an answer that arrives after its task is gone reaches a dead
+  process, and the mailbox holds the lane's messages and at most two replies. The
+  pauses are named timeouts. `top_relay` gained `attach`, `poll`, `send_piece` and
+  `detach`, and `peer_client.call_at` dispatches against the epoch the attach observed
+  with no discovery.
+- **The socket's choice** is `ui_socket.chosen`, made in `upgrade_home` before any
+  component starts, over the attach's outcome (`ui_choice_test` covers every arm): an
+  attach that succeeds starts the session component with `Standing.route = Relayed(page)`
+  and `ui_feed`; a box that cannot be reached, or asked for another try
+  (`remote_top.retryable`), starts the same component with a transport that answers
+  `PeerUnreachable`, which the browser retries; a box at its feed cap answers
+  `PeerCrowded`; a box without the revisions, with `page = "paged"`, or whose answer does
+  not read starts the 094 home page with a sentence that says why (`relayed.Fallback`).
+  No answer is cached. A relayed route holds a `root.PageOperator` permit. Its images are
+  served at the relayed document's `.../sessions/<id>/image/<ref>/<position>`
+  (`ui_http.RelayedImage`, with the reader kept per tab: `ui_sessions.register_images_for`), and its tool-result links are not drawn (`lane.Unlinked`).
+- **What the page shows** when the link drops: the component decides it, in the same
+  update that ends its lane (`component.lane_failure`), because it ignores a close that
+  arrives after. A lane that fails on a relayed route ends as `PeerUnreachable`, a waiting
+  page the browser reconnects, and on a local route as `ConnectionFailed`. `ui_feed` ends
+  with `ConnectionFailed` on a shut, which only picks the socket's retry close code. A box
+  that says the feed is gone ends it with the ending it gave, and a lapse is
+  `ConnectionFailed`, since the page redraws from a fresh attach. A box at its feed cap is
+  `PeerCrowded`, its own waiting words.
+- **Invariants.** The feed's token is a secret of the `ui_feed` process and is never
+  logged or drawn. A frame from the box is decoded by `remote_feed`'s total decoders,
+  bounded by the stable exchange's envelope, and reaches the page only as a frame a
+  local gateway would have written. The page draws no control for a command the box
+  refuses (`component.route`), and its Forget is offered only on grants the box's
+  spawner approved (`session_view/remembered.Spawner`).
 
 ## The relayed session page's daemon side (protocol-change/094, slice S2b)
 

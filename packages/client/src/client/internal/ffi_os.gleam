@@ -135,6 +135,35 @@ pub fn wait_for_sigterm() -> Nil
 @external(erlang, "client_ffi", "halt")
 pub fn halt(code: Int) -> anything
 
+/// One line read from standard input.
+pub type StdinLine {
+  /// A line without its newline. The bytes are not yet checked as UTF-8.
+  Text(BitArray)
+
+  /// The line exceeded the bound and was discarded unread.
+  TooLong
+
+  /// Standard input is closed.
+  EndOfInput
+}
+
+/// Reads one line of standard input, at most `max` bytes. OTP
+/// `io:get_chars/3` on `standard_io`: `gleam_stdlib` and `gleam_erlang`
+/// offer no way to read the process's standard input at all, and a pure
+/// function cannot. The shim reads byte by byte so the bound holds in
+/// memory, and drains an over-long line so later lines keep their numbers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // case ffi_os.read_stdin_line(8192) {
+/// //   ffi_os.Text(bytes) -> bytes
+/// //   ffi_os.TooLong | ffi_os.EndOfInput -> <<>>
+/// // }
+/// ```
+@external(erlang, "client_ffi", "read_stdin_line")
+pub fn read_stdin_line(max: Int) -> StdinLine
+
 /// Asks a running OTP supervisor to terminate: children are shut down in
 /// reverse start order, each with an `exit(Child, shutdown)` and its
 /// child spec's grace, and the supervisor then exits `shutdown`. OTP

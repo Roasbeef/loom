@@ -1594,3 +1594,36 @@ call site, so a handle that is not the parent's child still finds nothing.
   still admits one apply.
 - The pool placement with every executor full is classified and tested at
   `delegate_host.refused`, and not driven through a real pool.
+
+## Addendum: a pool that stays full is asked again after the failed start drains (2026-11-14)
+
+A drive of eight remote children on a full pool refused the ninth spawn as final with "its
+store failed: the session was reserved and never created", although room freed seconds later.
+That text is `describe(NotInitialized)`. It came from the admission of the second ask, not from
+the `Reserved` arm of `delegate_host.resident`.
+
+- *The interleaving.* The first ask creates the reservation and a slot, and the build fails with
+  the executor's no-room words. The registry remembers the failure and closes the slot in one turn
+  (`opened`, then `remember_failure(stop_slot(..))`), so while custody drains the status is
+  `Stopping`, never `Reserved`. The poll answers `NotYetOpen` for a stopping session, which is not
+  `no_room_reason`, so `child_resolver` does not end the row. When the slot has gone the row is
+  `Reserved` with the failure kept. The next ask reaches `returning_delegate`, whose `admit` refuses
+  a reserved row as `NotInitialized`, and `refused` makes that a `StoreFailure`, which the sender
+  takes as final. `Reserved` itself is reached when the failure could not be written, or when
+  the daemon restarts in the middle of the first build; that row is still refused as final.
+- *The ruling.* An ask refused `NotInitialized` reads the kept failure (`reserved_refusal`). A
+  no-room failure ends the row, as the first ask does, and is `NotYetOpen`, so the child is placed
+  afresh. Any other failure keeps the `StoreFailure`, as `a_session_that_cannot_open_ends_the_wait_with_a_refusal_test`
+  has it. The `Reserved` arm of `resident` and the join ruling are unchanged: a joined child has a
+  placed handle, so its registration is saved and admission never answers `NotInitialized` for
+  it, and a `StoreFailure` at a join still waits.
+- *What bounds it.* Nothing but the parent session. The sender asks with a doubling pause for 30
+  seconds (`agency.ask_until_answered`), and after that `remote_drain.spawn_pass` asks again
+  every 5 seconds for as long as the parent session exists, because a requested stub has no time
+  to live. One ask places and fails, and the next ends the row, so a pool that never frees costs
+  one create, attach, failed build and delete about every 10 seconds per unplaced child. The
+  no-room path already behaved this way when the first ask sampled the failed start. A
+  reservation that fails for any other reason is a final refusal on the next ask.
+- *Test.* `a_full_pool_stays_a_request_to_ask_again_after_the_failed_start_drains_test` holds the
+  failed build's cleanup so the first ask polls `Stopping`, then asks again after the drain. It
+  answered the store failure before the change.
