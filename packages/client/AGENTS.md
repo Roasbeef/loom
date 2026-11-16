@@ -8962,8 +8962,8 @@ the protocol-change/078 addendum on moving a session have the protocol.
   and `server.departure_for` judges the place, the listed executor and a primary
   checkout before it. Tests: `session_move_checkout_test` (the real host, plane and
   stores), `daemon_move_test`, `orchestrators_test`.
-- A move back is refused by the receiver, not built (protocol-change/107, addendum of
-  2026-11-14). `session_importer.not_back_to_a_directory` runs after the sender is
+- A move back is refused by the receiver, not built (protocol-change/107, the addendum
+  "a move back is refused, and an open scope for an unserved name is freed"). `session_importer.not_back_to_a_directory` runs after the sender is
   known to be listed and before the copy is verified: a session whose custody here is
   `Moved`, whose kept registration is local (`move_checkout.is_local`) and whose manifest
   names an executor or a pool is `Refused(Malformed(..))` with the sentence that its
@@ -8979,7 +8979,7 @@ the protocol-change/078 addendum on moving a session have the protocol.
   open scope that a source dying in the attach leaves, since the retry is a rebound
   attach. `workspace.refused_attempt` still closes only a scope its record shows it
   opened, so after the host's close the corrected name is refused once for the bound
-  name, and setting the name back records the close.
+  name (twice when it was corrected before the retry), and setting the name back records the close.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
   linked to the process that starts the daemon's services. `Control` carries the
   listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;
