@@ -1253,6 +1253,30 @@ fn set_aside(
   }
 
   remove_copy(move, registration)
+  remove_scratch(registration)
+}
+
+// The helper scratch directory the session's workspace plane made beside the
+// file (`serve.workspace_spec`). The plane makes it again on every open, so an
+// empty one carries nothing, and the row says `moved`, so no open can happen
+// here and nothing is using it. Only the finishing path calls this: an
+// abandoned move leaves the session resident, and removing the directory then
+// could race the open that follows. A directory that holds anything is the
+// leftover of a crashed writer, which an operator may want, so it stays.
+
+/// Removes the session's scratch directory when it is empty.
+fn remove_scratch(registration: catalogue.Registration) -> Nil {
+  let scratch = registration.path <> ".tmp"
+
+  // An empty directory is the whole of what is removed, so the recursive
+  // delete has nothing else to reach.
+  case simplifile.read_directory(scratch) {
+    Ok([]) -> {
+      let _removed = simplifile.delete(scratch)
+      Nil
+    }
+    Ok([_, ..]) | Error(_) -> Nil
+  }
 }
 
 /// Establishes remove copy for the caller, keeping its validation and result policy at this boundary.
