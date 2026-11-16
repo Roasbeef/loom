@@ -1579,13 +1579,17 @@ fn close_unserved(
   }
 }
 
-// Whether an attach left a scope that holds nothing of the session. One this
-// attach created or reopened has no tree and no call by construction. A rebound
-// scope is judged by its tree record and by the results the attach reported as
-// unacknowledged or lost: closing as retired forgets those acknowledgements, and
-// a session that ran there before the executor restarted may still need them.
-// A ledger that cannot be read counts as holding something, so that an
-// unreadable record never closes a scope.
+// Whether an attach left a scope in which no plane has run. One this attach
+// created or reopened was opened a moment ago, so no plane has run in it and no
+// call can be outstanding; a reopened scope may still have a tree row from its
+// earlier incarnation, which closing again does not touch. A rebound scope was
+// open before this attach, so a plane may have run in it, and its tree record and
+// the results the attach reported as unacknowledged or lost are the evidence of
+// that. Closing as retired deletes the acknowledgement tombstones and nothing
+// else. Unacknowledged results survive a close and are reported on the next
+// attach, so this guard is evidence that a session worked there and not a guard
+// against losing data. A ledger that cannot be read counts as holding something,
+// so that an unreadable record never closes a scope.
 /// Whether the scope the attach left has no tree record and no call to answer for.
 fn holds_nothing(
   state: State(census),
