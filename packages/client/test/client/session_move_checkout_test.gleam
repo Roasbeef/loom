@@ -1263,6 +1263,44 @@ pub fn a_rebound_scope_that_holds_a_tree_keeps_its_unserved_workspace_test() {
   finish(rig)
 }
 
+// The other evidence that a session worked in a rebound scope is a call whose
+// result the executor cannot give: the attach reports it as lost, and the host
+// leaves the scope open for the same reason as for a tree.
+pub fn a_rebound_scope_with_a_lost_result_keeps_its_unserved_workspace_test() {
+  let rig = start("rebound-unserved-lost", InWorktrees, 0)
+  let move = begin(rig)
+  open_scope_in(rig, "nosuch")
+  let key =
+    exec_ledger.Key(
+      session: rig.session,
+      op: "earlier-op",
+      step: "step",
+      source_index: 0,
+    )
+
+  // One connection for both writes: opening a ledger is the executor's restart
+  // recovery and turns the live runs of an earlier connection into lost ones.
+  let ledger = executor_ledger(rig)
+  let assert Ok(exec_ledger.Fresh) =
+    exec_ledger.admit(
+      ledger,
+      key,
+      1,
+      token(1),
+      "bash",
+      1024,
+      exec_ledger.default_limits(),
+    )
+    as "a call is admitted"
+  let assert Ok(Nil) = exec_ledger.mark_unknown(ledger, key)
+    as "its result is lost"
+  unclosed_record(rig)
+  let assert Aborted(reason) = session_mover.drive(named(rig, "nosuch"), move)
+  assert string.contains(reason, "nosuch")
+  assert executor_scope(rig).state == exec_ledger.Open
+  finish(rig)
+}
+
 // A scope that an attach for an unserved name left open, because the source died
 // while the executor handled the attach and the build failed at the owner link,
 // holds nothing: no plane was built and no tree was made. The retry is a rebound
