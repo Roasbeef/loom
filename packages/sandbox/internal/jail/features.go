@@ -3,6 +3,7 @@ package jail
 import (
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/roasbeef/loom/sandbox/internal/cgroup"
 	"github.com/roasbeef/loom/sandbox/internal/llock"
@@ -30,6 +31,12 @@ type Features struct {
 	// empty with a reason when unavailable.
 	CgroupDir    string
 	CgroupReason string
+	// LoopbackReady is true only when bwrap was probed with the flags
+	// loopback mode requires (LoopbackBwrapArgs) and ran. It is false in a
+	// hand-built Features, so the mode is refused unless a probe said yes.
+	// LoopbackReason says why not, when it is false and bwrap exists.
+	LoopbackReady  bool
+	LoopbackReason string
 	// Platform is not a probe of the running kernel but a fact about
 	// this build: whether Loom has a jail for the OS at all. See
 	// platform.go for why the two kinds of gap are kept apart.
@@ -50,6 +57,7 @@ func DetectFeaturesWith(cgroupBase string) Features {
 	case "linux":
 		if p, err := exec.LookPath("bwrap"); err == nil {
 			f.BwrapPath = p
+			f.LoopbackReady, f.LoopbackReason = probeLoopbackBwrap(p)
 		}
 		f.LandlockABI, f.LandlockReason = llock.ABIVersion()
 		f.Seccomp = seccompf.Supported()
@@ -132,4 +140,23 @@ func (f Features) HasFilesystemJail() bool {
 // HasNetworkJail reports whether this host can deny direct Internet sockets.
 func (f Features) HasNetworkJail() bool {
 	return f.Seccomp || f.SeatbeltPath != ""
+}
+
+// probeLoopbackBwrap runs bwrap once with the flags a loopback jail
+// requires, over a trivial command, and says whether it ran. A bwrap too
+// old to know --disable-userns, or an environment where the hard
+// --unshare-user fails, answers no, and the mode is refused rather than
+// run with fewer guarantees.
+func probeLoopbackBwrap(bwrap string) (bool, string) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		return false, "no true(1) to probe bwrap with: " + err.Error()
+	}
+	args := append([]string{}, LoopbackBwrapArgs...)
+	args = append(args, "--unshare-net", "--ro-bind", "/", "/", truePath)
+	if out, err := exec.Command(bwrap, args...).CombinedOutput(); err != nil {
+		return false, "bwrap " + strings.Join(LoopbackBwrapArgs, " ") +
+			" does not run here: " + strings.TrimSpace(string(out))
+	}
+	return true, ""
 }

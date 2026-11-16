@@ -3324,6 +3324,7 @@ fn encode_network(network: policy.NetworkPolicy) -> JsonValue {
   // This match resolves network before the enclosing validation continues.
   case network {
     policy.NetworkOff -> json.Object([#("mode", json.String("off"))])
+    policy.NetworkLoopback -> json.Object([#("mode", json.String("loopback"))])
     policy.NetworkFull -> json.Object([#("mode", json.String("full"))])
     policy.NetworkProxy(allow:, proxy:) ->
       json.Object([
@@ -3343,6 +3344,7 @@ fn decode_network(value: JsonValue) -> Result(policy.NetworkPolicy, String) {
   // This match resolves mode before the enclosing validation continues.
   case mode {
     "off" -> Ok(policy.NetworkOff)
+    "loopback" -> Ok(policy.NetworkLoopback)
     "full" -> Ok(policy.NetworkFull)
     "proxy" -> {
       // This match validates the input shape before constructing its result.

@@ -26,3 +26,6 @@ func Supported() bool { return false }
 // Supported() gets a refusal rather than a silent no-op that would leave
 // the network open while the report claimed a filter.
 func Install() error { return fmt.Errorf("seccompf: %s", UnavailableReason) }
+
+// InstallLoopback fails off Linux for the same reason Install does.
+func InstallLoopback() error { return fmt.Errorf("seccompf: %s", UnavailableReason) }
