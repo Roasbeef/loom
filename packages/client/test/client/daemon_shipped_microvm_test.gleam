@@ -2535,7 +2535,7 @@ fn untrusted_guest(run: Run) -> Nil {
 }
 
 // A second guest on the untrusted link, brought up while the daemon of the
-// first still runs (protocol-change/115). The step's configuration is not the
+// first still runs (protocol-change/116). The step's configuration is not the
 // default file, so `up` cannot find this daemon and the test sends the command
 // itself: the reply must list the new guest `started` and the first
 // `unchanged`, and a session on the new guest must be resident with no second

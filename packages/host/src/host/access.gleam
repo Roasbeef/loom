@@ -1551,7 +1551,7 @@ pub fn refusal_code(fields: List(#(String, JsonValue))) -> String {
       }
 
     // The message of a refused reload is the reason the file was not applied,
-    // which is what the developer needs to fix (protocol-change/115).
+    // which is what the developer needs to fix (protocol-change/116).
     Ok(json.String("reload_invalid")) ->
       case list.key_find(fields, "message") {
         Ok(json.String(reason)) -> "reload_invalid: " <> reason

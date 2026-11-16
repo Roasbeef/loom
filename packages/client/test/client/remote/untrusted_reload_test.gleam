@@ -1,4 +1,4 @@
-//// `executors.reload` with real links (protocol-change/115).
+//// `executors.reload` with real links (protocol-change/116).
 ////
 //// A registry that starts real `untrusted_link` processes holds a row for one
 //// executor, and a session attaches through it. The file then gains a second

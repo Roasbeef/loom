@@ -2022,7 +2022,7 @@ open one when there is none. The ticket's `pull_request` carries the URL once it
 ### 3.33 `executors.reload`
 
 Owner-only (a member is refused `forbidden`), and it needs no epoch
-([protocol-change/115](../protocol-change/115-executors-reload.md)). It is a
+([protocol-change/116](../protocol-change/116-executors-reload.md)). It is a
 mutation, so a daemon that is draining refuses it as it refuses any mutation. The
 daemon rereads the configuration file it started from and brings the links of its
 untrusted executors to match it. A daemon that was started with no configuration

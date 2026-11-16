@@ -231,7 +231,7 @@ pub type Config {
     /// the ledger links it to (protocol-change/086, phase 2), which
     /// `executor_roster` adds when the list is read. The trusted rows stay as
     /// read at start; the untrusted ones are reread by `executors.reload`, and
-    /// `executor_roster` takes them from `links` (protocol-change/115).
+    /// `executor_roster` takes them from `links` (protocol-change/116).
     executors: List(executors.Executor),
     /// The groups of those executors a session may be created in, read from
     /// `[pools.<name>]` at startup and never reread (protocol-change/078).
@@ -283,7 +283,7 @@ pub type Config {
     /// (protocol-change/109).
     untrusted: untrusted_config.Settings,
     /// The process that holds the untrusted executor rows and their links,
-    /// started by `prepare_startup` (protocol-change/115). `None` on a `Config`
+    /// started by `prepare_startup` (protocol-change/116). `None` on a `Config`
     /// that startup has not prepared, which then has the rows of `executors`
     /// as they were read and no link.
     links: Option(untrusted_links.Registry),
@@ -291,7 +291,7 @@ pub type Config {
     /// built the first jail policy, which is when each was masked.
     /// `executors.reload` applies a new `[executor_link]` only under one of
     /// these, because a directory that appeared later is masked from no jail
-    /// already built (protocol-change/115). Empty on a `Config` that startup
+    /// already built (protocol-change/116). Empty on a `Config` that startup
     /// has not prepared.
     vm_directories: List(String),
   )
@@ -1166,7 +1166,7 @@ fn untrusted_settings(
 ///
 /// The links belong to `untrusted_links`, which starts them unlinked from the
 /// startup process and starts one again when `executors.reload` finds it dead
-/// (protocol-change/115): a link that died takes its bindings with it, and the
+/// (protocol-change/116): a link that died takes its bindings with it, and the
 /// sessions it served refuse their callbacks until they attach again. The
 /// gateway is unlinked and not restarted, as the host is.
 ///
@@ -2869,7 +2869,7 @@ fn executor_roster(config: Config) -> Roster(executors.Executor) {
 
 /// The executor rows the operator wrote, as they are now: the trusted rows read
 /// at start, and the untrusted rows the registry holds, which `executors.reload`
-/// changes (protocol-change/115). A `Config` with no registry has the rows it
+/// changes (protocol-change/116). A `Config` with no registry has the rows it
 /// was read with. Rows are sorted by name.
 fn written_executors(
   startup: List(executors.Executor),
@@ -2885,7 +2885,7 @@ fn written_executors(
   }
 }
 
-/// What `executors.reload` runs (protocol-change/115), or `None` for a daemon
+/// What `executors.reload` runs (protocol-change/116), or `None` for a daemon
 /// that has no configuration file or no registry of links. The file is read and
 /// decoded inside the registry's process, so two reloads apply in order.
 ///
@@ -3361,7 +3361,7 @@ fn crash_after_step() -> fn(session_move.Step) -> Nil {
 }
 
 /// Creates the microVM directories, mode 0700, when they are missing
-/// (protocol-change/115, "The link key and the masks"), and answers the ones
+/// (protocol-change/116, "The link key and the masks"), and answers the ones
 /// that exist afterwards as canonical paths.
 ///
 /// A jail's mask over a path that does not exist, under a read-only parent, is

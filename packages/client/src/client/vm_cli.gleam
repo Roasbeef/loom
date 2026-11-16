@@ -1056,7 +1056,7 @@ fn restart_check(upped: Upped) -> Result(Nil, String) {
 /// configuration the daemon is asked which executors it holds, and one that
 /// does not hold the guest has not read its row, whether this call wrote the
 /// row or an earlier call did and then failed to boot. Such a daemon is asked
-/// to reload (protocol-change/115), and the refusal that says to restart it
+/// to reload (protocol-change/116), and the refusal that says to restart it
 /// is given only when it cannot reload: it predates the command, refused it, or
 /// could not bring the guest's link up. A configuration other than the default
 /// belongs to a daemon that cannot be asked, as for any guest.
@@ -4270,7 +4270,7 @@ fn ask_daemon(command: String) -> Result(core_json.JsonValue, String) {
 }
 
 /// Asks the default daemon to reread its configuration and bring the links of
-/// its untrusted executors to match (protocol-change/115), and classifies what
+/// its untrusted executors to match (protocol-change/116), and classifies what
 /// came back. The reply body is decoded by `executor_reload.decode`, which is
 /// total, so a daemon that answers anything else is `NoAnswer`.
 fn reload_daemon() -> vm_link.ReloadResult {
@@ -4855,7 +4855,7 @@ type AfterRemoval {
   LeaveDaemon
 
   // An untrusted guest's row left the default file, so a running daemon is
-  // asked to stop its link (protocol-change/115).
+  // asked to stop its link (protocol-change/116).
   ReloadDaemon
 }
 

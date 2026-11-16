@@ -63,7 +63,7 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
   `code_mode` run in flight. A `Run` or a `StartExecution` for a session the link
   holds no binding for (a link started in place of a dead one) is answered
   `NoPlane` by `answered_unbound` and never sent, so the surface attaches again
-  and mints one (protocol-change/115); no other message is held to a binding.
+  and mints one (protocol-change/116); no other message is held to a binding.
 - `remote/untrusted_gateway` is the acceptor, one `weft/state_machine` per
   connection (the handshake runs there, not in the acceptor), a waiter per request
   (unlinked, and exiting with `noconnection` when its connection dies, so a
@@ -100,7 +100,7 @@ once, and checks size and digest in `remote/outcome_fetch` before decoding.
 Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 (`RunLost`, `Unknown`), never a refusal that invites a re-run.
 
-Reloading the rows (protocol-change/115). `daemon/untrusted_links` is a
+Reloading the rows (protocol-change/116). `daemon/untrusted_links` is a
 `weft/actor`, started by `prepare_startup` beside `project_book`, that holds the
 untrusted `executors.Executor` rows and the pid of each row's link and unlinks
 every link it starts (a reload reads each pid with `is_alive`, logs a dead one
@@ -258,7 +258,7 @@ the port without recording it, works out the merge (a refusal leaves no guest),
 records the kind and port, writes the file, then runs `stage_with` and
 `launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd entry), which are
 the shared halves of `stage` and `boot`. A running default daemon
-is asked to reload (`executors.reload`, protocol-change/115): `restart_of` and
+is asked to reload (`executors.reload`, protocol-change/116): `restart_of` and
 `untrusted_restart_check` ask `vm_link.daemon_need`, send the command through
 `vm_cli.reload_daemon` and read the reply with `vm_link.reload_result` and
 `reload_report`, which prints one line for every entry that is not `unchanged`.

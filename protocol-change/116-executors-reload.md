@@ -1,4 +1,4 @@
-# protocol-change/115: `executors.reload`, so a running daemon learns a new untrusted executor
+# protocol-change/116: `executors.reload`, so a running daemon learns a new untrusted executor
 
 **Status**: ACCEPTED 2026-11-13, under the delegation of `docs/execution.md`
 section 7, after one independent adversarial review ("Review and disposition"

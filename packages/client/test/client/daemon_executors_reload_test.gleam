@@ -1,4 +1,4 @@
-//// `executors.reload` across the real control socket (protocol-change/115).
+//// `executors.reload` across the real control socket (protocol-change/116).
 ////
 //// The registry behind the command is real, with fake links that only hold a
 //// link's registered name, so the tests prove what the socket and the daemon's

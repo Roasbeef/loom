@@ -382,7 +382,7 @@ pub type Command {
   LedgerHoldings
 
   /// Makes the daemon reread the configuration file it started from and bring
-  /// the links of its untrusted executors to match it (protocol-change/115).
+  /// the links of its untrusted executors to match it (protocol-change/116).
   /// The body is empty. Owner-only; a daemon started with no file answers
   /// `not_found`.
   ReloadExecutors

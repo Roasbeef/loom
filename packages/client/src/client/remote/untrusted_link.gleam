@@ -637,7 +637,7 @@ type Unbound {
 /// Answers a `Run` or a `StartExecution` for a session the link holds no
 /// binding for with `NoPlane`, the refusal the executor's host gives a scope
 /// it holds no plane for, so the surface cannot tell the two apart and attaches
-/// again (protocol-change/115).
+/// again (protocol-change/116).
 ///
 /// A link started in place of a dead one holds no bindings, but the executor
 /// behind it may still hold the session's plane, and would run the call and

@@ -221,7 +221,7 @@ pub fn fixture_with_ledger(
 }
 
 /// `fixture_with_ledger` with the capability `executors.reload` runs
-/// (protocol-change/115). `None` is a daemon with no configuration file, which
+/// (protocol-change/116). `None` is a daemon with no configuration file, which
 /// answers the command `not_found`.
 ///
 /// ## Examples

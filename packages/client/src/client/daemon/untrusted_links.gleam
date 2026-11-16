@@ -1,5 +1,5 @@
 //// The daemon's untrusted executor rows and the processes that link to them
-//// (protocol-change/115).
+//// (protocol-change/116).
 ////
 //// An untrusted executor is reached by a link process that registers a name on
 //// this node, and a session's placement finds the executor by that name. The

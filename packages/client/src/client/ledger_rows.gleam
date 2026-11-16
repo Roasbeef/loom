@@ -151,7 +151,7 @@ pub fn executor_roster(
 }
 
 /// `executor_roster` for written rows that change while the daemon runs, which
-/// the untrusted executor rows do (protocol-change/115). `written` is called
+/// the untrusted executor rows do (protocol-change/116). `written` is called
 /// once for each read, and the same list serves both the derivation and the
 /// fallback, so a read never mixes two versions of the written rows.
 ///

@@ -1,4 +1,4 @@
-//// The rules of `executors.reload` that need no process (protocol-change/115):
+//// The rules of `executors.reload` that need no process (protocol-change/116):
 //// which change a row comes to, which reloads are refused, and the reply.
 ////
 //// `executors.reload` makes a running daemon reread its configuration file

@@ -1,4 +1,4 @@
-//// The untrusted link registry (protocol-change/115), observed through the
+//// The untrusted link registry (protocol-change/116), observed through the
 //// name each link registers.
 ////
 //// The registry starts, replaces and stops processes that register

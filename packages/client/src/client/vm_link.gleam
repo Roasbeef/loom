@@ -897,7 +897,7 @@ pub type DaemonNeed {
 }
 
 /// Decides whether the default daemon is asked to run `executors.reload` for
-/// an untrusted guest (protocol-change/115). A running daemon is asked when
+/// an untrusted guest (protocol-change/116). A running daemon is asked when
 /// this command changed the guest's row, because no daemon can have read it, or
 /// when the row was already there and the daemon does not list the guest: a
 /// first `up` whose boot failed after the row was written, and a daemon that
@@ -932,7 +932,7 @@ pub type ReloadResult {
   Answered(reply: executor_reload.Reply)
 
   /// The daemon does not know the command, which is how a daemon older than
-  /// protocol-change/115 answers.
+  /// protocol-change/116 answers.
   PredatesReload
 
   /// The daemon refused the call. `message` is the reason, when the refusal

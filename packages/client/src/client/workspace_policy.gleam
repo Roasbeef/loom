@@ -1852,7 +1852,7 @@ pub type VmHomes {
 }
 
 /// The microVM directories the daemon creates at its start, so that every
-/// policy built afterwards masks them (protocol-change/115, "The link key and
+/// policy built afterwards masks them (protocol-change/116, "The link key and
 /// the masks"). A mask over a path that does not exist, under a read-only
 /// parent, is not built, and a session keeps its policy for its life, so a
 /// directory created after the first session began would be readable by it.

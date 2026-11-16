@@ -738,7 +738,7 @@ diff run through the executor's broker are refused on an untrusted executor for
 now.
 
 The untrusted rows are the one part of `[executors.<name>]` that a running daemon
-rereads. `executors.reload` (protocol-change 115) rereads the file, starts a link
+rereads. `executors.reload` (protocol-change 116) rereads the file, starts a link
 for a new untrusted row, replaces the link of a row whose address or pin changed
 or whose link ended, and stops the link of a row that was removed. A session that
 is already placed keeps its placement. Trusted rows are read once, at start.
@@ -773,7 +773,7 @@ row (see `ledger` above); `loom deployment status` shows it as down.
 `[executors.<name>]`, and read once when the daemon starts. It is the certificate
 this orchestrator presents on the link to every untrusted executor.
 
-`executors.reload` (protocol-change 115) does not change this table in a running
+`executors.reload` (protocol-change 116) does not change this table in a running
 daemon. It applies the table of the new file only when it equals the table the
 daemon started with, or when the daemon started with none and each of the three
 files is under `$HOME/.loom/vm` or `<state root>/vm`. Any other change takes

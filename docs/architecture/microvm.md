@@ -982,7 +982,7 @@ under `~/.loom/vm` or the state root can read the key and its passphrase. Keep
 missing path under a read-only parent is not built, and a session keeps its
 policy for its life, so the daemon creates `~/.loom/vm` and `<state root>/vm`,
 mode 0700, at its start, before any jail is built (`daemon/main.ensure_vm_homes`,
-protocol-change/115). It creates a directory only when it is missing and never
+protocol-change/116). It creates a directory only when it is missing and never
 changes one that exists. A failure to create the state root's directory stops
 the start; a failure to create the home's is logged as
 `daemon.vm_home_unavailable` and the daemon starts, since `loom vm up` runs as
@@ -1273,7 +1273,7 @@ code, which runs as the same user, could read the key
 #### A new guest reaches a running daemon by a reload
 
 The daemon reads `[executors.*]` and `[executor_link]` at its start, and
-`executors.reload` (protocol-change/115) makes it read them again. `up`,
+`executors.reload` (protocol-change/116) makes it read them again. `up`,
 `ensure` and `rm` write `loom.toml` and then, for an untrusted guest in the
 default configuration, send the command to a daemon that is running when this
 command changed the row or the daemon's executor list does not name the guest

@@ -1,4 +1,4 @@
-//// The pure rules of `executors.reload` (protocol-change/115): the plan from a
+//// The pure rules of `executors.reload` (protocol-change/116): the plan from a
 //// held set and a wanted set, the `[executor_link]` rule, the refusals and the
 //// reply's codec.
 ////

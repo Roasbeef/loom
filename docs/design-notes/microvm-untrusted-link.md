@@ -36,7 +36,7 @@ untrusted link becomes the default.
 
 Two further pieces are needed that 109 did not have to build: a running daemon
 learning about a new guest without a restart (an owner-only `executors.reload`
-control command, protocol-change/115), and a stable address per guest (a
+control command, protocol-change/116), and a stable address per guest (a
 loopback port reserved once and recorded beside the guest).
 
 ## 1. Threat model
@@ -324,7 +324,7 @@ way no daemon is stopped, which removes `vm_spec.daemon_step` and the stop
 step (`client/vm_spec.gleam:3201` (`daemon_step`)).
 
 A new control command is a change to the client control protocol, so this
-needs **protocol-change/115**.
+needs **protocol-change/116**.
 
 ### (b) A stable address
 
@@ -406,7 +406,7 @@ stand in for the actor; `broker.over` only wraps a subject
    lines.
 
 Total: about 1,600 lines of product code and 800 of tests, the size of 109's
-slice 2. It needs its own proposal (**protocol-change/116**), as 110 and 111
+slice 2. It needs its own proposal (**protocol-change/117**), as 110 and 111
 were separate proposals over the same link, with an addendum on 109 pointing to
 it.
 
@@ -495,13 +495,13 @@ Each slice ships alone and is listed in merge order.
    and `up` sending `reload` when a daemon runs. **Exit**: with a daemon
    running, `vm up` of a second guest serves a session with no restart; the
    daemon restarted reaches both; `vm_cli_test` covers the taken-port decision.
-   Needs **protocol-change/115**. Built: the daemon side, then the clients
+   Needs **protocol-change/116**. Built: the daemon side, then the clients
    (`vm_link.reload_report`, `vm_cli.reload_daemon`), under
-   protocol-change/115.
+   protocol-change/116.
 3. **The broker tunnel (109 slice 3).** Section 5. **Exit**: the
    `untrusted_end_to_end_test` cases of step 7, and the microVM step of slice 1
    extended so the Changes tab shows the jailed call's edit against a recorded
-   baseline and a goal check passes. Needs **protocol-change/116** and a
+   baseline and a goal check passes. Needs **protocol-change/117** and a
    pointer addendum on 109.
 4. **The untrusted link becomes the default.** `up` and `ensure` use it with no
    flag; a resumed distribution guest is refused naming `sync`, `rm` and `up`;
@@ -533,7 +533,7 @@ not change.
 > run --forward`. One link authority and one orchestrator leaf per vm home live
 > under `<vm home>/link/`; each guest has its own leaf, and both sides pin.
 > A running daemon learns of a new guest through the owner-only
-> `executors.reload` (protocol-change/115). No cookie, epmd registration,
+> `executors.reload` (protocol-change/116). No cookie, epmd registration,
 > ledger, authority key or daemon restart is involved.
 >
 > **Why.** Over distribution, the guest's `loom` user holds the executor's
@@ -548,7 +548,7 @@ not change.
 > **What it costs.** The guest is no longer a deployment member: sessions on it
 > cannot be moved between orchestrators by the ledger, and remote evolution on
 > a guest waits for 109's slice 4. Non-tool callers ride the broker tunnel of
-> protocol-change/116. Every reply pays a JSON encode and a total decode, and
+> protocol-change/117. Every reply pays a JSON encode and a total decode, and
 > bytes grow by a third as base64. A guest made over distribution is not
 > resumed: `up` names `vm sync`, `vm rm` and `up`. The libkrun VMM escape of the
 > Consequences section is unchanged: a guest kernel exploit that escapes the

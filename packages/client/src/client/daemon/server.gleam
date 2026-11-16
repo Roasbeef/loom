@@ -166,7 +166,7 @@ pub type Config(instance) {
     /// `ledger.*` owner commands read and extend (protocol-change/086). `None`
     /// answers them `not_found`.
     ledger: Option(ledger_control.Handle),
-    /// What `executors.reload` runs (protocol-change/115): reread the file the
+    /// What `executors.reload` runs (protocol-change/116): reread the file the
     /// daemon started from and bring the untrusted links to match. `None` on a
     /// daemon started with no configuration file, which answers `not_found`.
     executors_reload: Option(ExecutorsReload),
@@ -3775,7 +3775,7 @@ pub type ReloadFailure {
 }
 
 /// The code `executors.reload` answers when the daemon refuses the file. The
-/// message is the reason (protocol-change/115).
+/// message is the reason (protocol-change/116).
 pub const reload_invalid_code = "reload_invalid"
 
 /// `executors.reload`: owner-only, and `not_found` when the daemon has no

@@ -201,7 +201,7 @@ The differences from the trusted mode are these.
   and never sent. This is the case of a link started in place of a dead one
   while the executor still holds the session's plane: the surface attaches
   again, the attach mints a binding, and the executor rebinds the plane it has
-  (protocol-change/115). An `attach`, a `close`, a query, an ack and a stop need
+  (protocol-change/116). An `attach`, a `close`, a query, an ack and a stop need
   no binding.
 - **Everything returned is decoded totally**, against the kind of reply the
   request waits for. A frame that does not decode, a reply of the wrong kind, a
