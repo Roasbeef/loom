@@ -344,6 +344,15 @@ reload command makes that case cheap. The pin makes a collision safe.
 
 ## 5. Slice 3, sized
 
+> **Superseded in detail by
+> [protocol-change/117](../../protocol-change/117-broker-tunnel.md).** The
+> proposal checked this section against the code and lists what it corrects
+> under "Corrections to the design note". The main differences: hooks are not
+> wired to the tunnel and stay refused on an untrusted executor (step 6 is not
+> built), there is no stdin frame, the link buffers a call's output until it
+> settles, and a session that stored an unavailable baseline still shows its
+> working-tree changes.
+
 ### How non-tool callers reach the broker today
 
 Each non-tool caller gets the plane's `broker.Broker`: for a remote session it
