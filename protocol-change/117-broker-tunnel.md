@@ -369,8 +369,8 @@ for a dropped connection, and runs and requests are re-sent as 109 describes.
 | more `output` bytes on one stream than the spec's `requirements.limits.output_bytes` | violation |
 | an event or a `cleared` the table above calls a violation | violation |
 
-`max_frame_values` is the bound for 109's decoded-breadth risk (finding F5 of
-the design note). It applies to every frame through `decode_envelope`
+`max_frame_values` is the bound, in JSON values, for 109's decoded-breadth risk
+(finding F5 of the design note). It applies to every frame through `decode_envelope`
 (`client/remote/untrusted_codec.gleam:329`) and to a fetched outcome through
 `decode_outcome_bytes` (`client/remote/untrusted_codec.gleam:390`), which reads
 up to `max_outcome_bytes` (96 MiB) inside the link. A fetched outcome that the
@@ -532,11 +532,17 @@ keep its own processes running in any case. Widen the plane's base policy or
 add a grant through a spec. Deliver more output than the orchestrator's cap, or
 make the link hold more than those bytes. Hold an entry past its caller's wait.
 Run a hook, or receive a hook's command, payload or the operator's home path.
-Make a frame or a fetched outcome decode to more than `max_frame_values`
+Make a frame or a fetched outcome decode to more than `max_frame_values` JSON
 values.
 
 **Residual risks.** The executor sees the goal check command and the Git
-commands, which describe work it already holds.
+commands, which describe work it already holds. A base64 string is one JSON
+value but can carry a nested document that is decoded outside the value bound:
+`msgpack_of`, `decode_sandbox_policy` and `decode_lsp_server` in
+`client/remote/untrusted_codec.gleam` each parse one, and the msgpack inside a
+24 MiB frame can hold millions of values. The bound is on JSON values, not on
+everything a frame decodes to. A byte cap on `msgpack_of` would refuse honest
+large binary arguments, so the risk is recorded rather than closed.
 
 ## What it costs
 
@@ -584,8 +590,10 @@ slice 4 here.
    `remote/untrusted_codec_test` round-trips every new item and every
    `ExecFailure` and `broker.Refusal` variant, refuses a spec with a `grants`
    member and each oversized field, and extends the kind matrices so only the
-   diagonal decodes; `core/json_test` parses a document of `max_frame_values`
-   values and refuses one more, on both targets; `remote/untrusted_link_test`
+   diagonal decodes; `core/json_test` runs the count's cases at a small size
+   on both targets, because the JavaScript parser takes a stack frame per array
+   item, and the full bound of `max_frame_values` values, accepted and then
+   refused one past, is exercised on the BEAM in the client suites; `remote/untrusted_link_test`
    refuses a 1,048,577-value frame, answers a fetched outcome over the bound as
    lost, and names both wire numbers on a wire-only mismatch;
    `remote/untrusted_gateway_test` answers a `clear_call` with
@@ -593,7 +601,11 @@ slice 4 here.
 3. **The tunnel.** The door and `untrusted_link.tunnel`, the call table and
    buffer, the gateway's waiter and the book's record, and `workspace.build`
    setting `clear_call` for an untrusted placement while `with_imported_hooks`
-   sets the refusing function. **Exit**: `remote/untrusted_link_test` has the
+   sets the refusing function. The link checks a spec's `argv`, `env`,
+   `waiting_ms` and `deadline_ms` against the codec's limits where it checks
+   `encode_fitting`, so an over-limit spec is refused locally with
+   `BrokerUnavailable` and never makes the gateway close the connection.
+   **Exit**: `remote/untrusted_link_test` has the
    hostile executor send events for an id never issued, for a `run`'s id, for a
    call still `Clearing`, a `cleared` for a `Running` call, and output past the
    cap, each closing the connection while the link survives and a `Running`
@@ -679,3 +691,18 @@ can run through the tunnel, which led to keeping hooks refused.
 | Re-check | Wiring hooks ships an unexercised path and an unresolved `HOME` disclosure | Accepted. Hooks stay refused, with seven preconditions for a later change | "Hooks stay refused", decision 2 |
 | Re-check | `bit_array.append` copies the buffer per chunk | Accepted. The buffer grows with a bit-array expression | the buffer paragraph |
 | Re-check, LOW | `CallOutput` fields at settlement; the value count on the link's own sends; `waiting_ms` against the link's own wait | Accepted | "Frames", the table's refusals |
+
+A third review, 2026-11-17, of the integrated slices 1 and 2
+(c62d24f08..b5150d68f), read-only. Its verdict was merge as is; the follow-ups
+below were taken before slice 3.
+
+| Severity | Finding | Disposition | Where it landed |
+|---|---|---|---|
+| HIGH, pre-existing | A refused document costs tens of bytes of heap per byte consumed, because `codepoint_offset` builds the codepoint list of the prefix | Accepted. The offset counts non-continuation bytes and allocates nothing | `core/json` |
+| MEDIUM, pre-existing | A duplicate-key refusal quotes the whole key | Accepted. Clipped to 64 codepoints | `core/json` |
+| MEDIUM | `sent_callback` checks neither frame bound, so an honest over-count callback closes the connection | Accepted. It sends with `encode_fitting`, fails its asker when the callback does not fit | `untrusted_gateway` |
+| MEDIUM, pre-existing | Nested msgpack and JSON documents are decoded outside the value bound | Recorded, not closed | "Residual risks", "Bounds" |
+| LOW | `wide_int_of` accepts an integer of any magnitude | Accepted. Magnitudes above 2^256 are refused | `untrusted_codec` |
+| LOW | The argv, env and millisecond limits are private to the decoder | Accepted for slice 3 | slice 3 |
+| LOW | A link test asserts staying open after an at-bound frame, which is no barrier | Accepted. The at-bound half is dropped; the over-bound wait is 30 seconds | `untrusted_link_test` |
+| LOW | Slice 2's exit claims the full bound on both targets | Accepted. Amended to say what runs where | slice 2 |
