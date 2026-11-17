@@ -263,7 +263,7 @@ pub fn child_resolver(
   Result(agency.DelegateEndpoint, SpawnRefusal) {
   fn(spawner, parent, child) {
     use made <- result.try(creation_for(spawner, parent, child))
-    use delegated <- result.try(
+    let asked =
       manager.delegate_session(
         context.registry,
         manager.DelegateRequest(
@@ -278,26 +278,101 @@ pub fn child_resolver(
           now_ms: context.now_ms(),
         ),
       )
-      |> result.map_error(refused),
-    )
+
+    // A reservation whose first start failed is refused admission as not
+    // created. That is final unless the start failed for want of room.
+    use delegated <- result.try(case asked {
+      Ok(delegated) -> Ok(delegated)
+      Error(manager.DelegateFailed(manager.NotInitialized) as error) ->
+        Error(reserved_refusal(context, spawner, parent, child, error))
+      Error(error) -> Error(refused(error))
+    })
+
     let opened = resident(context, delegated.session_id)
 
     // A session whose executor had no room is ended, so its slot and its failed
     // row are not held while the spawn is asked again, which makes a new one.
     case opened {
       Error(remote_spawn.NotYetOpen(reason:)) if reason == no_room_reason -> {
-        let _ended =
-          manager.release_delegate_child(
-            context.registry,
-            spawner.name,
-            parent.session,
-            child,
-            context.sessions_directory,
-          )
+        end_failed_child(context, spawner, parent, child)
         opened
       }
       _ -> opened
     }
+  }
+}
+
+/// Ends the pair's child session and its row, so the next ask places it afresh.
+/// A failure to end it is not reported: the next ask meets the same row and
+/// ends it again.
+fn end_failed_child(
+  context: Context(instance),
+  spawner: Spawner,
+  parent: Parent,
+  child: String,
+) -> Nil {
+  let _ended =
+    manager.release_delegate_child(
+      context.registry,
+      spawner.name,
+      parent.session,
+      child,
+      context.sessions_directory,
+    )
+  Nil
+}
+
+/// What an ask is told when its child's session is still a reservation.
+///
+/// The first ask that polls a failed start can only see the slot closing, which
+/// is `NotYetOpen` for a session that may yet open, so it leaves the row in
+/// place. The ask after it finds the slot gone and the row `Reserved` with the
+/// failure kept, and admission refuses that as not created. When the kept
+/// failure is an executor with no room, the pool is still only full: the row is
+/// ended as the first ask would have ended it and the sender is asked to come
+/// again. Any other failure keeps the refusal. A requested stub has no time to
+/// live, so the sender keeps asking a pool that never frees for as long as the
+/// parent session exists.
+fn reserved_refusal(
+  context: Context(instance),
+  spawner: Spawner,
+  parent: Parent,
+  child: String,
+  error: manager.DelegateError,
+) -> SpawnRefusal {
+  let found =
+    manager.delegate_child(
+      context.registry,
+      spawner.name,
+      parent.session,
+      child,
+    )
+
+  // Branch on whether the reservation's kept failure is a lack of room.
+  case kept_no_room(context, found) {
+    True -> {
+      end_failed_child(context, spawner, parent, child)
+      remote_spawn.NotYetOpen(reason: no_room_reason)
+    }
+    False -> refused(error)
+  }
+}
+
+/// Whether the pair's session is a reservation whose kept start failure is an
+/// executor with no room. An unreadable pair or session is not, so the refusal
+/// stands.
+fn kept_no_room(
+  context: Context(instance),
+  found: Result(Option(catalogue.Delegate), manager.Error),
+) -> Bool {
+  case found {
+    Ok(Some(row)) ->
+      case manager.get(context.registry, row.session_id) {
+        Ok(manager.View(status: manager.FailedStart(reason:, ..), ..)) ->
+          no_room(reason)
+        Ok(manager.View(..)) | Error(_) -> False
+      }
+    Ok(None) | Error(_) -> False
   }
 }
 

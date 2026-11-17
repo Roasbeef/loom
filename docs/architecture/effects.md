@@ -61,7 +61,7 @@ tool's requirements, field by field:
 
 - Root coverage is prefix-aware. A base root `/work` covers a requested
   `/work/sub`, and the result is the *requested*, narrower root.
-- The network lattice meets at `Off < Proxy < Full`.
+- The network lattice meets at `Off < Loopback < Proxy < Full`.
 - Each limit takes the per-field minimum, with `0` meaning unlimited.
 - Environment allowlists intersect as exact strings.
 - Protected paths union.
@@ -607,7 +607,14 @@ A protected path is removed from the view whatever its inode type. A
 directory, or a path that does not exist yet, is shadowed by an empty
 read-only tmpfs; a file is shadowed by a read-only bind of an empty
 device. Neither can be read through, written through, or created in.
-Under network-off, bwrap also unshares the network namespace.
+Under network-off, bwrap also unshares the network namespace. The
+namespace is not interface-less: bwrap brings `lo` up with `127.0.0.1/8`
+in it (`loopback_setup`, run when `--unshare-net` is given), so a jail has
+had a working loopback all along and only seccomp keeps a process from
+using it. There is no other interface that can carry traffic and no
+default route. (On some host kernels a fresh namespace also lists
+`tunl0`, `gre0` and similar tunnel devices that autoload with their
+modules; they are down and have no address.)
 
 ### Stage 2 and seccomp
 
@@ -639,10 +646,70 @@ the filesystem layers. Three further details matter:
   amd64, on any x32-ABI syscall. Both are classic filter bypasses.
 - Non-`AF_UNIX` socket creation fails with `EPERM` rather than a kill, so
   tools that probe for network and fall back keep working.
+- `io_uring_setup`, `io_uring_enter` and `io_uring_register` (425 to 427 on
+  both architectures) fail with `EPERM` in every mode that installs the
+  filter. The filter constrains socket creation by filtering the `socket`
+  system calls, and io_uring is a second way to ask the kernel for the same
+  operations that the filter does not see; standard container profiles deny
+  it for the same reason.
 
 Installation uses `SECCOMP_FILTER_FLAG_TSYNC` so the filter binds *every*
 thread of the Go runtime; without it, another thread could make the
 blocked call. A partial sync is an error, not a success.
+
+**Network mode `loopback`** ([protocol-change/115](../../protocol-change/115-network-loopback-mode.md))
+sits between off and proxy in the lattice. It is the same fresh namespace
+with a second seccomp program, and nothing else changes. It exists for an
+embedding host that has decided, for one kind of run, that processes of
+one execution must reach each other over TCP, as an integration test
+that starts two daemons does. Nothing in Loom selects it: no tool,
+profile or configuration, and `permissions.network` still accepts only
+`full`.
+
+| call | off | loopback |
+| --- | --- | --- |
+| `socket(AF_UNIX, ...)`, `socketpair(AF_UNIX, ...)` | allowed | allowed |
+| `socket(AF_INET, SOCK_STREAM, 0 or IPPROTO_TCP)` | `EPERM` | allowed |
+| `socket(AF_INET, ...)` with any other type or protocol (UDP, raw, SCTP, MPTCP) | `EPERM` | `EPERM` |
+| `socket(AF_INET6, ...)`, `AF_PACKET`, every `AF_NETLINK` family, anything else | `EPERM` | `EPERM` |
+| `socketpair` outside `AF_UNIX` | `EPERM` | `EPERM` |
+| `setsockopt(IPPROTO_TCP, TCP_ULP)` | n/a, no TCP socket | `EPERM` |
+
+The type argument is masked with `SOCK_TYPE_MASK` (`0xf`) before it is
+compared, so `SOCK_NONBLOCK` and `SOCK_CLOEXEC` do not change a verdict.
+The architecture check and the x32 kill are the same as in the off
+program, and the off program itself is byte-for-byte unchanged (a test
+pins it). `bind`, `listen` and `connect` are not filtered, as in off mode:
+seccomp cannot read the address, and the namespace bounds it. A connect to
+an address outside `127.0.0.0/8` has no route and fails with
+`ENETUNREACH`; a listener on the host's loopback, or in another jail, is
+unreachable because each jail has its own namespace.
+
+*What it costs.* The host kernel's TCP code becomes reachable from jailed
+code, through `socket`, `bind`, `listen`, `connect`, `accept`, `sendmsg`
+and `setsockopt` on IPv4 stream sockets. That is new kernel attack
+surface for model-influenced code. Netlink, raw and packet sockets, UDP,
+SCTP, MPTCP and the kernel TLS upgrade stay closed. A host should ask for
+this mode only for a kind of run where it has accepted that surface.
+
+*Preconditions.* Loopback mode runs only in a jail that holds no
+capabilities and cannot create a nested user namespace. For this mode
+alone the bwrap argv requires its own user namespace (`--unshare-user`,
+not the `-try` form), and adds `--disable-userns` and `--cap-drop ALL`;
+the off and full argv are unchanged. At startup the helper runs bwrap once
+with exactly those flags, and `jail.Start` refuses the mode, naming it,
+when that probe fails (a bwrap too old to know `--disable-userns`, or an
+environment where the hard `--unshare-user` fails). It never runs the mode
+with less.
+
+*Where it is enforced.* Only on Linux under bwrap, where the fresh
+namespace is what keeps the permitted sockets off the host network. The
+helper refuses the mode, with an error that names it, on Darwin (Seatbelt
+has no network namespace, and its profile is not changed), on the
+degraded Linux path with no bwrap (the host's namespace, where the filter
+alone would hand out host sockets), and on any other platform. The
+enforcement matrix demands the same `seccomp-net` layer as off; on Darwin
+that demand cannot be met.
 
 ### Resource limits
 
@@ -789,7 +856,8 @@ than hiding it. It lists what it has in `hello.features` and, per
 execution, in an `enforcement` list and a `degraded` flag, with entries
 such as `bwrap`, `mounts:ro=2,rw=1,mask=3,scratch=tmpfs,plan=…`,
 `landlock:abi=5`, `seccomp-net`, `seatbelt-net`, `rlimit-cpu`, and
-`skip:landlock: ...`. The broker's enforcement demand selects what to do
+`skip:landlock: ...`. (Both `off` and `loopback` report `seccomp-net`; the
+policy the broker sent says which program it was.) The broker's enforcement demand selects what to do
 about the report:
 
 - `PlatformEnforcement`, the production default, refuses a degraded

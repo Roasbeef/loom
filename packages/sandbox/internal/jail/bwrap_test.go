@@ -187,12 +187,68 @@ func TestBwrapArgsNetworkProxyUnsharesNet(t *testing.T) {
 	}
 }
 
+// Loopback mode is the off namespace with a different filter, so the
+// argv must carry --unshare-net: the filter admits TCP sockets, and the
+// fresh namespace is the only thing that keeps them off the host network.
+func TestBwrapArgsNetworkLoopbackUnsharesNet(t *testing.T) {
+	p := basePol()
+	p.Network = policy.Network{Mode: policy.NetworkLoopback}
+	found := false
+	for _, a := range BwrapArgs(p, nil, "") {
+		if a == "--unshare-net" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("--unshare-net missing under network loopback")
+	}
+}
+
+// Loopback mode requires its own user namespace in the hard form, no
+// nested user namespaces and an empty capability set; the off and full
+// argv carry none of that.
+func TestBwrapArgsLoopbackRequiresUserNamespaceAndNoCaps(t *testing.T) {
+	has := func(args []string, a string) bool {
+		for _, x := range args {
+			if x == a {
+				return true
+			}
+		}
+		return false
+	}
+	p := basePol()
+	p.Network = policy.Network{Mode: policy.NetworkLoopback}
+	args := BwrapArgs(p, nil, "")
+	for _, want := range []string{"--unshare-user", "--disable-userns", "--cap-drop", "ALL", "--unshare-net"} {
+		if !has(args, want) {
+			t.Errorf("loopback argv lacks %s: %v", want, args)
+		}
+	}
+	if has(args, "--unshare-user-try") {
+		t.Errorf("loopback argv still has the soft user namespace flag: %v", args)
+	}
+	for _, mode := range []policy.NetworkMode{policy.NetworkOff, policy.NetworkFull} {
+		q := basePol()
+		q.Network = policy.Network{Mode: mode}
+		other := BwrapArgs(q, nil, "")
+		for _, banned := range []string{"--disable-userns", "--cap-drop", "--unshare-user"} {
+			if has(other, banned) {
+				t.Errorf("%s argv carries %s", mode, banned)
+			}
+		}
+		if !has(other, "--unshare-user-try") {
+			t.Errorf("%s argv lost --unshare-user-try", mode)
+		}
+	}
+}
+
 func TestBlocksDirectNetwork(t *testing.T) {
 	cases := []struct {
 		mode policy.NetworkMode
 		want bool
 	}{
 		{policy.NetworkOff, true},
+		{policy.NetworkLoopback, true},
 		{policy.NetworkProxy, true},
 		{policy.NetworkFull, false},
 	}
