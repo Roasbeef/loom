@@ -1297,15 +1297,29 @@ daemon cannot be found, and the output says it must restart.
 #### What the link lacks today
 
 The link carries tool calls, foreground and background code mode, state
-transport, placed blobs and every owner callback. It does not carry the
-commands that non-tool callers run through the executor's broker, so these are
-refused for a session placed on such a guest:
+transport, placed blobs and every owner callback. It also carries the commands
+that non-tool callers run through the executor's broker, through the broker
+tunnel (protocol-change/117, wire version 5): for a session placed on an
+untrusted executor, `remote/workspace.build` sets the plane's `clear_call` to
+`untrusted_link.tunnel` (`client/remote/untrusted_link.gleam:523`), so these
+work on such a guest as they do over distribution:
 
-- project hooks;
 - goal checks;
-- the Changes tab and the session's Git baseline, which is probed once at the
-  first open and then stored as unavailable for the session's life;
-- the peer view of the worktree in multiplayer;
+- the Changes tab and the peer view of the worktree in multiplayer;
+- the session's Git baseline, which is probed through the tunnel at the first
+  open and stored as a revision.
+
+A session opened on an untrusted executor before the tunnel existed keeps the
+`unavailable` baseline it stored, because the baseline is never probed again
+after the first open.
+
+Two things are still refused for a session placed on such a guest:
+
+- imported hooks, because the plane's `hooks` is `HooksRefused`
+  (`client/remote/workspace.gleam:703`) and `serve.hook_clear_call`
+  (`client/serve.gleam:284`) then answers every hook command with
+  `BrokerUnavailable`; the proposal lists what a later change must build first
+  (protocol-change/117, "Hooks stay refused");
 - remote evolution, because the link sets the executor's evolution census to
   `Uncompiled`.
 
@@ -1315,7 +1329,10 @@ changed. `daemon_shipped_microvm_test` boots such a guest and runs a jailed
 call that settles on the guest's kernel, with these checks: the guest root has
 no `.erlang.cookie` and its `loom.toml` no `[distribution]` table, the host's
 epmd lists no node for it, a jailed read of the executor's key returns nothing
-while the certificate beside it is readable, and `status` names the link.
+while the certificate beside it is readable, and `status` names the link. A
+second jailed call edits the guest's checkout, and the step then checks the
+stored baseline is a revision, the `worktree_diff` board lists the edited
+paths, and a goal check on the guest passes.
 
 ## Package registries and toolchains: `--allow` and `--provision`
 

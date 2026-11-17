@@ -85,6 +85,17 @@
 ////   root, so the marker written by the first turn is still in the checkout and
 ////   the state disk is still there, and a new session on the resumed guest reads
 ////   the marker back.
+//// - A guest made with `--link untrusted` (protocol-change/109) serves what the
+////   broker tunnel carries (protocol-change/117), through the daemon's own
+////   session assembly. After a jailed `bash` call edits a tracked file and adds
+////   one, the session's stored `session/git-start` is a revision and not
+////   `unavailable`, the `worktree_diff` observation is a ready board listing
+////   both paths, and a goal whose check tests for the new file completes with
+////   the check recorded at exit status 0 with the guest's own output, which the
+////   reviewer's feed repeats. On a tree without the tunnel the baseline is
+////   `unavailable`, the board is `failed` with the broker's refusal, and the
+////   check is refused. Hooks stay refused there and no step observes it: that
+////   needs a trust record fixture, and `untrusted_end_to_end_test` covers it.
 ////
 //// ## Running it
 ////
@@ -119,16 +130,20 @@
 ////   assertions.
 
 import broker/token
+import client/advisorslice
 import client/authority_key
 import client/distribution_bundle
 import client/executor_reload
+import client/session_git
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/vm_spec
 import core/json
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/string
 import host/bootstrap as native
@@ -138,6 +153,7 @@ import support/internal/ffi_proc
 import support/provider_http as provider
 import support/remote_daemons
 import support/remote_pair
+import tools/advise
 import weft
 import weft/poll
 
@@ -2455,75 +2471,104 @@ fn untrusted_guest(run: Run) -> Nil {
   let exchanges = [
     bash_exchange(untrusted_prompt, "untrusted-call", untrusted_command()),
     reply_after("untrusted-call", untrusted_answer),
+    bash_exchange(tunnel_prompt, "tunnel-call", tunnel_command()),
+    reply_after("tunnel-call", tunnel_answer),
   ]
-  let #(key, report) =
-    provider.with_server_for(
-      exchanges,
+
+  // The goal's reviewer is a second scripted provider, as in the remote goal
+  // test: the verdict is not under test, the check's result is.
+  let #(#(key, report), reviewer) =
+    provider.with_watched_server(
+      tunnel_reviewer(),
       provider.OnlySuccessful,
       600_000,
-      fn(url) {
-        // The file starts with only the model table a daemon needs, which is
-        // what a developer's own file would hold.
-        let assert Ok(Nil) =
-          simplifile.write(layout.config, remote_daemons.model_table(url))
-          as "the orchestrator's configuration is written"
-        let model = read_file(layout.config)
+      fn(reviewer_url, reviewer_watch) {
+        provider.with_server_for(
+          exchanges,
+          provider.OnlySuccessful,
+          580_000,
+          fn(url) {
+            // The file starts with only the model tables a daemon needs, which
+            // is what a developer's own file would hold.
+            let assert Ok(Nil) =
+              simplifile.write(
+                layout.config,
+                remote_pair.models(url, option.Some(reviewer_url)),
+              )
+              as "the orchestrator's configuration is written"
+            let model = read_file(layout.config)
 
-        let output =
-          expect_ok(
-            vm(run, ["up", "--link", "untrusted", ..flags]),
-            "loom vm up --link untrusted",
-          )
-        io.println_error(label <> " vm up (untrusted):\n" <> output)
-        let guest = run.vm_home <> "/" <> name
-        let port = untrusted_port(guest)
-        assert string.contains(
-          output,
-          "serves its executor over the untrusted link at 127.0.0.1:" <> port,
+            let output =
+              expect_ok(
+                vm(run, ["up", "--link", "untrusted", ..flags]),
+                "loom vm up --link untrusted",
+              )
+            io.println_error(label <> " vm up (untrusted):\n" <> output)
+            let guest = run.vm_home <> "/" <> name
+            let port = untrusted_port(guest)
+            assert string.contains(
+              output,
+              "serves its executor over the untrusted link at 127.0.0.1:"
+                <> port,
+            )
+            assert_untrusted_files(run, guest, port, model)
+
+            // An orchestrator started on that file reads the rows and dials
+            // the guest, with no distribution options file and no cookie.
+            let running = remote_daemons.start_plain(layout)
+            let control = remote_daemons.open_control(running)
+            let #(session, settled) =
+              remote_daemons.create_and_settle(
+                control,
+                1,
+                "untrusted-guest",
+                name,
+                remote_pair.workspace_name,
+              )
+            assert remote_daemons.settled_state(settled) == "resident"
+
+            // The daemon's deployment read lists the untrusted row by name,
+            // which is how `ensure` tells that a daemon has read the row.
+            let shown =
+              string.inspect(remote_daemons.command(
+                control,
+                20,
+                "deployment.status",
+                json.Object([]),
+              ))
+            io.println_error(
+              label <> " deployment.status (untrusted):\n" <> shown,
+            )
+            assert string.contains(shown, name)
+
+            second_guest_after_reload(run, flags, name, running, control)
+
+            let opened =
+              remote_pair.Opened(orchestrator: running, control:, session:)
+            remote_pair.converse_for(opened, untrusted_prompt, [
+              untrusted_answer,
+            ])
+
+            // The three things the broker tunnel serves, on this session. A
+            // second turn edits the guest's checkout, and the transcript
+            // carries both answers.
+            remote_pair.converse_for(opened, tunnel_prompt, [
+              untrusted_answer,
+              tunnel_answer,
+            ])
+            tunnel_serves(run, opened, reviewer_watch)
+
+            remote_daemons.stop_session(running, control, 100, session)
+            remote_pair.close_daemons([running])
+            remote_daemons.retire(layout.paths)
+
+            // The key is read now, because the removal below deletes the root.
+            let key =
+              read_file(guest <> "/root" <> node_dir <> "/creds/key.pem")
+            untrusted_daily_verbs(run, guest, port, flags)
+            key
+          },
         )
-        assert_untrusted_files(run, guest, port, model)
-
-        // An orchestrator started on that file reads the rows and dials the
-        // guest, with no distribution options file and no cookie.
-        let running = remote_daemons.start_plain(layout)
-        let control = remote_daemons.open_control(running)
-        let #(session, settled) =
-          remote_daemons.create_and_settle(
-            control,
-            1,
-            "untrusted-guest",
-            name,
-            remote_pair.workspace_name,
-          )
-        assert remote_daemons.settled_state(settled) == "resident"
-
-        // The daemon's deployment read lists the untrusted row by name, which
-        // is how `ensure` tells that a daemon has read the row.
-        let shown =
-          string.inspect(remote_daemons.command(
-            control,
-            20,
-            "deployment.status",
-            json.Object([]),
-          ))
-        io.println_error(label <> " deployment.status (untrusted):\n" <> shown)
-        assert string.contains(shown, name)
-
-        second_guest_after_reload(run, flags, name, running, control)
-
-        remote_pair.converse_for(
-          remote_pair.Opened(orchestrator: running, control:, session:),
-          untrusted_prompt,
-          [untrusted_answer],
-        )
-        remote_daemons.stop_session(running, control, 100, session)
-        remote_pair.close_daemons([running])
-        remote_daemons.retire(layout.paths)
-
-        // The key is read now, because the removal below deletes the root.
-        let key = read_file(guest <> "/root" <> node_dir <> "/creds/key.pem")
-        untrusted_daily_verbs(run, guest, port, flags)
-        key
       },
     )
 
@@ -2532,6 +2577,12 @@ fn untrusted_guest(run: Run) -> Nil {
   let result = remote_daemons.result_text(requests, "untrusted-call")
   io.println_error(label <> " untrusted tool result:\n" <> result)
   assert_untrusted_turn(key, result)
+  let edited = remote_daemons.result_text(requests, "tunnel-call")
+  io.println_error(label <> " tunnel edit tool result:\n" <> edited)
+  assert string.contains(edited, "edit_status=0")
+  let assert Ok(feeds) = reviewer
+    as "the reviewer saw the goal's feed and nothing else"
+  assert_tunnel_feed(feeds)
 }
 
 // A second guest on the untrusted link, brought up while the daemon of the
@@ -2797,6 +2848,240 @@ fn untrusted_daily_verbs(
   assert string.contains(after, "[models.fixture]")
   assert simplifile.is_directory(guest) == Ok(False)
   assert simplifile.is_directory(run.vm_home <> "/link") == Ok(False)
+  Nil
+}
+
+// --- what the broker tunnel serves (protocol-change/117) -----------------------
+
+const tunnel_prompt = "edit the checkout of the untrusted guest"
+
+const tunnel_answer = "edited in the untrusted guest"
+
+// The file the jailed edit creates and the goal's check looks for. README.md is
+// tracked in the guest's copy (the daily steps read its first line), so
+// appending to it is a change to a tracked file.
+const tunnel_file = "tunnel-check.txt"
+
+const tunnel_word = "tunnel-check-passed"
+
+const tunnel_objective = "check the checkout of the untrusted guest"
+
+// The edit prints what it did and what Git there says about it, and ends with
+// `true`, so the tool result is a successful one whatever a step reported.
+fn tunnel_command() -> String {
+  "echo tunnel-edit >> README.md; echo edit_status=$?; "
+  <> "echo tunnel-target > "
+  <> tunnel_file
+  <> "; echo file_status=$?; git status --short 2>&1; true"
+}
+
+fn tunnel_check() -> String {
+  "test -f " <> tunnel_file <> " && echo " <> tunnel_word <> " $(pwd)"
+}
+
+// The reviewer's one answer: a verdict of complete after one feed, which ends
+// the goal whatever the check said.
+fn tunnel_reviewer() -> List(provider.Exchange) {
+  [
+    provider.ComputedExchange(
+      provider.AwaitPromptPrefix(advisorslice.goal_feed_header),
+      fn(_seen) {
+        provider.ReplyToolUse(
+          "tunnel-advise",
+          advise.name,
+          json.Object([
+            #("verdict", json.String("complete")),
+            #("text", json.String("reviewed")),
+          ]),
+        )
+      },
+    ),
+    reply_after("tunnel-advise", "noted"),
+  ]
+}
+
+// The three things a session on an untrusted executor gets through the broker
+// tunnel, each observed the way the product observes it: the baseline in the
+// orchestrator's store, the Changes tab through the session socket's
+// `worktree_diff`, and the goal check through `goal_set` and `goal_get`. The
+// jailed edit has already run, and the session is idle.
+fn tunnel_serves(
+  run: Run,
+  opened: remote_pair.Opened,
+  reviewer_watch: provider.Watch,
+) -> Nil {
+  assert_tunnel_baseline(run, opened.session)
+
+  let socket = remote_pair.session_socket(opened)
+  assert_tunnel_board(tunnel_board(socket))
+
+  let socket = tunnel_pin_goal(socket)
+  let board = tunnel_await_goal(socket, 900, json.Null)
+  assert_tunnel_check(board)
+
+  // The board turns `complete` when the reviewer's `advise` call is judged,
+  // which is before the reviewer's turn is over. Stopping the session on the
+  // board alone races the reviewer's last request, so the provider's own
+  // record is the barrier.
+  let assert Ok(Nil) = provider.await_exhausted(reviewer_watch, 60_000)
+    as "the reviewer's closing turn reached its provider"
+  Nil
+}
+
+// Without the tunnel the probe's answer is refused, so the stored baseline is
+// `unavailable` with the refusal's text, and `kind` is not `revision`.
+fn assert_tunnel_baseline(run: Run, session: String) -> Nil {
+  let pair =
+    remote_pair.Pair(
+      directory: run.directory,
+      orchestrator: run.untrusted,
+      executor: run.untrusted,
+      checkout: "",
+    )
+  let assert option.Some(start) =
+    remote_pair.session_fact(pair, session, session_git.key)
+    as "the orchestrator stored a baseline for the session"
+  let shown = json.to_string(start)
+  io.println_error(label <> " session baseline: " <> shown)
+  assert remote_daemons.field(start, "kind") == json.String("revision")
+    as { "the session's baseline is a revision, stored as " <> shown }
+  let assert json.String(revision) = remote_daemons.field(start, "value")
+    as { "the revision is a string, stored as " <> shown }
+  assert string.length(revision) == 40
+    as { "the revision is a commit id, stored as " <> shown }
+  Nil
+}
+
+// The worktree observation answers its command with a pending board and pushes
+// the finished one, which is `ready` or `failed`. Both end the wait, so a
+// refusal is read as a refusal and not as a timeout.
+fn tunnel_board(socket: remote_pair.SessionSocket) -> json.JsonValue {
+  let #(acknowledged, socket) =
+    remote_pair.session_command(socket, "worktree_diff", json.Object([]))
+  let pending =
+    remote_daemons.field(remote_daemons.field(acknowledged, "body"), "board")
+  assert remote_daemons.field(pending, "status") == json.String("pending")
+    as { "the observation is accepted, answered " <> json.to_string(pending) }
+  next_final_board(socket, 20)
+}
+
+fn next_final_board(
+  socket: remote_pair.SessionSocket,
+  remaining: Int,
+) -> json.JsonValue {
+  assert remaining > 0
+    as "the worktree board arrives in a bounded run of frames"
+  let board = case remote_pair.next_frame(socket) {
+    json.Object(fields) ->
+      case list.key_find(fields, "body") {
+        Ok(json.Object(body)) -> list.key_find(body, "board")
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+  case board {
+    Ok(json.Object(fields) as found) ->
+      case list.key_find(fields, "status") {
+        Ok(json.String("ready")) | Ok(json.String("failed")) -> found
+        _ -> next_final_board(socket, remaining - 1)
+      }
+    _ -> next_final_board(socket, remaining - 1)
+  }
+}
+
+// Without the tunnel the board is `failed`, with the broker's refusal as its
+// message, and lists no entry.
+fn assert_tunnel_board(board: json.JsonValue) -> Nil {
+  let shown = json.to_string(board)
+  io.println_error(label <> " worktree board: " <> shown)
+  assert remote_daemons.field(board, "status") == json.String("ready")
+    as { "the Changes tab is a ready board, read " <> shown }
+  let assert json.Array(entries) = remote_daemons.field(board, "entries")
+    as { "the board lists entries, read " <> shown }
+  let paths =
+    list.filter_map(entries, fn(entry) {
+      case remote_daemons.field(entry, "path") {
+        json.String(path) -> Ok(path)
+        _ -> Error(Nil)
+      }
+    })
+  assert list.contains(paths, "README.md")
+    as { "the tracked file the jail edited is listed, read " <> shown }
+  assert list.contains(paths, tunnel_file)
+    as { "the file the jail created is listed, read " <> shown }
+  Nil
+}
+
+fn tunnel_pin_goal(
+  socket: remote_pair.SessionSocket,
+) -> remote_pair.SessionSocket {
+  let #(reply, socket) =
+    remote_pair.session_command(
+      socket,
+      "goal_set",
+      json.Object([
+        #("objective", json.String(tunnel_objective)),
+        #("token_budget", json.Int(100_000)),
+        #("check", json.String(tunnel_check())),
+      ]),
+    )
+  assert remote_daemons.field(reply, "event") != json.String("error")
+    as { "the goal is pinned, answered " <> json.to_string(reply) }
+  socket
+}
+
+// Reads the goal until it is complete, up to `remaining` reads a tenth of a
+// second apart. A goal that never gets there fails with the last board, which
+// says whether a check ran and what it read.
+fn tunnel_await_goal(
+  socket: remote_pair.SessionSocket,
+  remaining: Int,
+  last: json.JsonValue,
+) -> json.JsonValue {
+  assert remaining > 0
+    as {
+      "the goal completes, and the last board read was " <> json.to_string(last)
+    }
+  let #(reply, socket) =
+    remote_pair.session_command(socket, "goal_get", json.Object([]))
+  let board = remote_daemons.field(remote_daemons.field(reply, "body"), "board")
+  case remote_daemons.field(board, "status") == json.String("complete") {
+    True -> board
+    False -> {
+      process.sleep(100)
+      tunnel_await_goal(socket, remaining - 1, board)
+    }
+  }
+}
+
+// Without the tunnel the check is refused: the goal never records a status 0,
+// and `not_finished` names the refusal.
+fn assert_tunnel_check(board: json.JsonValue) -> Nil {
+  let shown = json.to_string(board)
+  io.println_error(label <> " goal board: " <> shown)
+  let ran = remote_daemons.field(board, "last_check")
+  assert remote_daemons.field(ran, "command") == json.String(tunnel_check())
+    as { "the check that ran is the one pinned, read " <> shown }
+  assert remote_daemons.field(ran, "status") == json.Int(0)
+    as { "the check passed on the guest, read " <> shown }
+  assert remote_daemons.field(ran, "not_finished") == json.Null
+    as { "the check settled, read " <> shown }
+  let assert json.String(output) = remote_daemons.field(ran, "output")
+    as { "the check carries its output, read " <> shown }
+  assert string.contains(output, tunnel_word)
+    as { "the check's output is the guest's, read " <> shown }
+  Nil
+}
+
+// What the reviewer was shown: the check's pass and the guest's own output.
+fn assert_tunnel_feed(feeds: List(provider.ObservedRequest)) -> Nil {
+  let bodies =
+    list.map(feeds, fn(request) { remote_pair.request_text(request.body) })
+  let assert Ok(feed) = list.find(bodies, string.contains(_, tunnel_objective))
+    as "the reviewer was fed the goal"
+  assert string.contains(feed, "exit status 0")
+  assert string.contains(feed, "(the check passed)")
+  assert string.contains(feed, tunnel_word)
   Nil
 }
 
