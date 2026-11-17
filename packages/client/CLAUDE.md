@@ -123,7 +123,7 @@ wire and both protocol numbers (`untrusted_link.version_mismatch`); when the
 protocol versions agree the waiting requests are refused `Unreachable` with a
 text naming both wire versions, otherwise `VersionMismatch(supported: theirs)`.
 
-The broker tunnel (protocol-change/117, slice 3). An untrusted placement's
+The broker tunnel (protocol-change/117). An untrusted placement's
 `WorkspacePlane.clear_call` is `untrusted_link.tunnel(executor, session)`
 (`remote/workspace.build`; a trusted one keeps `clear_call.over_broker`), and
 its `hooks` is `HooksRefused`, so `serve.hook_clear_call` gives imported hooks a

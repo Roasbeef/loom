@@ -2733,7 +2733,7 @@ fn tunnel_or(
   body: json.JsonValue,
   next: fn() -> sm.Next(Phase, Data, Message),
 ) -> sm.Next(Phase, Data, Message) {
-  // A response for a tunnel id the table no longer holds falls through to
+  // A response for a tunnel id the table does not hold falls through to
   // `responded`, which drops it as it drops any response that crossed a
   // removal.
   case tunnel_calls.holds(data.calls, id) {

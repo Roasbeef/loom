@@ -16,8 +16,8 @@
 //// its capability call reaches the owner while it runs, and its value comes
 //// back to the record's worker. The worker's death stops it on the executor.
 ////
-//// The broker tunnel (protocol-change/117) takes the same trip for the
-//// session's non-tool callers, into a plane whose broker is the production
+//// The broker tunnel (protocol-change/117) carries the session's non-tool
+//// callers over the same link and gateway, into a plane whose broker is the production
 //// broker over a real helper: a goal check, the baseline probe, the worktree
 //// diff after a jailed edit and the peer observation each return what the
 //// executor's repository holds, and an imported hook stays refused.
@@ -950,7 +950,7 @@ pub fn a_goal_check_runs_through_the_tunnel_test() {
   assert failed.ending == goalstate.Exited(3)
 }
 
-// A hook on an untrusted placement is refused, as before the tunnel, though
+// A hook on an untrusted placement is refused, though
 // the same plane's clearing function serves the goal check and Git.
 pub fn a_hook_on_an_untrusted_placement_is_refused_test() {
   use tunnel <- with_tunnel("hook")
