@@ -95,13 +95,16 @@
 ////   up beside a running orchestrator, which reads it through
 ////   `executors.reload` (protocol-change/116), and refuses
 ////   `--link distribution`.
-//// - `loom vm ensure` with no `--config`, which is what `loom --vm` runs,
-////   boots a guest beside a daemon already running on the isolated home's
-////   default `loom.toml`, ends with its `executor=NAME workspace=NAME` line,
-////   and that same daemon process lists the guest without a restart, through
-////   `executors.reload`. A second `ensure` takes the fast path, and `rm` takes
-////   the row out again with the daemon still running. The step runs only when
-////   the launcher's home is the fixture's own (`isolated_home`).
+//// - `loom vm ensure` with no `--config` and the default vm home
+////   (`~/.loom/vm` of the isolated home), which is what `loom --vm` runs,
+////   boots a guest beside a daemon already running on that home's default
+////   `loom.toml` with no `[executor_link]`, ends with its `executor=NAME
+////   workspace=NAME` line, and that same daemon process takes the new table
+////   and lists the guest without a restart, through `executors.reload`. A
+////   second `ensure` takes the fast path, and `rm` of that vm home's last guest
+////   takes the row, `[executor_link]` and the link credentials out again with
+////   the daemon still running. The step runs only when the launcher's home is
+////   the fixture's own (`isolated_home`).
 //// - A guest an older loom made as a distribution peer is refused. Its
 ////   host-side traces are fabricated under the isolated vm home (bundles in
 ////   `deploy/`, and for a second one a `link` record saying `distribution`;
@@ -438,9 +441,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
   let _failing_stopped = vm(run, ["down", "--name", run.failing_name])
   let _untrusted_stopped = vm(run, ["down", "--name", run.untrusted_name])
   let _second_stopped = vm(run, ["down", "--name", second_untrusted_name(run)])
-  let _default_stopped =
-    vm(run, ["down", "--name", vm_spec.guest_name_for(default_workspace(run))])
-  retire_default_daemon(run)
+  default_teardown(run)
   remote_daemons.retire(run.untrusted.paths)
   remote_daemons.retire(run.orchestrator.paths)
   let assert [weft.Completed(0, Nil)] = outcomes
@@ -1637,7 +1638,7 @@ fn old_guests_are_refused(run: Run) -> Nil {
   io.println_error(label <> " vm up (old guest):\n" <> refused.output)
   assert refused.status == 1
     as { "up of an old guest exits 1:\n" <> refused.output }
-  assert_names_the_way_on(refused.output, up_name)
+  assert_names_the_way_on(run, refused.output, up_name)
 
   // `ensure`, which is what `loom --vm` runs: the same refusal with status 1
   // and no answer line, so the launcher reads it as a failure.
@@ -1654,7 +1655,7 @@ fn old_guests_are_refused(run: Run) -> Nil {
   io.println_error(label <> " vm ensure (old guest):\n" <> ensured.output)
   assert ensured.status == 1
     as { "ensure of an old guest exits 1:\n" <> ensured.output }
-  assert_names_the_way_on(ensured.output, ensure_name)
+  assert_names_the_way_on(run, ensured.output, ensure_name)
   assert !string.contains(ensured.output, "executor=")
     as { "ensure prints no answer line:\n" <> ensured.output }
 
@@ -1711,16 +1712,24 @@ fn old_guests_are_refused(run: Run) -> Nil {
 
 // The refusal says why, and names `sync`, `rm` and `up` for the guest, in that
 // order.
-fn assert_names_the_way_on(output: String, name: String) -> Nil {
+fn assert_names_the_way_on(run: Run, output: String, name: String) -> Nil {
   assert string.contains(output, "trusted distribution peer of your daemon")
     as { "the refusal says why:\n" <> output }
+  let copies = run.vm_home <> "/" <> name <> "/root/srv/workspaces/"
   let sync = "`loom vm sync --name " <> name <> "`"
   let rm = "`loom vm rm --name " <> name <> " --yes`"
   let up = "`loom vm up --name " <> name <> "`"
   let assert [_, after_sync] = string.split(output, sync)
     as { "the refusal names " <> sync <> " once:\n" <> output }
-  let assert [_, after_rm] = string.split(after_sync, rm)
+  let assert [between, after_rm] = string.split(after_sync, rm)
     as { "the refusal names " <> rm <> " after sync:\n" <> output }
+
+  // Between them, the real directory of the guest's copies and the `down` a
+  // running guest needs.
+  assert string.contains(between, copies)
+    as { "the refusal names " <> copies <> ":\n" <> output }
+  assert string.contains(between, "`loom vm down --name " <> name <> "`")
+    as { "the refusal names `loom vm down`:\n" <> output }
   assert string.contains(after_rm, up)
     as { "the refusal names " <> up <> " last:\n" <> output }
 }
@@ -1760,19 +1769,37 @@ fn default_workspace(run: Run) -> String {
   run.directory <> "/defaultws"
 }
 
-// What every `loom --vm` takes: `loomd vm ensure` with no `--config`, against
-// the default `loom.toml` of a daemon that already runs. `ensure` boots the
-// guest, writes its row into that file, finds the daemon through its endpoint
-// record, sees that it does not list the guest, and asks it to reload
-// (protocol-change/116). The step checks the answer line, that the same daemon
-// process still runs (its fence is the pid and birth marker it started with),
-// that it now lists the guest, and that `rm` of the guest drops the row again.
-// It runs only when the launcher's home is the fixture's own.
+// The run as the default-daemon step sees it: the vm home is the isolated
+// home's `~/.loom/vm`, the default every `loom --vm` user has. A daemon that
+// started with no `[executor_link]` takes a proposed table on a reload only
+// when its files are under that directory or the state root's `vm`
+// (`executor_reload.link_rule`), so a vm home elsewhere, like the fixture's
+// own, would be refused the reload by design.
+fn default_run(run: Run, home: String) -> Run {
+  Run(..run, vm_home: home <> "/.loom/vm")
+}
+
+// What every `loom --vm` takes: `loomd vm ensure` with no `--config` and the
+// default vm home, against the default `loom.toml` of a daemon that already
+// runs and holds no `[executor_link]`. `ensure` mints the link credentials,
+// boots the guest, writes `[executor_link]` and its row into that file, finds
+// the daemon through its endpoint record, sees that it does not list the
+// guest, and asks it to reload (protocol-change/116). The step checks the
+// answer line, that the reload was not refused, that the same daemon process
+// still runs (its fence is the pid and birth marker it started with), that it
+// now lists the guest, and that `rm` of this vm home's last guest takes the
+// row, `[executor_link]` and the credentials out again with the daemon
+// running. It runs only when the launcher's home is the fixture's own.
 fn default_daemon_reads_the_guest(run: Run) -> Nil {
   case isolated_home(run) {
     Error(reason) ->
       io.println_error("SKIP " <> label <> " default daemon: " <> reason)
     Ok(home) -> {
+      let run = default_run(run, home)
+      let assert Ok(Nil) = native.ensure_private_directory(run.vm_home)
+        as "the default vm home is private"
+      setup_manifest(run)
+
       let workspace = default_workspace(run)
       let assert Ok(Nil) = simplifile.create_directory_all(workspace)
         as "the default step's repository directory is created"
@@ -1793,7 +1820,8 @@ fn default_daemon_reads_the_guest(run: Run) -> Nil {
       ])
       let name = vm_spec.guest_name_for(workspace)
 
-      // The daemon reads the default file, which holds a model it never calls.
+      // The daemon reads the default file, which holds a model it never calls
+      // and no `[executor_link]`.
       let paths = default_paths(home)
       let config = home <> "/.loom/loom.toml"
       let assert Ok(Nil) =
@@ -1821,14 +1849,21 @@ fn default_daemon_reads_the_guest(run: Run) -> Nil {
         label <> " vm ensure (default daemon):\n" <> ensured.output,
       )
       assert ensured.status == 0 as { "ensure exits 0:\n" <> ensured.output }
+      assert !string.contains(ensured.output, "refused to reload")
+        as { "the daemon took the reload:\n" <> ensured.output }
       let answer = vm_spec.ensure_line(name, "defaultws")
       assert list.contains(
         string.split(ensured.output, "\n") |> list.map(string.trim),
         answer,
       )
         as { "ensure ends with " <> answer <> ":\n" <> ensured.output }
-      assert string.contains(read_file(config), "[executors." <> name <> "]")
-        as { "ensure wrote the guest's row into the default file" }
+      let written = read_file(config)
+      assert string.contains(written, "[executors." <> name <> "]")
+        as {
+          "ensure wrote the guest's row into the default file:\n" <> written
+        }
+      assert string.contains(written, "[executor_link]")
+        as { "ensure wrote the link table into the default file:\n" <> written }
 
       // The same process runs, and it reads the row without a restart.
       assert endpoint.is_present(fence) == Ok(True)
@@ -1851,8 +1886,8 @@ fn default_daemon_reads_the_guest(run: Run) -> Nil {
       assert string.contains(again.output, "already serving")
         as { "the second ensure takes the fast path:\n" <> again.output }
 
-      // `rm` takes the row out of the default file and asks the same daemon to
-      // drop the link.
+      // `rm` of the vm home's last guest takes its row, `[executor_link]` and
+      // the link credentials out, and asks the same daemon to drop the link.
       let down = vm(run, ["down", "--name", name])
       assert string.contains(down.output, "Stopped the guest " <> name)
         as { "the default step's guest stops:\n" <> down.output }
@@ -1862,8 +1897,13 @@ fn default_daemon_reads_the_guest(run: Run) -> Nil {
           "loom vm rm of the default step's guest",
         )
       io.println_error(label <> " vm rm (default daemon):\n" <> removed)
-      assert !string.contains(read_file(config), "[executors." <> name <> "]")
-        as { "rm took the row out of the default file" }
+      let after_rm = read_file(config)
+      assert !string.contains(after_rm, "[executors." <> name <> "]")
+        as { "rm took the row out of the default file:\n" <> after_rm }
+      assert !string.contains(after_rm, "[executor_link]")
+        as { "rm took the link table out with the last guest:\n" <> after_rm }
+      assert simplifile.is_directory(run.vm_home <> "/link") == Ok(False)
+        as "rm took the default vm home's link credentials"
       assert endpoint.is_present(fence) == Ok(True)
         as "the default daemon still runs after rm"
       let after =
@@ -1881,12 +1921,23 @@ fn default_daemon_reads_the_guest(run: Run) -> Nil {
   }
 }
 
-// Retires a daemon the default-daemon step left on the isolated home, by the
-// pid and birth marker its own endpoint record holds.
-fn retire_default_daemon(run: Run) -> Nil {
+// What a failed default-daemon step can leave on the isolated home: its guest
+// running under the default vm home, its daemon, and the vm home itself, which
+// holds a guest root of read-only directories and is outside the fixture's
+// own directory.
+fn default_teardown(run: Run) -> Nil {
   case isolated_home(run) {
     Error(_) -> Nil
-    Ok(home) -> remote_daemons.retire(default_paths(home))
+    Ok(home) -> {
+      let run = default_run(run, home)
+      let name = vm_spec.guest_name_for(default_workspace(run))
+      let _stopped = vm(run, ["down", "--name", name])
+      remote_daemons.retire(default_paths(home))
+      let assert Ok(chmod) = ffi_proc.which("chmod") as "chmod is on PATH"
+      let _writable = ffi_proc.run(chmod, ["-R", "u+w", run.vm_home], in: ".")
+      let _removed = simplifile.delete_all([run.vm_home])
+      Nil
+    }
   }
 }
 
@@ -1967,19 +2018,25 @@ fn install_artifacts(run: Run) -> Nil {
   link(run.artifacts.runner, build <> "/go-microvm-runner")
   link(run.artifacts.firmware_dir, build <> "/firmware")
   link(run.artifacts.guest_root, build <> "/guest-root")
+  setup_manifest(run)
+}
 
+// Writes the manifest of the build tree `install_artifacts` made into the run's
+// vm home, with `loom-vm setup --from-build`. A run with another vm home calls
+// this again for its own.
+fn setup_manifest(run: Run) -> Nil {
   let output =
     expect_ok(
       vm_launcher(run, [
         "setup",
         "--from-build",
-        build,
+        run.directory <> "/build",
         "--lib-dir",
         run.artifacts.lib_dir,
       ]),
       "loom-vm setup --from-build",
     )
-  io.println_error(label <> " manifest:\n" <> output)
+  io.println_error(label <> " manifest (" <> run.vm_home <> "):\n" <> output)
 }
 
 fn link(target: String, path: String) -> Nil {
