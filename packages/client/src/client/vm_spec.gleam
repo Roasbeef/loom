@@ -2375,7 +2375,9 @@ pub fn unchecked_revoke_line(name: String) -> String {
   "Not checked: the link graph, whether "
   <> name
   <> " owns sessions or has sessions placed on it, and the directory's voters, "
-  <> "because a guest made over distribution can no longer be started."
+  <> "because a guest made over distribution can no longer be started. "
+  <> "Sessions placed on it stay in the catalogue, and a new guest of the same "
+  <> "name serves them."
 }
 
 /// The refusal `rm` gives when the revoke of a guest made over distribution

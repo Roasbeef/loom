@@ -245,7 +245,7 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             remains. A guest an older loom made as a distribution peer loses
             its [executors.NAME], and the [distribution] table and the home's
             .erlang.cookie only when they are this guest's deployment's and no
-            other [executors.*] table remains; otherwise rm leaves them and
+            other trusted [executors.*] table remains; otherwise rm leaves them and
             says so. Such a guest that joined a ledger deployment is revoked
             with the key, when it is on this machine, and otherwise rm prints
             the revoke to run; one that others joined is removed last. Every
@@ -2305,7 +2305,7 @@ fn link_of(guest: Instance, name: String) -> Result(vm_spec.LinkKind, String) {
     vm_link.made(record, traces)
     |> result.map_error(fn(reason) { guest.kind_file <> ": " <> reason }),
   )
-  vm_link.settle(name, record, traces)
+  vm_link.settle(name, guest.directory, record, traces)
 }
 
 /// What a first `up` left in the guest's directory before it recorded a link:
@@ -5406,10 +5406,21 @@ fn signed_revoke(
   )
   let checked = vm_spec.unchecked_revoke_line(name)
 
-  // An entry no daemon took is in the operator's copy, which is reported.
+  // An entry no daemon took is in the operator's copy, which is reported with
+  // what waiting costs: a daemon whose ledger still enrols the name refuses
+  // every reload while an untrusted row of that name exists (`unshadowed` in
+  // `daemon/main`), so each later guest falls back to the stop-or-name path.
   let took = case ledger_cli.delivered(signed) {
     Ok(where_) -> "Handed to " <> where_ <> "."
-    Error(reason) -> "Not handed to a daemon: " <> reason
+    Error(reason) ->
+      "Not handed to a daemon: "
+      <> reason
+      <> " Until it is imported the daemon's ledger still enrols "
+      <> name
+      <> ", so once a new guest "
+      <> name
+      <> " exists the daemon refuses every executors.reload and each new "
+      <> "guest stops an idle daemon or asks for its restart."
   }
 
   [

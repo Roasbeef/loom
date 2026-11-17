@@ -388,9 +388,12 @@ and `ensure` refuse them naming the three commands and change no file, that
 `status` and `list` call them distribution guests, and that `rm --yes` removes
 them, taking one's `[distribution]` table and trusted row out of a file whose
 untrusted row and other lines stay. A default-daemon step runs `vm ensure` with
-no `--config` beside a daemon on the isolated home's default file and checks
-the answer line, that the same daemon process lists the guest after the
-reload, the fast path of a second `ensure`, and `rm` with the daemon running.
+no `--config` and the default vm home (`~/.loom/vm` of the isolated home)
+beside a daemon on that home's default file with no `[executor_link]`, and
+checks the answer line, that the reload was not refused, that the same daemon
+process lists the guest after it, the fast path of a second `ensure`, and `rm`
+of that vm home's last guest, which takes `[executor_link]` and the
+credentials too, with the daemon running.
 The first guest is removed last, and takes `[executor_link]` and
 `<vm home>/link/` with it. It does not observe that hooks stay refused, which
 needs a trust record fixture; `remote/untrusted_end_to_end_test` covers it.

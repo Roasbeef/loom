@@ -3811,7 +3811,7 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             remains. A guest an older loom made as a distribution peer loses
             its [executors.NAME], and the [distribution] table and the home's
             .erlang.cookie only when they are this guest's deployment's and no
-            other [executors.*] table remains; otherwise rm leaves them and
+            other trusted [executors.*] table remains; otherwise rm leaves them and
             says so. Such a guest that joined a ledger deployment is revoked
             with the key, when it is on this machine, and otherwise rm prints
             the revoke to run; one that others joined is removed last. Every
