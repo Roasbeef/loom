@@ -9091,7 +9091,11 @@ the protocol-change/078 addendum on moving a session have the protocol.
   (`workspace.attach` over the stopped file with `owner_services.declining`), send
   `Hands.apply_state` (a fenced `StateApply`) and close the scope, which writes the clean
   close the later steps read. A rerun uses the cell's state while the store still holds
-  it, and a cell for another operation is ignored. `Refused(stage, reason)` is what
+  it, and a cell for another operation is ignored. Every write of that cell also
+  writes `client/moved_calls` (`client/move/interrupted`): the `ReplayNever` calls the
+  stopped file holds effect-pending. They ran in the directory, so the receiver's
+  `workspace.recover_by_placement` answers them `OutcomeUnknown` without asking an
+  executor whose fence would say they did not run. `Refused(stage, reason)` is what
   resending cannot change and abandons the move; `Unfinished` stalls it. The source's
   row is never rewritten: `relocated` gives the later steps a copy of the registration
   with the executor and workspace of `orchestrators.CheckoutTarget`, so the manifest

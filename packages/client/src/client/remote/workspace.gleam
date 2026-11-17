@@ -95,6 +95,7 @@ import client/executors
 import client/git_identity
 import client/jobs
 import client/jobstate
+import client/moved_calls
 import client/owner_services.{type OwnerServices}
 import client/pools
 import client/remote/address.{type Address}
@@ -737,7 +738,7 @@ fn build(
     tools: remote.tools,
     clock: executor_clock,
     incarnation:,
-    recover: recover_by_placement(functions),
+    recover: recover_by_placement(functions, opened),
     transfer: fn() {
       // This match resolves process.subject_owner(owner_port.inbox(port)) before the surrounding protocol step continues.
       // This match resolves process.subject_owner(owner_port.inbox(port)) before the enclosing validation continues.
@@ -1286,23 +1287,37 @@ fn refused(
 // A workspace tool is recovered by the executor's ledger. An owner tool never
 // reached the executor, so its answer is the one a session with no recovery
 // gives: a call that is safe to repeat is offered for replay, and any other is
-// unknown.
-/// Recover by placement keeps this client operation’s decoding or state decision in one place.
+// unknown. A workspace call that was pending when the session moved here from a
+// directory on another orchestrator is the same case: it ran there, under a
+// local placement, and this executor's fence would say it did not run.
+/// Routes an orphaned call to the executor that ran it, or to the answer a
+/// session with no recovery gives when no executor did.
 fn recover_by_placement(
   functions: surface.Functions,
+  opened: Session,
 ) -> fn(ToolRun) -> Recovery {
   fn(run: ToolRun) {
-    // This match resolves tool_placement.placement(run.call.name) before the surrounding protocol step continues.
-    // This match resolves tool_placement.placement(run.call.name) before the enclosing validation continues.
+    // Only a workspace call this session dispatched to an executor has a row
+    // there that can say what it did.
     case tool_placement.placement(run.call.name) {
-      Ok(tool_placement.WorkspaceSide) -> functions.recover(run)
-      Ok(tool_placement.OwnerSide) | Error(Nil) ->
-        // This match resolves run.replay before the surrounding protocol step continues.
-        case run.replay {
-          operation.ReplaySafe -> effects.NotStarted
-          operation.ReplayNever -> effects.OutcomeUnknown
+      Ok(tool_placement.WorkspaceSide) ->
+        case moved_calls.listed(opened, run) {
+          False -> functions.recover(run)
+          True -> unrecorded(run)
         }
+      Ok(tool_placement.OwnerSide) | Error(Nil) -> unrecorded(run)
     }
+  }
+}
+
+// What a call no executor recorded is told as: a call that is safe to repeat is
+// offered for replay, and any other has an unknown outcome.
+/// The local surface's answer for an orphaned call, judged by its policy.
+fn unrecorded(run: ToolRun) -> Recovery {
+  // The policy persisted with the call decides.
+  case run.replay {
+    operation.ReplaySafe -> effects.NotStarted
+    operation.ReplayNever -> effects.OutcomeUnknown
   }
 }
 

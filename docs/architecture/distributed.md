@@ -920,10 +920,25 @@ deduplicates the replay against any stale `Run`.
 | `unknown`, or a tombstone | `OutcomeUnknown` | "the outcome is unknown" |
 | no row, `ReplaySafe` | `NotStarted` | nothing yet: the planner replays it |
 | no row, `ReplayNever` (fenced) | `NotStarted` | "the call never reached the executor and did not run" |
+| not asked: `ReplayNever`, pending when the session moved from a directory (a moved `ReplaySafe` call is still asked) | `OutcomeUnknown` | "the outcome is unknown" |
 | refused or unreachable | `OutcomeUnknown` | "the outcome is unknown" |
 
 Recovery assumes the attach of the current open ran first, because "no row"
 means "never started" only after the token has taken effect.
+
+The fenced answer is true only for a call this session dispatched to the
+executor. A session that moved from a directory on another orchestrator
+(protocol-change/107, slice 4c) can arrive with a call pending that ran there,
+under a local placement, and that no executor ever saw. The move's checkout step
+lists every such `ReplayNever` call in the file's `client/move/interrupted`
+cell (`client/moved_calls`), in the same commit as its own progress cell, and
+`workspace.recover_by_placement` answers a listed call with `OutcomeUnknown`
+without asking the executor. That is the answer the same session would get
+after a restart on its source, and the answer an owner-side call gets. A call
+dispatched under a local placement has no route to an executor, so there is no
+stale `Run` for a fence to stop. Keys are never reused and a `ReplayNever`
+orphan is never replayed, so a list left from an earlier move never covers a
+call the destination dispatched itself.
 
 ### Two clocks
 
@@ -1478,7 +1493,9 @@ drained workspace), and it leaves the cell the other steps already read.
    workspace, a name the executor does not serve and a tree that holds changes are
    refused, and the refusal ends the move.
 4. **Record.** The file's reserved cell `client/move/checkout` says the checkout was
-   placed for this operation. The six steps then run with a copy of the registration
+   placed for this operation, and the same commit writes `client/move/interrupted`,
+   the `ReplayNever` calls the stopped file holds pending (see "Recovery and the
+   per-key fence"). The six steps then run with a copy of the registration
    that names the executor and workspace, so the manifest tells the receiver.
 
 Each stage logs one line on the source (`daemon.move_checkout_captured`, `_sent`,
