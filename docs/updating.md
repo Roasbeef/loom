@@ -126,12 +126,28 @@ pid to stop.
 A guest made by a loom from before the untrusted link became the default is a
 trusted distribution peer of your daemon, and `loom vm up`, `loom vm ensure` and
 `loom --vm` refuse it; `loom vm list` shows its link as `distribution`. Move its
-work to a new guest in this order: `loom vm sync --name NAME` fetches its
-commits into your checkout, `loom vm rm --name NAME --yes` removes the guest and
-its tables from `loom.toml`, and `loom vm up --name NAME` makes it again on the
-untrusted link. `sync` fetches commits only; uncommitted edits in the guest's
-copy stay in its root, which `rm` deletes. See
-[the microVM architecture](architecture/microvm.md).
+work to a new guest in this order:
+
+1. `loom vm sync --name NAME` fetches its commits into your checkout. It
+   fetches commits only, so copy any uncommitted edits out of
+   `<vm home>/NAME/root/srv/workspaces/` (`~/.loom/vm` unless
+   `LOOM_VM_HOME` says otherwise) before the next step deletes them.
+2. `loom vm down --name NAME`, if the guest still runs; `rm` refuses a
+   running guest.
+3. `loom vm rm --name NAME --yes` deletes the guest's directory and undoes its
+   enrolment: it removes `[executors.NAME]` from `loom.toml`, and the
+   `[distribution]` table and the home's `.erlang.cookie` when they are this
+   guest's deployment's and no other trusted executor needs them (untrusted
+   rows never do), deletes the authority key it sealed unless another old
+   guest shares the deployment, and revokes a guest that joined a ledger
+   deployment, without the placement check, since the guest can no longer
+   serve a session. A guest that others joined is removed after them.
+4. `loom vm up --name NAME` makes it again on the untrusted link.
+
+A daemon that runs while you replace a guest that minted its deployment still
+holds that deployment, so it cannot read the new guest's row by a reload: `up`
+stops it when it is idle and otherwise names the command that restarts it,
+once. See [the microVM architecture](architecture/microvm.md).
 
 ## Install a source build
 

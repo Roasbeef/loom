@@ -354,12 +354,14 @@ distribution` is refused. There is no `--trusted` escape.
 A guest made over distribution by an older loom is refused, not resumed or
 converted. `up` and `ensure` read its host-side records (a `link` record that
 says `distribution`, or `deploy/` bundles with no link credentials and no
-record) before anything is written, booted or sent, and answer with one sentence
-that names `loom vm sync --name NAME`, `loom vm rm --name NAME --yes` and `loom
-vm up --name NAME`, in that order. `status`, `list`, `logs`, `down`, `sync` and
-`rm` handle such a guest as before, and `rm` keeps its distribution teardown
-(tables, cookie, sealed key, ledger revoke) for one release, after which the
-distribution path of `loom vm` is deleted.
+record) before anything is written, booted or sent, and answer with a refusal
+that names `loom vm sync --name NAME`, `loom vm down --name NAME` for a guest
+that still runs, `loom vm rm --name NAME --yes` and `loom vm up --name NAME`, in
+that order. `status`, `list`, `logs`, `down`, `sync` and `rm` handle such a guest
+as before, and `rm` keeps its distribution teardown (tables, cookie, sealed key,
+ledger revoke) for one release, after which the distribution path of `loom vm`
+is deleted. `rm` signs the ledger revoke of such a guest without the check for
+sessions placed on it, because a guest `up` refuses can never serve one again.
 
 **Why.** Over distribution, the guest's `loom` user holds the executor's
 cookie and key, and the distribution connection the orchestrator dials is

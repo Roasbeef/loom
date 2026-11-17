@@ -889,7 +889,7 @@ refusal comes before anything is installed, written, booted or sent, has exit
 status 1, and is one sentence on standard error:
 
 ```text
-loomd: the guest NAME was made as a trusted distribution peer of your daemon, so code that takes it over could run in the daemon as you, and it is no longer started. Fetch its commits with `loom vm sync --name NAME`, remove it with `loom vm rm --name NAME --yes`, and make it again on the untrusted link with `loom vm up --name NAME`.
+loomd: the guest NAME was made as a trusted distribution peer of your daemon, so code that takes it over could run in the daemon as you, and it is no longer started. Fetch its commits with `loom vm sync --name NAME`; that fetches commits only, so copy any uncommitted edits out of <vm home>/NAME/root/srv/workspaces/ first. Then stop it with `loom vm down --name NAME` if it still runs, remove it with `loom vm rm --name NAME --yes`, which deletes that root, and make it again on the untrusted link with `loom vm up --name NAME`.
 ```
 
 The guest is not converted in place: its root and its state disk are rebuilt by
@@ -899,12 +899,19 @@ distribution, retired` above its node and epmd lines, and `list` names its link
 in a column of its own. `rm` keeps the distribution teardown: it removes
 `[executors.<name>]`, and the `[distribution]` table and the home's
 `.erlang.cookie` only when they are this guest's deployment's and no other
-`[executors.*]` table remains (`vm_spec.plan_teardown`); it deletes the sealed
-authority directory unless another guest's bundle names the same deployment; it
-revokes a guest that joined a ledger deployment with the key when that is on
-this machine (refusing, and removing nothing, while sessions are still placed on
-it), and otherwise prints the revoke to run; and it refuses a guest that minted a
-deployment others joined until they are removed. This teardown, and the mint,
+trusted `[executors.*]` table remains (`vm_spec.plan_teardown`; an untrusted row
+never needs `[distribution]`, so it does not keep the table, which would then
+name `orch/` credentials `rm` deletes); it deletes the sealed authority
+directory unless another guest's bundle names the same deployment; it revokes a
+guest that joined a ledger deployment with the key when that is on this
+machine, signing without the placement check (`ledger_cli.Forced`), since the
+guest can never serve a session again, and refusing with the `rm` to run again
+only when the key or its ledger copy cannot be used; it prints the revoke to
+run when the key is elsewhere; and it refuses a guest that minted a deployment
+others joined until they are removed. It deletes the guest's roots and state
+disk before the rest of its directory, so an interrupted `rm` leaves `deploy/`
+or the `link` record behind with nothing they classify, and the next command
+still reads the guest as an old one. This teardown, and the mint,
 join and staging code that `up` no longer reaches, are deleted from `loom vm`
 after one release.
 
@@ -1267,9 +1274,14 @@ guest a jailed call edits the guest's checkout, and the step then checks the
 stored baseline is a revision, the `worktree_diff` board lists the edited
 paths, and a goal's check records exit status 0 with the guest's output. A
 third guest is read by the running orchestrator through `executors.reload`, and
-its jailed call sees that guest's own leaf. A last step fabricates the host-side
+its jailed call sees that guest's own leaf. A step fabricates the host-side
 traces of two distribution guests and checks that `up` and `ensure` refuse them
-naming the three commands and change no file, and that `rm --yes` removes them.
+naming the commands and change no file, and that `rm --yes` removes them and
+takes one's `[distribution]` table and trusted row out of a file whose untrusted
+row stays. Another runs `loomd vm ensure` with no `--config` beside a daemon on
+the isolated home's default file, and checks that the same daemon process lists
+the guest after the reload, that a second `ensure` takes the fast path, and that
+`rm` takes the row out with the daemon still running.
 
 ## Package registries and toolchains: `--allow` and `--provision`
 
