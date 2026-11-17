@@ -35,6 +35,12 @@
 //// and replaced, so a move that was abandoned and asked for again captures the
 //// workspace as it is now.
 ////
+//// Every write of that cell also writes `client/moved_calls`, the calls that
+//// must not run twice and that the stopped file holds pending. The turn that
+//// dispatched them ran in this directory, and the destination reads the list so
+//// that it tells the model their outcome is unknown instead of asking an
+//// executor that never saw them.
+////
 //// Applying again is harmless. An apply of a tip the tree already has answers
 //// the tip and changes nothing, and the scope the source left open is rebound by
 //// the next attach, so a crash between the attach and the close costs one more
@@ -71,6 +77,7 @@
 //// 5. `landing` builds the function that does the landing, over an executor's
 ////    placement.
 
+import client/moved_calls
 import client/orchestrators.{type CheckoutTarget}
 import client/owner_services
 import client/remote/owner_port
@@ -484,15 +491,23 @@ fn storage_read(opened: session.Session) -> Result(Option(Marker), String) {
 
 /// Replaces the cell in an opened session file. The write goes straight to the
 /// file's store, which is legal because no writer holds a file that is moving.
+///
+/// The same commit records which calls the stopped file holds pending
+/// (`client/moved_calls`). They ran here, under this directory's placement, and
+/// the executor the destination asks never saw them, so the destination must
+/// learn from the file that their outcome is unknown. Writing the list with the
+/// marker means that every file this step lets the destination take carries it.
 fn storage_write(
   opened: session.Session,
   marker: Marker,
 ) -> Result(Nil, String) {
+  use interrupted <- result.try(moved_calls.record(opened))
   storage.commit(
     opened.store,
     tx.Tx(
       writes: [
         tx.SetRegister(register.FactCustom, key, register.value(encode(marker))),
+        interrupted,
       ],
       expected: [],
     ),

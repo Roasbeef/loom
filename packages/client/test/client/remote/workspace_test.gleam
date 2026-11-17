@@ -11,6 +11,7 @@ import client/evolution/record
 import client/executors
 import client/extension/hooks as extension_hooks
 import client/jobstate
+import client/moved_calls
 import client/pools
 import client/remote/host
 import client/remote/owner_port
@@ -28,9 +29,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import machine/codec
 import machine/operation
-import machine/strand
 import runtime/effects
 import session/session
 import storage/exec_ledger
@@ -408,6 +407,60 @@ pub fn recovery_follows_the_calls_placement_test() {
   rig.stop(executor)
 }
 
+// A session that moved here from a directory on another orchestrator arrives
+// with a call it dispatched there still pending. The call ran on that machine,
+// so this executor's fence would tell the model it did not run, and a model
+// told that repeats a call that must not run twice. The move's checkout step
+// listed the call, and recovery answers it as a local session would.
+pub fn a_call_pending_when_the_session_left_a_directory_is_unknown_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let executor = standard(probe, protocol.AllRetired)
+  let opened = store()
+  let moved = fixtures.tool_run("ran_on_the_laptop", 0)
+  holds_pending(opened, moved)
+  record_moved_calls(opened)
+
+  let hands = attached(executor, opened)
+
+  assert hands.recover(moved) == effects.OutcomeUnknown
+  assert fixtures.runs(probe) == []
+
+  // A call this session dispatches after the move is not on the list, so the
+  // executor's ledger still answers for it.
+  let later = fixtures.tool_run("dispatched_here", 1)
+  assert hands.recover(later) == effects.NotStarted
+  rig.stop(executor)
+}
+
+// The fence's answer is the honest one for a session on an executor whose
+// orchestrator restarted: the stale `Run` of the dead runtime can never start
+// once the fence holds the key, so "did not run" is true. A session that never
+// moved from a directory has no list, and nothing about that answer changes.
+pub fn a_restart_in_place_keeps_the_fenced_did_not_run_answer_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let executor = standard(probe, protocol.AllRetired)
+  let opened = store()
+  let pending = fixtures.tool_run("never_reached_the_executor", 0)
+  holds_pending(opened, pending)
+
+  let hands = attached(executor, opened)
+
+  assert moved_calls.read(opened) == Ok([])
+  assert hands.recover(pending) == effects.NotStarted
+  assert fixtures.run_count(probe, "never_reached_the_executor") == 0
+  rig.stop(executor)
+}
+
+// The write the move's checkout step commits with its own cell.
+fn record_moved_calls(opened: session.Session) -> Nil {
+  let assert Ok(write) = moved_calls.record(opened)
+    as "the pending calls are read"
+  let assert Ok(_) =
+    storage.commit(opened.store, tx.Tx(writes: [write], expected: []))
+    as "the list is recorded"
+  Nil
+}
+
 pub fn operator_directory_additions_are_refused_test() {
   let probe = fixtures.probe(fixtures.Open)
   let executor = standard(probe, protocol.AllRetired)
@@ -476,32 +529,7 @@ fn list_get(fields: List(#(String, json.JsonValue)), key: String) {
 // Records the operation of `run` as running that call, the way the planner
 // does before the effect starts.
 fn holds_pending(opened: session.Session, run: effects.ToolRun) -> Nil {
-  let generator = ids.generator(clock.fixed(at: 0), seed: 2)
-  let #(entry, _) = ids.mint_entry(generator)
-  let state =
-    batch(run.step_id, [
-      operation.CallEffectPending(
-        source_index: run.source_index,
-        result_entry: entry,
-        replay: operation.ReplayNever,
-      ),
-    ])
-  let assert Ok(_) =
-    storage.commit(
-      opened.store,
-      tx.Tx(
-        writes: [
-          tx.SetRegister(
-            register.OpState,
-            ids.op_id_to_string(run.operation),
-            register.value(codec.encode_state(state)),
-          ),
-        ],
-        expected: [],
-      ),
-    )
-    as "the operation state is recorded"
-  Nil
+  fixtures.hold_pending(opened, run)
 }
 
 // --- which calls this session still holds pending --------------------------
@@ -510,33 +538,7 @@ fn batch(
   turn_id: String,
   calls: List(operation.ToolCallState),
 ) -> operation.OperationState {
-  let generator = ids.generator(clock.fixed(at: 0), seed: 9)
-  let #(assistant, _) = ids.mint_entry(generator)
-  operation.RunState(
-    control: operation.Running,
-    settings: operation.RunSettings(
-      compaction: operation.CompactionSettings(
-        enabled: False,
-        reserve_tokens: 0,
-        keep_recent_tokens: 0,
-      ),
-      steering_mode: operation.ConsumeAll,
-      follow_up_mode: operation.ConsumeAll,
-      tool_execution: operation.Parallel,
-    ),
-    phase: operation.Tools(batch: operation.ToolBatch(
-      assistant_entry: assistant,
-      configuration: strand.StrandConfiguration(
-        model: strand.ModelIdentity(provider: "p", model_id: "m"),
-        thinking_level: strand.ThinkingOff,
-        active_tool_names: [],
-      ),
-      turn_id:,
-      calls:,
-    )),
-    inbox: operation.Inbox(steer: [], follow_up: [], writes: []),
-    latest_assistant: None,
-  )
+  fixtures.tool_batch(turn_id, calls)
 }
 
 pub fn only_a_planned_or_running_call_of_the_step_is_pending_test() {
@@ -570,6 +572,69 @@ pub fn only_a_planned_or_running_call_of_the_step_is_pending_test() {
   // A call of another step, or one the batch does not list, is not pending.
   assert !workspace.pending(state, "turn-2", 2)
   assert !workspace.pending(state, "turn-1", 9)
+}
+
+// A move that was abandoned after its checkout step wrote the list leaves the
+// session local again, and a local open never reads the list. When the move is
+// asked for again, the list is written again from the file as it is then: the
+// call the local open settled is gone from it, and the call pending now is on
+// it. A call that is safe to repeat is never listed, because the executor's "no
+// row" already sends it to the planner's replay.
+pub fn the_moved_calls_list_is_written_again_from_the_file_test() {
+  let opened = store()
+  let run = fixtures.tool_run("first", 0)
+  let generator = ids.generator(clock.fixed(at: 0), seed: 5)
+  let #(entry, _) = ids.mint_entry(generator)
+  let listed = fn(index) {
+    moved_calls.Call(
+      op: ids.op_id_to_string(run.operation),
+      step: run.step_id,
+      source_index: index,
+    )
+  }
+
+  // The first move stopped the session with one call of each policy pending.
+  fixtures.hold_state(
+    opened,
+    run.operation,
+    batch(run.step_id, [
+      operation.CallEffectPending(
+        source_index: 0,
+        result_entry: entry,
+        replay: operation.ReplayNever,
+      ),
+      operation.CallEffectPending(
+        source_index: 1,
+        result_entry: entry,
+        replay: operation.ReplaySafe,
+      ),
+    ]),
+  )
+  record_moved_calls(opened)
+  assert moved_calls.read(opened) == Ok([listed(0)])
+
+  // The abandoned move's session reopened here and settled the first call, and
+  // a later turn left another pending when the second move stopped it.
+  fixtures.hold_state(
+    opened,
+    run.operation,
+    batch(run.step_id, [
+      operation.CallCompleted(
+        source_index: 0,
+        result_entry: entry,
+        terminate: False,
+      ),
+      operation.CallEffectPending(
+        source_index: 2,
+        result_entry: entry,
+        replay: operation.ReplayNever,
+      ),
+    ]),
+  )
+  record_moved_calls(opened)
+  assert moved_calls.read(opened) == Ok([listed(2)])
+  assert !moved_calls.listed(opened, run)
+  assert moved_calls.listed(opened, effects.ToolRun(..run, source_index: 2))
 }
 
 pub fn a_call_of_a_finished_operation_is_settled_and_a_garbled_key_is_not_test() {
