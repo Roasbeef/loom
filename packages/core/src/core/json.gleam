@@ -701,7 +701,25 @@ fn check_unique_key(
   case dict.has_key(seen, name) {
     False -> Ok(Nil)
     True ->
-      Error(fail(cursor, "unique object keys (\"" <> name <> "\" repeats)"))
+      Error(fail(
+        cursor,
+        "unique object keys (\"" <> shown_key(name) <> "\" repeats)",
+      ))
+  }
+}
+
+// A repeated key is the one place a report quotes document text of
+// unbounded length, so it is clipped to 64 codepoints and the report says
+// how many were left out.
+fn shown_key(name: String) -> String {
+  let length = string.length(name)
+  case length > 64 {
+    False -> name
+    True ->
+      string.slice(name, 0, 64)
+      <> "… ("
+      <> int.to_string(length - 64)
+      <> " more)"
   }
 }
 

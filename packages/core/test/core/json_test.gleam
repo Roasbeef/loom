@@ -590,3 +590,21 @@ pub fn the_bounded_parse_agrees_with_the_plain_parse_test() {
     assert report.expected == over_the_bound
   })
 }
+
+// A repeated key is named in the report, clipped to 64 codepoints so a
+// hostile document cannot make the report as large as its own key.
+pub fn a_repeated_key_is_clipped_in_the_report_test() {
+  let key = string.repeat("é", 200)
+  let text = "{\"" <> key <> "\":1,\"" <> key <> "\":2}"
+  let assert Error(report) = json.parse(text) as "the repeat is refused"
+  assert string.length(report.expected) < 200
+  assert string.contains(report.expected, string.repeat("é", 64))
+  assert !string.contains(report.expected, string.repeat("é", 65))
+  assert string.contains(report.expected, "136 more")
+}
+
+pub fn a_short_repeated_key_is_shown_whole_test() {
+  let assert Error(report) = json.parse("{\"ab\":1,\"ab\":2}")
+    as "the repeat is refused"
+  assert report.expected == "unique object keys (\"ab\" repeats)"
+}
