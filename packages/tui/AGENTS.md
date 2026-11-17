@@ -501,7 +501,8 @@ registered name. `tui.launch_vm` is the test seam. `main` answers `Vm` after
 `ensure` prints its reason and halts with its status. The server's standard
 error is on the terminal there, so a refusal (a guest an older loom made as a
 distribution peer is refused naming `loom vm sync`, `loom vm rm --yes` and
-`loom vm up`) is already shown and an empty captured reason adds no line.
+`loom vm up`) is already shown and an empty captured reason adds no line
+(`vm_ensure.failure_lines`).
 
 `tui/vm_ensure` runs `<server> vm ensure --workspace DIR [--config FILE]` through
 `host.run_captured` (the server from `bootstrap.server_executable`), so it adds no

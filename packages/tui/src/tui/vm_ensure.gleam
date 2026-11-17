@@ -495,6 +495,26 @@ pub fn launch(
   )
 }
 
+/// The lines an interactive launch prints for a failed `ensure`: the reason
+/// after `loom:`, or nothing when the reason is empty. The interactive launch
+/// puts the server's standard error on the terminal, so a refusal, such as the
+/// one for a guest an older loom made as a distribution peer, is printed there
+/// already and its captured text is empty; a bare `loom:` line after it would
+/// say nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_ensure.failure_lines("") == []
+/// assert vm_ensure.failure_lines("no manifest") == ["loom: no manifest"]
+/// ```
+pub fn failure_lines(reason: String) -> List(String) {
+  case string.trim(reason) {
+    "" -> []
+    _ -> ["loom: " <> reason]
+  }
+}
+
 /// The directory the launch asks the guest to serve, as it is named to the
 /// server.
 fn directory_of(options: bootstrap.Options) -> String {

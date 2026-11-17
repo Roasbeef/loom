@@ -548,13 +548,7 @@ fn interactive_vm(
       {
         Ok(chosen) -> interactive(Local(chosen, ""), record)
         Error(vm_ensure.Failure(status:, reason:)) -> {
-          // The server's standard error goes to the terminal here, so a
-          // refusal's reason is printed already and the captured text is
-          // empty; an empty `loom:` line after it would say nothing.
-          case string.trim(reason) == "" {
-            True -> Nil
-            False -> io.println_error("loom: " <> reason)
-          }
+          list.each(vm_ensure.failure_lines(reason), io.println_error)
           ffi_terminal.halt(status)
           Nil
         }
