@@ -69,6 +69,7 @@ import broker/executor
 import broker/policy
 import broker/token
 import client/catalog
+import client/clear_call
 import client/codemode as codemode_wiring
 import client/contributions
 import client/directories
@@ -264,6 +265,12 @@ pub type Prepared {
   )
 }
 
+/// Clears one call for the owner's own non-tool work, answering a running
+/// handle or the refusal. The third argument is the clearance wait in
+/// milliseconds. See `client/clear_call` for why the definition lives there.
+pub type ClearCall =
+  clear_call.ClearCall
+
 /// Publishes one resource to the owner's custody before the next begins.
 ///
 /// Arguments are the part, its cleanup, and the transfer which acknowledges
@@ -362,9 +369,15 @@ pub type WorkspacePlane {
     /// Runs one cleared tool call on the workspace's machine, under the
     /// authority the owner read from its store.
     run: fn(effects.ToolRun, wiring.Authority) -> effects.ToolOutcome,
-    /// The capability broker which clears calls for the owner's own
-    /// non-tool work: imported hooks, the goal check, Git observations.
+    /// The capability broker of this workspace, for the code that holds a
+    /// broker actor for its own reasons: aborting a step, code mode, the
+    /// language servers, one-shot teardown.
     broker: Broker,
+    /// Clears one call for the owner's own non-tool work: imported hooks,
+    /// the goal check and the Git observations. Where the broker is in this
+    /// VM it is a function over `broker`; a placement whose broker is not
+    /// here supplies another.
+    clear_call: ClearCall,
     /// What the machine says about itself.
     census: Census,
     /// What the prompt needs, read when a prompt is rendered.
@@ -844,7 +857,7 @@ fn finish_local(
   use identity <- result.try(prepare_identity(
     prepared,
     census,
-    effect.broker,
+    clear_call.over_broker(effect.broker),
     clock,
     entropy,
   ))
@@ -1046,6 +1059,7 @@ fn plane_over(
       wiring.run_workspace_tool(view, escalate, output, run, authority)
     },
     broker: broker_actor,
+    clear_call: clear_call.over_broker(broker_actor),
     census:,
     prompt_facts: prompt_facts_of(workspace, effect.pool),
     resolve_directory: fn(requested, mode) {
@@ -1102,28 +1116,28 @@ fn fatal_roots(effect: EffectPlane) -> List(#(String, Pid)) {
 }
 
 /// The wiring the repository observations of this workspace run under: the
-/// session's broker and the census's policy, environment and Git.
+/// clearing function of the session and the census's policy, environment and Git.
 ///
 /// The workspace uses it to prepare the tool Git identity, and the owner
-/// builds the same value over `plane.broker` for the diff and baseline
+/// builds the same value over `plane.clear_call` for the diff and baseline
 /// observations, so the two cannot be configured differently.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // workspace_plane.worktree_wiring(plane.census, plane.broker, demand, clock, entropy)
+/// // workspace_plane.worktree_wiring(plane.census, plane.clear_call, demand, clock, entropy)
 /// ```
 ///
 pub fn worktree_wiring(
   census: Census,
-  broker_actor: Broker,
+  clear_call: ClearCall,
   demand: EnforcementDemand,
   clock: Clock,
   entropy: fn() -> Int,
 ) -> worktree_diff.Wiring {
   worktree_diff.Wiring(
     workspace: census.workspace,
-    broker: broker_actor,
+    clear_call:,
     base_policy: census.base_policy,
     clock:,
     demand:,
@@ -1142,13 +1156,12 @@ pub fn worktree_wiring(
 fn prepare_identity(
   prepared: Prepared,
   census: Census,
-  broker_actor: Broker,
+  clear_call: ClearCall,
   clock: Clock,
   entropy: fn() -> Int,
 ) -> Result(List(Warning), String) {
   let spec = prepared.spec
-  let wiring =
-    worktree_wiring(census, broker_actor, spec.demand, clock, entropy)
+  let wiring = worktree_wiring(census, clear_call, spec.demand, clock, entropy)
 
   // An owner's identity replaces this machine's global one: the executor's own
   // `~/.gitconfig` is not read when the owner said who the author is, so a

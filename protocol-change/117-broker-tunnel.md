@@ -29,7 +29,7 @@ Four things a session does through its executor's broker are refused when the
 executor is untrusted, because they call `broker.clear_call`, `broker.stdin` and
 `broker.cancel` on `WorkspacePlane.broker` (`client/workspace_plane.gleam:367`),
 and the link puts a broker subject whose owner has exited in that place
-(`refusing_broker` (`client/remote/untrusted_link.gleam:556`)):
+(`refusing_broker` (`client/remote/untrusted_link.gleam:555`)):
 
 1. Goal checks, through `tool.broker_runner` in
    `goal_check_wiring` (`client/serve.gleam:6935`).
@@ -113,7 +113,7 @@ A `weft/registry` address would give the link a second typed subject without an
 atom. The address is a reference, so it would have to travel from the registry
 of 116 to `workspace.untrusted_candidate` with the row, as a new field on
 `executors.Executor`. A second registered name follows the pattern the link
-already uses (`name_for` (`client/remote/untrusted_link.gleam:417`)).
+already uses (`name_for` (`client/remote/untrusted_link.gleam:416`)).
 
 ### Corrections to the design note
 
@@ -125,8 +125,8 @@ Section 5 of the design note is the starting point. Against the code:
   port retargets at every attach, not `broker.over(census.broker, ..)`.
 - The executor side does not see the plane's broker subject when it encodes an
   attach reply. `untrusted_bridge.ask_host` projects the census onto the wire
-  inside the waiter (`projected` (`client/remote/untrusted_bridge.gleam:1304`)),
-  and the gateway's `answer` (`client/remote/untrusted_gateway.gleam:643`) gets
+  inside the waiter (`projected` (`client/remote/untrusted_bridge.gleam:1305`)),
+  and the gateway's `answer` (`client/remote/untrusted_gateway.gleam:644`) gets
   a `Response` with the subject already dropped.
 - The seam cannot be the two-argument `tool.broker_runner` shape, which fixes
   the clearance wait when it is built; `hookrunner.run` and `run_git` choose a
@@ -150,12 +150,14 @@ Section 5 of the design note is the starting point. Against the code:
 
 ### Wire version
 
-`untrusted_wire.version` (`client/remote/untrusted_wire.gleam:92`) goes from 4
+`untrusted_wire.version` (`client/remote/untrusted_wire.gleam:112`) goes from 4
 to 5. `protocol.version` stays 7.
 
 ### The seam in `client`
 
-One function type, defined in `client/workspace_plane`:
+One function type, defined in `client/clear_call` and re-exported by
+`client/workspace_plane` (which imports `worktree_diff`, so a definition there
+would make the import graph cyclic):
 
 ```gleam
 pub type ClearCall =
@@ -220,8 +222,8 @@ The wire's spec carries `op_id`, `step_id`, `base_policy`, `requirements`,
 takes from nowhere but itself ("Authority on the executor"). `outcome` is
 `exited {result}` with the whole `ExecResult`, or `failed {failure}` with every
 `ExecFailure` variant. Policies use the codec's existing `encode_sandbox_policy`
-(`client/remote/untrusted_codec.gleam:1642`), and a `PolicyRefused` refusal
-reuses `decode_denial` (`client/remote/untrusted_codec.gleam:2715`). The codec
+(`client/remote/untrusted_codec.gleam:1829`), and a `PolicyRefused` refusal
+reuses `decode_denial` (`client/remote/untrusted_codec.gleam:2902`). The codec
 refuses a `waiting_ms` or a `deadline_ms` outside 0 to 2^53, an `argv` of more
 than 4,096 entries, and an `env` of more than 1,024 pairs, as 109's codec
 refuses absurd sizes.
@@ -267,7 +269,7 @@ place of another, 116), when the spec carries grants, when its output limit is
 zero or above `max_call_output_bytes` (1 MiB, the goal check's own cap), when
 the frame would pass `max_frame_bytes` or `max_frame_values`, which the link
 checks where it checks `too_large_to_send`
-(`client/remote/untrusted_link.gleam:823`), and when the binding already has 8
+(`client/remote/untrusted_link.gleam:826`), and when the binding already has 8
 entries or the link 64. Each is `Error(BrokerUnavailable)` and is logged; no
 caller in the tree sends a spec the link refuses for its shape, and a refused
 request is never kept or re-sent.
@@ -289,7 +291,7 @@ Every ordering ends in one stated outcome:
 | `cleared` while `Running`, `call_event` while `Clearing`, either for an id never issued or held as another kind of request | none | as for a dropped connection, for every entry | violation, closes the connection |
 
 The dropped-frame rule is 109's for responses (`responded`
-(`client/remote/untrusted_link.gleam:1178`)): an id from 1 up to `next_id` was
+(`client/remote/untrusted_link.gleam:1225`)): an id from 1 up to `next_id` was
 issued, so a frame for it that the link no longer holds crossed a removal. A
 second `settled` is therefore dropped, not a violation.
 
@@ -338,7 +340,7 @@ The waiter is linked to its connection, so a connection that crashes takes its
 waiters with it. A connection does not trap exits, so a waiter killed while
 linked would take the connection with it: the gateway unlinks a tunnel waiter
 before it kills it for a `cancel`. Every path by which a connection stops
-normally (`closed` (`client/remote/untrusted_gateway.gleam:814`), an ended or
+normally (`closed` (`client/remote/untrusted_gateway.gleam:830`), an ended or
 broken socket) unlinks and kills the connection's tunnel waiters first, because
 a normal stop does not propagate through a link. A waiter killed inside
 `broker.clear_call`, which waits out a congested pool in the caller's own
@@ -369,13 +371,13 @@ for a dropped connection, and runs and requests are re-sent as 109 describes.
 
 `max_frame_values` is the bound for 109's decoded-breadth risk (finding F5 of
 the design note). It applies to every frame through `decode_envelope`
-(`client/remote/untrusted_codec.gleam:225`) and to a fetched outcome through
-`decode_outcome_bytes` (`client/remote/untrusted_codec.gleam:279`), which reads
+(`client/remote/untrusted_codec.gleam:329`) and to a fetched outcome through
+`decode_outcome_bytes` (`client/remote/untrusted_codec.gleam:390`), which reads
 up to `max_outcome_bytes` (96 MiB) inside the link. A fetched outcome that the
 bounded parse refuses is answered to its asker as lost (`fetched`
-(`client/remote/untrusted_link.gleam:1403`)), which is no violation. An honest
+(`client/remote/untrusted_link.gleam:1450`)), which is no violation. An honest
 gateway counts a response's values where `replied`
-(`client/remote/untrusted_gateway.gleam:760`) checks `fits`, and sends a
+(`client/remote/untrusted_gateway.gleam:771`) checks `fits`, and sends a
 response over the count as `Oversized`, as it sends one over the byte bound. The
 orchestrator then fetches the outcome and answers it lost, or answers a reply
 that holds no outcome lost at once, so an honest executor never loops on a
@@ -500,7 +502,7 @@ A version 4 executor and a version 5 orchestrator, or the reverse, refuse each
 other at the handshake, and every session on that executor is refused, tools
 included. Today the link reads only the peer's `protocol.version` from a
 mismatched `welcome` and refuses with `VersionMismatch(supported: theirs)`
-(`greeted` (`client/remote/untrusted_link.gleam:1077`)), whose text names
+(`greeted` (`client/remote/untrusted_link.gleam:1084`)), whose text names
 protocol versions; on a wire-only mismatch it reads "the executor speaks
 protocol version 7 and this orchestrator does not". Slice 2 logs both wire and
 both protocol numbers at every mismatch, and when the protocol numbers agree it

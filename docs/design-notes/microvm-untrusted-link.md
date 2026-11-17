@@ -75,7 +75,7 @@ developer-path addendum.
 
 ### What a hostile executor can still do to the orchestrator under 109
 
-The link's checks are in `client/remote/untrusted_link.gleam:1576` (`admitted`):
+The link's checks are in `client/remote/untrusted_link.gleam:1600` (`admitted`):
 the binding must be one this link minted and has not retired, the id must be
 fresh, and the callback must be about work the link is carrying
 (`client/remote/untrusted_link.gleam:1649` (`about_work`)). An escalation must
@@ -83,9 +83,9 @@ describe a `run` in flight exactly, arguments included. A capability or
 `Holds` must sit at a `run` or an outstanding background `start`. A launch and
 an interaction need a `code_mode` run in flight. Host-seam capabilities need
 the session's `code_mode` call in flight specifically
-(`client/remote/untrusted_link.gleam:1618` (`from_a_program`)). Facts, notices,
+(`client/remote/untrusted_link.gleam:1653` (`from_a_program`)). Facts, notices,
 wakes, strand activity, the MCP plan and the Git identity need only the binding
-(`client/remote/untrusted_link.gleam:1721` (`McpPlanCall`)), because background
+(`client/remote/untrusted_link.gleam:1769` (`McpPlanCall`)), because background
 jobs send them after their call ended; the owner port fences them to the
 session's reserved fact prefixes. Bounds are 64 callbacks per binding and 1024
 per link.
@@ -161,7 +161,7 @@ census the link sets to `Uncompiled`.
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
 | Placed blobs, outcomes over 32 MiB (110) | works | works | nothing |
 | Remote evolution | works when the guest's census says `Compiles` | refused: the link sets `Uncompiled` | 109 slice 4 |
-| Operator directory additions | refused for any remote workspace (`client/remote/workspace.gleam:700` (`resolve_directory`)) | same | same as today |
+| Operator directory additions | refused for any remote workspace (`client/remote/workspace.gleam:706` (`resolve_directory`)) | same | same as today |
 | Permission grants and escalations | works | works; `escalate` must describe the call in flight exactly; the residual risk above applies | nothing |
 | Git author identity | works (`AskGitIdentity`) | works (`GitIdentityCall`) | nothing |
 | Working-directory facts in the prompt | works (census) | works (the wire census carries `workspace_plane.Census` and `PromptFacts`) | nothing |
@@ -248,8 +248,8 @@ What the daemon needs, read from the code:
   (`client/daemon/main.gleam:1230` (`start_untrusted_links`)), registered under
   `untrusted_link.name_for(name)`.
 - `remote/workspace.candidate` sends an untrusted row to the link's name and
-  never needs distribution (`client/remote/workspace.gleam:738` (`candidate`),
-  `client/remote/workspace.gleam:1045` (`untrusted_candidate`)).
+  never needs distribution (`client/remote/workspace.gleam:744` (`candidate`),
+  `client/remote/workspace.gleam:1051` (`untrusted_candidate`)).
 
 ### The guest side
 

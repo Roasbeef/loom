@@ -201,7 +201,7 @@ PR #819's parallel reimplementation lost.
 When a workspace host starts it returns what the orchestrator needs to build
 the prompt and the tool table: platform and enforcement level, the toolchain
 probe, available language servers, helper degradation, the shell, the Git
-program (`host_git.program`, `workspace_plane.gleam:566`, probes the host it runs on),
+program (`host_git.program`, `workspace_plane.gleam:579`, probes the host it runs on),
 the workspace root as an opaque string, the guidance files' text, the project
 hook files' bytes and the base policy summary. The orchestrator renders and
 pins the prompt from it, exactly as it pins guidance today, and checks the
@@ -456,7 +456,7 @@ host creates no scope and changes no state
 (`client/remote/host.gleam:580`). The orchestrator's open then stops the
 session's owner port and fails with `executor_unavailable: the executor speaks
 protocol version N and this orchestrator does not`
-(`refused`, `client/remote/workspace.gleam:1005`; the wording is
+(`refused`, `client/remote/workspace.gleam:1011`; the wording is
 `client/remote/protocol.gleam:573`). There is no negotiation and no accepted
 range. `Run`, `Query` and the other messages carry no version of their own,
 because each session open begins with an `Attach`. The constant's doc comment
