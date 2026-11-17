@@ -3812,14 +3812,15 @@ fn encode_exec_failure(failure: exec.ExecFailure) -> JsonValue {
 }
 
 /// Reads an execution that settled as a failure. The failure a helper's
-/// handshake reports nests inside a spawn error, and so inside this, which is
-/// bounded by the parser's nesting depth.
+/// handshake reports nests inside a spawn error, and the spawn error inside a
+/// refusal that holds this, but no `ExecFailure` holds a spawn error, so the
+/// type itself bounds how deep this decoder can recurse.
 fn decode_exec_failure(
   value: JsonValue,
 ) -> Result(exec.ExecFailure, CorruptionReport) {
   use #(kind, fields) <- result.try(tagged_of(value, "exec failure"))
 
-  // The kind names the failure; the five that carry nothing are told apart by
+  // The kind names the failure; the seven that carry nothing are told apart by
   // the kind alone.
   case kind {
     "not_ready" -> Ok(exec.NotReady)

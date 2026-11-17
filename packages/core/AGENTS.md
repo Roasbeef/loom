@@ -147,7 +147,7 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   msgpack rejects non-byte-aligned bit arrays and trailing bytes.
 - **`json.parse_bounded` bounds the number of values, during the parse.**
   Each object, array, string, number, boolean and null is one value; object
-  keys are not counted. The allowance rides on the parser's cursor and is
+  keys are not counted. The allowance is a field of the parser's cursor and is
   spent as each value begins, so the first value past the bound is refused
   before it or anything after it is built, and no second pass is made.
   `json.parse` is the same walk with an allowance of the document's byte

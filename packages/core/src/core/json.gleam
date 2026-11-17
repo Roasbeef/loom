@@ -493,7 +493,7 @@ pub fn build_string_by_codepoint(text: String) -> StringTree {
 // codepoint at a time; on a 5 MB branch that was tens of millions of heap
 // words per projection and most of the server's per-step CPU (issue #359).
 //
-// `values` is how many more values the document may begin. It travels with
+// `values` is how many more values the document may begin. It is a field of
 // the cursor because the cursor is the one thing every step of the walk
 // hands on, and so the count needs no second pass and no argument of its
 // own on every helper.
