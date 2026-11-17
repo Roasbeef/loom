@@ -33,9 +33,24 @@ import session_view/remembered as session
 import web_view/remembered.{type Armed}
 import web_view/view/home_table
 
+/// Which rows offer a Forget button. A page of a session on another orchestrator
+/// withdraws only the grants that orchestrator's spawner approved
+/// (protocol-change/108), so it offers the button on those rows alone and says
+/// where to forget the rest.
+pub type Offer {
+  /// Every row, and Forget all.
+  Everything
+
+  /// The grants this page approved, one at a time, and no Forget all. The page
+  /// is a principal, which the other orchestrator recorded with each grant.
+  PageGrants(page: String)
+}
+
 /// The messages the section's buttons send.
 pub type Presses(message) {
   Presses(
+    /// Which rows offer a Forget button.
+    offer: Offer,
     /// A Forget button, with the question for its row. The question is made
     /// from the list as drawn, so the press sends nothing but the question.
     ask: fn(Armed) -> message,
@@ -107,7 +122,10 @@ fn body(
               }),
             ),
           ),
-          everything(board, total, state, presses),
+          case presses.offer {
+            Everything -> everything(board, total, state, presses)
+            PageGrants(_) -> element.none()
+          },
         ]
       }
   }
@@ -176,18 +194,43 @@ fn row(
           presses,
         )
       Some(_) | None ->
-        html.div([attribute.class("share-actions")], [
-          html.button(
-            [
-              attribute.type_("button"),
-              attribute.class("remembered-forget"),
-              event.on_click(presses.ask(armed)),
-            ],
-            [html.text("Forget")],
-          ),
-        ])
+        case offered(presses.offer, provenance, armed.forget) {
+          True ->
+            html.div([attribute.class("share-actions")], [
+              html.button(
+                [
+                  attribute.type_("button"),
+                  attribute.class("remembered-forget"),
+                  event.on_click(presses.ask(armed)),
+                ],
+                [html.text("Forget")],
+              ),
+            ])
+          False ->
+            html.p([attribute.class("session-quiet")], [
+              html.text("Approved on the other machine. Forget it there."),
+            ])
+        }
     },
   ])
+}
+
+/// Whether a row offers its Forget button: every row does on a local page, and
+/// on a page of another orchestrator only a permission this page approved, since
+/// that orchestrator withdraws no consent and no other grant.
+fn offered(
+  offer: Offer,
+  provenance: session.Provenance,
+  forget: session.Forget,
+) -> Bool {
+  case offer, forget {
+    Everything, _ -> True
+    PageGrants(page:), session.ForgetPermission(..) ->
+      session.by_page(provenance, page)
+    PageGrants(_), session.ForgetConsent(..)
+    | PageGrants(_), session.ForgetEverything(..)
+    -> False
+  }
 }
 
 /// The button under the list, which asks about everything.

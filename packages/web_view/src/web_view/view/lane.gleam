@@ -173,6 +173,15 @@ pub fn view(
   )
 }
 
+/// Whether the lane draws the links to a tool result's whole text.
+pub type Links {
+  /// A session on this daemon, whose results this daemon serves.
+  Linked
+
+  /// A session on another orchestrator, whose results are not relayed.
+  Unlinked
+}
+
 /// A lane with a server-side return to the live endpoint. The return button
 /// always has the same sibling path as Load older, including at the beginning.
 /// The browser's floating jump control activates this read-only handler.
@@ -192,6 +201,7 @@ pub fn navigable(
   marks: Marks,
   folds: Folds(message),
   session: String,
+  links: Links,
 ) -> Element(message) {
   let boundary = boundary(top, load)
 
@@ -228,6 +238,7 @@ pub fn navigable(
     marks,
     folds,
     session,
+    links,
     endpoint,
   )
 }
@@ -403,7 +414,18 @@ pub fn rows(
   folds: Folds(message),
   session: String,
 ) -> Element(message) {
-  rows_at(pieces, live, top, draw, replies, marks, folds, session, "live")
+  rows_at(
+    pieces,
+    live,
+    top,
+    draw,
+    replies,
+    marks,
+    folds,
+    session,
+    Linked,
+    "live",
+  )
 }
 
 /// The endpoint marker keeps the browser return visible on short pages.
@@ -416,6 +438,7 @@ fn rows_at(
   marks: Marks,
   folds: Folds(message),
   session: String,
+  links: Links,
   endpoint: String,
 ) -> Element(message) {
   element.element(
@@ -430,7 +453,7 @@ fn rows_at(
       keyed.div(
         [attribute.class("transcript lane"), attribute.role("log")],
         list.append(
-          timeline(pieces, draw, replies, marks, folds, session),
+          timeline(pieces, draw, replies, marks, folds, session, links),
           live_entry(live, draw, marks, replies),
         ),
       ),
@@ -447,6 +470,7 @@ fn timeline(
   marks: Marks,
   folds: Folds(message),
   session: String,
+  links: Links,
 ) -> List(#(String, Element(message))) {
   let newest = newest_thought(pieces)
 
@@ -456,7 +480,16 @@ fn timeline(
       _ ->
         Ok(#(
           piece_key(piece),
-          timeline_row(piece, draw, replies, marks, folds, session, newest),
+          timeline_row(
+            piece,
+            draw,
+            replies,
+            marks,
+            folds,
+            session,
+            links,
+            newest,
+          ),
         ))
     }
   })
@@ -480,7 +513,7 @@ fn timeline(
 pub fn reading(pieces: List(turns.Piece)) -> Element(message) {
   keyed.div(
     [attribute.class("transcript lane"), attribute.role("log")],
-    timeline(pieces, line_element, NoReplies, no_marks(), NoFolds, ""),
+    timeline(pieces, line_element, NoReplies, no_marks(), NoFolds, "", Linked),
   )
 }
 
@@ -641,6 +674,7 @@ fn timeline_row(
   marks: Marks,
   folds: Folds(message),
   session: String,
+  links: Links,
   newest: String,
 ) -> Element(message) {
   let #(hue, target) = belongs_to(piece, marks)
@@ -650,7 +684,7 @@ fn timeline_row(
       [],
     ),
     html.div([attribute.class("tl-body")], [
-      piece_element(piece, draw, replies, marks, folds, session, newest),
+      piece_element(piece, draw, replies, marks, folds, session, links, newest),
     ]),
   ])
 }
@@ -723,11 +757,12 @@ fn piece_element(
   marks: Marks,
   folds: Folds(message),
   session: String,
+  links: Links,
   newest: String,
 ) -> Element(message) {
   case piece {
     turns.Plain(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, folds, session, newest)
+      block_element(block, thoughts, took, draw, folds, session, links, newest)
 
     // A person's message: who sent it on a line of its own, and the words in
     // a bubble beneath. The sender's name is session text, a text node. The
@@ -742,7 +777,16 @@ fn piece_element(
           html.span([attribute.class("who-name")], [html.text(name)]),
           html.text(" · operator"),
         ]),
-        block_element(block, dict.new(), None, draw, folds, session, newest),
+        block_element(
+          block,
+          dict.new(),
+          None,
+          draw,
+          folds,
+          session,
+          links,
+          newest,
+        ),
       ])
 
     // A settled turn's work is its divider, a button, and the steps only
@@ -770,7 +814,7 @@ fn piece_element(
           [attribute.class("work-items")],
           list.append(
             hidden_line(hidden),
-            work_items(items, draw, session, newest),
+            work_items(items, draw, session, links, newest),
           ),
         ),
       ])
@@ -795,7 +839,7 @@ fn piece_element(
     turns.Work(items:, folding: turns.Open, ..) ->
       keyed.div(
         [attribute.class("work open")],
-        work_items(items, draw, session, newest),
+        work_items(items, draw, session, links, newest),
       )
 
     // A spawn is a line of the strand that made it: the verb the step words
@@ -1130,6 +1174,7 @@ fn work_items(
   items: List(turns.Item),
   draw: fn(Line) -> Element(message),
   session: String,
+  links: Links,
   newest: String,
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
@@ -1139,7 +1184,7 @@ fn work_items(
       turns.Step(key:, ..) | turns.Memory(key:, ..) -> key
     }
 
-    #(key, item_element(item, draw, session, newest))
+    #(key, item_element(item, draw, session, links, newest))
   })
 }
 
@@ -1153,12 +1198,22 @@ fn item_element(
   item: turns.Item,
   draw: fn(Line) -> Element(message),
   session: String,
+  links: Links,
   newest: String,
 ) -> Element(message) {
   // Dispatch on item_element state.
   case item {
     turns.Narrated(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, NoFolds, session, newest)
+      block_element(
+        block,
+        thoughts,
+        took,
+        draw,
+        NoFolds,
+        session,
+        links,
+        newest,
+      )
     turns.Memory(lines:, full:, ..) ->
       fold_row.memory(
         step_words.memory(lines),
@@ -1178,7 +1233,7 @@ fn item_element(
       // Dispatch on item_element state.
       let links = case result_source {
         None -> []
-        Some(id) -> result_links(session, id)
+        Some(id) -> result_links(session, links, id)
       }
 
       // A foreground `code_mode` call is a card (`view/program_card`): the
@@ -1249,6 +1304,7 @@ fn block_element(
   draw: fn(Line) -> Element(message),
   folds: Folds(message),
   session: String,
+  links: Links,
   newest: String,
 ) -> Element(message) {
   // A reasoning block owns one leaf for its source-derived headings and bodies.
@@ -1278,7 +1334,7 @@ fn block_element(
         element.ref(session),
         element.ref(inherited),
       ])
-      block_body(block, thoughts, took, draw, folds, session, inherited)
+      block_body(block, thoughts, took, draw, folds, session, links, inherited)
     }
     False ->
       block_body(
@@ -1288,6 +1344,7 @@ fn block_element(
         fn(line) { fold_row.line_row(line, draw) },
         folds,
         session,
+        links,
         newest,
       )
   }
@@ -1303,6 +1360,7 @@ fn block_body(
   draw: fn(Line) -> Element(message),
   folds: Folds(message),
   session: String,
+  links: Links,
   newest: String,
 ) -> Element(message) {
   let counted = turns.reasoning_lines(block)
@@ -1383,7 +1441,7 @@ fn block_body(
         pictures(session, block.key, transcript_image.of_block(block)),
         case turns.block_result(block) {
           None -> []
-          Some(id) -> result_links(session, id)
+          Some(id) -> result_links(session, links, id)
         },
       ),
     ),
@@ -1391,11 +1449,17 @@ fn block_body(
 }
 
 /// The links to a result's whole text, which are addresses on the page's own
-/// session. With no session there is no address to draw, and none is.
-fn result_links(session: String, id: ids.EntryId) -> List(Element(message)) {
-  case session {
-    "" -> []
-    _ -> [tool_result.links(session, id)]
+/// session. With no session there is no address to draw, and none is. A page of
+/// a session on another orchestrator draws none either, because the box serves
+/// no result page for a feed (protocol-change/108).
+fn result_links(
+  session: String,
+  links: Links,
+  id: ids.EntryId,
+) -> List(Element(message)) {
+  case session, links {
+    "", _ | _, Unlinked -> []
+    _, Linked -> [tool_result.links(session, id)]
   }
 }
 

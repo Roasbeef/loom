@@ -130,11 +130,38 @@ spec ProbePartitionDropped observes eLinkDropped {
   }
 }
 
+// The adapter closed the page and showed the waiting state.
+spec ProbeShownWaiting observes eShown {
+  start state Watching {
+    on eShown do (k: tShown) {
+      assert k != SH_WAITING, "witness: the page showed the waiting state";
+    }
+  }
+}
+
 // A poll's cursor was ahead of the queue and was refused.
 spec ProbeCursorAhead observes eCursorRefused {
   start state Watching {
     on eCursorRefused do (k: int) {
       assert k != 0, "witness: a poll ahead of the queue was refused";
+    }
+  }
+}
+
+// The adapter received an answer with no frame and paused before the next poll.
+spec ProbeEmptyPause observes eEmptyAnswer {
+  start state Watching {
+    on eEmptyAnswer do {
+      assert false, "witness: an empty answer was followed by a pause";
+    }
+  }
+}
+
+// The feed ended with a lane frame still queued, which is dropped with the feed.
+spec ProbeQueuedAtEnd observes eFeedDone {
+  start state Watching {
+    on eFeedDone do (queued: int) {
+      assert queued == 0, "witness: the feed ended with a lane frame still queued";
     }
   }
 }
@@ -145,6 +172,15 @@ spec ProbeCursorBehind observes eCursorRefused {
   start state Watching {
     on eCursorRefused do (k: int) {
       assert k != 1, "witness: a poll behind the acknowledged point was refused";
+    }
+  }
+}
+
+// The adapter dropped the frames of an answer that reported the feed ended.
+spec ProbeDroppedEnded observes eDroppedEnded {
+  start state Watching {
+    on eDroppedEnded do {
+      assert false, "witness: the frames of an ended answer were dropped";
     }
   }
 }

@@ -72,6 +72,7 @@ import client/remote/peer_client
 import client/remote/peer_service
 import client/remote/peer_top
 import client/remote_escalation.{type Answer, type Decider, type Decision}
+import client/remote_feed
 import client/remote_mail
 import client/remote_top.{type Offers, type Placement, type SessionsPage}
 import client/roster.{type Roster}
@@ -545,6 +546,139 @@ pub fn session_for_request(
   list.find(page.rows, fn(row) { row.request_id == request_id })
   |> result.map(fn(row) { row.session_id })
   |> option.from_result
+}
+
+// --- the live page's feed (protocol-change/108) ---------------------------------------
+
+/// Opens a feed on a relayed session: the one call of the four that discovers the
+/// box's epoch, which the others then reuse. The principal and name are the
+/// laptop page's, which the box keeps as plain data and which authenticate
+/// nothing. A box that does not advertise `108.attach.1` answers `Unsupported`,
+/// and one whose table serves the paged page refuses with `NotOffered`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // top_relay.attach(relay, "box", remote_feed.Attach(session, principal, "Laptop"))
+/// ```
+pub fn attach(
+  relay: Relay,
+  name: String,
+  attach: remote_feed.Attach,
+) -> Result(remote_feed.Attached, Failure) {
+  use value <- result.try(once(
+    relay,
+    name,
+    remote_feed.attach_revision,
+    remote_feed.encode_request(remote_feed.AttachRequest(attach)),
+  ))
+  remote_feed.decode_attached(value) |> result.map_error(Unreadable)
+}
+
+/// One long poll of a feed: the frames after `after`, waiting up to `wait_ms` at
+/// the box for the first. It dispatches against the epoch the attach observed.
+/// The call's budget is `call_ms`, which covers the wait, and nothing is resent
+/// here: a poll that fails is the feed client's to ask again, with the same
+/// `after`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // top_relay.poll(relay, "box", attached, 0, 5000)
+/// ```
+pub fn poll(
+  relay: Relay,
+  name: String,
+  attached: remote_feed.Attached,
+  after: Int,
+  wait_ms: Int,
+) -> Result(remote_feed.Answer, Failure) {
+  let request =
+    remote_feed.PollRequest(remote_feed.Poll(
+      feed: attached.feed,
+      after:,
+      wait_ms:,
+    ))
+  use value <- result.try(fenced(relay, name, attached.epoch, request))
+  remote_feed.decode_answer(value) |> result.map_error(Unreadable)
+}
+
+/// Sends one piece of one frame the lane transmitted. The box admits a piece once
+/// and answers a repeat without effect, so a caller that lost the answer may send
+/// it again unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // top_relay.send_piece(relay, "box", attached, piece)
+/// ```
+pub fn send_piece(
+  relay: Relay,
+  name: String,
+  attached: remote_feed.Attached,
+  piece: remote_feed.Piece,
+) -> Result(Nil, Failure) {
+  use value <- result.try(fenced(
+    relay,
+    name,
+    attached.epoch,
+    remote_feed.SendRequest(piece),
+  ))
+  acknowledged(value, "send")
+}
+
+/// Ends a feed. The box answers for a feed it no longer holds as for one it did.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // top_relay.detach(relay, "box", attached)
+/// ```
+pub fn detach(
+  relay: Relay,
+  name: String,
+  attached: remote_feed.Attached,
+) -> Result(Nil, Failure) {
+  use value <- result.try(fenced(
+    relay,
+    name,
+    attached.epoch,
+    remote_feed.DetachRequest(attached.feed),
+  ))
+  acknowledged(value, "detach")
+}
+
+/// An acknowledgement carries nothing, and anything else does not read.
+fn acknowledged(value: json.JsonValue, what: String) -> Result(Nil, Failure) {
+  case value {
+    json.Null -> Ok(Nil)
+    json.Object(_)
+    | json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_) -> Error(Unreadable("invalid " <> what <> " reply"))
+  }
+}
+
+/// Asks one feed operation against the epoch the attach observed, within
+/// `call_ms`. The body is the vocabulary's own encoding of the request.
+fn fenced(
+  relay: Relay,
+  name: String,
+  epoch: String,
+  request: remote_feed.Request,
+) -> Result(json.JsonValue, Failure) {
+  use at <- result.try(relay.dial(name))
+  peer_client.call_at(
+    at,
+    epoch,
+    remote_feed.revision_of(request),
+    remote_feed.encode_request(request),
+    relay.timing.call_ms,
+  )
+  |> result.map_error(peer_failure)
+  |> result.try(fn(answer) { answer |> result.map_error(Refused) })
 }
 
 // --- asking ----------------------------------------------------------------------------

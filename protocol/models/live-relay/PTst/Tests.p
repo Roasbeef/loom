@@ -24,7 +24,7 @@ fun cmdAt(at: int, cmd: tCmd, pieces: int): tCmdAt {
 fun quietPlan(): tPlan {
   var e: seq[tEmit];
   var c: seq[tCmdAt];
-  return (ticks = 10, settle = 10, emits = e, cmds = c, breakAt = -1, healAt = -1, closeAt = -1, stopAt = -1, revokeAt = -1, ownerAt = -1, aheadAt = -1, behindAt = -1, laneDeadline = 8, loses = 0, dups = 0, delays = 0, short = 0);
+  return (ticks = 10, settle = 10, emits = e, cmds = c, breakAt = -1, healAt = -1, closeAt = -1, stopAt = -1, revokeAt = -1, ownerAt = -1, aheadAt = -1, behindAt = -1, laneDeadline = 8, loses = 0, dups = 0, delays = 0, short = 0, hostile = 0);
 }
 
 // Pushes of two sizes and one command of each kind, a command of two pieces, the
@@ -231,6 +231,64 @@ machine TestDetach {
   }
 }
 
+// A partition longer than the lane's deadline, begun as the lane sends a frame,
+// so the lane fails with the link cut. The page must show waiting. The heal comes
+// after the lane failed.
+machine TestLongPartition {
+  start state Init {
+    entry {
+      var p: tPlan;
+      p = quietPlan();
+      p.ticks = 24;
+      p.emits += (0, emit(0, 1));
+      p.cmds += (0, cmdAt(2, CMD_FORWARD, 1));
+      p.breakAt = 2;
+      p.healAt = 18;
+      p.laneDeadline = 5;
+      new Harness(p);
+    }
+  }
+}
+
+// A lane whose deadline is shorter than a delayed reply, over a link that is
+// up. The lane fails with the box heard from last, so the page shows a failure
+// and not the waiting state, which is for a link that is down.
+machine TestFastLane {
+  start state Init {
+    entry {
+      var p: tPlan;
+      p = quietPlan();
+      p.ticks = 14;
+      p.emits += (0, emit(0, 1));
+      p.cmds += (0, cmdAt(2, CMD_FORWARD, 1));
+      p.delays = 4;
+      p.laneDeadline = 1;
+      new Harness(p);
+    }
+  }
+}
+
+// A box that is not honest: after a bound lapse it answers the late poll with
+// the frames it had queued as well as the ending. The laptop must deliver none.
+machine TestHostileEnd {
+  start state Init {
+    entry {
+      var p: tPlan;
+      p = quietPlan();
+      p.ticks = 22;
+      p.emits += (0, emit(2, 1));
+      p.emits += (1, emit(2, 1));
+      p.emits += (2, emit(2, 1));
+      p.emits += (3, emit(2, 1));
+      p.emits += (4, emit(3, 1));
+      p.breakAt = 1;
+      p.healAt = 7;
+      p.hostile = 1;
+      new Harness(p);
+    }
+  }
+}
+
 // An approval and its repeats through a link that loses and duplicates, for the
 // decision door property.
 machine TestApprovals {
@@ -301,56 +359,64 @@ test tcCap [main = TestCap]:
   (union System, { TestCap });
 
 test tcNormal [main = TestNormal]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EveryEndingDetachesOnce in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EveryEndingDetachesOnce, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestNormal });
 
 test tcLossy [main = TestLossy]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestLossy });
 
 test tcRacing [main = TestRacing]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestRacing });
 
 test tcShortPartition [main = TestShortPartition]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, ShortPartitionLosesNothing in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, ShortPartitionLosesNothing, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestShortPartition });
 
 test tcBoundLapse [main = TestBoundLapse]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestBoundLapse });
 
 test tcOversize [main = TestOversize]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestOversize });
 
 test tcByteLapse [main = TestByteLapse]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestByteLapse });
 
 test tcLeaseLapse [main = TestLeaseLapse]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestLeaseLapse });
 
 test tcStop [main = TestStop]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestStop });
 
 test tcRevoke [main = TestRevoke]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestRevoke });
 
 test tcDetach [main = TestDetach]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestDetach });
 
 test tcApprovals [main = TestApprovals]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestApprovals });
 
 test tcPieces [main = TestPieces]:
-  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly in
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
   (union System, { TestPieces });
+
+test tcLongPartition [main = TestLongPartition]:
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting, EmptyAnswerPauses, NothingSentAfterEnd in
+  (union System, { TestLongPartition });
+
+test tcHostileEnd [main = TestHostileEnd]:
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, EmptyAnswerPauses, NothingSentAfterEnd in
+  (union System, { TestHostileEnd });
 
 // One spec each, for mutate.py.
 test tcOnlyOrderedAtMostOnce [main = TestLossy]:
@@ -367,6 +433,12 @@ test tcOnlyRelayedDoor [main = TestApprovals]:
 
 test tcOnlyShortPartition [main = TestShortPartition]:
   assert ShortPartitionLosesNothing in (union System, { TestShortPartition });
+
+test tcOnlyDownWaiting [main = TestLongPartition]:
+  assert DownShowsWaiting in (union System, { TestLongPartition });
+
+test tcOnlyHostileEnd [main = TestHostileEnd]:
+  assert NothingAfterEnd in (union System, { TestHostileEnd });
 
 test tcOnlyCap [main = TestCap]:
   assert CapNeverExceeded in (union System, { TestCap });
@@ -433,6 +505,28 @@ test tcProbeLaneFailed [main = TestLossy]:
 
 test tcProbePartitionDropped [main = TestShortPartition]:
   assert ProbePartitionDropped in (union System, { TestShortPartition });
+
+test tcProbeShownWaiting [main = TestLongPartition]:
+  assert ProbeShownWaiting in (union System, { TestLongPartition });
+
+test tcFastLane [main = TestFastLane]:
+  assert FeedOrderedAtMostOnce, LaneFrameOnceWhole, NothingAfterEnd, RelayedDoorOnly, DownShowsWaiting, EmptyAnswerPauses, NothingSentAfterEnd in
+  (union System, { TestFastLane });
+
+test tcOnlyEmptyPause [main = TestNormal]:
+  assert EmptyAnswerPauses in (union System, { TestNormal });
+
+test tcOnlyNoSendAfterEnd [main = TestStop]:
+  assert NothingSentAfterEnd in (union System, { TestStop });
+
+test tcProbeEmptyPause [main = TestNormal]:
+  assert ProbeEmptyPause in (union System, { TestNormal });
+
+test tcProbeQueuedAtEnd [main = TestStop]:
+  assert ProbeQueuedAtEnd in (union System, { TestStop });
+
+test tcProbeDroppedEnded [main = TestHostileEnd]:
+  assert ProbeDroppedEnded in (union System, { TestHostileEnd });
 
 test tcProbeCursorAhead [main = TestNormal]:
   assert ProbeCursorAhead in (union System, { TestNormal });
