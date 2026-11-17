@@ -100,7 +100,8 @@
 //// with the member ignored, so a sender cannot believe it sent one. The
 //// codec also refuses an `argv` of more than 4,096 entries, an `env` of more
 //// than 1,024 pairs, a `waiting_ms` outside 0 to 2^32 - 1 (it becomes a
-//// receive's timeout), and a `deadline_ms` outside 0 to 2^53.
+//// receive's timeout), and a `deadline_ms` outside 0 to 2^42 (the relay arms
+//// a timer for the time left to it).
 //// The `cleared` reply carries a whole `broker.Refusal`, and a `call_event`
 //// a whole `ExecResult` or `ExecFailure`. One of their values is carried
 //// lossily: a helper actor that failed to start because its initialiser
@@ -3581,10 +3582,12 @@ pub const max_call_argv = 4096
 /// The most pairs a tunnelled call's `env` may carry, for the same reason.
 pub const max_call_env = 1024
 
-/// The latest deadline in milliseconds a tunnelled call may name, 2^53, the
-/// largest integer a JSON reader on any platform holds exactly. A deadline is
-/// an instant compared with a clock, never a receive's timeout.
-pub const max_call_ms = 9_007_199_254_740_992
+/// The latest deadline a tunnelled call may name, 2^42 epoch milliseconds (in
+/// the year 2109). The broker's relay arms a state timeout for the time left
+/// before the deadline, and the runtime's timer refuses a span near 2^53, so
+/// the bound is one any real deadline is under and any span to it is a timer
+/// the runtime accepts.
+pub const max_call_ms = 4_398_046_511_104
 
 /// The longest clearance wait in milliseconds a tunnelled call may name,
 /// 2^32 - 1. The wait becomes a receive's timeout on both sides, and the
@@ -3654,7 +3657,7 @@ fn decode_tunnel_spec(
 }
 
 /// Reads a call's pooled budget. Its cap is positive, as the broker's ledger
-/// requires, and its deadline is a wall instant of at most 2^53 milliseconds.
+/// requires, and its deadline is a wall instant of at most 2^42 milliseconds.
 fn decode_budget(value: JsonValue) -> Result(budget.Budget, CorruptionReport) {
   use fields <- result.try(object_of(value, "budget"))
   use max_outstanding <- result.try(id_field(fields, "max_outstanding"))
@@ -4326,12 +4329,12 @@ fn wait_of(value: JsonValue, on: String) -> Result(Int, CorruptionReport) {
   }
 }
 
-/// Reads a wait or a deadline in milliseconds, from 0 to 2^53.
+/// Reads a deadline in epoch milliseconds, from 0 to `max_call_ms`.
 fn millis_of(value: JsonValue, on: String) -> Result(Int, CorruptionReport) {
   use millis <- result.try(nat_of(value, on))
 
-  // A larger value is no real wait, and a reader on another platform could
-  // not hold it exactly.
+  // A later deadline is no real one, and the relay's timer for it would be
+  // refused by the runtime.
   case millis <= max_call_ms {
     True -> Ok(millis)
     False ->
