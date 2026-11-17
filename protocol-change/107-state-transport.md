@@ -1627,3 +1627,60 @@ the `Reserved` arm of `delegate_host.resident`.
 - *Test.* `a_full_pool_stays_a_request_to_ask_again_after_the_failed_start_drains_test` holds the
   failed build's cleanup so the first ask polls `Stopping`, then asks again after the drain. It
   answered the store failure before the change.
+
+## Addendum: a call in flight when a local session moves (2026-11-16)
+
+A live drive of exit criterion 2 of #1137 on 2026-11-14 moved a session whose workspace is a
+directory on the laptop while a tool call ran.
+The slot stop killed the turn before the call's outcome was staged, so the file the
+destination received held the call as effect-pending. The destination placed the session on
+the executor, and recovery asked that executor's ledger, which had never seen the call. For a
+`ReplayNever` call the ledger fences a key it has no row for and answers that the call did not
+start, so the model was told "the call never reached the executor and did not run". The call
+had run on the laptop and written a file. A model told that repeats a call that must not run
+twice. Nothing above is edited, no wire constructor or configuration key is added, the
+version stays at 6, and no interface of spec Part 1 changes.
+
+**The rule.** A call dispatched under a local placement has no route to any executor, so no
+executor can say what it did, and no stale `Run` for it exists for a fence to stop. Such a call
+is answered as a local session answers it after a restart in place: its outcome is unknown.
+The fenced "did not run" stays the answer for every call the session dispatched to the
+executor it asks, including after an orchestrator restart and after a move of a session that
+was already on that executor, whose ledger holds the rows.
+
+**How the destination knows.** The checkout step writes a second reserved cell,
+`client/move/interrupted` (`client/moved_calls`), in the same commit as every write of its
+progress cell `client/move/checkout`. It lists, by operation, step and source index, every call
+the stopped file holds effect-pending under `ReplayNever`. `workspace.recover_by_placement`
+answers a listed call with `OutcomeUnknown` and does not ask the executor. `ReplaySafe` calls
+are not listed, because the executor's "no row" already sends them to the planner's replay.
+
+**Why it holds.**
+
+- *Every file the destination takes from a local source carries the list.* The pending set
+  cannot change while the session is stopped, the list is written after the stop and before
+  the cut, and the destination is told of the session only after the checkout step is done.
+  A crash between the stop and the write leaves a mover that runs the step again.
+- *A list never covers a call the destination dispatched.* A listed key is pending again only
+  if the same operation, step and index are dispatched again. Keys are never reused, and a
+  `ReplayNever` orphan is never replayed, so once the destination stages a listed call's
+  outcome the key stays settled. A list left in the file by an earlier move is inert.
+- *An abandoned move needs nothing.* The session is local again and opens with no recovery,
+  which never reads the list. A move asked for again writes the list again from the file as it
+  is then.
+
+**Costs and limits.** A call whose intent was durable but whose effect had not started when the
+stop came is told as unknown, which is what a local restart in place says about it, and is not
+false. A move begun by a daemon without this rule whose checkout cell already reads done is not
+rewritten, so its file has no list; that needs an upgrade in the middle of a move. Background
+executions are recovered through `execution_lookup` and are not covered. The models in
+`protocol/models/session-move` and `protocol/models/state-transfer` do not model tool calls
+or the ledger's call rows, and the list adds no step and no ordering of its own, so they are
+unchanged.
+
+**Tests.** `a_call_in_flight_when_the_move_stopped_the_turn_is_unknown_on_the_receiver_test`
+(`session_move_checkout_test`, through the real mover, host and ledger) and
+`a_call_pending_when_the_session_left_a_directory_is_unknown_test` (`workspace_test`) both
+failed against the earlier rule. `a_restart_in_place_keeps_the_fenced_did_not_run_answer_test`
+pins the fenced answer, and `the_moved_calls_list_is_written_again_from_the_file_test` the
+recomputation after an abandoned move.
