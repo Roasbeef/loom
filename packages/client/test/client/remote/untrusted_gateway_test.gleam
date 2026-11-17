@@ -20,6 +20,7 @@
 import broker/broker
 import broker/budget
 import client/internal/ffi_tls_stream.{type Stream}
+import client/owner_services
 import client/remote/blob_transfer
 import client/remote/host
 import client/remote/protocol
@@ -28,6 +29,7 @@ import client/remote/untrusted_codec
 import client/remote/untrusted_gateway
 import client/remote/untrusted_wire
 import client/workspace_policy
+import core/ids.{type Seq}
 import core/json
 import core/message
 import gleam/bit_array
@@ -515,4 +517,123 @@ pub fn a_response_past_the_value_bound_goes_out_as_oversized_test() {
       digest: blob_transfer.digest_of(bytes),
     ))
   stop(rig)
+}
+
+// --- callbacks past the frame bounds ------------------------------------------
+
+/// A plane whose every call writes `value` to a fact cell through its owner
+/// and reports what the write came to.
+fn putting(
+  results: Subject(Result(Seq, owner_services.FactFault)),
+  value: json.JsonValue,
+) -> host.PlaneFactory(RemoteCensus) {
+  fn(spec: host.AttachSpec) {
+    let owner = spec.owner
+    Ok(host.Plane(
+      run: fn(run, _authority) {
+        process.send(results, owner.facts.put("job/wide", value, None))
+        fixtures.expected_outcome(run)
+      },
+      census: remote_orchestrator.census(remote_orchestrator.standard_tools()),
+      children: fn(builder) { builder },
+      close: fn(retire_children) {
+        let _retired = retire_children()
+        protocol.AllRetired
+      },
+      execute: fn(_start) { json.Null },
+      abort_step: fn(_op, _step) { Nil },
+      evolution: None,
+      state: None,
+    ))
+  }
+}
+
+/// Attaches a gateway over a plane that writes an array of `items` zeros to a
+/// fact cell during its call, and sends that call.
+fn start_putting(
+  label: String,
+  items: Int,
+  results: Subject(Result(Seq, owner_services.FactFault)),
+) -> #(Programs, Stream) {
+  let pair = rig.pair(label)
+  let executor =
+    remote_orchestrator.start(putting(
+      results,
+      json.Array(list.repeat(json.Int(0), items)),
+    ))
+  let assert Ok(gateway) =
+    untrusted_gateway.start(untrusted_gateway.Config(
+      address: "127.0.0.1",
+      port: 0,
+      credentials: pair.executor,
+      orchestrators: [pair.orchestrator_pin],
+      host: executor.address,
+      blobs: None,
+      logger: log.discard(),
+    ))
+    as "the gateway starts"
+  let programs =
+    Programs(
+      pair:,
+      executor:,
+      gateway:,
+      launches: process.new_subject(),
+      started: process.new_subject(),
+    )
+  let stream = rig.hello(gateway.port, pair)
+  attach(stream)
+  rig.send(stream, run_request(2, fixtures.tool_run("put", 0)))
+  #(programs, stream)
+}
+
+// How many zeros fill a fact-put callback to exactly the value bound: the
+// callback's own frame holds the same values as the one with an empty array,
+// less the array's one.
+fn items_to_the_bound() -> Int {
+  let frame =
+    untrusted_wire.Callback(
+      binding: <<1:size(128)>>,
+      id: 1,
+      callback: untrusted_wire.FactPutCall(
+        key: "job/wide",
+        value: json.Array([]),
+        expected: None,
+      ),
+    )
+  let assert Ok(text) = bit_array.to_string(untrusted_codec.encode_frame(frame))
+    as "the frame is text"
+  let assert Ok(document) = json.parse(text) as "the frame parses"
+  untrusted_wire.max_frame_values - json.count_values(document)
+}
+
+// A callback of more values than a frame may hold is not sent, because the
+// orchestrator would close the connection over it and re-send everything. The
+// plane that asked hears a failure, and the connection goes on to answer the
+// call that was in flight.
+pub fn a_callback_past_the_value_bound_is_not_sent_and_fails_its_asker_test() {
+  let results = process.new_subject()
+  let #(rig, stream) =
+    start_putting("callback-over", items_to_the_bound() + 1, results)
+
+  let assert Ok(Error(_fault)) = process.receive(results, 20_000)
+    as "the asker hears a failure"
+  let assert Ok(untrusted_codec.ResponseEnvelope(id: 2, ..)) = rig.next(stream)
+    as "no callback was sent, and the call is answered on the same connection"
+  assert !rig.closed(stream, 300)
+  stop_programs(rig)
+}
+
+// A callback of exactly the bound goes out as a callback.
+pub fn a_callback_at_the_value_bound_is_sent_test() {
+  let results = process.new_subject()
+  let #(rig, stream) =
+    start_putting("callback-at", items_to_the_bound(), results)
+
+  let assert Ok(untrusted_codec.CallbackEnvelope(body:, ..)) = rig.next(stream)
+    as "the callback is sent"
+  let assert Ok(untrusted_wire.FactPutCall(key: "job/wide", ..)) =
+    untrusted_codec.decode_callback(body)
+    as "it is the fact put"
+  assert process.receive(results, 100) == Error(Nil)
+  stop_programs(rig)
 }
