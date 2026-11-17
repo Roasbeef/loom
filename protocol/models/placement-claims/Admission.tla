@@ -16,7 +16,9 @@
 (* catalogue may keep, and a slot in the registry. An ask is one registry  *)
 (* turn (`manager.delegate_session`) and then a poll of the session's      *)
 (* status (`delegate_host.resident`). A build fails for want of room while *)
-(* the pool is full and succeeds once a scope is free.                     *)
+(* the pool is full and succeeds once a scope is free. With Broken, every  *)
+(* build fails for a reason no later ask can change, as a workspace that   *)
+(* is not a repository does.                                               *)
 (*                                                                         *)
 (* A scope frees only when a finished child is joined. While the parent    *)
 (* waits in the spawn tool its own `agent_wait` cannot run, so the only    *)
@@ -24,9 +26,11 @@
 (* every pass (`remote_drain.pass`). The parent's own wait after the tool  *)
 (* returns is not modelled: the property is about the asks.                *)
 (*                                                                         *)
-(* Four constants turn on the rules of the fix, and three more turn one    *)
-(* rule into a wrong version of it, so that its mutation can be checked.   *)
-(* All four rules off is the code the second drive ran (e128668ee).        *)
+(* Four constants are the rules of the fix (RetryInPlace, BareAsksAgain,   *)
+(* AnswerNotSilent, KeepsFinal) and one is a rule the code already had     *)
+(* (FinalReleases). RetryMakesNew turns R1 into a wrong version of it.     *)
+(* The code the second drive ran (e128668ee) is the four rules of the fix  *)
+(* off and FinalReleases on.                                               *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -34,9 +38,11 @@ CONSTANTS
     RetryInPlace,   \* R1: a repeat ask rebuilds the reservation; nothing ends a row for no room.
     BareAsksAgain,  \* R2: a reservation with no kept failure is a reason to ask again, not final.
     AnswerNotSilent,\* R3: a NotYetOpen answer to the drain's spawn does not skip its join.
+    KeepsFinal,     \* R1's limit: a reservation whose kept failure is final is not rebuilt.
     FinalReleases,  \* A final refusal ends the child's session (`ended_unless_asks_again`).
     RetryMakesNew,  \* MUTANT of R1: the repeat ask makes a new reservation instead.
     LostFailure,    \* The catalogue may fail to keep a start failure, once.
+    Broken,         \* Every build fails for a reason no later ask can change.
     MaxMade         \* Bound on registrations made, for the configurations that make many.
 
 Askers == {"tool", "drain"}
@@ -47,9 +53,10 @@ VARIABLES
     sid,      \* The registration the row names, or None.
     regs,     \* Every registration that exists for this child (a leak is a second one).
     reg,      \* The state of the row's registration: "reserved" or "saved".
-    kept,     \* The start failure the catalogue kept: "none", "noroom" or "lost".
+    kept,     \* The start failure kept: "none", "noroom", "other" (final) or "lost" (not written).
     slot,     \* The registry's slot: "none", "building", "closing" or "running".
     made,     \* Registrations made so far.
+    builds,   \* Builds started so far, counted up to three, which keeps the space finite.
     room,     \* An executor scope is free.
     finished, \* Another child of the parent has finished; its scope frees at its join.
     started,  \* The registrations in which a child was started (a first turn).
@@ -60,16 +67,17 @@ VARIABLES
     silent,   \* The drain's spawn step marked the box silent in this pass.
     final     \* History: an asker was answered a final refusal.
 
-vars == <<row, sid, regs, reg, kept, slot, made, room, finished, started,
-          ask, held, stub, dpass, silent, final>>
+vars == <<row, sid, regs, reg, kept, slot, made, builds, room, finished,
+          started, ask, held, stub, dpass, silent, final>>
 
 TypeOK ==
     /\ row \in {"none", "open", "releasing"}
     /\ sid \in 0..MaxMade
     /\ regs \subseteq 1..MaxMade
     /\ reg \in {"reserved", "saved"}
-    /\ kept \in {"none", "noroom", "lost"}
+    /\ kept \in {"none", "noroom", "other", "lost"}
     /\ slot \in {"none", "building", "closing", "running"}
+    /\ builds \in 0..3
     /\ ask \in [Askers -> {"idle", "poll", "ending", "done"}]
     /\ held \in [Askers -> 0..MaxMade]
     /\ stub \in {"requested", "refused", "spawned"}
@@ -77,7 +85,7 @@ TypeOK ==
 
 Init ==
     /\ row = "none" /\ sid = None /\ regs = {} /\ reg = "reserved"
-    /\ kept = "none" /\ slot = "none" /\ made = 0
+    /\ kept = "none" /\ slot = "none" /\ made = 0 /\ builds = 0
     /\ room = FALSE /\ finished = FALSE /\ started = {}
     /\ ask = [a \in Askers |-> "idle"]
     /\ held = [a \in Askers |-> None]
@@ -90,7 +98,7 @@ Init ==
 (* refused unless it is already spawned, and the tool stops. A request to  *)
 (* ask again sends the tool round again; for the drain it ends the spawn   *)
 (* step, and without R3 it marks the box silent for the join step          *)
-(* (`remote_drain.attempt_spawn`, where NotYetOpen is Unreachable).        *)
+(* (`remote_drain.attempt_spawn`, where NotYetOpen was Unreachable).       *)
 (***************************************************************************)
 Done(a, next) ==
     /\ ask' = [ask EXCEPT ![a] = next]
@@ -128,12 +136,13 @@ EndByName ==
 Refused(a) ==
     /\ Heard(a, "final")
     /\ IF FinalReleases THEN EndByName ELSE UNCHANGED <<row, sid, regs, slot>>
-    /\ UNCHANGED <<reg, kept, made, room, finished, started>>
+    /\ UNCHANGED <<reg, kept, made, builds, room, finished, started>>
 
 \* A request to ask again, with nothing changed on the box.
 Again(a) ==
     /\ Heard(a, "again")
-    /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, room, finished, started>>
+    /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, builds, room,
+                   finished, started>>
 
 (***************************************************************************)
 (* The registry's turn of an ask (`manager.delegate_now`).                  *)
@@ -142,21 +151,28 @@ Again(a) ==
 (* row is `DelegateReleased`, final. An open row with a slot that is       *)
 (* building or running is admitted and polled, and one that is closing is  *)
 (* answered stopping (`returning_delegate`). An open reserved row with no  *)
-(* slot is the subject of the fix. Today admission refuses it              *)
-(* `NotInitialized` and `reserved_refusal` reads the kept failure: no room *)
-(* ends the row and asks again, anything else is final. With R1 the turn   *)
-(* builds the same reservation again under its request key, and with the   *)
-(* mutant it makes a new one beside it.                                    *)
+(* slot is the subject of the fix. Before it, admission refused it         *)
+(* `NotInitialized` and `reserved_refusal` read the kept failure: no room  *)
+(* ended the row and asked again, anything else was final. With R1 the     *)
+(* turn builds the same reservation again under its request key           *)
+(* (`manager.unslotted`), unless, with KeepsFinal, the kept failure is one *)
+(* no later ask can change: then the turn starts nothing and answers the   *)
+(* failed start, which the poll reads as final. With the mutant the turn  *)
+(* makes a new reservation beside the old one.                             *)
 (***************************************************************************)
 Asking(a) ==
     \/ a = "tool" /\ ask[a] = "idle" /\ stub # "spawned"
     \/ a = "drain" /\ ask[a] = "idle" /\ dpass = "spawn" /\ stub = "requested"
 
+\* One more build, counted up to three. Only the Broken configurations read
+\* the count, so the others do not count and their state space stays as it was.
+Bump(n) == IF ~Broken \/ n >= 3 THEN n ELSE n + 1
+
 Create(a) ==
     /\ made < MaxMade
     /\ row' = "open" /\ sid' = made + 1 /\ regs' = regs \cup {made + 1}
     /\ reg' = "reserved" /\ kept' = "none" /\ slot' = "building"
-    /\ made' = made + 1
+    /\ made' = made + 1 /\ builds' = Bump(builds)
     /\ ask' = [ask EXCEPT ![a] = "poll"]
     /\ held' = [held EXCEPT ![a] = made + 1]
     /\ UNCHANGED <<room, finished, started, stub, dpass, silent, final>>
@@ -171,16 +187,22 @@ Admit(a) ==
        ELSE IF row = "releasing" THEN Refused(a)
        ELSE IF slot \in {"building", "running"} THEN
             /\ Poll(a, sid)
-            /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, room,
+            /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, builds, room,
                            finished, started, stub, dpass, silent, final>>
        ELSE IF slot = "closing" THEN Again(a)
        ELSE IF reg = "saved" THEN
             \* A placed child's saved session is opened again.
             /\ slot' = "running" /\ Poll(a, sid)
-            /\ UNCHANGED <<row, sid, regs, reg, kept, made, room, finished,
-                           started, stub, dpass, silent, final>>
+            /\ UNCHANGED <<row, sid, regs, reg, kept, made, builds, room,
+                           finished, started, stub, dpass, silent, final>>
+       ELSE IF RetryInPlace /\ KeepsFinal /\ kept = "other" THEN
+            \* The failed start is answered as it is, and nothing is built.
+            /\ Poll(a, sid)
+            /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, builds, room,
+                           finished, started, stub, dpass, silent, final>>
        ELSE IF RetryInPlace /\ ~RetryMakesNew THEN
             /\ slot' = "building" /\ kept' = "none" /\ Poll(a, sid)
+            /\ builds' = Bump(builds)
             /\ UNCHANGED <<row, sid, regs, reg, made, room, finished, started,
                            stub, dpass, silent, final>>
        ELSE IF RetryInPlace THEN
@@ -188,32 +210,35 @@ Admit(a) ==
             /\ made < MaxMade
             /\ sid' = made + 1 /\ regs' = regs \cup {made + 1}
             /\ reg' = "reserved" /\ kept' = "none" /\ slot' = "building"
-            /\ made' = made + 1 /\ Poll(a, made + 1)
+            /\ made' = made + 1 /\ builds' = Bump(builds) /\ Poll(a, made + 1)
             /\ UNCHANGED <<row, room, finished, started, stub, dpass, silent, final>>
        ELSE IF kept = "noroom" THEN
             \* reserved_refusal: the row is ended and the sender asked again.
             /\ row' = "none" /\ sid' = None /\ regs' = regs \ {sid}
             /\ Heard(a, "again")
-            /\ UNCHANGED <<reg, kept, slot, made, room, finished, started>>
+            /\ UNCHANGED <<reg, kept, slot, made, builds, room, finished, started>>
        ELSE Refused(a)
 
 (***************************************************************************)
-(* The build ends. With a free scope the slot runs and the registration is *)
-(* saved. Without one the registry keeps the failure and stops the slot in *)
-(* one turn (`remember_failure(stop_slot(..))`). With LostFailure the      *)
-(* catalogue may fail to keep it once, which leaves a bare reservation.   *)
+(* The build ends. With a free scope, and unless Broken, the slot runs and *)
+(* the registration is saved. Otherwise the registry keeps the failure and *)
+(* stops the slot in one turn (`remember_failure(stop_slot(..))`): no room *)
+(* while the pool is full, or the final reason when Broken. With           *)
+(* LostFailure the catalogue may fail to keep it once, which leaves a bare *)
+(* reservation.                                                            *)
 (***************************************************************************)
 BuildEnds ==
     /\ slot = "building"
-    /\ IF room
+    /\ IF room /\ ~Broken
           THEN /\ slot' = "running" /\ reg' = "saved"
                /\ UNCHANGED kept
           ELSE /\ slot' = "closing"
-               /\ kept' \in IF LostFailure /\ kept # "lost"
-                                THEN {"noroom", "lost"} ELSE {"noroom"}
+               /\ kept' \in (IF Broken THEN {"other"} ELSE {"noroom"})
+                            \cup (IF LostFailure /\ kept # "lost"
+                                     THEN {"lost"} ELSE {})
                /\ UNCHANGED reg
-    /\ UNCHANGED <<row, sid, regs, made, room, finished, started, ask, held,
-                   stub, dpass, silent, final>>
+    /\ UNCHANGED <<row, sid, regs, made, builds, room, finished, started, ask,
+                   held, stub, dpass, silent, final>>
 
 (* The failed slot's custody drains. A releasing row is then deleted.       *)
 Retire ==
@@ -222,21 +247,23 @@ Retire ==
     /\ IF row = "releasing"
           THEN row' = "none" /\ sid' = None /\ regs' = regs \ {sid}
           ELSE UNCHANGED <<row, sid, regs>>
-    /\ UNCHANGED <<reg, kept, made, room, finished, started, ask, held, stub,
-                   dpass, silent, final>>
+    /\ UNCHANGED <<reg, kept, made, builds, room, finished, started, ask, held,
+                   stub, dpass, silent, final>>
 
 (***************************************************************************)
 (* One read of an admitted asker's poll (`delegate_host.resident`), in its *)
-(* own step, so the other asker's steps fall between two reads.            *)
+(* own step, so the other asker's steps fall between two reads. Each       *)
+(* status is read as `delegate_host.reading` reads it.                     *)
 (*                                                                         *)
 (* A registration that is gone reads `Missing`, which is a store failure,  *)
 (* final. A running slot places the child: the claim lets one asker do the *)
 (* work, and the Agency adopts the call site, so the second asker hears    *)
-(* the same handle. A closing slot is stopping: ask again. A reservation   *)
-(* with no slot whose failure is no room: today the asker answers ask      *)
-(* again and then ends the row by name in a later step; with R1 it only    *)
-(* answers ask again. A bare reservation is final today, ask again with R2.*)
-(* A building slot is not read: the poll waits.                            *)
+(* the same handle. A closing slot is stopping: ask again. A failed start  *)
+(* whose reason no ask can change is final. A reservation with no slot     *)
+(* whose failure is no room: before the fix the asker answered ask again   *)
+(* and then ended the row by name in a later step; with R1 it only answers *)
+(* ask again. A bare reservation was final, and asks again with R2. A      *)
+(* building slot is not read: the poll waits.                              *)
 (***************************************************************************)
 Gone(a) == held[a] \notin regs \/ held[a] # sid
 
@@ -247,22 +274,24 @@ Read(a) ==
        ELSE IF slot = "running" THEN
             /\ started' = started \cup {sid}
             /\ Heard(a, "handle")
-            /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, room, finished>>
+            /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, builds, room,
+                           finished>>
        ELSE IF slot = "closing" \/ row = "releasing" THEN Again(a)
+       ELSE IF kept = "other" THEN Refused(a)
        ELSE IF kept = "noroom" /\ RetryInPlace THEN Again(a)
        ELSE IF kept = "noroom" THEN
             /\ ask' = [ask EXCEPT ![a] = "ending"]
-            /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, room,
+            /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, builds, room,
                            finished, started, held, stub, dpass, silent, final>>
        ELSE IF BareAsksAgain THEN Again(a)
        ELSE Refused(a)
 
-(* The end by name that `child_resolver` makes after a no-room poll.        *)
+(* The end by name that `child_resolver` made after a no-room poll.         *)
 End(a) ==
     /\ ask[a] = "ending"
     /\ EndByName
     /\ Heard(a, "again")
-    /\ UNCHANGED <<reg, kept, made, room, finished, started>>
+    /\ UNCHANGED <<reg, kept, made, builds, room, finished, started>>
 
 (***************************************************************************)
 (* The drain's join step. Unless the spawn step marked the box silent, it  *)
@@ -272,22 +301,22 @@ End(a) ==
 SkipSpawn ==
     /\ dpass = "spawn" /\ ask["drain"] = "idle" /\ stub # "requested"
     /\ dpass' = "join" /\ silent' = FALSE
-    /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, room, finished,
-                   started, ask, held, stub, final>>
+    /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, builds, room,
+                   finished, started, ask, held, stub, final>>
 
 Join ==
     /\ dpass = "join"
     /\ room' = (room \/ (finished /\ ~silent))
     /\ dpass' = "spawn" /\ silent' = FALSE
-    /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, finished, started,
-                   ask, held, stub, final>>
+    /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, builds, finished,
+                   started, ask, held, stub, final>>
 
 (* Another child of the parent finishes. Its scope is held until its join. *)
 Finish ==
     /\ ~finished
     /\ finished' = TRUE
-    /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, room, started, ask,
-                   held, stub, dpass, silent, final>>
+    /\ UNCHANGED <<row, sid, regs, reg, kept, slot, made, builds, room,
+                   started, ask, held, stub, dpass, silent, final>>
 
 Next ==
     \/ \E a \in Askers : Admit(a) \/ Read(a) \/ End(a)
@@ -308,19 +337,27 @@ Spec ==
 (***************************************************************************)
 (* Properties.                                                             *)
 (*                                                                         *)
-(* NoRoomNeverFinal (P1): every build in the model fails only for want of  *)
-(* room, so no asker is ever answered a final refusal.                     *)
+(* NoRoomNeverFinal (P1): when every build fails only for want of room, no *)
+(* asker is ever answered a final refusal. Checked without Broken.         *)
 (*                                                                         *)
 (* PlacedOnceRoomFrees (P2): the child is placed and the parent's stub     *)
 (* learns its handle, while both askers keep asking and another child      *)
-(* finishes.                                                               *)
+(* finishes. Checked without Broken.                                       *)
 (*                                                                         *)
 (* OneSessionPerChild (P3): at most one registration exists for the child, *)
 (* and at most one child is started for it.                                *)
 (*                                                                         *)
-(* NothingHeldUnplaced (P4): once the parent has stopped asking with the   *)
-(* child unplaced and no ask is in flight, no row, registration or slot    *)
-(* is left for it.                                                         *)
+(* NothingHeldUnplaced (P4): once the tool has heard the refusal, the      *)
+(* drain is not asking, and no slot is draining, no row or registration    *)
+(* is left for the child. It has a witness only with Broken.               *)
+(*                                                                         *)
+(* BuildsBoundedWhenBroken (P5): a child whose build fails for a final     *)
+(* reason has at most two builds started for it, one for each asker,       *)
+(* however the asks interleave. No registration is built twice; the second *)
+(* build is the tool's ask after the drain heard the refusal and ended the *)
+(* row, which finds no row and makes one, and then hears the refusal too.  *)
+(*                                                                         *)
+(* RefusedWhenBroken: such a child's stub learns the refusal.              *)
 (***************************************************************************)
 NoRoomNeverFinal == ~final
 
@@ -328,10 +365,14 @@ PlacedOnceRoomFrees == <>(stub = "spawned")
 
 OneSessionPerChild == Cardinality(regs) <= 1 /\ Cardinality(started) <= 1
 
-Quiet == \A a \in Askers : ask[a] \in {"idle", "done"}
+Quiet == ask["tool"] = "done" /\ ask["drain"] = "idle"
 
 NothingHeldUnplaced ==
     (stub = "refused" /\ Quiet /\ slot = "none")
         => (row = "none" /\ regs = {})
+
+BuildsBoundedWhenBroken == Broken => builds <= 2
+
+RefusedWhenBroken == <>(stub = "refused")
 
 =============================================================================
