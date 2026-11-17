@@ -200,7 +200,7 @@ pub type Request {
 /// words, in the bounds and the shape of a `TopSessions` row.
 pub type Label {
   Label(
-    /// The session's name, its first prompt once it has one.
+    /// The session's name, as its own page's heading draws it.
     name: String,
     /// Where the session's tools run.
     placement: Placement,

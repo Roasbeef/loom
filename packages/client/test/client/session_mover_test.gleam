@@ -546,6 +546,43 @@ fn sqlite_lease_free(path: String) -> Bool {
   }
 }
 
+// --- the scratch directory ----------------------------------------------------------
+
+// A session that ran left the empty `<id>.db.tmp` its workspace plane made, and
+// the finished move left it beside the tombstone. The retirement removes it
+// when it is empty, and leaves one that holds a file.
+pub fn a_finished_move_removes_an_empty_scratch_directory_test() {
+  let rig =
+    start("scratch", 1, Recorded, protocol.AllRetired, receiver_knows_box(), 0)
+  let scratch = source_file(rig) <> ".tmp"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(scratch)
+  let move = begin(rig)
+  assert session_mover.drive(plain(rig), move) == Finished
+  assert_moved(rig)
+  assert simplifile.is_directory(scratch) == Ok(False)
+  finish(rig)
+}
+
+pub fn a_finished_move_keeps_a_scratch_directory_that_holds_a_file_test() {
+  let rig =
+    start(
+      "scratch-kept",
+      1,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  let scratch = source_file(rig) <> ".tmp"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(scratch)
+  let assert Ok(Nil) = simplifile.write(scratch <> "/left-by-a-crash", "x")
+  let move = begin(rig)
+  assert session_mover.drive(plain(rig), move) == Finished
+  assert_moved(rig)
+  assert simplifile.is_file(scratch <> "/left-by-a-crash") == Ok(True)
+  finish(rig)
+}
+
 // --- the happy path -----------------------------------------------------------------
 
 pub fn a_stopped_session_moves_and_runs_on_the_receiver_at_the_next_incarnation_test() {

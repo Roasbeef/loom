@@ -352,6 +352,19 @@ pub fn an_attach_answers_a_token_the_epoch_the_incarnation_and_a_heading_test() 
   assert gateway.attached(rig.harness.hub) == rig.baseline + 1
 }
 
+// A listing row of a session shows its first prompt, but the page's heading is
+// the session's name, and the relayed page is to read what the box's own page
+// reads.
+pub fn the_heading_names_the_session_and_not_its_first_prompt_test() {
+  let rig = rig("heading-name", deciding, remote_feed.lease_ms)
+  manager.seed_subtitle(rig.registry, rig.session, "say: hello from the laptop")
+
+  // The seed is a cast, and a call from the same process is answered after it.
+  let assert Ok(_) = manager.get(rig.registry, rig.session)
+  let attached = attach(rig)
+  assert attached.label.name == "laptop session"
+}
+
 pub fn a_session_that_is_not_the_spawners_is_refused_and_takes_no_place_test() {
   let rig = rig("not-relayed", deciding, remote_feed.lease_ms)
   assert attach_as(rig, "0198c0de-0000-7000-8000-00000000dead")

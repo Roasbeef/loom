@@ -1524,20 +1524,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       activity: dict.new(),
       departure: None,
       resuming: None,
-      share: case
-        start.transport.invite,
-        start.standing.sharing,
-        start.standing.opening
-      {
-        None, Some(creations.Private), FromBookmark -> invites.BookmarkedPrivate
-        None, Some(creations.Shareable), FromBookmark
-        | None, None, FromBookmark
-        -> invites.Bookmarked
-        Some(_), Some(creations.Private), _ -> invites.Unshareable
-        Some(_), Some(creations.Shareable), _ | Some(_), None, _ ->
-          invites.Ready
-        None, _, FromLink -> invites.Withheld
-      },
+      share: shared_by(start),
       moving: case start.transport.shareable, start.standing.sharing {
         Some(_), Some(creations.Private) -> shareables.Idle
         Some(_), Some(creations.Shareable) | Some(_), None | None, _ ->
@@ -1569,6 +1556,31 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       armed: None,
     ),
   )
+}
+
+/// What the Session tab's invitation control starts as. A session on another
+/// orchestrator is invited to from that orchestrator's own page, whatever opened
+/// this one, so its sentence says so. A local page's control follows the
+/// capability, the session's scope and how the page was opened.
+fn shared_by(start: Start(socket)) -> invites.Share {
+  case start.standing.route {
+    Relayed(..) -> invites.Elsewhere(machine: start.standing.machine)
+    Local ->
+      case
+        start.transport.invite,
+        start.standing.sharing,
+        start.standing.opening
+      {
+        None, Some(creations.Private), FromBookmark -> invites.BookmarkedPrivate
+        None, Some(creations.Shareable), FromBookmark
+        | None, None, FromBookmark
+        -> invites.Bookmarked
+        Some(_), Some(creations.Private), _ -> invites.Unshareable
+        Some(_), Some(creations.Shareable), _ | Some(_), None, _ ->
+          invites.Ready
+        None, _, FromLink -> invites.Withheld
+      }
+  }
 }
 
 /// The component's first state and the two subscriptions it runs for its
@@ -5877,6 +5889,7 @@ pub fn invite(
     | Some(_), invites.Unshareable
     | Some(_), invites.Bookmarked
     | Some(_), invites.BookmarkedPrivate
+    | Some(_), invites.Elsewhere(..)
     | None, _
     -> #(model, effect.none())
   }
@@ -5909,6 +5922,7 @@ fn invited(model: Model(socket), answer: invites.Answer) -> Model(socket) {
     | invites.Unshareable, _
     | invites.Bookmarked, _
     | invites.BookmarkedPrivate, _
+    | invites.Elsewhere(..), _
     | invites.Ready, _
     | invites.Showing(..), _
     | invites.Refused(..), _
@@ -5933,6 +5947,7 @@ pub fn dismiss_invitation(model: Model(socket)) -> Model(socket) {
     | invites.Unshareable
     | invites.Bookmarked
     | invites.BookmarkedPrivate
+    | invites.Elsewhere(..)
     | invites.Ready
     | invites.Asking -> model
   }
@@ -8552,14 +8567,37 @@ pub fn heading(
   )
 }
 
-// Where the page's own session keeps its code, from the list the sidebar read:
-// nothing until the read has the session, which a page that opened a moment ago
-// may not yet.
+/// Where the page's own session keeps its code. A local page reads it from the
+/// list the sidebar read: nothing until the read has the session, which a page
+/// that opened a moment ago may not yet. A relayed page's session is on another
+/// orchestrator and is in no list this daemon reads, so its code is the one the
+/// orchestrator's attach answer put in the label.
 fn current_code(model: Model(socket)) -> Option(listing.Code) {
-  listing.entries(model.view.groups)
-  |> list.find(fn(entry) { entry.id == model.shared.session })
-  |> result.map(fn(entry) { listing.place(entry, model.view.machine).code })
-  |> option.from_result
+  case model.view.route {
+    Relayed(..) -> relayed_code(model.view.label)
+    Local ->
+      listing.entries(model.view.groups)
+      |> list.find(fn(entry) { entry.id == model.shared.session })
+      |> result.map(fn(entry) { listing.place(entry, model.view.machine).code })
+      |> option.from_result
+  }
+}
+
+/// The code a relayed session's label names: a workspace on an executor, a
+/// workspace on a pool, or a folder on the orchestrator. A label with none of
+/// the three, as a page that is waiting for its orchestrator holds, names no
+/// code, and the strip says only where the agent runs.
+fn relayed_code(label: Option(Label)) -> Option(listing.Code) {
+  case label {
+    None -> None
+    Some(Label(executor: "", pool: "", workspace: "", ..)) -> None
+    Some(Label(executor: "", pool: "", workspace:, ..)) ->
+      Some(listing.Folder(path: workspace))
+    Some(Label(executor:, pool: "", workspace:, ..)) ->
+      Some(listing.Registered(executor:, workspace:))
+    Some(Label(pool:, workspace:, ..)) ->
+      Some(listing.Pooled(pool:, workspace:))
+  }
 }
 
 /// The top bar's context figure. The primary strand's has no value until its
