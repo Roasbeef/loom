@@ -441,9 +441,12 @@ fn fixture(artifacts: Artifacts) -> Nil {
   let _failing_stopped = vm(run, ["down", "--name", run.failing_name])
   let _untrusted_stopped = vm(run, ["down", "--name", run.untrusted_name])
   let _second_stopped = vm(run, ["down", "--name", second_untrusted_name(run)])
-  default_teardown(run)
   remote_daemons.retire(run.untrusted.paths)
   remote_daemons.retire(run.orchestrator.paths)
+
+  // After the orchestrators' retires, because its own asserts would otherwise
+  // skip them when one fails.
+  default_teardown(run)
   let assert [weft.Completed(0, Nil)] = outcomes
     as "the microvm body completes before native teardown"
 
