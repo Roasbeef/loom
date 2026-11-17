@@ -948,6 +948,25 @@ pub fn a_wider_spec_base_runs_under_the_planes_base_test() {
   )
   let assert broker.CallExited(result:) = outcome as "cat exits"
   assert result.code != 0
+
+  // The same wide spec reads a file inside the plane's roots, so the refusal
+  // above is the plane's base at work and not a `cat` that cannot run.
+  let assert Ok(Nil) = simplifile.write(real.workspace <> "/inside", "INSIDE")
+    as "the inside file is written"
+  send_clear(
+    stream,
+    3,
+    untrusted_wire.TunnelSpec(..spec, step_id: "wide-inside", argv: [
+      "/bin/cat",
+      real.workspace <> "/inside",
+    ]),
+    15_000,
+  )
+  assert cleared_within(stream, 3, 20_000) == Ok(Nil)
+  let #(inside, outcome) = settlement(stream, 3, [])
+  assert stdout_of(inside) == <<"INSIDE">>
+  let assert broker.CallExited(result:) = outcome as "the inside cat exits"
+  assert result.code == 0
 }
 
 // A root that is not a plain absolute path could pass the meet as text and
