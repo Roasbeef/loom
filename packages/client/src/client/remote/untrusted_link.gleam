@@ -585,7 +585,11 @@ pub fn tunnel_waiting(
           process.new_selector()
           |> process.select_map(reply, Heard)
           |> process.select_specific_monitor(watch, fn(_down) { DoorDown })
-          |> process.selector_receive(int.max(0, waiting + slack_ms))
+          |> process.selector_receive(int.clamp(
+            waiting + slack_ms,
+            0,
+            untrusted_codec.max_call_wait_ms,
+          ))
         process.demonitor_process(watch)
 
         // Only the link's own `Ok` is a running call; a silent link is given
@@ -2619,10 +2623,14 @@ fn shaped(spec: broker.CallSpec, waiting: Int) -> Result(Nil, String) {
   let within = fn(millis) {
     millis >= 0 && millis <= untrusted_codec.max_call_ms
   }
+
+  // The wait is the link's own timer and, less a second, the executor's
+  // receive, so it is held to what a receive's timeout can be.
   let fits =
     list.drop(spec.argv, untrusted_codec.max_call_argv) == []
     && list.drop(spec.env, untrusted_codec.max_call_env) == []
-    && within(waiting)
+    && waiting >= 0
+    && waiting <= untrusted_codec.max_call_wait_ms
     && within(spec.budget.deadline_ms)
 
   // Grants come only from an approved escalation, which a tunnelled call has

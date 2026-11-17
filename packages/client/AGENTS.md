@@ -107,7 +107,8 @@ executor's frame `CallEvent(call, TunnelOutput(stream, data) |
 TunnelSettled(broker.CallOutcome))`. The codec carries every `ExecResult`
 field, every `ExecFailure` and every `broker.Refusal`; it refuses a spec with a
 `grants` or `demand` member, an `argv` over 4,096 entries, an `env` over 1,024
-pairs, and a `waiting_ms` or `deadline_ms` outside 0 to 2^53; an
+pairs, a `waiting_ms` outside 0 to 2^32 - 1 (`max_call_wait_ms`, a receive's
+longest timeout), and a `deadline_ms` outside 0 to 2^53; an
 `actor.InitExited(Abnormal(_))` crosses as `InitFailed` with its printed reason.
 `untrusted_wire.max_frame_values` (1,048,576) bounds the JSON values of every
 frame (`decode_envelope`) and of a fetched outcome (`decode_outcome_bytes`)

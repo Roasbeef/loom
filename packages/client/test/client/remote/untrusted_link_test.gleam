@@ -2441,3 +2441,41 @@ fn recording_door(
   process.send(seen, untrusted_link.tunnel_shape(message))
   recording_door(door, seen)
 }
+
+// A clearance wait becomes a receive's timeout, which holds at most 2^32 - 1
+// milliseconds: a wait at that bound is sent, and the caller's own receive does
+// not raise; one past it is refused before anything is sent.
+pub fn a_clearance_wait_is_held_to_a_receive_timeout_test() {
+  let rig = start("tunnel-longest-wait")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let longest = untrusted_codec.max_call_wait_ms
+
+  let #(_asker, told) =
+    clear_from(
+      untrusted_link.tunnel_through(rig.door, "s1"),
+      tunnel_spec(64),
+      longest,
+    )
+  let id = clear_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Error(broker.OperationAborted)),
+    ),
+  )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.OperationAborted)))
+
+  let #(_asker, told) =
+    clear_from(
+      untrusted_link.tunnel_through(rig.door, "s1"),
+      tunnel_spec(64),
+      longest + 1,
+    )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.BrokerUnavailable)))
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
