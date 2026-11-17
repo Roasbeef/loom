@@ -3,12 +3,11 @@
 ////
 //// Imported hooks, the goal check and the repository observations each need
 //// a cleared call: a process started under the session's policy, whose
-//// output arrives as `CallEvent`s on a subject the caller owns. They used
-//// to hold a `Broker` and call it directly, which is correct where the
-//// workspace's broker is in this VM and has no meaning where it is not.
-//// This type is the seam between what they ask for and who answers: the
-//// caller supplies a spec, an events subject and a clearance wait, and the
-//// placement decides what clears it.
+//// output arrives as `CallEvent`s on a subject the caller owns. A `Broker`
+//// they could call directly exists only where the workspace's broker is in
+//// this VM, so they hold this function instead. It is the seam between what
+//// they ask for and who answers: the caller supplies a spec, an events
+//// subject and a clearance wait, and the placement decides what clears it.
 ////
 //// The type lives here, and `client/workspace_plane` re-exports it as
 //// `ClearCall`, because `worktree_diff` and `hookrunner` take it and

@@ -690,8 +690,9 @@ fn build(
     )
   let opened = registered.opened
 
-  // The same relay broker answers the call-clearing seam, so a placement on
-  // an executor still ends in the refusing relay for non-tool work.
+  // The same relay broker answers the call-clearing seam. On a trusted
+  // executor that is the plane's broker; on an untrusted one it is the
+  // link's refusing broker, so non-tool work is refused there.
   let placed_broker = broker.over(owner_port.broker(port), executor_clock)
   Hands(
     plane: workspace_plane.WorkspacePlane(
