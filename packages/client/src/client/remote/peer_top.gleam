@@ -2,7 +2,7 @@
 ////
 //// The existing TopHost remains the authority: this module only converts
 //// bounded JSON to its arguments and converts its result back to data. It
-//// never trusts a caller-supplied node identity. The four revisions of the live
+//// never trusts a caller-supplied node identity. The five revisions of the live
 //// session page (protocol-change/108) ride the same dispatch: their bodies are
 //// read by `client/remote_feed` and their answers go to `TopHost.feeds`.
 
@@ -85,7 +85,7 @@ pub fn dispatch(
   }
 }
 
-/// Runs one of the four operations of a live session page. The body is decoded
+/// Runs one of the five operations of a live session page. The body is decoded
 /// completely by `remote_feed`'s total decoder before a callback sees it, and
 /// the node is the exchange's, never a field of the body.
 fn feed(
@@ -107,6 +107,8 @@ fn feed(
       host.send(node, piece) |> result.map(fn(_) { json.Null })
     remote_feed.DetachRequest(feed:) ->
       host.detach(node, feed) |> result.map(fn(_) { json.Null })
+    remote_feed.WorktreeRequest(feed:) ->
+      host.worktree(node, feed) |> result.map(remote_feed.encode_observation)
   }
 }
 

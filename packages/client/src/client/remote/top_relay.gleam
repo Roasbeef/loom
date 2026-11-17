@@ -76,6 +76,7 @@ import client/remote_feed
 import client/remote_mail
 import client/remote_top.{type Offers, type Placement, type SessionsPage}
 import client/roster.{type Roster}
+import client/worktree_diff
 import core/json
 import gleam/int
 import gleam/list
@@ -94,6 +95,21 @@ pub const create_ms = 30_000
 
 /// How long every other call waits for one answer, in milliseconds.
 pub const call_ms = 7000
+
+/// How long a call for the box's workspace observation waits for its answer, in
+/// milliseconds. The box may work for the observation's whole execution
+/// deadline and then the broker's cleanup grace before it answers, so a shorter
+/// wait would read a slow, clipped board as no answer. It must stay under the
+/// 14 s of the page's `reading` run (`ui_socket.reading`), which wraps the call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert top_relay.worktree_ms() == 13_000
+/// ```
+pub fn worktree_ms() -> Int {
+  worktree_diff.capture_timeout_ms + worktree_diff.settlement_grace_ms
+}
 
 /// The bound on connecting to a peer that is not connected yet. It is shorter
 /// than a call so that an unreachable host costs the page little.
@@ -648,6 +664,34 @@ pub fn detach(
   acknowledged(value, "detach")
 }
 
+/// Asks the box for its observation of the session's workspace, the one its own
+/// page's Changes tab draws (`108.worktree.1`). It dispatches against the epoch
+/// the attach observed, within `worktree_ms`, and is asked once: the page asks
+/// again for a newer tool result, and a refusal or silence is not retried here.
+/// A box that does not advertise the revision answers `Unsupported`, which the page
+/// reads as a box with nothing to show and does not ask again about. The box
+/// decides whether this feed may read the workspace, so an `Observed` board has
+/// been judged there, and its text is read only by the page's own decoder.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // top_relay.worktree(relay, "box", attached)
+/// ```
+pub fn worktree(
+  relay: Relay,
+  name: String,
+  attached: remote_feed.Attached,
+) -> Result(remote_feed.Observation, Failure) {
+  use value <- result.try(fenced(
+    relay,
+    name,
+    attached.epoch,
+    remote_feed.WorktreeRequest(attached.feed),
+  ))
+  remote_feed.decode_observation(value) |> result.map_error(Unreadable)
+}
+
 /// An acknowledgement carries nothing, and anything else does not read.
 fn acknowledged(value: json.JsonValue, what: String) -> Result(Nil, Failure) {
   case value {
@@ -662,7 +706,9 @@ fn acknowledged(value: json.JsonValue, what: String) -> Result(Nil, Failure) {
 }
 
 /// Asks one feed operation against the epoch the attach observed, within
-/// `call_ms`. The body is the vocabulary's own encoding of the request.
+/// `call_ms`, or `worktree_ms` for the workspace observation, which the box
+/// takes longer to make. The body is the vocabulary's own encoding of the
+/// request.
 fn fenced(
   relay: Relay,
   name: String,
@@ -670,12 +716,23 @@ fn fenced(
   request: remote_feed.Request,
 ) -> Result(json.JsonValue, Failure) {
   use at <- result.try(relay.dial(name))
+
+  // Only the workspace observation takes the longer wait: the box runs Git for
+  // it, where every other operation is answered from the feed's own state.
+  let wait_ms = case request {
+    remote_feed.WorktreeRequest(..) -> worktree_ms()
+    remote_feed.AttachRequest(..)
+    | remote_feed.PollRequest(..)
+    | remote_feed.SendRequest(..)
+    | remote_feed.DetachRequest(..) -> relay.timing.call_ms
+  }
+
   peer_client.call_at(
     at,
     epoch,
     remote_feed.revision_of(request),
     remote_feed.encode_request(request),
-    relay.timing.call_ms,
+    wait_ms,
   )
   |> result.map_error(peer_failure)
   |> result.try(fn(answer) { answer |> result.map_error(Refused) })

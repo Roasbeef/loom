@@ -418,3 +418,80 @@ pub fn a_git_diff_draws_no_preamble_and_no_trailing_row_test() {
   assert !string.contains(html, "diff-file")
   assert list.length(string.split(html, "diff-row")) == 4
 }
+
+// --- a relayed page (protocol-change/108, 108.worktree.1) -----------------------
+
+// A live page of a session on another orchestrator, whose transport records its
+// asks. The capability is the box's observation, asked through the feed.
+fn relayed_page(
+  clock: page_fixture.Clock,
+  asks: Asks,
+) -> component.Model(page_fixture.Wire) {
+  let start = page_fixture.start_with(clock)
+  component.Start(
+    ..start,
+    standing: component.Standing(
+      ..start.standing,
+      reader: component.DaemonOwner,
+      machine: "box",
+      route: component.Relayed(page: "page-1"),
+    ),
+    transport: component.Transport(
+      ..start.transport,
+      worktree: Some(fn(_deliver) { process.send(asks, Nil) }),
+      logins: None,
+    ),
+  )
+  |> component.new
+}
+
+// The box's observation is drawn in the relayed page's Changes tab as the box's
+// own page draws it: the diff against HEAD and not the session's edits board.
+pub fn a_relayed_page_draws_the_boxs_git_observation_test() {
+  let model =
+    relayed_page(page_fixture.clock(), process.new_subject())
+    |> component.apply([lane_fixture.edited([#("a.gleam", edit)])])
+  let seen =
+    page_fixture.run(model, component.update, [
+      component.Worktreed(
+        worktrees.Seen(board("head", [text_file("shell.txt", edit)], 0)),
+      ),
+    ])
+  let html = element.to_string(component.view(seen))
+  assert string.contains(html, "shell.txt")
+  assert string.contains(html, "against HEAD")
+  assert !string.contains(html, "from this session")
+}
+
+// A box with no observation to give answers `Withheld`. The tab stays the edits
+// board with no sentence, exactly as a relayed page drew it before, and the page
+// asks once and does not ask again for later tool results.
+pub fn a_relayed_page_whose_box_withholds_stays_on_the_edits_board_test() {
+  let clock = page_fixture.clock()
+  let asks = process.new_subject()
+  let model =
+    relayed_page(clock, asks)
+    |> component.apply([lane_fixture.edited([#("a.gleam", edit)])])
+    |> tick
+  assert asked(asks) == 1
+
+  let model =
+    page_fixture.run(model, component.update, [
+      component.Worktreed(worktrees.Withheld),
+    ])
+  let html = element.to_string(component.view(model))
+  assert string.contains(html, "a.gleam")
+  assert string.contains(html, "from this session")
+  assert !string.contains(html, "may not read")
+  assert !string.contains(html, "could not be read")
+
+  // A newer tool result and a long wait ask nothing.
+  let model =
+    model
+    |> component.apply([
+      lane_fixture.edited([#("a.gleam", edit), #("b.gleam", edit)]),
+    ])
+  page_fixture.set(clock, worktrees.lost_ms * 2)
+  let _ = tick(model)
+  assert asked(asks) == 0
+}

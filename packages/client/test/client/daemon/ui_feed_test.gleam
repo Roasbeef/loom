@@ -124,6 +124,7 @@ fn host(
         process.send(seen, "detach")
         Ok(Nil)
       },
+      worktree: fn(_node, _feed) { Ok(remote_feed.Withheld) },
     ),
   )
 }

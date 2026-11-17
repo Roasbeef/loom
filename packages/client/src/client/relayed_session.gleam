@@ -132,6 +132,10 @@ pub type Endpoint {
     /// and who decided.
     resolve: fn(Terms, String, Decision, Int, Decider) ->
       Result(Answer, Refusal),
+    /// The session's own observation of its workspace, the one its own page's
+    /// Changes tab reads (`worktree_diff.to_json`), or the words that say why
+    /// there is none. The words are the daemon's to log and never reach a page.
+    worktree: fn() -> Result(JsonValue, String),
   )
 }
 
@@ -152,22 +156,25 @@ pub fn refusing() -> Endpoint {
     resolve: fn(_terms, _id, _decision, _seq, _decider) {
       Error(remote_top.NotRelayed)
     },
+    worktree: fn() { Error("the session is not relayed") },
   )
 }
 
 /// The endpoint of one session. `borrow` lends the session's runtime, as the
 /// Agency's holder does, and answers `Error(Nil)` when the session is not up.
-/// `stop` and `resolve` are the hub's, closed over its address by the assembly.
+/// `stop` and `resolve` are the hub's, closed over its address by the assembly,
+/// and `worktree` is the session's own observation of its workspace.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // relayed_session.endpoint(agency.runtime_supplier(config), stop, resolve)
+/// // relayed_session.endpoint(agency.runtime_supplier(config), stop, resolve, worktree)
 /// ```
 pub fn endpoint(
   borrow: fn() -> Result(api.Runtime, Nil),
   stop: fn() -> Result(Nil, Refusal),
   resolve: fn(Terms, String, Decision, Int, Decider) -> Result(Answer, Refusal),
+  worktree: fn() -> Result(JsonValue, String),
 ) -> Endpoint {
   let with = fn(use_runtime: fn(api.Runtime) -> Result(a, Refusal)) {
     // This match resolves borrow() before the surrounding protocol step continues.
@@ -184,6 +191,7 @@ pub fn endpoint(
     history: fn(cursor, limit) { with(history_page(_, cursor, limit)) },
     stop:,
     resolve:,
+    worktree:,
   )
 }
 

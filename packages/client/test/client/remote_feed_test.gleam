@@ -1,5 +1,5 @@
 //// The vocabulary of a live session page on another orchestrator
-//// (protocol-change/108): the four request bodies and the two answers, the
+//// (protocol-change/108): the five request bodies and the three answers, the
 //// refusals they add to 094's, and that every decoder is total.
 ////
 //// A decoder is total when every input is an `Ok` or an `Error` and no input
@@ -12,7 +12,8 @@ import client/remote/feed_pieces
 import client/remote/peer_codec
 import client/remote_feed.{
   type Attached, Answer, Attach, AttachRequest, Attached, DetachRequest, Label,
-  Piece, PollRequest, SendRequest,
+  Observed, Piece, PollRequest, SendRequest, Unreadable, Withheld,
+  WorktreeRequest,
 }
 import client/remote_top
 import core/json.{type JsonValue}
@@ -56,19 +57,22 @@ fn requests() -> List(remote_feed.Request) {
     PollRequest(remote_feed.Poll(feed: token, after: 7, wait_ms: 5000)),
     SendRequest(piece(0, 5, "hello")),
     DetachRequest(feed: token),
+    WorktreeRequest(feed: token),
   ]
 }
 
 // --- the revisions -----------------------------------------------------------------
 
-pub fn the_four_revisions_are_named_once_test() {
+pub fn the_five_revisions_are_named_once_test() {
   assert remote_feed.revisions
     == [
       remote_feed.attach_revision,
       remote_feed.feed_revision,
       remote_feed.send_revision,
       remote_feed.detach_revision,
+      remote_feed.worktree_revision,
     ]
+  assert remote_feed.worktree_revision == "108.worktree.1"
   assert list.all(remote_feed.revisions, remote_feed.is_revision)
   assert !remote_feed.is_revision("108.feed.2")
   assert !remote_feed.is_revision("094.send.1")
@@ -93,7 +97,7 @@ pub fn a_revision_does_not_read_another_revisions_body_test() {
     let body = remote_feed.encode_request(request)
     let own = remote_feed.revision_of(request)
     list.each(remote_feed.revisions, fn(revision) {
-      case revision == own {
+      case revision == own || shares_a_body(revision, own) {
         True -> Nil
         False -> {
           let assert Error(_) = remote_feed.decode_request(revision, body)
@@ -104,6 +108,13 @@ pub fn a_revision_does_not_read_another_revisions_body_test() {
   })
   assert remote_feed.decode_request("108.feed.2", json.Array([]))
     == Error("the body is not one the revision takes")
+}
+
+// A detach and a workspace request both carry the feed's token alone, so the
+// body of one is a body of the other and only the revision says which it is.
+fn shares_a_body(one: String, other: String) -> Bool {
+  let token_only = [remote_feed.detach_revision, remote_feed.worktree_revision]
+  list.contains(token_only, one) && list.contains(token_only, other)
 }
 
 pub fn a_token_is_thirty_two_lowercase_hexadecimal_characters_test() {
@@ -542,6 +553,7 @@ pub fn a_daemon_that_serves_no_feed_refuses_every_operation_test() {
     == Error(refusal)
   assert host.send("laptop@10.0.0.1", piece(0, 1, "x")) == Error(refusal)
   assert host.detach("laptop@10.0.0.1", token) == Error(refusal)
+  assert host.worktree("laptop@10.0.0.1", token) == Error(refusal)
 }
 
 // --- totality ----------------------------------------------------------------------
@@ -775,6 +787,152 @@ pub fn the_poll_answer_decoder_is_total_test() {
         }
         Error(_) -> Nil
       }
+    },
+  )
+}
+
+// --- the workspace observation -------------------------------------------------------
+
+fn board(patch: String) -> JsonValue {
+  json.Object([
+    #("source", json.String("git")),
+    #("repository", json.String("head")),
+    #("entries", json.Array([json.Object([#("patch", json.String(patch))])])),
+  ])
+}
+
+fn observations() -> List(remote_feed.Observation) {
+  [Observed(board("+x")), Withheld, Unreadable]
+}
+
+pub fn every_observation_round_trips_test() {
+  list.each(observations(), fn(observation) {
+    assert remote_feed.decode_observation(remote_feed.encode_observation(
+        observation,
+      ))
+      == Ok(observation)
+  })
+  assert remote_feed.encode_observation(Withheld)
+    == json.Object([#("read", json.String("withheld"))])
+}
+
+pub fn a_worktree_request_names_the_feed_alone_test() {
+  assert remote_feed.encode_request(WorktreeRequest(feed: token))
+    == json.Array([json.String(token)])
+  assert remote_feed.decode_request(
+      remote_feed.worktree_revision,
+      json.Array([json.String(token), json.Int(1)]),
+    )
+    == Error("the body is not one the revision takes")
+  assert remote_feed.decode_request(
+      remote_feed.worktree_revision,
+      json.Array([json.String(string.uppercase(token))]),
+    )
+    == Error("the feed token is not 32 lowercase hexadecimal characters")
+}
+
+pub fn an_observation_answer_that_does_not_read_is_refused_whole_test() {
+  let refused = fn(value) {
+    let assert Error(_) = remote_feed.decode_observation(value)
+    Nil
+  }
+  refused(json.Null)
+  refused(json.Array([]))
+  refused(json.Object([]))
+  refused(json.Object([#("read", json.String("other"))]))
+  refused(json.Object([#("read", json.Int(1))]))
+
+  // A `seen` answer needs a board, and the board is an object.
+  refused(json.Object([#("read", json.String("seen"))]))
+  refused(
+    json.Object([#("read", json.String("seen")), #("board", json.String("x"))]),
+  )
+  refused(
+    json.Object([#("read", json.String("seen")), #("board", json.Array([]))]),
+  )
+}
+
+// A board over the bound is refused where it is read and where it is made, and
+// one at the bound is read. The bound is the page decoder's own, so a board the
+// answer admits is one the page can read.
+pub fn a_board_over_the_bound_is_refused_at_both_ends_test() {
+  let fits = board(string.repeat("x", remote_feed.max_worktree_bytes - 100))
+  let over = board(string.repeat("x", remote_feed.max_worktree_bytes))
+  assert remote_feed.observed(fits) == Observed(fits)
+  assert remote_feed.observed(over) == Unreadable
+  assert remote_feed.decode_observation(
+      json.Object([#("read", json.String("seen")), #("board", fits)]),
+    )
+    == Ok(Observed(fits))
+  assert remote_feed.decode_observation(
+      json.Object([#("read", json.String("seen")), #("board", over)]),
+    )
+    == Error("the workspace board is over its bound")
+
+  // One answer is always one frame: the bound is far below the exchange's.
+  assert remote_feed.max_worktree_bytes < peer_codec.operation_bytes
+}
+
+pub fn the_observation_decoder_is_total_test() {
+  qcheck.run(config(), json_value(3), fn(value) {
+    case remote_feed.decode_observation(value) {
+      Ok(found) -> {
+        assert remote_feed.decode_observation(remote_feed.encode_observation(
+            found,
+          ))
+          == Ok(found)
+      }
+      Error(_) -> Nil
+    }
+  })
+
+  // The generic values rarely carry the member names, so the answers' own
+  // shape is drawn too: each word with an arbitrary board.
+  qcheck.run(
+    config(),
+    qcheck.tuple2(qcheck.bounded_int(0, 3), json_value(2)),
+    fn(drawn) {
+      let #(which, value) = drawn
+      let word = case which {
+        0 -> "seen"
+        1 -> "withheld"
+        2 -> "unreadable"
+        _ -> "other"
+      }
+      let body = json.Object([#("read", json.String(word)), #("board", value)])
+      case remote_feed.decode_observation(body) {
+        Ok(found) -> {
+          assert remote_feed.decode_observation(remote_feed.encode_observation(
+              found,
+            ))
+            == Ok(found)
+        }
+        Error(_) -> Nil
+      }
+    },
+  )
+  qcheck.run(
+    config(),
+    qcheck.tuple2(qcheck.bounded_int(0, 4), qcheck.bounded_int(0, 5)),
+    fn(drawn) {
+      let #(target, how) = drawn
+      list.each(observations(), fn(observation) {
+        case
+          remote_feed.decode_observation(mutate(
+            remote_feed.encode_observation(observation),
+            target,
+            how,
+          ))
+        {
+          Ok(found) -> {
+            assert remote_feed.decode_observation(
+                remote_feed.encode_observation(found),
+              )
+              == Ok(found)
+          }
+          Error(_) -> Nil
+        }
+      })
     },
   )
 }

@@ -21,6 +21,7 @@ import client/remote/top_view
 import client/remote_escalation
 import client/remote_mail
 import client/remote_top
+import client/worktree_diff
 import core/json
 import gleam/erlang/node
 import gleam/erlang/process.{type Subject}
@@ -837,4 +838,15 @@ pub fn a_view_with_an_unreachable_box_has_no_rows_and_says_why_test() {
   assert snapshot.rows == []
   assert snapshot.seen_ms == None
   assert snapshot.standing == top_view.Stale(why: Unreachable, since_ms: 7)
+}
+
+// The box may work for the observation's whole deadline and then the broker's
+// cleanup grace before it answers, so a shorter wait would read a slow, clipped
+// board as no answer. The page's run (`ui_socket.reading`, 14 s) wraps the call
+// and must outlast it.
+pub fn the_worktree_call_outlasts_the_observation_test() {
+  assert top_relay.worktree_ms()
+    >= worktree_diff.capture_timeout_ms + worktree_diff.settlement_grace_ms
+  assert top_relay.worktree_ms() > top_relay.call_ms
+  assert top_relay.worktree_ms() < 14_000
 }
