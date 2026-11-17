@@ -16,6 +16,7 @@
 //// its capability call reaches the owner while it runs, and its value comes
 //// back to the record's worker. The worker's death stops it on the executor.
 
+import broker/exec
 import broker/framing
 import client/escalate
 import client/owner_services
@@ -131,6 +132,7 @@ fn start(label: String) -> Rig {
       orchestrators: [pair.orchestrator_pin],
       host: executor.address,
       blobs: Some(keeper),
+      demand: exec.PlatformEnforcement,
       logger: log.discard(),
     ))
     as "the gateway starts"

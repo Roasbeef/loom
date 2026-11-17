@@ -136,6 +136,7 @@ fn serve(label: String) -> Placement {
       orchestrators: [pair.orchestrator_pin],
       host: started.data,
       blobs: None,
+      demand: exec.PlatformEnforcement,
       logger: log.discard(),
     ))
     as "the gateway starts"

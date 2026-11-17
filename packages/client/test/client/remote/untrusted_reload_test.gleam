@@ -10,6 +10,7 @@
 //// Both gateways admit the same orchestrator certificate, because one
 //// `[executor_link]` table is all a daemon presents; they differ in port.
 
+import broker/exec
 import client/daemon/limits
 import client/daemon/main
 import client/daemon/untrusted_links
@@ -75,6 +76,7 @@ fn gateway_for(
       orchestrators: [pair.orchestrator_pin],
       host: executor.address,
       blobs: None,
+      demand: exec.PlatformEnforcement,
       logger: log.discard(),
     ))
     as "the gateway starts"
