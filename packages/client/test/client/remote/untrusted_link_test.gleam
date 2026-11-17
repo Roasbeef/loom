@@ -19,8 +19,20 @@
 //// what it receives, on an outcome it fetches and on what it sends, refuse a
 //// tunnel event the link never asked for, and check that a welcome of another
 //// wire version is refused in words that name both wire versions.
+////
+//// The tunnel tests (protocol-change/117) drive a session's clearing function
+//// through the link's door while the hand-driven executor answers, or forges:
+//// events for an id never issued, for a run, for a call still clearing, a
+//// second `cleared`, output past the limit, a late `cleared` and a second
+//// settlement. Every ordering of the proposal's table ends as it says, a
+//// dropped connection sends no tunnelled call again, and each of the three
+//// ways a caller gives a call up sends exactly one `cancel`.
 
+import broker/broker
+import broker/budget
+import broker/exec
 import broker/framing
+import broker/policy
 import client/codemode as codemode_wiring
 import client/escalate
 import client/internal/ffi_tls_stream.{type Listener, type Stream}
@@ -34,6 +46,7 @@ import client/remote/untrusted_bridge
 import client/remote/untrusted_codec
 import client/remote/untrusted_link
 import client/remote/untrusted_wire
+import client/workspace_policy
 import codemode/satellite
 import core/json
 import core/message
@@ -58,6 +71,8 @@ type Rig {
     address: address.Address(protocol.HostMessage(RemoteCensus)),
     link: process.Pid,
     blobs: Subject(untrusted_bridge.BlobAsk),
+    /// The link's tunnel door (protocol-change/117).
+    door: process.Name(untrusted_link.Tunnel),
   )
 }
 
@@ -71,10 +86,12 @@ fn start(label: String) -> Rig {
   let pair = rig.pair(label)
   let #(listener, port) = rig.listen(pair.executor, [pair.orchestrator_pin])
   let name = process.new_name("untrusted_link_test")
+  let door = process.new_name("untrusted_link_door")
   let assert Ok(started) =
     untrusted_link.start_placing(untrusted_link.Config(
       executor: "pod",
       name:,
+      door:,
       host: "127.0.0.1",
       port:,
       pin: pair.executor_pin,
@@ -89,6 +106,7 @@ fn start(label: String) -> Rig {
     address: untrusted_link.address(name),
     link: started.pid,
     blobs: started.blobs,
+    door:,
   )
 }
 
@@ -581,6 +599,7 @@ pub fn an_executor_with_a_certificate_from_another_authority_is_refused_test() {
     untrusted_link.start(untrusted_link.Config(
       executor: "pod",
       name:,
+      door: process.new_name("untrusted_link_door"),
       host: "127.0.0.1",
       port:,
       pin: pair.executor_pin,
@@ -675,6 +694,7 @@ fn link_to(
     untrusted_link.start(untrusted_link.Config(
       executor: "pod",
       name:,
+      door: process.new_name("untrusted_link_door"),
       host: "127.0.0.1",
       port:,
       pin: pair.executor_pin,
@@ -1827,9 +1847,10 @@ pub fn a_request_of_more_values_than_the_bound_is_refused_and_not_kept_test() {
   stop(rig)
 }
 
-// This link clears no tunnelled call yet, so an event for one is a frame an
-// honest executor never sends.
-pub fn a_call_event_closes_the_connection_test() {
+// Request 1 is the attach, which is outstanding, so an event for it names a
+// request of another kind than a tunnelled call: a frame an honest executor
+// never sends.
+pub fn a_call_event_for_an_attach_closes_the_connection_test() {
   let rig = start("call-event")
   let #(port, _seen) = recording_port()
   let Attached(stream:, ..) = attach(rig, "s1", port, None)
@@ -1887,4 +1908,614 @@ pub fn a_wire_only_version_mismatch_names_both_wire_versions_test() {
       protocol.version + 1,
     )
     == Error(protocol.VersionMismatch(supported: protocol.version + 1))
+}
+
+// --- the broker tunnel (117) -----------------------------------------------------
+
+/// What a tunnelled call's asker tells the test: the clearing function's answer,
+/// then every event the link delivers.
+type Asked {
+  Answered(answer: Result(tool.RunningCall, broker.Refusal))
+  Heard(event: broker.CallEvent)
+}
+
+/// A spec a goal check would clear, with a per-stream output limit.
+fn tunnel_spec(output_bytes: Int) -> broker.CallSpec {
+  let base = workspace_policy.base_policy("/work")
+  broker.CallSpec(
+    op_id: fixtures.tool_run("check", 0).operation,
+    step_id: "goal-check:1",
+    base_policy: base,
+    requirements: policy.SandboxPolicy(
+      ..base,
+      limits: policy.Limits(..base.limits, output_bytes:),
+    ),
+    grants: [],
+    response: broker.RefuseNarrowed,
+    demand: exec.PlatformEnforcement,
+    argv: ["git", "status"],
+    env: [],
+    cwd: "/work",
+    budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
+  )
+}
+
+/// Clears `spec` for `session` from a process of its own through `clear`, and
+/// forwards what it hears to the returned subject.
+fn clear_from(
+  clear: fn(broker.CallSpec, Subject(broker.CallEvent), Int) ->
+    Result(tool.RunningCall, broker.Refusal),
+  spec: broker.CallSpec,
+  waiting: Int,
+) -> #(process.Pid, Subject(Asked)) {
+  let told = process.new_subject()
+  let asker =
+    process.spawn_unlinked(fn() {
+      let events = process.new_subject()
+      process.send(told, Answered(clear(spec, events, waiting)))
+      forwarding(events, told)
+    })
+  #(asker, told)
+}
+
+fn forwarding(events: Subject(broker.CallEvent), told: Subject(Asked)) -> Nil {
+  process.send(told, Heard(process.receive_forever(events)))
+  forwarding(events, told)
+}
+
+/// Clears from a fresh asker and reads the `clear_call` off the wire.
+fn clearing(
+  rig: Rig,
+  stream: Stream,
+  session: String,
+  waiting: Int,
+) -> #(Int, process.Pid, Subject(Asked)) {
+  let #(asker, told) =
+    clear_from(
+      untrusted_link.tunnel_through(rig.door, session),
+      tunnel_spec(64),
+      waiting,
+    )
+  #(clear_request(stream), asker, told)
+}
+
+/// The id of the next frame, which must be a `clear_call`.
+fn clear_request(stream: Stream) -> Int {
+  let assert Ok(untrusted_codec.RequestEnvelope(id:, body:)) = rig.next(stream)
+    as "the clearance arrives"
+  let assert Ok(untrusted_wire.ClearCallRequest(spec:, waiting_ms:, ..)) =
+    untrusted_codec.decode_request(body)
+    as "it decodes as a clear_call"
+  assert spec.argv == ["git", "status"]
+  assert waiting_ms >= 1
+  id
+}
+
+/// A call the executor has cleared, with its asker holding the running call.
+fn running(
+  rig: Rig,
+  stream: Stream,
+  session: String,
+) -> #(Int, process.Pid, Subject(Asked), tool.RunningCall) {
+  let #(id, asker, told) = clearing(rig, stream, session, 30_000)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Ok(Nil)),
+    ),
+  )
+  let assert Ok(Answered(Ok(call))) = process.receive(told, 5000)
+    as "the call cleared"
+  #(id, asker, told, call)
+}
+
+fn lost() -> Asked {
+  Heard(
+    broker.CallSettled(broker.CallFailed(exec.ExecutionLost(exec.RelayDown))),
+  )
+}
+
+fn settle(stream: Stream, id: Int) -> Nil {
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: id,
+      event: untrusted_wire.TunnelSettled(broker.CallExited(exited())),
+    ),
+  )
+}
+
+fn exited() -> exec.ExecResult {
+  exec.ExecResult(
+    code: 0,
+    signal: 0,
+    stdout_bytes: 5,
+    stderr_bytes: 0,
+    stdout_truncated: False,
+    stderr_truncated: False,
+    enforcement: [],
+    degraded: False,
+    wall_ms: 3,
+    timed_out: False,
+    cancelled: False,
+  )
+}
+
+/// Every frame the executor reads within `within_ms`, decoded as far as its
+/// envelope, until the connection is silent.
+fn frames_within(
+  stream: Stream,
+  within_ms: Int,
+) -> List(untrusted_codec.Envelope) {
+  case rig.next_raw(stream, within_ms) {
+    Ok(frame) ->
+      case untrusted_codec.decode_envelope(frame) {
+        Ok(envelope) -> [envelope, ..frames_within(stream, within_ms)]
+        Error(_report) -> frames_within(stream, within_ms)
+      }
+    Error(_silent_or_closed) -> []
+  }
+}
+
+fn cancels_of(frames: List(untrusted_codec.Envelope), id: Int) -> Int {
+  list.count(frames, fn(envelope) {
+    envelope == untrusted_codec.CancelEnvelope(id:)
+  })
+}
+
+// The whole of an honest call: the executor clears it, streams output, and
+// settles; the asker hears the output only at the settlement, as one chunk per
+// stream with its byte count, then the settlement.
+pub fn a_tunnelled_call_buffers_its_output_until_it_settles_test() {
+  let rig = start("tunnel-honest")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, told, _call) = running(rig, stream, "s1")
+
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: id,
+      event: untrusted_wire.TunnelOutput(framing.Stdout, <<"hel">>),
+    ),
+  )
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: id,
+      event: untrusted_wire.TunnelOutput(framing.Stdout, <<"lo">>),
+    ),
+  )
+  assert process.receive(told, 300) == Error(Nil)
+  settle(stream, id)
+  assert process.receive(told, 5000)
+    == Ok(Heard(broker.CallOutput(framing.Stdout, <<"hello">>, 5, False)))
+  assert process.receive(told, 5000)
+    == Ok(Heard(broker.CallSettled(broker.CallExited(exited()))))
+
+  // A second settlement crossed the removal and is dropped, and so is a late
+  // `cleared`: the connection stays open.
+  settle(stream, id)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Ok(Nil)),
+    ),
+  )
+  assert !rig.closed(stream, 500)
+  assert process.receive(told, 300) == Error(Nil)
+  stop(rig)
+}
+
+// A refusal the executor answers reaches the asker, and the entry is gone.
+pub fn a_refused_clearance_reaches_the_asker_test() {
+  let rig = start("tunnel-refused")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, told) = clearing(rig, stream, "s1", 30_000)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Error(broker.OperationAborted)),
+    ),
+  )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.OperationAborted)))
+  stop(rig)
+}
+
+/// Starts a rig with one running call, sends `forged` as the executor, and
+/// checks that the connection closes, the link lives, and the running call's
+/// asker hears that its call was lost.
+fn forged_closes(label: String, forged: fn(Stream, Int) -> Nil) -> Nil {
+  let rig = start(label)
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, told, _call) = running(rig, stream, "s1")
+
+  forged(stream, id)
+  assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
+  assert process.receive(told, 5000) == Ok(lost())
+  stop(rig)
+}
+
+pub fn an_event_for_an_id_never_issued_closes_the_connection_test() {
+  use stream, _id <- forged_closes("tunnel-never-issued")
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: 9999,
+      event: untrusted_wire.TunnelOutput(framing.Stdout, <<"forged">>),
+    ),
+  )
+}
+
+pub fn an_event_for_a_runs_id_closes_the_connection_test() {
+  let rig = start("tunnel-run-id")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, told, _call) = running(rig, stream, "s1")
+  let #(run_id, _run_asker, _answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  assert run_id != id
+
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: run_id,
+      event: untrusted_wire.TunnelSettled(broker.CallExited(exited())),
+    ),
+  )
+  assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
+  assert process.receive(told, 5000) == Ok(lost())
+  stop(rig)
+}
+
+pub fn an_event_for_a_call_still_clearing_closes_the_connection_test() {
+  let rig = start("tunnel-clearing-event")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(_running_id, _asker, running_told, _call) = running(rig, stream, "s1")
+  let #(clearing_id, _clearing_asker, clearing_told) =
+    clearing(rig, stream, "s1", 30_000)
+
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: clearing_id,
+      event: untrusted_wire.TunnelOutput(framing.Stdout, <<"early">>),
+    ),
+  )
+  assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
+  assert process.receive(running_told, 5000) == Ok(lost())
+  assert process.receive(clearing_told, 5000)
+    == Ok(Answered(Error(broker.BrokerUnavailable)))
+  stop(rig)
+}
+
+pub fn a_second_cleared_for_a_running_call_closes_the_connection_test() {
+  use stream, id <- forged_closes("tunnel-cleared-twice")
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Ok(Nil)),
+    ),
+  )
+}
+
+pub fn output_past_the_limit_closes_the_connection_test() {
+  use stream, id <- forged_closes("tunnel-past-limit")
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: id,
+      event: untrusted_wire.TunnelOutput(framing.Stderr, <<0:size({ 65 * 8 })>>),
+    ),
+  )
+}
+
+// A tunnelled call is sent on one connection at most: after a drop, its asker
+// is told at once, and the next connection carries only what is re-sent for
+// 109, never a `clear_call`.
+pub fn a_dropped_connection_ends_tunnelled_calls_and_sends_none_again_test() {
+  let rig = start("tunnel-dropped")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(_running_id, _asker, running_told, _call) = running(rig, stream, "s1")
+  let #(_clearing_id, _clearing_asker, clearing_told) =
+    clearing(rig, stream, "s1", 30_000)
+
+  ffi_tls_stream.close(stream)
+  assert process.receive(running_told, 5000) == Ok(lost())
+  assert process.receive(clearing_told, 5000)
+    == Ok(Answered(Error(broker.BrokerUnavailable)))
+
+  // The binding makes the link dial again; it re-sends the attach and nothing
+  // the tunnel sent.
+  let again = rig.greeted(rig.listener)
+  let resent = frames_within(again, 1000)
+  assert resent != []
+  assert list.all(resent, fn(envelope) {
+    case envelope {
+      untrusted_codec.RequestEnvelope(body:, ..) ->
+        case untrusted_codec.decode_request(body) {
+          Ok(untrusted_wire.ClearCallRequest(..)) -> False
+          Ok(_other) | Error(_) -> True
+        }
+      _other -> True
+    }
+  })
+  stop(rig)
+}
+
+pub fn the_death_of_a_tunnelled_calls_asker_sends_one_cancel_test() {
+  let rig = start("tunnel-asker-dies")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, asker, _told, _call) = running(rig, stream, "s1")
+
+  process.kill(asker)
+  assert cancels_of(frames_within(stream, 1000), id) == 1
+  stop(rig)
+}
+
+pub fn cancelling_a_tunnelled_call_settles_it_lost_and_sends_one_cancel_test() {
+  let rig = start("tunnel-cancel")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, told, call) = running(rig, stream, "s1")
+
+  call.cancel()
+  call.cancel()
+  assert process.receive(told, 5000) == Ok(lost())
+  assert cancels_of(frames_within(stream, 1000), id) == 1
+
+  // The executor's own settlement, crossing the cancel, is dropped.
+  settle(stream, id)
+  assert !rig.closed(stream, 500)
+  assert process.receive(told, 300) == Error(Nil)
+  stop(rig)
+}
+
+// The clearing function gives a call up while the link still holds it: the
+// link forgets it and cancels it once, and its own clearance wait, which
+// passes later, finds nothing to do.
+pub fn a_withdrawn_clearance_sends_one_cancel_test() {
+  let rig = start("tunnel-withdraw")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(_asker, told) =
+    clear_from(
+      untrusted_link.tunnel_waiting(rig.door, "s1", -2500),
+      tunnel_spec(64),
+      3000,
+    )
+  let id = clear_request(stream)
+
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.BrokerUnavailable)))
+  let frames = frames_within(stream, 3500)
+  assert cancels_of(frames, id) == 1
+
+  // A `cleared` for the withdrawn call crossed the removal and is dropped.
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Ok(Nil)),
+    ),
+  )
+  assert !rig.closed(stream, 500)
+  stop(rig)
+}
+
+// The link's own clearance wait ends a call the executor never cleared.
+pub fn a_clearance_wait_that_passes_refuses_and_sends_one_cancel_test() {
+  let rig = start("tunnel-wait")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, told) = clearing(rig, stream, "s1", 300)
+
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.BrokerUnavailable)))
+  assert cancels_of(frames_within(stream, 1000), id) == 1
+  stop(rig)
+}
+
+pub fn a_clear_with_no_connection_is_refused_at_once_test() {
+  let rig = start("tunnel-no-connection")
+  let clear = untrusted_link.tunnel_through(rig.door, "s1")
+  let events = process.new_subject()
+  assert clear(tunnel_spec(64), events, 30_000)
+    == Error(broker.BrokerUnavailable)
+  stop(rig)
+}
+
+pub fn a_clear_for_a_session_with_no_binding_is_refused_at_once_test() {
+  let rig = start("tunnel-no-binding")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let clear = untrusted_link.tunnel_through(rig.door, "s2")
+  let events = process.new_subject()
+
+  assert clear(tunnel_spec(64), events, 30_000)
+    == Error(broker.BrokerUnavailable)
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+pub fn a_ninth_clear_on_one_binding_is_refused_at_once_test() {
+  let rig = start("tunnel-ninth")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let _eight =
+    list.map(list.repeat(Nil, 8), fn(_n) { clearing(rig, stream, "s1", 30_000) })
+
+  let clear = untrusted_link.tunnel_through(rig.door, "s1")
+  let events = process.new_subject()
+  assert clear(tunnel_spec(64), events, 30_000)
+    == Error(broker.BrokerUnavailable)
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+// A spec whose argv passes the codec's limit would close the connection at the
+// executor, so it is refused here and never sent; so is a spec with grants,
+// and one whose output limit is past what the link holds.
+pub fn a_spec_past_the_limits_is_refused_locally_and_not_sent_test() {
+  let rig = start("tunnel-over-limit")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let clear = untrusted_link.tunnel_through(rig.door, "s1")
+  let events = process.new_subject()
+  let spec = tunnel_spec(64)
+
+  let long =
+    broker.CallSpec(
+      ..spec,
+      argv: list.repeat("x", untrusted_codec.max_call_argv + 1),
+    )
+  assert clear(long, events, 30_000) == Error(broker.BrokerUnavailable)
+  let granted = broker.CallSpec(..spec, grants: [policy.GrantEnv("SECRET")])
+  assert clear(granted, events, 30_000) == Error(broker.BrokerUnavailable)
+  assert clear(tunnel_spec(2_000_000), events, 30_000)
+    == Error(broker.BrokerUnavailable)
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+// A door that dies after it was found, while a new link's door takes its
+// name, may have let the `Clear` reach the new link. The clearing function
+// then sends `Withdraw` to the name, after the `Clear`, so the new link drops
+// a call nobody waits for. The first fake door takes the `Clear`, hands the
+// name to a second fake and exits; the second records what reaches the name.
+pub fn a_door_that_goes_down_is_followed_by_a_withdraw_test() {
+  let door = process.new_name("untrusted_link_test_fake_door")
+  let seen = process.new_subject()
+  let ready = process.new_subject()
+  let _first =
+    process.spawn_unlinked(fn() {
+      let assert Ok(Nil) = process.register(process.self(), door)
+        as "the first door registers"
+      process.send(ready, Nil)
+      let message = process.receive_forever(process.named_subject(door))
+      process.send(seen, untrusted_link.tunnel_shape(message))
+      let assert Ok(Nil) = process.unregister(door) as "the first door leaves"
+      let handed = process.new_subject()
+      let _second =
+        process.spawn_unlinked(fn() {
+          let assert Ok(Nil) = process.register(process.self(), door)
+            as "the second door registers"
+          process.send(handed, Nil)
+          recording_door(door, seen)
+        })
+      let assert Ok(Nil) = process.receive(handed, 1000)
+        as "the second door holds the name"
+      Nil
+    })
+  let assert Ok(Nil) = process.receive(ready, 1000) as "the first door is up"
+
+  let clear = untrusted_link.tunnel_through(door, "s1")
+  assert clear(tunnel_spec(64), process.new_subject(), 5000)
+    == Error(broker.BrokerUnavailable)
+  let assert Ok(#("clear", asked)) = process.receive(seen, 1000)
+    as "the first door took the clearance"
+  let assert Ok(#("withdraw", withdrawn)) = process.receive(seen, 1000)
+    as "the withdraw reached the name's new holder"
+  assert withdrawn == asked
+}
+
+fn recording_door(
+  door: process.Name(untrusted_link.Tunnel),
+  seen: Subject(#(String, Subject(Result(Nil, broker.Refusal)))),
+) -> Nil {
+  let message = process.receive_forever(process.named_subject(door))
+  process.send(seen, untrusted_link.tunnel_shape(message))
+  recording_door(door, seen)
+}
+
+// A clearance wait becomes a receive's timeout, which holds at most 2^32 - 1
+// milliseconds: a wait at that bound is sent, and the caller's own receive does
+// not raise; one past it is refused before anything is sent.
+pub fn a_clearance_wait_is_held_to_a_receive_timeout_test() {
+  let rig = start("tunnel-longest-wait")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let longest = untrusted_codec.max_call_wait_ms
+
+  let #(_asker, told) =
+    clear_from(
+      untrusted_link.tunnel_through(rig.door, "s1"),
+      tunnel_spec(64),
+      longest,
+    )
+  let id = clear_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Error(broker.OperationAborted)),
+    ),
+  )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.OperationAborted)))
+
+  let #(_asker, told) =
+    clear_from(
+      untrusted_link.tunnel_through(rig.door, "s1"),
+      tunnel_spec(64),
+      longest + 1,
+    )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.BrokerUnavailable)))
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+// A deadline becomes a timer on the executor, for the time left to it, so the
+// link carries one at 2^42 epoch milliseconds and refuses a later one before
+// sending anything.
+pub fn a_deadline_is_held_to_what_the_relays_timer_accepts_test() {
+  let rig = start("tunnel-latest-deadline")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let latest = untrusted_codec.max_call_ms
+  assert latest == 4_398_046_511_104
+  let at = fn(deadline_ms) {
+    broker.CallSpec(
+      ..tunnel_spec(64),
+      budget: budget.Budget(max_outstanding: 1, deadline_ms:),
+    )
+  }
+
+  let #(_asker, told) =
+    clear_from(untrusted_link.tunnel_through(rig.door, "s1"), at(latest), 5000)
+  let id = clear_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Error(broker.OperationAborted)),
+    ),
+  )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.OperationAborted)))
+
+  let #(_asker, told) =
+    clear_from(
+      untrusted_link.tunnel_through(rig.door, "s1"),
+      at(latest + 1),
+      5000,
+    )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.BrokerUnavailable)))
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
 }

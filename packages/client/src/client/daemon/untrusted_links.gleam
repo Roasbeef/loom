@@ -111,6 +111,11 @@ pub type Links {
     start: fn(Row, Credentials) -> Result(Pid, String),
     /// The process that holds the link's name for an executor, if any.
     holder: fn(String) -> Result(Pid, Nil),
+    /// The process that holds the name of the link's tunnel door for an
+    /// executor, if any (protocol-change/117). A link's door dies with it, but
+    /// a start must not race a door that has not exited yet, so its name is
+    /// cleared as the link's is.
+    door: fn(String) -> Result(Pid, Nil),
   )
 }
 
@@ -169,6 +174,7 @@ pub fn production(logger: Logger) -> Links {
       untrusted_link.start(untrusted_link.Config(
         executor: row.name,
         name: untrusted_link.name_for(row.name),
+        door: untrusted_link.tunnel_name_for(row.name),
         host: row.host,
         port: row.port,
         pin: row.pin,
@@ -178,6 +184,9 @@ pub fn production(logger: Logger) -> Links {
       ))
     },
     holder: fn(executor) { process.named(untrusted_link.name_for(executor)) },
+    door: fn(executor) {
+      process.named(untrusted_link.tunnel_name_for(executor))
+    },
   )
 }
 
@@ -458,28 +467,43 @@ fn replace(
   Book(..book, slots: dict.insert(book.slots, executor.name, slot))
 }
 
-/// Kills whatever holds the link's name, a link of this registry or a process
-/// an earlier owner left, and waits for the name to be free. The wait is what
-/// the reconcile's deadline leaves.
+/// Kills whatever holds the link's name and its door's, a link of this
+/// registry or a process an earlier owner left, and waits for both names to be
+/// free. The wait is what the reconcile's deadline leaves.
 fn clear_name(book: Book, name: String, deadline: Int) -> Result(Nil, String) {
+  use Nil <- result.try(clear_held(book.links.holder, name, deadline))
+  clear_held(book.links.door, name, deadline)
+}
+
+/// Kills the process `holder` finds for the executor and waits for it to let
+/// the name go.
+fn clear_held(
+  holder: fn(String) -> Result(Pid, Nil),
+  name: String,
+  deadline: Int,
+) -> Result(Nil, String) {
   let remaining = deadline - poll.monotonic().now()
 
   // Without time left, nothing is attempted, so nothing is half done.
-  case remaining > 0, book.links.holder(name) {
+  case remaining > 0, holder(name) {
     False, _ -> Error("the reload ran out of time before this row")
     True, Error(Nil) -> Ok(Nil)
-    True, Ok(holder) -> {
-      process.kill(holder)
-      freed(book, name, remaining)
+    True, Ok(held) -> {
+      process.kill(held)
+      freed(holder, name, remaining)
     }
   }
 }
 
 /// Waits until no process holds the name.
-fn freed(book: Book, name: String, within: Int) -> Result(Nil, String) {
+fn freed(
+  holder: fn(String) -> Result(Pid, Nil),
+  name: String,
+  within: Int,
+) -> Result(Nil, String) {
   let outcome =
     poll.until(within:, every: 10, attempt: fn() {
-      case book.links.holder(name) {
+      case holder(name) {
         Error(Nil) -> poll.Done(Nil)
         Ok(_holder) -> poll.Retry
       }

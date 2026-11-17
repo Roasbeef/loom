@@ -269,6 +269,32 @@ import weft/registry as address
 // trust record, whichever machine the files were on. The hooks run through
 // the plane's broker under the census's policy and environment.
 
+/// The clearing function an imported hook's commands go through, from a
+/// plane's `hooks` and `clear_call`. A placement that refuses hooks, an
+/// untrusted executor's, gets one that answers every command as a broker
+/// that cannot be reached, so no hook runs on that placement
+/// (protocol-change/117, "Hooks stay refused").
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.hook_clear_call(plane.hooks, plane.clear_call)
+/// ```
+@internal
+pub fn hook_clear_call(
+  hooks: workspace_plane.Hooks,
+  clear_call: workspace_plane.ClearCall,
+) -> workspace_plane.ClearCall {
+  // The goal check and the Git observations use the plane's `clear_call`
+  // either way.
+  case hooks {
+    workspace_plane.HooksRun -> clear_call
+    workspace_plane.HooksRefused -> fn(_spec, _events, _waiting) {
+      Error(broker.BrokerUnavailable)
+    }
+  }
+}
+
 /// Establishes with imported hooks for the caller, keeping its validation and result policy at this boundary.
 fn with_imported_hooks(
   built: effects.Effects,
@@ -301,7 +327,7 @@ fn with_imported_hooks(
     hook_coordinates(settings, base_policy, entropy(), clock, environment)
   let runner =
     hookrunner.Context(
-      clear_call: plane.clear_call,
+      clear_call: hook_clear_call(plane.hooks, plane.clear_call),
       base_policy: base_policy,
       op_id: coordinates.op_id,
       step_id: "imported-hooks",

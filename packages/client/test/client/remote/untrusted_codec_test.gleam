@@ -2474,7 +2474,8 @@ pub fn an_argv_or_env_past_its_bound_is_refused_test() {
 }
 
 pub fn a_wait_or_deadline_outside_its_range_is_refused_test() {
-  let largest = 9_007_199_254_740_992
+  let largest = untrusted_codec.max_call_ms
+  assert largest == 4_398_046_511_104
   let deadline = fn(value) {
     clear_call_with(
       "budget",
@@ -2485,20 +2486,22 @@ pub fn a_wait_or_deadline_outside_its_range_is_refused_test() {
     )
   }
 
+  let longest = untrusted_codec.max_call_wait_ms
+  assert longest == 4_294_967_295
   let assert Ok(_request) =
-    untrusted_codec.decode_request(clear_call_waiting(largest))
-    as "a wait of 2^53 milliseconds is carried"
+    untrusted_codec.decode_request(clear_call_waiting(longest))
+    as "a wait of 2^32 - 1 milliseconds is carried"
   let assert Error(_report) =
-    untrusted_codec.decode_request(clear_call_waiting(largest + 1))
-    as "a wait past 2^53 milliseconds is refused"
+    untrusted_codec.decode_request(clear_call_waiting(longest + 1))
+    as "a wait past what a receive's timeout holds is refused"
   let assert Error(_report) =
     untrusted_codec.decode_request(clear_call_waiting(-1))
     as "a negative wait is refused"
   let assert Ok(_request) = untrusted_codec.decode_request(deadline(largest))
-    as "a deadline of 2^53 is carried"
+    as "a deadline of 2^42 is carried"
   let assert Error(_report) =
     untrusted_codec.decode_request(deadline(largest + 1))
-    as "a deadline past 2^53 is refused"
+    as "a deadline past 2^42 is refused"
   let assert Error(_report) = untrusted_codec.decode_request(deadline(-1))
     as "a negative deadline is refused"
   let assert Error(_report) =

@@ -69,6 +69,7 @@ fn links() -> untrusted_links.Links {
   untrusted_links.Links(
     start: fn(row, _credentials) { hold(row.name) },
     holder: fn(name) { process.named(untrusted_link.name_for(name)) },
+    door: fn(_name) { Error(Nil) },
   )
 }
 
@@ -387,6 +388,7 @@ pub fn a_table_named_through_a_link_dials_with_the_path_checked_test() {
         hold(row.name)
       },
       holder: fn(name) { process.named(untrusted_link.name_for(name)) },
+      door: fn(_name) { Error(Nil) },
     )
 
   reloading_over(

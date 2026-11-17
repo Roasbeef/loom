@@ -50,6 +50,7 @@
 ////    loss of either of the last two ends the daemon.
 
 import argv
+import broker/exec
 import client/agency
 import client/catalog
 import client/catalogue_page
@@ -385,6 +386,9 @@ pub type ExecutorHost {
     /// a report treats as a source that said nothing and not as a host with
     /// nothing in its ledger.
     facts: fn() -> Option(node_report.ExecutorFacts),
+    /// The enforcement the host's planes are built with, which the untrusted
+    /// gateway demands of a tunnelled call (protocol-change/117).
+    demand: exec.EnforcementDemand,
   )
 }
 
@@ -1190,7 +1194,7 @@ pub fn start_untrusted(
       Error(
         "[executor_listener] needs [workspaces] to serve: this daemon has no executor host",
       )
-    Some(listener), Some(_host) -> {
+    Some(listener), Some(host) -> {
       use blobs <- result.try(start_placed_blobs(config.state_root))
       use gateway <- result.map(
         untrusted_gateway.start(untrusted_gateway.Config(
@@ -1200,6 +1204,7 @@ pub fn start_untrusted(
           orchestrators: listener.orchestrators,
           host: address.Address(node: node.self(), name: address.default()),
           blobs: Some(blobs),
+          demand: host.demand,
           logger:,
         )),
       )
@@ -1336,8 +1341,9 @@ pub fn start_executor(
         |> list.map(fn(workspace) { workspace.name })
       let summarize = started.data.summarize
       Ok(
-        Some(
-          ExecutorHost(monitor: process.monitor(started.pid), facts: fn() {
+        Some(ExecutorHost(
+          monitor: process.monitor(started.pid),
+          facts: fn() {
             summarize(executor_summary_ms)
             |> result.map(fn(snapshot) {
               node_facts.executor_facts(snapshot, limits, platform, names)
@@ -1348,8 +1354,9 @@ pub fn start_executor(
               )
             })
             |> option.from_result
-          }),
-        ),
+          },
+          demand: machine.demand,
+        )),
       )
     }
   }
