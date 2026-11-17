@@ -90,9 +90,10 @@
 ////   session assembly. After a jailed `bash` call edits a tracked file and adds
 ////   one, the session's stored `session/git-start` is a revision and not
 ////   `unavailable`, the `worktree_diff` observation is a ready board listing
-////   both paths, and a goal whose check tests for the new file completes with
-////   the check recorded at exit status 0 with the guest's own output, which the
-////   reviewer's feed repeats. On a tree without the tunnel the baseline is
+////   both paths, and a goal pinned with a check that tests for the new file records
+////   that check at exit status 0 with the guest's own output and workspace path.
+////   The step does not wait for the goal to complete, and clears it before the
+////   session stops. On a tree without the tunnel the baseline is
 ////   `unavailable`, the board is `failed` with the broker's refusal, and the
 ////   check is refused. Hooks stay refused there and no step observes it: that
 ////   needs a trust record fixture, and `untrusted_end_to_end_test` covers it.
@@ -130,7 +131,6 @@
 ////   assertions.
 
 import broker/token
-import client/advisorslice
 import client/authority_key
 import client/distribution_bundle
 import client/executor_reload
@@ -153,7 +153,6 @@ import support/internal/ffi_proc
 import support/provider_http as provider
 import support/remote_daemons
 import support/remote_pair
-import tools/advise
 import weft
 import weft/poll
 
@@ -2475,14 +2474,15 @@ fn untrusted_guest(run: Run) -> Nil {
     reply_after("tunnel-call", tunnel_answer),
   ]
 
-  // The goal's reviewer is a second scripted provider, as in the remote goal
-  // test: the verdict is not under test, the check's result is.
-  let #(#(key, report), reviewer) =
+  // `goal_set` is refused unless the server routes an advisor, so the config
+  // names one. Its provider has an empty script because the step never waits
+  // for a review: only the check, which runs before any feed, is under test.
+  let #(#(key, report), _reviewer) =
     provider.with_watched_server(
-      tunnel_reviewer(),
+      [],
       provider.OnlySuccessful,
       600_000,
-      fn(reviewer_url, reviewer_watch) {
+      fn(reviewer_url, _reviewer_watch) {
         provider.with_server_for(
           exchanges,
           provider.OnlySuccessful,
@@ -2556,11 +2556,15 @@ fn untrusted_guest(run: Run) -> Nil {
               untrusted_answer,
               tunnel_answer,
             ])
-            tunnel_serves(run, opened, reviewer_watch)
+            let observed = tunnel_serves(run, opened)
 
             remote_daemons.stop_session(running, control, 100, session)
             remote_pair.close_daemons([running])
             remote_daemons.retire(layout.paths)
+
+            // Asserted only now, so a failed assertion cannot leave the
+            // session open on a guest the fixture then takes down.
+            assert_tunnel(observed)
 
             // The key is read now, because the removal below deletes the root.
             let key =
@@ -2580,9 +2584,6 @@ fn untrusted_guest(run: Run) -> Nil {
   let edited = remote_daemons.result_text(requests, "tunnel-call")
   io.println_error(label <> " tunnel edit tool result:\n" <> edited)
   assert string.contains(edited, "edit_status=0")
-  let assert Ok(feeds) = reviewer
-    as "the reviewer saw the goal's feed and nothing else"
-  assert_tunnel_feed(feeds)
 }
 
 // A second guest on the untrusted link, brought up while the daemon of the
@@ -2879,58 +2880,50 @@ fn tunnel_check() -> String {
   "test -f " <> tunnel_file <> " && echo " <> tunnel_word <> " $(pwd)"
 }
 
-// The reviewer's one answer: a verdict of complete after one feed, which ends
-// the goal whatever the check said.
-fn tunnel_reviewer() -> List(provider.Exchange) {
-  [
-    provider.ComputedExchange(
-      provider.AwaitPromptPrefix(advisorslice.goal_feed_header),
-      fn(_seen) {
-        provider.ReplyToolUse(
-          "tunnel-advise",
-          advise.name,
-          json.Object([
-            #("verdict", json.String("complete")),
-            #("text", json.String("reviewed")),
-          ]),
-        )
-      },
-    ),
-    reply_after("tunnel-advise", "noted"),
-  ]
+// What the session showed, read while it was live and asserted after it
+// stopped: the stored baseline, the worktree board, and the goal board with
+// the check's result (or the last board read when no check appeared).
+type Observed {
+  Observed(
+    baseline: option.Option(json.JsonValue),
+    board: json.JsonValue,
+    goal: Result(json.JsonValue, json.JsonValue),
+  )
 }
 
 // The three things a session on an untrusted executor gets through the broker
 // tunnel, each observed the way the product observes it: the baseline in the
 // orchestrator's store, the Changes tab through the session socket's
 // `worktree_diff`, and the goal check through `goal_set` and `goal_get`. The
-// jailed edit has already run, and the session is idle.
-fn tunnel_serves(
-  run: Run,
-  opened: remote_pair.Opened,
-  reviewer_watch: provider.Watch,
-) -> Nil {
-  assert_tunnel_baseline(run, opened.session)
+// jailed edit has already run, and the session is idle. The goal is cleared
+// before this returns, so the session holds none when it is stopped.
+fn tunnel_serves(run: Run, opened: remote_pair.Opened) -> Observed {
+  let baseline = tunnel_baseline(run, opened.session)
 
   let socket = remote_pair.session_socket(opened)
-  assert_tunnel_board(tunnel_board(socket))
+  let board = tunnel_board(socket)
 
   let socket = tunnel_pin_goal(socket)
-  let board = tunnel_await_goal(socket, 900, json.Null)
-  assert_tunnel_check(board)
+  let goal = tunnel_await_check(socket, 900, json.Null)
 
-  // The board turns `complete` when the reviewer's `advise` call is judged,
-  // which is before the reviewer's turn is over. Stopping the session on the
-  // board alone races the reviewer's last request, so the provider's own
-  // record is the barrier.
-  let assert Ok(Nil) = provider.await_exhausted(reviewer_watch, 60_000)
-    as "the reviewer's closing turn reached its provider"
-  Nil
+  // The goal stays active whether or not its check ran, so it is cleared the
+  // way a client clears one, and the acknowledgement is read.
+  let #(cleared, _socket) =
+    remote_pair.session_command(socket, "goal_clear", json.Object([]))
+  assert remote_daemons.field(cleared, "event") != json.String("error")
+    as { "the goal is cleared, answered " <> json.to_string(cleared) }
+  Observed(baseline:, board:, goal:)
 }
 
-// Without the tunnel the probe's answer is refused, so the stored baseline is
-// `unavailable` with the refusal's text, and `kind` is not `revision`.
-fn assert_tunnel_baseline(run: Run, session: String) -> Nil {
+fn assert_tunnel(observed: Observed) -> Nil {
+  assert_tunnel_baseline(observed.baseline)
+  assert_tunnel_board(observed.board)
+  assert_tunnel_check(observed.goal)
+}
+
+// The baseline fact as the orchestrator stored it, read from a copy of its
+// store.
+fn tunnel_baseline(run: Run, session: String) -> option.Option(json.JsonValue) {
   let pair =
     remote_pair.Pair(
       directory: run.directory,
@@ -2938,8 +2931,13 @@ fn assert_tunnel_baseline(run: Run, session: String) -> Nil {
       executor: run.untrusted,
       checkout: "",
     )
-  let assert option.Some(start) =
-    remote_pair.session_fact(pair, session, session_git.key)
+  remote_pair.session_fact(pair, session, session_git.key)
+}
+
+// Without the tunnel the probe's answer is refused, so the stored baseline is
+// `unavailable` with the refusal's text, and `kind` is not `revision`.
+fn assert_tunnel_baseline(baseline: option.Option(json.JsonValue)) -> Nil {
+  let assert option.Some(start) = baseline
     as "the orchestrator stored a baseline for the session"
   let shown = json.to_string(start)
   io.println_error(label <> " session baseline: " <> shown)
@@ -3030,33 +3028,45 @@ fn tunnel_pin_goal(
   socket
 }
 
-// Reads the goal until it is complete, up to `remaining` reads a tenth of a
-// second apart. A goal that never gets there fails with the last board, which
-// says whether a check ran and what it read.
-fn tunnel_await_goal(
+// Reads the goal until it carries a check result, up to `remaining` reads a
+// tenth of a second apart. The check runs before any reviewer feed, and a
+// pinned goal's feed need not follow within the wait, so the goal's status is
+// not waited on. A goal with no result in time answers the last board.
+fn tunnel_await_check(
   socket: remote_pair.SessionSocket,
   remaining: Int,
   last: json.JsonValue,
-) -> json.JsonValue {
-  assert remaining > 0
-    as {
-      "the goal completes, and the last board read was " <> json.to_string(last)
-    }
-  let #(reply, socket) =
-    remote_pair.session_command(socket, "goal_get", json.Object([]))
-  let board = remote_daemons.field(remote_daemons.field(reply, "body"), "board")
-  case remote_daemons.field(board, "status") == json.String("complete") {
-    True -> board
-    False -> {
-      process.sleep(100)
-      tunnel_await_goal(socket, remaining - 1, board)
+) -> Result(json.JsonValue, json.JsonValue) {
+  case remaining > 0 {
+    False -> Error(last)
+    True -> {
+      let #(reply, socket) =
+        remote_pair.session_command(socket, "goal_get", json.Object([]))
+      let board =
+        remote_daemons.field(remote_daemons.field(reply, "body"), "board")
+      case remote_daemons.field(board, "last_check") {
+        json.Null -> {
+          process.sleep(100)
+          tunnel_await_check(socket, remaining - 1, board)
+        }
+        _ -> Ok(board)
+      }
     }
   }
 }
 
-// Without the tunnel the check is refused: the goal never records a status 0,
-// and `not_finished` names the refusal.
-fn assert_tunnel_check(board: json.JsonValue) -> Nil {
+// Without the tunnel the check is refused: no result appears, or `status` is
+// not 0 and `not_finished` names the refusal. The workspace path is the one the
+// daily steps assert (`cwd=/srv/workspaces/repo`), built from `workspaces_dir`.
+fn assert_tunnel_check(goal: Result(json.JsonValue, json.JsonValue)) -> Nil {
+  let assert Ok(board) = goal
+    as {
+      "the goal records a check result; the last board read was "
+      <> case goal {
+        Error(last) -> json.to_string(last)
+        Ok(_) -> ""
+      }
+    }
   let shown = json.to_string(board)
   io.println_error(label <> " goal board: " <> shown)
   let ran = remote_daemons.field(board, "last_check")
@@ -3070,18 +3080,11 @@ fn assert_tunnel_check(board: json.JsonValue) -> Nil {
     as { "the check carries its output, read " <> shown }
   assert string.contains(output, tunnel_word)
     as { "the check's output is the guest's, read " <> shown }
-  Nil
-}
-
-// What the reviewer was shown: the check's pass and the guest's own output.
-fn assert_tunnel_feed(feeds: List(provider.ObservedRequest)) -> Nil {
-  let bodies =
-    list.map(feeds, fn(request) { remote_pair.request_text(request.body) })
-  let assert Ok(feed) = list.find(bodies, string.contains(_, tunnel_objective))
-    as "the reviewer was fed the goal"
-  assert string.contains(feed, "exit status 0")
-  assert string.contains(feed, "(the check passed)")
-  assert string.contains(feed, tunnel_word)
+  assert string.contains(
+    output,
+    workspaces_dir <> "/" <> remote_pair.workspace_name,
+  )
+    as { "the check ran in the guest's workspace copy, read " <> shown }
   Nil
 }
 
