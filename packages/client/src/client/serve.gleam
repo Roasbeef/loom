@@ -272,8 +272,8 @@ import weft/registry as address
 /// The clearing function an imported hook's commands go through, from a
 /// plane's `hooks` and `clear_call`. A placement that refuses hooks, an
 /// untrusted executor's, gets one that answers every command as a broker
-/// that cannot be reached, which is how hooks there were refused before the
-/// tunnel (protocol-change/117, "Hooks stay refused").
+/// that cannot be reached, so no hook runs on that placement
+/// (protocol-change/117, "Hooks stay refused").
 ///
 /// ## Examples
 ///

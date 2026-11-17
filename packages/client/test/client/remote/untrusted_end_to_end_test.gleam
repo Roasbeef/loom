@@ -16,8 +16,8 @@
 //// its capability call reaches the owner while it runs, and its value comes
 //// back to the record's worker. The worker's death stops it on the executor.
 ////
-//// The broker tunnel (protocol-change/117) takes the same trip for the
-//// session's non-tool callers, into a plane whose broker is the production
+//// The broker tunnel (protocol-change/117) carries the session's non-tool
+//// callers over the same link and gateway, into a plane whose broker is the production
 //// broker over a real helper: a goal check, the baseline probe, the worktree
 //// diff after a jailed edit and the peer observation each return what the
 //// executor's repository holds, and an imported hook stays refused.
@@ -65,6 +65,7 @@ import host/bootstrap
 import runtime/effects.{type ToolRun}
 import simplifile
 import support/enforcement
+import support/fake_clear_call
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator
 import support/untrusted_rig as rig
@@ -949,30 +950,66 @@ pub fn a_goal_check_runs_through_the_tunnel_test() {
   assert failed.ending == goalstate.Exited(3)
 }
 
-// A hook on an untrusted placement is refused, as before the tunnel, though
+// A hook on an untrusted placement is refused, though
 // the same plane's clearing function serves the goal check and Git.
 pub fn a_hook_on_an_untrusted_placement_is_refused_test() {
   use tunnel <- with_tunnel("hook")
-  let refused =
-    serve.hook_clear_call(workspace_plane.HooksRefused, tunnel.clear)
-  let events = process.new_subject()
   let spec =
     broker.CallSpec(
       op_id: fixtures.tool_run("hook", 0).operation,
       step_id: "imported-hooks",
       base_policy: tunnel.base,
-      requirements: tunnel.base,
+      // A real hook asks for a mebibyte per stream, which the link admits, so
+      // only the refusing function stands between a hook and the executor.
+      requirements: policy.SandboxPolicy(
+        ..tunnel.base,
+        limits: policy.Limits(..tunnel.base.limits, output_bytes: 1_048_576),
+      ),
       grants: [],
       response: broker.RefuseNarrowed,
       demand: exec.PlatformEnforcement,
       argv: ["/bin/sh", "-c", "echo hooked"],
-      env: [],
+      env: [#("PATH", tunnel.path)],
       cwd: tunnel.workspace,
       budget: budget.Budget(1, bootstrap.system_time_ms() + 30_000),
     )
-  let assert Error(broker.BrokerUnavailable) = refused(spec, events, 5000)
+
+  // Over a recording clearing function, a refused placement never calls it,
+  // and a placement that runs hooks does.
+  let probe = process.new_subject()
+  let recording =
+    fake_clear_call.answering(probe, fn(_spec) {
+      [
+        broker.CallSettled(
+          broker.CallFailed(exec.ExecutionLost(exec.RelayDown)),
+        ),
+      ]
+    })
+  let events = process.new_subject()
+  let assert Error(broker.BrokerUnavailable) =
+    serve.hook_clear_call(workspace_plane.HooksRefused, recording)(
+      spec,
+      events,
+      5000,
+    )
     as "the hook's command is refused"
-  assert process.receive(events, 300) == Error(Nil)
-  let served = jailed(tunnel, "not-a-hook", "echo served")
-  assert served.stdout == <<"served\n">>
+  assert process.receive(probe, 300) == Error(Nil)
+  let assert Ok(_call) =
+    serve.hook_clear_call(workspace_plane.HooksRun, recording)(
+      spec,
+      process.new_subject(),
+      5000,
+    )
+    as "a placement that runs hooks clears through its function"
+  let assert Ok(fake_clear_call.Cleared(..)) = process.receive(probe, 300)
+    as "the clearing function was called"
+
+  // The same spec through the tunnel itself clears and runs, so the refusal
+  // above is the refusing function's and not the link's.
+  let assert Ok(call) = tunnel.clear(spec, events, 15_000)
+    as "the tunnel admits a hook-sized spec"
+  call.stdin(<<>>, True)
+  let assert Ok(collected) = tool.collect_events(events, waiting: 20_000)
+    as "the call settles"
+  assert collected.stdout == <<"hooked\n">>
 }

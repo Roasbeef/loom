@@ -412,6 +412,7 @@ fn execute(
   let after = step(model, command)
   let #(table, effects) =
     tunnel_calls.step(sut.table, event_of(sut, model, command))
+  use Nil <- result_try(contents(effects, sut, model, after, command))
   let sut = case command {
     Open(..) ->
       Sut(
@@ -930,4 +931,138 @@ pub fn the_generated_sequences_reach_the_bounds_and_the_hostile_rows_test() {
     each.0 == Drop && dict.size({ each.1 }.live) > 1
   })
     as "some connection drops under several calls"
+}
+
+// What each asker is told, not only how often: a clearance answers what the
+// executor sent, every other answer is `BrokerUnavailable`, a settlement hands
+// over exactly the buffered bytes then the outcome that was sent, and an open
+// the table does not admit is refused once.
+fn contents(
+  effects: List(Effect(Int, Int)),
+  sut: Sut,
+  model: Model,
+  after: Model,
+  command: Command,
+) -> Result(Nil, statem.Violation) {
+  let answers =
+    list.filter_map(effects, fn(effect) {
+      case effect {
+        tunnel_calls.Answer(reply:, answer:) -> Ok(#(reply, answer))
+        _other -> Error(Nil)
+      }
+    })
+  let refusals =
+    list.filter_map(effects, fn(effect) {
+      case effect {
+        tunnel_calls.Refuse(reply:, ..) -> Ok(reply)
+        _other -> Error(Nil)
+      }
+    })
+  use Nil <- result_try(answered_as_sent(answers, sut, model, command))
+  use Nil <- result_try(refused_once(refusals, sut, model, after, command))
+  settled_as_buffered(effects, sut, model, command)
+}
+
+fn answered_as_sent(
+  answers: List(#(Int, Result(Nil, broker.Refusal))),
+  sut: Sut,
+  model: Model,
+  command: Command,
+) -> Result(Nil, statem.Violation) {
+  let expected = case command, violates(model, command) {
+    Clear(pick:, clearance:), False ->
+      case dict.get(model.live, picked(model, pick)), clearance {
+        Ok(Held(state: KeptClearing, ..)), Clears -> [
+          #(reply_of(sut, picked(model, pick)), Ok(Nil)),
+        ]
+        Ok(Held(state: KeptClearing, ..)), Refuses -> [
+          #(reply_of(sut, picked(model, pick)), Error(broker.OperationAborted)),
+        ]
+        _, _ -> []
+      }
+    _, _ -> {
+      // Every other answer is the link's own refusal: a passed wait, a drop
+      // and a violation end clearing calls that way.
+      list.map(answers, fn(pair) { #(pair.0, Error(broker.BrokerUnavailable)) })
+    }
+  }
+  require(
+    answers == expected,
+    "answer-content",
+    string.inspect(command) <> " answered " <> string.inspect(answers),
+  )
+}
+
+fn refused_once(
+  refusals: List(Int),
+  sut: Sut,
+  model: Model,
+  after: Model,
+  command: Command,
+) -> Result(Nil, statem.Violation) {
+  let expected = case command {
+    Open(..) ->
+      case dict.size(after.live) > dict.size(model.live) {
+        True -> []
+        False -> [sut.next_reply]
+      }
+    _other -> []
+  }
+  require(
+    refusals == expected,
+    "refused-once",
+    string.inspect(command) <> " refused " <> string.inspect(refusals),
+  )
+}
+
+fn settled_as_buffered(
+  effects: List(Effect(Int, Int)),
+  sut: Sut,
+  model: Model,
+  command: Command,
+) -> Result(Nil, statem.Violation) {
+  let delivered =
+    list.filter_map(effects, fn(effect) {
+      case effect {
+        tunnel_calls.Deliver(events:, event:) -> Ok(#(events, event))
+        _other -> Error(Nil)
+      }
+    })
+  case command {
+    Settle(pick:) ->
+      case dict.get(model.live, picked(model, pick)) {
+        Ok(Held(state: KeptRunning(out:, err:), ..)) -> {
+          let events = reply_of(sut, picked(model, pick))
+          let stream = fn(stream, size) {
+            case size {
+              0 -> []
+              _bytes -> [
+                #(
+                  events,
+                  broker.CallOutput(
+                    stream:,
+                    data: <<0:size({ size * 8 })>>,
+                    total_bytes: size,
+                    truncated: False,
+                  ),
+                ),
+              ]
+            }
+          }
+          let expected =
+            list.flatten([
+              stream(framing.Stdout, out),
+              stream(framing.Stderr, err),
+              [#(events, broker.CallSettled(exited()))],
+            ])
+          require(
+            delivered == expected,
+            "settled-content",
+            "a settlement delivered " <> string.inspect(delivered),
+          )
+        }
+        _other -> Ok(Nil)
+      }
+    _other -> Ok(Nil)
+  }
 }

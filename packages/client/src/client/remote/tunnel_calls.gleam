@@ -1,5 +1,6 @@
 //// The table of tunnelled calls an untrusted link holds (protocol-change/117),
-//// and every rule for how an entry changes, with no process in sight.
+//// and every rule for how an entry changes, as functions that start no
+//// process and send no message.
 ////
 //// A session's non-tool callers (goal checks, the Changes tab, the baseline
 //// probe and the peer view) clear calls on the executor's broker through the
@@ -47,7 +48,7 @@
 //// | `Cancelled` while running | removed | `ExecutionLost(RelayDown)` | `cancel` |
 //// | `AskerDied` | removed | nobody | `cancel` |
 //// | `ConnectionDropped` | all removed | `BrokerUnavailable` if clearing, `ExecutionLost(RelayDown)` if running | none |
-//// | a frame for a tunnel id no longer held | none | nothing | none (dropped) |
+//// | a frame for a tunnel id the table has removed | none | nothing | none (dropped) |
 //// | `Cleared` while running, an event while clearing, more output than the limit, or a frame for an id never issued or held as another request | all removed, as for a dropped connection | as for a dropped connection | violation |
 
 import broker/broker
@@ -303,7 +304,7 @@ fn opened(
 }
 
 /// Sorts an executor frame: an id never issued, or held as another request,
-/// is a violation; an issued id the table no longer holds crossed a removal
+/// is a violation; an issued id the table does not hold crossed a removal
 /// and is dropped; a held one goes to `held`.
 fn from_executor(
   table: Table(reply, events),
@@ -548,9 +549,10 @@ fn removed(table: Table(reply, events), id: Int) -> Table(reply, events) {
   Table(entries: dict.delete(table.entries, id))
 }
 
-/// The settlement a caller hears for a call the link can no longer follow:
+/// The settlement a caller hears for a call the link has stopped following:
 /// the one failure that says the effect may have run and must not be
-/// replayed, with the link standing where a relay would stand.
+/// replayed, with the cause `RelayDown`, which the broker gives when the
+/// relay that carried a call dies.
 fn lost() -> broker.CallEvent {
   broker.CallSettled(broker.CallFailed(exec.ExecutionLost(exec.RelayDown)))
 }

@@ -585,7 +585,11 @@ pub fn tunnel_waiting(
           process.new_selector()
           |> process.select_map(reply, Heard)
           |> process.select_specific_monitor(watch, fn(_down) { DoorDown })
-          |> process.selector_receive(int.max(0, waiting + slack_ms))
+          |> process.selector_receive(int.clamp(
+            waiting + slack_ms,
+            0,
+            untrusted_codec.max_call_wait_ms,
+          ))
         process.demonitor_process(watch)
 
         // Only the link's own `Ok` is a running call; a silent link is given
@@ -598,7 +602,17 @@ pub fn tunnel_waiting(
               }),
             )
           Ok(Heard(Error(refusal))) -> Error(refusal)
-          Ok(DoorDown) -> Error(broker.BrokerUnavailable)
+
+          // The door looked up may die, and a reload may register a new
+          // link's door under the name, between the lookup and the send, so
+          // the `Clear` can reach a link this function does not watch. The
+          // withdraw goes to the same name from the same process, so it
+          // follows the `Clear`, and a link that admitted the call removes it
+          // and cancels it instead of holding it for nobody.
+          Ok(DoorDown) -> {
+            address.deliver(at, Withdraw(reply))
+            Error(broker.BrokerUnavailable)
+          }
           Error(Nil) -> {
             address.deliver(at, Withdraw(reply))
             Error(broker.BrokerUnavailable)
@@ -606,6 +620,26 @@ pub fn tunnel_waiting(
         }
       }
     }
+  }
+}
+
+/// What a `Tunnel` message is, and the reply subject it names, for a test
+/// that plays the door: `"clear"`, `"withdraw"` or `"cancel"`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(kind, reply) = untrusted_link.tunnel_shape(received)
+/// ```
+@internal
+pub fn tunnel_shape(
+  tunnel: Tunnel,
+) -> #(String, Subject(Result(Nil, broker.Refusal))) {
+  // Each message names the asker's reply subject.
+  case tunnel {
+    Clear(reply:, ..) -> #("clear", reply)
+    Withdraw(reply:) -> #("withdraw", reply)
+    CancelCall(reply:) -> #("cancel", reply)
   }
 }
 
@@ -2589,10 +2623,14 @@ fn shaped(spec: broker.CallSpec, waiting: Int) -> Result(Nil, String) {
   let within = fn(millis) {
     millis >= 0 && millis <= untrusted_codec.max_call_ms
   }
+
+  // The wait is the link's own timer and, less a second, the executor's
+  // receive, so it is held to what a receive's timeout can be.
   let fits =
     list.drop(spec.argv, untrusted_codec.max_call_argv) == []
     && list.drop(spec.env, untrusted_codec.max_call_env) == []
-    && within(waiting)
+    && waiting >= 0
+    && waiting <= untrusted_codec.max_call_wait_ms
     && within(spec.budget.deadline_ms)
 
   // Grants come only from an approved escalation, which a tunnelled call has
@@ -2695,7 +2733,7 @@ fn tunnel_or(
   body: json.JsonValue,
   next: fn() -> sm.Next(Phase, Data, Message),
 ) -> sm.Next(Phase, Data, Message) {
-  // A response for a tunnel id the table no longer holds falls through to
+  // A response for a tunnel id the table does not hold falls through to
   // `responded`, which drops it as it drops any response that crossed a
   // removal.
   case tunnel_calls.holds(data.calls, id) {

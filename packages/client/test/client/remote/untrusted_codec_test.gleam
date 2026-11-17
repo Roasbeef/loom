@@ -2485,12 +2485,14 @@ pub fn a_wait_or_deadline_outside_its_range_is_refused_test() {
     )
   }
 
+  let longest = untrusted_codec.max_call_wait_ms
+  assert longest == 4_294_967_295
   let assert Ok(_request) =
-    untrusted_codec.decode_request(clear_call_waiting(largest))
-    as "a wait of 2^53 milliseconds is carried"
+    untrusted_codec.decode_request(clear_call_waiting(longest))
+    as "a wait of 2^32 - 1 milliseconds is carried"
   let assert Error(_report) =
-    untrusted_codec.decode_request(clear_call_waiting(largest + 1))
-    as "a wait past 2^53 milliseconds is refused"
+    untrusted_codec.decode_request(clear_call_waiting(longest + 1))
+    as "a wait past what a receive's timeout holds is refused"
   let assert Error(_report) =
     untrusted_codec.decode_request(clear_call_waiting(-1))
     as "a negative wait is refused"
