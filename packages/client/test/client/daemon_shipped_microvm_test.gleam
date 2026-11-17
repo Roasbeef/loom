@@ -2380,6 +2380,17 @@ fn untrusted_guest(run: Run) -> Nil {
             // the guest, with no distribution options file and no cookie.
             let running = remote_daemons.start_plain(layout)
             let control = remote_daemons.open_control(running)
+
+            // The further guest's `up` and `rm` both write this daemon's
+            // configuration file, so they run before the step's main session
+            // opens. The daemon reopens a session a second or two after its
+            // configuration file changes (`client/config_watch`), and a prompt
+            // submitted in that instant is reported as unconfirmed and not
+            // retried, so this step makes every write before it opens the
+            // session, which then loads the final text.
+            let digests =
+              second_guest_after_reload(run, flags, name, running, control)
+
             let #(session, settled) =
               remote_daemons.create_and_settle(
                 control,
@@ -2403,9 +2414,6 @@ fn untrusted_guest(run: Run) -> Nil {
               label <> " deployment.status (untrusted):\n" <> shown,
             )
             assert string.contains(shown, name)
-
-            let digests =
-              second_guest_after_reload(run, flags, name, running, control)
 
             let opened =
               remote_pair.Opened(orchestrator: running, control:, session:)
