@@ -17,7 +17,8 @@
 ////
 //// The wire 5 tests (protocol-change/117) hold the link to the value bound on
 //// what it receives, on an outcome it fetches and on what it sends, refuse a
-//// tunnel event the link never asked for.
+//// tunnel event the link never asked for, and check that a welcome of another
+//// wire version is refused in words that name both wire versions.
 
 import broker/framing
 import client/codemode as codemode_wiring
@@ -1844,4 +1845,47 @@ pub fn a_call_event_closes_the_connection_test() {
   assert rig.closed(stream, 5000)
   assert process.is_alive(rig.link)
   stop(rig)
+}
+
+/// Starts a link, sends an attach, and answers the link's `hello` with a
+/// `welcome` of the given numbers. Answers what the attach was told.
+fn welcomed_with(
+  label: String,
+  wire: Int,
+  protocol_version: Int,
+) -> Result(protocol.Attached(RemoteCensus), protocol.Refusal) {
+  let rig = start(label)
+  let #(port, _seen) = recording_port()
+  let reply = attach_unread(rig.address, port)
+  let stream = rig.accept(rig.listener)
+  let assert Ok(untrusted_codec.HelloEnvelope(..)) = rig.next(stream)
+    as "the link says hello"
+  rig.send(stream, untrusted_wire.Welcome(wire:, protocol: protocol_version))
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the attach is answered"
+  assert process.is_alive(rig.link)
+  stop(rig)
+  answer
+}
+
+// When only the wire differs, the refusal says so in both numbers instead of
+// naming a protocol version the two sides share.
+pub fn a_wire_only_version_mismatch_names_both_wire_versions_test() {
+  let theirs = untrusted_wire.version - 1
+  let assert Error(protocol.Unreachable(reason)) =
+    welcomed_with("wire-mismatch", theirs, protocol.version)
+    as "a wire-only mismatch is refused as unreachable"
+  assert string.contains(reason, "wire version " <> int.to_string(theirs))
+  assert string.contains(
+    reason,
+    "wire version " <> int.to_string(untrusted_wire.version),
+  )
+
+  // A protocol difference keeps 078's refusal.
+  assert welcomed_with(
+      "protocol-mismatch",
+      untrusted_wire.version,
+      protocol.version + 1,
+    )
+    == Error(protocol.VersionMismatch(supported: protocol.version + 1))
 }

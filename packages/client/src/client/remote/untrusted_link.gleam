@@ -1095,18 +1095,50 @@ fn greeted(
         Ok(untrusted_codec.WelcomeEnvelope(wire:, protocol: theirs))
           if wire == untrusted_wire.version && theirs == protocol.version
         -> opened(stream, data)
-        Ok(untrusted_codec.WelcomeEnvelope(protocol: theirs, ..)) ->
-          rest(
-            stream,
-            refuse_all(data, protocol.VersionMismatch(supported: theirs)),
-            "the executor speaks another version",
-          )
+        Ok(untrusted_codec.WelcomeEnvelope(wire:, protocol: theirs)) ->
+          mismatched(stream, data, wire, theirs)
         Ok(_other) -> violation(stream, data, "the first frame was not welcome")
         Error(report) -> violation(stream, data, corruption.describe(report))
       }
     ffi_tls_stream.Ended | ffi_tls_stream.Broken ->
       rest(stream, data, "the connection closed during the greeting")
   }
+}
+
+/// A `welcome` of other versions: logs all four numbers and refuses everything
+/// that waits. When the protocol versions agree, only the wire differs, and the
+/// refusal is `Unreachable` naming both wire versions, because
+/// `VersionMismatch` names protocol versions and its text would blame the one
+/// number the two sides share.
+fn mismatched(
+  stream: Stream,
+  data: Data,
+  wire: Int,
+  theirs: Int,
+) -> sm.Next(Phase, Data, Message) {
+  log.warn(data.config.logger, "untrusted_link.version_mismatch", [
+    field.text("executor", data.config.executor),
+    field.count("our_wire", untrusted_wire.version),
+    field.count("their_wire", wire),
+    field.count("our_protocol", protocol.version),
+    field.count("their_protocol", theirs),
+  ])
+
+  // A protocol difference keeps 078's refusal; a wire-only one names the wire.
+  let refusal = case theirs == protocol.version {
+    False -> protocol.VersionMismatch(supported: theirs)
+    True ->
+      protocol.Unreachable(
+        "executor "
+        <> data.config.executor
+        <> " speaks untrusted wire version "
+        <> int.to_string(wire)
+        <> " and this orchestrator speaks wire version "
+        <> int.to_string(untrusted_wire.version),
+      )
+  }
+
+  rest(stream, refuse_all(data, refusal), "the executor speaks another version")
 }
 
 /// Opens the link: every outstanding request goes out in the order it was
