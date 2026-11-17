@@ -40,6 +40,7 @@ import broker/broker
 import broker/budget
 import broker/exec
 import broker/policy
+import client/bounded_text
 import client/clear_call.{type ClearCall}
 import client/codemode
 import client/daemon/transfer
@@ -322,10 +323,9 @@ pub fn starting_revision(wiring: Wiring) -> Start {
     Ok(#(NotRepository, _)) ->
       Unavailable("Workspace was not a repository at session start")
 
-    // The reason is stored in `session/git-start`, and over the tunnel its
-    // diagnostic is the executor's text, so it is clipped as
-    // `capture_committed` clips it for display.
-    Error(error) -> Unavailable(string.slice(error_message(error), 0, 512))
+    // The reason is stored in `session/git-start`; `error_message` bounds
+    // every part of it that the executor chose.
+    Error(error) -> Unavailable(error_message(error))
   }
 }
 
@@ -1066,7 +1066,7 @@ fn diagnostic(bytes: BitArray) -> String {
   bytes
   |> bit_array.to_string
   |> result.unwrap("Git returned a non-UTF-8 diagnostic")
-  |> string.slice(0, 512)
+  |> bounded_text.clip(512)
 }
 
 /// Establishes fit board for the caller, keeping its validation and result policy at this boundary.
@@ -1179,8 +1179,14 @@ pub fn error_message(error: Error) -> String {
     OutputLimit -> "worktree observation exceeded its output budget"
     InvalidOutput ->
       "Git output could not be decoded without changing file identity"
-    Refused(reason) -> "worktree observation was refused: " <> reason
-    ExecutionFailed(reason) -> "worktree observation failed: " <> reason
+
+    // Over the tunnel these reasons are the executor's text, which lands in
+    // the stored baseline, the peer observation's fact and the board, so
+    // each is clipped here, by bytes (`bounded_text`), to 512.
+    Refused(reason) ->
+      "worktree observation was refused: " <> bounded_text.clip(reason, 512)
+    ExecutionFailed(reason) ->
+      "worktree observation failed: " <> bounded_text.clip(reason, 512)
     NoSettlement ->
       "worktree observation did not settle; cancellation was requested"
     GitFailed(code, diagnostic) ->

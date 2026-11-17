@@ -741,7 +741,8 @@ pub fn a_failed_baseline_probe_stores_a_clipped_reason_test() {
   let assert worktree_diff.Unavailable(reason) =
     worktree_diff.starting_revision(wiring)
     as "a failed probe is unavailable"
-  assert string.length(reason) == 512
+  assert string.starts_with(reason, "Git exited 1: xxx")
+  assert string.byte_size(reason) <= 1024
 }
 
 /// A Git call that never settles ends the capture's bounded wait with
@@ -766,4 +767,47 @@ pub fn a_git_call_that_never_settles_is_cancelled_through_the_handle_test() {
   // The deadline is the capture clock's reading plus the shared timeout.
   assert spec.budget.deadline_ms == 3_000_000 + worktree_diff.capture_timeout_ms
   assert waiting == 100
+}
+
+// --- executor text kept bounded (protocol-change/117) ----------------------------
+
+/// Text an executor chooses: megabytes of one letter, and one letter carrying
+/// a million combining accents, which is one grapheme cluster that a slice by
+/// graphemes would walk in full.
+fn hostile_texts() -> List(String) {
+  [string.repeat("x", 3_000_000), "a" <> string.repeat("\u{0301}", 1_000_000)]
+}
+
+/// A clearing function that refuses every call with `text` as its reason.
+fn refusing_with(text: String) -> clear_call.ClearCall {
+  fn(_spec, _events, _waiting) {
+    Error(broker.InvalidPolicy(policy.RelativePath(text)))
+  }
+}
+
+/// A clearing function whose every call settles as a helper refusal carrying
+/// `text`.
+fn failing_with(text: String) -> clear_call.ClearCall {
+  let probe = process.new_subject()
+  fake_clear_call.answering(probe, fn(_spec) {
+    [broker.CallSettled(broker.CallFailed(exec.RefusedByHelper("e", text)))]
+  })
+}
+
+// The baseline stores the reason and the peer view publishes it as a fact, so
+// a refusal or a failure the executor describes at frame size ends as bounded
+// text on both, whatever the text is made of.
+pub fn executor_text_is_bounded_in_the_baseline_and_the_peer_fact_test() {
+  list.each(hostile_texts(), fn(text) {
+    list.each([refusing_with(text), failing_with(text)], fn(clear) {
+      let wiring = fake_wiring(clear, clock.fixed(at: 2_000_000))
+      let assert worktree_diff.Unavailable(reason) =
+        worktree_diff.starting_revision(wiring)
+        as "a refused probe is unavailable"
+      assert string.byte_size(reason) <= 1024
+      let fact = json.to_string(worktree_diff.peer_observation(wiring))
+      assert string.contains(fact, "unavailable")
+      assert string.byte_size(fact) <= 2048
+    })
+  })
 }
