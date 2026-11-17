@@ -913,7 +913,7 @@ deduplicates the replay against any stale `Run`.
 | `unknown`, or a tombstone | `OutcomeUnknown` | "the outcome is unknown" |
 | no row, `ReplaySafe` | `NotStarted` | nothing yet: the planner replays it |
 | no row, `ReplayNever` (fenced) | `NotStarted` | "the call never reached the executor and did not run" |
-| not asked: pending when the session moved from a directory | `OutcomeUnknown` | "the outcome is unknown" |
+| not asked: `ReplayNever`, pending when the session moved from a directory (a moved `ReplaySafe` call is still asked) | `OutcomeUnknown` | "the outcome is unknown" |
 | refused or unreachable | `OutcomeUnknown` | "the outcome is unknown" |
 
 Recovery assumes the attach of the current open ran first, because "no row"
@@ -1486,7 +1486,9 @@ drained workspace), and it leaves the cell the other steps already read.
    workspace, a name the executor does not serve and a tree that holds changes are
    refused, and the refusal ends the move.
 4. **Record.** The file's reserved cell `client/move/checkout` says the checkout was
-   placed for this operation. The six steps then run with a copy of the registration
+   placed for this operation, and the same commit writes `client/move/interrupted`,
+   the `ReplayNever` calls the stopped file holds pending (see "Recovery and the
+   per-key fence"). The six steps then run with a copy of the registration
    that names the executor and workspace, so the manifest tells the receiver.
 
 Each stage logs one line on the source (`daemon.move_checkout_captured`, `_sent`,

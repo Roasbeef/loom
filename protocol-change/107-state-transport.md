@@ -1681,6 +1681,10 @@ unchanged.
 **Tests.** `a_call_in_flight_when_the_move_stopped_the_turn_is_unknown_on_the_receiver_test`
 (`session_move_checkout_test`, through the real mover, host and ledger) and
 `a_call_pending_when_the_session_left_a_directory_is_unknown_test` (`workspace_test`) both
-failed against the earlier rule. `a_restart_in_place_keeps_the_fenced_did_not_run_answer_test`
-pins the fenced answer, and `the_moved_calls_list_is_written_again_from_the_file_test` the
-recomputation after an abandoned move.
+failed against the earlier rule; the first also checks that an unlisted key is still asked of
+the executor. `a_restart_in_place_keeps_the_fenced_did_not_run_answer_test` pins the fenced
+answer for a session with no list, and checks that the fence holds: a `Run` sent after the
+recovery is refused with the did-not-run text and the call never runs.
+`the_moved_calls_list_is_written_again_from_the_file_test` covers the recomputation after an
+abandoned move, and `a_malformed_moved_calls_cell_is_refused_and_answers_unknown_test` the
+refusal of a cell this rule did not write and the unknown answer recovery then gives.
