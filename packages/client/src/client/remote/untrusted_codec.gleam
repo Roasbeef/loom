@@ -10,7 +10,9 @@
 //// pid or a function, so the same bytes mean the same on any machine.
 ////
 //// The executor is assumed hostile, so every decoder is total. A frame is
-//// parsed by `core/json`, which bounds nesting and refuses a duplicated key;
+//// parsed by `core/json`, which bounds nesting, refuses a duplicated key and
+//// refuses a document of more than `untrusted_wire.max_frame_values` values
+//// before it has built them (`json.parse_bounded`);
 //// every field is then read through a helper that answers with a
 //// `CorruptionReport` when it is absent, of the wrong JSON type, out of range,
 //// or not canonical base64. Ids are at least 1, offsets and sizes are not
@@ -77,6 +79,34 @@
 //// the same bytes, which is what lets each piece come from a fresh read of the
 //// executor's ledger.
 ////
+//// A fetched outcome is parsed under the same value bound as a frame, so an
+//// outcome of 96 MiB cannot describe more values than one frame may hold.
+////
+//// ## Sending within the receiver's bounds
+////
+//// A receiver refuses a frame over `untrusted_wire.max_frame_bytes` or
+//// `untrusted_wire.max_frame_values`, and refusal closes the connection. A
+//// sender that kept or re-sent such a frame would close every connection it
+//// is sent on, so `encode_fitting` checks both bounds before a frame goes out
+//// and gives the sender the bytes and the reason when it does not fit. The
+//// value count costs a walk of the frame's tree only for a frame of more than
+//// `max_frame_values` bytes: every value begins with a byte of its own, so a
+//// smaller frame cannot hold more values than that.
+////
+//// ## The broker tunnel (protocol-change/117)
+////
+//// A `clear_call` carries a `TunnelSpec`, which has no `grants` and no
+//// `demand`; a spec that names either member is refused rather than read
+//// with the member ignored, so a sender cannot believe it sent one. The
+//// codec also refuses an `argv` of more than 4,096 entries, an `env` of more
+//// than 1,024 pairs, and a `waiting_ms` or `deadline_ms` outside 0 to 2^53.
+//// The `cleared` reply carries a whole `broker.Refusal`, and a `call_event`
+//// a whole `ExecResult` or `ExecFailure`. One of their values is carried
+//// lossily: a helper actor that failed to start because its initialiser
+//// exited abnormally (`actor.InitExited(process.Abnormal(reason))`) carries a
+//// term no wire can, and is read back as `actor.InitFailed` with the
+//// reason's printed form.
+////
 //// One encoding failure is also handled by refusal rather than by a result.
 //// `core/msgpack` can fail to encode an integer outside 64 bits, and
 //// `encode_frame` does not return a `Result`. Such a value is written as JSON
@@ -85,21 +115,28 @@
 ////
 //// ## Flow
 ////
-//// `encode_frame` → `decode_envelope` → `decode_request` → `decode_response` →
-//// `decode_callback` → `decode_answer` → `decode_frame`
+//// `encode_frame` → `encode_fitting` → `decode_envelope` → `decode_request` →
+//// `decode_response` → `decode_callback` → `decode_answer` →
+//// `decode_call_event` → `decode_frame`
 ////
-//// 1. `encode_frame` writes any frame as the bytes of one JSON document.
+//// 1. `encode_frame` writes any frame as the bytes of one JSON document, and
+////    `encode_fitting` does so only for a frame within the receiver's bounds.
 //// 2. `decode_envelope` reads the header of a received frame and checks the
 ////    ids and bindings, and keeps the body undecoded.
 //// 3. `decode_request` and `decode_callback` read the body of a frame whose
 ////    constructor the receiver does not choose.
 //// 4. `decode_response` and `decode_answer` read the body of a frame against
-////    the kind the receiver expects.
+////    the kind the receiver expects, and `decode_call_event` reads the event
+////    of a tunnelled call.
 //// 5. `decode_frame` runs the two steps together given the kinds.
 
+import broker/broker
+import broker/budget
 import broker/escalation
+import broker/exec
 import broker/framing
 import broker/policy as sandbox_policy
+import broker/token
 import client/codemode as codemode_wiring
 import client/directories
 import client/escalate
@@ -126,10 +163,12 @@ import core/json.{type JsonValue}
 import core/message
 import core/msgpack
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/int
 import gleam/json as gleam_json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/operation
@@ -171,6 +210,17 @@ pub type Envelope {
   /// the response to request `id`. It has no body: the size and the digest
   /// are the whole of it, and `digest` is 64 lower-case hex digits.
   OversizedEnvelope(id: Int, size: Int, digest: String)
+
+  /// An event of the tunnelled call that request `call` cleared, whose body
+  /// `decode_call_event` reads (protocol-change/117).
+  CallEventEnvelope(call: Int, body: JsonValue)
+}
+
+/// A frame `encode_fitting` would not send: its bytes, which a sender that
+/// describes the frame in place of sending it still needs, and which of the
+/// receiver's bounds it passes.
+pub type Unfit {
+  Unfit(bytes: BitArray, reason: String)
 }
 
 // The fields of a decoded JSON object, in the order they were written.
@@ -204,6 +254,60 @@ pub fn encode_frame(frame: untrusted_wire.Frame) -> BitArray {
   |> bit_array.from_string
 }
 
+/// Encodes a frame when it is within both bounds its receiver enforces,
+/// `untrusted_wire.max_frame_bytes` and `untrusted_wire.max_frame_values`.
+/// A frame past either is `Unfit`, with its bytes and the bound it passes, so
+/// the sender refuses or describes it instead of sending what the receiver
+/// would refuse by closing the connection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let frame = untrusted_wire.Cancel(id: 7)
+/// assert untrusted_codec.encode_fitting(frame)
+///   == Ok(untrusted_codec.encode_frame(frame))
+/// ```
+pub fn encode_fitting(frame: untrusted_wire.Frame) -> Result(BitArray, Unfit) {
+  let value = frame_json(frame)
+  let bytes = bit_array.from_string(json.to_string(value))
+  let size = bit_array.byte_size(bytes)
+
+  // A frame of no more bytes than the value bound cannot hold more values
+  // than it, because each value begins with a byte of its own, so only a large
+  // frame pays for the count.
+  let values = case size > untrusted_wire.max_frame_values {
+    True -> json.count_values(value)
+    False -> 0
+  }
+
+  // The byte bound is checked first: the receiver's socket refuses such a
+  // frame before it is parsed.
+  case
+    size > untrusted_wire.max_frame_bytes,
+    values > untrusted_wire.max_frame_values
+  {
+    True, _ ->
+      Error(Unfit(
+        bytes:,
+        reason: "the frame is "
+          <> int.to_string(size)
+          <> " bytes, more than the "
+          <> int.to_string(untrusted_wire.max_frame_bytes)
+          <> " one frame holds",
+      ))
+    False, True ->
+      Error(Unfit(
+        bytes:,
+        reason: "the frame holds "
+          <> int.to_string(values)
+          <> " values, more than the "
+          <> int.to_string(untrusted_wire.max_frame_values)
+          <> " one frame may",
+      ))
+    False, False -> Ok(bytes)
+  }
+}
+
 /// Reads the header of a received frame and leaves its body undecoded.
 ///
 /// Every input is an `Error` rather than a crash: bytes that are not UTF-8,
@@ -230,12 +334,15 @@ pub fn decode_envelope(bytes: BitArray) -> Result(Envelope, CorruptionReport) {
       corrupt("frame", "UTF-8 text", "bytes")
     }),
   )
-  use value <- result.try(json.parse(text))
+  use value <- result.try(json.parse_bounded(
+    text,
+    max_values: untrusted_wire.max_frame_values,
+  ))
   use fields <- result.try(object_of(value, "frame"))
   use name <- result.try(string_field(fields, "frame"))
 
   // The frame name decides which header fields follow it. A frame that is
-  // none of the eight is not one this protocol sends.
+  // none of the nine is not one this protocol sends.
   case name {
     "hello" -> versions_envelope(fields, HelloEnvelope)
     "welcome" -> versions_envelope(fields, WelcomeEnvelope)
@@ -245,6 +352,7 @@ pub fn decode_envelope(bytes: BitArray) -> Result(Envelope, CorruptionReport) {
     "callback" -> bound_envelope(fields, CallbackEnvelope)
     "answer" -> bound_envelope(fields, AnswerEnvelope)
     "oversized" -> oversized_envelope(fields)
+    "call_event" -> call_event_envelope(fields)
     other -> Error(unknown("frame", other))
   }
 }
@@ -270,6 +378,9 @@ pub fn encode_outcome_bytes(outcome: effects.ToolOutcome) -> BitArray {
 
 /// Reads the bytes `encode_outcome_bytes` wrote, totally. The orchestrator calls
 /// it only after the bytes' size and SHA-256 matched what the executor declared.
+/// The bytes are parsed under `untrusted_wire.max_frame_values`, as a frame is:
+/// an outcome may be three frames long, and its bytes must not describe more
+/// values than one frame may hold.
 ///
 /// ## Examples
 ///
@@ -285,7 +396,10 @@ pub fn decode_outcome_bytes(
       corrupt("outcome", "UTF-8 text", "bytes")
     }),
   )
-  use value <- result.try(json.parse(text))
+  use value <- result.try(json.parse_bounded(
+    text,
+    max_values: untrusted_wire.max_frame_values,
+  ))
   decode_outcome(value)
 }
 
@@ -359,6 +473,7 @@ pub fn decode_request(
       untrusted_wire.OutcomePieceRequest(key:, offset:)
     }
     "start_execution" -> decode_start_execution_request(fields)
+    "clear_call" -> decode_clear_call_request(fields)
     "stop_execution" -> {
       use key <- result.try(nested(fields, "key", decode_key))
       use incarnation <- result.map(int_field(fields, "incarnation"))
@@ -443,6 +558,9 @@ pub fn decode_response(
     untrusted_wire.ExecutionKind ->
       nested(fields, "answer", decode_execution_answer)
       |> result.map(untrusted_wire.ExecutionAnswered)
+    untrusted_wire.ClearedKind ->
+      decode_answer_field(fields, decode_nil, decode_broker_refusal)
+      |> result.map(untrusted_wire.ClearedAnswered)
   }
 }
 
@@ -602,6 +720,39 @@ pub fn decode_answer(
   }
 }
 
+/// Decodes the event of a `call_event` frame. The event needs no expected kind:
+/// what it may be does not depend on the request it names, and whether that
+/// request is one the receiver holds is the receiver's check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let event = untrusted_wire.TunnelOutput(framing.Stdout, <<"hi">>)
+/// let frame = untrusted_wire.CallEvent(call: 4, event:)
+/// let assert Ok(untrusted_codec.CallEventEnvelope(body:, ..)) =
+///   untrusted_codec.decode_envelope(untrusted_codec.encode_frame(frame))
+/// assert untrusted_codec.decode_call_event(body) == Ok(event)
+/// ```
+pub fn decode_call_event(
+  body: JsonValue,
+) -> Result(untrusted_wire.TunnelEvent, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(body, "call event"))
+
+  // A call reports output while it runs and one settlement at its end.
+  case kind {
+    "output" -> {
+      use stream <- result.try(nested(fields, "stream", decode_output_stream))
+      use data <- result.map(field_as(fields, "data", bytes_of))
+      untrusted_wire.TunnelOutput(stream:, data:)
+    }
+    "settled" -> {
+      use outcome <- result.map(nested(fields, "outcome", decode_call_outcome))
+      untrusted_wire.TunnelSettled(outcome:)
+    }
+    other -> Error(unknown("call event", other))
+  }
+}
+
 /// Decodes a whole frame when the reply kinds are known: `response` says which
 /// reply the request with an id expects, and `answer` says which answer the
 /// callback with a binding and id expects. A response or answer for which the
@@ -647,6 +798,9 @@ pub fn decode_frame(
       answer_frame(binding, id, body, answer(binding, id))
     OversizedEnvelope(id:, size:, digest:) ->
       Ok(untrusted_wire.Oversized(id:, size:, digest:))
+    CallEventEnvelope(call:, body:) ->
+      decode_call_event(body)
+      |> result.map(fn(event) { untrusted_wire.CallEvent(call:, event:) })
   }
 }
 
@@ -715,6 +869,13 @@ fn oversized_envelope(fields: Fields) -> Result(Envelope, CorruptionReport) {
   use size <- result.try(nat_field(fields, "size"))
   use digest <- result.map(field_as(fields, "digest", digest_of))
   OversizedEnvelope(id:, size:, digest:)
+}
+
+/// Reads the request id and the event of a `call_event`.
+fn call_event_envelope(fields: Fields) -> Result(Envelope, CorruptionReport) {
+  use call <- result.try(id_field(fields, "call"))
+  use body <- result.map(field(fields, "event"))
+  CallEventEnvelope(call:, body:)
 }
 
 /// Decodes a response body against the kind its id expects.
@@ -794,6 +955,11 @@ fn frame_json(frame: untrusted_wire.Frame) -> JsonValue {
         #("id", json.Int(id)),
         #("size", json.Int(size)),
         #("digest", json.String(digest)),
+      ])
+    untrusted_wire.CallEvent(call:, event:) ->
+      frame_object("call_event", [
+        #("call", json.Int(call)),
+        #("event", encode_tunnel_event(event)),
       ])
   }
 }
@@ -913,6 +1079,12 @@ fn encode_request(request: untrusted_wire.Request) -> JsonValue {
         #("key", encode_key(key)),
         #("incarnation", json.Int(incarnation)),
       ])
+    untrusted_wire.ClearCallRequest(binding:, spec:, waiting_ms:) ->
+      tagged("clear_call", [
+        #("binding", encode_bytes(binding)),
+        #("spec", encode_tunnel_spec(spec)),
+        #("waiting_ms", json.Int(waiting_ms)),
+      ])
   }
 }
 
@@ -1006,6 +1178,16 @@ fn decode_start_execution_request(
   )
 }
 
+/// Reads a `clear_call` request.
+fn decode_clear_call_request(
+  fields: Fields,
+) -> Result(untrusted_wire.Request, CorruptionReport) {
+  use binding <- result.try(field_as(fields, "binding", binding_of))
+  use spec <- result.try(nested(fields, "spec", decode_tunnel_spec))
+  use waiting_ms <- result.map(field_as(fields, "waiting_ms", millis_of))
+  untrusted_wire.ClearCallRequest(binding:, spec:, waiting_ms:)
+}
+
 /// The JSON of what a background program's launch captured.
 fn encode_terms(terms: owner_services.ExecutionTerms) -> JsonValue {
   json.Object([
@@ -1076,6 +1258,7 @@ fn response_tag(kind: untrusted_wire.ResponseKind) -> String {
     untrusted_wire.BlobPutKind -> "blob_put"
     untrusted_wire.OutcomePieceKind -> "outcome_piece"
     untrusted_wire.ExecutionKind -> "execution"
+    untrusted_wire.ClearedKind -> "cleared"
   }
 }
 
@@ -1144,6 +1327,10 @@ fn encode_response(response: untrusted_wire.Response) -> JsonValue {
     untrusted_wire.ExecutionAnswered(answer:) ->
       tagged(response_tag(untrusted_wire.ExecutionKind), [
         #("answer", encode_execution_answer(answer)),
+      ])
+    untrusted_wire.ClearedAnswered(answer:) ->
+      tagged(response_tag(untrusted_wire.ClearedKind), [
+        #("answer", encode_result(answer, encode_nil, encode_broker_refusal)),
       ])
   }
 }
@@ -3382,6 +3569,814 @@ fn decode_git_identity(
   protocol.GitIdentity(name:, email:)
 }
 
+// --- the broker tunnel (protocol-change/117) -------------------------------------
+
+// The most entries a tunnelled call's `argv` may carry, and the most pairs its
+// `env` may. Every caller the tunnel serves sends a handful; the bounds keep a
+// hostile spec from becoming a list the orchestrator or the executor walks.
+const max_call_argv = 4096
+
+const max_call_env = 1024
+
+// The longest wait or deadline in milliseconds a tunnelled call may name,
+// 2^53, the largest integer a JSON reader on any platform holds exactly.
+const max_call_ms = 9_007_199_254_740_992
+
+/// The JSON of a tunnelled call's spec.
+fn encode_tunnel_spec(spec: untrusted_wire.TunnelSpec) -> JsonValue {
+  json.Object([
+    #("op_id", json.String(ids.op_id_to_string(spec.op_id))),
+    #("step_id", json.String(spec.step_id)),
+    #("base_policy", encode_sandbox_policy(spec.base_policy)),
+    #("requirements", encode_sandbox_policy(spec.requirements)),
+    #("response", encode_narrowing(spec.response)),
+    #("argv", encode_list(spec.argv, json.String)),
+    #("env", encode_pairs(spec.env)),
+    #("cwd", json.String(spec.cwd)),
+    #(
+      "budget",
+      json.Object([
+        #("max_outstanding", json.Int(spec.budget.max_outstanding)),
+        #("deadline_ms", json.Int(spec.budget.deadline_ms)),
+      ]),
+    ),
+  ])
+}
+
+/// Reads a tunnelled call's spec. A spec that names `grants` or `demand` is
+/// refused: neither is the orchestrator's to send, and reading the rest while
+/// ignoring them would let a sender believe it had sent one.
+fn decode_tunnel_spec(
+  value: JsonValue,
+) -> Result(untrusted_wire.TunnelSpec, CorruptionReport) {
+  use fields <- result.try(object_of(value, "call spec"))
+  use Nil <- result.try(absent(fields, "grants"))
+  use Nil <- result.try(absent(fields, "demand"))
+  use op_id <- result.try(field_as(fields, "op_id", op_id_of))
+  use step_id <- result.try(string_field(fields, "step_id"))
+  use base_policy <- result.try(field_as(fields, "base_policy", policy_of))
+  use requirements <- result.try(field_as(fields, "requirements", policy_of))
+  use response <- result.try(nested(fields, "response", decode_narrowing))
+
+  // The two lists are counted before any item is read.
+  use argv <- result.try(
+    field_as(fields, "argv", fn(value, on) {
+      bounded_list_of(value, on, max_call_argv, string_reader)
+    }),
+  )
+  use env <- result.try(
+    field_as(fields, "env", fn(value, on) {
+      bounded_list_of(value, on, max_call_env, decode_pair)
+    }),
+  )
+  use cwd <- result.try(string_field(fields, "cwd"))
+  use budget <- result.map(nested(fields, "budget", decode_budget))
+  untrusted_wire.TunnelSpec(
+    op_id:,
+    step_id:,
+    base_policy:,
+    requirements:,
+    response:,
+    argv:,
+    env:,
+    cwd:,
+    budget:,
+  )
+}
+
+/// Reads a call's pooled budget. Its cap is positive, as the broker's ledger
+/// requires, and its deadline is a wall instant of at most 2^53 milliseconds.
+fn decode_budget(value: JsonValue) -> Result(budget.Budget, CorruptionReport) {
+  use fields <- result.try(object_of(value, "budget"))
+  use max_outstanding <- result.try(id_field(fields, "max_outstanding"))
+  use deadline_ms <- result.map(field_as(fields, "deadline_ms", millis_of))
+  budget.Budget(max_outstanding:, deadline_ms:)
+}
+
+/// The JSON of what the broker does when composition narrows a call.
+fn encode_narrowing(response: broker.NarrowingResponse) -> JsonValue {
+  json.String(case response {
+    broker.RefuseNarrowed -> "refuse_narrowed"
+    broker.ProceedNarrowed -> "proceed_narrowed"
+  })
+}
+
+/// Reads what the broker does when composition narrows a call.
+fn decode_narrowing(
+  value: JsonValue,
+) -> Result(broker.NarrowingResponse, CorruptionReport) {
+  enum_of(value, "response", [
+    #("refuse_narrowed", broker.RefuseNarrowed),
+    #("proceed_narrowed", broker.ProceedNarrowed),
+  ])
+}
+
+/// The JSON of one event of a tunnelled call.
+fn encode_tunnel_event(event: untrusted_wire.TunnelEvent) -> JsonValue {
+  case event {
+    untrusted_wire.TunnelOutput(stream:, data:) ->
+      tagged("output", [
+        #("stream", encode_output_stream(stream)),
+        #("data", encode_bytes(data)),
+      ])
+    untrusted_wire.TunnelSettled(outcome:) ->
+      tagged("settled", [#("outcome", encode_call_outcome(outcome))])
+  }
+}
+
+/// The JSON of how a cleared call ended.
+fn encode_call_outcome(outcome: broker.CallOutcome) -> JsonValue {
+  case outcome {
+    broker.CallExited(result:) ->
+      tagged("exited", [#("result", encode_exec_result(result))])
+    broker.CallFailed(failure:) ->
+      tagged("failed", [#("failure", encode_exec_failure(failure))])
+  }
+}
+
+/// Reads how a cleared call ended.
+fn decode_call_outcome(
+  value: JsonValue,
+) -> Result(broker.CallOutcome, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "call outcome"))
+
+  // A call either exited under its enforcement or settled as a failure.
+  case kind {
+    "exited" -> {
+      use result <- result.map(nested(fields, "result", decode_exec_result))
+      broker.CallExited(result:)
+    }
+    "failed" -> {
+      use failure <- result.map(nested(fields, "failure", decode_exec_failure))
+      broker.CallFailed(failure:)
+    }
+    other -> Error(unknown("call outcome", other))
+  }
+}
+
+/// The JSON of a completed execution, every field of the helper's report.
+fn encode_exec_result(result: exec.ExecResult) -> JsonValue {
+  json.Object([
+    #("code", json.Int(result.code)),
+    #("signal", json.Int(result.signal)),
+    #("stdout_bytes", json.Int(result.stdout_bytes)),
+    #("stderr_bytes", json.Int(result.stderr_bytes)),
+    #("stdout_truncated", json.Bool(result.stdout_truncated)),
+    #("stderr_truncated", json.Bool(result.stderr_truncated)),
+    #("enforcement", encode_list(result.enforcement, json.String)),
+    #("degraded", json.Bool(result.degraded)),
+    #("wall_ms", json.Int(result.wall_ms)),
+    #("timed_out", json.Bool(result.timed_out)),
+    #("cancelled", json.Bool(result.cancelled)),
+  ])
+}
+
+/// Reads a completed execution. The exit code and the signal are any 64-bit
+/// integers, as the helper reports them; the byte counts and the wall time are
+/// not negative.
+fn decode_exec_result(
+  value: JsonValue,
+) -> Result(exec.ExecResult, CorruptionReport) {
+  use fields <- result.try(object_of(value, "exec result"))
+  use code <- result.try(int_field(fields, "code"))
+  use signal <- result.try(int_field(fields, "signal"))
+  use stdout_bytes <- result.try(nat_field(fields, "stdout_bytes"))
+  use stderr_bytes <- result.try(nat_field(fields, "stderr_bytes"))
+  use stdout_truncated <- result.try(field_as(
+    fields,
+    "stdout_truncated",
+    bool_of,
+  ))
+  use stderr_truncated <- result.try(field_as(
+    fields,
+    "stderr_truncated",
+    bool_of,
+  ))
+
+  // The rest of the report says what was enforced and how the run ended.
+  use enforcement <- result.try(list_field(fields, "enforcement", string_reader))
+  use degraded <- result.try(field_as(fields, "degraded", bool_of))
+  use wall_ms <- result.try(nat_field(fields, "wall_ms"))
+  use timed_out <- result.try(field_as(fields, "timed_out", bool_of))
+  use cancelled <- result.map(field_as(fields, "cancelled", bool_of))
+  exec.ExecResult(
+    code:,
+    signal:,
+    stdout_bytes:,
+    stderr_bytes:,
+    stdout_truncated:,
+    stderr_truncated:,
+    enforcement:,
+    degraded:,
+    wall_ms:,
+    timed_out:,
+    cancelled:,
+  )
+}
+
+/// The JSON of an execution that settled as a failure.
+fn encode_exec_failure(failure: exec.ExecFailure) -> JsonValue {
+  case failure {
+    exec.NotReady -> tagged("not_ready", [])
+    exec.HandshakeTimeout -> tagged("handshake_timeout", [])
+    exec.HelperBusy -> tagged("helper_busy", [])
+    exec.DegradedHelper(features:) ->
+      tagged("degraded_helper", [
+        #("features", encode_list(features, json.String)),
+      ])
+    exec.DegradedExecution(result:) ->
+      tagged("degraded_execution", [#("result", encode_exec_result(result))])
+    exec.RefusedByHelper(code:, message:) ->
+      tagged("refused_by_helper", [
+        #("code", json.String(code)),
+        #("message", json.String(message)),
+      ])
+    exec.ChannelFault(fault:) ->
+      tagged("channel_fault", [#("fault", encode_fault(fault))])
+    exec.ChannelClosed(status:) ->
+      tagged("channel_closed", [#("status", json.Int(status))])
+    exec.ProtocolViolation(kind:) ->
+      tagged("protocol_violation", [#("violation", json.String(kind))])
+    exec.ProtocolVersionMismatch(helper:, broker:) ->
+      tagged("protocol_version_mismatch", [
+        #("helper", json.Int(helper)),
+        #("broker", json.Int(broker)),
+      ])
+    exec.SendFailed -> tagged("send_failed", [])
+    exec.CancelEscalated -> tagged("cancel_escalated", [])
+    exec.HeartbeatMissed -> tagged("heartbeat_missed", [])
+    exec.HelperUnresponsive -> tagged("helper_unresponsive", [])
+    exec.ExecutionLost(cause:) ->
+      tagged("execution_lost", [#("cause", encode_loss_cause(cause))])
+  }
+}
+
+/// Reads an execution that settled as a failure. The failure a helper's
+/// handshake reports nests inside a spawn error, and the spawn error inside a
+/// refusal that holds this, but no `ExecFailure` holds a spawn error, so the
+/// type itself bounds how deep this decoder can recurse.
+fn decode_exec_failure(
+  value: JsonValue,
+) -> Result(exec.ExecFailure, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "exec failure"))
+
+  // The kind names the failure; the seven that carry nothing are told apart by
+  // the kind alone.
+  case kind {
+    "not_ready" -> Ok(exec.NotReady)
+    "handshake_timeout" -> Ok(exec.HandshakeTimeout)
+    "helper_busy" -> Ok(exec.HelperBusy)
+    "degraded_helper" -> {
+      use features <- result.map(list_field(fields, "features", string_reader))
+      exec.DegradedHelper(features:)
+    }
+    "degraded_execution" -> {
+      use result <- result.map(nested(fields, "result", decode_exec_result))
+      exec.DegradedExecution(result:)
+    }
+    "refused_by_helper" -> {
+      use code <- result.try(string_field(fields, "code"))
+      use message <- result.map(string_field(fields, "message"))
+      exec.RefusedByHelper(code:, message:)
+    }
+    "channel_fault" -> {
+      use fault <- result.map(nested(fields, "fault", decode_fault))
+      exec.ChannelFault(fault:)
+    }
+    "channel_closed" -> {
+      use status <- result.map(int_field(fields, "status"))
+      exec.ChannelClosed(status:)
+    }
+    "protocol_violation" -> {
+      use violation <- result.map(string_field(fields, "violation"))
+      exec.ProtocolViolation(kind: violation)
+    }
+    "protocol_version_mismatch" -> {
+      use helper <- result.try(int_field(fields, "helper"))
+      use broker <- result.map(int_field(fields, "broker"))
+      exec.ProtocolVersionMismatch(helper:, broker:)
+    }
+    "send_failed" -> Ok(exec.SendFailed)
+    "cancel_escalated" -> Ok(exec.CancelEscalated)
+    "heartbeat_missed" -> Ok(exec.HeartbeatMissed)
+    "helper_unresponsive" -> Ok(exec.HelperUnresponsive)
+    "execution_lost" -> {
+      use cause <- result.map(nested(fields, "cause", decode_loss_cause))
+      exec.ExecutionLost(cause:)
+    }
+    other -> Error(unknown("exec failure", other))
+  }
+}
+
+/// The JSON of which machinery a lost execution lost.
+fn encode_loss_cause(cause: exec.LossCause) -> JsonValue {
+  json.String(case cause {
+    exec.HelperActorDown -> "helper_actor_down"
+    exec.RelayDown -> "relay_down"
+    exec.ExecutorClosing -> "executor_closing"
+  })
+}
+
+/// Reads which machinery a lost execution lost.
+fn decode_loss_cause(
+  value: JsonValue,
+) -> Result(exec.LossCause, CorruptionReport) {
+  enum_of(value, "cause", [
+    #("helper_actor_down", exec.HelperActorDown),
+    #("relay_down", exec.RelayDown),
+    #("executor_closing", exec.ExecutorClosing),
+  ])
+}
+
+/// The JSON of how a helper's byte stream broke its framing.
+fn encode_fault(fault: framing.Fault) -> JsonValue {
+  case fault {
+    framing.CorruptFrame(report:) ->
+      tagged("corrupt_frame", [
+        #("boundary", json.String(report.boundary)),
+        #("subject", json.String(report.subject)),
+        #("expected", json.String(report.expected)),
+        #("context", json.String(report.context)),
+      ])
+    framing.VersionMismatch(version:) ->
+      tagged("version_mismatch", [#("version", json.Int(version))])
+    framing.OversizedFrame(declared_bytes:) ->
+      tagged("oversized_frame", [#("declared_bytes", json.Int(declared_bytes))])
+  }
+}
+
+/// Reads how a helper's byte stream broke its framing. A report's context is
+/// cut again to the length `corruption.report` keeps, as any report built
+/// here is.
+fn decode_fault(value: JsonValue) -> Result(framing.Fault, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "fault"))
+
+  // A fault is a frame that did not parse, the wrong version, or a length
+  // prefix past the limit.
+  case kind {
+    "corrupt_frame" -> {
+      use at <- result.try(string_field(fields, "boundary"))
+      use on <- result.try(string_field(fields, "subject"))
+      use expected <- result.try(string_field(fields, "expected"))
+      use context <- result.map(string_field(fields, "context"))
+      framing.CorruptFrame(report: corruption.report(
+        at:,
+        on:,
+        expected:,
+        context:,
+      ))
+    }
+    "version_mismatch" -> {
+      use version <- result.map(int_field(fields, "version"))
+      framing.VersionMismatch(version:)
+    }
+    "oversized_frame" -> {
+      use declared_bytes <- result.map(int_field(fields, "declared_bytes"))
+      framing.OversizedFrame(declared_bytes:)
+    }
+    other -> Error(unknown("fault", other))
+  }
+}
+
+/// The JSON of the broker's refusal of a call.
+fn encode_broker_refusal(refusal: broker.Refusal) -> JsonValue {
+  case refusal {
+    broker.PolicyRefused(denial:) ->
+      tagged("policy_refused", [
+        #(
+          "denial",
+          grant_codec.encode_denial(
+            reason: denial.reason,
+            source: denial.source,
+            wanted: denial.wanted,
+          ),
+        ),
+      ])
+    broker.InvalidPolicy(error:) ->
+      tagged("invalid_policy", [#("error", encode_policy_error(error))])
+    broker.BudgetRefused(refusal:) ->
+      tagged("budget_refused", [#("refusal", encode_budget_refusal(refusal))])
+    broker.MintRefused(error:) ->
+      tagged("mint_refused", [#("error", encode_mint_error(error))])
+    broker.NoHelper(error:) ->
+      tagged("no_helper", [#("error", encode_checkout_error(error))])
+    broker.OperationAborted -> tagged("operation_aborted", [])
+    broker.BrokerUnavailable -> tagged("broker_unavailable", [])
+  }
+}
+
+/// Reads the broker's refusal of a call. A policy refusal's denial is read
+/// through `client/grants`, as an escalation's is.
+fn decode_broker_refusal(
+  value: JsonValue,
+) -> Result(broker.Refusal, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "broker refusal"))
+
+  // The kind names the refusal; two carry nothing.
+  case kind {
+    "policy_refused" -> {
+      use denial <- result.map(nested(fields, "denial", decode_denial))
+      broker.PolicyRefused(denial:)
+    }
+    "invalid_policy" -> {
+      use error <- result.map(nested(fields, "error", decode_policy_error))
+      broker.InvalidPolicy(error:)
+    }
+    "budget_refused" -> {
+      use refusal <- result.map(nested(fields, "refusal", decode_budget_refusal))
+      broker.BudgetRefused(refusal:)
+    }
+    "mint_refused" -> {
+      use error <- result.map(nested(fields, "error", decode_mint_error))
+      broker.MintRefused(error:)
+    }
+    "no_helper" -> {
+      use error <- result.map(nested(fields, "error", decode_checkout_error))
+      broker.NoHelper(error:)
+    }
+    "operation_aborted" -> Ok(broker.OperationAborted)
+    "broker_unavailable" -> Ok(broker.BrokerUnavailable)
+    other -> Error(unknown("broker refusal", other))
+  }
+}
+
+/// The JSON of why a composed policy is invalid.
+fn encode_policy_error(error: sandbox_policy.PolicyError) -> JsonValue {
+  case error {
+    sandbox_policy.RelativePath(path:) ->
+      tagged("relative_path", [#("path", json.String(path))])
+    sandbox_policy.NegativeLimit(field:, value:) ->
+      tagged("negative_limit", [
+        #("field", json.String(sandbox_policy.limit_field_name(field))),
+        #("value", json.Int(value)),
+      ])
+    sandbox_policy.ScratchIsRoot -> tagged("scratch_is_root", [])
+    sandbox_policy.MountOverlapsProtected(mount:, protected:) ->
+      tagged("mount_overlaps_protected", [
+        #("mount", json.String(mount)),
+        #("protected", json.String(protected)),
+      ])
+    sandbox_policy.DuplicateMount(path:) ->
+      tagged("duplicate_mount", [#("path", json.String(path))])
+    sandbox_policy.MountPathTrailingSlash(path:) ->
+      tagged("mount_path_trailing_slash", [#("path", json.String(path))])
+    sandbox_policy.MountPathParentSegment(path:) ->
+      tagged("mount_path_parent_segment", [#("path", json.String(path))])
+    sandbox_policy.MountShadowsWritableRoot(mount:, writable_root:) ->
+      tagged("mount_shadows_writable_root", [
+        #("mount", json.String(mount)),
+        #("writable_root", json.String(writable_root)),
+      ])
+  }
+}
+
+/// Reads why a composed policy is invalid.
+fn decode_policy_error(
+  value: JsonValue,
+) -> Result(sandbox_policy.PolicyError, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "policy error"))
+
+  // Each kind is one of the policy's structural refusals.
+  case kind {
+    "relative_path" -> {
+      use path <- result.map(string_field(fields, "path"))
+      sandbox_policy.RelativePath(path:)
+    }
+    "negative_limit" -> {
+      use field <- result.try(nested(fields, "field", decode_limit_field))
+      use value <- result.map(int_field(fields, "value"))
+      sandbox_policy.NegativeLimit(field:, value:)
+    }
+    "scratch_is_root" -> Ok(sandbox_policy.ScratchIsRoot)
+    "mount_overlaps_protected" -> {
+      use mount <- result.try(string_field(fields, "mount"))
+      use protected <- result.map(string_field(fields, "protected"))
+      sandbox_policy.MountOverlapsProtected(mount:, protected:)
+    }
+    "duplicate_mount" -> {
+      use path <- result.map(string_field(fields, "path"))
+      sandbox_policy.DuplicateMount(path:)
+    }
+    "mount_path_trailing_slash" -> {
+      use path <- result.map(string_field(fields, "path"))
+      sandbox_policy.MountPathTrailingSlash(path:)
+    }
+    "mount_path_parent_segment" -> {
+      use path <- result.map(string_field(fields, "path"))
+      sandbox_policy.MountPathParentSegment(path:)
+    }
+    "mount_shadows_writable_root" -> {
+      use mount <- result.try(string_field(fields, "mount"))
+      use writable_root <- result.map(string_field(fields, "writable_root"))
+      sandbox_policy.MountShadowsWritableRoot(mount:, writable_root:)
+    }
+    other -> Error(unknown("policy error", other))
+  }
+}
+
+/// Reads a limit field by the name the policy file gives it.
+fn decode_limit_field(
+  value: JsonValue,
+) -> Result(sandbox_policy.LimitField, CorruptionReport) {
+  enum_of(
+    value,
+    "field",
+    list.map(
+      [
+        sandbox_policy.CpuSeconds,
+        sandbox_policy.WallSeconds,
+        sandbox_policy.MemBytes,
+        sandbox_policy.Pids,
+        sandbox_policy.FsizeBytes,
+        sandbox_policy.OutputBytes,
+      ],
+      fn(field) { #(sandbox_policy.limit_field_name(field), field) },
+    ),
+  )
+}
+
+/// The JSON of the pooled budget's refusal.
+fn encode_budget_refusal(refusal: budget.Refusal) -> JsonValue {
+  case refusal {
+    budget.OutstandingCapReached(cap:) ->
+      tagged("outstanding_cap_reached", [#("cap", json.Int(cap))])
+    budget.DeadlinePassed(deadline_ms:) ->
+      tagged("deadline_passed", [#("deadline_ms", json.Int(deadline_ms))])
+  }
+}
+
+/// Reads the pooled budget's refusal.
+fn decode_budget_refusal(
+  value: JsonValue,
+) -> Result(budget.Refusal, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "budget refusal"))
+
+  // A reservation fails on its cap or on its deadline.
+  case kind {
+    "outstanding_cap_reached" -> {
+      use cap <- result.map(int_field(fields, "cap"))
+      budget.OutstandingCapReached(cap:)
+    }
+    "deadline_passed" -> {
+      use deadline_ms <- result.map(int_field(fields, "deadline_ms"))
+      budget.DeadlinePassed(deadline_ms:)
+    }
+    other -> Error(unknown("budget refusal", other))
+  }
+}
+
+/// The JSON of why a capability token could not be minted.
+fn encode_mint_error(error: token.MintError) -> JsonValue {
+  case error {
+    token.EntropyFailure(got_bytes:) ->
+      tagged("entropy_failure", [#("got_bytes", json.Int(got_bytes))])
+    token.DuplicateToken -> tagged("duplicate_token", [])
+  }
+}
+
+/// Reads why a capability token could not be minted.
+fn decode_mint_error(
+  value: JsonValue,
+) -> Result(token.MintError, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "mint error"))
+
+  // The entropy source either answered short or repeated itself.
+  case kind {
+    "entropy_failure" -> {
+      use got_bytes <- result.map(int_field(fields, "got_bytes"))
+      token.EntropyFailure(got_bytes:)
+    }
+    "duplicate_token" -> Ok(token.DuplicateToken)
+    other -> Error(unknown("mint error", other))
+  }
+}
+
+/// The JSON of why no helper could be borrowed.
+fn encode_checkout_error(error: exec.CheckoutError) -> JsonValue {
+  case error {
+    exec.AllBusy(size:) -> tagged("all_busy", [#("size", json.Int(size))])
+    exec.SpawnFailed(error:) ->
+      tagged("spawn_failed", [#("error", encode_spawn_error(error))])
+    exec.PoolUnavailable -> tagged("pool_unavailable", [])
+  }
+}
+
+/// Reads why no helper could be borrowed.
+fn decode_checkout_error(
+  value: JsonValue,
+) -> Result(exec.CheckoutError, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "checkout error"))
+
+  // A pool is full, could not spawn, or did not answer.
+  case kind {
+    "all_busy" -> {
+      use size <- result.map(nat_field(fields, "size"))
+      exec.AllBusy(size:)
+    }
+    "spawn_failed" -> {
+      use error <- result.map(nested(fields, "error", decode_spawn_error))
+      exec.SpawnFailed(error:)
+    }
+    "pool_unavailable" -> Ok(exec.PoolUnavailable)
+    other -> Error(unknown("checkout error", other))
+  }
+}
+
+/// The JSON of why a fresh helper could not be spawned.
+fn encode_spawn_error(error: exec.SpawnError) -> JsonValue {
+  case error {
+    exec.PolicyUnencodable(error:) ->
+      tagged("policy_unencodable", [#("error", encode_msgpack_error(error))])
+    exec.PolicyFileFailed -> tagged("policy_file_failed", [])
+    exec.PortOpenFailed -> tagged("port_open_failed", [])
+    exec.ActorFailed(error:) ->
+      tagged("actor_failed", [#("error", encode_start_error(error))])
+    exec.HandshakeFailed(failure:) ->
+      tagged("handshake_failed", [#("failure", encode_exec_failure(failure))])
+  }
+}
+
+/// Reads why a fresh helper could not be spawned.
+fn decode_spawn_error(
+  value: JsonValue,
+) -> Result(exec.SpawnError, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "spawn error"))
+
+  // The spawn failed at its policy, its port, its actor or its handshake.
+  case kind {
+    "policy_unencodable" -> {
+      use error <- result.map(nested(fields, "error", decode_msgpack_error))
+      exec.PolicyUnencodable(error:)
+    }
+    "policy_file_failed" -> Ok(exec.PolicyFileFailed)
+    "port_open_failed" -> Ok(exec.PortOpenFailed)
+    "actor_failed" -> {
+      use error <- result.map(nested(fields, "error", decode_start_error))
+      exec.ActorFailed(error:)
+    }
+    "handshake_failed" -> {
+      use failure <- result.map(nested(fields, "failure", decode_exec_failure))
+      exec.HandshakeFailed(failure:)
+    }
+    other -> Error(unknown("spawn error", other))
+  }
+}
+
+/// The JSON of why msgpack could not encode a policy. The integer that did
+/// not fit is outside 64 bits by definition, so it is written as it is.
+fn encode_msgpack_error(error: msgpack.EncodeError) -> JsonValue {
+  case error {
+    msgpack.IntegerOutOfRange(value:) ->
+      tagged("integer_out_of_range", [#("value", json.Int(value))])
+    msgpack.UnencodableLength(length:) ->
+      tagged("unencodable_length", [#("length", json.Int(length))])
+  }
+}
+
+/// Reads why msgpack could not encode a policy. The out-of-range integer is
+/// the one integer on this wire not held to 64 bits, because it is the value
+/// msgpack refused for being wider; `wide_int_of` bounds its magnitude.
+fn decode_msgpack_error(
+  value: JsonValue,
+) -> Result(msgpack.EncodeError, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "msgpack error"))
+
+  // An integer too wide, or a length too long.
+  case kind {
+    "integer_out_of_range" -> {
+      use number <- result.map(field_as(fields, "value", wide_int_of))
+      msgpack.IntegerOutOfRange(value: number)
+    }
+    "unencodable_length" -> {
+      use length <- result.map(int_field(fields, "length"))
+      msgpack.UnencodableLength(length:)
+    }
+    other -> Error(unknown("msgpack error", other))
+  }
+}
+
+/// The JSON of why a helper's actor did not start. An initialiser that exited
+/// abnormally carries a term, which is written as its printed form under
+/// `init_failed`, the one lossy value of the tunnel (see the module doc).
+fn encode_start_error(error: actor.StartError) -> JsonValue {
+  case error {
+    actor.InitTimeout -> tagged("init_timeout", [])
+    actor.InitFailed(reason) ->
+      tagged("init_failed", [#("reason", json.String(reason))])
+    actor.InitExited(process.Normal) -> tagged("init_exited_normal", [])
+    actor.InitExited(process.Killed) -> tagged("init_exited_killed", [])
+    actor.InitExited(process.Abnormal(reason:)) ->
+      tagged("init_failed", [
+        #("reason", json.String("exited: " <> string.inspect(reason))),
+      ])
+  }
+}
+
+/// Reads why a helper's actor did not start.
+fn decode_start_error(
+  value: JsonValue,
+) -> Result(actor.StartError, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "start error"))
+
+  // The initialiser timed out, failed with a reason, or exited.
+  case kind {
+    "init_timeout" -> Ok(actor.InitTimeout)
+    "init_failed" -> {
+      use reason <- result.map(string_field(fields, "reason"))
+      actor.InitFailed(reason)
+    }
+    "init_exited_normal" -> Ok(actor.InitExited(process.Normal))
+    "init_exited_killed" -> Ok(actor.InitExited(process.Killed))
+    other -> Error(unknown("start error", other))
+  }
+}
+
+/// Reads the sandbox policy at a field from the base64 of its msgpack bytes,
+/// naming that field in its report.
+fn policy_of(
+  value: JsonValue,
+  on: String,
+) -> Result(sandbox_policy.SandboxPolicy, CorruptionReport) {
+  use bytes <- result.try(bytes_of(value, on))
+  sandbox_policy.decode(bytes)
+}
+
+/// Reads a wait or a deadline in milliseconds, from 0 to 2^53.
+fn millis_of(value: JsonValue, on: String) -> Result(Int, CorruptionReport) {
+  use millis <- result.try(nat_of(value, on))
+
+  // A larger value is no real wait, and a reader on another platform could
+  // not hold it exactly.
+  case millis <= max_call_ms {
+    True -> Ok(millis)
+    False ->
+      Error(corrupt(
+        on,
+        "at most " <> int.to_string(max_call_ms) <> " milliseconds",
+        int.to_string(millis),
+      ))
+  }
+}
+
+/// Reads an array of at most `most` items, each with `decode`. The count is
+/// checked by walking at most `most` items before any is decoded.
+fn bounded_list_of(
+  value: JsonValue,
+  on: String,
+  most: Int,
+  decode: fn(JsonValue) -> Result(a, CorruptionReport),
+) -> Result(List(a), CorruptionReport) {
+  use items <- result.try(array_of(value, on))
+
+  // Dropping `most` items leaves nothing exactly when there were at most that
+  // many, and touches no more than `most` of a longer list.
+  case list.drop(items, most) {
+    [] -> list.try_map(items, decode)
+    [_, ..] ->
+      Error(corrupt(
+        on,
+        "at most " <> int.to_string(most) <> " entries",
+        "more than " <> int.to_string(most) <> " entries",
+      ))
+  }
+}
+
+/// Refuses an object that has a field named `name`.
+fn absent(fields: Fields, name: String) -> Result(Nil, CorruptionReport) {
+  case list.key_find(fields, name) {
+    Error(Nil) -> Ok(Nil)
+    Ok(_present) -> Error(corrupt(name, "no field named " <> name, "present"))
+  }
+}
+
+/// Reads an integer of any width up to `wide_int_limit`; only a value defined
+/// as too wide for 64 bits needs more than 64. Its magnitude is held to `wide_int_limit`, because the
+/// parser bounds the digits of a number only by the frame's size, and an
+/// integer of a million digits costs time to parse and again every time a
+/// report that holds it is printed.
+fn wide_int_of(value: JsonValue, on: String) -> Result(Int, CorruptionReport) {
+  case value {
+    json.Int(number) ->
+      case int.absolute_value(number) <= wide_int_limit() {
+        True -> Ok(number)
+        False ->
+          Error(corrupt(
+            on,
+            "an integer of at most 2^256 in magnitude",
+            describe(value),
+          ))
+      }
+    other -> Error(corrupt(on, "an integer", describe(other)))
+  }
+}
+
+/// The largest magnitude `wide_int_of` accepts, 2^256. Every value on the wire
+/// that is not held to 64 bits is a limit or a count an honest sender reads
+/// from a 64-bit field, so none comes near it.
+fn wide_int_limit() -> Int {
+  int.bitwise_shift_left(1, 256)
+}
+
 // --- shared shapes --------------------------------------------------------------
 
 /// An object whose `kind` names a constructor, followed by its fields.
@@ -3526,12 +4521,15 @@ fn decode_pairs(
   value: JsonValue,
 ) -> Result(List(#(String, String)), CorruptionReport) {
   use items <- result.try(array_of(value, "pairs"))
-  list.try_map(items, fn(item) {
-    use fields <- result.try(object_of(item, "pair"))
-    use name <- result.try(string_field(fields, "name"))
-    use text <- result.map(string_field(fields, "value"))
-    #(name, text)
-  })
+  list.try_map(items, decode_pair)
+}
+
+/// Reads one name and value pair.
+fn decode_pair(item: JsonValue) -> Result(#(String, String), CorruptionReport) {
+  use fields <- result.try(object_of(item, "pair"))
+  use name <- result.try(string_field(fields, "name"))
+  use text <- result.map(string_field(fields, "value"))
+  #(name, text)
 }
 
 /// The JSON of bytes: standard base64 with padding.

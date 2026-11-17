@@ -301,7 +301,7 @@ fn with_imported_hooks(
     hook_coordinates(settings, base_policy, entropy(), clock, environment)
   let runner =
     hookrunner.Context(
-      broker: plane.broker,
+      clear_call: plane.clear_call,
       base_policy: base_policy,
       op_id: coordinates.op_id,
       step_id: "imported-hooks",
@@ -4732,7 +4732,7 @@ fn assemble_in(
   let worktree_wiring =
     workspace_plane.worktree_wiring(
       plane.census,
-      broker_actor,
+      plane.clear_call,
       settings.demand,
       call_clock,
       entropy,
@@ -6945,10 +6945,9 @@ fn goal_check_wiring(
 
   goalcheck.wiring(
     goalcheck.Runner(
-      clear_call: tool.broker_runner(
-        broker: plane.broker,
-        waiting: workspace_plane.jobs_clearance_ms,
-      ),
+      clear_call: fn(spec, events) {
+        plane.clear_call(spec, events, workspace_plane.jobs_clearance_ms)
+      },
       base_policy: census.base_policy,
       demand: settings.demand,
       env: census.env,

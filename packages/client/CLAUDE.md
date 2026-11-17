@@ -43,7 +43,7 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
 `[executor_listener]` beside `[distribution]`.
 
 - `remote/untrusted_wire` is the frames (`Hello`, `Welcome`, `Request`, `Cancel`,
-  `Response`, `Callback`, `Answer`), 078's requests and owner messages without
+  `Response`, `Callback`, `Answer`, `Oversized`, `CallEvent`), 078's requests and owner messages without
   their subjects, and the reply kinds. `remote/untrusted_codec` is their total JSON
   codec: `decode_envelope` first, then the body against the kind the receiver
   expects. Its lossy encodings are listed in its module doc.
@@ -99,6 +99,31 @@ from the re-sent request's next `Oversized`, runs at most `max_fetches` (2) at
 once, and checks size and digest in `remote/outcome_fetch` before decoding.
 Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 (`RunLost`, `Unknown`), never a refusal that invites a re-run.
+
+Wire version 5 (protocol-change/117, slice 2: the wire, not yet the tunnel).
+`untrusted_wire` adds `ClearCallRequest(binding, spec, waiting_ms)`, whose
+`TunnelSpec` is a `broker.CallSpec` without `grants` and `demand`, its reply
+`ClearedAnswered(Result(Nil, broker.Refusal))` (`ClearedKind`), and the
+executor's frame `CallEvent(call, TunnelOutput(stream, data) |
+TunnelSettled(broker.CallOutcome))`. The codec carries every `ExecResult`
+field, every `ExecFailure` and every `broker.Refusal`; it refuses a spec with a
+`grants` or `demand` member, an `argv` over 4,096 entries, an `env` over 1,024
+pairs, and a `waiting_ms` or `deadline_ms` outside 0 to 2^53; an
+`actor.InitExited(Abnormal(_))` crosses as `InitFailed` with its printed reason.
+`untrusted_wire.max_frame_values` (1,048,576) bounds the JSON values of every
+frame (`decode_envelope`) and of a fetched outcome (`decode_outcome_bytes`)
+through `core/json.parse_bounded`, which refuses during the parse. Each side
+checks its own sends with `untrusted_codec.encode_fitting` (bytes and values;
+the value walk runs only for a frame over 1,048,576 bytes): the link refuses an
+unfit request `Invalid` and never keeps it, and an unfit owner answer with the
+callback's refused answer; the gateway's `replied` sends an unfit response as
+`Oversized`, so a fetched outcome over the value bound is answered lost and an
+honest executor never loops. Until the tunnel lands the gateway answers every
+`clear_call` with `ClearedAnswered(Error(BrokerUnavailable))` and the link
+treats any `CallEvent` as a violation. A `welcome` of other versions logs both
+wire and both protocol numbers (`untrusted_link.version_mismatch`); when the
+protocol versions agree the waiting requests are refused `Unreachable` with a
+text naming both wire versions, otherwise `VersionMismatch(supported: theirs)`.
 
 Reloading the rows (protocol-change/116). `daemon/untrusted_links` is a
 `weft/actor`, started by `prepare_startup` beside `project_book`, that holds the
@@ -3947,7 +3972,10 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   three adders (`scratch`, `jobs`, `lsp_manager`) because `serve` splices
   each into its services tree at its established position; each holds only
   its child specification. `WorkspacePlane` is `run(ToolRun, Authority)` (the
-  workspace half of `wiring.run_tool`), `broker`, `census`, a lazy
+  workspace half of `wiring.run_tool`), `broker` (for the code that holds a
+  broker actor for its own reasons: aborts, code mode, language servers,
+  teardown), `clear_call: ClearCall` (how the owner's non-tool work clears one
+  call: imported hooks, the goal check, the Git observations), `census`, a lazy
   `prompt_facts` (the workspace's guidance files as text and the helper's
   health, so a pinned prompt pays for neither), `resolve_directory`
   (`directories.resolve_addition` against the workspace's filesystem),
@@ -5074,8 +5102,10 @@ question each, and one composition point in `serve`:
   the `Source` it was read from; `notes` reports unsupported kinds and
   no-moment events at load time rather than loading them silently.
 - `client/hookrunner` — one imported command hook as one jailed
-  process through `broker.clear_call`, the worktree observation's own
-  pattern: `sh -c` shell form or `args` exec form, the event JSON on stdin
+  process through `Context.clear_call`, a `clear_call.ClearCall` (the same
+  seam `worktree_diff.Wiring.clear_call` uses; `WorkspacePlane.clear_call` is
+  its source, and `client/clear_call` defines the type because `workspace_plane`
+  imports `worktree_diff`): `sh -c` shell form or `args` exec form, the event JSON on stdin
   closed after, the handler's `timeout` seconds as the wall limit and
   the budget deadline, a timed-out run reporting `WallCancelled` with no
   output for the caller to read a decision out of. `Outcome.capture`
@@ -5514,6 +5544,10 @@ these forks because they define the same modules.
   copied. A write refusal aborts assembly; host code never follows a planted
   tool-home symlink to publish this file. Imported operator hooks keep their
   original HOME and ordinary global Git configuration.
+- **Repository observations clear through `worktree_diff.Wiring.clear_call`,
+  not a broker.** `git_identity` and the diff, baseline and peer observation
+  start Git by calling it and use the returned `RunningCall`'s `stdin` and
+  `cancel`; `workspace_plane.worktree_wiring` takes the plane's `clear_call`.
 - **Jailed Git calls use the host-resolved binary, never the Xcode shim.**
   `serve` fills `worktree_diff.Wiring.git` once per assembly from
   `host_git.program`, and both `git_identity` and `worktree_diff` name it in
@@ -9012,7 +9046,11 @@ the protocol-change/078 addendum on moving a session have the protocol.
   (`workspace.attach` over the stopped file with `owner_services.declining`), send
   `Hands.apply_state` (a fenced `StateApply`) and close the scope, which writes the clean
   close the later steps read. A rerun uses the cell's state while the store still holds
-  it, and a cell for another operation is ignored. `Refused(stage, reason)` is what
+  it, and a cell for another operation is ignored. Every write of that cell also
+  writes `client/moved_calls` (`client/move/interrupted`): the `ReplayNever` calls the
+  stopped file holds effect-pending. They ran in the directory, so the receiver's
+  `workspace.recover_by_placement` answers them `OutcomeUnknown` without asking an
+  executor whose fence would say they did not run. `Refused(stage, reason)` is what
   resending cannot change and abandons the move; `Unfinished` stalls it. The source's
   row is never rewritten: `relocated` gives the later steps a copy of the registration
   with the executor and workspace of `orchestrators.CheckoutTarget`, so the manifest

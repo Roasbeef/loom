@@ -31,6 +31,7 @@ import client/executors
 import client/internal/ffi_os
 import client/jobs
 import client/move_checkout
+import client/moved_calls
 import client/orchestrators.{CheckoutTarget}
 import client/remote/address.{type Address}
 import client/remote/host
@@ -54,6 +55,7 @@ import client/state_transfer.{type Link, Link}
 import client/workspaces
 import client/worktree_git
 import core/clock
+import core/ids
 import gleam/bit_array
 import gleam/erlang/atom
 import gleam/erlang/node
@@ -65,12 +67,14 @@ import gleam/otp/actor
 import gleam/string
 import host/bootstrap
 import provider/secret
+import runtime/effects
 import session/session
 import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
 import storage/exec_ledger
+import support/remote_fixtures as fixtures
 import support/remote_orchestrator as host_rig
 import support/state_rig
 import support/worktree_rig.{git, write}
@@ -626,6 +630,13 @@ fn assert_directory_untouched(rig: Rig) -> Nil {
 // The receiver opens the session on the executor, as the daemon would, and the
 // tree it finds there.
 fn attach_on_receiver(rig: Rig) -> workspace.Hands {
+  let #(arrived, opened) = open_on_receiver(rig)
+  let assert Ok(Nil) = session.close(opened)
+  arrived
+}
+
+// The receiver's open, with its store left open for what recovery reads.
+fn open_on_receiver(rig: Rig) -> #(workspace.Hands, session.Session) {
   let assert Ok(opened) =
     session.open_sqlite(
       path: target_file(rig),
@@ -660,8 +671,7 @@ fn attach_on_receiver(rig: Rig) -> workspace.Hands {
       logger: log.discard(),
     ))
     as "the receiver attaches to the executor"
-  let assert Ok(Nil) = session.close(opened)
-  arrived
+  #(arrived, opened)
 }
 
 // --- the happy path ----------------------------------------------------------------------
@@ -764,6 +774,47 @@ pub fn a_checkout_that_was_placed_leaves_a_clean_close_for_the_six_steps_test() 
   let assert Ok(cell) =
     scope.read_at(target_file(rig), "inspector", clock.fixed(at: 9000))
   assert cell == Some(scope.Scope(1, Some(protocol.AllRetired), Some("box")))
+  finish(rig)
+}
+
+// The move stopped a turn with a call in flight. The call ran in the source's
+// directory, and the executor the receiver attaches to never saw it, so its
+// ledger would fence the key and the model would be told the call did not run.
+// The receiver tells it the outcome is unknown instead, which is what the same
+// session would have been told had it restarted on the source.
+pub fn a_call_in_flight_when_the_move_stopped_the_turn_is_unknown_on_the_receiver_test() {
+  let rig = start("in-flight", InWorktrees, 0)
+  let in_flight = fixtures.tool_run("ran_in_the_directory", 0)
+  let assert Ok(source) =
+    session.open_sqlite(
+      path: source_file(rig),
+      owner: "runtime",
+      lease_ttl_ms: 30_000,
+      clock: clock.fixed(at: 2000),
+    )
+    as "the source session opens"
+  fixtures.hold_pending(source, in_flight)
+  let assert Ok(Nil) = session.close(source)
+
+  let move = begin(rig)
+  assert session_mover.drive(plain(rig), move) == Finished
+  let #(arrived, opened) = open_on_receiver(rig)
+
+  assert moved_calls.read(opened)
+    == Ok([
+      moved_calls.Call(
+        op: ids.op_id_to_string(in_flight.operation),
+        step: in_flight.step_id,
+        source_index: 0,
+      ),
+    ])
+  assert arrived.recover(in_flight) == effects.OutcomeUnknown
+
+  // An unlisted key is still asked of the executor, which answers it, so the
+  // unknown outcome above is the list's and not a refusal or a lost link.
+  assert arrived.recover(fixtures.tool_run("dispatched_here", 1))
+    == effects.NotStarted
+  let assert Ok(Nil) = session.close(opened)
   finish(rig)
 }
 

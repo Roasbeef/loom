@@ -1165,7 +1165,8 @@ fn ledger_ask(
     | untrusted_wire.BlobPutRequest(..)
     | untrusted_wire.OutcomePieceRequest(..)
     | untrusted_wire.StartExecutionRequest(..)
-    | untrusted_wire.StopExecutionRequest(..) ->
+    | untrusted_wire.StopExecutionRequest(..)
+    | untrusted_wire.ClearCallRequest(..) ->
       untrusted_wire.LookupAnswered(
         Error(protocol.Invalid("misrouted request")),
       )

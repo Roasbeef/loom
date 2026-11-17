@@ -11,6 +11,7 @@ import broker/exec
 import broker/executor
 import broker/policy
 import client/catalog
+import client/clear_call
 import client/host_git
 import client/serve
 import client/workspace_policy
@@ -106,7 +107,7 @@ pub fn serve_workspace(
     as "the fixture starts the production broker and pool"
   run(worktree_diff.Wiring(
     workspace:,
-    broker:,
+    clear_call: clear_call.over_broker(broker),
     base_policy: base,
     clock:,
     demand: exec.PlatformEnforcement,
