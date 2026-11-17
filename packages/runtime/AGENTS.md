@@ -59,7 +59,10 @@ path a fresh run's `ToolDone` takes; `OutcomeUnknown` is the orphan observation
 with `replay_still_safe: False`; `NotStarted` is that observation with `True`
 when the persisted policy is `ReplaySafe` and the current registration still
 says so, otherwise a `ToolFailed("the call never reached the executor and did
-not run")`. A recovery effect killed by abort, or one that dies unanswered,
+not run")`. So a surface may answer `NotStarted` only for a call its own record
+proves never ran: the client's remote surface answers a call that was pending
+when the session moved from a directory with `OutcomeUnknown` instead
+(`client/moved_calls`, protocol-change/107). A recovery effect killed by abort, or one that dies unanswered,
 takes `effect_exit`'s ordinary tool path. `runtime` reads the argument key
 through `machine/internal/build.tool_args_key`, the one place that format is
 spelled. See `protocol-change/078`.

@@ -1,4 +1,5 @@
 import core/json
+import gleam/int
 import gleam/list
 import gleam/string
 import gleam/string_tree
@@ -431,6 +432,28 @@ pub fn a_report_offset_counts_codepoints_test() {
   assert string.contains(report.subject, "codepoint offset 6")
 }
 
+// A document that fails right after a string reports an offset equal to the
+// number of codepoints in everything before the failure, whatever widths the
+// string's codepoints have. The prefix is the encoded string and the space
+// that follows it.
+pub fn a_report_offset_is_the_prefix_codepoint_count_test() {
+  qcheck.run(generated_config(), gen.small_string(), fn(text) {
+    let prefix = json.to_string(json.String(text)) <> " "
+    let assert Error(report) = json.parse(prefix <> "x")
+      as "the trailing x is refused"
+    let expected = list.length(string.to_utf_codepoints(prefix))
+    assert report.subject == "codepoint offset " <> int.to_string(expected)
+  })
+}
+
+// Astral-plane codepoints are four bytes and a combining accent is two, and
+// each is one codepoint in the offset.
+pub fn a_report_offset_counts_astral_and_combining_test() {
+  let assert Error(report) = json.parse("\"🦊😀e\u{0301}\" x")
+    as "the trailing x is refused"
+  assert report.subject == "codepoint offset 7"
+}
+
 // Key order is the one difference two encoders of the same arguments are
 // free to disagree on, so the canonical form erases it at every depth and
 // keeps array order, which is part of the value.
@@ -483,4 +506,128 @@ pub fn string_delimiter_reports_preserve_codepoint_positions_test() {
     as "the missing closing quote is reported at end of input"
   assert unfinished.subject == "codepoint offset 8"
   assert unfinished.context == "end of input"
+}
+
+// --- the bound on values ------------------------------------------------
+
+// The refusal every bounded parse gives for a document past its bound.
+const over_the_bound = "no more json values than the parse's bound"
+
+/// Asserts that `text` parses with a bound of exactly `values` and is refused
+/// with one less, the refusal naming the bound rather than the syntax.
+fn assert_holds_exactly(text: String, values: Int) -> Nil {
+  let assert Ok(parsed) = json.parse(text) as "the test's document is JSON"
+  assert json.count_values(parsed) == values
+  assert json.parse_bounded(text, max_values: values) == Ok(parsed)
+  let assert Error(report) = json.parse_bounded(text, max_values: values - 1)
+    as "one value fewer than the document holds is refused"
+  assert report.expected == over_the_bound
+}
+
+pub fn a_scalar_is_one_value_test() {
+  assert_holds_exactly("null", 1)
+  assert_holds_exactly("true", 1)
+  assert_holds_exactly("-12.5e3", 1)
+  assert_holds_exactly("\"text\"", 1)
+}
+
+pub fn an_array_is_one_value_and_each_item_another_test() {
+  assert_holds_exactly("[]", 1)
+  assert_holds_exactly("[1, 2, 3]", 4)
+  assert_holds_exactly("[[[]]]", 3)
+}
+
+pub fn an_object_key_is_not_a_value_test() {
+  assert_holds_exactly("{}", 1)
+  assert_holds_exactly("{\"k\": \"v\"}", 2)
+  assert_holds_exactly("{\"a\": 1, \"b\": [true, null]}", 5)
+  assert_holds_exactly("{\"a\": {\"b\": {\"c\": {}}}}", 4)
+}
+
+pub fn a_bound_below_one_refuses_every_document_test() {
+  let assert Error(_report) = json.parse_bounded("0", max_values: 0)
+    as "a bound of zero admits no value"
+  let assert Error(_report) = json.parse_bounded("0", max_values: -5)
+    as "a negative bound admits no value"
+  Nil
+}
+
+// A wide flat document at its bound: the shape a hostile frame takes to make
+// the parser build many small values.
+pub fn a_wide_document_parses_at_its_bound_and_not_past_it_test() {
+  // A thousand items, because on the JavaScript target the parser takes a
+  // stack frame per array item and the runtime's stack holds a few thousand.
+  // The client's link test drives the wire's full bound on the BEAM.
+  let items = 1000
+  let text = "[" <> string.join(list.repeat("0", items), ",") <> "]"
+  assert_holds_exactly(text, items + 1)
+}
+
+// The count is spent as each value begins, so a document is refused at the
+// first value past its bound and the bytes after it are never read: here they
+// are not JSON at all, and the refusal is the bound's, at the fourth value.
+pub fn the_bound_is_enforced_before_the_rest_is_read_test() {
+  let assert Error(report) =
+    json.parse_bounded("[1, 2, 3, this is not json", max_values: 3)
+    as "the fourth value is refused"
+  assert report.expected == over_the_bound
+  assert report.subject == "codepoint offset 7"
+}
+
+// Whatever the document, a bound at or above its count reads it exactly as
+// the plain parse does, and a bound below its count refuses it.
+pub fn the_bounded_parse_agrees_with_the_plain_parse_test() {
+  let generator = qcheck.tuple2(gen.json_value(4), qcheck.bounded_int(0, 8))
+  qcheck.run(generated_config(), generator, fn(drawn) {
+    let #(value, slack) = drawn
+    let text = json.to_string(value)
+    let values = json.count_values(value)
+    assert json.parse_bounded(text, max_values: values + slack)
+      == json.parse(text)
+    let assert Error(report) =
+      json.parse_bounded(text, max_values: values - 1 - slack)
+      as "a bound below the count is refused"
+    assert report.expected == over_the_bound
+  })
+}
+
+// A repeated key is named in the report, clipped to a 96-byte prefix so a
+// hostile document cannot make the report as large as its own key. The report
+// gives the key's size in bytes.
+pub fn a_repeated_key_is_clipped_in_the_report_test() {
+  let key = string.repeat("é", 200)
+  let text = "{\"" <> key <> "\":1,\"" <> key <> "\":2}"
+  let assert Error(report) = json.parse(text) as "the repeat is refused"
+  assert string.length(report.expected) < 200
+  assert string.contains(report.expected, string.repeat("é", 48))
+  assert !string.contains(report.expected, string.repeat("é", 49))
+  assert string.contains(report.expected, "(400 bytes)")
+}
+
+// One letter and hundreds of combining accents is a single grapheme, so a
+// clip counted in graphemes would show all of it.
+pub fn a_key_of_combining_accents_is_clipped_in_the_report_test() {
+  let key = "e" <> string.repeat("\u{0301}", 800)
+  let text = "{\"" <> key <> "\":1,\"" <> key <> "\":2}"
+  let assert Error(report) = json.parse(text) as "the repeat is refused"
+  assert string.byte_size(report.expected) < 300
+  assert string.contains(report.expected, "(1601 bytes)")
+}
+
+// For any key, what is shown is valid UTF-8 (a Gleam string is) of at most the
+// clip plus the fixed text around it.
+pub fn a_shown_key_is_bounded_for_any_key_test() {
+  qcheck.run(generated_config(), gen.small_string(), fn(piece) {
+    let key = string.repeat(piece <> "x", 40)
+    let text = "{" <> json.to_string(json.String(key)) <> ":1,"
+    let text = text <> json.to_string(json.String(key)) <> ":2}"
+    let assert Error(report) = json.parse(text) as "the repeat is refused"
+    assert string.byte_size(report.expected) < 96 + 80
+  })
+}
+
+pub fn a_short_repeated_key_is_shown_whole_test() {
+  let assert Error(report) = json.parse("{\"ab\":1,\"ab\":2}")
+    as "the repeat is refused"
+  assert report.expected == "unique object keys (\"ab\" repeats)"
 }

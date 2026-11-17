@@ -9,8 +9,10 @@ import broker/broker
 import broker/budget
 import broker/exec
 import broker/executor
+import broker/framing
 import broker/policy
 import client/catalog
+import client/clear_call
 import client/daemon/transfer
 import client/host_git
 import client/serve
@@ -33,6 +35,7 @@ import session/session
 import simplifile
 import storage/storage
 import support/enforcement
+import support/fake_clear_call
 import tools/tool
 
 pub fn porcelain_keeps_whitespace_and_newline_identity_test() {
@@ -440,8 +443,7 @@ fn invoke(
     ids.mint_op(ids.generator(wiring.clock, wiring.entropy()))
   let events = process.new_subject()
   let assert Ok(call) =
-    broker.clear_call(
-      wiring.broker,
+    wiring.clear_call(
       broker.CallSpec(
         op_id: operation,
         step_id: "fixture",
@@ -455,11 +457,11 @@ fn invoke(
         cwd: wiring.workspace,
         budget: budget.Budget(1, now + 10_000),
       ),
-      events:,
-      waiting: 5000,
+      events,
+      5000,
     )
     as "the fixture clears its jailed command"
-  broker.stdin(wiring.broker, call, data: <<>>, eof: True)
+  call.stdin(<<>>, True)
   let assert Ok(collected) = tool.collect_events(events, waiting: 15_000)
     as "the fixture's jailed command settles"
   collected
@@ -533,7 +535,7 @@ fn serve_workspace(
     as "the fixture starts the production broker and pool"
   run(worktree_diff.Wiring(
     workspace:,
-    broker:,
+    clear_call: clear_call.over_broker(broker),
     base_policy: base,
     clock:,
     demand: exec.PlatformEnforcement,
@@ -631,5 +633,181 @@ pub fn a_linked_worktree_under_a_hidden_directory_is_observed_test() {
     assert board.total == 2
     assert string.contains(file(board, "tracked.txt").patch, "+edited by")
     assert string.contains(file(board, "added.txt").patch, "+new")
+  })
+}
+
+// A wiring that reaches no broker: the clearing function is the fake the
+// test passes, and the clock is the one the test chooses, so the deadline
+// the capture computes, and therefore the wait it asks for, is exact.
+fn fake_wiring(
+  clear: clear_call.ClearCall,
+  wall: clock.Clock,
+) -> worktree_diff.Wiring {
+  worktree_diff.Wiring(
+    workspace: "/fixture",
+    clear_call: clear,
+    base_policy: policy.workspace_default("/fixture"),
+    clock: wall,
+    demand: exec.BestEffort,
+    env: [#("PATH", "/usr/bin:/bin")],
+    entropy: fn() { 117 },
+    git: "/fixture/git",
+  )
+}
+
+fn git_exited(code: Int) -> broker.CallOutcome {
+  broker.CallExited(exec.ExecResult(
+    code:,
+    signal: 0,
+    stdout_bytes: 0,
+    stderr_bytes: 0,
+    stdout_truncated: False,
+    stderr_truncated: False,
+    enforcement: [],
+    degraded: False,
+    wall_ms: 4,
+    timed_out: False,
+    cancelled: False,
+  ))
+}
+
+/// The starting-revision probe reaches Git only through the function it was
+/// handed: each of its two calls is cleared with the fixed argv, the
+/// workspace as cwd and a wait equal to the capture's remaining deadline,
+/// and the scripted settlements are what the probe decodes.
+pub fn the_observation_clears_through_the_function_it_was_given_test() {
+  let probe = process.new_subject()
+  let revision = string.repeat("ab", 20)
+  let clear =
+    fake_clear_call.answering(probe, fn(spec) {
+      let output = case list.last(spec.argv) {
+        Ok("--is-inside-work-tree") -> "true\n"
+        _ -> revision <> "\n"
+      }
+      [
+        broker.CallOutput(
+          framing.Stdout,
+          bit_array.from_string(output),
+          string.byte_size(output),
+          False,
+        ),
+        broker.CallSettled(git_exited(0)),
+      ]
+    })
+  let wiring = fake_wiring(clear, clock.fixed(at: 2_000_000))
+
+  assert worktree_diff.starting_revision(wiring)
+    == worktree_diff.Revision(revision)
+
+  let assert Ok(fake_clear_call.Cleared(first, waiting)) =
+    process.receive(probe, 100)
+    as "the inside-work-tree probe is cleared"
+  assert list.last(first.argv) == Ok("--is-inside-work-tree")
+  assert first.cwd == "/fixture"
+  assert first.step_id == "worktree-observation"
+  assert first.grants == []
+  assert waiting == worktree_diff.capture_timeout_ms
+  assert process.receive(probe, 100) == Ok(fake_clear_call.StdinFinal(<<>>))
+
+  let assert Ok(fake_clear_call.Cleared(second, _)) =
+    process.receive(probe, 100)
+    as "the HEAD probe is cleared"
+  assert list.drop(second.argv, list.length(second.argv) - 4)
+    == ["rev-parse", "--verify", "--quiet", "HEAD"]
+  assert process.receive(probe, 100) == Ok(fake_clear_call.StdinFinal(<<>>))
+}
+
+/// A baseline probe that fails stores its reason in `session/git-start`, and
+/// over the tunnel the reason's diagnostic is the executor's text, so it is
+/// clipped to 512 characters however long the executor made it
+/// (protocol-change/117).
+pub fn a_failed_baseline_probe_stores_a_clipped_reason_test() {
+  let probe = process.new_subject()
+  let long = string.repeat("x", 20_000)
+  let clear =
+    fake_clear_call.answering(probe, fn(_spec) {
+      [
+        broker.CallOutput(
+          framing.Stderr,
+          bit_array.from_string(long),
+          string.byte_size(long),
+          False,
+        ),
+        broker.CallSettled(git_exited(1)),
+      ]
+    })
+  let wiring = fake_wiring(clear, clock.fixed(at: 2_000_000))
+
+  let assert worktree_diff.Unavailable(reason) =
+    worktree_diff.starting_revision(wiring)
+    as "a failed probe is unavailable"
+  assert string.starts_with(reason, "Git exited 1: xxx")
+  assert string.byte_size(reason) <= 1024
+}
+
+/// A Git call that never settles ends the capture's bounded wait with
+/// `NoSettlement`, and the capture cancels through the handle it was given.
+/// The stepping clock leaves 100 ms of the deadline when the status call
+/// starts, so the wait is that plus the settlement grace.
+pub fn a_git_call_that_never_settles_is_cancelled_through_the_handle_test() {
+  let probe = process.new_subject()
+  let clear = fake_clear_call.answering(probe, fn(_spec) { [] })
+  let step = worktree_diff.capture_timeout_ms - 100
+  let wiring = fake_wiring(clear, clock.stepping(from: 3_000_000, by: step))
+
+  assert worktree_diff.capture(wiring) == Error(worktree_diff.NoSettlement)
+
+  let assert Ok(fake_clear_call.Cleared(spec, waiting)) =
+    process.receive(probe, 100)
+    as "the status call was cleared first"
+  assert list.contains(spec.argv, "status")
+  assert process.receive(probe, 100) == Ok(fake_clear_call.StdinFinal(<<>>))
+  assert process.receive(probe, 100) == Ok(fake_clear_call.Cancelled)
+
+  // The deadline is the capture clock's reading plus the shared timeout.
+  assert spec.budget.deadline_ms == 3_000_000 + worktree_diff.capture_timeout_ms
+  assert waiting == 100
+}
+
+// --- executor text kept bounded (protocol-change/117) ----------------------------
+
+/// Text an executor chooses: megabytes of one letter, and one letter carrying
+/// a million combining accents, which is one grapheme cluster that a slice by
+/// graphemes would walk in full.
+fn hostile_texts() -> List(String) {
+  [string.repeat("x", 3_000_000), "a" <> string.repeat("\u{0301}", 1_000_000)]
+}
+
+/// A clearing function that refuses every call with `text` as its reason.
+fn refusing_with(text: String) -> clear_call.ClearCall {
+  fn(_spec, _events, _waiting) {
+    Error(broker.InvalidPolicy(policy.RelativePath(text)))
+  }
+}
+
+/// A clearing function whose every call settles as a helper refusal carrying
+/// `text`.
+fn failing_with(text: String) -> clear_call.ClearCall {
+  let probe = process.new_subject()
+  fake_clear_call.answering(probe, fn(_spec) {
+    [broker.CallSettled(broker.CallFailed(exec.RefusedByHelper("e", text)))]
+  })
+}
+
+// The baseline stores the reason and the peer view publishes it as a fact, so
+// a refusal or a failure the executor describes at frame size ends as bounded
+// text on both, whatever the text is made of.
+pub fn executor_text_is_bounded_in_the_baseline_and_the_peer_fact_test() {
+  list.each(hostile_texts(), fn(text) {
+    list.each([refusing_with(text), failing_with(text)], fn(clear) {
+      let wiring = fake_wiring(clear, clock.fixed(at: 2_000_000))
+      let assert worktree_diff.Unavailable(reason) =
+        worktree_diff.starting_revision(wiring)
+        as "a refused probe is unavailable"
+      assert string.byte_size(reason) <= 1024
+      let fact = json.to_string(worktree_diff.peer_observation(wiring))
+      assert string.contains(fact, "unavailable")
+      assert string.byte_size(fact) <= 2048
+    })
   })
 }

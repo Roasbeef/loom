@@ -214,9 +214,9 @@ pub type OwnerReply {
 }
 
 /// What a waiter heard while it waited on the host.
-type Heard {
+type Heard(answer) {
   /// The host answered, or went away.
-  Heard(response: Response)
+  Heard(response: answer)
 
   /// The connection that carries the request died first.
   Partitioned
@@ -988,40 +988,8 @@ pub fn ask_host(
   // Each request is the `HostMessage` of the same name with a reply subject
   // this process owns.
   case request, owner_port {
-    untrusted_wire.AttachRequest(
-      version:,
-      session:,
-      workspace:,
-      incarnation:,
-      token:,
-      binding: _,
-    ),
-      Some(port)
-    ->
-      Some(asked_host(
-        host,
-        connection,
-        protocol.Attach(
-          version,
-          session,
-          workspace,
-          incarnation,
-          token,
-          port,
-          _,
-        ),
-        fn(answer) {
-          untrusted_wire.AttachAnswered(result.map(answer, projected))
-        },
-        untrusted_wire.AttachAnswered(Error(fault)),
-      ))
-
-    untrusted_wire.AttachRequest(..), None ->
-      Some(
-        untrusted_wire.AttachAnswered(
-          Error(protocol.Invalid("an attach needs an owner port")),
-        ),
-      )
+    untrusted_wire.AttachRequest(..), _ ->
+      Some(ask_attach(host, request, owner_port, connection).0)
 
     untrusted_wire.RunRequest(key:, incarnation:, token:, run:, authority:), _
     ->
@@ -1064,6 +1032,71 @@ pub fn ask_host(
     }
 
     _, _ -> Some(ledger_ask(host, connection, request, fault))
+  }
+}
+
+/// `ask_host` for an attach, answering beside the projected response the
+/// census the host answered with, whole. The wire drops the plane's broker
+/// subject and keeps the base policy among much else; the gateway records
+/// both under the binding before the reply goes out, so a tunnelled call that
+/// follows the reply clears on that broker under that base
+/// (protocol-change/117). A refused attach, and any request that is not an
+/// attach, answers `None` beside the response.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(response, census) = untrusted_bridge.ask_attach(host, request, Some(proxy), connection)
+/// ```
+pub fn ask_attach(
+  host: Address(HostMessage(RemoteCensus)),
+  request: Request,
+  owner_port: Option(Subject(OwnerMessage)),
+  connection: Pid,
+) -> #(Response, Option(RemoteCensus)) {
+  let fault = protocol.ExecutorFault("the executor's host is gone")
+  let refused = fn(refusal) {
+    #(untrusted_wire.AttachAnswered(Error(refusal)), None)
+  }
+
+  // Only an attach with the proxy that stands in for its owner port reaches
+  // the host.
+  case request, owner_port {
+    untrusted_wire.AttachRequest(
+      version:,
+      session:,
+      workspace:,
+      incarnation:,
+      token:,
+      binding: _,
+    ),
+      Some(port)
+    ->
+      asked_host(
+        host,
+        connection,
+        protocol.Attach(
+          version,
+          session,
+          workspace,
+          incarnation,
+          token,
+          port,
+          _,
+        ),
+        fn(answer) {
+          #(
+            untrusted_wire.AttachAnswered(result.map(answer, projected)),
+            answer
+              |> result.map(fn(attached) { attached.census })
+              |> option.from_result,
+          )
+        },
+        refused(fault),
+      )
+    untrusted_wire.AttachRequest(..), None ->
+      refused(protocol.Invalid("an attach needs an owner port"))
+    _other, _ -> refused(protocol.Invalid("misrouted request"))
   }
 }
 
@@ -1165,7 +1198,8 @@ fn ledger_ask(
     | untrusted_wire.BlobPutRequest(..)
     | untrusted_wire.OutcomePieceRequest(..)
     | untrusted_wire.StartExecutionRequest(..)
-    | untrusted_wire.StopExecutionRequest(..) ->
+    | untrusted_wire.StopExecutionRequest(..)
+    | untrusted_wire.ClearCallRequest(..) ->
       untrusted_wire.LookupAnswered(
         Error(protocol.Invalid("misrouted request")),
       )
@@ -1269,9 +1303,9 @@ fn asked_host(
   host: Address(HostMessage(RemoteCensus)),
   connection: Pid,
   make: fn(Subject(reply)) -> HostMessage(RemoteCensus),
-  wrap: fn(reply) -> Response,
-  lost: Response,
-) -> Response {
+  wrap: fn(reply) -> answer,
+  lost: answer,
+) -> answer {
   let reply = process.new_subject()
 
   // Watching before sending means a host that is already gone answers with

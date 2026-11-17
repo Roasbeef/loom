@@ -46,6 +46,7 @@ fn start(label: String) -> Rig {
     untrusted_link.start(untrusted_link.Config(
       executor: "pod",
       name:,
+      door: process.new_name("untrusted_link_door"),
       host: "127.0.0.1",
       port:,
       pin: pair.executor_pin,

@@ -1137,6 +1137,11 @@ that epmd is reachable, the listen port is free, and the peer pins and
 certificates match
 ```
 
+That is the wording of the run's release. A release since then words the same
+fault as `the peer could not be reached: it may be stopped, or its node name,
+pins or certificates may not match`, because the dial cannot tell a stopped
+peer from a refused certificate.
+
 The terminal shows the same reason as `session startup failed
 (executor_unavailable): <reason>` (**Pending**; the run used the control protocol).
 The reason names what failed: the connection,

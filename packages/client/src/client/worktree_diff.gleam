@@ -40,6 +40,8 @@ import broker/broker
 import broker/budget
 import broker/exec
 import broker/policy
+import client/bounded_text
+import client/clear_call.{type ClearCall}
 import client/codemode
 import client/daemon/transfer
 import core/clock
@@ -77,8 +79,9 @@ pub type Wiring {
   Wiring(
     /// The attached session's absolute workspace, including a repository subtree.
     workspace: String,
-    /// The session's existing effect broker and helper pool.
-    broker: broker.Broker,
+    /// Clears one observation process; on a local workspace this is the
+    /// session's effect broker, and a placement may supply another.
+    clear_call: ClearCall,
     /// The assembled policy, including state masks and linked Git metadata.
     base_policy: policy.SandboxPolicy,
     /// The session's injected wall clock.
@@ -319,6 +322,9 @@ pub fn starting_revision(wiring: Wiring) -> Start {
     Ok(#(Unborn, _)) -> Empty
     Ok(#(NotRepository, _)) ->
       Unavailable("Workspace was not a repository at session start")
+
+    // The reason is stored in `session/git-start`; `error_message` bounds
+    // every part of it that the executor chose.
     Error(error) -> Unavailable(error_message(error))
   }
 }
@@ -758,8 +764,7 @@ fn run_git(
     )
   let events = process.new_subject()
   use call <- result.try(
-    broker.clear_call(
-      wiring.broker,
+    wiring.clear_call(
       broker.CallSpec(
         op_id: capture.op_id,
         step_id: "worktree-observation",
@@ -781,19 +786,19 @@ fn run_git(
         cwd: wiring.workspace,
         budget: budget.Budget(1, capture.deadline),
       ),
-      events:,
-      waiting: remaining,
+      events,
+      remaining,
     )
     |> result.map_error(clearance_error),
   )
 
   // No command consumes interactive input. Cancelling on missing settlement
   // requests cleanup; it does not claim that native retirement was observed.
-  broker.stdin(wiring.broker, call, data: <<>>, eof: True)
+  call.stdin(<<>>, True)
   use collected <- result.try(
     tool.collect_events(events, waiting: remaining + settlement_grace_ms)
     |> result.map_error(fn(_) {
-      broker.cancel(wiring.broker, call)
+      call.cancel()
       NoSettlement
     }),
   )
@@ -1061,7 +1066,7 @@ fn diagnostic(bytes: BitArray) -> String {
   bytes
   |> bit_array.to_string
   |> result.unwrap("Git returned a non-UTF-8 diagnostic")
-  |> string.slice(0, 512)
+  |> bounded_text.clip(512)
 }
 
 /// Establishes fit board for the caller, keeping its validation and result policy at this boundary.
@@ -1174,8 +1179,14 @@ pub fn error_message(error: Error) -> String {
     OutputLimit -> "worktree observation exceeded its output budget"
     InvalidOutput ->
       "Git output could not be decoded without changing file identity"
-    Refused(reason) -> "worktree observation was refused: " <> reason
-    ExecutionFailed(reason) -> "worktree observation failed: " <> reason
+
+    // Over the tunnel these reasons are the executor's text, which lands in
+    // the stored baseline, the peer observation's fact and the board, so
+    // each is clipped here, by bytes (`bounded_text`), to 512.
+    Refused(reason) ->
+      "worktree observation was refused: " <> bounded_text.clip(reason, 512)
+    ExecutionFailed(reason) ->
+      "worktree observation failed: " <> bounded_text.clip(reason, 512)
     NoSettlement ->
       "worktree observation did not settle; cancellation was requested"
     GitFailed(code, diagnostic) ->

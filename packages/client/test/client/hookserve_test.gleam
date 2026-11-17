@@ -18,6 +18,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
+import client/clear_call
 import client/hookcompat
 import client/hookrunner
 import client/hookserve
@@ -567,7 +568,7 @@ fn assembled(
     workspace: ground.workspace,
     trust_root: ground.root <> "/hooktrust",
     runner: hookrunner.Context(
-      broker: broker_actor,
+      clear_call: clear_call.over_broker(broker_actor),
       base_policy: hook_base(ground.workspace),
       op_id: ground.operation,
       step_id: "hookserve-fixture",

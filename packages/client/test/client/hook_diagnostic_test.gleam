@@ -6,6 +6,7 @@ import broker/exec
 import broker/framing
 import broker/policy
 import broker/token
+import client/clear_call
 import client/hookrunner
 import core/clock
 import core/ids
@@ -111,7 +112,7 @@ fn run(script: Script) -> hookrunner.Outcome {
   let #(op_id, _) = ids.mint_op(ids.generator(wall, 363))
   let ctx =
     hookrunner.Context(
-      broker: broker_actor,
+      clear_call: clear_call.over_broker(broker_actor),
       base_policy: policy.workspace_default("/fixture"),
       op_id:,
       step_id: "diagnostic",
