@@ -190,6 +190,10 @@ that names the rule, and requires the case to fail on that rule.
 - The spawner, the table, `page` and the relayed row. The cap is modelled for one
   spawner with a cap of one in place of eight, in `tcCap` only. Every other case
   runs one feed.
+- `Observe`, the worktree read (`108.worktree.1`). It is read-only, changes no queue,
+  cursor, piece, lease or ending, and renews no lease, so it adds no interleaving
+  the model's properties speak of. What it answers is the box's authority check and
+  a bounded Git observation, which the unit tests cover.
 - A new attach after a feed ended. A lapsed page reconnects through 097 and starts
   from a fresh subscribe, which is always correct and is a new feed.
 - The numbers in the proposal. The lease, wait, timeouts and bounds are scaled down,

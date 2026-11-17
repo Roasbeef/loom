@@ -63,6 +63,7 @@
 import broker/token
 import client/daemon/manager
 import client/daemon/profiles
+import client/daemon/ui_relay
 import client/delegate_host
 import client/deployment
 import client/gateway
@@ -1085,13 +1086,13 @@ fn archive(
 
 // --- live session feeds ----------------------------------------------------------------
 
-// The four operations of a live session page (protocol-change/108). Each is judged
+// The five operations of a live session page (protocol-change/108). Each is judged
 // against the spawner its node resolves to, as the eight of 094 are. A token is
 // looked up only among that spawner's feeds before anything else is read, so a
 // request for a feed that has ended, or that another spawner holds, learns that
 // the feed has ended and touches nothing.
 
-/// Builds the four callbacks over one directory of feeds. `host` calls it over the
+/// Builds the five callbacks over one directory of feeds. `host` calls it over the
 /// directory it starts, and a test calls it over a directory it controls.
 ///
 /// ## Examples
@@ -1125,7 +1126,48 @@ pub fn serving_feeds(
         Error(feed_directory.Unanswered) -> Error(not_answering())
       }
     },
+    worktree: fn(node, token) {
+      use feed <- result.try(held_feed(context, directory, node, token))
+
+      // The feed hands out its own observer, built over its own standing when it
+      // was attached, and this task runs it. The request is the exchange's own
+      // task, which dies with the laptop's call, so nothing here outlives it.
+      use observe <- result.map(feed_host.observation(feed))
+      observe()
+    },
   )
+}
+
+/// What the box answers a feed that asks for its session's workspace. The feed's
+/// own check is run again and capped by Operator, the cap a local page's read is
+/// held to (`ui_relay.may_read_workspace`), so a feed whose standing is an
+/// observer's, or no longer passes, is withheld the workspace and `observe` does
+/// not run. Otherwise the session's own observation is the answer, within the
+/// bound the page's decoder holds a board to. Its failure text is never sent,
+/// because it can carry a repository's own words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert top_host.worktree_observation(check, observe) == remote_feed.Withheld
+/// ```
+@internal
+pub fn worktree_observation(
+  check: fn() -> Result(#(access.Principal, access.Authority), String),
+  observe: fn() -> Result(JsonValue, String),
+) -> remote_feed.Observation {
+  case check() {
+    Error(_) -> remote_feed.Withheld
+    Ok(#(_, authority)) ->
+      case ui_relay.may_read_workspace(authority, access.Operator) {
+        False -> remote_feed.Withheld
+        True ->
+          case observe() {
+            Ok(board) -> remote_feed.observed(board)
+            Error(_) -> remote_feed.Unreadable
+          }
+      }
+  }
 }
 
 /// The feed a token names among the sender's spawner's feeds. A token that is
@@ -1234,41 +1276,46 @@ fn started_feed(
   }
 
   let authority = access.Participant(access.Operator)
+  let check = feed_check(context, spawner.name, session, incarnation)
+  let observe = context.endpoint(instance).worktree
 
   // The connection id goes into the gateway's presence roster and to every
   // subscribed connection, Observers included, so it is its own random id and
   // never the token that names the feed.
   let connection_id = "feed-" <> hex_entropy(8)
   use feed <- result.map(
-    feed_host.start(feed_host.Settings(
-      hub: context.gateway(instance),
-      binding: gateway.Binding(
-        session_id: session,
-        epoch: context.epoch,
-        incarnation:,
-        connection_id: connection_id,
-        principal: context.owner,
-        authority:,
-        digest:,
-        signin: None,
-        door: gateway.PeerDoor(spawner.name, deciding),
+    feed_host.start(
+      feed_host.Settings(
+        hub: context.gateway(instance),
+        binding: gateway.Binding(
+          session_id: session,
+          epoch: context.epoch,
+          incarnation:,
+          connection_id: connection_id,
+          principal: context.owner,
+          authority:,
+          digest:,
+          signin: None,
+          door: gateway.PeerDoor(spawner.name, deciding),
+        ),
+        check:,
+        failed_reader: fn() {
+          let _ =
+            manager.stop_if_incarnation(context.registry, session, incarnation)
+          Nil
+        },
+        spawner: spawner.name,
+        ceiling: table.approval_ceiling,
+        decider: remote_escalation.Decider(
+          principal: attach.principal,
+          name: attach.name,
+        ),
+        admit: transfer,
+        owner: process.self(),
+        lease_ms: context.feed_lease_ms,
+        observe: fn() { worktree_observation(check, observe) },
       ),
-      check: feed_check(context, spawner.name, session, incarnation),
-      failed_reader: fn() {
-        let _ =
-          manager.stop_if_incarnation(context.registry, session, incarnation)
-        Nil
-      },
-      spawner: spawner.name,
-      ceiling: table.approval_ceiling,
-      decider: remote_escalation.Decider(
-        principal: attach.principal,
-        name: attach.name,
-      ),
-      admit: transfer,
-      owner: process.self(),
-      lease_ms: context.feed_lease_ms,
-    ))
+    )
     |> result.map_error(fn(reason) { remote_top.NotYetOpen(reason:) }),
   )
   feed_directory.register(directory, token, feed)

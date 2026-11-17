@@ -24,6 +24,7 @@ import client/gateway
 import client/grants
 import client/internal/ffi_os
 import client/protocol
+import client/relayed_session
 import client/remote/feed_directory
 import client/remote/peer_client
 import client/remote_feed
@@ -1042,4 +1043,106 @@ pub fn a_feed_that_is_gone_is_still_lapsed_and_its_detach_is_still_ok_test() {
   assert feeds.poll(own_node(), remote_feed.Poll(feed:, after: 0, wait_ms: 0))
     == Error(remote_top.FeedEnded(remote_top.FeedLapsed))
   assert feeds.detach(own_node(), feed) == Ok(Nil)
+}
+
+// --- the workspace observation (108.worktree.1) ----------------------------------
+
+fn board() -> JsonValue {
+  json.Object([
+    #("source", json.String("git")),
+    #("repository", json.String("head")),
+    #("marker", json.String("the-session-own-board")),
+  ])
+}
+
+fn observing_rig(label: String, lease_ms: Int) -> Rig {
+  feed_rig.observing(
+    label,
+    deciding,
+    lease_ms,
+    relayed_session.Endpoint(..relayed_session.refusing(), worktree: fn() {
+      Ok(board())
+    }),
+  )
+}
+
+fn ask_worktree(
+  rig: Rig,
+  attached: remote_feed.Attached,
+) -> Result(remote_feed.Observation, remote_top.Refusal) {
+  let assert Ok(answer) =
+    call(
+      rig,
+      remote_feed.worktree_revision,
+      remote_feed.WorktreeRequest(attached.feed),
+    )
+    as "the workspace request is answered"
+  use value <- result.map(answer)
+  let assert Ok(decoded) = remote_feed.decode_observation(value)
+    as "the workspace answer decodes"
+  decoded
+}
+
+pub fn an_operator_feed_is_answered_the_sessions_own_observation_test() {
+  let rig = observing_rig("worktree", remote_feed.lease_ms)
+  let attached = attach(rig)
+  assert ask_worktree(rig, attached) == Ok(remote_feed.Observed(board()))
+}
+
+pub fn a_session_with_no_observation_is_unreadable_and_says_nothing_else_test() {
+  let rig = rig("worktree-none", deciding, remote_feed.lease_ms)
+  let attached = attach(rig)
+  assert ask_worktree(rig, attached) == Ok(remote_feed.Unreadable)
+}
+
+pub fn a_workspace_request_for_an_unknown_token_is_feed_ended_test() {
+  let rig = observing_rig("worktree-unknown", remote_feed.lease_ms)
+  let attached = attach(rig)
+  let stranger =
+    remote_feed.Attached(..attached, feed: "0123456789abcdef0123456789abcdef")
+  assert ask_worktree(rig, stranger)
+    == Error(remote_top.FeedEnded(remote_top.FeedLapsed))
+}
+
+// Asking for the workspace is not a poll: it renews no lease, so a laptop that
+// only asks lapses its feed, and the ended feed refuses the question.
+pub fn asking_for_the_workspace_renews_no_lease_test() {
+  let rig = observing_rig("worktree-lease", short_lease_ms)
+  let attached = attach(rig)
+  let assert poll.Answered(_) =
+    poll.until(within: 10_000, every: 100, attempt: fn() {
+      case ask_worktree(rig, attached) {
+        Error(remote_top.FeedEnded(remote_top.FeedLapsed)) -> poll.Done(Nil)
+        Ok(_) | Error(_) -> poll.Retry
+      }
+    })
+    as "a feed that is only asked about its workspace lapses"
+  assert gateway.attached(rig.harness.hub) == rig.baseline
+}
+
+// The authority check is part of the wiring `top_host` builds for each feed, not
+// of the request's own fences: a feed the session no longer runs for is refused
+// the workspace, and the session's observation does not run for it.
+pub fn a_feed_the_session_no_longer_serves_is_refused_the_workspace_test() {
+  let ran = process.new_subject()
+  let rig =
+    feed_rig.observing(
+      "worktree-stopped",
+      deciding,
+      remote_feed.lease_ms,
+      relayed_session.Endpoint(..relayed_session.refusing(), worktree: fn() {
+        process.send(ran, Nil)
+        Ok(board())
+      }),
+    )
+  let attached = attach(rig)
+  let assert Ok(_) = manager.stop_session(rig.registry, rig.session)
+    as "the session stops under the feed"
+
+  let refused = case ask_worktree(rig, attached) {
+    Ok(remote_feed.Withheld) | Error(remote_top.FeedEnded(_)) -> True
+    Ok(_) | Error(_) -> False
+  }
+  assert refused
+  assert process.receive(ran, 0) == Error(Nil)
 }
