@@ -57,6 +57,7 @@ import core/msgpack
 import gleam/bit_array
 import gleam/dynamic
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
@@ -2300,6 +2301,43 @@ pub fn every_cleared_answer_round_trips_test() {
   list.each(every_broker_refusal(), fn(refusal) {
     assert_response(untrusted_wire.ClearedAnswered(answer: Error(refusal)))
   })
+}
+
+// The one integer on the wire wider than 64 bits is the value msgpack refused,
+// and it is held to 2^256 in magnitude: the bound is accepted, one past it is
+// refused, and so is an integer of ten thousand digits.
+pub fn an_integer_past_two_to_the_256th_is_refused_test() {
+  let bound = int.bitwise_shift_left(1, 256)
+  let cleared = fn(number) {
+    untrusted_wire.ClearedAnswered(
+      answer: Error(
+        broker.NoHelper(
+          exec.SpawnFailed(
+            exec.PolicyUnencodable(error: msgpack.IntegerOutOfRange(
+              value: number,
+            )),
+          ),
+        ),
+      ),
+    )
+  }
+  let assert_response = fn(number) {
+    untrusted_wire.Response(id: 9, response: cleared(number))
+  }
+
+  let at = assert_response(bound)
+  assert through(at) == Ok(at)
+  let negative = assert_response(-bound)
+  assert through(negative) == Ok(negative)
+  let assert Error(_past) = through(assert_response(bound + 1))
+    as "one past the bound is refused"
+  let assert Error(_wide) = through(assert_response(-bound - 1))
+    as "one past the bound is refused when negative"
+  let assert Ok(digits) = int.parse(string.repeat("9", 10_000))
+    as "ten thousand digits parse"
+  let assert Error(report) = through(assert_response(digits))
+    as "an integer of ten thousand digits is refused"
+  assert string.length(string.inspect(report)) < 1000
 }
 
 pub fn every_call_event_round_trips_test() {

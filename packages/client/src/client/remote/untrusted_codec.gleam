@@ -3812,14 +3812,15 @@ fn encode_exec_failure(failure: exec.ExecFailure) -> JsonValue {
 }
 
 /// Reads an execution that settled as a failure. The failure a helper's
-/// handshake reports nests inside a spawn error, and so inside this, which is
-/// bounded by the parser's nesting depth.
+/// handshake reports nests inside a spawn error, and the spawn error inside a
+/// refusal that holds this, but no `ExecFailure` holds a spawn error, so the
+/// type itself bounds how deep this decoder can recurse.
 fn decode_exec_failure(
   value: JsonValue,
 ) -> Result(exec.ExecFailure, CorruptionReport) {
   use #(kind, fields) <- result.try(tagged_of(value, "exec failure"))
 
-  // The kind names the failure; the five that carry nothing are told apart by
+  // The kind names the failure; the seven that carry nothing are told apart by
   // the kind alone.
   case kind {
     "not_ready" -> Ok(exec.NotReady)
@@ -4234,8 +4235,7 @@ fn encode_msgpack_error(error: msgpack.EncodeError) -> JsonValue {
 
 /// Reads why msgpack could not encode a policy. The out-of-range integer is
 /// the one integer on this wire not held to 64 bits, because it is the value
-/// msgpack refused for being wider; the parser has already bounded its digits
-/// by the frame's size.
+/// msgpack refused for being wider; `wide_int_of` bounds its magnitude.
 fn decode_msgpack_error(
   value: JsonValue,
 ) -> Result(msgpack.EncodeError, CorruptionReport) {
@@ -4349,13 +4349,32 @@ fn absent(fields: Fields, name: String) -> Result(Nil, CorruptionReport) {
   }
 }
 
-/// Reads an integer of any width, which only a value defined as too wide for
-/// 64 bits may be.
+/// Reads an integer of any width up to `wide_int_limit`; only a value defined
+/// as too wide for 64 bits needs more than 64. Its magnitude is held to `wide_int_limit`, because the
+/// parser bounds the digits of a number only by the frame's size, and an
+/// integer of a million digits costs time to parse and again every time a
+/// report that holds it is printed.
 fn wide_int_of(value: JsonValue, on: String) -> Result(Int, CorruptionReport) {
   case value {
-    json.Int(number) -> Ok(number)
+    json.Int(number) ->
+      case int.absolute_value(number) <= wide_int_limit() {
+        True -> Ok(number)
+        False ->
+          Error(corrupt(
+            on,
+            "an integer of at most 2^256 in magnitude",
+            describe(value),
+          ))
+      }
     other -> Error(corrupt(on, "an integer", describe(other)))
   }
+}
+
+/// The largest magnitude `wide_int_of` accepts, 2^256. Every value on the wire
+/// that is not held to 64 bits is a limit or a count an honest sender reads
+/// from a 64-bit field, so none comes near it.
+fn wide_int_limit() -> Int {
+  int.bitwise_shift_left(1, 256)
 }
 
 // --- shared shapes --------------------------------------------------------------

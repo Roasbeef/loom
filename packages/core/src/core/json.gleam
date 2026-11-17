@@ -493,7 +493,7 @@ pub fn build_string_by_codepoint(text: String) -> StringTree {
 // codepoint at a time; on a 5 MB branch that was tens of millions of heap
 // words per projection and most of the server's per-step CPU (issue #359).
 //
-// `values` is how many more values the document may begin. It travels with
+// `values` is how many more values the document may begin. It is a field of
 // the cursor because the cursor is the one thing every step of the walk
 // hands on, and so the count needs no second pass and no argument of its
 // own on every helper.
@@ -511,13 +511,32 @@ fn fail(cursor: Cursor, expected: String) -> CorruptionReport {
   )
 }
 
-// The report keeps counting in codepoints, as it always has, and pays for
-// the count only when there is a report to write.
+// The report counts the offset in codepoints, and pays for the count only
+// when there is a report to write. The consumed prefix of a document that
+// came from a `String` is valid UTF-8, and every codepoint in valid UTF-8
+// has exactly one byte outside the continuation range `0x80..0xBF`, so the
+// codepoint count is the number of such bytes. The walk builds no list
+// and no string, and allocates nothing on the BEAM (on JavaScript each step
+// makes a short-lived view), which matters because a hostile peer controls how long the prefix is: a
+// list of the prefix's codepoints costs tens of bytes of heap per byte
+// consumed.
 fn codepoint_offset(cursor: Cursor) -> Int {
-  bit_array.slice(cursor.source, 0, cursor.consumed)
-  |> result.try(bit_array.to_string)
-  |> result.map(fn(prefix) { list.length(string.to_utf_codepoints(prefix)) })
-  |> result.unwrap(cursor.consumed)
+  case bit_array.slice(cursor.source, 0, cursor.consumed) {
+    Ok(prefix) -> count_codepoint_starts(prefix, 0)
+    Error(Nil) -> cursor.consumed
+  }
+}
+
+/// Counts the bytes of valid UTF-8 that begin a codepoint, which are the bytes
+/// outside the continuation range `0x80..0xBF`. The walk is tail recursive over
+/// a binary match context, so it allocates no list and no string.
+fn count_codepoint_starts(bytes: BitArray, count: Int) -> Int {
+  case bytes {
+    <<byte, rest:bits>> if byte >= 0x80 && byte <= 0xBF ->
+      count_codepoint_starts(rest, count)
+    <<_, rest:bits>> -> count_codepoint_starts(rest, count + 1)
+    _ -> count
+  }
 }
 
 /// Shows at most 24 codepoints of remaining input in a report.
@@ -685,9 +704,36 @@ fn check_unique_key(
   case dict.has_key(seen, name) {
     False -> Ok(Nil)
     True ->
-      Error(fail(cursor, "unique object keys (\"" <> name <> "\" repeats)"))
+      Error(fail(
+        cursor,
+        "unique object keys (\"" <> shown_key(name) <> "\" repeats)",
+      ))
   }
 }
+
+/// The key as a report shows it. A repeated key is the one place a report
+/// quotes document text of unbounded length, so it is clipped to a prefix of
+/// at most `shown_key_bytes` bytes, cut back to a codepoint boundary, and the
+/// report gives the key's size in bytes. The clip is by bytes because the
+/// other measures of a string's length walk all of it: counting graphemes of a
+/// key made of one letter and millions of combining accents costs seconds and
+/// hundreds of megabytes, and returns a length of one.
+fn shown_key(name: String) -> String {
+  let size = string.byte_size(name)
+
+  // A key within the clip is shown whole; a longer one is cut and sized.
+  case size > shown_key_bytes {
+    False -> name
+    True ->
+      valid_prefix(<<name:utf8>>, shown_key_bytes)
+      <> "… ("
+      <> int.to_string(size)
+      <> " bytes)"
+  }
+}
+
+/// How many bytes of a repeated key a refusal shows.
+const shown_key_bytes = 96
 
 /// Parses one key-value member pair of an object.
 fn parse_member(

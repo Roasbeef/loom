@@ -1,4 +1,5 @@
 import core/json
+import gleam/int
 import gleam/list
 import gleam/string
 import gleam/string_tree
@@ -431,6 +432,28 @@ pub fn a_report_offset_counts_codepoints_test() {
   assert string.contains(report.subject, "codepoint offset 6")
 }
 
+// A document that fails right after a string reports an offset equal to the
+// number of codepoints in everything before the failure, whatever widths the
+// string's codepoints have. The prefix is the encoded string and the space
+// that follows it.
+pub fn a_report_offset_is_the_prefix_codepoint_count_test() {
+  qcheck.run(generated_config(), gen.small_string(), fn(text) {
+    let prefix = json.to_string(json.String(text)) <> " "
+    let assert Error(report) = json.parse(prefix <> "x")
+      as "the trailing x is refused"
+    let expected = list.length(string.to_utf_codepoints(prefix))
+    assert report.subject == "codepoint offset " <> int.to_string(expected)
+  })
+}
+
+// Astral-plane codepoints are four bytes and a combining accent is two, and
+// each is one codepoint in the offset.
+pub fn a_report_offset_counts_astral_and_combining_test() {
+  let assert Error(report) = json.parse("\"🦊😀e\u{0301}\" x")
+    as "the trailing x is refused"
+  assert report.subject == "codepoint offset 7"
+}
+
 // Key order is the one difference two encoders of the same arguments are
 // free to disagree on, so the canonical form erases it at every depth and
 // keeps array order, which is part of the value.
@@ -566,4 +589,45 @@ pub fn the_bounded_parse_agrees_with_the_plain_parse_test() {
       as "a bound below the count is refused"
     assert report.expected == over_the_bound
   })
+}
+
+// A repeated key is named in the report, clipped to a 96-byte prefix so a
+// hostile document cannot make the report as large as its own key. The report
+// gives the key's size in bytes.
+pub fn a_repeated_key_is_clipped_in_the_report_test() {
+  let key = string.repeat("é", 200)
+  let text = "{\"" <> key <> "\":1,\"" <> key <> "\":2}"
+  let assert Error(report) = json.parse(text) as "the repeat is refused"
+  assert string.length(report.expected) < 200
+  assert string.contains(report.expected, string.repeat("é", 48))
+  assert !string.contains(report.expected, string.repeat("é", 49))
+  assert string.contains(report.expected, "(400 bytes)")
+}
+
+// One letter and hundreds of combining accents is a single grapheme, so a
+// clip counted in graphemes would show all of it.
+pub fn a_key_of_combining_accents_is_clipped_in_the_report_test() {
+  let key = "e" <> string.repeat("\u{0301}", 800)
+  let text = "{\"" <> key <> "\":1,\"" <> key <> "\":2}"
+  let assert Error(report) = json.parse(text) as "the repeat is refused"
+  assert string.byte_size(report.expected) < 300
+  assert string.contains(report.expected, "(1601 bytes)")
+}
+
+// For any key, what is shown is valid UTF-8 (a Gleam string is) of at most the
+// clip plus the fixed text around it.
+pub fn a_shown_key_is_bounded_for_any_key_test() {
+  qcheck.run(generated_config(), gen.small_string(), fn(piece) {
+    let key = string.repeat(piece <> "x", 40)
+    let text = "{" <> json.to_string(json.String(key)) <> ":1,"
+    let text = text <> json.to_string(json.String(key)) <> ":2}"
+    let assert Error(report) = json.parse(text) as "the repeat is refused"
+    assert string.byte_size(report.expected) < 96 + 80
+  })
+}
+
+pub fn a_short_repeated_key_is_shown_whole_test() {
+  let assert Error(report) = json.parse("{\"ab\":1,\"ab\":2}")
+    as "the repeat is refused"
+  assert report.expected == "unique object keys (\"ab\" repeats)"
 }

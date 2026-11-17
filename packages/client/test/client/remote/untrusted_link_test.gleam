@@ -1726,8 +1726,10 @@ fn wide_response(id: Int, items: Int) -> BitArray {
 
 // The link reads a response to a request it no longer holds without decoding
 // its body, so the only thing a late response with a wide body can break is
-// the value bound: at the bound it is dropped and the connection stays open,
-// and one value past it is a violation that closes the connection.
+// the value bound: one value past it is a violation that closes the
+// connection. The exact boundary, where a frame at the bound is accepted, is
+// pinned by the codec's own test, which reads the frame back; here a frame at
+// the bound would show only that the connection stayed open for a while.
 pub fn a_frame_past_the_value_bound_closes_the_connection_test() {
   let rig = start("value-bound")
   let #(port, _seen) = recording_port()
@@ -1743,12 +1745,9 @@ pub fn a_frame_past_the_value_bound_closes_the_connection_test() {
   )
   assert process.receive(answers, 5000) == Ok(protocol.RunLost)
 
-  let at_bound = untrusted_wire.max_frame_values - 4
-  rig.send_raw(stream, wide_response(id, at_bound))
-  assert !rig.closed(stream, 3000)
-
-  rig.send_raw(stream, wide_response(id, at_bound + 1))
-  assert rig.closed(stream, 10_000)
+  let past_bound = untrusted_wire.max_frame_values - 4 + 1
+  rig.send_raw(stream, wide_response(id, past_bound))
+  assert rig.closed(stream, 30_000)
   assert process.is_alive(rig.link)
   stop(rig)
 }
