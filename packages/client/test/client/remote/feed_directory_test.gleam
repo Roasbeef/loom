@@ -12,6 +12,7 @@ import client/gateway_test
 import client/remote/feed_directory
 import client/remote/feed_host
 import client/remote_escalation
+import client/remote_feed
 import core/ids
 import gleam/erlang/process
 import gleam/list
@@ -48,28 +49,31 @@ fn feed_owned(
     as "the fixture digest is valid"
   let authority = access.Participant(access.Operator)
   let assert Ok(feed) =
-    feed_host.start(feed_host.Settings(
-      hub: harness.hub,
-      binding: gateway.Binding(
-        session_id: ids.session_id_to_string(api.session_id(harness.runtime)),
-        epoch: "epoch",
-        incarnation: "incarnation",
-        connection_id: name,
-        principal: box_owner(),
-        authority:,
-        digest:,
-        signin: None,
-        door: gateway.PeerDoor("laptop", gateway.Decides),
+    feed_host.start(
+      feed_host.Settings(
+        hub: harness.hub,
+        binding: gateway.Binding(
+          session_id: ids.session_id_to_string(api.session_id(harness.runtime)),
+          epoch: "epoch",
+          incarnation: "incarnation",
+          connection_id: name,
+          principal: box_owner(),
+          authority:,
+          digest:,
+          signin: None,
+          door: gateway.PeerDoor("laptop", gateway.Decides),
+        ),
+        check: fn() { Ok(#(box_owner(), authority)) },
+        failed_reader: fn() { Nil },
+        spawner: "laptop",
+        ceiling: None,
+        decider: remote_escalation.Decider(principal: "page", name: "Page"),
+        admit: fn() { Ok(Nil) },
+        owner:,
+        lease_ms: 60_000,
+        observe: fn() { remote_feed.Withheld },
       ),
-      check: fn() { Ok(#(box_owner(), authority)) },
-      failed_reader: fn() { Nil },
-      spawner: "laptop",
-      ceiling: None,
-      decider: remote_escalation.Decider(principal: "page", name: "Page"),
-      admit: fn() { Ok(Nil) },
-      owner:,
-      lease_ms: 60_000,
-    ))
+    )
     as "the feed starts"
   feed
 }

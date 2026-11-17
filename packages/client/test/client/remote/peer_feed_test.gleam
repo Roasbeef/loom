@@ -1,4 +1,4 @@
-//// The four revisions of the live session page inside the stable peer
+//// The five revisions of the live session page inside the stable peer
 //// envelope (protocol-change/108): each reaches the host's function with the node
 //// the exchange took from the caller's reply subject and with a body the total
 //// decoder read whole, and a body that decoder refuses never reaches the host.
@@ -16,7 +16,7 @@ import gleam/string
 
 const token = "0123456789abcdef0123456789abcdef"
 
-/// A host whose four functions report what they were handed.
+/// A host whose five functions report what they were handed.
 fn recording(seen: Subject(String)) -> orchestrator_port.TopHost {
   orchestrator_port.TopHost(
     ..orchestrator_port.refusing_top(),
@@ -37,6 +37,10 @@ fn recording(seen: Subject(String)) -> orchestrator_port.TopHost {
         process.send(seen, "detach " <> node <> " " <> feed)
         Ok(Nil)
       },
+      worktree: fn(node, feed) {
+        process.send(seen, "worktree " <> node <> " " <> feed)
+        Ok(remote_feed.Withheld)
+      },
     ),
   )
 }
@@ -56,7 +60,7 @@ fn received(seen: Subject(String)) -> List(String) {
   }
 }
 
-pub fn the_four_revisions_are_advertised_and_dispatched_test() {
+pub fn the_five_revisions_are_advertised_and_dispatched_test() {
   list.each(remote_feed.revisions, fn(revision) {
     assert list.contains(peer_codec.revisions, revision)
   })
@@ -96,12 +100,19 @@ pub fn each_revision_reaches_its_function_with_the_exchanges_node_test() {
     == Ok(Ok(json.Null))
   assert dispatch(seen, "108.detach.1", json.Array([json.String(token)]))
     == Ok(Ok(json.Null))
+
+  // The workspace request reaches its own function, and the answer is the
+  // vocabulary's own encoding of what that function returned.
+  let assert Ok(Ok(observed)) =
+    dispatch(seen, "108.worktree.1", json.Array([json.String(token)]))
+  assert remote_feed.decode_observation(observed) == Ok(remote_feed.Withheld)
   assert received(seen)
     == [
       "attach laptop@host session-1",
       "poll laptop@host " <> token,
       "send laptop@host {}",
       "detach laptop@host " <> token,
+      "worktree laptop@host " <> token,
     ]
 }
 
@@ -140,6 +151,10 @@ pub fn a_body_the_decoder_refuses_never_reaches_the_host_test() {
     ),
     #("108.detach.1", json.Object([])),
     #("108.detach.1", json.Array([json.String(string.uppercase(token))])),
+    #("108.worktree.1", json.Object([])),
+    #("108.worktree.1", json.Array([])),
+    #("108.worktree.1", json.Array([json.String(token), json.Int(0)])),
+    #("108.worktree.1", json.Array([json.String(string.uppercase(token))])),
   ]
   list.each(hostile, fn(attempt) {
     let #(revision, body) = attempt

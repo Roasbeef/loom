@@ -1024,3 +1024,99 @@ or body changed. Three are closed and two are left, and the reasons are recorded
   the component's `Transport`, a timer and the home's relayed-section state in the
   component, and an open that departs for the relayed address. That is component
   machinery, not a wire change, and is not done here.
+
+## Addendum: the relayed page's Changes tab, `108.worktree.1` (2026-11-14)
+
+The parity addendum above left one content difference: the box's own page draws the
+workspace's Git diff in its Changes tab, and a relayed page draws the session's edits
+board, because the laptop cannot read the box's workspace. This addendum adds one
+revision, `108.worktree.1`, that carries the box's own observation to the relayed
+page. It is additive. The four frames above are unchanged, no connection or process
+shape is added, and the page that was drawn before is what an older peer still gets.
+
+**The revision.** It is one more operation of the stable exchange, advertised in
+`peer_codec.revisions` and routed by `peer_top.dispatch`, with the epoch fence,
+the node taken from the exchange, and the spawner-scoped token lookup of the other
+four.
+
+| Revision | Body | Answer |
+|---|---|---|
+| `108.worktree.1` | `[attach]` | `{read, board?}`, `board` present only for `seen` |
+
+The body is a JSON array of one token, read by `remote_feed.decode_request`, so a
+body of any other arity or with a malformed token is refused whole with `malformed`
+as the others are. The answer is an object whose `read` is `seen`, `withheld` or
+`unreadable`, and which carries `board` only for `seen`. `remote_feed.decode_observation`
+refuses any other word, a `seen` answer with no board or a board that is not an
+object, and a board whose JSON is over `max_worktree_bytes` (48,000). A token that
+is gone is refused `feed_ended` with `lapsed`, an ended feed is refused with its
+ending, and a directory that does not answer is refused `not_yet_open`, all as for a
+send. The decoder checks the envelope. The board's own fields are read by
+`session_view/worktree_view.decode`, the decoder the box's own page uses, so a board
+that does not read is `Unreadable` on the page, and the box's text is drawn only as
+the text nodes `view/worktree` already draws.
+
+**Authority is the box's.** The feed hands out an observer closure built when the feed
+was attached, over the feed's own check and the session's own observation
+(`top_host.worktree_observation`). It runs the feed's check again and caps the result
+by Operator with `ui_relay.may_read_workspace`, the function the local page's
+`ui_socket.worktree_answer` now calls too, so both pages are shown the workspace for
+the same standings: an owner's or an operator's, and never an observer's. A feed whose
+standing is an observer's, or whose check no longer passes, is answered `withheld`
+and the observation does not run. Feeds are admitted at Operator today, so the
+observer case is reached by the unit test of `worktree_observation` and not by a
+real attach. The laptop gains no other capability: it holds a request, and the box
+decides each time. `Withheld` is the read of a page that has no capability, so the
+tab is the edits board with no sentence. A failed observation is `unreadable` and its
+text, which can carry a repository's own words, is never sent.
+
+**Bounds, and why there is no piece protocol.** The observation is clipped where it is
+made. `worktree_diff.fit_board` adds files while the encoded board fits
+`board_byte_limit` (40,960) and marks a cut in `extent` and `omitted`, which the
+page draws, so the clip rule and the notice are the ones the box's own page already
+has. The answer therefore needs no clip of its own. `remote_feed.max_worktree_bytes`
+is the page decoder's bound, and `remote_feed.observed` answers `unreadable` for a
+board over it and never cuts JSON a second time. One answer is at most 48,000 bytes
+of board against the exchange's 1,048,576, so it is one frame and no piece protocol
+is needed. No unclippable case was found.
+
+**What the box runs, and where.** The feed process answers one new message, which
+reads its phase and returns the closure, and the request task runs the observation.
+That task is the one `peer_service` already starts for every request and cancels when
+the laptop's call ends, so no process is added, the feed's mailbox is not held by Git,
+and the laptop's call budget bounds how long the box works for it. That budget is
+`top_relay.worktree_ms`, 13 s, which is the observation's execution deadline (8 s,
+`worktree_diff.capture_timeout_ms`) plus the broker's cleanup grace (5 s,
+`worktree_diff.settlement_grace_ms`), and not the 7 s `call_ms` of the other
+operations: a 7 s wait would cut off a slow observation and read it as `unreadable`,
+where the box's own page draws a clipped board. The `reading` run that wraps the call
+is 14 s, so it outlasts the call. The laptop's half is the weft run `ui_socket.reading`, which returns at once as the
+local page's run does and is the same code. A relayed page asks no more often than a
+local one: the component asks after a new tool result, at most once in `refresh_ms`,
+with one read out. The box adds no per-credential allowance, as the local page's
+`reserve_worktree_read` is a count of one daemon's own sockets. A spawner that sends
+many requests at once is a configured peer that can already make the session run Git
+through its prompts, so it gains no capability, and each request ends with its call.
+
+**Not in the model.** `protocol/models/live-relay` abstracts bodies: it has frames,
+pieces, polls and ticks and no request kind beyond them. The new request is
+read-only, changes no queue, cursor, piece, lease or ending (asking is not a poll and
+renews no lease, which `feed_host_test` checks by letting a feed that is only asked
+about its workspace lapse), and adds no interleaving the model's properties speak
+of. The model is unchanged for that reason.
+
+**Mixed versions.** A new laptop asking an old box sends the request to a stable
+endpoint whose revisions lack `108.worktree.1`, which answers `Unsupported`.
+`top_relay.worktree` returns `Unsupported`, and `relayed_worktree_answer` reads that
+as `Withheld`, so the tab is exactly the edits board of the parity addendum. The page
+then treats `Withheld` as final: `component.observed` asks nothing after a `Withheld`
+read, so there is one request and no retry loop. An old laptop never sends the
+revision, and a new box serves it to no one that does not ask. A box that answers
+anything the decoder refuses is `Unreadable`, which draws one sentence and asks
+again only after a newer tool result. `worktree_page_test` drives a box that answers
+`Unsupported` and counts one exchange per read.
+
+**What stays open.** A box that restarts between two reads answers `stale` to the
+fenced call, which the page reads as `Unreadable` until the feed itself ends and the
+page reattaches. The edits board on a relayed page is still drawn when the box
+withholds, which is the same sentence-free tab a page with no capability draws.

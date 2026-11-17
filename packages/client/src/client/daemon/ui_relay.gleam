@@ -185,6 +185,32 @@ pub fn capped(
   }
 }
 
+/// Whether a standing may read the session's workspace through the daemon's
+/// own observation: an owner's or an operator's, after `capped`, and never an
+/// observer's. The page's own Changes tab (`ui_socket.worktree_answer`) and the
+/// box's answer to a relayed page's feed (`108.worktree.1`) both ask this, so
+/// the two draw the workspace for the same standings.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_relay.may_read_workspace(access.Owner, access.Operator)
+/// assert !ui_relay.may_read_workspace(
+///   access.Participant(access.Observer),
+///   access.Operator,
+/// )
+/// ```
+pub fn may_read_workspace(
+  authority: access.Authority,
+  ceiling: access.Role,
+) -> Bool {
+  // The cap decides: only the two standings that can operate a session read it.
+  case capped(authority, ceiling) {
+    access.Owner | access.Participant(access.Operator) -> True
+    access.Participant(access.Observer) -> False
+  }
+}
+
 /// A page's authorization: `check`, refused once `open` says the page's UI
 /// session has ended.
 ///

@@ -13,14 +13,23 @@
 //// running.
 
 import client/daemon/ui_socket
+import client/remote/address
+import client/remote/peer_codec
+import client/remote/peer_service
+import client/remote/top_relay
+import client/remote_feed
+import client/remote_top
 import core/json
+import gleam/erlang/node
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/worktree_view
 import storage/access
+import web_view/ending
 import web_view/worktrees
+import weft/actor
 
 fn principal() -> access.Principal {
   access.Principal(id: "p", display_name: "P", kind: access.MemberPrincipal)
@@ -321,4 +330,118 @@ pub fn a_third_read_inside_the_window_is_refused_without_running_test() {
   assert process.receive(ran, 0) == Ok(Nil)
   assert process.receive(ran, 0) == Ok(Nil)
   assert process.receive(ran, 0) == Error(Nil)
+}
+
+// --- a relayed page's read (protocol-change/108, 108.worktree.1) ------------------
+
+fn attached() -> remote_feed.Attached {
+  remote_feed.Attached(
+    feed: "0123456789abcdef0123456789abcdef",
+    epoch: "epoch-1",
+    incarnation: "incarnation-1",
+    label: remote_feed.Label(
+      name: "work",
+      placement: remote_top.Folder(path: "/srv/work"),
+    ),
+  )
+}
+
+fn page_open() -> Result(Nil, ending.Ending) {
+  Ok(Nil)
+}
+
+// The page draws what the box observed through the same decoder a local page's
+// board goes through, so a board that does not read is unreadable here too, and a
+// box that withholds the workspace leaves the tab as a page without a read has it.
+pub fn a_relayed_page_reads_the_boxs_board_with_its_own_decoder_test() {
+  let read =
+    ui_socket.relayed_worktree_answer(page_open, fn() {
+      Ok(remote_feed.Observed(one_file()))
+    })
+  assert board_of(read).files != []
+
+  let broken = json.Object([#("source", json.String("git"))])
+  assert ui_socket.relayed_worktree_answer(page_open, fn() {
+      Ok(remote_feed.Observed(broken))
+    })
+    == worktrees.Unreadable
+  assert ui_socket.relayed_worktree_answer(page_open, fn() {
+      Ok(remote_feed.Withheld)
+    })
+    == worktrees.Withheld
+  assert ui_socket.relayed_worktree_answer(page_open, fn() {
+      Ok(remote_feed.Unreadable)
+    })
+    == worktrees.Unreadable
+}
+
+// A page whose own session ended asks nothing of the box, and a box that cannot
+// be reached or answers garbage is unreadable and never carries its words.
+pub fn a_relayed_page_that_ended_asks_nothing_and_failures_are_unreadable_test() {
+  let asked = process.new_subject()
+  assert ui_socket.relayed_worktree_answer(
+      fn() { Error(ending.PageEnded) },
+      fn() {
+        process.send(asked, Nil)
+        Ok(remote_feed.Withheld)
+      },
+    )
+    == worktrees.Declined
+  assert process.receive(asked, 0) == Error(Nil)
+
+  list.each(
+    [
+      top_relay.Unreachable,
+      top_relay.Silent,
+      top_relay.PeerChanged,
+      top_relay.Unreadable("fatal: /secret"),
+      top_relay.Refused(remote_top.FeedEnded(remote_top.FeedLapsed)),
+    ],
+    fn(failure) {
+      assert ui_socket.relayed_worktree_answer(page_open, fn() {
+          Error(failure)
+        })
+        == worktrees.Unreadable
+    },
+  )
+}
+
+// A box that does not have the revision answers `Unsupported` to the one request,
+// which the page reads as withheld, so the tab stays the edits board as it is
+// today. The request is made once and not retried.
+pub fn a_box_without_the_revision_is_withheld_after_one_request_test() {
+  let asked = process.new_subject()
+  let name = process.new_name("old_box")
+  let assert Ok(_) =
+    actor.new(Nil)
+    |> actor.on_message(fn(state, message: peer_service.Message) {
+      let peer_service.Exchange(payload, reply_to) = message
+      process.send(asked, payload)
+      process.send(
+        reply_to,
+        peer_codec.encode_response(
+          peer_codec.Unsupported(peer_codec.request_id(payload)),
+        ),
+      )
+      actor.continue(state)
+    })
+    |> actor.named(name)
+    |> actor.start
+    as "the old box starts"
+  let relay =
+    top_relay.through(
+      fn(_name) { Ok(address.Address(node: node.self(), name:)) },
+      top_relay.production(),
+    )
+  assert top_relay.worktree(relay, "box", attached())
+    == Error(top_relay.Unsupported)
+  assert ui_socket.relayed_worktree_answer(page_open, fn() {
+      top_relay.worktree(relay, "box", attached())
+    })
+    == worktrees.Withheld
+
+  // Two reads, two exchanges, and nothing that retries by itself.
+  let assert Ok(_) = process.receive(asked, 100)
+  let assert Ok(_) = process.receive(asked, 100)
+  assert process.receive(asked, 300) == Error(Nil)
 }

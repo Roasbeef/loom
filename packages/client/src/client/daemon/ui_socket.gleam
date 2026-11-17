@@ -1355,8 +1355,9 @@ fn live_socket(
 /// transport. The component's own capabilities that are the laptop's (the
 /// sidebar, switching, resuming, going home) are the ones a local page has, and
 /// the ones that are a power of the daemon that serves the session (invite,
-/// rename, shareable, worktree, manage, peers, logins) are not offered, because
-/// the box offers none of them over the feed.
+/// rename, shareable, manage, peers, logins) are not offered, because the box
+/// offers none of them over the feed. The workspace read is offered as a request
+/// to the box, which decides it (`108.worktree.1`).
 fn admit_live(
   daemon: root.Root(instance),
   attachment: server.HomeAttachment(instance),
@@ -1392,6 +1393,23 @@ fn admit_live(
         }
     }
   }
+
+  // The workspace is the box's to read. The capability asks the box for its
+  // observation through the feed's own attach, and the box decides whether this
+  // feed may have it, so holding the capability grants the laptop nothing. A page
+  // with no feed has nothing to ask.
+  let worktree = case reach {
+    Attached(attached:) ->
+      worktree_capability(role, fn(deliver) {
+        reading(deliver, fn() {
+          relayed_worktree_answer(still_open, fn() {
+            top_relay.worktree(relay, target.orchestrator, attached)
+          })
+        })
+      })
+    Waiting | Crowded -> None
+  }
+
   let transport =
     component.Transport(
       connect: fn(inbox, opened) {
@@ -1420,7 +1438,7 @@ fn admit_live(
       }),
       rename: None,
       shareable: None,
-      worktree: None,
+      worktree:,
       manage: None,
       logins: None,
       peers: None,
@@ -4553,10 +4571,25 @@ pub fn worktree_task(
   observe: fn() -> Result(wire.JsonValue, String),
   deliver: fn(worktrees.Read) -> Nil,
 ) -> Nil {
+  reading(deliver, fn() { worktree_answer(check, ceiling, reserve, observe) })
+}
+
+/// Runs one read of the workspace in a weft run of its own that returns at
+/// once, and delivers what `answer` made from that run. Both pages' reads go
+/// through it, so a read of the daemon's own workspace and a read the box makes
+/// for a relayed page have the same run, the same link to the page's runtime
+/// and the same deadline. It is 14 s, which covers the observation's execution
+/// deadline and the broker's cleanup grace (13 s together), and so the relayed
+/// read's call, which waits that long (`top_relay.worktree_ms`), and its page
+/// check.
+fn reading(
+  deliver: fn(worktrees.Read) -> Nil,
+  answer: fn() -> worktrees.Read,
+) -> Nil {
   let _ =
     weft.new([
       fn() {
-        deliver(worktree_answer(check, ceiling, reserve, observe))
+        deliver(answer())
         Ok(Nil)
       },
     ])
@@ -4597,16 +4630,61 @@ pub fn worktree_answer(
   case check() {
     Error(_) -> worktrees.Declined
     Ok(#(_, authority)) ->
-      // This branch resolves ui_relay capped authority ceiling before the operation continues.
-      case ui_relay.capped(authority, ceiling) {
-        access.Owner | access.Participant(access.Operator) ->
-          // This branch resolves reserve before the operation continues.
+      case ui_relay.may_read_workspace(authority, ceiling) {
+        False -> worktrees.Declined
+
+        // This branch resolves reserve before the operation continues.
+        True ->
           case reserve() {
             Ok(Nil) -> worktree_read(observe())
             Error(Nil) -> worktrees.Throttled
           }
+      }
+  }
+}
 
-        access.Participant(access.Observer) -> worktrees.Declined
+/// What a relayed page is told of its session's workspace: the box's own
+/// observation, which the box judged for the feed's standing, or the reason the
+/// page draws none.
+///
+/// The page's own standing is checked first, with the check the feed client
+/// runs before every poll (`open`), so a page whose UI session ended asks
+/// nothing of the box and is `Declined`. The box then answers (`ask` is
+/// `top_relay.worktree`): a board is read by the same decoder a local page's is,
+/// so one that does not read is `Unreadable`, and a box that withholds the
+/// workspace from this feed, or that does not have the revision, is `Withheld`.
+/// `Withheld` is the read of a page that holds no capability, so the tab lists
+/// the agent's edits exactly as it does without one and the page does not ask
+/// again (`component.observed`). A refusal, a silence or a garbled answer is
+/// `Unreadable` and never carries the box's words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.relayed_worktree_answer(open, ask)
+/// ```
+@internal
+pub fn relayed_worktree_answer(
+  open: fn() -> Result(Nil, ending.Ending),
+  ask: fn() -> Result(remote_feed.Observation, top_relay.Failure),
+) -> worktrees.Read {
+  case open() {
+    Error(_) -> worktrees.Declined
+    Ok(Nil) ->
+      case ask() {
+        Ok(remote_feed.Observed(board:)) -> worktree_read(Ok(board))
+        Ok(remote_feed.Withheld)
+        | Error(top_relay.Unsupported)
+        | Error(top_relay.OlderBuild) -> worktrees.Withheld
+        Ok(remote_feed.Unreadable)
+        | Error(top_relay.NotConfigured(_))
+        | Error(top_relay.Unreachable)
+        | Error(top_relay.Silent)
+        | Error(top_relay.Refused(_))
+        | Error(top_relay.PeerChanged)
+        | Error(top_relay.InvalidPeer)
+        | Error(top_relay.RequestTooLarge)
+        | Error(top_relay.Unreadable(_)) -> worktrees.Unreadable
       }
   }
 }
