@@ -591,16 +591,39 @@ pub fn the_bounded_parse_agrees_with_the_plain_parse_test() {
   })
 }
 
-// A repeated key is named in the report, clipped to 64 codepoints so a
-// hostile document cannot make the report as large as its own key.
+// A repeated key is named in the report, clipped to a 96-byte prefix so a
+// hostile document cannot make the report as large as its own key. The report
+// gives the key's size in bytes.
 pub fn a_repeated_key_is_clipped_in_the_report_test() {
   let key = string.repeat("é", 200)
   let text = "{\"" <> key <> "\":1,\"" <> key <> "\":2}"
   let assert Error(report) = json.parse(text) as "the repeat is refused"
   assert string.length(report.expected) < 200
-  assert string.contains(report.expected, string.repeat("é", 64))
-  assert !string.contains(report.expected, string.repeat("é", 65))
-  assert string.contains(report.expected, "136 more")
+  assert string.contains(report.expected, string.repeat("é", 48))
+  assert !string.contains(report.expected, string.repeat("é", 49))
+  assert string.contains(report.expected, "(400 bytes)")
+}
+
+// One letter and hundreds of combining accents is a single grapheme, so a
+// clip counted in graphemes would show all of it.
+pub fn a_key_of_combining_accents_is_clipped_in_the_report_test() {
+  let key = "e" <> string.repeat("\u{0301}", 800)
+  let text = "{\"" <> key <> "\":1,\"" <> key <> "\":2}"
+  let assert Error(report) = json.parse(text) as "the repeat is refused"
+  assert string.byte_size(report.expected) < 300
+  assert string.contains(report.expected, "(1601 bytes)")
+}
+
+// For any key, what is shown is valid UTF-8 (a Gleam string is) of at most the
+// clip plus the fixed text around it.
+pub fn a_shown_key_is_bounded_for_any_key_test() {
+  qcheck.run(generated_config(), gen.small_string(), fn(piece) {
+    let key = string.repeat(piece <> "x", 40)
+    let text = "{" <> json.to_string(json.String(key)) <> ":1,"
+    let text = text <> json.to_string(json.String(key)) <> ":2}"
+    let assert Error(report) = json.parse(text) as "the repeat is refused"
+    assert string.byte_size(report.expected) < 96 + 80
+  })
 }
 
 pub fn a_short_repeated_key_is_shown_whole_test() {

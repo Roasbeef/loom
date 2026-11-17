@@ -515,8 +515,9 @@ fn fail(cursor: Cursor, expected: String) -> CorruptionReport {
 // when there is a report to write. The consumed prefix of a document that
 // came from a `String` is valid UTF-8, and every codepoint in valid UTF-8
 // has exactly one byte outside the continuation range `0x80..0xBF`, so the
-// codepoint count is the number of such bytes. The walk allocates nothing,
-// which matters because a hostile peer controls how long the prefix is: a
+// codepoint count is the number of such bytes. The walk builds no list
+// and no string, and allocates nothing on the BEAM (on JavaScript each step
+// makes a short-lived view), which matters because a hostile peer controls how long the prefix is: a
 // list of the prefix's codepoints costs tens of bytes of heap per byte
 // consumed.
 fn codepoint_offset(cursor: Cursor) -> Int {
@@ -711,21 +712,28 @@ fn check_unique_key(
 }
 
 /// The key as a report shows it. A repeated key is the one place a report
-/// quotes document text of unbounded length, so it is clipped to 64 codepoints
-/// and the report says how many were left out.
+/// quotes document text of unbounded length, so it is clipped to a prefix of
+/// at most `shown_key_bytes` bytes, cut back to a codepoint boundary, and the
+/// report gives the key's size in bytes. The clip is by bytes because the
+/// other measures of a string's length walk all of it: counting graphemes of a
+/// key made of one letter and millions of combining accents costs seconds and
+/// hundreds of megabytes, and returns a length of one.
 fn shown_key(name: String) -> String {
-  let length = string.length(name)
+  let size = string.byte_size(name)
 
-  // A key within the clip is shown whole; a longer one is cut and counted.
-  case length > 64 {
+  // A key within the clip is shown whole; a longer one is cut and sized.
+  case size > shown_key_bytes {
     False -> name
     True ->
-      string.slice(name, 0, 64)
+      valid_prefix(<<name:utf8>>, shown_key_bytes)
       <> "… ("
-      <> int.to_string(length - 64)
-      <> " more)"
+      <> int.to_string(size)
+      <> " bytes)"
   }
 }
+
+/// How many bytes of a repeated key a refusal shows.
+const shown_key_bytes = 96
 
 /// Parses one key-value member pair of an object.
 fn parse_member(
