@@ -18,18 +18,19 @@
 //// - `setup` runs the `loom-vm` that ships beside the daemon to install the
 ////   artifacts for a release or a build tree, trying each tag the running
 ////   build may be published under (`install_artifacts`).
-//// - `up` reads and checks the manifest, installing the running build's
-////   release first when there is none (`installed_manifest`), finds the
-////   workspace, settles the deployment (`deployment`: mint one, `join` the
-////   ledger deployment the configuration holds, or refuse a static one),
-////   installs the orchestrator of a minted one (`enroll`), stages the guest
-////   root (`stage`) and boots it (`boot`).
+//// - `up` settles the guest's link first (`link_of`), which refuses a guest an
+////   older loom made as a distribution peer, then reads and checks the
+////   manifest, installing the running build's release first when there is
+////   none (`installed_manifest`), finds the workspace, mints the link's
+////   credentials and writes the guest's row (`enroll_linked`), stages the
+////   guest root (`stage_with`) and boots it (`launch_guest`), all through
+////   `bring_up_linked`. The distribution path (`deployment`, `enroll`, `stage`,
+////   `boot`) is reached by no guest now and is deleted after one release.
 //// - `ensure` makes the guest of one workspace ready for `loom --vm`: it names
 ////   the guest after the workspace (`vm_spec.guest_name_for`), reads the
 ////   facts (`ensure_facts`), lets `vm_spec.ensure_step` decide, and boots
 ////   through `bring_up`, the same code `up` runs. Its last line of standard
-////   output names the executor and workspace, and status 75 with
-////   `daemon=required` says only a running daemon is missing (`ensure`).
+////   output names the executor and workspace (`ensure`).
 //// - `down` signals the recorded process and waits for it (`down`).
 //// - `status` reports what the pid file, the process table and the host epmd
 ////   say (`status`).
@@ -62,47 +63,30 @@
 //// Everything of one guest lives in `<vm home>/<name>/`, where the vm home is
 //// `$LOOM_VM_HOME` or `~/.loom/vm`:
 ////
-//// - `deploy/` holds the two provisioned bundles and the public ledger. A
-////   second `up` reads the bundles again rather than minting new certificates,
-////   so the orchestrator's installed configuration keeps matching the executor
-////   it trusts. A guest minted before the membership ledger holds `/1` bundles
-////   that list their peers; they are read and installed as they were, and are
-////   never converted.
-//// - `orch/` holds the orchestrator's installed credentials. A guest that joined
-////   its daemon's deployment has none and no orchestrator bundle: the daemon is
-////   already a member, and its configuration is not touched.
+//// - `link` records that the guest is on the untrusted link, `link-port` the
+////   host loopback port its row names, and `link-credentials/` its own leaf
+////   and key (`client/vm_link_pki`), minted first. The vm home's `link/` holds
+////   the link authority and the orchestrator's leaf, shared by every guest.
 //// - `root/` is the guest's own clone of the exported guest root, and
-////   `state.img` is the disk its executor keeps its ledger and scopes on. A
-////   second `up` boots both again, so whatever the guest wrote into its
-////   checkout and the sessions its executor holds survive `down`; `--fresh`
-////   replaces both. `down` leaves them for the user to read.
+////   `state.img` is the disk its executor keeps its scopes on. A second `up`
+////   boots both again, so whatever the guest wrote into its checkout and the
+////   sessions its executor holds survive `down`; `--fresh` replaces both.
+////   `down` leaves them for the user to read.
 //// - `loom-vm.pid` names the process and its birth marker, and `loom-vm.log`
 ////   holds the guest's console.
 ////
-//// ## The authority key
+//// ## Guests made over distribution
 ////
-//// `up` mints a deployment in ledger mode (protocol-change/086), so a node can
-//// be enrolled into it later without minting everything again. The authority
-//// key that signs the ledger is sealed under
-//// `<vm home>/authority/<deployment id>/` with `client/authority_key`, beside
-//// the authority certificate, the operator's copy of the ledger, the cookie
-//// and a `passphrase` file `up` generated (32 bytes from the production
-//// entropy source, mode 0600). A standing guest has no terminal, and the file
-//// is what a later `loom distribution enroll --passphrase-file` reads.
-////
-//// That directory is outside every guest root and no bundle that reaches the
-//// guest holds the key: the executor's bundle has its own node key and the
-//// deployment's cookie. The daemon's jails mask `~/.loom/vm` and the state
-//// root's `vm` (`workspace_policy`), so the directory is out of reach of
-//// jailed tools under either. A `$LOOM_VM_HOME` elsewhere is not masked, and
-//// the key and its passphrase are then readable by any process of the user.
-//// `rm` deletes the directory with the guest that minted it, unless another
-//// guest's bundle names the same deployment.
-////
-//// The orchestrator's bundle goes into the user's `loom.toml` the way `loom
-//// distribution install` puts it: it merges `[distribution]` and
-//// `[executors.<name>]`, and refuses a file that already holds a different
-//// deployment instead of replacing it.
+//// A guest an older loom made is a distribution peer of the daemon. Its
+//// directory holds `deploy/`, the provisioned bundles, and, when it minted its
+//// deployment, `orch/`; its root holds the executor's node key and cookie,
+//// and a deployment it minted has its authority key sealed under
+//// `<vm home>/authority/<deployment id>/` beside a generated `passphrase`. `up`
+//// and `ensure` refuse such a guest (`vm_link.settle`), and `status`, `list`,
+//// `logs`, `down`, `sync` and `rm` treat it as they always did; `rm` undoes
+//// its `[distribution]` and `[executors.<name>]` tables, its cookie, its
+//// sealed key and its ledger membership as `vm_spec.plan_teardown` and
+//// `removal_plan` decide.
 ////
 //// ## Why the process is signalled by birth marker
 ////
@@ -158,9 +142,8 @@ pub const usage =
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
                   [--allow HOST]... [--provision SCRIPT]
-                  [--link distribution|untrusted]
        loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
-                      [--config PATH] [--link distribution|untrusted]
+                      [--config PATH]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -181,12 +164,16 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             --from-build DIR records a build tree (packages/vmm/build). A
             development build has no release: build the artifacts in a
             checkout and run `make vmm-install-dev`.
-  up        Make the guest a member of your daemon's deployment. A loom.toml
-            with no deployment gets a two-node ledger deployment, with the
-            orchestrator enrolled as [executors.NAME]. A loom.toml that holds a
-            ledger deployment gets the guest enrolled in it through the running
-            daemon, which derives [executors.NAME] from the ledger with no
-            restart and no change to the file. Then clone the guest root, copy
+  up        Make the guest an untrusted executor of your daemon. The daemon
+            reaches it over a pinned TLS link that is not Erlang distribution,
+            so the guest holds no cookie and code that takes it over reaches
+            no code in your daemon. The first up mints a private link
+            authority under the vm home and writes [executor_link] and
+            [executors.NAME] into loom.toml beside whatever is there; it never
+            replaces a table that differs, and leaves [distribution] as it is.
+            A daemon that is already running is asked to read the new row; it
+            is stopped, or named, only when it predates that command or
+            refuses it. Then clone the guest root, copy
             the workspace into it, boot the guest with `loom-vm run` and wait until
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
@@ -197,13 +184,15 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             copy gets a repository of its own. With no artifacts installed it
             first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
-            loom.toml to enroll in (default ~/.loom/loom.toml).
-            A static deployment is refused, and so is a ledger deployment when
-            its daemon is not running or its authority key is not on this
-            machine. Each guest has its own NAME, so several can run at once.
+            loom.toml to write (default ~/.loom/loom.toml). Each guest has its
+            own NAME, so several can run at once.
             A guest that ran before keeps its root, the checkouts in it and its
             state disk, so `down` and `up` resume where it stopped. --fresh
-            replaces all three.
+            replaces all three. A guest an older loom made as an Erlang
+            distribution peer is refused, naming `loom vm sync`, `loom vm rm`
+            and `loom vm up`, which move its work to a new guest. A session on
+            a guest runs no project hooks and no remote evolution:
+            docs/architecture/microvm.md says why.
             --github chooses where loom-vm reads the token its credential proxy
             injects: gh (the default) runs `gh auth token`, env reads
             LOOM_VM_GITHUB_TOKEN, and off gives the guest no network beyond
@@ -222,18 +211,6 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             in loom-vm.log. A failing script fails up, and the next up runs it
             again. A resume skips a script that succeeded, and refuses a new
             one: add --fresh. Use --allow for the hosts it needs.
-            --link untrusted reaches the guest over a pinned TLS link that is
-            not Erlang distribution, so the guest holds no cookie and its
-            takeover reaches no code in your daemon. It mints a private link
-            authority under the vm home, writes [executor_link] and
-            [executors.NAME] into loom.toml beside whatever is there (it never
-            replaces a table that differs, and leaves [distribution] as it is),
-            and needs no deployment, ledger or running daemon. A daemon that is
-            already running is asked to read the new row; it is stopped, or
-            named, only when it predates that command or refuses it. The link
-            is recorded and kept for the guest's life; `distribution` is the
-            default. The link lacks project hooks, goal checks and the Changes
-            tab for now: docs/architecture/microvm.md lists them.
   ensure    Make the guest of one workspace ready, which is what `loom --vm`
             runs. The guest is named after DIR (default: the current
             directory): its last segment and six digits of its path, so every
@@ -244,34 +221,35 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             --github, --allow and --config mean what they mean for up, and a
             resume keeps the access and hosts the guest was started with. A
             guest that already serves ignores --github and --allow, and says
-            so. A guest whose root came from another release, or whose
-            executor is still booting, is refused with the command to run.
+            so. A guest whose root came from another release, whose executor
+            is still booting, or that an older loom made as a distribution
+            peer, is refused with the commands to run.
             Progress goes to standard error. The last line of standard output
             is `executor=NAME workspace=NAME`, the words `loom --executor E
-            --workspace W` takes. Exit status 75 with the line `daemon=required`
-            means the only thing missing is a running daemon, which ensure
-            never starts: start one and run it again. It fails, leaving the
-            guest up, when a daemon that holds sessions must restart to read the
-            deployment this call installed.
+            --workspace W` takes. It fails, leaving the guest up, when a
+            running daemon cannot read the guest's row without a restart.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
-  status    Say whether the guest runs, where it is registered and what it
-            holds.
+  status    Say whether the guest runs, which link it was made with, where it
+            is reached and what it holds.
   logs      Print the last lines of the guest's console log, loom-vm.log:
             100, or --lines N, and at most the last 4 MiB of them. There is
             no follow mode.
   list      Print one line for each guest under the vm home: its name,
-            whether it runs, and its workspaces.
-  rm        Delete a stopped guest and undo its enrolment. It removes
-            [executors.NAME] from loom.toml (--config PATH, default
-            ~/.loom/loom.toml), and the [distribution] table and the home's
+            whether it runs, the link it was made with (untrusted, or
+            distribution for a guest an older loom made, which up refuses),
+            and its workspaces.
+  rm        Delete a stopped guest and undo its enrolment in loom.toml
+            (--config PATH, default ~/.loom/loom.toml). For a guest on the
+            untrusted link it removes [executors.NAME], and [executor_link]
+            with the vm home's link credentials when no other untrusted guest
+            remains. A guest an older loom made as a distribution peer loses
+            its [executors.NAME], and the [distribution] table and the home's
             .erlang.cookie only when they are this guest's deployment's and no
-            other [executors.*] table remains; otherwise it leaves them and
-            says so. A guest that joined a ledger deployment is revoked with
-            the key, when it is on this machine, and otherwise rm prints the
-            revoke to run. A guest that others joined is removed last. A guest
-            on the untrusted link has nothing to revoke: rm removes its
-            [executors.NAME] table, and [executor_link] with the vm home's
-            link credentials when no other untrusted guest remains. Every other line of loom.toml is kept. A running guest is
+            other [executors.*] table remains; otherwise rm leaves them and
+            says so. Such a guest that joined a ledger deployment is revoked
+            with the key, when it is on this machine, and otherwise rm prints
+            the revoke to run; one that others joined is removed last. Every
+            other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
             the workspaces and the local branches that origin lacks.
@@ -774,6 +752,12 @@ fn up(options: UpOptions) -> Result(String, String) {
 /// the boot path exists once.
 fn bring_up(options: UpOptions) -> Result(Upped, String) {
   use vm_home <- result.try(vm_home())
+  let guest = instance(vm_home, options.name)
+
+  // The link is settled first, from the host's records alone, so a guest made
+  // over distribution is refused before a manifest is installed, a file is
+  // written or a daemon is asked anything.
+  use kind <- result.try(link_of(guest, options.name))
   use manifest <- result.try(installed_manifest(vm_home))
   use Nil <- result.try(vm_spec.check_revision(
     manifest,
@@ -781,7 +765,6 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   ))
   use workspace <- result.try(workspace_of(options))
   let names = vm_spec.names(options.name)
-  let guest = instance(vm_home, options.name)
   use Nil <- result.try(refuse_running(guest, options.name))
   use Nil <- result.try(refuse_stranded(
     guest,
@@ -802,8 +785,9 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   let options = UpOptions(..options, allow:)
 
   // A guest on the untrusted link has no deployment to settle, and shares only
-  // the checks above and the root, state and boot steps below.
-  use kind <- result.try(link_of(guest, options))
+  // the checks above and the root, state and boot steps below. `settle` never
+  // answers `Distribution`, so the distribution half below is reached by no
+  // guest; it is deleted with the rest of that path after one release.
   use <- on_link(kind, fn() {
     bring_up_linked(LinkedUp(
       manifest:,
@@ -1177,7 +1161,10 @@ fn ensure_facts(
   let names = vm_spec.names(name)
   let guest = instance(vm_home, name)
   use state <- result.try(process_state(guest) |> result.map_error(Refused))
-  use kind <- result.try(link_of(guest, options) |> result.map_error(Refused))
+
+  // A guest made over distribution is refused here, before `ensure_step`, so
+  // even one that serves is not handed to `loom --vm`.
+  use kind <- result.try(link_of(guest, name) |> result.map_error(Refused))
 
   // The record's process is read through its birth marker, so a stale record
   // is no process, and the node's epmd registration is read beside it.
@@ -2302,38 +2289,48 @@ type LinkedUp {
   )
 }
 
-/// The link this command gives the guest: the one its `link` record says, one
-/// that bundles imply, or the one `--link` asks for when the guest is new
-/// (`vm_link.settle`). A guest never changes its link, so a mismatch refuses
-/// before anything is written.
-fn link_of(
-  guest: Instance,
-  options: UpOptions,
-) -> Result(vm_spec.LinkKind, String) {
+/// The link `up` and `ensure` give the guest, which is the untrusted one, or
+/// the refusal for a guest made over distribution (`vm_link.settle`). It reads
+/// only the host's records beside the guest, so a refusal comes before
+/// anything is written, booted or sent.
+fn link_of(guest: Instance, name: String) -> Result(vm_spec.LinkKind, String) {
   use record <- result.try(read_record(guest.kind_file))
-  vm_link.settle(options.name, record, traces_of(guest), options.link)
+  vm_link.settle(name, record, traces_of(guest))
 }
 
 /// What a first `up` left in the guest's directory before it recorded a link:
-/// the leaf an untrusted `up` mints, or the bundles a distribution `up` writes.
+/// the leaf an untrusted `up` mints, or the bundles a distribution `up` wrote.
 fn traces_of(guest: Instance) -> vm_link.Traces {
-  let leaf = is_plain_directory(guest.link_credentials)
-  let bundles = is_plain_directory(guest.deploy)
+  vm_link.traces(
+    directory_presence(guest.link_credentials),
+    directory_presence(guest.deploy),
+  )
+}
 
-  // The leaf is looked for first: it is minted before anything else of an
-  // untrusted guest exists, so it names the link of a run that stopped early.
-  case leaf, bundles {
-    True, _ -> vm_link.LeafTrace
-    False, True -> vm_link.DeployTrace
-    False, False -> vm_link.NoTraces
+/// Whether `path` is a real directory, as the presence `vm_link.traces` takes.
+/// A link where the directory belongs is no directory.
+fn directory_presence(path: String) -> vm_spec.Presence {
+  case is_plain_directory(path) {
+    True -> vm_spec.Present
+    False -> vm_spec.Absent
   }
 }
 
-/// The link a guest was made with, for the commands that only read it. A guest
-/// with no record and no trace of a first run is a distribution guest.
+/// The link a guest was made with, for the commands that only read it. A
+/// directory with no record and no trace of a first run is one `up` would
+/// make an untrusted guest of, so it is read as one.
 fn recorded_kind(guest: Instance) -> Result(vm_spec.LinkKind, String) {
+  use made <- result.try(made_kind(guest))
+  Ok(option.unwrap(made, vm_spec.Untrusted))
+}
+
+/// The link a guest was made with, or none when no `up` left a sign of it
+/// (`vm_link.made`).
+fn made_kind(
+  guest: Instance,
+) -> Result(option.Option(vm_spec.LinkKind), String) {
   use record <- result.try(read_record(guest.kind_file))
-  vm_link.settle("", record, traces_of(guest), None)
+  vm_link.made(record, traces_of(guest))
 }
 
 /// The text of a record file the host wrote, or none when it is absent.
@@ -2786,9 +2783,10 @@ fn on_untrusted_report(
   }
 }
 
-/// The `status` lines about how the guest is reached: the node and the host's
-/// epmd entry for a distribution guest, and the link, its address and the
-/// guest's pin for an untrusted one.
+/// The `status` lines about how the guest is reached: the link, then the node
+/// and the host's epmd entry for a distribution guest, and the address and
+/// the guest's pin for an untrusted one. The first line names the link either
+/// way, so a developer can tell an old guest that `up` refuses.
 fn link_lines(
   guest: Instance,
   names: vm_spec.Names,
@@ -2798,6 +2796,7 @@ fn link_lines(
   // port and a pin recorded beside the guest.
   case kind {
     vm_spec.Distribution -> [
+      "link:       distribution, retired: `loom vm up` refuses this guest",
       "node:       " <> names.executor_node,
       "epmd:       " <> epmd_line(names),
     ]
@@ -4804,8 +4803,9 @@ fn guests() -> Result(String, String) {
   }
 }
 
-/// A guest's name, whether it runs and its workspaces, in aligned columns. A
-/// guest with no pid file is stopped.
+/// A guest's name, whether it runs, the link it was made with and its
+/// workspaces, in aligned columns. A guest with no pid file is stopped, and a
+/// `distribution` guest is one `up` refuses.
 fn guest_line(vm_home: String, name: String, width: Int) -> String {
   let guest = instance(vm_home, name)
 
@@ -4817,9 +4817,17 @@ fn guest_line(vm_home: String, name: String, width: Int) -> String {
     Error(_) -> "unknown"
   }
 
+  // A record that cannot be read is said to be so, never guessed.
+  let link = case recorded_kind(guest) {
+    Ok(kind) -> vm_link.kind_word(kind)
+    Error(_) -> "unknown"
+  }
+
   string.pad_end(name, width, " ")
   <> "  "
   <> string.pad_end(state, 7, " ")
+  <> "  "
+  <> string.pad_end(link, 12, " ")
   <> "  "
   <> workspace_line(guest)
 }
@@ -5079,10 +5087,11 @@ fn linked_removal_plan(
   ))
 }
 
-/// The links of the guests other than `name`, from their `link` records. A
-/// directory with no record is a distribution guest, and a record that cannot
-/// be read counts as untrusted, so the shared credentials are kept rather than
-/// removed under a guest that may still need them.
+/// The links of the guests other than `name`, from their `link` records and
+/// traces. A directory with neither, such as the vm home's own `link/`, is no
+/// guest and is not counted, and a record that cannot be read counts as
+/// untrusted, so the shared credentials are kept rather than removed under a
+/// guest that may still need them.
 fn other_kinds(
   vm_home: String,
   name: String,
@@ -5098,9 +5107,12 @@ fn other_kinds(
     |> list.filter(fn(entry) {
       entry != name && result.is_ok(vm_spec.valid_existing_name(entry))
     })
-    |> list.map(fn(entry) {
-      recorded_kind(instance(vm_home, entry))
-      |> result.unwrap(vm_spec.Untrusted)
+    |> list.filter_map(fn(entry) {
+      case made_kind(instance(vm_home, entry)) {
+        Ok(Some(kind)) -> Ok(kind)
+        Ok(None) -> Error(Nil)
+        Error(_) -> Ok(vm_spec.Untrusted)
+      }
     }),
   )
 }

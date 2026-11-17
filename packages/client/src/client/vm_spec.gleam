@@ -218,17 +218,18 @@ pub type UpOptions {
     allow: List(String),
     /// The host path of the script `--provision` names.
     provision: Option(String),
-    /// How the daemon reaches the guest when `--link` said. `None` means the
-    /// flag was not given, which is not the same as `distribution`: a resume
-    /// keeps the link the guest was made with (`client/vm_link.settle`).
-    link: Option(LinkKind),
   )
 }
 
-/// How the host daemon reaches a guest's executor.
+/// How the host daemon reaches a guest's executor. `up` and `ensure` make and
+/// resume only `Untrusted` guests (`client/vm_link.settle`), so nothing in
+/// `UpOptions` names a link; `Distribution` is what the verbs that read a
+/// guest (`status`, `list`, `rm`) find in a guest made before the untrusted
+/// link was the default.
 pub type LinkKind {
-  /// A trusted Erlang distribution peer, which is how every guest was reached
-  /// before `--link` existed.
+  /// A trusted Erlang distribution peer, which is how guests were reached
+  /// until the untrusted link became the default. Such a guest holds the
+  /// executor's cookie and node key, and is no longer started.
   Distribution
 
   /// An untrusted executor over a pinned TLS link that is not distribution
@@ -625,7 +626,6 @@ fn default_up() -> UpOptions {
     freshness: Resume,
     allow: [],
     provision: None,
-    link: None,
   )
 }
 
@@ -671,8 +671,8 @@ fn up_flags(
       up_flags(rest, UpOptions(..options, github: Some(github)))
     }
     ["--link", value, ..rest] -> {
-      use link <- result.try(link_kind(value))
-      up_flags(rest, UpOptions(..options, link: Some(link)))
+      use Nil <- result.try(link_flag(value))
+      up_flags(rest, options)
     }
 
     // The one flag with no value: starting again is a choice, not a setting.
@@ -699,13 +699,27 @@ fn up_flags(
   }
 }
 
-/// Reads `--link`'s value.
-fn link_kind(value: String) -> Result(LinkKind, String) {
-  // The two words are the ones `status` and the guest's `link` record use.
+/// Checks `--link`'s value. Every guest `up` makes is on the untrusted link,
+/// so `--link untrusted` is the default spelled out and changes nothing; it is
+/// still accepted because scripts written while it was a choice pass it.
+/// `--link distribution` is refused with the reason, so no command can make a
+/// guest that holds the executor's cookie.
+fn link_flag(value: String) -> Result(Nil, String) {
+  // The one word that means something names the default; the other kind's
+  // word gets its own reason, and anything else is a typing error.
   case value {
-    "distribution" -> Ok(Distribution)
-    "untrusted" -> Ok(Untrusted)
-    _ -> Error("--link takes distribution or untrusted, not " <> value)
+    "untrusted" -> Ok(Nil)
+    "distribution" ->
+      Error(
+        "--link distribution is retired for guests, because a guest made as a "
+        <> "distribution peer lets code that takes it over run in your daemon "
+        <> "as you. Every guest uses the untrusted link, so run `loom vm up` "
+        <> "with no --link.",
+      )
+    _ ->
+      Error(
+        "--link takes only untrusted, which every guest uses, not " <> value,
+      )
   }
 }
 

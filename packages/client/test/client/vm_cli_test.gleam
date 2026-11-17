@@ -130,6 +130,27 @@ pub fn vm_is_a_command_of_both_binaries_test() {
   assert result.is_error(vm_cli.run(["up", "--bogus", "1"]))
 }
 
+pub fn the_usage_no_longer_offers_a_distribution_guest_test() {
+  // The flag is accepted for scripts but not advertised, and the text says
+  // what happens to a guest an older loom made.
+  assert !string.contains(vm_cli.usage, "--link")
+  assert !string.contains(vm_cli.usage, "distribution|untrusted")
+  assert string.contains(vm_cli.usage, "untrusted executor of your daemon")
+  assert string.contains(
+    vm_cli.usage,
+    "naming `loom vm sync`, `loom vm rm`\n            and `loom vm up`",
+  )
+}
+
+pub fn up_with_link_distribution_is_refused_before_it_runs_test() {
+  // The parser refuses it, so the refusal comes before any file is read and
+  // carries the usage after the reason.
+  let assert Error(reason) = vm_cli.run(["up", "--link", "distribution"])
+    as "up --link distribution is refused"
+  assert string.starts_with(reason, "--link distribution is retired")
+  assert string.contains(reason, vm_cli.usage)
+}
+
 pub fn the_installers_force_advice_is_left_out_test() {
   assert vm_spec.without_force_hint(
       "c.toml already has [distribution] with different values; pass --force to replace the tables this bundle owns",

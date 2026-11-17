@@ -121,7 +121,16 @@ by a loom that kept no such copy, and that was provisioned, needs
 release manifest is upgraded too; only a `dev` manifest keeps the root as it is. After a GitHub token rotates, run `loom vm down` and `loom vm up`:
 the token is read once at launch. A launcher killed with SIGKILL can leave its
 runner alive; `up` and `rm` refuse, and `down` and `status` report it, naming the
-pid to stop. See
+pid to stop.
+
+A guest made by a loom from before the untrusted link became the default is a
+trusted distribution peer of your daemon, and `loom vm up`, `loom vm ensure` and
+`loom --vm` refuse it; `loom vm list` shows its link as `distribution`. Move its
+work to a new guest in this order: `loom vm sync --name NAME` fetches its
+commits into your checkout, `loom vm rm --name NAME --yes` removes the guest and
+its tables from `loom.toml`, and `loom vm up --name NAME` makes it again on the
+untrusted link. `sync` fetches commits only; uncommitted edits in the guest's
+copy stay in its root, which `rm` deletes. See
 [the microVM architecture](architecture/microvm.md).
 
 ## Install a source build
