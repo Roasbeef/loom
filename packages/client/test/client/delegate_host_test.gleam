@@ -1841,8 +1841,22 @@ pub fn two_asks_polling_one_failed_start_are_both_asked_to_come_again_test() {
   let assert Ok(#(_owner, answer)) = process.receive(builds, 2000)
     as "the first ask's build begins"
   process.sleep(100)
-  let second = resolving(here, laptop, remote)
-  process.sleep(50)
+  let second =
+    resolving(
+      context_at(registry, "/delegate-host/sessions", 9999),
+      laptop,
+      remote,
+    )
+
+  // The second ask's admission moves the pair's last contact to its own time,
+  // in the same registry turn that admits it to the building slot, so the
+  // contact time is the barrier that it was admitted before the build fails.
+  assert eventually(fn() {
+    case catalogue.delegate_for(store, laptop.name, remote.session) {
+      Ok(Some(row)) -> row.last_contact_ms == 9999
+      Ok(None) | Error(_) -> False
+    }
+  })
   process.send(answer, Error(full))
 
   let assert Error(remote_spawn.NotYetOpen(_)) = resolved(first)
@@ -1850,6 +1864,59 @@ pub fn two_asks_polling_one_failed_start_are_both_asked_to_come_again_test() {
   let assert Error(remote_spawn.NotYetOpen(_)) = resolved(second)
     as "the second ask is asked to come again, not refused"
   assert catalogue.delegates_held(store, laptop.name) == Ok(1)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A start that failed for a reason no later ask can change stays final. The
+// first ask's poll reads only the slot draining and is asked to come again. The
+// next ask finds the reservation with the reason kept, and is answered that
+// reason without a second build, which would fail the same way and clear it.
+pub fn a_final_start_failure_is_answered_by_the_next_ask_without_a_build_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let builds = process.new_subject()
+  let registry = gated_registry(store, builds)
+  let here = context(registry, "/delegate-host/sessions")
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(35)
+  let broken = "the executor's workspace is not a repository"
+
+  // Hold cleanup of the failed build so the first ask polls a stopping session.
+  let first = resolving(here, laptop, remote)
+  let assert Ok(#(owner, answer)) = process.receive(builds, 2000)
+    as "the first build begins"
+  let draining = process.new_subject()
+  assert custody.publish(owner, custody.Storage, fn() {
+      let release = process.new_subject()
+      process.send(draining, release)
+      process.receive_forever(release)
+      Ok(Nil)
+    })
+    == Ok(Nil)
+  process.send(answer, Error(broken))
+  let assert Ok(release) = process.receive(draining, 2000)
+    as "the failed build has entered retained cleanup"
+  let assert Error(remote_spawn.NotYetOpen(_)) = resolved(first)
+    as "a stopping session asks the sender to come again"
+
+  // Once the slot has drained the reservation keeps the reason.
+  process.send(release, Nil)
+  let assert Ok(Some(row)) =
+    catalogue.delegate_for(store, laptop.name, remote.session)
+    as "the pair keeps its reserved session"
+  assert eventually(fn() {
+    case manager.get(registry, row.session_id) {
+      Ok(manager.View(status: manager.FailedStart(..), ..)) -> True
+      Ok(_) | Error(_) -> False
+    }
+  })
+
+  // The next ask is told the reason, and no build is started for it.
+  let next = resolving(here, laptop, remote)
+  assert process.receive(builds, 500) == Error(Nil)
+  let assert Error(remote_spawn.StoreFailure(reason:)) = resolved(next)
+    as "the next ask is refused with the kept reason"
+  assert string.contains(reason, broken)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }

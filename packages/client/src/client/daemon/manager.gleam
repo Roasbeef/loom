@@ -5839,7 +5839,14 @@ fn returning_delegate(
 // addendum of 2026-11-17). Admission would refuse it `NotInitialized`, and an
 // ask that deleted it instead would delete it under another ask of the same
 // child that is still reading it.
-/// Admits a pair's session with no slot, building a reservation again.
+//
+// A reservation whose kept failure is one no later ask can change is not built
+// again: the build would fail the same way and clear the reason, and an ask
+// whose poll read the slot draining would never be told it. Its failed start is
+// the answer, which the ask's poll reads as final. The failure is read in this
+// turn, so no other ask's build can come between the read and the answer.
+/// Admits a pair's session with no slot, building a reservation again unless
+/// its kept failure is final.
 fn unslotted(
   phase: Phase,
   book: Book(instance),
@@ -5848,22 +5855,57 @@ fn unslotted(
 ) -> #(Book(instance), Result(Status, Error)) {
   // Only a reservation is built again; anything else is admission's.
   case catalogue.get(book.catalogue, session_id) {
-    Ok(catalogue.Registration(state: catalogue.Reserved, ..)) -> {
-      let #(book, created) =
-        create_session(
-          phase,
-          book,
-          request.creation,
-          request.directory,
-          request.generator,
-          domain.SessionOnly,
-          request.configuration,
-        )
-      #(book, result.map(created, fn(view) { view.status }))
-    }
+    Ok(catalogue.Registration(state: catalogue.Reserved, ..)) ->
+      case catalogue.start_failure(book.catalogue, session_id) {
+        Ok(Some(catalogue.StartFailure(reason:, at:))) ->
+          case no_room(reason) {
+            True -> rebuilt(phase, book, request)
+            False -> #(book, Ok(FailedStart(reason:, at:)))
+          }
+
+        // No kept failure, or none that can be read, is a reservation the next
+        // build may finish.
+        Ok(None) | Error(_) -> rebuilt(phase, book, request)
+      }
     Ok(catalogue.Registration(state: catalogue.Saved, ..)) | Error(_) ->
       admit(phase, book, session_id)
   }
+}
+
+/// Builds a pair's reservation again through the creation path under the row's
+/// own request key, which finds the reservation by that key.
+fn rebuilt(
+  phase: Phase,
+  book: Book(instance),
+  request: DelegateRequest,
+) -> #(Book(instance), Result(Status, Error)) {
+  let #(book, created) =
+    create_session(
+      phase,
+      book,
+      request.creation,
+      request.directory,
+      request.generator,
+      domain.SessionOnly,
+      request.configuration,
+    )
+  #(book, result.map(created, fn(view) { view.status }))
+}
+
+/// Whether the reason a session failed to start is an executor with no room
+/// for it: a state of the pool, which passes, so the next ask builds again. The
+/// two fragments are the executor's own words for a full table of scopes and a
+/// full ledger (`remote/protocol.describe`). `client/delegate_host` reads a
+/// failed start with the same function, so the registry and the ask agree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert manager.no_room("the executor already holds 4 scopes that are not cleanly closed")
+/// ```
+pub fn no_room(reason: String) -> Bool {
+  string.contains(reason, "scopes that are not cleanly closed")
+  || string.contains(reason, "bytes of unacknowledged results")
 }
 
 // A pair that has none. The room is checked before anything is created, so a
