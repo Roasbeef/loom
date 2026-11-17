@@ -204,6 +204,7 @@ import client/daemon/ui_projects
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/ui_top
+import client/daemon/ui_wait
 import client/daemon/upgrade_log
 import client/gateway
 import client/peers
@@ -317,6 +318,12 @@ type Signal {
   // The delayed close after `Ended`, once the component has drawn its end,
   // with the close code that ending calls for.
   Stop(close: ending.Close)
+
+  // A relayed page's link ended in a way that may clear. The socket stays open,
+  // so the page keeps what it drew under the waiting notice, and `awaiting`
+  // asks the orchestrator whether it answers. The socket closes with a retry,
+  // once, when it does (`ui_wait`).
+  Held(awaiting: fn() -> ui_wait.Reach)
 }
 
 // A serving page is the two things the socket does with its component:
@@ -748,6 +755,7 @@ fn websocket(
           | Pending(..), mist.Custom(Client(_))
           | Pending(..), mist.Custom(Ended(_))
           | Pending(..), mist.Custom(Stop(_))
+          | Pending(..), mist.Custom(Held(_))
           -> mist.stop()
 
           // The browser's client runtime speaks Lustre's protocol. What the
@@ -781,6 +789,18 @@ fn websocket(
           }
 
           Serving(..), mist.Custom(Stop(close)) -> closing(close)
+
+          // The orchestrator did not answer. The run asks again at growing
+          // pauses and hands the socket one `Stop(Retry)` when it does, so a
+          // box that stays down costs no socket exit and no crash report per
+          // attempt. A second `Held` cannot arrive, because the feed reports
+          // its end once.
+          Serving(signals:, ..) as serving, mist.Custom(Held(awaiting)) -> {
+            ui_wait.start(awaiting, fn() {
+              process.send(signals, Stop(ending.Retry))
+            })
+            mist.continue(serving)
+          }
 
           Serving(..), mist.Binary(_)
           | Serving(..), mist.Closed
@@ -1410,11 +1430,17 @@ fn admit_live(
     Waiting | Crowded -> None
   }
 
+  // The question a held page asks of its orchestrator: its placements, a read
+  // that makes nothing on the box.
+  let orchestrator = target.orchestrator
+  let awaiting = fn() {
+    ui_wait.reach_of(top_relay.placements(relay, orchestrator))
+  }
   let transport =
     component.Transport(
       connect: fn(inbox, opened) {
         connect_feed(relay, target, reach, still_open, inbox, opened, fn(why) {
-          process.send(signals, Ended(why))
+          report_ending(signals, why, awaiting)
         })
       },
       transmit: ui_feed.transmit,
@@ -1466,6 +1492,33 @@ fn admit_live(
           serving(page, signals)
         }
       }
+  }
+}
+
+/// Reports a relayed page's ending to its socket. An ending that may clear by
+/// itself holds the socket open so the page keeps what it drew, and starts the
+/// wait for the orchestrator once the component has drawn the notice, which
+/// takes `ended_grace_ms` as it does for a close. An ending the person must
+/// resolve closes the socket after the same grace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.report_ending(signals, ending.PeerUnreachable, awaiting)
+/// ```
+fn report_ending(
+  signals: process.Subject(Signal),
+  why: ending.Ending,
+  awaiting: fn() -> ui_wait.Reach,
+) -> Nil {
+  // A retry ending holds the page open and waits for the box, and a final
+  // ending closes the socket once the component has drawn it.
+  case ending.close(why) {
+    ending.Retry -> {
+      let _ = process.send_after(signals, ended_grace_ms, Held(awaiting))
+      Nil
+    }
+    ending.Final -> process.send(signals, Ended(why))
   }
 }
 

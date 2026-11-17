@@ -1360,6 +1360,14 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   and `rename_for_admin` are the home's and the admin page's daemon checks;
   `home_rename_self_capability` hands the home its capability, and `home_event` admits a
   `submit` beneath `home.signins_path`.
+- `daemon/ui_wait`: how a live relayed page waits out a dropped link without ending its
+  socket. `ui_socket.report_ending` turns a `Retry` ending (`web_view/ending.close`) into a
+  `Held` signal after the quarter-second grace. The socket stays open, so the component keeps
+  its last cut, and `ui_wait.start` runs one weft run (`poll.until_on`, `Doubling` from 1 s to
+  8 s, bounded by `max_wait_ms`, the eight hours of a UI session) that asks
+  `top_relay.placements` through `reach_of`. It sends `Stop(Retry)` once, when the box
+  answers, so an outage makes one abnormal socket exit (mist closes with 4000 only from
+  `stop_abnormal`) and not one per browser retry. `ui_wait_test` pins when `done` is called.
 - `daemon/ui_socket`: the page's mist socket. Its pending phase owns the
   admission callback until the component starts; the serving handler retains
   no copy of that callback or its resolved runtime. The relay's repeated
