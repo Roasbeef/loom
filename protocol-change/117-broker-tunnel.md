@@ -1,9 +1,9 @@
 # protocol-change/117: the broker tunnel, so non-tool callers reach an untrusted executor
 
-**Status**: PROPOSED 2026-11-16, revised 2026-11-16 and 2026-11-17 after one
-independent adversarial review and its re-check ("Review and disposition"
-below). Not built. It is accepted under `docs/execution.md` section 7 once the
-owner has answered "Decisions for the owner".
+**Status**: ACCEPTED 2026-11-17 by the owner, who answered "Decisions for the
+owner" below as recommended. Proposed 2026-11-16 and revised after one
+independent adversarial review and its re-check ("Review and disposition").
+Not built.
 **Affects**: the untrusted executor wire of [109](109-untrusted-executors.md)
 (`untrusted_wire.version` 4 to 5): one new request and its reply, and one new
 frame from the executor. One new process per untrusted executor on the
@@ -620,6 +620,9 @@ slice 4 here.
    passes.
 
 ## Decisions for the owner
+
+The owner accepted all three recommendations on 2026-11-17: a stale guest is
+refused, hooks stay refused, and a stored `Unavailable` is kept.
 
 1. **Is a stale guest (wire version 4) refused until `loom vm up` upgrades its
    root, rather than served without the tunnel?** Recommendation: refuse.
