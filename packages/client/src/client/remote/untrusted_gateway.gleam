@@ -67,6 +67,7 @@ import client/remote/blob_service
 import client/remote/blob_transfer
 import client/remote/protocol.{type HostMessage, type OwnerMessage}
 import client/remote/remote_census.{type RemoteCensus}
+import client/remote/tunnel_paths
 import client/remote/untrusted_bridge.{type OwnerReply}
 import client/remote/untrusted_codec
 import client/remote/untrusted_wire.{type Request, type Response}
@@ -864,11 +865,43 @@ fn tunnelled(
   let report = fn(frame, end) {
     process.send(data.subject, FromTunnel(id:, frame:, end:))
   }
-  let waiter =
-    process.spawn(fn() {
-      tunnel_waiter(book, pin, binding, spec, waiting_ms, demand, id, report)
-    })
-  Connection(..data, tunnels: dict.insert(data.tunnels, id, waiter))
+
+  // A path that is not plain could survive the meet as text and name more
+  // than the plane holds once the helper cleans it, so the call is refused
+  // before any process is started for it (`tunnel_paths`).
+  case tunnel_paths.plain_spec(spec.base_policy, spec.requirements, spec.cwd) {
+    Error(reason) -> {
+      log.warn(data.logger, "untrusted_gateway.tunnel_refused", [
+        field.text("reason", reason),
+      ])
+      report(
+        untrusted_wire.Response(
+          id:,
+          response: untrusted_wire.ClearedAnswered(Error(
+            broker.BrokerUnavailable,
+          )),
+        ),
+        Ends,
+      )
+      data
+    }
+    Ok(Nil) -> {
+      let waiter =
+        process.spawn(fn() {
+          tunnel_waiter(
+            book,
+            pin,
+            binding,
+            spec,
+            waiting_ms,
+            demand,
+            id,
+            report,
+          )
+        })
+      Connection(..data, tunnels: dict.insert(data.tunnels, id, waiter))
+    }
+  }
 }
 
 /// One tunnelled call, in its waiter: the plane recorded for the binding, the

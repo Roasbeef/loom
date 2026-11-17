@@ -949,3 +949,62 @@ pub fn a_wider_spec_base_runs_under_the_planes_base_test() {
   let assert broker.CallExited(result:) = outcome as "cat exits"
   assert result.code != 0
 }
+
+// A root that is not a plain absolute path could pass the meet as text and
+// name more than the plane holds once the helper cleans it, so each spelling
+// is refused before anything runs: the marker the command would write is
+// never made.
+pub fn a_spec_with_an_unplain_root_is_refused_and_runs_nothing_test() {
+  use real, stream <- with_real_plane("unplain", readable_workspace)
+  let spellings = [
+    real.workspace <> "/..",
+    real.workspace <> "/../etc",
+    real.workspace <> "/./x",
+    real.workspace <> "//x",
+  ]
+  list.index_map(spellings, fn(root, index) {
+    let id = index + 2
+    let marker = real.workspace <> "/marker-" <> int.to_string(id)
+    unplain_sent(real, stream, id, root, marker)
+    assert cleared_within(stream, id, 20_000) == Error(broker.BrokerUnavailable)
+    assert simplifile.is_file(marker) == Ok(False)
+  })
+
+  // A relative root does not get that far: the policy's own total decoder
+  // refuses it, and a request that does not decode closes the connection.
+  let marker = real.workspace <> "/marker-relative"
+  unplain_sent(real, stream, 9, "work", marker)
+  assert rig.closed(stream, 5000)
+  assert simplifile.is_file(marker) == Ok(False)
+}
+
+/// Sends a call that would write `marker`, with `root` added to the writable
+/// roots of both its base and its requirements.
+fn unplain_sent(
+  real: Real,
+  stream: Stream,
+  id: Int,
+  root: String,
+  marker: String,
+) -> Nil {
+  let wide =
+    policy.SandboxPolicy(..real.base, writable_roots: [
+      root,
+      ..real.base.writable_roots
+    ])
+  let spec =
+    untrusted_wire.TunnelSpec(
+      ..real_spec(
+        real,
+        "unplain-" <> int.to_string(id),
+        ["/usr/bin/touch", marker],
+        4096,
+      ),
+      base_policy: wide,
+      requirements: policy.SandboxPolicy(
+        ..wide,
+        limits: policy.Limits(..wide.limits, output_bytes: 4096, wall_s: 60),
+      ),
+    )
+  send_clear(stream, id, spec, 15_000)
+}
