@@ -838,6 +838,52 @@ pub fn a_session_that_comes_back_is_taken_in_over_its_tombstone_test() {
   finish(rig)
 }
 
+pub fn a_session_that_was_a_local_directory_here_is_not_taken_back_from_an_executor_test() {
+  let rig = rig("return-local", box())
+  let copy = cut(rig, 51, clean())
+  assert send(rig, copy, other_op, 65_536) == session_move.Accepted
+
+  // This daemon gave the session away from a directory on this machine, and the
+  // manifest now names the executor that holds its work. Taking it in would keep
+  // the old registration and reopen the session in a directory that lacks it.
+  let record =
+    catalogue.Registration(
+      id: copy.session,
+      path: rig.directory <> "/sessions/" <> copy.session <> ".db",
+      workspace: "/home/laptop/repo",
+      name: "was a laptop directory",
+      configuration: "",
+      profile: None,
+      model: None,
+      executor: "",
+      pool: "",
+      created_at: 1,
+      request_key: "was-local",
+      state: catalogue.Reserved,
+      subtitle: None,
+    )
+  assert catalogue.reserve(rig.store, record) == Ok(record)
+  let assert Ok(_) = catalogue.confirm(rig.store, copy.session)
+  let assert Ok(_) =
+    catalogue.begin_move(rig.store, copy.session, op:, to: "alpha")
+  let assert Ok(_) = catalogue.finish_move(rig.store, copy.session, op:)
+
+  let assert session_move.Refused(session_move.Malformed(reason:)) =
+    session_importer.activate(rig.context, activation(copy, other_op))
+    as "the move back is refused"
+  assert string.contains(reason, "work is on the executor `box`")
+  assert string.contains(
+    reason,
+    "the directory it came from on that orchestrator is not supported yet",
+  )
+
+  // Nothing changed: the tombstone stands and no file was placed.
+  assert manager.custody(rig.registry, copy.session)
+    == Ok(catalogue.Moved(op:, to: "alpha"))
+  assert simplifile.is_file(record.path) == Ok(False)
+  finish(rig)
+}
+
 // --- on a directory member (protocol-change/083) -----------------------------
 
 fn recorded(
