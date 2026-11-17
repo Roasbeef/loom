@@ -521,17 +521,19 @@ fn fail(cursor: Cursor, expected: String) -> CorruptionReport {
 // consumed.
 fn codepoint_offset(cursor: Cursor) -> Int {
   case bit_array.slice(cursor.source, 0, cursor.consumed) {
-    Ok(prefix) -> count_leading_bytes(prefix, 0)
+    Ok(prefix) -> count_codepoint_starts(prefix, 0)
     Error(Nil) -> cursor.consumed
   }
 }
 
-// Counts the bytes that are not UTF-8 continuation bytes.
-fn count_leading_bytes(bytes: BitArray, count: Int) -> Int {
+/// Counts the bytes of valid UTF-8 that begin a codepoint, which are the bytes
+/// outside the continuation range `0x80..0xBF`. The walk is tail recursive over
+/// a binary match context, so it allocates no list and no string.
+fn count_codepoint_starts(bytes: BitArray, count: Int) -> Int {
   case bytes {
     <<byte, rest:bits>> if byte >= 0x80 && byte <= 0xBF ->
-      count_leading_bytes(rest, count)
-    <<_, rest:bits>> -> count_leading_bytes(rest, count + 1)
+      count_codepoint_starts(rest, count)
+    <<_, rest:bits>> -> count_codepoint_starts(rest, count + 1)
     _ -> count
   }
 }
@@ -708,11 +710,13 @@ fn check_unique_key(
   }
 }
 
-// A repeated key is the one place a report quotes document text of
-// unbounded length, so it is clipped to 64 codepoints and the report says
-// how many were left out.
+/// The key as a report shows it. A repeated key is the one place a report
+/// quotes document text of unbounded length, so it is clipped to 64 codepoints
+/// and the report says how many were left out.
 fn shown_key(name: String) -> String {
   let length = string.length(name)
+
+  // A key within the clip is shown whole; a longer one is cut and counted.
   case length > 64 {
     False -> name
     True ->
