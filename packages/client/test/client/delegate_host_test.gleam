@@ -1913,10 +1913,10 @@ pub fn a_final_start_failure_is_answered_by_the_next_ask_without_a_build_test() 
 
   // The next ask is told the reason, and no build is started for it.
   let next = resolving(here, laptop, remote)
-  assert process.receive(builds, 500) == Error(Nil)
   let assert Error(remote_spawn.StoreFailure(reason:)) = resolved(next)
     as "the next ask is refused with the kept reason"
   assert string.contains(reason, broken)
+  assert process.receive(builds, 0) == Error(Nil)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }

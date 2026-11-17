@@ -269,6 +269,8 @@ pub type Delegated {
     /// `Resident` is serving and `Opening` is building. A retained slot reports
     /// `Stopping` while original custody drains or `RecoveryBlocked` when its
     /// cleanup proof was lost, so callers can distinguish retry from refusal.
+    /// `FailedStart` is a reservation whose kept failure is not a lack of room:
+    /// nothing was built, and the failure is the answer.
     status: Status,
   )
 }
@@ -5855,17 +5857,23 @@ fn unslotted(
 ) -> #(Book(instance), Result(Status, Error)) {
   // Only a reservation is built again; anything else is admission's.
   case catalogue.get(book.catalogue, session_id) {
-    Ok(catalogue.Registration(state: catalogue.Reserved, ..)) ->
-      case catalogue.start_failure(book.catalogue, session_id) {
-        Ok(Some(catalogue.StartFailure(reason:, at:))) ->
+    Ok(catalogue.Registration(state: catalogue.Reserved, ..) as record) ->
+      case reserved_status(book, record) {
+        FailedStart(reason:, at:) ->
           case no_room(reason) {
             True -> rebuilt(phase, book, request)
             False -> #(book, Ok(FailedStart(reason:, at:)))
           }
 
         // No kept failure, or none that can be read, is a reservation the next
-        // build may finish.
-        Ok(None) | Error(_) -> rebuilt(phase, book, request)
+        // build may finish. `reserved_status` answers only that or a failed
+        // start, and the other statuses are listed so the match stays total.
+        Reserved
+        | Saved
+        | Opening(_)
+        | Resident(_)
+        | Stopping(_)
+        | RecoveryBlocked(_) -> rebuilt(phase, book, request)
       }
     Ok(catalogue.Registration(state: catalogue.Saved, ..)) | Error(_) ->
       admit(phase, book, session_id)
