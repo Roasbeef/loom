@@ -5,7 +5,7 @@
 //// the records beside each guest, the host ports strangers hold, and the
 //// daemon. `up`, `down`, `rm` and the rest run over it by applying the real
 //// decisions (`vm_link.settle`, `port_step`, `install`, `uninstall`,
-//// `daemon_need`, `staging`, `vm_spec.daemon_step`) to what the world holds and
+//// `daemon_need`, `staging`) to what the world holds and
 //// writing back what `vm_cli.bring_up_linked` would write, in the order it
 //// writes it: the leaf, the port choice and the merge, the `link` record, the
 //// `link-port` record, and last the file. The `Model` is a coarser account of
@@ -33,9 +33,9 @@
 //// - `kind-fixed`: a guest asked for the other link is refused unchanged, and a
 ////   guest that has a leaf, with or without a record, is never a distribution
 ////   guest.
-//// - `daemon`: a row the daemon has not read stops an idle daemon and leaves a
-////   busy one stale, including a row an earlier `up` wrote and a failed boot
-////   left unread, and a row it has read touches neither.
+//// - `daemon`: a row the daemon has not read makes a running daemon read the
+////   file, idle or busy, including a row an earlier `up` wrote and a failed
+////   boot left unread, and a row it has read touches no daemon.
 //// - `refused`: a trusted row of the guest's name, or an operator's own link
 ////   table, refuses an untrusted `up` and writes no row.
 ////
@@ -693,22 +693,18 @@ fn booted(world: World, guest: Int, merged: vm_link.Merged) -> World {
       vm_link.SawExecutors(list.map(held, fn(row) { row.0 }))
   }
   let daemon = case vm_link.daemon_need(rows, saw, name_of(guest)) {
-    vm_link.MustRestart -> after_change(world.daemon)
+    vm_link.MustReload -> after_reload(world.daemon, world.config)
     vm_link.NeedsNothing -> world.daemon
   }
   World(..with_life(world, guest, Alive), daemon:)
 }
 
-// What `up` does about a daemon that has not read a row: stop an idle one and
-// leave a busy one.
-fn after_change(daemon: WorldDaemon) -> WorldDaemon {
+// What a reload does to a running daemon: it reads the untrusted rows the file
+// holds now, whatever sessions it has.
+fn after_reload(daemon: WorldDaemon, config: String) -> WorldDaemon {
   case daemon {
     WorldDown -> WorldDown
-    WorldUp(sessions:, ..) ->
-      case vm_spec.daemon_step(1, vm_spec.Counted(sessions)) {
-        vm_spec.StopIt -> WorldDown
-        vm_spec.LeaveAlone(_) -> daemon
-      }
+    WorldUp(sessions:, ..) -> WorldUp(sessions:, rows: untrusted_rows(config))
   }
 }
 
@@ -1068,24 +1064,36 @@ fn model_recorded(model: Model, guest: Int, slot: Slot, stop: Stop) -> Model {
     StopsAfter(AfterConfig) -> put(model, enrolled)
     _ -> {
       // A boot that succeeds asks the daemon whether it holds this row: one
-      // that does not is stopped when idle and left stale when busy.
+      // that does not is made to read the file, idle or busy.
       let model =
         put(model, Present(Untrusted, Alive, Some(port), EnrolledAt(port)))
-      Model(..model, daemon: unread(model.daemon, guest, port))
+      Model(
+        ..model,
+        daemon: unread(model.daemon, guest, model_rows(model), row, port),
+      )
     }
   }
 }
 
-// A daemon that has not read the guest's row at its port is stopped when it is
-// idle and left behind when it is busy, and one that has is left alone.
-fn unread(daemon: Daemon, guest: Int, port: Int) -> Daemon {
+// A daemon is asked to reload when the command changed the guest's row, which
+// is a row that was not at this port before, or when the daemon lists no row of
+// the guest's name. A reload reads the whole file. The listing carries names and
+// no addresses, so a daemon that holds the name at an older port, for a row an
+// earlier `up` moved and failed to boot, stays behind until a command changes
+// the row again.
+fn unread(
+  daemon: Daemon,
+  guest: Int,
+  rows: List(#(Int, Int)),
+  was: Enrolment,
+  port: Int,
+) -> Daemon {
   case daemon {
     DaemonDown -> DaemonDown
     DaemonUp(busy:, seen:) ->
-      case list.contains(seen, #(guest, port)), busy {
-        True, _ -> daemon
-        False, Idle -> DaemonDown
-        False, Occupied -> daemon
+      case list.any(seen, fn(row) { row.0 == guest }), was == EnrolledAt(port) {
+        True, True -> daemon
+        _, _ -> DaemonUp(busy:, seen: rows)
       }
   }
 }
@@ -1255,27 +1263,17 @@ const plain = Start(NoDeployment, NoSquatter, NothingOfTheOperators)
 
 const ledger = Start(LedgerDeployment, NoSquatter, NothingOfTheOperators)
 
-pub fn the_first_untrusted_guest_stops_an_idle_daemon_test() {
+pub fn the_first_untrusted_guest_makes_an_idle_daemon_read_its_row_test() {
   let assert Ok(#(world, _)) =
     replay(plain, [StartDaemon(0), Up(0, Some(Untrusted))])
-  assert world.daemon == WorldDown
+  assert world.daemon == WorldUp(0, untrusted_rows(world.config))
   assert world.link_home
 }
 
-pub fn a_busy_daemon_is_left_stale_until_it_restarts_test() {
-  let assert Ok(#(stale, _)) =
+pub fn a_busy_daemon_reads_the_row_and_is_never_stopped_test() {
+  let assert Ok(#(world, _)) =
     replay(plain, [StartDaemon(2), Up(0, Some(Untrusted))])
-  assert stale.daemon == WorldUp(2, [])
-
-  // A restart reads the row, and the daemon is current again.
-  let assert Ok(#(current, _)) =
-    replay(plain, [
-      StartDaemon(2),
-      Up(0, Some(Untrusted)),
-      StopDaemon,
-      StartDaemon(2),
-    ])
-  assert current.daemon != WorldDown
+  assert world.daemon == WorldUp(2, untrusted_rows(world.config))
 }
 
 pub fn a_resume_that_changes_no_row_touches_no_daemon_test() {
@@ -1290,29 +1288,27 @@ pub fn a_resume_that_changes_no_row_touches_no_daemon_test() {
 }
 
 pub fn a_failed_first_boot_leaves_a_row_the_next_up_finds_unread_test() {
-  // The first `up` wrote the row and its boot failed, so no daemon step ran. A
-  // daemon that started before the row, and holds no session, is stopped by the
-  // next `up` even though the row is unchanged.
-  let assert Ok(#(world, _)) =
+  // The first `up` wrote the row and its boot failed, so no reload ran and the
+  // daemon is behind the file, idle or busy.
+  let assert Ok(#(behind, _)) =
     replay(plain, [
-      StartDaemon(0),
+      StartDaemon(2),
       UpStopped(0, AfterConfig),
-      Up(0, None),
     ])
-  assert world.daemon == WorldDown
+  assert behind.daemon == WorldUp(2, [])
 
-  // A busy one is left running and is stale, which `ensure` turns into a
-  // refusal.
-  let assert Ok(#(busy, _)) =
+  // The next `up` finds the row standing and unlisted, and asks the daemon to
+  // read it.
+  let assert Ok(#(world, _)) =
     replay(plain, [
       StartDaemon(2),
       UpStopped(0, AfterConfig),
       Up(0, None),
     ])
-  assert busy.daemon == WorldUp(2, [])
+  assert world.daemon == WorldUp(2, untrusted_rows(world.config))
 }
 
-pub fn a_taken_port_moves_the_row_and_asks_the_daemon_to_restart_test() {
+pub fn a_taken_port_moves_the_row_and_the_daemon_reads_the_new_port_test() {
   let assert Ok(#(before, _)) =
     replay(plain, [Up(0, Some(Untrusted)), Down(0), StartDaemon(2)])
   let assert Ok(#(after, _)) =
@@ -1324,9 +1320,10 @@ pub fn a_taken_port_moves_the_row_and_asks_the_daemon_to_restart_test() {
       Up(0, None),
     ])
 
-  // The row names a new port, the record agrees, and the busy daemon is stale.
+  // The row names a new port, and the busy daemon, which held the old one, was
+  // asked to read it.
   assert untrusted_rows(after.config) != untrusted_rows(before.config)
-  assert after.daemon == WorldUp(2, untrusted_rows(before.config))
+  assert after.daemon == WorldUp(2, untrusted_rows(after.config))
 }
 
 pub fn a_ledger_deployment_is_left_exactly_as_it_was_test() {
