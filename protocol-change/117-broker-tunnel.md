@@ -539,8 +539,8 @@ values.
 commands, which describe work it already holds. A base64 string is one JSON
 value but can carry a nested document that is decoded outside the value bound:
 `msgpack_of`, `decode_sandbox_policy` and `decode_lsp_server` in
-`client/remote/untrusted_codec.gleam` each parse one, and the msgpack inside a
-24 MiB frame can hold millions of values. The bound is on JSON values, not on
+`client/remote/untrusted_codec.gleam` each parse one, and about 24 MiB of
+msgpack inside a 32 MiB frame can hold millions of values. The bound is on JSON values, not on
 everything a frame decodes to. A byte cap on `msgpack_of` would refuse honest
 large binary arguments, so the risk is recorded rather than closed.
 
@@ -699,7 +699,7 @@ below were taken before slice 3.
 | Severity | Finding | Disposition | Where it landed |
 |---|---|---|---|
 | HIGH, pre-existing | A refused document costs tens of bytes of heap per byte consumed, because `codepoint_offset` builds the codepoint list of the prefix | Accepted. The offset counts non-continuation bytes and allocates nothing | `core/json` |
-| MEDIUM, pre-existing | A duplicate-key refusal quotes the whole key | Accepted. Clipped to 64 codepoints | `core/json` |
+| MEDIUM, pre-existing | A duplicate-key refusal quotes the whole key | Accepted. Clipped to a 96-byte prefix cut at a codepoint boundary, with the key's size in bytes | `core/json` |
 | MEDIUM | `sent_callback` checks neither frame bound, so an honest over-count callback closes the connection | Accepted. It sends with `encode_fitting`, fails its asker when the callback does not fit | `untrusted_gateway` |
 | MEDIUM, pre-existing | Nested msgpack and JSON documents are decoded outside the value bound | Recorded, not closed | "Residual risks", "Bounds" |
 | LOW | `wide_int_of` accepts an integer of any magnitude | Accepted. Magnitudes above 2^256 are refused | `untrusted_codec` |
