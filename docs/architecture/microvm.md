@@ -886,10 +886,11 @@ the host daemon as the developer with those files.
 records alone: a `link` record that says `distribution`, or `deploy/` with no
 `link-credentials/` and no record, which is what every such guest has. The
 refusal comes before anything is installed, written, booted or sent, has exit
-status 1, and is one sentence on standard error:
+status 1, and prints three sentences on standard error, with the guest's real
+directory in place of `/Users/me/.loom/vm/NAME` below:
 
 ```text
-loomd: the guest NAME was made as a trusted distribution peer of your daemon, so code that takes it over could run in the daemon as you, and it is no longer started. Fetch its commits with `loom vm sync --name NAME`; that fetches commits only, so copy any uncommitted edits out of <vm home>/NAME/root/srv/workspaces/ first. Then stop it with `loom vm down --name NAME` if it still runs, remove it with `loom vm rm --name NAME --yes`, which deletes that root, and make it again on the untrusted link with `loom vm up --name NAME`.
+loomd: the guest NAME was made as a trusted distribution peer of your daemon, so code that takes it over could run in the daemon as you, and it is no longer started. Fetch its commits with `loom vm sync --name NAME`; that fetches commits only, so copy any uncommitted edits out of /Users/me/.loom/vm/NAME/root/srv/workspaces/ first. Then stop it with `loom vm down --name NAME` if it still runs, remove it with `loom vm rm --name NAME --yes`, which deletes that root, and make it again on the untrusted link with `loom vm up --name NAME`.
 ```
 
 The guest is not converted in place: its root and its state disk are rebuilt by
@@ -1278,10 +1279,14 @@ its jailed call sees that guest's own leaf. A step fabricates the host-side
 traces of two distribution guests and checks that `up` and `ensure` refuse them
 naming the commands and change no file, and that `rm --yes` removes them and
 takes one's `[distribution]` table and trusted row out of a file whose untrusted
-row stays. Another runs `loomd vm ensure` with no `--config` beside a daemon on
-the isolated home's default file, and checks that the same daemon process lists
-the guest after the reload, that a second `ensure` takes the fast path, and that
-`rm` takes the row out with the daemon still running.
+row stays. Another runs `loomd vm ensure` with no `--config` and the default vm
+home (the isolated home's `~/.loom/vm`, since a daemon started with no
+`[executor_link]` takes a new table by reload only from there or the state
+root's `vm`), beside a daemon on that home's default file, and checks that the
+same daemon process takes the table and lists the guest after the reload, that
+a second `ensure` takes the fast path, and that `rm` of the last guest takes
+the row, `[executor_link]` and the credentials out with the daemon still
+running.
 
 ## Package registries and toolchains: `--allow` and `--provision`
 
