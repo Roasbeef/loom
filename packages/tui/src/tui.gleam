@@ -548,7 +548,13 @@ fn interactive_vm(
       {
         Ok(chosen) -> interactive(Local(chosen, ""), record)
         Error(vm_ensure.Failure(status:, reason:)) -> {
-          io.println_error("loom: " <> reason)
+          // The server's standard error goes to the terminal here, so a
+          // refusal's reason is printed already and the captured text is
+          // empty; an empty `loom:` line after it would say nothing.
+          case string.trim(reason) == "" {
+            True -> Nil
+            False -> io.println_error("loom: " <> reason)
+          }
           ffi_terminal.halt(status)
           Nil
         }
@@ -3708,9 +3714,8 @@ fn vm_usage() -> String {
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
                   [--allow HOST]... [--provision SCRIPT]
-                  [--link distribution|untrusted]
        loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
-                      [--config PATH] [--link distribution|untrusted]
+                      [--config PATH]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -3731,12 +3736,16 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             --from-build DIR records a build tree (packages/vmm/build). A
             development build has no release: build the artifacts in a
             checkout and run `make vmm-install-dev`.
-  up        Make the guest a member of your daemon's deployment. A loom.toml
-            with no deployment gets a two-node ledger deployment, with the
-            orchestrator enrolled as [executors.NAME]. A loom.toml that holds a
-            ledger deployment gets the guest enrolled in it through the running
-            daemon, which derives [executors.NAME] from the ledger with no
-            restart and no change to the file. Then clone the guest root, copy
+  up        Make the guest an untrusted executor of your daemon. The daemon
+            reaches it over a pinned TLS link that is not Erlang distribution,
+            so the guest holds no cookie and code that takes it over reaches
+            no code in your daemon. The first up mints a private link
+            authority under the vm home and writes [executor_link] and
+            [executors.NAME] into loom.toml beside whatever is there; it never
+            replaces a table that differs, and leaves [distribution] as it is.
+            A daemon that is already running is asked to read the new row; it
+            is stopped, or named, only when it predates that command or
+            refuses it. Then clone the guest root, copy
             the workspace into it, boot the guest with `loom-vm run` and wait until
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
@@ -3747,13 +3756,15 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             copy gets a repository of its own. With no artifacts installed it
             first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
-            loom.toml to enroll in (default ~/.loom/loom.toml).
-            A static deployment is refused, and so is a ledger deployment when
-            its daemon is not running or its authority key is not on this
-            machine. Each guest has its own NAME, so several can run at once.
+            loom.toml to write (default ~/.loom/loom.toml). Each guest has its
+            own NAME, so several can run at once.
             A guest that ran before keeps its root, the checkouts in it and its
             state disk, so `down` and `up` resume where it stopped. --fresh
-            replaces all three.
+            replaces all three. A guest an older loom made as an Erlang
+            distribution peer is refused, naming `loom vm sync`, `loom vm rm`
+            and `loom vm up`, which move its work to a new guest. A session on
+            a guest runs no project hooks and no remote evolution:
+            docs/architecture/microvm.md says why.
             --github chooses where loom-vm reads the token its credential proxy
             injects: gh (the default) runs `gh auth token`, env reads
             LOOM_VM_GITHUB_TOKEN, and off gives the guest no network beyond
@@ -3772,18 +3783,6 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             in loom-vm.log. A failing script fails up, and the next up runs it
             again. A resume skips a script that succeeded, and refuses a new
             one: add --fresh. Use --allow for the hosts it needs.
-            --link untrusted reaches the guest over a pinned TLS link that is
-            not Erlang distribution, so the guest holds no cookie and its
-            takeover reaches no code in your daemon. It mints a private link
-            authority under the vm home, writes [executor_link] and
-            [executors.NAME] into loom.toml beside whatever is there (it never
-            replaces a table that differs, and leaves [distribution] as it is),
-            and needs no deployment, ledger or running daemon. A daemon that is
-            already running is asked to read the new row; it is stopped, or
-            named, only when it predates that command or refuses it. The link
-            is recorded and kept for the guest's life; `distribution` is the
-            default. The link lacks project hooks, goal checks and the Changes
-            tab for now: docs/architecture/microvm.md lists them.
   ensure    Make the guest of one workspace ready, which is what `loom --vm`
             runs. The guest is named after DIR (default: the current
             directory): its last segment and six digits of its path, so every
@@ -3794,34 +3793,35 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             --github, --allow and --config mean what they mean for up, and a
             resume keeps the access and hosts the guest was started with. A
             guest that already serves ignores --github and --allow, and says
-            so. A guest whose root came from another release, or whose
-            executor is still booting, is refused with the command to run.
+            so. A guest whose root came from another release, whose executor
+            is still booting, or that an older loom made as a distribution
+            peer, is refused with the commands to run.
             Progress goes to standard error. The last line of standard output
             is `executor=NAME workspace=NAME`, the words `loom --executor E
-            --workspace W` takes. Exit status 75 with the line `daemon=required`
-            means the only thing missing is a running daemon, which ensure
-            never starts: start one and run it again. It fails, leaving the
-            guest up, when a daemon that holds sessions must restart to read the
-            deployment this call installed.
+            --workspace W` takes. It fails, leaving the guest up, when a
+            running daemon cannot read the guest's row without a restart.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
-  status    Say whether the guest runs, where it is registered and what it
-            holds.
+  status    Say whether the guest runs, which link it was made with, where it
+            is reached and what it holds.
   logs      Print the last lines of the guest's console log, loom-vm.log:
             100, or --lines N, and at most the last 4 MiB of them. There is
             no follow mode.
   list      Print one line for each guest under the vm home: its name,
-            whether it runs, and its workspaces.
-  rm        Delete a stopped guest and undo its enrolment. It removes
-            [executors.NAME] from loom.toml (--config PATH, default
-            ~/.loom/loom.toml), and the [distribution] table and the home's
+            whether it runs, the link it was made with (untrusted, or
+            distribution for a guest an older loom made, which up refuses),
+            and its workspaces.
+  rm        Delete a stopped guest and undo its enrolment in loom.toml
+            (--config PATH, default ~/.loom/loom.toml). For a guest on the
+            untrusted link it removes [executors.NAME], and [executor_link]
+            with the vm home's link credentials when no other untrusted guest
+            remains. A guest an older loom made as a distribution peer loses
+            its [executors.NAME], and the [distribution] table and the home's
             .erlang.cookie only when they are this guest's deployment's and no
-            other [executors.*] table remains; otherwise it leaves them and
-            says so. A guest that joined a ledger deployment is revoked with
-            the key, when it is on this machine, and otherwise rm prints the
-            revoke to run. A guest that others joined is removed last. A guest
-            on the untrusted link has nothing to revoke: rm removes its
-            [executors.NAME] table, and [executor_link] with the vm home's
-            link credentials when no other untrusted guest remains. Every other line of loom.toml is kept. A running guest is
+            other [executors.*] table remains; otherwise rm leaves them and
+            says so. Such a guest that joined a ledger deployment is revoked
+            with the key, when it is on this machine, and otherwise rm prints
+            the revoke to run; one that others joined is removed last. Every
+            other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
             the workspaces and the local branches that origin lacks.

@@ -498,7 +498,10 @@ refuses `--executor`, `--pool`, `--session` and `--addr` with one line each
 (`vm_refusals`); `--workspace` stays the host directory the guest serves, not a
 registered name. `tui.launch_vm` is the test seam. `main` answers `Vm` after
 `require_terminal` and before the alternate screen (`interactive_vm`): a failed
-`ensure` prints its reason and halts with its status.
+`ensure` prints its reason and halts with its status. The server's standard
+error is on the terminal there, so a refusal (a guest an older loom made as a
+distribution peer is refused naming `loom vm sync`, `loom vm rm --yes` and
+`loom vm up`) is already shown and an empty captured reason adds no line.
 
 `tui/vm_ensure` runs `<server> vm ensure --workspace DIR [--config FILE]` through
 `host.run_captured` (the server from `bootstrap.server_executable`), so it adds no
@@ -513,10 +516,12 @@ alone. `loom --vm` serves the nearest `.git` ancestor (`tui.vm_directory`);
 first run (`daemon=required`) prints one launcher line instead of its refusal. `parse_line` is the total parser of the last
 line, `executor=NAME workspace=NAME`, validated by `placement.new`; `answer` reads
 a status and output as `Ready`, `NeedsDaemon` (status 75 and the last line
-`daemon=required`) or `Failed`. The ordering is `ensure` first, because the first
-guest of a machine installs `[distribution]` and an earlier daemon would not have
-read it; on `NeedsDaemon` `start_daemon` resolves the daemon of the launch (which
-starts one if none runs) and `ensure` runs once more, whose answer is final. The
+`daemon=required`) or `Failed`. The ordering is `ensure` first, because a new
+guest's untrusted row goes into `loom.toml` and `ensure` asks a running daemon to
+reload it, while a daemon the launcher starts afterwards reads it at boot. On
+`NeedsDaemon`, which no current guest asks for since none joins a ledger
+deployment, `start_daemon` resolves the daemon of the launch (which starts one if
+none runs) and `ensure` runs once more, whose answer is final. The
 runner, the daemon start and the reporter are arguments of `vm_ensure.ensure`;
 `launch` supplies the real ones. The returned options have the executor placement
 and an empty `workspace`, exactly the `--executor` launch's. `loom run -p ...

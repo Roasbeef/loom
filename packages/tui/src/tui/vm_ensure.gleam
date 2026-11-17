@@ -11,15 +11,22 @@
 ////
 //// ## Two orderings
 ////
-//// The launcher runs `ensure` before it resolves the daemon, because the first
-//// guest of a machine installs the deployment into `loom.toml` and a daemon
-//// that started earlier would not have read it (`ensure` stops an idle one, and
-//// the launcher's normal resolve then starts it again with the table). The
-//// second and later guests join that deployment through the running daemon,
-//// and `ensure` never starts one: it exits with status 75 and the last line
-//// `daemon=required`. The launcher then resolves the daemon, which starts one
-//// when none runs, and runs `ensure` once more. One retry and no loop: a second
-//// answer that is not a guest is the error.
+//// The launcher runs `ensure` before it resolves the daemon, because a new
+//// guest's row goes into `loom.toml` and a daemon must read it: `ensure` asks a
+//// running daemon to reload (protocol-change/116), and when none runs the
+//// launcher's normal resolve starts one that reads the file. `ensure` never
+//// starts a daemon. A server that needs one to go on exits with status 75 and
+//// the last line `daemon=required`; the launcher then resolves the daemon and
+//// runs `ensure` once more. One retry and no loop: a second answer that is not
+//// a guest is the error. Only a guest joining a ledger deployment asked for a
+//// daemon this way, and no guest joins one now that every guest is on the
+//// untrusted link; the retry goes when the distribution path of `loom vm` is
+//// deleted.
+////
+//// A refusal, such as the one for a guest an older loom made as a
+//// distribution peer, is status 1 with the server's reason on its standard
+//// error. An interactive launch has already shown that reason on the terminal,
+//// so its captured text is empty and the launcher adds no line of its own.
 ////
 //// ## Flow
 ////
