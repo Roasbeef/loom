@@ -2391,3 +2391,53 @@ pub fn a_spec_past_the_limits_is_refused_locally_and_not_sent_test() {
   assert rig.next_raw(stream, 300) == Error("silent")
   stop(rig)
 }
+
+// A door that dies after it was found, while a new link's door takes its
+// name, may have let the `Clear` reach the new link. The clearing function
+// then sends `Withdraw` to the name, after the `Clear`, so the new link drops
+// a call nobody waits for. The first fake door takes the `Clear`, hands the
+// name to a second fake and exits; the second records what reaches the name.
+pub fn a_door_that_goes_down_is_followed_by_a_withdraw_test() {
+  let door = process.new_name("untrusted_link_test_fake_door")
+  let seen = process.new_subject()
+  let ready = process.new_subject()
+  let _first =
+    process.spawn_unlinked(fn() {
+      let assert Ok(Nil) = process.register(process.self(), door)
+        as "the first door registers"
+      process.send(ready, Nil)
+      let message = process.receive_forever(process.named_subject(door))
+      process.send(seen, untrusted_link.tunnel_shape(message))
+      let assert Ok(Nil) = process.unregister(door) as "the first door leaves"
+      let handed = process.new_subject()
+      let _second =
+        process.spawn_unlinked(fn() {
+          let assert Ok(Nil) = process.register(process.self(), door)
+            as "the second door registers"
+          process.send(handed, Nil)
+          recording_door(door, seen)
+        })
+      let assert Ok(Nil) = process.receive(handed, 1000)
+        as "the second door holds the name"
+      Nil
+    })
+  let assert Ok(Nil) = process.receive(ready, 1000) as "the first door is up"
+
+  let clear = untrusted_link.tunnel_through(door, "s1")
+  assert clear(tunnel_spec(64), process.new_subject(), 5000)
+    == Error(broker.BrokerUnavailable)
+  let assert Ok(#("clear", asked)) = process.receive(seen, 1000)
+    as "the first door took the clearance"
+  let assert Ok(#("withdraw", withdrawn)) = process.receive(seen, 1000)
+    as "the withdraw reached the name's new holder"
+  assert withdrawn == asked
+}
+
+fn recording_door(
+  door: process.Name(untrusted_link.Tunnel),
+  seen: Subject(#(String, Subject(Result(Nil, broker.Refusal)))),
+) -> Nil {
+  let message = process.receive_forever(process.named_subject(door))
+  process.send(seen, untrusted_link.tunnel_shape(message))
+  recording_door(door, seen)
+}

@@ -598,7 +598,17 @@ pub fn tunnel_waiting(
               }),
             )
           Ok(Heard(Error(refusal))) -> Error(refusal)
-          Ok(DoorDown) -> Error(broker.BrokerUnavailable)
+
+          // The door looked up may die, and a reload may register a new
+          // link's door under the name, between the lookup and the send, so
+          // the `Clear` can reach a link this function does not watch. The
+          // withdraw goes to the same name from the same process, so it
+          // follows the `Clear`, and a link that admitted the call removes it
+          // and cancels it instead of holding it for nobody.
+          Ok(DoorDown) -> {
+            address.deliver(at, Withdraw(reply))
+            Error(broker.BrokerUnavailable)
+          }
           Error(Nil) -> {
             address.deliver(at, Withdraw(reply))
             Error(broker.BrokerUnavailable)
@@ -606,6 +616,26 @@ pub fn tunnel_waiting(
         }
       }
     }
+  }
+}
+
+/// What a `Tunnel` message is, and the reply subject it names, for a test
+/// that plays the door: `"clear"`, `"withdraw"` or `"cancel"`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(kind, reply) = untrusted_link.tunnel_shape(received)
+/// ```
+@internal
+pub fn tunnel_shape(
+  tunnel: Tunnel,
+) -> #(String, Subject(Result(Nil, broker.Refusal))) {
+  // Each message names the asker's reply subject.
+  case tunnel {
+    Clear(reply:, ..) -> #("clear", reply)
+    Withdraw(reply:) -> #("withdraw", reply)
+    CancelCall(reply:) -> #("cancel", reply)
   }
 }
 
