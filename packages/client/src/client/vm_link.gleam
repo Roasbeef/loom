@@ -1,4 +1,5 @@
-//// The decisions behind `loom vm up --link untrusted`, with no effect in them.
+//// The decisions behind `loom vm up`, which reaches every new guest over the
+//// untrusted link, with no effect in them.
 ////
 //// A guest reached over the untrusted link (protocol-change/109) is not a
 //// distribution peer. The host daemon dials the guest's executor listener over
@@ -15,8 +16,9 @@
 ////
 //// ## Flow
 ////
-//// - `settle` picks the guest's link from its record, the traces of a first run and the
-////   `--link` flag, and refuses to change it.
+//// - `settle` decides the link a guest is brought up on from its record and
+////   the traces of a first run (`traces`, `made`): the untrusted link, or a
+////   refusal for a guest made as a distribution peer.
 //// - `port_step` decides whether the recorded loopback port is kept or a new
 ////   one is reserved.
 //// - `install` merges `[executor_link]` and the guest's row into the host's
@@ -89,37 +91,31 @@ pub fn encode_kind(kind: LinkKind) -> String {
   }
 }
 
-/// Reads the `link` record. A guest with no record is a distribution guest,
-/// which is what every guest made before the record existed is, so those guests
-/// are unchanged. Text that names neither kind is an error, never a default: a
-/// record that cannot be read must not turn an untrusted guest into a trusted
-/// one.
+/// Reads the text of a `link` record. Text that names neither kind is an
+/// error, never a default: a record that cannot be read must not turn an
+/// untrusted guest into a trusted one, and must not let a distribution guest
+/// pass for an untrusted one either.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_link.decode_kind(None) == Ok(vm_spec.Distribution)
-/// assert vm_link.decode_kind(Some("untrusted\n")) == Ok(vm_spec.Untrusted)
+/// assert vm_link.decode_kind("untrusted\n") == Ok(vm_spec.Untrusted)
 /// ```
-pub fn decode_kind(record: Option(String)) -> Result(LinkKind, String) {
-  case record {
-    None -> Ok(Distribution)
-    Some(text) ->
-      case string.trim(text) {
-        "distribution" -> Ok(Distribution)
-        "untrusted" -> Ok(Untrusted)
-        other ->
-          Error(
-            "the link record says "
-            <> string.inspect(string.slice(other, 0, 40))
-            <> ", not distribution or untrusted",
-          )
-      }
+pub fn decode_kind(text: String) -> Result(LinkKind, String) {
+  case string.trim(text) {
+    "distribution" -> Ok(Distribution)
+    "untrusted" -> Ok(Untrusted)
+    other ->
+      Error(
+        "the link record says "
+        <> string.inspect(string.slice(other, 0, 40))
+        <> ", not distribution or untrusted",
+      )
   }
 }
 
 /// What a guest's directory holds that a first `up` leaves before it records a
-/// link: the bundles a distribution `up` writes, or the leaf an untrusted `up`
+/// link: the bundles a distribution `up` wrote, or the leaf an untrusted `up`
 /// mints. Either says which link the guest was started with even when the run
 /// stopped before it wrote the `link` record.
 pub type Traces {
@@ -133,69 +129,104 @@ pub type Traces {
   LeafTrace
 }
 
-/// The link a guest has after this command: the one it was made with, or the
-/// one `--link` asks for when it is new.
+/// The traces of a guest's directory, from whether it holds the untrusted
+/// leaf's `link-credentials/` and the distribution bundles' `deploy/`.
 ///
-/// A guest keeps its link for life. A guest with a `link` record has that
-/// kind; one with distribution bundles and no record is a distribution guest,
-/// and one with a minted leaf is an untrusted guest; one with neither is new
-/// and takes the flag, defaulting to distribution. A flag that names the other kind is refused, because the guest's root, its row
-/// and its credentials all belong to one kind, and `--fresh` replaces the root
-/// and the disk but not the host's configuration.
+/// The leaf decides when both are there: it is minted before anything else of
+/// an untrusted guest exists, and no `up` has minted one for a guest that had
+/// bundles.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let new = vm_link.settle("dev", None, vm_link.NoTraces, Some(vm_spec.Untrusted))
-/// assert new == Ok(vm_spec.Untrusted)
+/// assert vm_link.traces(vm_spec.Absent, vm_spec.Present) == vm_link.DeployTrace
 /// ```
-pub fn settle(
-  name: String,
-  record: Option(String),
-  traces: Traces,
-  requested: Option(LinkKind),
-) -> Result(LinkKind, String) {
-  use made <- result.try(made_with(record, traces))
-
-  // A new guest takes the flag; an existing one keeps what it has.
-  case made, requested {
-    None, None -> Ok(Distribution)
-    None, Some(asked) -> Ok(asked)
-    Some(kind), None -> Ok(kind)
-    Some(kind), Some(asked) if kind == asked -> Ok(kind)
-    Some(kind), Some(asked) -> Error(mixed_refusal(name, kind, asked))
+pub fn traces(
+  credentials: vm_spec.Presence,
+  bundles: vm_spec.Presence,
+) -> Traces {
+  case credentials, bundles {
+    vm_spec.Present, _ -> LeafTrace
+    vm_spec.Absent, vm_spec.Present -> DeployTrace
+    vm_spec.Absent, vm_spec.Absent -> NoTraces
   }
 }
 
-/// The kind a guest was made with, or none when it is new.
-fn made_with(
+/// The kind a guest was made with, or none when its directory holds no sign
+/// that any `up` made it.
+///
+/// A record decides. Without one, the traces of a first run say which link it
+/// was: the bundles of a distribution guest, which every guest made before the
+/// record existed has, or the leaf of an untrusted run that stopped before it
+/// wrote the record. The read-only verbs ask this, so a guest made over
+/// distribution keeps being shown and removed as one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_link.made(None, vm_link.DeployTrace) == Ok(Some(vm_spec.Distribution))
+/// assert vm_link.made(None, vm_link.NoTraces) == Ok(None)
+/// ```
+pub fn made(
   record: Option(String),
   traces: Traces,
 ) -> Result(Option(LinkKind), String) {
-  // A record decides. Without one, the traces of a first run say which link it
-  // was, so a flagless `up` after an interrupted untrusted one resumes it as
-  // untrusted and never as a distribution guest.
   case record, traces {
-    Some(_), _ -> decode_kind(record) |> result.map(Some)
+    Some(text), _ -> decode_kind(text) |> result.map(Some)
     None, DeployTrace -> Ok(Some(Distribution))
     None, LeafTrace -> Ok(Some(Untrusted))
     None, NoTraces -> Ok(None)
   }
 }
 
-/// The refusal for a guest asked to change its link.
-fn mixed_refusal(name: String, made: LinkKind, asked: LinkKind) -> String {
+/// The link `up` and `ensure` bring a guest up on, which is always the
+/// untrusted one, or the refusal for a guest made as a distribution peer.
+///
+/// A new guest and an untrusted one get the untrusted link. A guest made over
+/// distribution holds the executor's cookie and node key in its root, so code
+/// that takes over the guest can run in the host daemon as the developer; it
+/// is refused rather than resumed or converted, before anything is written,
+/// booted or sent, and the refusal names the three commands that move its work
+/// to a new guest (the owner's ruling of 2026-11-13, ADR-022). No input makes
+/// this answer `Distribution`, which is what keeps every command from making a
+/// new distribution guest or turning an untrusted one into one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_link.settle("dev", None, vm_link.NoTraces) == Ok(vm_spec.Untrusted)
+/// let assert Error(_) = vm_link.settle("dev", None, vm_link.DeployTrace)
+/// ```
+pub fn settle(
+  name: String,
+  record: Option(String),
+  traces: Traces,
+) -> Result(LinkKind, String) {
+  use kind <- result.try(made(record, traces))
+
+  // Only a guest made over distribution is refused; everything else, new or
+  // not, is brought up on the untrusted link.
+  case kind {
+    Some(Distribution) -> Error(retired_refusal(name))
+    Some(Untrusted) | None -> Ok(Untrusted)
+  }
+}
+
+/// The refusal for a guest made over distribution: why it is not started, and
+/// the commands in the order a developer needs them, so its commits are
+/// fetched before the guest that holds them is deleted.
+fn retired_refusal(name: String) -> String {
   "the guest "
   <> name
-  <> " was made with the "
-  <> kind_word(made)
-  <> " link and keeps it, even under `--fresh`, which replaces the root and the "
-  <> "disk and leaves the daemon's configuration as it is. Remove it with "
-  <> "`loom vm rm --name "
+  <> " was made as a trusted distribution peer of your daemon, so code that "
+  <> "takes it over could run in the daemon as you, and it is no longer "
+  <> "started. Fetch its commits with `loom vm sync --name "
   <> name
-  <> " --yes` and run `loom vm up --link "
-  <> kind_word(asked)
-  <> "` again."
+  <> "`, remove it with `loom vm rm --name "
+  <> name
+  <> " --yes`, and make it again on the untrusted link with `loom vm up --name "
+  <> name
+  <> "`."
 }
 
 /// The word `--link` and `status` use for a kind.

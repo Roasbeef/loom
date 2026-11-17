@@ -774,6 +774,12 @@ fn up(options: UpOptions) -> Result(String, String) {
 /// the boot path exists once.
 fn bring_up(options: UpOptions) -> Result(Upped, String) {
   use vm_home <- result.try(vm_home())
+  let guest = instance(vm_home, options.name)
+
+  // The link is settled first, from the host's records alone, so a guest made
+  // over distribution is refused before a manifest is installed, a file is
+  // written or a daemon is asked anything.
+  use kind <- result.try(link_of(guest, options.name))
   use manifest <- result.try(installed_manifest(vm_home))
   use Nil <- result.try(vm_spec.check_revision(
     manifest,
@@ -781,7 +787,6 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   ))
   use workspace <- result.try(workspace_of(options))
   let names = vm_spec.names(options.name)
-  let guest = instance(vm_home, options.name)
   use Nil <- result.try(refuse_running(guest, options.name))
   use Nil <- result.try(refuse_stranded(
     guest,
@@ -802,8 +807,9 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   let options = UpOptions(..options, allow:)
 
   // A guest on the untrusted link has no deployment to settle, and shares only
-  // the checks above and the root, state and boot steps below.
-  use kind <- result.try(link_of(guest, options))
+  // the checks above and the root, state and boot steps below. `settle` never
+  // answers `Distribution`, so the distribution half below is reached by no
+  // guest; it is deleted with the rest of that path after one release.
   use <- on_link(kind, fn() {
     bring_up_linked(LinkedUp(
       manifest:,
@@ -1177,7 +1183,10 @@ fn ensure_facts(
   let names = vm_spec.names(name)
   let guest = instance(vm_home, name)
   use state <- result.try(process_state(guest) |> result.map_error(Refused))
-  use kind <- result.try(link_of(guest, options) |> result.map_error(Refused))
+
+  // A guest made over distribution is refused here, before `ensure_step`, so
+  // even one that serves is not handed to `loom --vm`.
+  use kind <- result.try(link_of(guest, name) |> result.map_error(Refused))
 
   // The record's process is read through its birth marker, so a stale record
   // is no process, and the node's epmd registration is read beside it.
@@ -2302,38 +2311,48 @@ type LinkedUp {
   )
 }
 
-/// The link this command gives the guest: the one its `link` record says, one
-/// that bundles imply, or the one `--link` asks for when the guest is new
-/// (`vm_link.settle`). A guest never changes its link, so a mismatch refuses
-/// before anything is written.
-fn link_of(
-  guest: Instance,
-  options: UpOptions,
-) -> Result(vm_spec.LinkKind, String) {
+/// The link `up` and `ensure` give the guest, which is the untrusted one, or
+/// the refusal for a guest made over distribution (`vm_link.settle`). It reads
+/// only the host's records beside the guest, so a refusal comes before
+/// anything is written, booted or sent.
+fn link_of(guest: Instance, name: String) -> Result(vm_spec.LinkKind, String) {
   use record <- result.try(read_record(guest.kind_file))
-  vm_link.settle(options.name, record, traces_of(guest), options.link)
+  vm_link.settle(name, record, traces_of(guest))
 }
 
 /// What a first `up` left in the guest's directory before it recorded a link:
-/// the leaf an untrusted `up` mints, or the bundles a distribution `up` writes.
+/// the leaf an untrusted `up` mints, or the bundles a distribution `up` wrote.
 fn traces_of(guest: Instance) -> vm_link.Traces {
-  let leaf = is_plain_directory(guest.link_credentials)
-  let bundles = is_plain_directory(guest.deploy)
+  vm_link.traces(
+    directory_presence(guest.link_credentials),
+    directory_presence(guest.deploy),
+  )
+}
 
-  // The leaf is looked for first: it is minted before anything else of an
-  // untrusted guest exists, so it names the link of a run that stopped early.
-  case leaf, bundles {
-    True, _ -> vm_link.LeafTrace
-    False, True -> vm_link.DeployTrace
-    False, False -> vm_link.NoTraces
+/// Whether `path` is a real directory, as the presence `vm_link.traces` takes.
+/// A link where the directory belongs is no directory.
+fn directory_presence(path: String) -> vm_spec.Presence {
+  case is_plain_directory(path) {
+    True -> vm_spec.Present
+    False -> vm_spec.Absent
   }
 }
 
-/// The link a guest was made with, for the commands that only read it. A guest
-/// with no record and no trace of a first run is a distribution guest.
+/// The link a guest was made with, for the commands that only read it. A
+/// directory with no record and no trace of a first run is one `up` would
+/// make an untrusted guest of, so it is read as one.
 fn recorded_kind(guest: Instance) -> Result(vm_spec.LinkKind, String) {
+  use made <- result.try(made_kind(guest))
+  Ok(option.unwrap(made, vm_spec.Untrusted))
+}
+
+/// The link a guest was made with, or none when no `up` left a sign of it
+/// (`vm_link.made`).
+fn made_kind(
+  guest: Instance,
+) -> Result(option.Option(vm_spec.LinkKind), String) {
   use record <- result.try(read_record(guest.kind_file))
-  vm_link.settle("", record, traces_of(guest), None)
+  vm_link.made(record, traces_of(guest))
 }
 
 /// The text of a record file the host wrote, or none when it is absent.
@@ -5079,10 +5098,11 @@ fn linked_removal_plan(
   ))
 }
 
-/// The links of the guests other than `name`, from their `link` records. A
-/// directory with no record is a distribution guest, and a record that cannot
-/// be read counts as untrusted, so the shared credentials are kept rather than
-/// removed under a guest that may still need them.
+/// The links of the guests other than `name`, from their `link` records and
+/// traces. A directory with neither, such as the vm home's own `link/`, is no
+/// guest and is not counted, and a record that cannot be read counts as
+/// untrusted, so the shared credentials are kept rather than removed under a
+/// guest that may still need them.
 fn other_kinds(
   vm_home: String,
   name: String,
@@ -5098,9 +5118,12 @@ fn other_kinds(
     |> list.filter(fn(entry) {
       entry != name && result.is_ok(vm_spec.valid_existing_name(entry))
     })
-    |> list.map(fn(entry) {
-      recorded_kind(instance(vm_home, entry))
-      |> result.unwrap(vm_spec.Untrusted)
+    |> list.filter_map(fn(entry) {
+      case made_kind(instance(vm_home, entry)) {
+        Ok(Some(kind)) -> Ok(kind)
+        Ok(None) -> Error(Nil)
+        Error(_) -> Ok(vm_spec.Untrusted)
+      }
     }),
   )
 }

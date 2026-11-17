@@ -13,13 +13,17 @@
 //// decisions, so a decision that drifts from the rules fails the check instead
 //// of agreeing with itself.
 ////
-//// There are three guests that can each be reached either way. A configuration
-//// may already hold a ledger deployment, a trusted row with the first guest's
-//// name, an operator's own `[executor_link]` that names other files, or an
-//// operator's own untrusted row that relies on the table `up` adds. A daemon is
-//// down, idle or busy, and a stranger can take a guest's port while the guest
-//// is down. An `up` can also stop after any step (`UpStopped`), which is what a
-//// refusal, a crash or a failed boot does. The properties, by tag:
+//// There are three guests. Every guest a command makes is on the untrusted
+//// link; the third can start out as a guest made over distribution before the
+//// untrusted link was the default, stopped or running, with its trusted row in
+//// the file, because such guests exist on developers' machines. A
+//// configuration may already hold a ledger deployment, a trusted row with the
+//// first guest's name, an operator's own `[executor_link]` that names other
+//// files, or an operator's own untrusted row that relies on the table `up`
+//// adds. A daemon is down, idle or busy, and a stranger can take a guest's port
+//// while the guest is down. An `up` can also stop after any step
+//// (`UpStopped`), which is what a refusal, a crash or a failed boot does. The
+//// properties, by tag:
 ////
 //// - `untouched`: a command on an untrusted guest never changes the
 ////   `[distribution]` table or any row that is not one of the guests' own.
@@ -30,9 +34,13 @@
 ////   row name the same loopback port, after every command.
 //// - `no-cookie`: what `up` stages for an untrusted guest holds no cookie, no
 ////   ledger and no `[distribution]` table.
-//// - `kind-fixed`: a guest asked for the other link is refused unchanged, and a
+//// - `kind-fixed`: the world's guests are the model's, guest by guest, and a
 ////   guest that has a leaf, with or without a record, is never a distribution
 ////   guest.
+//// - `retired`: `up` of a guest made over distribution is refused and changes
+////   nothing: no file, no record, no row and no daemon.
+//// - `no-distribution`: no command makes a distribution guest where there was
+////   none, or turns an untrusted guest into one.
 //// - `daemon`: a row the daemon has not read makes a running daemon read the
 ////   file, idle or busy, including a row an earlier `up` wrote and a failed
 ////   boot left unread, and a row it has read touches no daemon.
@@ -40,7 +48,7 @@
 ////   table, refuses an untrusted `up` and writes no row.
 ////
 //// The schedules are drawn from a fixed seed, and the same rules run over
-//// six starting configurations.
+//// eight starting configurations.
 
 import client/distribution_install
 import client/vm_link.{LinkFiles, Row}
@@ -165,8 +173,9 @@ type Stop {
 }
 
 type Command {
-  // `loom vm up`, with `--link` when given. A resume gives none.
-  Up(guest: Int, asked: Option(LinkKind))
+  // `loom vm up`. No flag names a link, because `--link untrusted` changes
+  // nothing and `--link distribution` is refused by the parser.
+  Up(guest: Int)
   // An `up --link untrusted` that stops after a step.
   UpStopped(guest: Int, step: Step)
   Down(guest: Int)
@@ -179,8 +188,23 @@ type Command {
 
 // How a run begins.
 type Start {
-  Start(deployment: Deployment, squatter: Squatter, operator: Operator)
+  Start(
+    deployment: Deployment,
+    squatter: Squatter,
+    operator: Operator,
+    old: OldGuest,
+  )
 }
+
+// Whether the third guest was made over distribution before the untrusted link
+// was the default, and whether it runs.
+type OldGuest {
+  NoOldGuest
+  OldGuest(life: Life)
+}
+
+// The third guest's index, which is the one a start can make an old guest of.
+const old_index = 2
 
 type Deployment {
   NoDeployment
@@ -267,13 +291,36 @@ fn start_config(start: Start) -> String {
     OperatorLink -> [operator_link]
     OperatorRow -> [operator_row()]
   }
-  string.join(list.flatten([[notes], deployment, squatter, operator]), "\n")
+
+  // The old guest's own trusted row, as its distribution `up` installed it.
+  let old = case start.old {
+    NoOldGuest -> []
+    OldGuest(..) -> [old_row()]
+  }
+  string.join(
+    list.flatten([[notes], deployment, squatter, operator, old]),
+    "\n",
+  )
+}
+
+fn old_row() -> String {
+  "[executors."
+  <> name_of(old_index)
+  <> "]\nnode = \"loom_vm_"
+  <> name_of(old_index)
+  <> "_exec@127.0.0.1\"\n"
 }
 
 fn start_world(start: Start) -> World {
+  // A distribution guest's directory holds its bundles and no `link` record,
+  // which is what every such guest made before the record existed holds.
+  let third = case start.old {
+    NoOldGuest -> WorldAbsent
+    OldGuest(life:) -> WorldGuest(None, None, vm_link.DeployTrace, life)
+  }
   World(
     config: start_config(start),
-    slots: [WorldAbsent, WorldAbsent, WorldAbsent],
+    slots: [WorldAbsent, WorldAbsent, third],
     taken: [],
     next: first_port,
     daemon: WorldDown,
@@ -282,8 +329,12 @@ fn start_world(start: Start) -> World {
 }
 
 fn start_model(start: Start) -> Model {
+  let third = case start.old {
+    NoOldGuest -> Absent
+    OldGuest(life:) -> Present(Distribution, life, None, NotEnrolled)
+  }
   Model(
-    slots: [Absent, Absent, Absent],
+    slots: [Absent, Absent, third],
     taken: [],
     next: first_port,
     daemon: DaemonDown,
@@ -384,13 +435,13 @@ fn kept(text: String) -> #(Option(tom.Toml), List(#(String, tom.Toml))) {
   #(option.from_result(dict.get(document(text), "distribution")), others)
 }
 
-// The link a guest has, read as `vm_cli.recorded_kind` reads it: from its
-// record, and failing that from the traces a first run left.
+// The link a guest has, read as `vm_cli.made_kind` reads it: from its record,
+// and failing that from the traces a first run left.
 fn kind_of_slot(slot: WorldSlot) -> Option(LinkKind) {
   case slot {
     WorldAbsent -> None
     WorldGuest(link:, traces:, ..) ->
-      option.from_result(vm_link.settle("", link, traces, None))
+      vm_link.made(link, traces) |> result.unwrap(None)
   }
 }
 
@@ -423,7 +474,7 @@ fn view_of(world: World, guest: Int) -> Slot {
     WorldAbsent -> Absent
     WorldGuest(link: None, traces: vm_link.LeafTrace, ..) -> Stub
     WorldGuest(port:, life:, ..) as slot -> {
-      let kind = option.unwrap(kind_of_slot(slot), Distribution)
+      let kind = option.unwrap(kind_of_slot(slot), Untrusted)
       Present(
         kind:,
         life:,
@@ -452,8 +503,61 @@ fn execute(
   command: Command,
 ) -> Result(World, statem.Violation) {
   use after <- result.try(apply(world, model, command))
+  use Nil <- result.try(check_no_distribution(world, after, command))
+  use Nil <- result.try(check_retired(world, after, command))
   use after <- result.try(check_world(after))
   check_follows(after, next_model(model, command), command)
+}
+
+// No command makes a distribution guest: a guest the world reads as one after
+// the command was one before it.
+fn check_no_distribution(
+  before: World,
+  after: World,
+  command: Command,
+) -> Result(Nil, statem.Violation) {
+  list.try_each([0, 1, 2], fn(guest) {
+    let was = kind_of_slot(at(before.slots, guest, WorldAbsent))
+    let now = kind_of_slot(at(after.slots, guest, WorldAbsent))
+    case now == Some(Distribution) && was != Some(Distribution) {
+      False -> Ok(Nil)
+      True ->
+        Error(violation(
+          "no-distribution",
+          string.inspect(command)
+            <> " made "
+            <> name_of(guest)
+            <> " a distribution guest from "
+            <> string.inspect(was),
+        ))
+    }
+  })
+}
+
+// `up` of a guest made over distribution leaves the whole world as it was: the
+// file, every record, the ports, the credentials and the daemon.
+fn check_retired(
+  before: World,
+  after: World,
+  command: Command,
+) -> Result(Nil, statem.Violation) {
+  case command {
+    Up(guest) ->
+      case kind_of_slot(at(before.slots, guest, WorldAbsent)), after == before {
+        Some(Distribution), False ->
+          Error(violation(
+            "retired",
+            "up of the distribution guest "
+              <> name_of(guest)
+              <> " changed "
+              <> string.inspect(before)
+              <> " into "
+              <> string.inspect(after),
+          ))
+        _, _ -> Ok(Nil)
+      }
+    _ -> Ok(Nil)
+  }
 }
 
 fn apply(
@@ -462,7 +566,7 @@ fn apply(
   command: Command,
 ) -> Result(World, statem.Violation) {
   case command {
-    Up(guest, asked) -> execute_up(world, model, guest, asked)
+    Up(guest) -> execute_up(world, model, guest)
     UpStopped(guest, step) ->
       untrusted_up(world, model, guest, StopsAfter(step))
     Down(guest) -> Ok(with_life(world, guest, Dead))
@@ -495,61 +599,31 @@ fn with_life(world: World, guest: Int, life: Life) -> World {
   }
 }
 
-// `up`: the link is settled from the guest's records, its traces and the flag,
-// and then the guest is brought up the way its link says.
+// `up`: the link is settled from the guest's records and its traces, and the
+// guest is brought up on the untrusted link, or refused when it was made over
+// distribution. A refusal is the end of the command: nothing after `settle`
+// runs, so nothing is written.
 fn execute_up(
   world: World,
   model: Model,
   guest: Int,
-  asked: Option(LinkKind),
 ) -> Result(World, statem.Violation) {
   let slot = at(world.slots, guest, WorldAbsent)
   let #(record, traces) = case slot {
     WorldAbsent -> #(None, vm_link.NoTraces)
     WorldGuest(link:, traces:, ..) -> #(link, traces)
   }
-  let settled = vm_link.settle(name_of(guest), record, traces, asked)
+  let settled = vm_link.settle(name_of(guest), record, traces)
 
-  // A guest whose link differs from the flag is refused and changes nothing.
+  // Only a distribution guest is refused, and nothing brings one up.
   case settled, kind_of_slot(slot) {
-    Error(_), Some(kind) ->
-      case asked {
-        Some(wanted) if wanted != kind -> Ok(world)
-        _ -> Error(violation("kind-fixed", "refused a settled guest"))
-      }
-    Error(reason), None ->
-      Error(violation("kind-fixed", "refused a new guest: " <> reason))
-    Ok(Distribution), _ -> Ok(distribution_up(world, guest))
+    Error(_), Some(Distribution) -> Ok(world)
+    Error(reason), _ ->
+      Error(violation("kind-fixed", "refused a guest: " <> reason))
+    Ok(Distribution), _ ->
+      Error(violation("no-distribution", "brought a guest up over distribution"))
     Ok(Untrusted), _ -> untrusted_up(world, model, guest, RunsOn)
   }
-}
-
-fn distribution_up(world: World, guest: Int) -> World {
-  // A distribution guest enrols a deployment when there is none and adds its
-  // own trusted row. It is the other kind of guest, present so the properties
-  // of an untrusted guest can be held against it.
-  let deployment = case dict.has_key(document(world.config), "distribution") {
-    True -> []
-    False -> [ledger_deployment]
-  }
-  let row = case dict.has_key(rows_of(world.config), name_of(guest)) {
-    True -> []
-    False -> [
-      "[executors." <> name_of(guest) <> "]\nnode = \"peer@127.0.0.1\"\n",
-    ]
-  }
-  World(
-    ..world,
-    config: string.join(
-      list.flatten([[string.trim_end(world.config)], deployment, row]),
-      "\n",
-    ),
-    slots: set_at(
-      world.slots,
-      guest,
-      WorldGuest(None, None, vm_link.DeployTrace, Alive),
-    ),
-  )
 }
 
 // `bring_up_linked`, step by step, as far as `stop` lets it go. Each step
@@ -943,7 +1017,7 @@ fn model_rows(model: Model) -> List(#(Int, Int)) {
 
 fn next_model(model: Model, command: Command) -> Model {
   case command {
-    Up(guest, asked) -> model_up(model, guest, asked)
+    Up(guest) -> model_up(model, guest)
     UpStopped(guest, step) -> model_untrusted(model, guest, StopsAfter(step))
     Down(guest) -> with_life_of(model, guest, Dead)
     Rm(guest) -> Model(..model, slots: set_at(model.slots, guest, Absent))
@@ -980,40 +1054,15 @@ fn with_life_of(model: Model, guest: Int, life: Life) -> Model {
   }
 }
 
-fn model_up(model: Model, guest: Int, asked: Option(LinkKind)) -> Model {
+fn model_up(model: Model, guest: Int) -> Model {
   case at(model.slots, guest, Absent) {
-    // A new guest takes the flag.
-    Absent ->
-      case option.unwrap(asked, Distribution) {
-        Untrusted -> model_untrusted(model, guest, RunsOn)
-        Distribution ->
-          Model(
-            ..model,
-            slots: set_at(
-              model.slots,
-              guest,
-              Present(Distribution, Alive, None, NotEnrolled),
-            ),
-          )
-      }
+    // A guest made over distribution is refused and stays as it was.
+    Present(kind: Distribution, ..) -> model
 
-    // A leaf with no record is an untrusted guest, and is refused the other.
-    Stub ->
-      case asked {
-        Some(Distribution) -> model
-        _ -> model_untrusted(model, guest, RunsOn)
-      }
-
-    // An existing guest keeps its link and is refused another.
-    Present(kind:, ..) ->
-      case asked {
-        Some(wanted) if wanted != kind -> model
-        _ ->
-          case kind {
-            Distribution -> with_life_of(model, guest, Alive)
-            Untrusted -> model_untrusted(model, guest, RunsOn)
-          }
-      }
+    // A new guest, a leaf with no record and an untrusted guest are all
+    // brought up on the untrusted link.
+    Absent | Stub | Present(kind: Untrusted, ..) ->
+      model_untrusted(model, guest, RunsOn)
   }
 }
 
@@ -1100,17 +1149,15 @@ fn unread(
 
 fn precondition(model: Model, command: Command) -> statem.Admission {
   let admitted = case command {
-    Up(guest, asked) -> {
-      let dead = case at(model.slots, guest, Absent) {
+    // A running guest is refused by `refuse_running` on its own account, which
+    // this model does not hold. A distribution guest is refused before that
+    // whatever its life, so `up` of one that runs is admitted too.
+    Up(guest) ->
+      case at(model.slots, guest, Absent) {
         Absent | Stub -> True
+        Present(kind: Distribution, ..) -> True
         Present(life:, ..) -> life == Dead
       }
-
-      // A trusted row of the first guest's name is only ever met by an
-      // untrusted `up`, which refuses it.
-      let squatted = model.start.squatter == TrustedRowForFirst && guest == 0
-      dead && { !squatted || asked == Some(Untrusted) }
-    }
     UpStopped(guest, _) ->
       case at(model.slots, guest, Absent) {
         Absent | Stub -> True
@@ -1145,15 +1192,6 @@ fn precondition(model: Model, command: Command) -> statem.Admission {
 
 fn command(_model: Model) -> qcheck.Generator(Command) {
   let guest = qcheck.bounded_int(0, 2)
-  let asked =
-    qcheck.bounded_int(0, 4)
-    |> qcheck.map(fn(n) {
-      case n {
-        0 -> None
-        1 -> Some(Distribution)
-        _ -> Some(Untrusted)
-      }
-    })
   let step =
     qcheck.bounded_int(0, 3)
     |> qcheck.map(fn(n) {
@@ -1164,24 +1202,18 @@ fn command(_model: Model) -> qcheck.Generator(Command) {
         _ -> AfterConfig
       }
     })
-  qcheck.from_weighted_generators(
-    #(24, qcheck.map2(guest, asked, fn(index, kind) { Up(index, kind) })),
-    [
-      #(
-        10,
-        qcheck.map2(guest, step, fn(index, step) { UpStopped(index, step) }),
-      ),
-      #(8, qcheck.map(guest, Down)),
-      #(8, qcheck.map(guest, Rm)),
-      #(6, qcheck.map(guest, PortTaken)),
-      #(
-        6,
-        qcheck.bounded_int(0, 1)
-          |> qcheck.map(fn(n) { StartDaemon(n * 2) }),
-      ),
-      #(4, qcheck.constant(StopDaemon)),
-    ],
-  )
+  qcheck.from_weighted_generators(#(24, qcheck.map(guest, Up)), [
+    #(10, qcheck.map2(guest, step, fn(index, step) { UpStopped(index, step) })),
+    #(8, qcheck.map(guest, Down)),
+    #(8, qcheck.map(guest, Rm)),
+    #(6, qcheck.map(guest, PortTaken)),
+    #(
+      6,
+      qcheck.bounded_int(0, 1)
+        |> qcheck.map(fn(n) { StartDaemon(n * 2) }),
+    ),
+    #(4, qcheck.constant(StopDaemon)),
+  ])
 }
 
 fn describe(command: Command) -> String {
@@ -1217,27 +1249,60 @@ fn campaign(start: Start) -> Nil {
 }
 
 pub fn guests_follow_the_model_in_an_empty_file_test() {
-  campaign(Start(NoDeployment, NoSquatter, NothingOfTheOperators))
+  campaign(Start(NoDeployment, NoSquatter, NothingOfTheOperators, NoOldGuest))
 }
 
 pub fn guests_follow_the_model_beside_a_ledger_deployment_test() {
-  campaign(Start(LedgerDeployment, NoSquatter, NothingOfTheOperators))
+  campaign(Start(
+    LedgerDeployment,
+    NoSquatter,
+    NothingOfTheOperators,
+    NoOldGuest,
+  ))
 }
 
 pub fn guests_follow_the_model_when_a_trusted_row_has_the_first_guests_name_test() {
-  campaign(Start(NoDeployment, TrustedRowForFirst, NothingOfTheOperators))
+  campaign(Start(
+    NoDeployment,
+    TrustedRowForFirst,
+    NothingOfTheOperators,
+    NoOldGuest,
+  ))
 }
 
 pub fn guests_follow_the_model_beside_a_ledger_and_a_squatting_row_test() {
-  campaign(Start(LedgerDeployment, TrustedRowForFirst, NothingOfTheOperators))
+  campaign(Start(
+    LedgerDeployment,
+    TrustedRowForFirst,
+    NothingOfTheOperators,
+    NoOldGuest,
+  ))
 }
 
 pub fn guests_follow_the_model_beside_an_operators_own_link_table_test() {
-  campaign(Start(LedgerDeployment, NoSquatter, OperatorLink))
+  campaign(Start(LedgerDeployment, NoSquatter, OperatorLink, NoOldGuest))
 }
 
 pub fn guests_follow_the_model_beside_an_operators_own_untrusted_row_test() {
-  campaign(Start(NoDeployment, NoSquatter, OperatorRow))
+  campaign(Start(NoDeployment, NoSquatter, OperatorRow, NoOldGuest))
+}
+
+pub fn guests_follow_the_model_beside_a_stopped_distribution_guest_test() {
+  campaign(Start(
+    LedgerDeployment,
+    NoSquatter,
+    NothingOfTheOperators,
+    OldGuest(Dead),
+  ))
+}
+
+pub fn guests_follow_the_model_beside_a_running_distribution_guest_test() {
+  campaign(Start(
+    LedgerDeployment,
+    TrustedRowForFirst,
+    OperatorRow,
+    OldGuest(Alive),
+  ))
 }
 
 // --- scripted schedules through the same rules --------------------------------------------------------
@@ -1259,30 +1324,32 @@ fn replay(
   )
 }
 
-const plain = Start(NoDeployment, NoSquatter, NothingOfTheOperators)
+const plain = Start(NoDeployment, NoSquatter, NothingOfTheOperators, NoOldGuest)
 
-const ledger = Start(LedgerDeployment, NoSquatter, NothingOfTheOperators)
+const ledger =
+  Start(LedgerDeployment, NoSquatter, NothingOfTheOperators, NoOldGuest)
+
+const old =
+  Start(LedgerDeployment, NoSquatter, NothingOfTheOperators, OldGuest(Dead))
 
 pub fn the_first_untrusted_guest_makes_an_idle_daemon_read_its_row_test() {
-  let assert Ok(#(world, _)) =
-    replay(plain, [StartDaemon(0), Up(0, Some(Untrusted))])
+  let assert Ok(#(world, _)) = replay(plain, [StartDaemon(0), Up(0)])
   assert world.daemon == WorldUp(0, untrusted_rows(world.config))
   assert world.link_home
 }
 
 pub fn a_busy_daemon_reads_the_row_and_is_never_stopped_test() {
-  let assert Ok(#(world, _)) =
-    replay(plain, [StartDaemon(2), Up(0, Some(Untrusted))])
+  let assert Ok(#(world, _)) = replay(plain, [StartDaemon(2), Up(0)])
   assert world.daemon == WorldUp(2, untrusted_rows(world.config))
 }
 
 pub fn a_resume_that_changes_no_row_touches_no_daemon_test() {
   let assert Ok(#(world, _)) =
     replay(plain, [
-      Up(0, Some(Untrusted)),
+      Up(0),
       Down(0),
       StartDaemon(2),
-      Up(0, None),
+      Up(0),
     ])
   assert world.daemon == WorldUp(2, untrusted_rows(world.config))
 }
@@ -1303,21 +1370,20 @@ pub fn a_failed_first_boot_leaves_a_row_the_next_up_finds_unread_test() {
     replay(plain, [
       StartDaemon(2),
       UpStopped(0, AfterConfig),
-      Up(0, None),
+      Up(0),
     ])
   assert world.daemon == WorldUp(2, untrusted_rows(world.config))
 }
 
 pub fn a_taken_port_moves_the_row_and_the_daemon_reads_the_new_port_test() {
-  let assert Ok(#(before, _)) =
-    replay(plain, [Up(0, Some(Untrusted)), Down(0), StartDaemon(2)])
+  let assert Ok(#(before, _)) = replay(plain, [Up(0), Down(0), StartDaemon(2)])
   let assert Ok(#(after, _)) =
     replay(plain, [
-      Up(0, Some(Untrusted)),
+      Up(0),
       Down(0),
       PortTaken(0),
       StartDaemon(2),
-      Up(0, None),
+      Up(0),
     ])
 
   // The row names a new port, and the busy daemon, which held the old one, was
@@ -1329,8 +1395,8 @@ pub fn a_taken_port_moves_the_row_and_the_daemon_reads_the_new_port_test() {
 pub fn a_ledger_deployment_is_left_exactly_as_it_was_test() {
   let assert Ok(#(world, _)) =
     replay(ledger, [
-      Up(0, Some(Untrusted)),
-      Up(1, Some(Untrusted)),
+      Up(0),
+      Up(1),
       Down(0),
       Rm(0),
     ])
@@ -1339,16 +1405,15 @@ pub fn a_ledger_deployment_is_left_exactly_as_it_was_test() {
 }
 
 pub fn removing_the_last_untrusted_guest_removes_the_link_table_test() {
-  let assert Ok(#(world, _)) =
-    replay(plain, [Up(0, Some(Untrusted)), Down(0), Rm(0)])
+  let assert Ok(#(world, _)) = replay(plain, [Up(0), Down(0), Rm(0)])
   assert !dict.has_key(document(world.config), "executor_link")
   assert !world.link_home
 }
 
 pub fn an_operators_row_keeps_the_table_and_its_credentials_test() {
   let assert Ok(#(world, _)) =
-    replay(Start(NoDeployment, NoSquatter, OperatorRow), [
-      Up(0, Some(Untrusted)),
+    replay(Start(NoDeployment, NoSquatter, OperatorRow, NoOldGuest), [
+      Up(0),
       Down(0),
       Rm(0),
     ])
@@ -1361,18 +1426,43 @@ pub fn an_operators_row_keeps_the_table_and_its_credentials_test() {
     == ["theirs"]
 }
 
-pub fn a_guest_is_refused_the_other_link_and_changes_nothing_test() {
-  let assert Ok(#(first, _)) = replay(plain, [Up(0, Some(Untrusted)), Down(0)])
-  let assert Ok(#(second, _)) =
-    replay(plain, [Up(0, Some(Untrusted)), Down(0), Up(0, Some(Distribution))])
-  assert second == first
+pub fn a_distribution_guest_is_refused_and_changes_nothing_test() {
+  // Stopped or running, with a daemon or without, `up` of the old guest leaves
+  // the world exactly as it was.
+  list.each([Dead, Alive], fn(life) {
+    let start = Start(..old, old: OldGuest(life))
+    let assert Ok(#(before, _)) = replay(start, [StartDaemon(2)])
+    let assert Ok(#(after, model)) =
+      replay(start, [StartDaemon(2), Up(old_index)])
+    assert after == before
+    assert at(model.slots, old_index, Absent)
+      == Present(Distribution, life, None, NotEnrolled)
+  })
+}
+
+pub fn a_distribution_guest_removed_makes_room_for_an_untrusted_one_test() {
+  // `rm` keeps its distribution teardown, which takes the old trusted row, and
+  // the `up` after it makes the guest again on the untrusted link.
+  let assert Ok(#(world, model)) = replay(old, [Rm(old_index), Up(old_index)])
+  assert at(model.slots, old_index, Absent)
+    == Present(Untrusted, Alive, Some(first_port), EnrolledAt(first_port))
+  assert view_of(world, old_index) == at(model.slots, old_index, Absent)
+  assert !string.contains(world.config, "_exec@127.0.0.1")
+  assert has_row(world, old_index)
+}
+
+pub fn untrusted_guests_beside_an_old_one_leave_its_row_test() {
+  let assert Ok(#(world, _)) = replay(old, [Up(0), Up(1), Down(0), Rm(0)])
+  assert string.contains(world.config, string.trim_end(old_row()))
+  assert view_of(world, old_index)
+    == Present(Distribution, Dead, None, NotEnrolled)
 }
 
 pub fn a_run_that_stopped_after_its_leaf_stays_untrusted_when_resumed_flagless_test() {
   // Neither record nor bundles, only the leaf: a flagless `up` must resume the
   // guest as untrusted and never make it a distribution guest.
   let assert Ok(#(world, model)) =
-    replay(plain, [UpStopped(0, AfterLeaf), Up(0, None)])
+    replay(plain, [UpStopped(0, AfterLeaf), Up(0)])
   assert at(model.slots, 0, Absent)
     == Present(Untrusted, Alive, Some(first_port), EnrolledAt(first_port))
   assert view_of(world, 0) == at(model.slots, 0, Absent)
@@ -1380,8 +1470,9 @@ pub fn a_run_that_stopped_after_its_leaf_stays_untrusted_when_resumed_flagless_t
 }
 
 pub fn a_trusted_row_of_the_guests_name_refuses_it_and_writes_no_row_test() {
-  let squatted = Start(NoDeployment, TrustedRowForFirst, NothingOfTheOperators)
-  let assert Ok(#(world, _)) = replay(squatted, [Up(0, Some(Untrusted))])
+  let squatted =
+    Start(NoDeployment, TrustedRowForFirst, NothingOfTheOperators, NoOldGuest)
+  let assert Ok(#(world, _)) = replay(squatted, [Up(0)])
 
   // The leaf was minted before the file refused the row, so the guest is a
   // stub that a flagless `up` still reads as untrusted, and the file is as it
@@ -1392,9 +1483,8 @@ pub fn a_trusted_row_of_the_guests_name_refuses_it_and_writes_no_row_test() {
 }
 
 pub fn an_operators_own_link_table_refuses_every_guest_test() {
-  let operator = Start(NoDeployment, NoSquatter, OperatorLink)
-  let assert Ok(#(world, _)) =
-    replay(operator, [Up(0, Some(Untrusted)), Up(1, Some(Untrusted))])
+  let operator = Start(NoDeployment, NoSquatter, OperatorLink, NoOldGuest)
+  let assert Ok(#(world, _)) = replay(operator, [Up(0), Up(1)])
   assert world.config == start_config(operator)
   assert enrolled_guests(world) == []
 }
