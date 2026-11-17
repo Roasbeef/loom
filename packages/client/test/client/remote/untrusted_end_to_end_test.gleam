@@ -15,9 +15,24 @@
 //// starts it through the surface the session attached with, the host runs it,
 //// its capability call reaches the owner while it runs, and its value comes
 //// back to the record's worker. The worker's death stops it on the executor.
+////
+//// The broker tunnel (protocol-change/117) takes the same trip for the
+//// session's non-tool callers, into a plane whose broker is the production
+//// broker over a real helper: a goal check, the baseline probe, the worktree
+//// diff after a jailed edit and the peer observation each return what the
+//// executor's repository holds, and an imported hook stays refused.
 
+import broker/broker
+import broker/budget
+import broker/exec
+import broker/executor
 import broker/framing
+import broker/policy
+import client/catalog
 import client/escalate
+import client/goalcheck
+import client/goalstate
+import client/host_git
 import client/owner_services
 import client/remote/blob_service
 import client/remote/blob_store
@@ -32,21 +47,31 @@ import client/remote/untrusted_codec
 import client/remote/untrusted_gateway
 import client/remote/untrusted_link
 import client/remote/untrusted_wire
+import client/serve
+import client/workspace_plane
+import client/workspace_policy
+import client/worktree_diff
 import core/clock
+import core/ids
 import core/json
 import core/message
 import core/msgpack
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/option.{None, Some}
 import gleam/string
+import host/bootstrap
 import runtime/effects.{type ToolRun}
 import simplifile
+import support/enforcement
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator
 import support/untrusted_rig as rig
+import support/worktree_rig
 import telemetry/log
 import tools/codemode as codemode_tool
+import tools/tool
 import weft/poll
 
 /// What the fake plane tells the test.
@@ -93,6 +118,8 @@ type Rig {
     /// The executor's keeper of placed blobs.
     keeper: blob_service.Service,
     records: Subject(Record),
+    /// The link's tunnel door (protocol-change/117).
+    door: process.Name(untrusted_link.Tunnel),
   )
 }
 
@@ -103,17 +130,20 @@ fn big_outcome() -> effects.ToolOutcome {
 }
 
 fn start(label: String) -> Rig {
+  start_over(
+    label,
+    remote_orchestrator.census(remote_orchestrator.standard_tools()),
+  )
+}
+
+/// `start` over a plane that reports `census`, whose broker a test may make
+/// real.
+fn start_over(label: String, census: RemoteCensus) -> Rig {
   let pair = rig.pair(label)
   let seen = process.new_subject()
   let escalations = process.new_subject()
   let executor =
-    remote_orchestrator.start_holding(
-      plane_factory(
-        seen,
-        remote_orchestrator.census(remote_orchestrator.standard_tools()),
-      ),
-      67_108_864,
-    )
+    remote_orchestrator.start_holding(plane_factory(seen, census), 67_108_864)
   let assert Ok(store) =
     blob_store.open(
       fixtures.scratch("untrusted-e2e-blobs-" <> label) <> "/placed-blobs",
@@ -131,11 +161,13 @@ fn start(label: String) -> Rig {
       orchestrators: [pair.orchestrator_pin],
       host: executor.address,
       blobs: Some(keeper),
+      demand: exec.PlatformEnforcement,
       logger: log.discard(),
     ))
     as "the gateway starts"
   let name = process.new_name("untrusted_end_to_end")
-  let #(link, blobs) = start_link(pair, gateway, name)
+  let door = process.new_name("untrusted_end_to_end_door")
+  let #(link, blobs) = start_link(pair, gateway, name, door)
   let records = process.new_subject()
   let services =
     owner_services_resuming(fixtures.quiet_services(), escalations)
@@ -163,6 +195,7 @@ fn start(label: String) -> Rig {
     blobs:,
     keeper:,
     records:,
+    door:,
   )
 }
 
@@ -172,11 +205,13 @@ fn start_link(
   pair: rig.Pair,
   gateway: untrusted_gateway.Gateway,
   name: process.Name(protocol.HostMessage(RemoteCensus)),
+  door: process.Name(untrusted_link.Tunnel),
 ) -> #(process.Pid, Subject(untrusted_bridge.BlobAsk)) {
   let assert Ok(untrusted_link.Started(pid: link, blobs:)) =
     untrusted_link.start_placing(untrusted_link.Config(
       executor: "pod",
       name:,
+      door:,
       host: "127.0.0.1",
       port: gateway.port,
       pin: pair.executor_pin,
@@ -203,8 +238,9 @@ fn restart_link(rig: Rig) -> Rig {
       }
     })
     as "the dead link's name is freed"
-  let #(link, blobs) = start_link(rig.pair, rig.gateway, rig.name)
-  Rig(..rig, link:, blobs:)
+  let door = process.new_name("untrusted_end_to_end_door")
+  let #(link, blobs) = start_link(rig.pair, rig.gateway, rig.name, door)
+  Rig(..rig, link:, blobs:, door:)
 }
 
 // Owner services whose capability records the call and answers `pong`.
@@ -520,7 +556,13 @@ pub fn a_request_made_while_no_link_holds_the_name_completes_once_one_does_test(
   assert process.receive(answers, 300) == Error(Nil)
 
   // A link registered under the name later is found by the asker's repair.
-  let #(link, _blobs) = start_link(rig.pair, rig.gateway, rig.name)
+  let #(link, _blobs) =
+    start_link(
+      rig.pair,
+      rig.gateway,
+      rig.name,
+      process.new_name("untrusted_end_to_end_door"),
+    )
   assert process.receive(answers, 15_000) == Ok(fixtures.expected_outcome(run))
   stop(Rig(..rig, link:))
 }
@@ -690,4 +732,247 @@ fn programmed(seen: Subject(Seen)) -> process.Pid {
     Ok(_other) -> programmed(seen)
     Error(Nil) -> panic as "the host never started the program"
   }
+}
+
+// --- the broker tunnel (protocol-change/117) -------------------------------------
+
+/// What a real plane gives a tunnel test: the session's clearing function
+/// through the link, and the wiring the repository observations use with it.
+type Tunnelled {
+  Tunnelled(
+    clear: workspace_plane.ClearCall,
+    wiring: worktree_diff.Wiring,
+    workspace: String,
+    base: policy.SandboxPolicy,
+    path: String,
+  )
+}
+
+/// Runs `run` against a host whose plane's broker is the production broker
+/// and pool over a Git repository with one commit, reached through the link
+/// and the gateway, when the helper enforces here.
+fn with_tunnel(label: String, run: fn(Tunnelled) -> Nil) -> Nil {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner has a package working directory"
+  let assert Ok(repository) = bootstrap.canonical_directory(here <> "/../..")
+    as "the source repository locates the built helper"
+  case enforcement.probe(repository <> "/bin/loom", "tunnel e2e " <> label) {
+    enforcement.EnforcementAbsent -> Nil
+    enforcement.EnforcementLive -> {
+      // The jail replaces /tmp with scratch, so /var/tmp keeps the
+      // workspace's path the same inside it.
+      let directory =
+        "/var/tmp/loom-tunnel-e2e-"
+        <> int.to_string(bootstrap.current_process_id())
+        <> "-"
+        <> label
+        <> "-"
+        <> int.to_string(bootstrap.system_time_ms())
+      let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+        as "the test owns a workspace"
+      let assert Ok(workspace) = bootstrap.canonical_directory(directory)
+        as "the policy uses absolute paths"
+      committed(workspace)
+      let #(base, path) = tunnel_base(workspace)
+      let clock = clock.from_function(bootstrap.system_time_ms)
+      let assert Ok(#(_pool, plane_broker, service)) =
+        serve.start_effect_plane(
+          helper: repository <> "/bin/loom-exec",
+          base_policy: base,
+          tmp_dir: workspace <> "/.helper",
+          size: 1,
+          clock:,
+        )
+        as "the production broker and pool start"
+      let census =
+        remote_orchestrator.census_over(
+          remote_orchestrator.standard_tools(),
+          broker.subject(plane_broker),
+        )
+      let census =
+        remote_census.RemoteCensus(
+          ..census,
+          census: workspace_plane.Census(
+            ..census.census,
+            workspace:,
+            base_policy: base,
+          ),
+        )
+      let rig = start_over("tunnel-" <> label, census)
+      let _attachment = attached(rig)
+      let clear = untrusted_link.tunnel_through(rig.door, "s1")
+      let env = [#("PATH", path), #("HOME", "/nonexistent")]
+      let wiring =
+        worktree_diff.Wiring(
+          workspace:,
+          clear_call: clear,
+          base_policy: base,
+          clock:,
+          demand: exec.PlatformEnforcement,
+          env:,
+          entropy: fn() { bootstrap.system_time_ms() },
+          git: host_git.program(),
+        )
+      run(Tunnelled(clear:, wiring:, workspace:, base:, path:))
+      stop(rig)
+      broker.stop(plane_broker)
+      let _closed =
+        executor.close(
+          service,
+          draining: executor.drain_ms,
+          helpers: executor.helpers_ms,
+        )
+      Nil
+    }
+  }
+}
+
+/// A repository with one committed file, made on the host.
+fn committed(workspace: String) -> Nil {
+  let _init = worktree_rig.git(workspace, ["init", "--quiet"])
+  let assert Ok(Nil) = simplifile.write(workspace <> "/tracked.txt", "before\n")
+    as "the tracked file is written"
+  let _add = worktree_rig.git(workspace, ["add", "--", "tracked.txt"])
+  let _commit =
+    worktree_rig.git(workspace, [
+      "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+      "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture",
+    ])
+  Nil
+}
+
+/// The plane's base over the workspace and the `PATH` a jailed Git needs here.
+/// Apple ships the real Git with Xcode, and `/usr/bin/git` is a launcher whose
+/// discovery needs host preferences, so only the developer tree is admitted
+/// beside the workspace and its binary comes first.
+fn tunnel_base(workspace: String) -> #(policy.SandboxPolicy, String) {
+  let base = workspace_policy.base_policy_for(workspace, catalog.WorkspaceReads)
+  let developer_usr = "/Applications/Xcode.app/Contents/Developer/usr"
+  case simplifile.is_directory(developer_usr) {
+    Ok(True) -> #(
+      policy.SandboxPolicy(..base, readable_roots: [workspace, developer_usr]),
+      developer_usr <> "/bin:/usr/bin:/bin:/usr/local/bin",
+    )
+    Ok(False) | Error(_) -> #(base, "/usr/local/bin:/usr/bin:/bin")
+  }
+}
+
+/// Runs `command` in the workspace through the tunnel as a jailed shell, and
+/// answers how it settled.
+fn jailed(tunnel: Tunnelled, step: String, command: String) -> tool.Collected {
+  let events = process.new_subject()
+  let spec =
+    broker.CallSpec(
+      op_id: fixtures.tool_run("edit", 0).operation,
+      step_id: step,
+      base_policy: tunnel.base,
+      // The link holds at most a mebibyte per stream, so the call names a
+      // smaller limit than the plane's base.
+      requirements: policy.SandboxPolicy(
+        ..tunnel.base,
+        limits: policy.Limits(..tunnel.base.limits, output_bytes: 65_536),
+      ),
+      grants: [],
+      response: broker.RefuseNarrowed,
+      demand: exec.PlatformEnforcement,
+      argv: ["/bin/sh", "-c", command],
+      env: [#("PATH", tunnel.path), #("HOME", "/nonexistent")],
+      cwd: tunnel.workspace,
+      budget: budget.Budget(1, bootstrap.system_time_ms() + 30_000),
+    )
+  let assert Ok(call) = tunnel.clear(spec, events, 15_000)
+    as "the jailed command clears through the tunnel"
+  call.stdin(<<>>, True)
+  let assert Ok(collected) = tool.collect_events(events, waiting: 20_000)
+    as "the jailed command settles"
+  collected
+}
+
+// The baseline probe runs Git through the link into the real plane and finds
+// the commit the repository holds.
+pub fn a_baseline_probe_runs_through_the_tunnel_test() {
+  use tunnel <- with_tunnel("baseline")
+  let head = worktree_rig.git(tunnel.workspace, ["rev-parse", "HEAD"])
+  assert worktree_diff.starting_revision(tunnel.wiring)
+    == worktree_diff.Revision(head)
+}
+
+// A jailed edit through the tunnel shows in the worktree diff observed
+// through the tunnel.
+pub fn a_worktree_diff_after_a_jailed_edit_runs_through_the_tunnel_test() {
+  use tunnel <- with_tunnel("diff")
+  let edit = jailed(tunnel, "edit", "echo edited > tracked.txt")
+  let assert broker.CallExited(result:) = edit.outcome as "the edit exits"
+  assert result.code == 0
+
+  let assert Ok(board) = worktree_diff.capture(tunnel.wiring)
+    as "the worktree is observed through the tunnel"
+  assert board.total == 1
+  let assert [file] = board.entries as "the one changed file is listed"
+  assert string.contains(file.patch, "+edited")
+}
+
+// The peer view's observation runs through the tunnel and names the
+// repository the plane holds.
+pub fn a_peer_observation_runs_through_the_tunnel_test() {
+  use tunnel <- with_tunnel("peer")
+  let observed = json.to_string(worktree_diff.peer_observation(tunnel.wiring))
+  assert string.contains(observed, "\"repository_root\"")
+  assert string.contains(observed, tunnel.workspace)
+  assert !string.contains(observed, "unavailable")
+}
+
+// A goal check runs through the tunnel and returns the command's real status
+// and output.
+pub fn a_goal_check_runs_through_the_tunnel_test() {
+  use tunnel <- with_tunnel("goal")
+  let #(op_id, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 7))
+  let wiring =
+    goalcheck.wiring(
+      goalcheck.Runner(
+        clear_call: fn(spec, events) { tunnel.clear(spec, events, 15_000) },
+        base_policy: tunnel.base,
+        demand: exec.PlatformEnforcement,
+        env: [#("PATH", tunnel.path), #("HOME", "/nonexistent")],
+        workspace: tunnel.workspace,
+        clock: clock.from_function(bootstrap.system_time_ms),
+        op_id:,
+        clearance_ms: 15_000,
+      ),
+      timeout_ms: 20_000,
+    )
+  let passed = wiring.run("echo goal-ok")
+  assert passed.ending == goalstate.Exited(0)
+  assert string.contains(passed.output, "goal-ok")
+  let failed = wiring.run("exit 3")
+  assert failed.ending == goalstate.Exited(3)
+}
+
+// A hook on an untrusted placement is refused, as before the tunnel, though
+// the same plane's clearing function serves the goal check and Git.
+pub fn a_hook_on_an_untrusted_placement_is_refused_test() {
+  use tunnel <- with_tunnel("hook")
+  let refused =
+    serve.hook_clear_call(workspace_plane.HooksRefused, tunnel.clear)
+  let events = process.new_subject()
+  let spec =
+    broker.CallSpec(
+      op_id: fixtures.tool_run("hook", 0).operation,
+      step_id: "imported-hooks",
+      base_policy: tunnel.base,
+      requirements: tunnel.base,
+      grants: [],
+      response: broker.RefuseNarrowed,
+      demand: exec.PlatformEnforcement,
+      argv: ["/bin/sh", "-c", "echo hooked"],
+      env: [],
+      cwd: tunnel.workspace,
+      budget: budget.Budget(1, bootstrap.system_time_ms() + 30_000),
+    )
+  let assert Error(broker.BrokerUnavailable) = refused(spec, events, 5000)
+    as "the hook's command is refused"
+  assert process.receive(events, 300) == Error(Nil)
+  let served = jailed(tunnel, "not-a-hook", "echo served")
+  assert served.stdout == <<"served\n">>
 }

@@ -100,8 +100,7 @@ once, and checks size and digest in `remote/outcome_fetch` before decoding.
 Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 (`RunLost`, `Unknown`), never a refusal that invites a re-run.
 
-Wire version 5 (protocol-change/117, slice 2: the wire, not yet the tunnel).
-`untrusted_wire` adds `ClearCallRequest(binding, spec, waiting_ms)`, whose
+Wire version 5 (protocol-change/117). `untrusted_wire` adds `ClearCallRequest(binding, spec, waiting_ms)`, whose
 `TunnelSpec` is a `broker.CallSpec` without `grants` and `demand`, its reply
 `ClearedAnswered(Result(Nil, broker.Refusal))` (`ClearedKind`), and the
 executor's frame `CallEvent(call, TunnelOutput(stream, data) |
@@ -118,12 +117,57 @@ the value walk runs only for a frame over 1,048,576 bytes): the link refuses an
 unfit request `Invalid` and never keeps it, and an unfit owner answer with the
 callback's refused answer; the gateway's `replied` sends an unfit response as
 `Oversized`, so a fetched outcome over the value bound is answered lost and an
-honest executor never loops. Until the tunnel lands the gateway answers every
-`clear_call` with `ClearedAnswered(Error(BrokerUnavailable))` and the link
-treats any `CallEvent` as a violation. A `welcome` of other versions logs both
+honest executor never loops. A `welcome` of other versions logs both
 wire and both protocol numbers (`untrusted_link.version_mismatch`); when the
 protocol versions agree the waiting requests are refused `Unreachable` with a
 text naming both wire versions, otherwise `VersionMismatch(supported: theirs)`.
+
+The broker tunnel (protocol-change/117, slice 3). An untrusted placement's
+`WorkspacePlane.clear_call` is `untrusted_link.tunnel(executor, session)`
+(`remote/workspace.build`; a trusted one keeps `clear_call.over_broker`), and
+its `hooks` is `HooksRefused`, so `serve.hook_clear_call` gives imported hooks a
+function that answers `BrokerUnavailable`. The baseline probe clips a refusal to
+512 characters before `session/git-start` stores it. **The door**: each link
+starts a `weft/actor` linked to it and registered as `Config.door`
+(`tunnel_name_for(executor)` in production) that forwards `Tunnel` messages
+(`Clear`, `Withdraw`, `CancelCall`, each keyed by the asker's fresh reply
+subject) to the link; `tunnel_through` looks the door up by name on every
+call, monitors it, waits `waiting` plus two seconds and withdraws on its own
+timeout. `untrusted_links` clears the door's name (`Links.door`) as it clears
+the link's. **The call table** is `remote/tunnel_calls`, pure: `step(table,
+event) -> #(table, effects)` over `Opened`, `Cleared`, `EventOutput`,
+`EventSettled`, `WaitPassed`, `Withdrawn`, `Cancelled`, `AskerDied` and
+`ConnectionDropped`, with effects `Answer`, `Deliver`, `SendClear`,
+`SendCancel`, `Refuse`, `Released` and `Violation`; the link applies them
+(`stepped_calls`, `effected`). Entries live apart from `outstanding`, so
+nothing tunnelled is re-sent; a frame names an `Origin` (`Unissued`,
+`OtherRequest`, `Issued`, from `origin_of`), and only an issued id the table no
+longer holds is dropped. The link refuses a `Clear` at once with no open
+connection, no binding for the session, grants, or a spec past the codec's
+exported limits (`max_call_argv`, `max_call_env`, `max_call_ms`) or
+`encode_fitting`; the table refuses an output limit of zero or over
+`max_call_output_bytes` (1 MiB), a ninth entry on a binding
+(`max_per_binding`) and a 65th on the link (`max_per_link`). **The buffer**:
+output is held per stream with `<<buffer:bits, chunk:bits>>` and delivered at
+settlement as one `CallOutput(truncated: False)` per stream with bytes, then
+`CallSettled`; a stream past the spec's `output_bytes` is a violation. The wire
+wait is the caller's less one second. **The gateway**: at attach,
+`untrusted_bridge.ask_attach` answers the host's census beside the response,
+and the attach's waiter records `Plane(broker, base_policy)` on the binding's
+proxy with the book's `Recorded` call before replying; `PlaneOf` answers it, and
+nothing for a binding not held or retired. Each `clear_call` runs in a **tunnel
+waiter** linked to its connection (`tunnelled`, `tunnel_waiter`): it clears
+with `broker.over` under `cleared_spec` (the meet of the plane's base, writable
+roots also readable, with the spec's base; no grants; `Config.demand`), closes
+stdin, sends `cleared` first, and forwards each non-empty chunk and the
+settlement as `FromTunnel` messages. `cancelled` unlinks a tunnel waiter before
+killing it, and `stopped` unlinks and kills every tunnel waiter on each normal
+stop. **Tests**: `remote/tunnel_calls_model_test` (statem, hostile frames and
+both bounds), `remote/untrusted_link_test` (hand-driven hostile executor over
+TLS), `remote/untrusted_gateway_test` (production broker and helper),
+`remote/untrusted_end_to_end_test` (goal check, baseline, diff after a jailed
+edit, peer view, hook refused) and `remote/untrusted_reload_test` (a call in
+flight across a replaced link).
 
 Reloading the rows (protocol-change/116). `daemon/untrusted_links` is a
 `weft/actor`, started by `prepare_startup` beside `project_book`, that holds the

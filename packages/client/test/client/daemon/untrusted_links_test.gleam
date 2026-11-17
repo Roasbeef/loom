@@ -57,6 +57,7 @@ fn fake_links() -> untrusted_links.Links {
   untrusted_links.Links(
     start: fn(row, _credentials) { hold(row.name) },
     holder: fn(name) { process.named(untrusted_link.name_for(name)) },
+    door: fn(_name) { Error(Nil) },
   )
 }
 
@@ -184,6 +185,7 @@ pub fn a_start_that_fails_leaves_the_row_out_test() {
       untrusted_links.Links(
         start: fn(_row, _credentials) { Error("no listener") },
         holder: fn(name) { holder_of(name) },
+        door: fn(_name) { Error(Nil) },
       ),
     )
 
@@ -202,6 +204,7 @@ pub fn a_row_not_reached_in_time_is_failed_and_kept_test() {
     untrusted_links.Links(
       start: fn(row, _credentials) { hold(row.name) },
       holder: fn(_name) { Ok(squatter) },
+      door: fn(_name) { Error(Nil) },
     )
   let links = registry(wedged)
   let started_at = ffi_os.system_time_ms()

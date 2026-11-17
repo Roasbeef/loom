@@ -717,6 +717,33 @@ pub fn the_observation_clears_through_the_function_it_was_given_test() {
   assert process.receive(probe, 100) == Ok(fake_clear_call.StdinFinal(<<>>))
 }
 
+/// A baseline probe that fails stores its reason in `session/git-start`, and
+/// over the tunnel the reason's diagnostic is the executor's text, so it is
+/// clipped to 512 characters however long the executor made it
+/// (protocol-change/117).
+pub fn a_failed_baseline_probe_stores_a_clipped_reason_test() {
+  let probe = process.new_subject()
+  let long = string.repeat("x", 20_000)
+  let clear =
+    fake_clear_call.answering(probe, fn(_spec) {
+      [
+        broker.CallOutput(
+          framing.Stderr,
+          bit_array.from_string(long),
+          string.byte_size(long),
+          False,
+        ),
+        broker.CallSettled(git_exited(1)),
+      ]
+    })
+  let wiring = fake_wiring(clear, clock.fixed(at: 2_000_000))
+
+  let assert worktree_diff.Unavailable(reason) =
+    worktree_diff.starting_revision(wiring)
+    as "a failed probe is unavailable"
+  assert string.length(reason) == 512
+}
+
 /// A Git call that never settles ends the capture's bounded wait with
 /// `NoSettlement`, and the capture cancels through the handle it was given.
 /// The stepping clock leaves 100 ms of the deadline when the status call

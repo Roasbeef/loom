@@ -75,17 +75,17 @@ developer-path addendum.
 
 ### What a hostile executor can still do to the orchestrator under 109
 
-The link's checks are in `client/remote/untrusted_link.gleam:1600` (`admitted`):
+The link's checks are in `client/remote/untrusted_link.gleam:1836` (`admitted`):
 the binding must be one this link minted and has not retired, the id must be
 fresh, and the callback must be about work the link is carrying
-(`client/remote/untrusted_link.gleam:1649` (`about_work`)). An escalation must
+(`client/remote/untrusted_link.gleam:1888` (`about_work`)). An escalation must
 describe a `run` in flight exactly, arguments included. A capability or
 `Holds` must sit at a `run` or an outstanding background `start`. A launch and
 an interaction need a `code_mode` run in flight. Host-seam capabilities need
 the session's `code_mode` call in flight specifically
-(`client/remote/untrusted_link.gleam:1653` (`from_a_program`)). Facts, notices,
+(`client/remote/untrusted_link.gleam:1889` (`from_a_program`)). Facts, notices,
 wakes, strand activity, the MCP plan and the Git identity need only the binding
-(`client/remote/untrusted_link.gleam:1769` (`McpPlanCall`)), because background
+(`client/remote/untrusted_link.gleam:2005` (`McpPlanCall`)), because background
 jobs send them after their call ended; the owner port fences them to the
 session's reserved fact prefixes. Bounds are 64 callbacks per binding and 1024
 per link.
@@ -135,7 +135,7 @@ GitHub token never enters the guest.
 The table is derived from the code: what the link carries is `untrusted_wire`'s
 `Request` and `Callback` types, and what it refuses comes from the refusing
 broker the link puts in the census
-(`client/remote/untrusted_link.gleam:552` (`refusing_broker`)), which every
+(`client/remote/untrusted_link.gleam:718` (`refusing_broker`)), which every
 non-tool caller reaches through `broker.over`
 (`client/remote/workspace.gleam:697` (`broker.over`)), and from the evolution
 census the link sets to `Uncompiled`.
@@ -149,19 +149,19 @@ census the link sets to `Uncompiled`.
 | Background jobs and their notices | works | works: `NotifyCall`, `WakeCall`, `StrandActivityCall` need only the binding; `live_jobs` reads the orchestrator's own store | nothing |
 | MCP, orchestrator-run servers | works | works: `McpPlanCall`, then capability callbacks during a program | nothing |
 | MCP, the guest's own `[mcp.<name>]` | works | works (the census's `mcp` statuses cross) | nothing |
-| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4373` (`There`)) | same | same as today |
+| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4399` (`There`)) | same | same as today |
 | Extensions' owner-bound calls | works | works (capability callbacks under `about_work`) | nothing |
-| Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:299`) | refused: every hook run is `RunError.Refused` | slice 3 |
-| Goal checks | works (`client/serve.gleam:6935` (`goal_check_wiring`)) | refused | slice 3 |
-| Changes tab (worktree diff) | works (`client/serve.gleam:4752` (`observe_worktree`)) | refused; the tab shows the broker's refusal | slice 3 |
-| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4741` (`prepare`)) | probed through the refusing broker and stored as `Unavailable` for the session's life (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | slice 3, and a session opened before it never recovers its baseline |
+| Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:329`) | refused: every hook run is `RunError.Refused` | slice 3 |
+| Goal checks | works (`client/serve.gleam:6961` (`goal_check_wiring`)) | refused | slice 3 |
+| Changes tab (worktree diff) | works (`client/serve.gleam:4778` (`observe_worktree`)) | refused; the tab shows the broker's refusal | slice 3 |
+| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4767` (`prepare`)) | probed through the refusing broker and stored as `Unavailable` for the session's life (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | slice 3, and a session opened before it never recovers its baseline |
 | Peer view of the worktree (multiplayer) | works (`worktree_diff.peer_observation`) | refused | slice 3 |
 | Agent spawn, `fresh` or `my_conversation` | works (orchestrator side) | works | nothing |
-| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3499` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
+| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3526` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
 | Placed blobs, outcomes over 32 MiB (110) | works | works | nothing |
 | Remote evolution | works when the guest's census says `Compiles` | refused: the link sets `Uncompiled` | 109 slice 4 |
-| Operator directory additions | refused for any remote workspace (`client/remote/workspace.gleam:706` (`resolve_directory`)) | same | same as today |
+| Operator directory additions | refused for any remote workspace (`client/remote/workspace.gleam:722` (`resolve_directory`)) | same | same as today |
 | Permission grants and escalations | works | works; `escalate` must describe the call in flight exactly; the residual risk above applies | nothing |
 | Git author identity | works (`AskGitIdentity`) | works (`GitIdentityCall`) | nothing |
 | Working-directory facts in the prompt | works (census) | works (the wire census carries `workspace_plane.Census` and `PromptFacts`) | nothing |
@@ -243,13 +243,13 @@ What the daemon needs, read from the code:
   passes written rows through (`client/ledger_rows.gleam:145`
   (`executor_roster`)). No `key_elsewhere` refusal can arise.
 - `untrusted_settings` refuses an untrusted row without `[executor_link]`
-  (`client/daemon/main.gleam:1141` (`untrusted_settings`)).
+  (`client/daemon/main.gleam:1148` (`untrusted_settings`)).
 - `start_untrusted_links` starts one link per untrusted row, at boot only
-  (`client/daemon/main.gleam:1230` (`start_untrusted_links`)), registered under
+  (`client/daemon/main.gleam:1238` (`start_untrusted_links`)), registered under
   `untrusted_link.name_for(name)`.
 - `remote/workspace.candidate` sends an untrusted row to the link's name and
-  never needs distribution (`client/remote/workspace.gleam:744` (`candidate`),
-  `client/remote/workspace.gleam:1051` (`untrusted_candidate`)).
+  never needs distribution (`client/remote/workspace.gleam:733` (`candidate`),
+  `client/remote/workspace.gleam:1067` (`untrusted_candidate`)).
 
 ### The guest side
 
@@ -291,7 +291,7 @@ release that changes `up`.
 
 The daemon reads `[executors.*]` and `[executor_link]` once at start and never
 rereads them (`client/daemon/main.gleam:278` (`untrusted`)); links start only
-there (`client/daemon/main.gleam:4850` (`start_untrusted`)). No daemon-wide
+there (`client/daemon/main.gleam:4857` (`start_untrusted`)). No daemon-wide
 configuration reload exists: `limits` validates its keys again on a catalogue
 reload and never rebinds (`client/daemon/limits.gleam:138` (`listen_address`)),
 and `gateway`'s reload is a session's model catalogue. What does exist is the
@@ -315,7 +315,7 @@ touching sessions on other executors. A link whose row changed is stopped and
 started again under the same name; its sessions' bindings retire with it and
 the surface's repair loop reattaches them, which is the path a dead link takes
 today. A side effect worth having: a link that crashed (links are not
-restarted, `client/daemon/main.gleam:1173` (`start_untrusted`)) comes back on
+restarted, `client/daemon/main.gleam:1180` (`start_untrusted`)) comes back on
 the next `reload`.
 
 `up` and `ensure` write the file first, then send `reload` if a daemon is

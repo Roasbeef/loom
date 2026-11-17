@@ -3571,16 +3571,18 @@ fn decode_git_identity(
 
 // --- the broker tunnel (protocol-change/117) -------------------------------------
 
-// The most entries a tunnelled call's `argv` may carry, and the most pairs its
-// `env` may. Every caller the tunnel serves sends a handful; the bounds keep a
-// hostile spec from becoming a list the orchestrator or the executor walks.
-const max_call_argv = 4096
+/// The most entries a tunnelled call's `argv` may carry. Every caller the
+/// tunnel serves sends a handful; the bound keeps a hostile spec from becoming
+/// a list the orchestrator or the executor walks. The link refuses a spec past
+/// it before sending, so the executor never closes the connection for one.
+pub const max_call_argv = 4096
 
-const max_call_env = 1024
+/// The most pairs a tunnelled call's `env` may carry, for the same reason.
+pub const max_call_env = 1024
 
-// The longest wait or deadline in milliseconds a tunnelled call may name,
-// 2^53, the largest integer a JSON reader on any platform holds exactly.
-const max_call_ms = 9_007_199_254_740_992
+/// The longest wait or deadline in milliseconds a tunnelled call may name,
+/// 2^53, the largest integer a JSON reader on any platform holds exactly.
+pub const max_call_ms = 9_007_199_254_740_992
 
 /// The JSON of a tunnelled call's spec.
 fn encode_tunnel_spec(spec: untrusted_wire.TunnelSpec) -> JsonValue {
