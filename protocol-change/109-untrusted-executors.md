@@ -573,3 +573,15 @@ direction rule: only the orchestrator sends blob bytes, and the executor sends
 outcome bytes only as replies to the orchestrator's own requests. The executor
 side of 110 also retires a binding when the host carries out a close of its
 scope, which this proposal left to the next attach.
+
+## Addendum, 2026-11-17: slice 3 is the broker tunnel
+
+This proposal's slice 3, the callers of the executor's broker that are not tool
+calls, is specified by [117](117-broker-tunnel.md) and built. For a session on
+an untrusted executor the tunnel serves goal checks, the worktree observation
+with its peer view, and the session's Git baseline, which a new session now
+probes as a revision instead of storing `Unavailable`. Imported hooks stay
+refused on an untrusted executor, because a hook's script and its outcome are
+both the executor's to write and 117 lists seven preconditions that a change
+wiring hooks to the tunnel must build first (117, "Hooks stay refused"). The
+untrusted wire is at version 5.

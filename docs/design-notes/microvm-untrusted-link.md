@@ -151,11 +151,11 @@ census the link sets to `Uncompiled`.
 | MCP, the guest's own `[mcp.<name>]` | works | works (the census's `mcp` statuses cross) | nothing |
 | Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4399` (`There`)) | same | same as today |
 | Extensions' owner-bound calls | works | works (capability callbacks under `about_work`) | nothing |
-| Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:329`) | refused: every hook run is `RunError.Refused` | slice 3 |
-| Goal checks | works (`client/serve.gleam:6961` (`goal_check_wiring`)) | refused | slice 3 |
-| Changes tab (worktree diff) | works (`client/serve.gleam:4778` (`observe_worktree`)) | refused; the tab shows the broker's refusal | slice 3 |
-| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4767` (`prepare`)) | probed through the refusing broker and stored as `Unavailable` for the session's life (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | slice 3, and a session opened before it never recovers its baseline |
-| Peer view of the worktree (multiplayer) | works (`worktree_diff.peer_observation`) | refused | slice 3 |
+| Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:329`) | refused: every hook run is `RunError.Refused`; still refused after the tunnel (protocol-change/117, "Hooks stay refused") | a later change, after 117's preconditions |
+| Goal checks | works (`client/serve.gleam:6961` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
+| Changes tab (worktree diff) | works (`client/serve.gleam:4778` (`observe_worktree`)) | carried by the tunnel (protocol-change/117; refused before it, with the broker's refusal in the tab) | nothing |
+| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4767` (`prepare`)) | carried by the tunnel for a new session (protocol-change/117); a session that stored `Unavailable` before it keeps that (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | nothing for a new session |
+| Peer view of the worktree (multiplayer) | works (`worktree_diff.peer_observation`) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
 | Agent spawn, `fresh` or `my_conversation` | works (orchestrator side) | works | nothing |
 | Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3526` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
@@ -507,7 +507,8 @@ Each slice ships alone and is listed in merge order.
    Needs **protocol-change/116**. Built: the daemon side, then the clients
    (`vm_link.reload_report`, `vm_cli.reload_daemon`), under
    protocol-change/116.
-3. **The broker tunnel (109 slice 3).** Section 5. **Exit**: the
+3. **The broker tunnel (109 slice 3).** Built, under protocol-change/117
+   (slices 1 to 4 there, the last being the microVM step). Section 5. **Exit**: the
    `untrusted_end_to_end_test` cases of step 7, and the microVM step of slice 1
    extended so the Changes tab shows the jailed call's edit against a recorded
    baseline and a goal check passes. Needs **protocol-change/117** and a
