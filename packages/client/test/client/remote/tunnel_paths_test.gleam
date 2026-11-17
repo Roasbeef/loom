@@ -8,25 +8,46 @@
 import broker/policy
 import client/remote/tunnel_paths
 import client/workspace_policy
+import gleam/bit_array
 import gleam/list
 import gleam/string
 import qcheck
 
-// Cleans a path as Go's `filepath.Clean` does for an absolute path: empty and
-// `.` segments go, and `..` removes the segment before it, or nothing at the
-// root.
+// Cleans a path as Go's `filepath.Clean` does for an absolute path, on bytes
+// as the helper does: empty and `.` segments go, and `..` removes the segment
+// before it, or nothing at the root.
 fn cleaned(path: String) -> String {
   let kept =
-    string.split(path, "/")
+    byte_segments(bit_array.from_string(path), <<>>, [])
     |> list.fold([], fn(kept, segment) {
       case segment, kept {
-        "", _ | ".", _ -> kept
-        "..", [] -> []
-        "..", [_, ..rest] -> rest
+        <<>>, _ | <<".">>, _ -> kept
+        <<"..">>, [] -> []
+        <<"..">>, [_, ..rest] -> rest
         other, _ -> [other, ..kept]
       }
     })
-  "/" <> string.join(list.reverse(kept), "/")
+  let joined =
+    list.reverse(kept)
+    |> list.intersperse(<<"/">>)
+    |> bit_array.concat
+  let assert Ok(text) = bit_array.to_string(<<"/", joined:bits>>)
+    as "a cleaned path is text"
+  text
+}
+
+// The segments between slash bytes, in order.
+fn byte_segments(
+  bytes: BitArray,
+  current: BitArray,
+  done: List(BitArray),
+) -> List(BitArray) {
+  case bytes {
+    <<>> -> list.reverse([current, ..done])
+    <<"/", rest:bits>> -> byte_segments(rest, <<>>, [current, ..done])
+    <<byte, rest:bits>> -> byte_segments(rest, <<current:bits, byte>>, done)
+    _ -> list.reverse([current, ..done])
+  }
 }
 
 fn paths() -> qcheck.Generator(String) {
@@ -38,6 +59,11 @@ fn paths() -> qcheck.Generator(String) {
       qcheck.return(""),
       qcheck.return("a.b"),
       qcheck.return("..x"),
+      // A combining mark joins the slash before it into one grapheme cluster,
+      // which a split of the text would not cut at.
+      qcheck.return("\u{301}x"),
+      qcheck.return("..\u{301}"),
+      qcheck.return("\u{301}"),
     ])
   let lead =
     qcheck.from_weighted_generators(#(9, qcheck.return("/")), [
@@ -75,6 +101,13 @@ pub fn each_unplain_spelling_is_refused_test() {
   assert !tunnel_paths.plain("/w/")
   assert !tunnel_paths.plain("w")
   assert !tunnel_paths.plain("")
+
+  // A slash followed by a combining mark is one grapheme cluster but still a
+  // slash byte, and the helper cleans by bytes.
+  assert !tunnel_paths.plain("/w/../\u{301}x")
+  assert !tunnel_paths.plain("/w/./\u{301}x")
+  assert !tunnel_paths.plain("/w//\u{301}x")
+  assert tunnel_paths.plain("/w/\u{301}x")
 }
 
 // Every path-bearing field of either policy, and the working directory, is

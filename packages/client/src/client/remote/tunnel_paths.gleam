@@ -14,13 +14,18 @@
 //// spec's base policy and requirements, and its working directory.
 
 import broker/policy.{type SandboxPolicy}
+import gleam/bit_array
 import gleam/list
 import gleam/result
-import gleam/string
 
 /// Whether `path` is absolute and made of plain segments: no `.`, no `..` and
 /// no empty segment, so no `//` and no trailing `/` other than the root. Such
 /// a path is unchanged by lexical cleaning.
+///
+/// The test reads bytes, as the meet's prefix test and the helper's cleaning
+/// do. A split of the text would match grapheme clusters, and a slash
+/// followed by a combining mark is one cluster, so `/w/../\u{301}x` would
+/// pass as two segments while the helper cleans it to `/\u{301}x`.
 ///
 /// ## Examples
 ///
@@ -31,15 +36,29 @@ import gleam/string
 /// ```
 pub fn plain(path: String) -> Bool {
   // The root alone is plain; anything else is a slash and plain segments.
-  case path {
-    "/" -> True
-    "/" <> rest ->
-      string.split(rest, "/")
-      |> list.all(fn(segment) {
-        segment != "" && segment != "." && segment != ".."
-      })
+  case bit_array.from_string(path) {
+    <<"/">> -> True
+    <<"/", rest:bits>> -> plain_segments(rest, <<>>)
     _relative -> False
   }
+}
+
+/// Whether the bytes after a slash are plain segments, with `segment` the
+/// bytes of the segment read so far.
+fn plain_segments(bytes: BitArray, segment: BitArray) -> Bool {
+  // A slash or the end closes a segment, which must be plain; any other byte
+  // joins it.
+  case bytes {
+    <<>> -> plain_segment(segment)
+    <<"/", rest:bits>> -> plain_segment(segment) && plain_segments(rest, <<>>)
+    <<byte, rest:bits>> -> plain_segments(rest, <<segment:bits, byte>>)
+    _unaligned -> False
+  }
+}
+
+/// Whether one segment's bytes are neither empty, `.` nor `..`.
+fn plain_segment(segment: BitArray) -> Bool {
+  segment != <<>> && segment != <<".">> && segment != <<"..">>
 }
 
 /// Every path a tunnelled call's spec names, with the field it is in, is
