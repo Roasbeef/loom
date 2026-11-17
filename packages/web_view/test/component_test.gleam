@@ -449,6 +449,7 @@ pub fn the_owner_on_a_read_only_link_is_not_told_to_ask_the_owner_test() {
         sharing: None,
         opening: component.FromLink,
         machine: "laptop",
+        route: component.Local,
       ),
     )
     |> component.new
@@ -468,4 +469,85 @@ pub fn the_owner_on_a_read_only_link_is_not_told_to_ask_the_owner_test() {
     member,
     "You can follow this session. Ask the owner for operator access.",
   )
+}
+
+// A relayed page that is following its session, over a stand-in for the box.
+fn following_relayed() {
+  simulate.application(
+    init: fn(start) { #(component.new(start), effect.none()) },
+    update: component.update,
+    view: component.view,
+  )
+  |> simulate.start(
+    component.Start(
+      ..page_fixture.start(),
+      standing: component.Standing(
+        ..component.unplaced,
+        machine: "box",
+        route: component.Relayed(page: "page-1"),
+      ),
+    ),
+  )
+  |> simulate.message(component.Opened(wire()))
+  |> arrive(page_fixture.transfer("observer", []))
+}
+
+// A lane that fails with a reason that names no ending is a failed connection on
+// a local page and a page waiting for the other orchestrator on a relayed one.
+// This is where a relayed page decides what a dropped link shows
+// (protocol-change/108, `DownShowsWaiting` in the model): the lane fails itself
+// at its deadline, and the feed client's own close arrives after that.
+pub fn a_lane_that_fails_on_a_relayed_route_draws_the_waiting_state_test() {
+  let failed = connection_event.Closed(session_channel.timed_out)
+
+  let local = simulate.message(following(), component.Arrived([failed]))
+  assert component.status(simulate.model(local))
+    == component.Ended(ending.ConnectionFailed)
+  assert string.contains(
+    element.to_string(simulate.view(local)),
+    ending.headline(ending.ConnectionFailed),
+  )
+
+  let relayed =
+    simulate.message(following_relayed(), component.Arrived([failed]))
+  assert component.status(simulate.model(relayed))
+    == component.Ended(ending.PeerUnreachable)
+  let html = element.to_string(simulate.view(relayed))
+  assert string.contains(html, ending.headline(ending.PeerUnreachable))
+  assert string.contains(html, "This page will reconnect.")
+  assert !string.contains(html, ending.headline(ending.ConnectionFailed))
+  assert !string.contains(html, "loom ui")
+}
+
+// A lane that breaks some other way on a relayed page, a frame that does not
+// decode or a server error, is not a wait. It is a failed connection, worded as
+// reconnecting.
+pub fn a_lane_that_breaks_on_a_relayed_route_is_a_failed_connection_test() {
+  let broken =
+    simulate.message(
+      following_relayed(),
+      component.Arrived([connection_event.Closed("frame 7 was undecodable")]),
+    )
+  assert component.status(simulate.model(broken))
+    == component.Ended(ending.ConnectionFailed)
+  let html = element.to_string(simulate.view(broken))
+  assert string.contains(html, "Reconnecting automatically")
+  assert !string.contains(html, "Reload this page")
+  assert !string.contains(html, ending.headline(ending.PeerUnreachable))
+}
+
+// An ending the feed names is drawn as that ending on a relayed page, and its
+// advice does not name a command that would mint a link to an identity this
+// daemon does not hold.
+pub fn a_relayed_page_draws_the_feeds_own_ending_without_a_session_command_test() {
+  let stopped =
+    simulate.message(
+      following_relayed(),
+      component.Arrived([
+        connection_event.Closed(ending.reason(ending.SessionStopped)),
+      ]),
+    )
+  let html = element.to_string(simulate.view(stopped))
+  assert string.contains(html, ending.headline(ending.SessionStopped))
+  assert !string.contains(html, "--session")
 }

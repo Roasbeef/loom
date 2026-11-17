@@ -479,7 +479,8 @@ def main():
         try:
             first = ready(record_path, original)
             # A local replacement must not inherit distribution flags from the updater.
-            (local_home / ".loom").mkdir()
+            # The daemon may already have made this at start, for the guest directory.
+            (local_home / ".loom").mkdir(exist_ok=True)
             (local_home / ".loom/loom.toml").write_text("[daemon]\nprofile = true\n")
             environment["ERL_FLAGS"] = "-kernel connect_all false"
             environment["LOOM_DEBUG_ARGS_FILE"] = str(root / "absent debug args")

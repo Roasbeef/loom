@@ -60,7 +60,10 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
   asker is the record's worker, `StopExecutionRequest` a cast like `AckRequest`,
   and `about_work` admits a capability or `Holds` at an outstanding start's site
   (`at_work`) and a `LaunchExecutionCall` or `InteractExecutionCall` only from a
-  `code_mode` run in flight.
+  `code_mode` run in flight. A `Run` or a `StartExecution` for a session the link
+  holds no binding for (a link started in place of a dead one) is answered
+  `NoPlane` by `answered_unbound` and never sent, so the surface attaches again
+  and mints one (protocol-change/116); no other message is held to a binding.
 - `remote/untrusted_gateway` is the acceptor, one `weft/state_machine` per
   connection (the handshake runs there, not in the acceptor), a waiter per request
   (unlinked, and exiting with `noconnection` when its connection dies, so a
@@ -96,6 +99,35 @@ from the re-sent request's next `Oversized`, runs at most `max_fetches` (2) at
 once, and checks size and digest in `remote/outcome_fetch` before decoding.
 Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 (`RunLost`, `Unknown`), never a refusal that invites a re-run.
+
+Reloading the rows (protocol-change/116). `daemon/untrusted_links` is a
+`weft/actor`, started by `prepare_startup` beside `project_book`, that holds the
+untrusted `executors.Executor` rows and the pid of each row's link and unlinks
+every link it starts (a reload reads each pid with `is_alive`, logs a dead one
+and starts it again). `reconcile(registry, load)` runs `load` inside the actor,
+checks `executor_reload.check_rows` and `check_names`, plans with
+`executor_reload.plan` and performs each step before one three second deadline
+(`reconcile_ms`) that starts before `load`; a row not reached is `Failed` and
+stays as it was. A link start (one second of its own) is begun, and an old link
+killed, only when that much of the deadline is left. Before it starts a link it
+kills whatever holds the link's registered name and waits for the name with
+`weft/poll`. The caller's wait and `rows`' wait are four seconds, above the
+turn's bound, because the actor answers one message at a time. `rows` answers
+the roster's untrusted rows, and `[]` when the actor does not answer.
+`daemon/main.executor_roster` is a read at each use of the trusted rows from start
+and `untrusted_links.rows`, sorted by name; in ledger mode it goes through
+`ledger_rows.executor_roster_over`, so a derived row is unaffected. `start_untrusted`
+is the registry's first reconcile. `executors.reload` is `protocol.ReloadExecutors`;
+`server.Config.executors_reload` holds `main.executors_reload_for`, which reads and
+decodes the file with `decode_startup`, applies `executor_reload.link_rule` to
+canonical paths under `Config.vm_directories` (the vm directories that existed at
+start, as `ensure_vm_homes` returned them) and dials with the table it checked, and
+refuses an untrusted name the ledger enrols, answering `reload_invalid` with the
+reason. `link_rule` lets a file drop the started table only when it holds no
+untrusted row (`loom vm rm` of the last guest). `client/executor_reload` is the
+pure part and owns the reply codec. Tests: `executor_reload_test`,
+`daemon/untrusted_links_test`, `daemon_executors_reload_test` and
+`remote/untrusted_reload_test`.
 
 Invariants: nothing on either side calls `binary_to_term`; every response is
 decoded against its request's kind; a callback reaches an owner port only through
@@ -225,10 +257,17 @@ directory built as `<dir>.minting` and renamed whole. `bring_up_linked` chooses
 the port without recording it, works out the merge (a refusal leaves no guest),
 records the kind and port, writes the file, then runs `stage_with` and
 `launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd entry), which are
-the shared halves of `stage` and `boot`. A changed row is applied by the
-daemon only at its next start (`daemon/main.start_untrusted`), so `restart_of`
-reuses `restart_after`: an idle default daemon is stopped, a busy one is
-left and named. `rm` plans through `linked_removal_plan`; `ensure` reads the
+the shared halves of `stage` and `boot`. A running default daemon
+is asked to reload (`executors.reload`, protocol-change/116): `restart_of` and
+`untrusted_restart_check` ask `vm_link.daemon_need`, send the command through
+`vm_cli.reload_daemon` and read the reply with `vm_link.reload_result` and
+`reload_report`, which prints one line for every entry that is not `unchanged`.
+Only a daemon that predates the command, refuses it, does not answer, or
+reports the guest's own link `failed`, `stopped` or absent gets the earlier path
+(`daemon_outcome`: an idle daemon is stopped, a busy one is left and named).
+`rm` sends the reload after it rewrites the file (`removal_daemon_lines`,
+`vm_link.removal_report`). `host/access.refusal_code` keeps the message of a
+`reload_invalid` refusal. `rm` plans through `linked_removal_plan`; `ensure` reads the
 console's ready line in place of epmd (`vm_link.registration`). The executor's
 jails mask the listener's key and the link's key (`executor_plane.masked_files`).
 `bring_up_linked` runs the shared part (`enroll_linked`: credentials, port, merge,
@@ -422,7 +461,16 @@ included, also masks the state root's `vm` directory, the home's `.loom/vm`
 and the home's `.erlang.cookie` (`workspace_policy.lazy_masks`,
 `node_home_masks`): `loom vm up` keeps each guest's bundles and its
 executor's key and cookie there, and the cookie is every distributed
-daemon's. A node key `loom distribution install` places outside the state
+daemon's. The daemon creates the home's `.loom/vm` and the state root's `vm`
+(mode 0700, only when missing, never changed when present) in `prepare_startup`
+through `main.ensure_vm_homes`, before distribution, the states or any jail, so
+a policy built later masks both even when the first guest comes after the
+session began (`workspace_policy.vm_home_directories` names them as a
+`VmHomes`; a failure to create the state root's stops the start, a failure to
+create the home's only logs `daemon.vm_home_unavailable`, because a daemon with
+a read-only `HOME` works today and `loom vm up` as the same user cannot make the
+directory appear later; `LOOM_VM_HOME` elsewhere is not covered; tests in
+`daemon_state_masks_test`). A node key `loom distribution install` places outside the state
 root is still unmasked for host sessions. `loom vm up` installs a newly
 minted deployment with `listen_address = "127.0.0.1"`
 (`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
@@ -2516,6 +2564,17 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   are saved,
   including grants without a refresh token, while plan inference requires
   `resource.invoke` and `chatgpt.tokens.use.direct`.
+- `client/seat_usage` and `client/seat_usage_cli` are `loomd seat-usage`: seats
+  (`{"label","provider","token"}` per line) arrive on standard input only,
+  each token lives in an opaque closure so `string.inspect` cannot print it,
+  and refusals are closed reason codes carrying a line number and a valid
+  label, never line text. Each seat is asked one read-only usage endpoint (no
+  model request, so no `--probe`) through `codex/network.fetch_adopted` with
+  a per-request timeout, a 256 KiB body bound and `weft.limit` concurrency.
+  `seat_usage.to_pool_events` maps a reading onto `provider/pool` events and
+  nothing calls the pool from a request path. The module doc cites where each
+  endpoint and field was verified. `ffi_os.read_stdin_line` is the one shim:
+  no stdlib reads standard input.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -10953,6 +11012,62 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
   frame. A poll that supersedes a held poll releases it at once. A token is looked
   up only among the sender's spawner's feeds. The feed host blocks on a gateway
   call, for at most the gateway's six seconds, and never on the laptop.
+
+## The live session feed, the laptop half (protocol-change/108, slice 3)
+
+The laptop's page for a session on another orchestrator is the session component
+with `daemon/ui_feed` as its transport. `ui_feed` plays the part `ui_relay` plays
+for a local session: it keeps one long poll open on the feed the socket attached,
+hands each frame to the component's inbox as `connection_event.Incoming`, sends the
+lane's frames to the box in pieces and ends with one of `web_view/ending`'s fixed
+reasons. Tests: `feed_cursor_test` and `feed_outbox_test` (fixed-seed `statem`
+properties, seeds 1084 to 1086), `ui_feed_test` (the process against a scripted box
+and a hostile one), `ui_feed_box_test` (the process against the box's real feed host
+and gateway in one VM, with a link a test cuts and restores) and `top_relay_test`.
+The model is `protocol/models/live-relay` (`UiFeed.p`, `Lane.p`), whose README lists
+the rules the code follows and the specs, mutants and probes that guard them.
+
+- **The pure parts** are `remote/feed_cursor` (the laptop's place in the feed: `after`
+  is the last frame handed on and moves one frame at a time; only the reply to the
+  poll in flight is read; a frame numbered `after` or less is dropped; a skipped
+  frame ends the feed; an answer that reports an ending hands on no frame; a poll
+  with no answer is asked again after 250 ms doubling to 2 s) and `remote/feed_outbox`
+  (the lane's frames queued and cut into pieces of at most `piece_bytes` ending on a
+  character boundary, one piece in flight, a piece with no answer sent again
+  unchanged; at most 32 frames and 25,165,824 bytes). Neither holds a process or reads
+  a clock.
+- **The process** is `daemon/ui_feed`, one `weft/state_machine` with a single phase.
+  Each poll and each piece is a weft run of its own that reports to a sink the
+  process selects, so an answer that arrives after its task is gone reaches a dead
+  process, and the mailbox holds the lane's messages and at most two replies. The
+  pauses are named timeouts. `top_relay` gained `attach`, `poll`, `send_piece` and
+  `detach`, and `peer_client.call_at` dispatches against the epoch the attach observed
+  with no discovery.
+- **The socket's choice** is `ui_socket.chosen`, made in `upgrade_home` before any
+  component starts, over the attach's outcome (`ui_choice_test` covers every arm): an
+  attach that succeeds starts the session component with `Standing.route = Relayed(page)`
+  and `ui_feed`; a box that cannot be reached, or asked for another try
+  (`remote_top.retryable`), starts the same component with a transport that answers
+  `PeerUnreachable`, which the browser retries; a box at its feed cap answers
+  `PeerCrowded`; a box without the revisions, with `page = "paged"`, or whose answer does
+  not read starts the 094 home page with a sentence that says why (`relayed.Fallback`).
+  No answer is cached. A relayed route holds a `root.PageOperator` permit. Its images are
+  served at the relayed document's `.../sessions/<id>/image/<ref>/<position>`
+  (`ui_http.RelayedImage`, with the reader kept per tab: `ui_sessions.register_images_for`), and its tool-result links are not drawn (`lane.Unlinked`).
+- **What the page shows** when the link drops: the component decides it, in the same
+  update that ends its lane (`component.lane_failure`), because it ignores a close that
+  arrives after. A lane that fails on a relayed route ends as `PeerUnreachable`, a waiting
+  page the browser reconnects, and on a local route as `ConnectionFailed`. `ui_feed` ends
+  with `ConnectionFailed` on a shut, which only picks the socket's retry close code. A box
+  that says the feed is gone ends it with the ending it gave, and a lapse is
+  `ConnectionFailed`, since the page redraws from a fresh attach. A box at its feed cap is
+  `PeerCrowded`, its own waiting words.
+- **Invariants.** The feed's token is a secret of the `ui_feed` process and is never
+  logged or drawn. A frame from the box is decoded by `remote_feed`'s total decoders,
+  bounded by the stable exchange's envelope, and reaches the page only as a frame a
+  local gateway would have written. The page draws no control for a command the box
+  refuses (`component.route`), and its Forget is offered only on grants the box's
+  spawner approved (`session_view/remembered.Spawner`).
 
 ## The relayed session page's daemon side (protocol-change/094, slice S2b)
 

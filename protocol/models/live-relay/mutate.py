@@ -57,7 +57,7 @@ MUTATIONS = {
      "    queue = default(seq[tFrame]);\n    qbytes = 0;\n    recvOff = 0;\n",
      "    recvOff = 0;\n"),
     ("PSrc/FeedHost.p",
-     "answerPoll(m.pollId, default(seq[tFrame]), ended);",
+     "answerPoll(m.pollId, leftover(), ended);",
      "answerPoll(m.pollId, queue, ended);")]),
 
   # An `approve` goes to the hub's relayed door. Here the feed host calls the
@@ -93,6 +93,37 @@ MUTATIONS = {
     ("PSrc/Types.p",
      "fun Lease(): int { return 10; }",
      "fun Lease(): int { return 3; }")]),
+
+  # An answer that reports the feed ended delivers no frame. The box here is not
+  # honest and answers its ending with the frames it had; the adapter that
+  # delivers them breaks the rule, and only the laptop's side can be at fault
+  # because the box's own check is blind in this case.
+  "M8-delivers-the-frames-of-an-ended-answer": ("tcOnlyHostileEnd", 4000, r"reports the feed ended", [
+    ("PSrc/UiFeed.p",
+     "    if (end == 0) {\n      foreach",
+     "    if (true) {\n      foreach")]),
+
+  # A page of a session on another orchestrator shows waiting when its lane fails,
+  # whatever the link did, because it cannot tell a down link from a slow one.
+  # Here the adapter shows a failure.
+  "M9-shows-a-failure-for-a-link-that-is-down": ("tcOnlyDownWaiting", 4000, r"failure for a link that was only down", [
+    ("PSrc/UiFeed.p",
+     "    return SH_WAITING;\n",
+     "    return SH_FAILED;\n")]),
+
+  # An answer with no frame is followed by a pause. Here the adapter polls again
+  # at once, so a box that answers empty at once drives a tight loop.
+  "M10-polls-again-at-once-after-an-empty-answer": ("tcOnlyEmptyPause", 1000, r"no pause", [
+    ("PSrc/UiFeed.p",
+     "      announce eEmptyAnswer;\n      paused = 1;\n      pauseAge = 0;\n",
+     "      announce eEmptyAnswer;\n      sendPoll();\n")]),
+
+  # A feed's outbox ends with it. Here the adapter keeps resending the piece in
+  # flight after the feed ended, which is a lane frame leaving after the end.
+  "M11-resends-a-piece-after-the-feed-ended": ("tcOnlyNoSendAfterEnd", 4000, r"after the feed ended", [
+    ("PSrc/UiFeed.p",
+     "    on eTick do (c: machine) {\n      announce eUiTick;\n      if (dead == 0 && closed == 0) {",
+     "    on eTick do (c: machine) {\n      announce eUiTick;\n      if (closed == 0) {")]),
 }
 
 

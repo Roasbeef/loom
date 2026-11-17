@@ -28,6 +28,19 @@ pub fn view(reason: Option(Ending), session_id: String) -> Element(message) {
   notice(reason, ending.headline, ending.advice(_, session_id))
 }
 
+/// The notice for a page of a session on another orchestrator that has ended.
+/// It is `view`'s headline with the home's advice, because `loom ui --session`
+/// would name an identity this daemon does not hold.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ended.relayed(Some(ending.PeerUnreachable))
+/// ```
+pub fn relayed(reason: Option(Ending)) -> Element(message) {
+  notice(reason, ending.headline, ending.relayed_advice)
+}
+
 /// The notice for a home page that has ended, in the home's words, which name
 /// no session (protocol-change/065). It is `view`'s notice and its classes.
 ///

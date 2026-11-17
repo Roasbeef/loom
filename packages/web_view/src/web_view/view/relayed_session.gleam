@@ -185,10 +185,20 @@ fn reach(state: State) -> Element(message) {
   }
 }
 
+/// The sentence that says which mode the transcript page is in. An empty node
+/// when there is nothing to say, so the header keeps its children.
+fn fallback(state: State) -> Element(message) {
+  case relayed.fallback_words(state.fallback, state.orchestrator) {
+    Some(words) -> html.p([attribute.class("relayed-mode")], [html.text(words)])
+    None -> element.none()
+  }
+}
+
 /// The name, where the session lives, what it is doing, and the controls.
 fn head(state: State, row: Row, presses: Presses(message)) -> Element(message) {
   html.header([attribute.class("relayed-head")], [
     html.h1([], [html.text(heading(row))]),
+    fallback(state),
     placement.view(state.orchestrator, Some(row.code)),
     html.p([attribute.class("relayed-where")], [
       html.span([attribute.class(state_class(row.activity))], [

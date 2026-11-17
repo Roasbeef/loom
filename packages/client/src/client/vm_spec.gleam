@@ -3240,16 +3240,17 @@ pub fn stop_command(pid: Int) -> String {
   "kill -TERM " <> int.to_string(pid)
 }
 
-/// Whether this `up` put the `[distribution]` table into the user's
-/// configuration. The daemon's note depends on it, because only a table that
-/// is new to a running daemon obliges the daemon to restart.
+/// Whether a daemon that is already running has yet to read what `up` put into
+/// the user's configuration. The daemon's note depends on it, because only a
+/// change that is new to a running daemon obliges the daemon to restart.
 pub type Table {
-  /// This `up` installed the table, so a daemon that was already running read
-  /// its configuration without it.
+  /// A daemon that was already running read its configuration without the
+  /// change: this `up` wrote it, or an earlier one did and the daemon says it
+  /// still runs without it.
   Installed
 
-  /// A resume: the guest's deployment was installed by an earlier `up` and this
-  /// one changed nothing in the configuration.
+  /// A resume: an earlier `up` wrote the change, this one changed nothing in
+  /// the configuration, and nothing says the daemon runs without it.
   AlreadyThere
 }
 
@@ -3275,8 +3276,8 @@ pub fn daemon_note(outcome: DaemonOutcome, table: Table) -> List(String) {
 /// The lines `up` ends with about the daemon, for a change to the daemon's
 /// configuration that it reads only at its start: `effect` names what the next
 /// start puts in effect, and `reason` says whether a running daemon must
-/// restart and why. `table` says whether this `up` made the change, because
-/// only then does the note name the command that stops the daemon.
+/// restart and why. `table` says whether a running daemon has yet to read the
+/// change, because only then does the note name the command that stops it.
 /// `daemon_note` is the words for a `[distribution]` table, and
 /// `client/vm_link.daemon_lines` the words for an untrusted guest's row.
 ///

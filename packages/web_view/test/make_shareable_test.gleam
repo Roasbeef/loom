@@ -49,6 +49,7 @@ fn page(
       sharing: Some(sharing),
       opening: component.FromLink,
       machine: "laptop",
+      route: component.Local,
     ),
     transport: component.Transport(
       ..start.transport,
@@ -267,6 +268,7 @@ pub fn a_bookmarks_page_draws_a_sentence_and_no_button_test() {
         sharing: Some(sharing),
         opening: component.FromBookmark,
         machine: "laptop",
+        route: component.Local,
       ),
     )
     |> component.new

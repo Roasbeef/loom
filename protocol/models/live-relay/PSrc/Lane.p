@@ -2,7 +2,8 @@
 // transmits one frame, then waits for the reply that answers it. Other frames
 // that arrive meanwhile (pushes) are delivered and change nothing. A reply that
 // has not come when the deadline passes is an unknown outcome, and the lane
-// fails, as in the proposal. A lane whose feed ended fails too.
+// fails, as in the proposal. A lane whose feed ended fails too. A failed lane
+// shuts its socket, which is `eLaneShut` to the adapter.
 machine Lane {
   var ui: machine;
   var deadline: int;
@@ -69,6 +70,7 @@ machine Lane {
     if (failed == 0) {
       failed = 1;
       announce eLaneFailed;
+      send ui, eLaneShut;
     }
   }
 }
