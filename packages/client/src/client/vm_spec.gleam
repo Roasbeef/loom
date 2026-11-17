@@ -713,8 +713,8 @@ fn link_flag(value: String) -> Result(Nil, String) {
       Error(
         "--link distribution is retired for guests, because a guest made as a "
         <> "distribution peer lets code that takes it over run in your daemon "
-        <> "as you. Every guest uses the untrusted link, so run `loom vm up` "
-        <> "with no --link.",
+        <> "as you. Every guest uses the untrusted link, so run it with no "
+        <> "--link.",
       )
     _ ->
       Error(

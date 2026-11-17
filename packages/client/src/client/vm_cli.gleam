@@ -287,6 +287,8 @@ pub fn main(arguments: List(String)) -> Nil {
   // command uses, so a script can tell a refused `up` from a started one. The
   // one other ending is `ensure` finding only a daemon missing: its reason is
   // on standard error, and standard output holds the line a launcher matches.
+  // Only a guest joining a ledger deployment took that ending, and none does
+  // now that every guest is on the untrusted link, so nothing reaches it.
   case finish(arguments) {
     Printed(text) -> io.println(text)
     Failed(reason) -> {
@@ -2295,7 +2297,15 @@ type LinkedUp {
 /// anything is written, booted or sent.
 fn link_of(guest: Instance, name: String) -> Result(vm_spec.LinkKind, String) {
   use record <- result.try(read_record(guest.kind_file))
-  vm_link.settle(name, record, traces_of(guest))
+  let traces = traces_of(guest)
+
+  // A record that cannot be read is named by its file first; the refusal of an
+  // old guest is a sentence of its own and comes from `settle` as it is.
+  use _ <- result.try(
+    vm_link.made(record, traces)
+    |> result.map_error(fn(reason) { guest.kind_file <> ": " <> reason }),
+  )
+  vm_link.settle(name, record, traces)
 }
 
 /// What a first `up` left in the guest's directory before it recorded a link:
@@ -2331,6 +2341,7 @@ fn made_kind(
 ) -> Result(option.Option(vm_spec.LinkKind), String) {
   use record <- result.try(read_record(guest.kind_file))
   vm_link.made(record, traces_of(guest))
+  |> result.map_error(fn(reason) { guest.kind_file <> ": " <> reason })
 }
 
 /// The text of a record file the host wrote, or none when it is absent.
@@ -4772,19 +4783,17 @@ fn guests() -> Result(String, String) {
       Error(vm_home <> " is unreadable: " <> simplifile.describe_error(error))
   })
 
-  // A guest directory has a valid name, is a directory of its own and holds
-  // the deployment `up` provisions first, or the `link` record an untrusted
-  // guest has instead. The manifest and the artifact cache that share the home
-  // are neither.
+  // A guest directory has a valid name, is a directory of its own and holds a
+  // sign that an `up` made it (`made_kind`, the same reading `rm` counts the
+  // other guests by), or a record that cannot be read, which is listed as
+  // unknown rather than hidden. The manifest, the artifact cache and the link
+  // credentials that share the home are none of these.
   let names =
     entries
     |> list.filter(fn(entry) {
       result.is_ok(vm_spec.valid_existing_name(entry))
       && is_plain_directory(vm_home <> "/" <> entry)
-      && {
-        is_plain_directory(vm_home <> "/" <> entry <> "/deploy")
-        || bootstrap.path_exists(instance(vm_home, entry).kind_file)
-      }
+      && made_kind(instance(vm_home, entry)) != Ok(None)
     })
     |> list.sort(string.compare)
   let width =

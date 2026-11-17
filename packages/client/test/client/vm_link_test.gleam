@@ -67,7 +67,8 @@ pub fn link_distribution_is_refused_saying_why_test() {
       as { verb <> " refuses --link distribution" }
     assert string.contains(reason, "--link distribution is retired")
     assert string.contains(reason, "run in your daemon as you")
-    assert string.contains(reason, "`loom vm up` with no --link")
+    assert string.contains(reason, "run it with no --link")
+    assert !string.contains(reason, "`loom vm up`")
   })
 
   let assert Error(reason) = vm_spec.parse(["up", "--link", "tls"])
@@ -155,10 +156,20 @@ fn assert_names_the_way_on(reason: String, name: String) -> Nil {
   let sync = "`loom vm sync --name " <> name <> "`"
   let rm = "`loom vm rm --name " <> name <> " --yes`"
   let up = "`loom vm up --name " <> name <> "`"
+  let down = "`loom vm down --name " <> name <> "`"
   let assert [_, after_sync] = string.split(reason, sync)
     as { "the refusal names " <> sync <> ": " <> reason }
-  let assert [_, after_rm] = string.split(after_sync, rm)
+
+  // Between `sync` and `rm`: where uncommitted edits are, and the `down` a
+  // running guest needs, since `rm` refuses one.
+  let assert [between, after_rm] = string.split(after_sync, rm)
     as { "the refusal names " <> rm <> " after sync: " <> reason }
+  assert string.contains(between, "commits only")
+  assert string.contains(
+    between,
+    "<vm home>/" <> name <> "/root/srv/workspaces/",
+  )
+  assert string.contains(between, down)
   assert string.contains(after_rm, up)
     as { "the refusal names " <> up <> " last: " <> reason }
 }

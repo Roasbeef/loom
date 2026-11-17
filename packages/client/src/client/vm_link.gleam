@@ -214,7 +214,10 @@ pub fn settle(
 
 /// The refusal for a guest made over distribution: why it is not started, and
 /// the commands in the order a developer needs them, so its commits are
-/// fetched before the guest that holds them is deleted.
+/// fetched before the guest that holds them is deleted. `sync` fetches commits
+/// only, and `rm` deletes the root that holds everything else, so the words
+/// say where uncommitted edits are, and that a guest still running is stopped
+/// before `rm`, which refuses a running one.
 fn retired_refusal(name: String) -> String {
   "the guest "
   <> name
@@ -222,14 +225,20 @@ fn retired_refusal(name: String) -> String {
   <> "takes it over could run in the daemon as you, and it is no longer "
   <> "started. Fetch its commits with `loom vm sync --name "
   <> name
-  <> "`, remove it with `loom vm rm --name "
+  <> "`; that fetches commits only, so copy any uncommitted edits out of "
+  <> "<vm home>/"
   <> name
-  <> " --yes`, and make it again on the untrusted link with `loom vm up --name "
+  <> "/root/srv/workspaces/ first. Then stop it with `loom vm down --name "
+  <> name
+  <> "` if it still runs, remove it with `loom vm rm --name "
+  <> name
+  <> " --yes`, which deletes that root, and make it again on the untrusted "
+  <> "link with `loom vm up --name "
   <> name
   <> "`."
 }
 
-/// The word `--link` and `status` use for a kind.
+/// The word the `link` record, `status` and `list` use for a kind.
 ///
 /// ## Examples
 ///
@@ -563,8 +572,8 @@ fn link_refusal(file: String) -> String {
   <> " already has an [executor_link] table that names files other than "
   <> "this vm home's link credentials. A daemon has one [executor_link] table, "
   <> "so a guest made here cannot share another authority's: its certificate "
-  <> "would not chain to that authority, and `loom vm up --link untrusted` "
-  <> "never replaces the table. Give `--config` another file for this guest, "
+  <> "would not chain to that authority, and `loom vm up` never replaces "
+  <> "the table. Give `--config` another file for this guest, "
   <> "or remove the table from this one if nothing else uses it."
 }
 
@@ -573,7 +582,7 @@ fn row_refusal(file: String, row: Row) -> String {
   file
   <> " already has [executors."
   <> row.name
-  <> "] with other values. `loom vm up --link untrusted` never replaces it. "
+  <> "] with other values. `loom vm up` never replaces it. "
   <> "If an earlier guest wrote it, `loom vm rm --name "
   <> row.name
   <> " --yes` removes it; otherwise remove it from the file, or give "
