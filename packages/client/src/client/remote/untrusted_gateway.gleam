@@ -852,6 +852,13 @@ fn recorded(
 /// is the reverse of a `run`'s waiter, which outlives its connection so the
 /// call's outcome reaches the ledger for the orchestrator's re-send; a
 /// tunnelled call is never re-sent.
+///
+/// The waiter is hand-rolled (a linked spawn, its pid in `tunnels`, unlink
+/// before kill in `cancelled` and `stopped`) rather than a weft run, and
+/// `docs/weft.md` lists it as a port to make. Its lifetime rule is that every
+/// way a connection stops ends its tunnel waiters: a crash through the link,
+/// and every normal stop through `stopped`. The two plain `sm.stop()` calls
+/// in `handshaken` and `hello` come before `Serving`, when no waiter exists.
 fn tunnelled(
   data: Connection,
   pin: BitArray,
