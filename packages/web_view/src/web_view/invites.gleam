@@ -116,6 +116,14 @@ pub type Share {
   /// session cannot be shared as well.
   BookmarkedPrivate
 
+  /// The session runs on another orchestrator, `machine`, which this page's
+  /// daemon relays. The page's daemon cannot mint access to a session it does
+  /// not hold, and the orchestrator offers no invitation over the live feed
+  /// (protocol-change/108), so the control draws one sentence that says where
+  /// the session is managed and no button. How the page was opened does not
+  /// matter, so this is not a `Bookmarked` page.
+  Elsewhere(machine: String)
+
   /// The control is drawn and waits for the owner to press a button.
   Ready
 

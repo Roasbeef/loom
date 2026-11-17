@@ -44,6 +44,7 @@
 ////    answers go to proxies, and waiters' replies go out as responses.
 //// 4. `proxy` is a binding's owner port.
 
+import broker/broker
 import broker/internal/call
 import client/internal/ffi_tls_stream.{type Stream}
 import client/remote/address.{type Address}
@@ -56,7 +57,6 @@ import client/remote/untrusted_codec
 import client/remote/untrusted_wire.{type Request, type Response}
 import core/corruption
 import core/json.{type JsonValue}
-import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -214,6 +214,8 @@ type Book {
     sessions: Dict(#(BitArray, String), BitArray),
     /// The keeper of placed blobs, told when a binding retires.
     blobs: Option(blob_service.Service),
+    /// Where the book and its proxies log.
+    logger: Logger,
   )
 }
 
@@ -242,6 +244,8 @@ type ProxyState {
     next_id: Int,
     /// Callbacks awaiting an answer, by id.
     outstanding: Dict(Int, OwnerReply),
+    /// Where a callback that cannot be sent is logged.
+    logger: Logger,
   )
 }
 
@@ -298,7 +302,7 @@ pub fn start(config: Config) -> Result(Gateway, String) {
     ffi_tls_stream.port_of(listener)
     |> result.replace_error("the untrusted executor listener has no port"),
   )
-  use book <- result.try(start_book(config.blobs))
+  use book <- result.try(start_book(config.blobs, config.logger))
   let served = Served(book:, host: config.host, blobs: config.blobs)
   let acceptor =
     process.spawn(fn() { accepting(listener, served, config.logger) })
@@ -523,7 +527,8 @@ fn framed(
         | Ok(untrusted_codec.WelcomeEnvelope(..))
         | Ok(untrusted_codec.ResponseEnvelope(..))
         | Ok(untrusted_codec.CallbackEnvelope(..))
-        | Ok(untrusted_codec.OversizedEnvelope(..)) ->
+        | Ok(untrusted_codec.OversizedEnvelope(..))
+        | Ok(untrusted_codec.CallEventEnvelope(..)) ->
           closed(
             stream,
             data,
@@ -663,6 +668,14 @@ fn answer(
       )
     untrusted_wire.OutcomePieceRequest(key:, offset:) ->
       Some(untrusted_bridge.outcome_piece(host, key, offset, carrier))
+
+    // This executor carries no tunnelled call yet, so every clearance is
+    // refused as a broker that cannot be reached. The tunnel replaces this
+    // arm with a waiter that clears the call on the plane's broker under the
+    // binding's recorded base policy and reports it as `call_event` frames.
+    untrusted_wire.ClearCallRequest(..) ->
+      Some(untrusted_wire.ClearedAnswered(Error(broker.BrokerUnavailable)))
+
     untrusted_wire.CloseRequest(session:, incarnation:, ..) -> {
       let response = untrusted_bridge.ask_host(host, request, port, carrier)
       closed_scope(answering, session, incarnation, response)
@@ -753,10 +766,12 @@ fn routed(
 }
 
 /// A waiter's answer, sent as the response to its request. A response whose
-/// frame would pass `max_frame_bytes` is sent as an `Oversized` instead, which
-/// the orchestrator follows by fetching the outcome in pieces
-/// (protocol-change/110); sent whole, the orchestrator's socket would refuse
-/// it, and the re-send on the next connection would meet the same frame.
+/// frame would pass `max_frame_bytes` or hold more than `max_frame_values`
+/// values is sent as an `Oversized` instead, which the orchestrator follows by
+/// fetching the outcome in pieces (protocol-change/110) or, for a reply that
+/// holds no outcome, answers as lost at once; sent whole, the orchestrator
+/// would refuse it by closing the connection, and the re-send on the next
+/// connection would meet the same frame.
 fn replied(
   stream: Stream,
   data: Connection,
@@ -768,18 +783,23 @@ fn replied(
   // Only a request with a reply has a waiter, and its waiter always replies.
   case response {
     Some(response) -> {
-      let frame =
-        untrusted_codec.encode_frame(untrusted_wire.Response(id:, response:))
-      let fits = bit_array.byte_size(frame) <= untrusted_wire.max_frame_bytes
-      outgoing(stream, data, case fits {
-        True -> frame
-        False ->
+      let fitting =
+        untrusted_codec.encode_fitting(untrusted_wire.Response(id:, response:))
+
+      // A response over either bound goes out as its description. A fetched
+      // outcome is parsed under the same value bound, so one that holds too
+      // many values is answered lost rather than asked for again.
+      let frame = case fitting {
+        Ok(frame) -> frame
+        Error(untrusted_codec.Unfit(bytes:, ..)) ->
           untrusted_codec.encode_frame(untrusted_bridge.oversized(
             id,
             response,
-            frame,
+            bytes,
           ))
-      })
+      }
+
+      outgoing(stream, data, frame)
     }
     None -> sm.keep(data)
   }
@@ -826,6 +846,7 @@ fn closed(
 /// Starts the book, linked to the caller.
 fn start_book(
   blobs: Option(blob_service.Service),
+  logger: Logger,
 ) -> Result(Subject(BookMessage), String) {
   actor.new_with_initialiser(1000, fn(subject) {
     let book =
@@ -835,6 +856,7 @@ fn start_book(
         proxies: dict.new(),
         sessions: dict.new(),
         blobs:,
+        logger:,
       )
     let selector =
       process.new_selector()
@@ -980,6 +1002,7 @@ fn proxy_for(
         incarnation,
         binding,
         connection,
+        book.logger,
       ))
       #(
         Book(
@@ -1035,6 +1058,7 @@ fn start_proxy(
   incarnation: Int,
   binding: BitArray,
   connection: Option(Subject(ConnectionMessage)),
+  logger: Logger,
 ) -> Result(Proxy, Nil) {
   actor.new_with_initialiser(1000, fn(_subject) {
     let owner = process.new_subject()
@@ -1048,6 +1072,7 @@ fn start_proxy(
       connection:,
       next_id: 1,
       outstanding: dict.new(),
+      logger:,
     ))
     |> actor.selecting(selector)
     |> actor.returning(Proxy(session:, incarnation:, owner:, control:))
@@ -1112,7 +1137,11 @@ fn forwarded(
   }
 }
 
-/// Puts one callback on the wire under the next id.
+/// Puts one callback on the wire under the next id. A callback past either
+/// frame bound is not sent: the orchestrator would refuse it by closing the
+/// connection and re-send every outstanding request, so it is logged and its
+/// asker is failed instead, and the id is kept for the next callback because
+/// the orchestrator never sees this one.
 fn sent_callback(
   state: ProxyState,
   connection: Subject(ConnectionMessage),
@@ -1120,21 +1149,34 @@ fn sent_callback(
   reply: Option(OwnerReply),
 ) -> ProxyState {
   let id = state.next_id
-  let frame =
-    untrusted_codec.encode_frame(untrusted_wire.Callback(
+  let fitting =
+    untrusted_codec.encode_fitting(untrusted_wire.Callback(
       binding: state.binding,
       id:,
       callback:,
     ))
-  process.send(connection, Outgoing(frame))
 
-  // A tail waits for no answer, so it holds no place.
-  let outstanding = case reply {
-    Some(reply) -> dict.insert(state.outstanding, id, reply)
-    None -> state.outstanding
+  // A frame that does not fit leaves no wire state and no outstanding entry.
+  case fitting {
+    Error(untrusted_codec.Unfit(reason:, ..)) -> {
+      log.warn(state.logger, "untrusted_gateway.callback_unfit", [
+        field.text("reason", reason),
+      ])
+      let _failed = option.map(reply, untrusted_bridge.fail_owner)
+      state
+    }
+    Ok(frame) -> {
+      process.send(connection, Outgoing(frame))
+
+      // A tail waits for no answer, so it holds no place.
+      let outstanding = case reply {
+        Some(reply) -> dict.insert(state.outstanding, id, reply)
+        None -> state.outstanding
+      }
+
+      ProxyState(..state, next_id: id + 1, outstanding:)
+    }
   }
-
-  ProxyState(..state, next_id: id + 1, outstanding:)
 }
 
 /// An answer: decoded against the kind its callback waits for and handed to

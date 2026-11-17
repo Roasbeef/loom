@@ -145,6 +145,19 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   containers nest at most `max_depth` (256) levels; `CorruptionReport`
   truncates its context excerpt to `max_context_length` (256) graphemes;
   msgpack rejects non-byte-aligned bit arrays and trailing bytes.
+- **`json.parse_bounded` bounds the number of values, during the parse.**
+  Each object, array, string, number, boolean and null is one value; object
+  keys are not counted. The allowance is a field of the parser's cursor and is
+  spent as each value begins, so the first value past the bound is refused
+  before it or anything after it is built, and no second pass is made.
+  `json.parse` is the same walk with an allowance of the document's byte
+  size plus one, which no document can spend, because every value begins
+  with a byte of its own. `json.count_values` counts a built value the same
+  way, so a sender can check its document against the bound a receiver
+  applies (protocol-change/117: the untrusted wire's `max_frame_values`).
+  On the JavaScript target the parser takes a stack frame per array item,
+  so a flat array of a few thousand items exhausts the stack there; the
+  tests stay below that.
 - **Duplicate keys are corruption, in both codecs.** Decoders disagree on
   first- versus last-occurrence precedence, so a document or frame
   carrying duplicates has no single meaning; rejecting is the only rule

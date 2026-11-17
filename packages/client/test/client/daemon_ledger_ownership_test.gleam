@@ -55,6 +55,8 @@ fn config(handle: ledger_control.Handle) -> main.Config {
       main.no_projects,
       state_node.none(),
       untrusted_config.none,
+      None,
+      [],
     ),
     ledger: Some(handle),
   )

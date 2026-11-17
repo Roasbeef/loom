@@ -24,6 +24,8 @@ import core/ids
 import core/json
 import core/message
 import core/msgpack
+import core/register
+import core/tx
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -31,10 +33,14 @@ import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import machine/codec
 import machine/operation
+import machine/strand
 import runtime/effects.{type ToolOutcome, type ToolRun}
+import session/session
 import simplifile
 import storage/exec_ledger
+import storage/storage
 import tools/agent
 import tools/directory_access
 
@@ -468,6 +474,81 @@ pub fn tool_run(call_id: String, source_index: Int) -> ToolRun {
     arguments:,
     replay: operation.ReplayNever,
     grants: [],
+  )
+}
+
+/// Records the operation of `run` as running that one call under
+/// `ReplayNever`, the way the planner does before the effect starts.
+pub fn hold_pending(opened: session.Session, run: ToolRun) -> Nil {
+  let generator = ids.generator(clock.fixed(at: 0), seed: 2)
+  let #(entry, _) = ids.mint_entry(generator)
+  let state =
+    tool_batch(run.step_id, [
+      operation.CallEffectPending(
+        source_index: run.source_index,
+        result_entry: entry,
+        replay: operation.ReplayNever,
+      ),
+    ])
+  hold_state(opened, run.operation, state)
+}
+
+/// Replaces the durable state of the operation `op` in the session's store.
+pub fn hold_state(
+  opened: session.Session,
+  op: ids.OpId,
+  state: operation.OperationState,
+) -> Nil {
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            register.OpState,
+            ids.op_id_to_string(op),
+            register.value(codec.encode_state(state)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the operation state is recorded"
+  Nil
+}
+
+/// A running operation in its tools phase for the step `turn_id`, holding
+/// `calls`.
+pub fn tool_batch(
+  turn_id: String,
+  calls: List(operation.ToolCallState),
+) -> operation.OperationState {
+  let generator = ids.generator(clock.fixed(at: 0), seed: 9)
+  let #(assistant, _) = ids.mint_entry(generator)
+  operation.RunState(
+    control: operation.Running,
+    settings: operation.RunSettings(
+      compaction: operation.CompactionSettings(
+        enabled: False,
+        reserve_tokens: 0,
+        keep_recent_tokens: 0,
+      ),
+      steering_mode: operation.ConsumeAll,
+      follow_up_mode: operation.ConsumeAll,
+      tool_execution: operation.Parallel,
+    ),
+    phase: operation.Tools(batch: operation.ToolBatch(
+      assistant_entry: assistant,
+      configuration: strand.StrandConfiguration(
+        model: strand.ModelIdentity(provider: "p", model_id: "m"),
+        thinking_level: strand.ThinkingOff,
+        active_tool_names: [],
+      ),
+      turn_id:,
+      calls:,
+    )),
+    inbox: operation.Inbox(steer: [], follow_up: [], writes: []),
+    latest_assistant: None,
   )
 }
 

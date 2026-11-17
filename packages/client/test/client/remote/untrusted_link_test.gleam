@@ -14,6 +14,11 @@
 //// only from the `code_mode` call that makes them, and a start's answer
 //// reaches its worker once across a dropped connection, while a cancel after
 //// the re-send goes out on the new one.
+////
+//// The wire 5 tests (protocol-change/117) hold the link to the value bound on
+//// what it receives, on an outcome it fetches and on what it sends, refuse a
+//// tunnel event the link never asked for, and check that a welcome of another
+//// wire version is refused in words that name both wire versions.
 
 import broker/framing
 import client/codemode as codemode_wiring
@@ -1218,6 +1223,81 @@ pub fn a_blob_for_a_session_with_no_binding_is_refused_at_once_test() {
   stop(rig)
 }
 
+pub fn a_run_or_start_for_a_session_with_no_binding_is_refused_and_never_sent_test() {
+  let rig = start("run-unbound")
+  let run = fixtures.tool_run("call_1", 0)
+  let run_reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Run(
+      key: protocol.key_of("s1", run),
+      incarnation: 0,
+      token: <<"token":utf8>>,
+      run:,
+      authority: fixtures.authority(),
+      reply: run_reply,
+    ),
+  )
+
+  // The refusal is the one an executor's host gives a scope it holds no plane
+  // for, so a surface attaches again.
+  let assert Ok(protocol.RunRefused(protocol.NoPlane(..))) =
+    process.receive(run_reply, 2000)
+    as "a run for a session with no binding is answered NoPlane"
+  let start_reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.StartExecution(
+      key: fixtures.execution_key("s1", "e1"),
+      incarnation: 0,
+      token: <<"token":utf8>>,
+      terms: fixtures.execution_terms(),
+      remaining_ms: 60_000,
+      reply: start_reply,
+    ),
+  )
+  let assert Ok(protocol.ExecutionRefused(protocol.NoPlane(..))) =
+    process.receive(start_reply, 2000)
+    as "a start for a session with no binding is answered NoPlane"
+
+  // Messages that start no work go through for the same session, and they are
+  // the first frames the executor reads: neither refused message was sent.
+  let unacked_reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.ListUnacked(session: "s1", reply: unacked_reply),
+  )
+  let query_reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Query(key: protocol.key_of("s1", run), reply: query_reply),
+  )
+  let stream = rig.greeted(rig.listener)
+  let assert Ok(untrusted_codec.RequestEnvelope(body: first, ..)) =
+    rig.next(stream)
+    as "the listing arrives"
+  let assert Ok(untrusted_codec.RequestEnvelope(body: second, ..)) =
+    rig.next(stream)
+    as "the query arrives"
+  assert untrusted_codec.decode_request(first)
+    == Ok(untrusted_wire.ListUnackedRequest("s1"))
+  assert untrusted_codec.decode_request(second)
+    == Ok(untrusted_wire.QueryRequest(protocol.key_of("s1", run)))
+  stop(rig)
+}
+
+pub fn a_run_after_the_session_attaches_is_sent_not_refused_test() {
+  let rig = start("run-bound")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let run = fixtures.tool_run("call_1", 0)
+
+  // The attach minted the binding, so the same run is carried.
+  let #(_id, _asker, answers) = run_in_flight(rig, stream, "s1", run)
+  assert process.receive(answers, 300) == Error(Nil)
+  stop(rig)
+}
+
 // --- background executions (slice 2) ---------------------------------------------
 
 // Sends a start for execution `id` of `session` from a worker process of its
@@ -1627,4 +1707,184 @@ pub fn a_launch_budget_beyond_the_orchestrators_ceiling_is_clamped_test() {
   assert process.receive(budgets, 2000)
     == Ok(fixtures.execution_terms().within_ms)
   stop(rig)
+}
+
+// --- wire 5: the value bound, the tunnel's frame and the version (117) -----------
+
+/// A response frame for request `id` whose body is an array of `items` zeros,
+/// so the frame holds `items + 4` values: the frame, its name, its id and the
+/// array.
+fn wide_response(id: Int, items: Int) -> BitArray {
+  bit_array.from_string(
+    "{\"frame\":\"response\",\"id\":"
+    <> int.to_string(id)
+    <> ",\"body\":["
+    <> string.join(list.repeat("0", items), ",")
+    <> "]}",
+  )
+}
+
+// The link reads a response to a request it no longer holds without decoding
+// its body, so the only thing a late response with a wide body can break is
+// the value bound: one value past it is a violation that closes the
+// connection. The exact boundary, where a frame at the bound is accepted, is
+// pinned by the codec's own test, which reads the frame back; here a frame at
+// the bound would show only that the connection stayed open for a while.
+pub fn a_frame_past_the_value_bound_closes_the_connection_test() {
+  let rig = start("value-bound")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let run = fixtures.tool_run("call_1", 0)
+  let #(id, _asker, answers) = run_in_flight(rig, stream, "s1", run)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.RunAnswered(protocol.RunLost),
+    ),
+  )
+  assert process.receive(answers, 5000) == Ok(protocol.RunLost)
+
+  let past_bound = untrusted_wire.max_frame_values - 4 + 1
+  rig.send_raw(stream, wide_response(id, past_bound))
+  assert rig.closed(stream, 30_000)
+  assert process.is_alive(rig.link)
+  stop(rig)
+}
+
+/// An outcome whose result's details are an array of `items` zeros.
+fn wide_outcome(items: Int) -> effects.ToolOutcome {
+  effects.ToolCompleted(
+    result: message.ToolResultMessage(
+      tool_call_id: "call_1",
+      tool_name: "bash",
+      content: [],
+      details: option.Some(json.Array(list.repeat(json.Int(0), items))),
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ),
+    terminate: False,
+  )
+}
+
+// An outcome is fetched in pieces whose bytes match their digest, so only its
+// decoding can refuse it, and the value bound applies to it as to a frame:
+// one that describes more values than a frame may hold is answered lost.
+pub fn a_fetched_outcome_past_the_value_bound_is_lost_test() {
+  let rig = start("outcome-value-bound")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let #(bytes, size, digest) =
+    encoding_of(wide_outcome(untrusted_wire.max_frame_values))
+  assert size < untrusted_wire.max_piece_bytes
+
+  rig.send(stream, untrusted_wire.Oversized(id:, size:, digest:))
+  let #(piece, at) = piece_request(stream)
+  assert at == 0
+  serve_piece(stream, piece, bytes, size, digest, 0)
+  assert process.receive(answers, 10_000) == Ok(protocol.RunLost)
+  assert !rig.closed(stream, 300)
+  assert process.is_alive(rig.link)
+  stop(rig)
+}
+
+// The link's own request is counted before it is kept: a run whose arguments
+// hold more values than the executor's parse admits would close every
+// connection it was sent on, so it is refused here and never sent.
+pub fn a_request_of_more_values_than_the_bound_is_refused_and_not_kept_test() {
+  let rig = start("request-too-wide")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let run =
+    effects.ToolRun(
+      ..fixtures.tool_run("call_1", 0),
+      arguments: json.Array(list.repeat(
+        json.Int(0),
+        untrusted_wire.max_frame_values,
+      )),
+    )
+
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Run(
+      key: protocol.key_of("s1", run),
+      incarnation: 0,
+      token: <<"token":utf8>>,
+      run:,
+      authority: fixtures.authority(),
+      reply:,
+    ),
+  )
+  let assert Ok(protocol.RunRefused(protocol.Invalid(_reason))) =
+    process.receive(reply, 10_000)
+    as "the run is refused, not sent"
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+// This link clears no tunnelled call yet, so an event for one is a frame an
+// honest executor never sends.
+pub fn a_call_event_closes_the_connection_test() {
+  let rig = start("call-event")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: 1,
+      event: untrusted_wire.TunnelOutput(framing.Stdout, <<"forged">>),
+    ),
+  )
+  assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
+  stop(rig)
+}
+
+/// Starts a link, sends an attach, and answers the link's `hello` with a
+/// `welcome` of the given numbers. Answers what the attach was told.
+fn welcomed_with(
+  label: String,
+  wire: Int,
+  protocol_version: Int,
+) -> Result(protocol.Attached(RemoteCensus), protocol.Refusal) {
+  let rig = start(label)
+  let #(port, _seen) = recording_port()
+  let reply = attach_unread(rig.address, port)
+  let stream = rig.accept(rig.listener)
+  let assert Ok(untrusted_codec.HelloEnvelope(..)) = rig.next(stream)
+    as "the link says hello"
+  rig.send(stream, untrusted_wire.Welcome(wire:, protocol: protocol_version))
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the attach is answered"
+  assert process.is_alive(rig.link)
+  stop(rig)
+  answer
+}
+
+// When only the wire differs, the refusal says so in both numbers instead of
+// naming a protocol version the two sides share.
+pub fn a_wire_only_version_mismatch_names_both_wire_versions_test() {
+  let theirs = untrusted_wire.version - 1
+  let assert Error(protocol.Unreachable(reason)) =
+    welcomed_with("wire-mismatch", theirs, protocol.version)
+    as "a wire-only mismatch is refused as unreachable"
+  assert string.contains(reason, "wire version " <> int.to_string(theirs))
+  assert string.contains(
+    reason,
+    "wire version " <> int.to_string(untrusted_wire.version),
+  )
+
+  // A protocol difference keeps 078's refusal.
+  assert welcomed_with(
+      "protocol-mismatch",
+      untrusted_wire.version,
+      protocol.version + 1,
+    )
+    == Error(protocol.VersionMismatch(supported: protocol.version + 1))
 }

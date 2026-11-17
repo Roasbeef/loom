@@ -12,17 +12,30 @@
 //// while nobody was connected, or is stopped by a cancel. The executor's proxy
 //// carries a launch to the orchestrator and refuses an answer of another kind
 //// as it would a lost one.
+////
+//// Wire 5 (protocol-change/117): a `clear_call` is answered as a broker that
+//// cannot be reached until the tunnel lands, and a response past the value
+//// bound goes out as its description, as one past the byte bound does.
 
+import broker/broker
+import broker/budget
 import client/internal/ffi_tls_stream.{type Stream}
+import client/owner_services
+import client/remote/blob_transfer
 import client/remote/host
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/untrusted_codec
 import client/remote/untrusted_gateway
 import client/remote/untrusted_wire
+import client/workspace_policy
+import core/ids.{type Seq}
 import core/json
+import core/message
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
-import gleam/option.{None}
+import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import runtime/effects.{type ToolRun}
 import support/remote_fixtures as fixtures
@@ -386,4 +399,241 @@ pub fn a_launch_answered_with_the_wrong_kind_is_refused_as_unanswered_test() {
     as "an interaction's answer never answers a launch"
   assert string.contains(reason, "did not answer the launch")
   assert string.contains(reason, fixtures.handle_of(fixtures.execution_terms()))
+}
+
+// --- wire 5 (protocol-change/117) ------------------------------------------------
+
+/// A gateway over a plane whose every call completes with `outcome`.
+fn start_answering(label: String, outcome: effects.ToolOutcome) -> Rig {
+  let pair = rig.pair(label)
+  let workers = process.new_subject()
+  let census = remote_orchestrator.census(remote_orchestrator.standard_tools())
+  // The outcome is a few megabytes, so the host reserves what a real one does.
+  let executor =
+    remote_orchestrator.start_holding(
+      fn(_spec: host.AttachSpec) {
+        Ok(host.Plane(
+          run: fn(_run, _authority) { outcome },
+          census:,
+          children: fn(builder) { builder },
+          close: fn(retire_children) {
+            let _retired = retire_children()
+            protocol.AllRetired
+          },
+          execute: fn(_start) { json.Null },
+          abort_step: fn(_op, _step) { Nil },
+          evolution: None,
+          state: None,
+        ))
+      },
+      host.default_max_result_bytes,
+    )
+  let assert Ok(gateway) =
+    untrusted_gateway.start(untrusted_gateway.Config(
+      address: "127.0.0.1",
+      port: 0,
+      credentials: pair.executor,
+      orchestrators: [pair.orchestrator_pin],
+      host: executor.address,
+      blobs: None,
+      logger: log.discard(),
+    ))
+    as "the gateway starts"
+  Rig(pair:, executor:, gateway:, workers:)
+}
+
+// This executor carries no tunnelled call yet: a clearance under a binding the
+// orchestrator holds is answered as a broker that cannot be reached, and the
+// connection serves the next request.
+pub fn a_clear_call_is_answered_broker_unavailable_test() {
+  let rig = start("clear-call")
+  let stream = rig.hello(rig.gateway.port, rig.pair)
+  attach(stream)
+
+  let spec =
+    untrusted_wire.TunnelSpec(
+      op_id: fixtures.tool_run("check", 0).operation,
+      step_id: "goal-check:1",
+      base_policy: workspace_policy.base_policy("/work"),
+      requirements: workspace_policy.base_policy("/work"),
+      response: broker.RefuseNarrowed,
+      argv: ["git", "status"],
+      env: [],
+      cwd: "/work",
+      budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
+    )
+  rig.send(
+    stream,
+    untrusted_wire.Request(
+      id: 2,
+      request: untrusted_wire.ClearCallRequest(
+        binding: <<1:size(128)>>,
+        spec:,
+        waiting_ms: 1000,
+      ),
+    ),
+  )
+  let assert Ok(untrusted_codec.ResponseEnvelope(id: 2, body:)) =
+    rig.next(stream)
+    as "the clearance is answered"
+  assert untrusted_codec.decode_response(untrusted_wire.ClearedKind, body)
+    == Ok(untrusted_wire.ClearedAnswered(Error(broker.BrokerUnavailable)))
+  assert !rig.closed(stream, 300)
+  stop(rig)
+}
+
+// A response far inside the byte bound but past the value bound goes out as
+// its description, as one past the byte bound does, so the orchestrator never
+// receives a frame it must refuse by closing the connection, and never re-sends
+// a request whose answer would close it again.
+pub fn a_response_past_the_value_bound_goes_out_as_oversized_test() {
+  let outcome =
+    effects.ToolCompleted(
+      result: message.ToolResultMessage(
+        tool_call_id: "wide",
+        tool_name: "bash",
+        content: [],
+        details: Some(
+          json.Array(list.repeat(json.Int(0), untrusted_wire.max_frame_values)),
+        ),
+        usage: None,
+        added_tool_names: None,
+        is_error: False,
+        timestamp: 0,
+      ),
+      terminate: False,
+    )
+  let rig = start_answering("wide-response", outcome)
+  let stream = rig.hello(rig.gateway.port, rig.pair)
+  attach(stream)
+
+  rig.send(stream, run_request(2, fixtures.tool_run("wide", 0)))
+  let bytes = untrusted_codec.encode_outcome_bytes(outcome)
+  assert bit_array.byte_size(bytes) < untrusted_wire.max_frame_bytes
+  assert rig.next(stream)
+    == Ok(untrusted_codec.OversizedEnvelope(
+      id: 2,
+      size: bit_array.byte_size(bytes),
+      digest: blob_transfer.digest_of(bytes),
+    ))
+  stop(rig)
+}
+
+// --- callbacks past the frame bounds ------------------------------------------
+
+/// A plane whose every call writes `value` to a fact cell through its owner
+/// and reports what the write came to.
+fn putting(
+  results: Subject(Result(Seq, owner_services.FactFault)),
+  value: json.JsonValue,
+) -> host.PlaneFactory(RemoteCensus) {
+  fn(spec: host.AttachSpec) {
+    let owner = spec.owner
+    Ok(host.Plane(
+      run: fn(run, _authority) {
+        process.send(results, owner.facts.put("job/wide", value, None))
+        fixtures.expected_outcome(run)
+      },
+      census: remote_orchestrator.census(remote_orchestrator.standard_tools()),
+      children: fn(builder) { builder },
+      close: fn(retire_children) {
+        let _retired = retire_children()
+        protocol.AllRetired
+      },
+      execute: fn(_start) { json.Null },
+      abort_step: fn(_op, _step) { Nil },
+      evolution: None,
+      state: None,
+    ))
+  }
+}
+
+/// Attaches a gateway over a plane that writes an array of `items` zeros to a
+/// fact cell during its call, and sends that call.
+fn start_putting(
+  label: String,
+  items: Int,
+  results: Subject(Result(Seq, owner_services.FactFault)),
+) -> #(Programs, Stream) {
+  let pair = rig.pair(label)
+  let executor =
+    remote_orchestrator.start(putting(
+      results,
+      json.Array(list.repeat(json.Int(0), items)),
+    ))
+  let assert Ok(gateway) =
+    untrusted_gateway.start(untrusted_gateway.Config(
+      address: "127.0.0.1",
+      port: 0,
+      credentials: pair.executor,
+      orchestrators: [pair.orchestrator_pin],
+      host: executor.address,
+      blobs: None,
+      logger: log.discard(),
+    ))
+    as "the gateway starts"
+  let programs =
+    Programs(
+      pair:,
+      executor:,
+      gateway:,
+      launches: process.new_subject(),
+      started: process.new_subject(),
+    )
+  let stream = rig.hello(gateway.port, pair)
+  attach(stream)
+  rig.send(stream, run_request(2, fixtures.tool_run("put", 0)))
+  #(programs, stream)
+}
+
+// How many zeros fill a fact-put callback to exactly the value bound: the
+// callback's own frame holds the same values as the one with an empty array,
+// less the array's one.
+fn items_to_the_bound() -> Int {
+  let frame =
+    untrusted_wire.Callback(
+      binding: <<1:size(128)>>,
+      id: 1,
+      callback: untrusted_wire.FactPutCall(
+        key: "job/wide",
+        value: json.Array([]),
+        expected: None,
+      ),
+    )
+  let assert Ok(text) = bit_array.to_string(untrusted_codec.encode_frame(frame))
+    as "the frame is text"
+  let assert Ok(document) = json.parse(text) as "the frame parses"
+  untrusted_wire.max_frame_values - json.count_values(document)
+}
+
+// A callback of more values than a frame may hold is not sent, because the
+// orchestrator would close the connection over it and re-send everything. The
+// plane that asked hears a failure, and the connection goes on to answer the
+// call that was in flight.
+pub fn a_callback_past_the_value_bound_is_not_sent_and_fails_its_asker_test() {
+  let results = process.new_subject()
+  let #(rig, stream) =
+    start_putting("callback-over", items_to_the_bound() + 1, results)
+
+  let assert Ok(Error(_fault)) = process.receive(results, 20_000)
+    as "the asker hears a failure"
+  let assert Ok(untrusted_codec.ResponseEnvelope(id: 2, ..)) = rig.next(stream)
+    as "no callback was sent, and the call is answered on the same connection"
+  assert !rig.closed(stream, 300)
+  stop_programs(rig)
+}
+
+// A callback of exactly the bound goes out as a callback.
+pub fn a_callback_at_the_value_bound_is_sent_test() {
+  let results = process.new_subject()
+  let #(rig, stream) =
+    start_putting("callback-at", items_to_the_bound(), results)
+
+  let assert Ok(untrusted_codec.CallbackEnvelope(body:, ..)) = rig.next(stream)
+    as "the callback is sent"
+  let assert Ok(untrusted_wire.FactPutCall(key: "job/wide", ..)) =
+    untrusted_codec.decode_callback(body)
+    as "it is the fact put"
+  assert process.receive(results, 100) == Error(Nil)
+  stop_programs(rig)
 }

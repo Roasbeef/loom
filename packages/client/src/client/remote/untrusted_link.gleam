@@ -23,6 +23,9 @@
 ////   owner port's subject, with the session, the port and the highest
 ////   callback id accepted. A binding retires when its session attaches again,
 ////   when its owner port dies, and on a successful close.
+////   A link holds none when it starts, so it answers a `Run` or a
+////   `StartExecution` for a session it holds none for with `NoPlane`
+////   (`answered_unbound`), and the surface attaches again.
 ////
 //// ## Re-sending
 ////
@@ -97,7 +100,6 @@ import client/remote/untrusted_wire.{type Answer, type Callback, type Request}
 import core/corruption
 import core/ids
 import core/json
-import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/node
 import gleam/erlang/process.{type Monitor, type Name, type Pid, type Subject}
@@ -402,8 +404,9 @@ pub fn address(
 
 /// The name the link to `executor` registers in production. An executor's
 /// name is the operator's, from `[executors.<name>]`, checked against the
-/// executor grammar and read once at start, so the atoms made here are as few
-/// as the configured executors and none comes from a peer.
+/// executor grammar and read from the configuration file at start and at each
+/// `executors.reload`, which refuses a file past 1,024 distinct names, so the
+/// atoms made here are bounded and none comes from a peer.
 ///
 /// ## Examples
 ///
@@ -605,8 +608,8 @@ fn handle(
 }
 
 /// A `HostMessage` from a session: answered at once if the link does not carry
-/// it, otherwise made an outstanding request and sent, or held for the next
-/// connection.
+/// it or holds no binding for the session it starts work for, otherwise made
+/// an outstanding request and sent, or held for the next connection.
 fn hosted(
   phase: Phase,
   data: Data,
@@ -614,6 +617,77 @@ fn hosted(
 ) -> sm.Next(Phase, Data, Message) {
   let bind = fn(session, port) { binding_for(data, session, port) }
 
+  // A run or a start for a session with no binding never leaves this link.
+  case answered_unbound(data, message) {
+    Refused -> sm.keep(data)
+    Passed -> carried(phase, data, message, bind)
+  }
+}
+
+/// What `answered_unbound` decided for a message.
+type Unbound {
+  /// The link answered the message and it must not be sent.
+  Refused
+
+  /// The link holds what the message needs, or the message needs nothing.
+  Passed
+}
+
+/// Answers a `Run` or a `StartExecution` for a session the link holds no
+/// binding for with `NoPlane`, the refusal the executor's host gives a scope
+/// it holds no plane for, so the surface cannot tell the two apart and attaches
+/// again (protocol-change/116).
+///
+/// A link started in place of a dead one holds no bindings, but the executor
+/// behind it may still hold the session's plane, and would run the call and
+/// never answer `NoPlane`. Every callback the call then made would be refused
+/// for a binding this link never minted. Refusing the call here, before it
+/// reaches the executor, makes the surface's attach mint the binding, and the
+/// executor rebinds the plane it already has. The refusal proves the call
+/// never started, so the surface may send it again after attaching.
+///
+/// Every other message passes. An `Attach` mints the binding; a `Close`, a
+/// query, a state transfer and a `ListUnacked` are answered by the executor's
+/// ledger or scope record whatever the link holds; an `Ack` and a
+/// `StopExecution` have no reply to refuse with.
+fn answered_unbound(data: Data, message: HostMessage(RemoteCensus)) -> Unbound {
+  let reason =
+    "the link to the executor holds no binding for this session; "
+    <> "the next tool call restores it"
+
+  // Only the two messages that start work for a session are held to a binding.
+  case message {
+    protocol.Run(key:, reply:, ..) ->
+      case dict.has_key(data.sessions, key.session) {
+        True -> Passed
+        False -> {
+          process.send(reply, protocol.RunRefused(protocol.NoPlane(reason)))
+          Refused
+        }
+      }
+    protocol.StartExecution(key:, reply:, ..) ->
+      case dict.has_key(data.sessions, key.session) {
+        True -> Passed
+        False -> {
+          process.send(
+            reply,
+            protocol.ExecutionRefused(protocol.NoPlane(reason)),
+          )
+          Refused
+        }
+      }
+    _ -> Passed
+  }
+}
+
+/// A message the link carries: made an outstanding request and sent, or held
+/// for the next connection.
+fn carried(
+  phase: Phase,
+  data: Data,
+  message: HostMessage(RemoteCensus),
+  bind: fn(String, Subject(OwnerMessage)) -> BitArray,
+) -> sm.Next(Phase, Data, Message) {
   // An ack and a stop have no reply and are not kept: a lost one is found
   // again by the owner port's reconciler, so it goes out only on an open
   // connection.
@@ -720,8 +794,11 @@ fn queued(
   port: Option(#(String, Subject(OwnerMessage))),
 ) -> sm.Next(Phase, Data, Message) {
   let id = data.next_id
-  let frame = encoded(untrusted_wire.Request(id:, request:))
-  use <- too_large_to_send(data, frame, reply)
+  use frame <- too_large_to_send(
+    data,
+    untrusted_wire.Request(id:, request:),
+    reply,
+  )
   let #(data, monitor) = watch(data, requester, Asker(id))
   let data = bound(data, request, port)
   let pending = Pending(request:, frame:, reply:, monitor:, fetching: Whole)
@@ -742,25 +819,30 @@ fn queued(
 }
 
 /// Refuses a request whose frame is larger than the executor's socket accepts,
-/// instead of keeping it: kept, it would close the connection on every send and
-/// be sent again on every reconnect, and nothing behind it would move. It was
-/// never sent, so the refusal is the honest answer.
+/// or holds more values than the executor's parse admits, instead of keeping
+/// it: kept, it would close the connection on every send and be sent again on
+/// every reconnect, and nothing behind it would move. It was never sent, so
+/// the refusal is the honest answer. A request that fits goes on as its bytes.
 fn too_large_to_send(
   data: Data,
-  frame: BitArray,
+  frame: untrusted_wire.Frame,
   reply: Reply,
-  next: fn() -> sm.Next(Phase, Data, Message),
+  next: fn(BitArray) -> sm.Next(Phase, Data, Message),
 ) -> sm.Next(Phase, Data, Message) {
-  // Every frame the link sends is bounded by what the peer's socket admits.
-  case bit_array.byte_size(frame) > untrusted_wire.max_frame_bytes {
-    True -> {
+  // Every frame the link sends is bounded by what the peer admits.
+  case untrusted_codec.encode_fitting(frame) {
+    Ok(bytes) -> next(bytes)
+    Error(untrusted_codec.Unfit(reason:, ..)) -> {
+      log.warn(data.config.logger, "untrusted_link.request_too_large", [
+        field.text("executor", data.config.executor),
+        field.text("reason", reason),
+      ])
       untrusted_bridge.refuse(
         reply,
-        protocol.Invalid("the request is larger than one frame of the link"),
+        protocol.Invalid("the request does not fit one frame of the link"),
       )
       sm.keep(data)
     }
-    False -> next()
   }
 }
 
@@ -1013,18 +1095,50 @@ fn greeted(
         Ok(untrusted_codec.WelcomeEnvelope(wire:, protocol: theirs))
           if wire == untrusted_wire.version && theirs == protocol.version
         -> opened(stream, data)
-        Ok(untrusted_codec.WelcomeEnvelope(protocol: theirs, ..)) ->
-          rest(
-            stream,
-            refuse_all(data, protocol.VersionMismatch(supported: theirs)),
-            "the executor speaks another version",
-          )
+        Ok(untrusted_codec.WelcomeEnvelope(wire:, protocol: theirs)) ->
+          mismatched(stream, data, wire, theirs)
         Ok(_other) -> violation(stream, data, "the first frame was not welcome")
         Error(report) -> violation(stream, data, corruption.describe(report))
       }
     ffi_tls_stream.Ended | ffi_tls_stream.Broken ->
       rest(stream, data, "the connection closed during the greeting")
   }
+}
+
+/// A `welcome` of other versions: logs all four numbers and refuses everything
+/// that waits. When the protocol versions agree, only the wire differs, and the
+/// refusal is `Unreachable` naming both wire versions, because
+/// `VersionMismatch` names protocol versions and its text would blame the one
+/// number the two sides share.
+fn mismatched(
+  stream: Stream,
+  data: Data,
+  wire: Int,
+  theirs: Int,
+) -> sm.Next(Phase, Data, Message) {
+  log.warn(data.config.logger, "untrusted_link.version_mismatch", [
+    field.text("executor", data.config.executor),
+    field.count("our_wire", untrusted_wire.version),
+    field.count("their_wire", wire),
+    field.count("our_protocol", protocol.version),
+    field.count("their_protocol", theirs),
+  ])
+
+  // A protocol difference keeps 078's refusal; a wire-only one names the wire.
+  let refusal = case theirs == protocol.version {
+    False -> protocol.VersionMismatch(supported: theirs)
+    True ->
+      protocol.Unreachable(
+        "executor "
+        <> data.config.executor
+        <> " speaks untrusted wire version "
+        <> int.to_string(wire)
+        <> " and this orchestrator speaks wire version "
+        <> int.to_string(untrusted_wire.version),
+      )
+  }
+
+  rest(stream, refuse_all(data, refusal), "the executor speaks another version")
 }
 
 /// Opens the link: every outstanding request goes out in the order it was
@@ -1080,6 +1194,14 @@ fn received(
           called_back(stream, data, binding, id, body)
         Ok(untrusted_codec.OversizedEnvelope(id:, size:, digest:)) ->
           oversized(stream, data, id, size, digest)
+
+        // This link sends no `clear_call` and so holds no tunnelled call, and
+        // an event for one is a frame an honest executor never sends. The
+        // tunnel replaces this arm with the call table's handling of output
+        // and settlement.
+        Ok(untrusted_codec.CallEventEnvelope(..)) ->
+          violation(stream, data, "an event for a call this link never cleared")
+
         Ok(untrusted_codec.HelloEnvelope(..))
         | Ok(untrusted_codec.WelcomeEnvelope(..))
         | Ok(untrusted_codec.RequestEnvelope(..))
@@ -1841,22 +1963,25 @@ fn fitting(
   answer: Option(Answer),
 ) -> Option(Answer) {
   // A tail has no answer and so no frame.
-  let size = case answer {
+  let fits = case answer {
     Some(answer) ->
-      bit_array.byte_size(
-        encoded(untrusted_wire.Answer(binding:, id:, answer:)),
-      )
-    None -> 0
+      untrusted_codec.encode_fitting(untrusted_wire.Answer(
+        binding:,
+        id:,
+        answer:,
+      ))
+      |> result.replace(Nil)
+    None -> Ok(Nil)
   }
 
-  // Only an answer that fits a frame is sent as it is.
-  case size > untrusted_wire.max_frame_bytes {
-    True ->
+  // Only an answer within both of the executor's bounds is sent as it is.
+  case fits {
+    Error(_unfit) ->
       untrusted_bridge.refused_answer(
         callback,
-        "the owner's answer is larger than one frame of the link",
+        "the owner's answer does not fit one frame of the link",
       )
-    False -> answer
+    Ok(Nil) -> answer
   }
 }
 

@@ -43,7 +43,7 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
 `[executor_listener]` beside `[distribution]`.
 
 - `remote/untrusted_wire` is the frames (`Hello`, `Welcome`, `Request`, `Cancel`,
-  `Response`, `Callback`, `Answer`), 078's requests and owner messages without
+  `Response`, `Callback`, `Answer`, `Oversized`, `CallEvent`), 078's requests and owner messages without
   their subjects, and the reply kinds. `remote/untrusted_codec` is their total JSON
   codec: `decode_envelope` first, then the body against the kind the receiver
   expects. Its lossy encodings are listed in its module doc.
@@ -60,7 +60,10 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
   asker is the record's worker, `StopExecutionRequest` a cast like `AckRequest`,
   and `about_work` admits a capability or `Holds` at an outstanding start's site
   (`at_work`) and a `LaunchExecutionCall` or `InteractExecutionCall` only from a
-  `code_mode` run in flight.
+  `code_mode` run in flight. A `Run` or a `StartExecution` for a session the link
+  holds no binding for (a link started in place of a dead one) is answered
+  `NoPlane` by `answered_unbound` and never sent, so the surface attaches again
+  and mints one (protocol-change/116); no other message is held to a binding.
 - `remote/untrusted_gateway` is the acceptor, one `weft/state_machine` per
   connection (the handshake runs there, not in the acceptor), a waiter per request
   (unlinked, and exiting with `noconnection` when its connection dies, so a
@@ -96,6 +99,60 @@ from the re-sent request's next `Oversized`, runs at most `max_fetches` (2) at
 once, and checks size and digest in `remote/outcome_fetch` before decoding.
 Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 (`RunLost`, `Unknown`), never a refusal that invites a re-run.
+
+Wire version 5 (protocol-change/117, slice 2: the wire, not yet the tunnel).
+`untrusted_wire` adds `ClearCallRequest(binding, spec, waiting_ms)`, whose
+`TunnelSpec` is a `broker.CallSpec` without `grants` and `demand`, its reply
+`ClearedAnswered(Result(Nil, broker.Refusal))` (`ClearedKind`), and the
+executor's frame `CallEvent(call, TunnelOutput(stream, data) |
+TunnelSettled(broker.CallOutcome))`. The codec carries every `ExecResult`
+field, every `ExecFailure` and every `broker.Refusal`; it refuses a spec with a
+`grants` or `demand` member, an `argv` over 4,096 entries, an `env` over 1,024
+pairs, and a `waiting_ms` or `deadline_ms` outside 0 to 2^53; an
+`actor.InitExited(Abnormal(_))` crosses as `InitFailed` with its printed reason.
+`untrusted_wire.max_frame_values` (1,048,576) bounds the JSON values of every
+frame (`decode_envelope`) and of a fetched outcome (`decode_outcome_bytes`)
+through `core/json.parse_bounded`, which refuses during the parse. Each side
+checks its own sends with `untrusted_codec.encode_fitting` (bytes and values;
+the value walk runs only for a frame over 1,048,576 bytes): the link refuses an
+unfit request `Invalid` and never keeps it, and an unfit owner answer with the
+callback's refused answer; the gateway's `replied` sends an unfit response as
+`Oversized`, so a fetched outcome over the value bound is answered lost and an
+honest executor never loops. Until the tunnel lands the gateway answers every
+`clear_call` with `ClearedAnswered(Error(BrokerUnavailable))` and the link
+treats any `CallEvent` as a violation. A `welcome` of other versions logs both
+wire and both protocol numbers (`untrusted_link.version_mismatch`); when the
+protocol versions agree the waiting requests are refused `Unreachable` with a
+text naming both wire versions, otherwise `VersionMismatch(supported: theirs)`.
+
+Reloading the rows (protocol-change/116). `daemon/untrusted_links` is a
+`weft/actor`, started by `prepare_startup` beside `project_book`, that holds the
+untrusted `executors.Executor` rows and the pid of each row's link and unlinks
+every link it starts (a reload reads each pid with `is_alive`, logs a dead one
+and starts it again). `reconcile(registry, load)` runs `load` inside the actor,
+checks `executor_reload.check_rows` and `check_names`, plans with
+`executor_reload.plan` and performs each step before one three second deadline
+(`reconcile_ms`) that starts before `load`; a row not reached is `Failed` and
+stays as it was. A link start (one second of its own) is begun, and an old link
+killed, only when that much of the deadline is left. Before it starts a link it
+kills whatever holds the link's registered name and waits for the name with
+`weft/poll`. The caller's wait and `rows`' wait are four seconds, above the
+turn's bound, because the actor answers one message at a time. `rows` answers
+the roster's untrusted rows, and `[]` when the actor does not answer.
+`daemon/main.executor_roster` is a read at each use of the trusted rows from start
+and `untrusted_links.rows`, sorted by name; in ledger mode it goes through
+`ledger_rows.executor_roster_over`, so a derived row is unaffected. `start_untrusted`
+is the registry's first reconcile. `executors.reload` is `protocol.ReloadExecutors`;
+`server.Config.executors_reload` holds `main.executors_reload_for`, which reads and
+decodes the file with `decode_startup`, applies `executor_reload.link_rule` to
+canonical paths under `Config.vm_directories` (the vm directories that existed at
+start, as `ensure_vm_homes` returned them) and dials with the table it checked, and
+refuses an untrusted name the ledger enrols, answering `reload_invalid` with the
+reason. `link_rule` lets a file drop the started table only when it holds no
+untrusted row (`loom vm rm` of the last guest). `client/executor_reload` is the
+pure part and owns the reply codec. Tests: `executor_reload_test`,
+`daemon/untrusted_links_test`, `daemon_executors_reload_test` and
+`remote/untrusted_reload_test`.
 
 Invariants: nothing on either side calls `binary_to_term`; every response is
 decoded against its request's kind; a callback reaches an owner port only through
@@ -225,10 +282,17 @@ directory built as `<dir>.minting` and renamed whole. `bring_up_linked` chooses
 the port without recording it, works out the merge (a refusal leaves no guest),
 records the kind and port, writes the file, then runs `stage_with` and
 `launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd entry), which are
-the shared halves of `stage` and `boot`. A changed row is applied by the
-daemon only at its next start (`daemon/main.start_untrusted`), so `restart_of`
-reuses `restart_after`: an idle default daemon is stopped, a busy one is
-left and named. `rm` plans through `linked_removal_plan`; `ensure` reads the
+the shared halves of `stage` and `boot`. A running default daemon
+is asked to reload (`executors.reload`, protocol-change/116): `restart_of` and
+`untrusted_restart_check` ask `vm_link.daemon_need`, send the command through
+`vm_cli.reload_daemon` and read the reply with `vm_link.reload_result` and
+`reload_report`, which prints one line for every entry that is not `unchanged`.
+Only a daemon that predates the command, refuses it, does not answer, or
+reports the guest's own link `failed`, `stopped` or absent gets the earlier path
+(`daemon_outcome`: an idle daemon is stopped, a busy one is left and named).
+`rm` sends the reload after it rewrites the file (`removal_daemon_lines`,
+`vm_link.removal_report`). `host/access.refusal_code` keeps the message of a
+`reload_invalid` refusal. `rm` plans through `linked_removal_plan`; `ensure` reads the
 console's ready line in place of epmd (`vm_link.registration`). The executor's
 jails mask the listener's key and the link's key (`executor_plane.masked_files`).
 `bring_up_linked` runs the shared part (`enroll_linked`: credentials, port, merge,
@@ -422,7 +486,16 @@ included, also masks the state root's `vm` directory, the home's `.loom/vm`
 and the home's `.erlang.cookie` (`workspace_policy.lazy_masks`,
 `node_home_masks`): `loom vm up` keeps each guest's bundles and its
 executor's key and cookie there, and the cookie is every distributed
-daemon's. A node key `loom distribution install` places outside the state
+daemon's. The daemon creates the home's `.loom/vm` and the state root's `vm`
+(mode 0700, only when missing, never changed when present) in `prepare_startup`
+through `main.ensure_vm_homes`, before distribution, the states or any jail, so
+a policy built later masks both even when the first guest comes after the
+session began (`workspace_policy.vm_home_directories` names them as a
+`VmHomes`; a failure to create the state root's stops the start, a failure to
+create the home's only logs `daemon.vm_home_unavailable`, because a daemon with
+a read-only `HOME` works today and `loom vm up` as the same user cannot make the
+directory appear later; `LOOM_VM_HOME` elsewhere is not covered; tests in
+`daemon_state_masks_test`). A node key `loom distribution install` places outside the state
 root is still unmasked for host sessions. `loom vm up` installs a newly
 minted deployment with `listen_address = "127.0.0.1"`
 (`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
@@ -3899,7 +3972,10 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   three adders (`scratch`, `jobs`, `lsp_manager`) because `serve` splices
   each into its services tree at its established position; each holds only
   its child specification. `WorkspacePlane` is `run(ToolRun, Authority)` (the
-  workspace half of `wiring.run_tool`), `broker`, `census`, a lazy
+  workspace half of `wiring.run_tool`), `broker` (for the code that holds a
+  broker actor for its own reasons: aborts, code mode, language servers,
+  teardown), `clear_call: ClearCall` (how the owner's non-tool work clears one
+  call: imported hooks, the goal check, the Git observations), `census`, a lazy
   `prompt_facts` (the workspace's guidance files as text and the helper's
   health, so a pinned prompt pays for neither), `resolve_directory`
   (`directories.resolve_addition` against the workspace's filesystem),
@@ -5026,8 +5102,10 @@ question each, and one composition point in `serve`:
   the `Source` it was read from; `notes` reports unsupported kinds and
   no-moment events at load time rather than loading them silently.
 - `client/hookrunner` — one imported command hook as one jailed
-  process through `broker.clear_call`, the worktree observation's own
-  pattern: `sh -c` shell form or `args` exec form, the event JSON on stdin
+  process through `Context.clear_call`, a `clear_call.ClearCall` (the same
+  seam `worktree_diff.Wiring.clear_call` uses; `WorkspacePlane.clear_call` is
+  its source, and `client/clear_call` defines the type because `workspace_plane`
+  imports `worktree_diff`): `sh -c` shell form or `args` exec form, the event JSON on stdin
   closed after, the handler's `timeout` seconds as the wall limit and
   the budget deadline, a timed-out run reporting `WallCancelled` with no
   output for the caller to read a decision out of. `Outcome.capture`
@@ -5466,6 +5544,10 @@ these forks because they define the same modules.
   copied. A write refusal aborts assembly; host code never follows a planted
   tool-home symlink to publish this file. Imported operator hooks keep their
   original HOME and ordinary global Git configuration.
+- **Repository observations clear through `worktree_diff.Wiring.clear_call`,
+  not a broker.** `git_identity` and the diff, baseline and peer observation
+  start Git by calling it and use the returned `RunningCall`'s `stdin` and
+  `cancel`; `workspace_plane.worktree_wiring` takes the plane's `clear_call`.
 - **Jailed Git calls use the host-resolved binary, never the Xcode shim.**
   `serve` fills `worktree_diff.Wiring.git` once per assembly from
   `host_git.program`, and both `git_identity` and `worktree_diff` name it in
@@ -8964,7 +9046,11 @@ the protocol-change/078 addendum on moving a session have the protocol.
   (`workspace.attach` over the stopped file with `owner_services.declining`), send
   `Hands.apply_state` (a fenced `StateApply`) and close the scope, which writes the clean
   close the later steps read. A rerun uses the cell's state while the store still holds
-  it, and a cell for another operation is ignored. `Refused(stage, reason)` is what
+  it, and a cell for another operation is ignored. Every write of that cell also
+  writes `client/moved_calls` (`client/move/interrupted`): the `ReplayNever` calls the
+  stopped file holds effect-pending. They ran in the directory, so the receiver's
+  `workspace.recover_by_placement` answers them `OutcomeUnknown` without asking an
+  executor whose fence would say they did not run. `Refused(stage, reason)` is what
   resending cannot change and abandons the move; `Unfinished` stalls it. The source's
   row is never rewritten: `relocated` gives the later steps a copy of the registration
   with the executor and workspace of `orchestrators.CheckoutTarget`, so the manifest
@@ -10981,7 +11067,10 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
   `admit_relayed` judges it. The queue's bound ends a feed and never drops a
   frame. A poll that supersedes a held poll releases it at once. A token is looked
   up only among the sender's spawner's feeds. The feed host blocks on a gateway
-  call, for at most the gateway's six seconds, and never on the laptop.
+  call, for at most the gateway's six seconds, and never on the laptop. The attach's
+  label names the session with `registration.name`, as the box's own page heads itself
+  (`top_host.heading_of`), and not with the first prompt a listing row shows, so the
+  relayed page's title reads as the box's page's does.
 
 ## The live session feed, the laptop half (protocol-change/108, slice 3)
 

@@ -187,6 +187,7 @@ fn fixture_serving(
       session_movers.idle(),
       deployment.alone("nonode@nohost"),
       None,
+      None,
       fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),
