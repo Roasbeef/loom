@@ -36,7 +36,7 @@ untrusted link becomes the default.
 
 Two further pieces are needed that 109 did not have to build: a running daemon
 learning about a new guest without a restart (an owner-only `executors.reload`
-control command, protocol-change/115), and a stable address per guest (a
+control command, protocol-change/116), and a stable address per guest (a
 loopback port reserved once and recorded beside the guest).
 
 ## 1. Threat model
@@ -47,7 +47,7 @@ loopback port reserved once and recorded beside the guest).
 |---|---|---|
 | Host daemon (`loomd`) | developer | provider keys, every session store, the hook trust record, approvals, clearance; its `[distribution]` key and the home's `.erlang.cookie`; in a minted guest's deployment, the orchestrator bundle under `<vm home>/<name>/orch/` |
 | `loom-vm` launcher | developer | the libkrun VMM, the hosted network stack and its egress policy, the GitHub credential proxy with the developer's token in memory, the host loopback forward and the guest's epmd registration (`--publish`) |
-| Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`client/vm_cli.gleam:2787` (`stage_node`)); the ledger file in ledger mode; the workspace copies; the state disk |
+| Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`client/vm_cli.gleam:2830` (`stage_node`)); the ledger file in ledger mode; the workspace copies; the state disk |
 | Jailed tool process | `loom`, under `loom-exec` | the workspace copy, the network the policy allows (with GitHub access, the proxy's placeholder token); the node key and cookie are masked by `node_credentials` (`client/executor_plane.gleam:323`) |
 
 ### What each party holds under the proposal
@@ -75,17 +75,17 @@ developer-path addendum.
 
 ### What a hostile executor can still do to the orchestrator under 109
 
-The link's checks are in `client/remote/untrusted_link.gleam:1502` (`admitted`):
+The link's checks are in `client/remote/untrusted_link.gleam:1576` (`admitted`):
 the binding must be one this link minted and has not retired, the id must be
 fresh, and the callback must be about work the link is carrying
-(`client/remote/untrusted_link.gleam:1575` (`about_work`)). An escalation must
+(`client/remote/untrusted_link.gleam:1649` (`about_work`)). An escalation must
 describe a `run` in flight exactly, arguments included. A capability or
 `Holds` must sit at a `run` or an outstanding background `start`. A launch and
 an interaction need a `code_mode` run in flight. Host-seam capabilities need
 the session's `code_mode` call in flight specifically
-(`client/remote/untrusted_link.gleam:1544` (`from_a_program`)). Facts, notices,
+(`client/remote/untrusted_link.gleam:1618` (`from_a_program`)). Facts, notices,
 wakes, strand activity, the MCP plan and the Git identity need only the binding
-(`client/remote/untrusted_link.gleam:1647` (`McpPlanCall`)), because background
+(`client/remote/untrusted_link.gleam:1721` (`McpPlanCall`)), because background
 jobs send them after their call ended; the owner port fences them to the
 session's reserved fact prefixes. Bounds are 64 callbacks per binding and 1024
 per link.
@@ -208,7 +208,7 @@ orchestrator leaf is re-issued only if its key is suspected: every guest's
 listener reads its configuration at boot. Neither is needed inside five years.
 
 `<vm home>/link/` sits under `~/.loom/vm`, which every jail on the host masks
-(`client/workspace_policy.gleam:1801` (`node_home_masks`)). A `LOOM_VM_HOME`
+(`client/workspace_policy.gleam:1811` (`node_home_masks`)). A `LOOM_VM_HOME`
 elsewhere is unmasked, as the authority directory already is.
 
 ### The orchestrator side
@@ -243,9 +243,9 @@ What the daemon needs, read from the code:
   passes written rows through (`client/ledger_rows.gleam:145`
   (`executor_roster`)). No `key_elsewhere` refusal can arise.
 - `untrusted_settings` refuses an untrusted row without `[executor_link]`
-  (`client/daemon/main.gleam:1126` (`untrusted_settings`)).
+  (`client/daemon/main.gleam:1141` (`untrusted_settings`)).
 - `start_untrusted_links` starts one link per untrusted row, at boot only
-  (`client/daemon/main.gleam:1211` (`start_untrusted_links`)), registered under
+  (`client/daemon/main.gleam:1230` (`start_untrusted_links`)), registered under
   `untrusted_link.name_for(name)`.
 - `remote/workspace.candidate` sends an untrusted row to the link's name and
   never needs distribution (`client/remote/workspace.gleam:738` (`candidate`),
@@ -290,8 +290,8 @@ release that changes `up`.
 ### (a) A running daemon learning about a new guest
 
 The daemon reads `[executors.*]` and `[executor_link]` once at start and never
-rereads them (`client/daemon/main.gleam:272` (`untrusted`)); links start only
-there (`client/daemon/main.gleam:4491` (`start_untrusted`)). No daemon-wide
+rereads them (`client/daemon/main.gleam:278` (`untrusted`)); links start only
+there (`client/daemon/main.gleam:4850` (`start_untrusted`)). No daemon-wide
 configuration reload exists: `limits` validates its keys again on a catalogue
 reload and never rebinds (`client/daemon/limits.gleam:138` (`listen_address`)),
 and `gateway`'s reload is a session's model catalogue. What does exist is the
@@ -299,7 +299,7 @@ mechanism ledger mode uses for rows that change while the daemon runs, a
 `Roster` read at each use (`client/roster.gleam:51` (`reading`)), and the
 precedent of an owner-only control command that changes rows without a
 restart, `ledger.append`, whose owner check is in
-`ledger_command` (`client/daemon/server.gleam:3817`).
+`ledger_command` (`client/daemon/server.gleam:3826`).
 
 Three options:
 
@@ -315,7 +315,7 @@ touching sessions on other executors. A link whose row changed is stopped and
 started again under the same name; its sessions' bindings retire with it and
 the surface's repair loop reattaches them, which is the path a dead link takes
 today. A side effect worth having: a link that crashed (links are not
-restarted, `client/daemon/main.gleam:1153` (`start_untrusted`)) comes back on
+restarted, `client/daemon/main.gleam:1173` (`start_untrusted`)) comes back on
 the next `reload`.
 
 `up` and `ensure` write the file first, then send `reload` if a daemon is
@@ -324,12 +324,12 @@ way no daemon is stopped, which removes `vm_spec.daemon_step` and the stop
 step (`client/vm_spec.gleam:3201` (`daemon_step`)).
 
 A new control command is a change to the client control protocol, so this
-needs **protocol-change/115**.
+needs **protocol-change/116**.
 
 ### (b) A stable address
 
 The row names `host:port`, and `boot` reserves a fresh loopback port on every
-boot today (`client/vm_cli.gleam:2535` (`reserve_loopback_port`)), which epmd
+boot today (`client/vm_cli.gleam:2554` (`reserve_loopback_port`)), which epmd
 made harmless.
 
 | Option | Daemon restart | Port taken while the guest is down | Cost |
@@ -406,7 +406,7 @@ stand in for the actor; `broker.over` only wraps a subject
    lines.
 
 Total: about 1,600 lines of product code and 800 of tests, the size of 109's
-slice 2. It needs its own proposal (**protocol-change/116**), as 110 and 111
+slice 2. It needs its own proposal (**protocol-change/117**), as 110 and 111
 were separate proposals over the same link, with an addendum on 109 pointing to
 it.
 
@@ -495,11 +495,13 @@ Each slice ships alone and is listed in merge order.
    and `up` sending `reload` when a daemon runs. **Exit**: with a daemon
    running, `vm up` of a second guest serves a session with no restart; the
    daemon restarted reaches both; `vm_cli_test` covers the taken-port decision.
-   Needs **protocol-change/115**.
+   Needs **protocol-change/116**. Built: the daemon side, then the clients
+   (`vm_link.reload_report`, `vm_cli.reload_daemon`), under
+   protocol-change/116.
 3. **The broker tunnel (109 slice 3).** Section 5. **Exit**: the
    `untrusted_end_to_end_test` cases of step 7, and the microVM step of slice 1
    extended so the Changes tab shows the jailed call's edit against a recorded
-   baseline and a goal check passes. Needs **protocol-change/116** and a
+   baseline and a goal check passes. Needs **protocol-change/117** and a
    pointer addendum on 109.
 4. **The untrusted link becomes the default.** `up` and `ensure` use it with no
    flag; a resumed distribution guest is refused naming `sync`, `rm` and `up`;
@@ -531,7 +533,7 @@ not change.
 > run --forward`. One link authority and one orchestrator leaf per vm home live
 > under `<vm home>/link/`; each guest has its own leaf, and both sides pin.
 > A running daemon learns of a new guest through the owner-only
-> `executors.reload` (protocol-change/115). No cookie, epmd registration,
+> `executors.reload` (protocol-change/116). No cookie, epmd registration,
 > ledger, authority key or daemon restart is involved.
 >
 > **Why.** Over distribution, the guest's `loom` user holds the executor's
@@ -546,7 +548,7 @@ not change.
 > **What it costs.** The guest is no longer a deployment member: sessions on it
 > cannot be moved between orchestrators by the ledger, and remote evolution on
 > a guest waits for 109's slice 4. Non-tool callers ride the broker tunnel of
-> protocol-change/116. Every reply pays a JSON encode and a total decode, and
+> protocol-change/117. Every reply pays a JSON encode and a total decode, and
 > bytes grow by a third as base64. A guest made over distribution is not
 > resumed: `up` names `vm sync`, `vm rm` and `up`. The libkrun VMM escape of the
 > Consequences section is unchanged: a guest kernel exploit that escapes the
