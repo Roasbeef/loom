@@ -5822,11 +5822,47 @@ fn returning_delegate(
           book,
           Ok(RecoveryBlocked(reason)),
         )
-        Ok(_) | Error(Nil) -> admit(phase, book, session_id)
+        Ok(_) -> admit(phase, book, session_id)
+        Error(Nil) -> unslotted(phase, book, request, session_id)
       }
 
       #(book, delegated(session_id, admitted))
     }
+  }
+}
+
+// A pair's session that holds no slot. A saved one is opened by admission. A
+// reserved one is a creation that has not finished: its build failed, most
+// often on a pool with no free scope, or the daemon stopped during it. It is
+// finished here, in this turn, by the creation path under the row's own request
+// key, which finds the reservation and builds it again (protocol-change/107,
+// addendum of 2026-11-17). Admission would refuse it `NotInitialized`, and an
+// ask that deleted it instead would delete it under another ask of the same
+// child that is still reading it.
+/// Admits a pair's session with no slot, building a reservation again.
+fn unslotted(
+  phase: Phase,
+  book: Book(instance),
+  request: DelegateRequest,
+  session_id: String,
+) -> #(Book(instance), Result(Status, Error)) {
+  // Only a reservation is built again; anything else is admission's.
+  case catalogue.get(book.catalogue, session_id) {
+    Ok(catalogue.Registration(state: catalogue.Reserved, ..)) -> {
+      let #(book, created) =
+        create_session(
+          phase,
+          book,
+          request.creation,
+          request.directory,
+          request.generator,
+          domain.SessionOnly,
+          request.configuration,
+        )
+      #(book, result.map(created, fn(view) { view.status }))
+    }
+    Ok(catalogue.Registration(state: catalogue.Saved, ..)) | Error(_) ->
+      admit(phase, book, session_id)
   }
 }
 

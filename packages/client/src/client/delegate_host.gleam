@@ -29,6 +29,14 @@
 //// 30 second window the sender gives a spawn. A session that fails to open ends
 //// the wait with the registry's own account of the failure.
 ////
+//// Every status the wait reads is classified by one function, `reading`. A start
+//// that failed because the executor had no room is a state of the pool, so it
+//// asks the sender to come again and ends nothing: the spawn tool and the
+//// sender's drain ask for the same child at the same time, and a session ended
+//// under one of them is read as gone by the other, which is a store failure the
+//// sender takes as final. The registry builds the reservation again for the
+//// next ask instead (protocol-change/107, addendum of 2026-11-17).
+////
 //// ## Releasing
 ////
 //// A `Release` says the parent session was deleted, so the pair's session is to
@@ -263,7 +271,7 @@ pub fn child_resolver(
   Result(agency.DelegateEndpoint, SpawnRefusal) {
   fn(spawner, parent, child) {
     use made <- result.try(creation_for(spawner, parent, child))
-    let asked =
+    use delegated <- result.try(
       manager.delegate_session(
         context.registry,
         manager.DelegateRequest(
@@ -278,101 +286,13 @@ pub fn child_resolver(
           now_ms: context.now_ms(),
         ),
       )
-
-    // A reservation whose first start failed is refused admission as not
-    // created. That is final unless the start failed for want of room.
-    use delegated <- result.try(case asked {
-      Ok(delegated) -> Ok(delegated)
-      Error(manager.DelegateFailed(manager.NotInitialized) as error) ->
-        Error(reserved_refusal(context, spawner, parent, child, error))
-      Error(error) -> Error(refused(error))
-    })
-
-    let opened = resident(context, delegated.session_id)
-
-    // A session whose executor had no room is ended, so its slot and its failed
-    // row are not held while the spawn is asked again, which makes a new one.
-    case opened {
-      Error(remote_spawn.NotYetOpen(reason:)) if reason == no_room_reason -> {
-        end_failed_child(context, spawner, parent, child)
-        opened
-      }
-      _ -> opened
-    }
-  }
-}
-
-/// Ends the pair's child session and its row, so the next ask places it afresh.
-/// A failure to end it is not reported: the next ask meets the same row and
-/// ends it again.
-fn end_failed_child(
-  context: Context(instance),
-  spawner: Spawner,
-  parent: Parent,
-  child: String,
-) -> Nil {
-  let _ended =
-    manager.release_delegate_child(
-      context.registry,
-      spawner.name,
-      parent.session,
-      child,
-      context.sessions_directory,
-    )
-  Nil
-}
-
-/// What an ask is told when its child's session is still a reservation.
-///
-/// The first ask that polls a failed start can only see the slot closing, which
-/// is `NotYetOpen` for a session that may yet open, so it leaves the row in
-/// place. The ask after it finds the slot gone and the row `Reserved` with the
-/// failure kept, and admission refuses that as not created. When the kept
-/// failure is an executor with no room, the pool is still only full: the row is
-/// ended as the first ask would have ended it and the sender is asked to come
-/// again. Any other failure keeps the refusal. A requested stub has no time to
-/// live, so the sender keeps asking a pool that never frees for as long as the
-/// parent session exists.
-fn reserved_refusal(
-  context: Context(instance),
-  spawner: Spawner,
-  parent: Parent,
-  child: String,
-  error: manager.DelegateError,
-) -> SpawnRefusal {
-  let found =
-    manager.delegate_child(
-      context.registry,
-      spawner.name,
-      parent.session,
-      child,
+      |> result.map_error(refused),
     )
 
-  // Branch on whether the reservation's kept failure is a lack of room.
-  case kept_no_room(context, found) {
-    True -> {
-      end_failed_child(context, spawner, parent, child)
-      remote_spawn.NotYetOpen(reason: no_room_reason)
-    }
-    False -> refused(error)
-  }
-}
-
-/// Whether the pair's session is a reservation whose kept start failure is an
-/// executor with no room. An unreadable pair or session is not, so the refusal
-/// stands.
-fn kept_no_room(
-  context: Context(instance),
-  found: Result(Option(catalogue.Delegate), manager.Error),
-) -> Bool {
-  case found {
-    Ok(Some(row)) ->
-      case manager.get(context.registry, row.session_id) {
-        Ok(manager.View(status: manager.FailedStart(reason:, ..), ..)) ->
-          no_room(reason)
-        Ok(manager.View(..)) | Error(_) -> False
-      }
-    Ok(None) | Error(_) -> False
+    // Nothing here ends the session when its executor has no room. Another ask
+    // for the same child may be polling it at this moment, and the registry
+    // builds the reservation again for the next ask (`manager.unslotted`).
+    resident(context, delegated.session_id)
   }
 }
 
@@ -731,6 +651,71 @@ fn live_children(
   }
 }
 
+/// What an ask makes of one reading of its session's status.
+pub type Reading {
+  /// The session is being built, so the ask reads it again.
+  Building
+
+  /// The session is resident, and its Agency answers the ask.
+  Reached
+
+  /// The ask is answered now with this refusal.
+  Answered(refusal: SpawnRefusal)
+}
+
+/// The one classification of a delegate session's status into what the ask
+/// that reads it answers (protocol-change/107, addendum of 2026-11-17).
+///
+/// A status a later ask can still open is `NotYetOpen`, which the sender asks
+/// again about: a reservation, whose build the registry runs again for the next
+/// ask; a start that failed because the executor had no room, which is a state
+/// of the pool; a saved session; and one whose slot is still draining. Only a
+/// start that failed for another reason and a session that cannot recover are
+/// final. Every path that answers a spawn from a session's status reads it
+/// through this function, so no two of them can answer the same status
+/// differently.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_host.reading(manager.Reserved)
+///   == delegate_host.Answered(remote_spawn.NotYetOpen(reason: delegate_host.not_built_reason))
+/// ```
+pub fn reading(status: manager.Status) -> Reading {
+  case status {
+    manager.Opening(_) -> Building
+    manager.Resident(_) -> Reached
+    manager.Reserved -> Answered(remote_spawn.NotYetOpen(not_built_reason))
+
+    // An executor with no room is a state of the pool, which passes.
+    manager.FailedStart(reason:, ..) ->
+      case no_room(reason) {
+        True -> Answered(remote_spawn.NotYetOpen(no_room_reason))
+        False ->
+          Answered(remote_spawn.StoreFailure(
+            "the delegate session failed to start: " <> reason,
+          ))
+      }
+
+    manager.Saved ->
+      Answered(remote_spawn.NotYetOpen("the delegate session did not open"))
+
+    // A failed open retains its slot while original custody drains. Like Saved
+    // after that drain, this can open on a later spawn, so it must not
+    // permanently refuse the sender's durable Requested stub.
+    manager.Stopping(_) ->
+      Answered(remote_spawn.NotYetOpen("the delegate session is stopping"))
+    manager.RecoveryBlocked(reason:) ->
+      Answered(remote_spawn.StoreFailure(
+        "the delegate session cannot recover: " <> reason,
+      ))
+  }
+}
+
+/// What a spawner is told when its child's session is a reservation that the
+/// next ask builds again.
+pub const not_built_reason = "the delegate session is not built yet; ask again"
+
 /// Polls the session registry until the delegate session becomes resident or times out.
 fn resident(
   context: Context(instance),
@@ -739,38 +724,22 @@ fn resident(
   let failed = fn(reason) { poll.Fail(remote_spawn.StoreFailure(reason:)) }
   let waited =
     poll.until(within: open_budget_ms, every: open_poll_ms, attempt: fn() {
-      // This branch resolves manager get context registry session_id before the operation continues.
+      // A registry that cannot answer is a store fault; any status it reports is
+      // read by `reading`, the one classification of a status.
       case manager.get(context.registry, session_id) {
         Error(error) -> failed(describe(error))
-        Ok(manager.View(status: manager.Opening(_), ..)) -> poll.Retry
-        Ok(manager.View(status: manager.Resident(_), ..)) ->
-          // This branch resolves manager resolve context registry session_id before the operation continues.
-          case manager.resolve(context.registry, session_id) {
-            Ok(instance) -> poll.Done(context.endpoint(instance))
-            Error(error) -> failed(describe(error))
+        Ok(manager.View(status:, ..)) ->
+          case reading(status) {
+            Building -> poll.Retry
+            Answered(refusal) -> poll.Fail(refusal)
+            Reached ->
+              // The instance is taken in its own registry call, which can
+              // still find the session gone.
+              case manager.resolve(context.registry, session_id) {
+                Ok(instance) -> poll.Done(context.endpoint(instance))
+                Error(error) -> failed(describe(error))
+              }
           }
-
-        Ok(manager.View(status: manager.Reserved, ..)) ->
-          failed("the delegate session was reserved and never created")
-        Ok(manager.View(status: manager.FailedStart(reason:, ..), ..)) ->
-          case no_room(reason) {
-            True -> poll.Fail(remote_spawn.NotYetOpen(reason: no_room_reason))
-            False -> failed("the delegate session failed to start: " <> reason)
-          }
-        Ok(manager.View(status: manager.Saved, ..)) ->
-          poll.Fail(remote_spawn.NotYetOpen(
-            reason: "the delegate session did not open",
-          ))
-
-        // A failed open retains its slot while original custody drains.
-        // Like Saved after that drain, this can open on a later spawn, so it
-        // must not permanently refuse the sender's durable Requested stub.
-        Ok(manager.View(status: manager.Stopping(_), ..)) ->
-          poll.Fail(remote_spawn.NotYetOpen(
-            reason: "the delegate session is stopping",
-          ))
-        Ok(manager.View(status: manager.RecoveryBlocked(reason:), ..)) ->
-          failed("the delegate session cannot recover: " <> reason)
       }
     })
 
