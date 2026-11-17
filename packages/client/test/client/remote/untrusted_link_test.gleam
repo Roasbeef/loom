@@ -2478,3 +2478,44 @@ pub fn a_clearance_wait_is_held_to_a_receive_timeout_test() {
   assert rig.next_raw(stream, 300) == Error("silent")
   stop(rig)
 }
+
+// A deadline becomes a timer on the executor, for the time left to it, so the
+// link carries one at 2^42 epoch milliseconds and refuses a later one before
+// sending anything.
+pub fn a_deadline_is_held_to_what_the_relays_timer_accepts_test() {
+  let rig = start("tunnel-latest-deadline")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let latest = untrusted_codec.max_call_ms
+  assert latest == 4_398_046_511_104
+  let at = fn(deadline_ms) {
+    broker.CallSpec(
+      ..tunnel_spec(64),
+      budget: budget.Budget(max_outstanding: 1, deadline_ms:),
+    )
+  }
+
+  let #(_asker, told) =
+    clear_from(untrusted_link.tunnel_through(rig.door, "s1"), at(latest), 5000)
+  let id = clear_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(Error(broker.OperationAborted)),
+    ),
+  )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.OperationAborted)))
+
+  let #(_asker, told) =
+    clear_from(
+      untrusted_link.tunnel_through(rig.door, "s1"),
+      at(latest + 1),
+      5000,
+    )
+  assert process.receive(told, 5000)
+    == Ok(Answered(Error(broker.BrokerUnavailable)))
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}

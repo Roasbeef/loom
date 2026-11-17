@@ -8,25 +8,46 @@
 import broker/policy
 import client/remote/tunnel_paths
 import client/workspace_policy
+import gleam/bit_array
 import gleam/list
 import gleam/string
 import qcheck
 
-// Cleans a path as Go's `filepath.Clean` does for an absolute path: empty and
-// `.` segments go, and `..` removes the segment before it, or nothing at the
-// root.
+// Cleans a path as Go's `filepath.Clean` does for an absolute path, on bytes
+// as the helper does: empty and `.` segments go, and `..` removes the segment
+// before it, or nothing at the root.
 fn cleaned(path: String) -> String {
   let kept =
-    string.split(path, "/")
+    byte_segments(bit_array.from_string(path), <<>>, [])
     |> list.fold([], fn(kept, segment) {
       case segment, kept {
-        "", _ | ".", _ -> kept
-        "..", [] -> []
-        "..", [_, ..rest] -> rest
+        <<>>, _ | <<".">>, _ -> kept
+        <<"..">>, [] -> []
+        <<"..">>, [_, ..rest] -> rest
         other, _ -> [other, ..kept]
       }
     })
-  "/" <> string.join(list.reverse(kept), "/")
+  let joined =
+    list.reverse(kept)
+    |> list.intersperse(<<"/">>)
+    |> bit_array.concat
+  let assert Ok(text) = bit_array.to_string(<<"/", joined:bits>>)
+    as "a cleaned path is text"
+  text
+}
+
+// The segments between slash bytes, in order.
+fn byte_segments(
+  bytes: BitArray,
+  current: BitArray,
+  done: List(BitArray),
+) -> List(BitArray) {
+  case bytes {
+    <<>> -> list.reverse([current, ..done])
+    <<"/", rest:bits>> -> byte_segments(rest, <<>>, [current, ..done])
+    <<byte, rest:bits>> -> byte_segments(rest, <<current:bits, byte>>, done)
+    _ -> list.reverse([current, ..done])
+  }
 }
 
 fn paths() -> qcheck.Generator(String) {
@@ -38,6 +59,11 @@ fn paths() -> qcheck.Generator(String) {
       qcheck.return(""),
       qcheck.return("a.b"),
       qcheck.return("..x"),
+      // A combining mark joins the slash before it into one grapheme cluster,
+      // which a split of the text would not cut at.
+      qcheck.return("\u{301}x"),
+      qcheck.return("..\u{301}"),
+      qcheck.return("\u{301}"),
     ])
   let lead =
     qcheck.from_weighted_generators(#(9, qcheck.return("/")), [
@@ -75,35 +101,53 @@ pub fn each_unplain_spelling_is_refused_test() {
   assert !tunnel_paths.plain("/w/")
   assert !tunnel_paths.plain("w")
   assert !tunnel_paths.plain("")
+
+  // A slash followed by a combining mark is one grapheme cluster but still a
+  // slash byte, and the helper cleans by bytes.
+  assert !tunnel_paths.plain("/w/../\u{301}x")
+  assert !tunnel_paths.plain("/w/./\u{301}x")
+  assert !tunnel_paths.plain("/w//\u{301}x")
+  assert tunnel_paths.plain("/w/\u{301}x")
 }
 
-// Every path-bearing field of either policy, and the working directory, is
-// checked.
-pub fn every_path_field_of_a_spec_is_checked_test() {
+// The roots of either policy are checked, because the meet keeps a root by a
+// prefix test of its text.
+pub fn the_roots_of_both_policies_are_checked_test() {
   let base = workspace_policy.base_policy("/w")
   let bad = "/w/.."
-  assert tunnel_paths.plain_spec(base, base, "/w") == Ok(Nil)
+  assert tunnel_paths.plain_spec(base, base) == Ok(Nil)
   let spoiled = [
     policy.SandboxPolicy(..base, writable_roots: [bad]),
     policy.SandboxPolicy(..base, readable_roots: [bad]),
-    policy.SandboxPolicy(..base, protected: [bad]),
-    policy.SandboxPolicy(..base, scratch: policy.ScratchPath(bad)),
-    policy.SandboxPolicy(..base, mounts: [
-      policy.Mount(
-        path: bad,
-        access: policy.MountReadOnly,
-        requirement: policy.MountRequired,
-      ),
-    ]),
   ]
   list.each(spoiled, fn(spoilt) {
-    let assert Error(_) = tunnel_paths.plain_spec(spoilt, base, "/w")
-      as "a base policy field is checked"
-    let assert Error(_) = tunnel_paths.plain_spec(base, spoilt, "/w")
-      as "a requirements field is checked"
+    let assert Error(_) = tunnel_paths.plain_spec(spoilt, base)
+      as "a base policy root is checked"
+    let assert Error(_) = tunnel_paths.plain_spec(base, spoilt)
+      as "a requirements root is checked"
     Nil
   })
-  let assert Error(_) = tunnel_paths.plain_spec(base, base, "/w/../etc")
-    as "the working directory is checked"
-  Nil
+}
+
+// The fields no spelling can widen pass whatever their spelling: a protected
+// path only adds a mask, a mount is kept only when it equals the base's, and
+// a scratch path is kept only when it equals the base's. A census base that
+// masks `//.loom/vm`, as a daemon whose `HOME` is `/` builds, is honest.
+pub fn the_fields_that_cannot_widen_are_not_checked_test() {
+  let base = workspace_policy.base_policy("/w")
+  let bad = "//.loom/vm"
+  let honest =
+    policy.SandboxPolicy(
+      ..base,
+      protected: [bad, ..base.protected],
+      scratch: policy.ScratchPath("/w/../scratch"),
+      mounts: [
+        policy.Mount(
+          path: "/w//m",
+          access: policy.MountReadOnly,
+          requirement: policy.MountRequired,
+        ),
+      ],
+    )
+  assert tunnel_paths.plain_spec(honest, honest) == Ok(Nil)
 }

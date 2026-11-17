@@ -1149,3 +1149,48 @@ fn unplain_sent(
     )
   send_clear(stream, id, spec, 15_000)
 }
+
+/// A plane base like `writable_only_workspace` that also masks a protected
+/// path spelled with an empty segment, as a daemon whose `HOME` is `/`
+/// builds `//.loom/vm`.
+fn unplain_protected_workspace(
+  workspace: String,
+  reads: List(String),
+) -> policy.SandboxPolicy {
+  let base = writable_only_workspace(workspace, reads)
+  policy.SandboxPolicy(..base, protected: ["//.loom/vm", ..base.protected])
+}
+
+// The census base goes back whole in an honest Git call, unplain protected
+// path and all, and a working directory spelled with a `.` segment binds
+// nothing: only the roots are judged, so the call runs and returns real
+// output.
+pub fn an_unplain_protected_path_in_the_base_does_not_refuse_a_git_call_test() {
+  use real, stream <- with_real_plane(
+    "unplain-protected",
+    unplain_protected_workspace,
+  )
+  let _initialized = worktree_rig.git(real.workspace, ["init", "--quiet"])
+  let read = worktree_diff.read_policy(real.base)
+  let spec =
+    untrusted_wire.TunnelSpec(
+      ..real_spec(
+        real,
+        "git",
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        4096,
+      ),
+      base_policy: read,
+      requirements: policy.SandboxPolicy(
+        ..read,
+        limits: policy.Limits(..read.limits, output_bytes: 4096, wall_s: 60),
+      ),
+      cwd: real.workspace <> "/.",
+    )
+  send_clear(stream, 2, spec, 15_000)
+  assert cleared_within(stream, 2, 20_000) == Ok(Nil)
+  let #(chunks, outcome) = settlement(stream, 2, [])
+  assert stdout_of(chunks) == <<"true\n">>
+  let assert broker.CallExited(result:) = outcome as "git exits"
+  assert result.code == 0
+}
