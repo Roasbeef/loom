@@ -690,10 +690,24 @@ fn build(
     )
   let opened = registered.opened
 
-  // The same relay broker answers the call-clearing seam. On a trusted
-  // executor that is the plane's broker; on an untrusted one it is the
-  // link's refusing broker, so non-tool work is refused there.
   let placed_broker = broker.over(owner_port.broker(port), executor_clock)
+
+  // On a trusted executor the relay broker is the plane's, and it answers the
+  // call-clearing seam too. On an untrusted one it is the link's refusing
+  // broker, so the seam goes through the link's tunnel instead, and imported
+  // hooks stay refused (protocol-change/117).
+  let #(clear, hooks) = case candidate.executor.trust {
+    executors.Untrusted(..) -> #(
+      untrusted_link.tunnel(candidate.executor.name, session),
+      workspace_plane.HooksRefused,
+    )
+    executors.Trusted -> #(
+      clear_call.over_broker(placed_broker),
+      workspace_plane.HooksRun,
+    )
+  }
+
+  // Every call the plane makes goes to the executor; nothing runs here.
   Hands(
     plane: workspace_plane.WorkspacePlane(
       // `run_placed` read this call's authority to route it, and the surface
@@ -701,7 +715,8 @@ fn build(
       // handed in here is not used.
       run: fn(run, _authority) { functions.run(run) },
       broker: placed_broker,
-      clear_call: clear_call.over_broker(placed_broker),
+      clear_call: clear,
+      hooks:,
       census: remote.census,
       prompt_facts: fn() { Ok(remote.prompt) },
       resolve_directory: fn(_requested, _mode) {

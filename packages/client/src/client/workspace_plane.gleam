@@ -360,6 +360,18 @@ pub type Children {
   )
 }
 
+/// Whether a placement runs the session's imported hooks.
+pub type Hooks {
+  /// Hooks clear through the plane's `clear_call`, as on this machine and on
+  /// a trusted executor.
+  HooksRun
+
+  /// Every hook command is refused as a broker that cannot be reached, as on
+  /// an untrusted executor: a hook's script and outcome would be the
+  /// executor's, and the tunnel carries no stdin for its payload.
+  HooksRefused
+}
+
 /// What the owner holds of the workspace after it starts.
 ///
 /// Each function is the whole of one thing the owner may ask. On one
@@ -378,6 +390,10 @@ pub type WorkspacePlane {
     /// VM it is a function over `broker`; a placement whose broker is not
     /// here supplies another.
     clear_call: ClearCall,
+    /// Whether imported hooks may clear through `clear_call`. An untrusted
+    /// executor's placement refuses them (protocol-change/117, "Hooks stay
+    /// refused"), though its goal checks and Git observations go through.
+    hooks: Hooks,
     /// What the machine says about itself.
     census: Census,
     /// What the prompt needs, read when a prompt is rendered.
@@ -1060,6 +1076,7 @@ fn plane_over(
     },
     broker: broker_actor,
     clear_call: clear_call.over_broker(broker_actor),
+    hooks: HooksRun,
     census:,
     prompt_facts: prompt_facts_of(workspace, effect.pool),
     resolve_directory: fn(requested, mode) {

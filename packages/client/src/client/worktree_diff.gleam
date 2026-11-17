@@ -321,7 +321,11 @@ pub fn starting_revision(wiring: Wiring) -> Start {
     Ok(#(Unborn, _)) -> Empty
     Ok(#(NotRepository, _)) ->
       Unavailable("Workspace was not a repository at session start")
-    Error(error) -> Unavailable(error_message(error))
+
+    // The reason is stored in `session/git-start`, and over the tunnel its
+    // diagnostic is the executor's text, so it is clipped as
+    // `capture_committed` clips it for display.
+    Error(error) -> Unavailable(string.slice(error_message(error), 0, 512))
   }
 }
 
