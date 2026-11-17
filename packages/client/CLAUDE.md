@@ -9412,7 +9412,8 @@ The box's deadline and retention (slice S4):
 - A delegate session that does not open in `delegate_host.open_budget_ms`, or
   goes back to saved while the host waits, answers
   `remote_spawn.NotYetOpen`, and `remote_spawner.answer` reads it as
-  `Unreachable`, so the laptop resends and the stub stays `Requested`. After a
+  `Unreachable` (`spawn_answer` as `peer_mail.NotOpen`, see below), so the
+  laptop resends and the stub stays `Requested`. After a
   box is killed, the dead writer's lease on the session file refuses every open
   until it expires (up to `lease_ttl_ms`, 60 s). A failed reopen can retain its
   slot as `Closing` while the original custody drains. Both a resolver already
@@ -9422,9 +9423,18 @@ The box's deadline and retention (slice S4):
   store failure, and a released parent still wins before either descriptor.
   The held-cleanup regressions in `delegate_host_test` cover both Closing entry
   paths, reuse of the durable pair, blocked cleanup and release priority.
-  An ask refused `NotInitialized` (a reservation whose first start failed) reads
-  the kept failure in `delegate_host.reserved_refusal`: a no-room failure ends
-  the row and answers `NotYetOpen`, any other keeps the `StoreFailure`.
+  A full pool (protocol-change/107, addendum of 2026-11-17): the spawn tool and
+  the drain ask for the same seeded child at once, and the port serves both, so
+  nothing on the box ends a child's row because its build failed for want of
+  room. A reservation the row names with no slot is built again in the
+  registry's turn by the next ask (`manager.unslotted`, through
+  `create_session` under the row's request key), and every status an ask reads
+  is classified by `delegate_host.reading`, where only a start that failed for
+  another reason and `RecoveryBlocked` are final. On the laptop a spawn answered
+  `NotYetOpen` is `peer_mail.NotOpen` (`remote_spawner.spawn_answer`), and
+  `remote_drain.attempt_spawn` does not mark the orchestrator silent for it, so
+  the pass still sends the join that collects a finished child and frees its
+  executor scope. Model: `protocol/models/placement-claims/Admission.tla`.
   `remote_release_test` and the shipped remote subagents test cover the sender
   and the box restart.
 - Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`

@@ -1627,3 +1627,90 @@ the `Reserved` arm of `delegate_host.resident`.
 - *Test.* `a_full_pool_stays_a_request_to_ask_again_after_the_failed_start_drains_test` holds the
   failed build's cleanup so the first ask polls `Stopping`, then asks again after the drain. It
   answered the store failure before the change.
+
+## Addendum: admission on a full pool, written down and checked (2026-11-17)
+
+A second drive of the pool-full case on e128668ee (six runs, `LOOM_EXECUTOR_MAX_SCOPES=1`,
+nine children) still refused the ninth spawn as final once, with "its store failed: the session
+is not registered" (run D5), logged a `store_failure` refusal of the ninth spawn in three runs
+that ended with a handle (D1, D2, D4), and in two runs answered "did not answer in time" with
+the ninth child placed late or not at all (D3, D6). The ruling of the addendum of 2026-11-14
+fixed one ordering and exposed its neighbours. This addendum replaces that ruling with a table
+and three rules, checked by a model. What crosses the node boundary is unchanged.
+
+- *Two asks for one child.* The spawn tool asks with a doubling pause for 30 seconds
+  (`agency.ask_until_answered`), the session's drain asks every requested stub at every pass
+  (`remote_drain.spawn_pass`), and the orchestrator port serves each `Spawn` in a process of its
+  own. So two asks for the same child are in flight on the box at once, by design, and the box
+  must answer each correctly whatever the other does.
+- *What went wrong on the box.* An ask that saw its child's build fail for no room ended the
+  child's row by name, deleting the registration (`child_resolver` after a no-room poll, and
+  `reserved_refusal` after a no-room `NotInitialized`). The other ask was still polling that
+  session, and its next read found the registration gone: `Catalogue(Missing)`, which
+  `resident` answered `StoreFailure("the session is not registered")`, final to the sender.
+  When the tool heard it, the model was told the spawn was refused (D5). When the drain heard
+  it, the stub was recorded `Refused` and the tool's later handle was recorded over it (D1, D2,
+  D4). The same end by name could also end a later reservation of the same child made by a
+  third ask, and a refusal could come from between `reserved_refusal`'s two reads.
+- *What went wrong on the laptop.* A finished seeded child holds its executor scope until a join
+  collects it, and while the parent waits in the spawn tool the only joiner is the drain. The
+  drain heard `NotYetOpen` as silence (`remote_spawner.answer` makes it `Unreachable`),
+  marked the box silent, and skipped its join for the rest of the pass, every pass. So room
+  could not free while the ninth stub was requested. In D1, D2 and D4 the false refusal took the
+  stub out of `Requested`, the drain's join resumed, and the tool's ask then placed the child:
+  those runs succeeded because of the box's defect. In D3 and D6 nothing freed room until the
+  parent's own wait, after the tool's window; in D6 the drain then placed the ninth child after
+  the parent's turn had ended.
+
+The admission table, for one child id. *ask* is a spawn ask's registry turn, *poll* one read of
+an admitted ask's session (`delegate_host.resident`). Every build failure here is for want of
+room unless the row says otherwise.
+
+| Row and session | ask | poll |
+|---|---|---|
+| no row | reserve and build; poll | (none) |
+| building | admit; poll | wait |
+| failed slot draining (`Stopping`) | `NotYetOpen`, row kept | `NotYetOpen`, row kept |
+| reserved, no slot, no-room failure kept | build the same reservation again; poll | `NotYetOpen`, row kept |
+| reserved, no slot, other failure kept | build again; its poll answers the failure | final `StoreFailure` naming it; `spawn_seed.landed` ends the session |
+| reserved, no slot, no failure kept | build again; poll | `NotYetOpen`, row kept |
+| running | handle (the call site is adopted) | handle |
+| releasing | final `ParentRunEnded` | `NotYetOpen` |
+| registration gone under a live poll | (a new ask finds no row) | final `StoreFailure`; reached only after a final refusal or a release |
+
+Before this addendum the three "reserved, no slot" rows ended the row (no room) or were final
+(no failure kept), and "registration gone" was reached from the no-room rows.
+
+- *Rule 1.* Nothing ends a child's row because its build failed for want of room. A reservation
+  that the row names and that holds no slot is built again by the next ask, in the registry's
+  turn, through the creation path under the row's own request key (`manager.unslotted`, which
+  calls `create_session`; `clear_kept_failure` clears the old reason). The child keeps one
+  registration while it waits. Its row counts against the spawner's `max_sessions` while it
+  waits, as any pending child does, and a deleted parent's release ends it.
+- *Rule 2.* Every status an ask reads is classified by one total function,
+  `delegate_host.reading`. A reservation, a no-room failure, a saved session and a draining
+  slot ask the sender to come again; only a start that failed for another reason and
+  `RecoveryBlocked` are final.
+- *Rule 3.* On the sender, a spawn answered `NotYetOpen` is `peer_mail.NotOpen`
+  (`remote_spawner.spawn_answer`), which every asker already retries as it does silence, and
+  `remote_drain.attempt_spawn` does not mark the orchestrator silent for it, so the pass still
+  sends its join.
+- *What is not changed.* The spawn tool's 30 second window and its "did not answer in time" text
+  are designed: a run whose children all outlast the window still returns that text, and the
+  drain places the child afterwards. A child placed after the window is not reported to the
+  model, which is told to read `agent_roster`. The two late joins of D6 that answered "still
+  working" used a handle assembled by hand whose operation was the child's session id, not its
+  run's operation, so they name no run; they are not evidence of a lost answer.
+- *Model.* `protocol/models/placement-claims/Admission.tla`, run by `make model-check`. With the
+  three rules off (`AdmissionMutantToday.cfg`) TLC finds the D5 sequence in six states; with
+  them on (`Admission.cfg`) no violation of the four properties (no final refusal from no room,
+  the child placed once a finished child is joined, one registration per child, nothing held
+  for an unplaced child whose parent stopped asking). Each rule has a mutant that fails on the
+  property it names. The model's README has the table of mutants.
+- *Tests.* `delegate_host_test`: `two_asks_polling_one_failed_start_are_both_asked_to_come_again_test`
+  reproduces D5's text before the change, `a_start_with_no_room_leaves_the_row_for_the_next_ask_test`,
+  `a_full_pool_reservation_is_built_again_by_the_next_ask_test` (the test of the 2026-11-14
+  addendum, rewritten for rule 1) and `every_status_an_ask_reads_has_one_answer_test`;
+  `daemon_manager_test`: `a_reserved_delegate_session_is_built_again_by_the_next_message_test`;
+  `agency_test`: `a_spawn_answered_not_yet_open_leaves_the_pass_its_join_test`; and
+  `daemon_spawn_host_test` asserts the `NotOpen` mapping.
