@@ -1689,14 +1689,107 @@ recovery is refused with the did-not-run text and the call never runs.
 abandoned move, and `a_malformed_moved_calls_cell_is_refused_and_answers_unknown_test` the
 refusal of a cell this rule did not write and the unknown answer recovery then gives.
 
+## Addendum: a move back is refused, and an open scope for an unserved name is freed (2026-11-14)
+
+A second live drive of `sessions.move` (exit criterion 2 of #1137, the failure paths) found two
+defects, and this addendum records the ruling on each. Nothing above is edited. No wire constructor
+is added and the version stays at 6.
+
+**A move back to the laptop is refused.** Slice 4c lists "moving the checkout back from the executor
+to a directory on a laptop" as not built, and the drive showed that nothing said so: `sessions.move`
+of a session from the box to the laptop it came from was accepted, and the session reopened in the
+old laptop directory without the commits made on the box, which stay on the executor's branch
+`loom/<session>`. The cause is in the receiver. A daemon that gave a session away keeps its
+registration, and the import of a session that comes back replaces only the move row
+(`catalogue.import_in_transaction`, `Moved -> Imported`, and `domain.import_session`, which keeps a
+registration it already holds). The registration that was kept names the laptop directory.
+
+- *The condition.* The receiver refuses an activation when the session's custody here is `Moved`,
+  the registration it kept is a directory on this machine (`move_checkout.is_local`: no executor and
+  no pool), and the manifest names an executor or a pool (`session_importer.not_back_to_a_directory`,
+  the third check of `activate`). The check runs after the sender is known to be listed, so a node
+  that this daemon does not list learns nothing, and before the copy is verified or placed.
+- *No false refusal.* A first move from the laptop to a box finds no registration on the box. A move
+  from one box to another finds none on the second box, or one that names an executor, and so does the
+  return of a session that was moved between two orchestrators and works on an executor. All three
+  are unchanged, and the third is covered by `a_session_that_comes_back_is_taken_in_over_its_tombstone_test`.
+  The only session refused is one whose kept registration would reopen it in a directory while its work
+  is elsewhere, which is the defect.
+- *Where it is refused.* At the destination's activation, which answers `Refused`, so the source
+  abandons the move and the session is resident on the box again, with the receiver's words in the
+  report. This is after the source stopped the session and closed its scope, as every receiver refusal
+  is, and before the retirement, so nothing moved. A refusal at the source's `sessions.move`, before
+  the stop, would need the source to know what the destination kept, which no message carries. The
+  `session_move.Refusal` type has no variant for it, and a new variant would change what crosses the
+  node boundary, so the refusal is a `Malformed` one and the report reads "the request is malformed:
+  this session's work is on the executor `box`, and moving it back to the directory it came from on
+  that orchestrator is not supported yet". The prefix is the wart of that choice. A variant of its own
+  is the cleaner shape if a later change takes a wire revision for another reason.
+- *Not built.* The return checkout. The addendum of slice 4c still lists it.
+
+**An open scope bound to an unserved name is freed.** The drive reproduced the one case that the
+the addendum "corrections to the workspace rebind, and the apply record as shipped" says needs both faults and has no recovery: an attach for a workspace
+the executor does not serve whose build dies before the workspace is checked, followed by a retry. It
+needs one fault, not two. The source dying while the executor handles the attach is enough, because
+the build asks the source for its plan (`build_plane`, `owner_link.mcp_plan`) before the factory
+checks the name. The ledger keeps the scope that attach created, open and bound to the name. The
+retry is a rebound attach, and `close_unserved` ignored a rebound scope, so the scope stayed open.
+The corrected name was refused for it, the refusal's advice to set the name back and move again
+reached the same state, and `loom executor release` refuses an open scope.
+
+- *The rule.* `close_unserved` in `client/remote/host.gleam` closes the scope as retired on the path
+  that finds the name unserved, whatever the attach did to the ledger, when the scope holds nothing:
+  no tree record, and, for a rebound scope, no result that the attach reported as unacknowledged or
+  lost. A scope the attach created or reopened holds nothing by construction. A rebound scope that
+  holds a tree, or results nobody acknowledged, is left open as before, which keeps the ruling of the
+  workspace rebind: a scope with a tree keeps its workspace for as long as the tree exists, and an
+  executor restarted with the workspace dropped from its configuration does not close a session's
+  own scope. A ledger that cannot be read counts as holding something.
+- *The refusal text.* It already said to set `checkout_workspace` back to the bound name, move again so
+  that the move ends and closes the scope, then correct the name, and it is now true for this case.
+  After the retry closes the scope the source's record still shows an attach with no close, so the
+  corrected name is asked about the close under a workspace the scope is not bound to and is refused
+  with that text once, or twice when the name was corrected before the retry. Setting the name back learns the close, the move ends again with a recorded
+  close, and the corrected name lands. `an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test`
+  runs the whole sequence. The text says "open or holds a tree" for the first of these refusals, when
+  the scope is closed and holds nothing, which is broad and not false in its advice.
+- *The checkout model.* This changes a transition of the checkout step: an attach for an unserved name
+  by a scope that is open and holds no tree now closes it. `MoveCheckout.tla` has the constants
+  `OwnerDiesInAttach` (the source dies in the attach and leaves the open scope) and
+  `CloseReboundUnserved` (the rule), the action `CkAttachUnknownDies`, and weak fairness of
+  `CkAttachUnknown`, which the retry needs. The model assumes the operator corrects the name after the
+  retry, once the scope is freed. `MoveCheckoutAlsoWorkspaces.cfg` runs the fault with
+  the rule and passes. `MoveCheckoutMutantOpenScopeUnserved.cfg` runs the fault without the rule, which is
+  the host before this change, and `NoLeak` fails: the move is abandoned with the scope still open.
+  The model has no unacknowledged results, so the refinement for them is checked by the tests only.
+
+**What this replaces.** The addendum "corrections to the workspace rebind, and the apply record as shipped" says of the case "no recovery is built for
+it". That is replaced by the rule above. It also says the retry is a rebound attach and "neither side
+closes a rebound scope". The host now closes a rebound scope that holds nothing, and the source still
+does not close one whose record shows no close, which is why the second refusal above is needed.
+
+**Still open.** A `WorktreeFailed` attach and a `NoPlane` for a root that is not a directory leave an
+open scope, and a failed `git worktree add` leaves a `Removed` tree row, as before. A scope an attach
+created before the owner link failed stays open until the retry, which is the retry's job. A live
+session in a `shared` workspace that ran calls, all of them acknowledged, on an executor restarted
+with the workspace dropped holds nothing by this rule and is closed by the retry. Its next attach
+reopens it at the next incarnation, so nothing is lost but the open scope. If the operator corrects the
+workspace name before the dead source's retry, the attach under the new name is refused for the open
+scope's workspace (`WorkspaceMismatch`), the move is abandoned and the scope stays open, and the advice
+above then has to be followed twice. The checkout model does not run this order: its `FixConfig` guard
+is keyed on `CloseReboundUnserved` and so assumes the name is corrected after the scope is freed. Nothing in this addendum
+was run over a real distribution link. The two live reproductions are the drive's `dfault2.sh` and
+`back.sh`, which were not re-run against these commits.
+
 ## Addendum: admission on a full pool, written down and checked (2026-11-17)
 
 A second drive of the pool-full case on e128668ee (six runs, `LOOM_EXECUTOR_MAX_SCOPES=1`,
 nine children) still refused the ninth spawn as final once, with "its store failed: the session
 is not registered" (run D5), logged a `store_failure` refusal of the ninth spawn in three runs
 that ended with a handle (D1, D2, D4), and in two runs answered "did not answer in time" with
-the ninth child placed late or not at all (D3, D6). The ruling of the addendum of 2026-11-14
-fixed one ordering and exposed its neighbours. This addendum replaces that ruling with a table
+the ninth child placed late or not at all (D3, D6). The ruling of the addendum "a pool that
+stays full is asked again after the failed start drains (2026-11-14)" fixed one ordering and
+exposed its neighbours. This addendum replaces that ruling with a table
 and three rules, checked by a model. What crosses the node boundary is unchanged.
 
 - *Two asks for one child.* The spawn tool asks with a doubling pause for 30 seconds
@@ -1789,8 +1882,8 @@ Before this addendum the three "reserved, no slot" rows ended the row (no room) 
   that a final failure is not built again. The model's README has the table of mutants.
 - *Tests.* `delegate_host_test`: `two_asks_polling_one_failed_start_are_both_asked_to_come_again_test`
   reproduces D5's text before the change, `a_start_with_no_room_leaves_the_row_for_the_next_ask_test`,
-  `a_full_pool_reservation_is_built_again_by_the_next_ask_test` (the test of the 2026-11-14
-  addendum, rewritten for rule 1), `a_final_start_failure_is_answered_by_the_next_ask_without_a_build_test`
+  `a_full_pool_reservation_is_built_again_by_the_next_ask_test` (the test of the addendum
+  "a pool that stays full is asked again after the failed start drains", rewritten for rule 1), `a_final_start_failure_is_answered_by_the_next_ask_without_a_build_test`
   and `every_status_an_ask_reads_has_one_answer_test`;
   `daemon_manager_test`: `a_reserved_delegate_session_is_built_again_by_the_next_message_test`;
   `agency_test`: `a_spawn_answered_not_yet_open_leaves_the_pass_its_join_test`; and

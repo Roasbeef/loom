@@ -56,7 +56,9 @@ CONSTANTS
     RebindClosedUnused,  \* An attach rebinds a closed scope that has no tree record.
     CloseFailedAttach,   \* An attach that cannot build its plane closes the scope it opened.
     MismatchRefused,     \* An attach refused for its workspace is a final refusal.
-    RebindOpen           \* MUTANT: an attach also rebinds an open scope.
+    RebindOpen,          \* MUTANT: an attach also rebinds an open scope.
+    OwnerDiesInAttach,   \* The source dies while the executor builds the plane of an attach for an unserved name.
+    CloseReboundUnserved \* An attach for an unserved name closes a rebound scope that has no tree record.
 
 VARIABLES
     cfgWs, bound, reb,   \* The configured workspace; the scope's workspace; an open scope was rebound.
@@ -322,26 +324,54 @@ CkAttach ==
 (* The attach for a name the executor does not serve: the ledger binds a     *)
 (* scope and the plane cannot be built. With CloseFailedAttach the host      *)
 (* closes a scope this attach created or reopened (here, a closed one), in   *)
-(* the same turn, and the source learns the refusal. A scope that was open   *)
-(* is rebound and left open. Without it the scope stays open and the mover   *)
-(* stalls.                                                                   *)
+(* the same turn, and the source learns the refusal. With                    *)
+(* CloseReboundUnserved it closes a scope the attach rebound as well, when   *)
+(* the scope holds no tree record (exBranch = -1), which is how the retry of *)
+(* CkAttachUnknownDies frees the scope that attach left. A scope with a tree *)
+(* is a session's own and is left open. Without the rule the scope stays     *)
+(* open and the mover stalls.                                                *)
+FreesRebound == CloseReboundUnserved /\ exec.holder # "none" /\ exBranch = -1
+
 CkAttachUnknown ==
     /\ CkOn /\ pc = "sent" /\ aliveX /\ tok < MaxTok
-    /\ cfgWs = "unknown" /\ bound # "unknown"   \* A repeat changes nothing the mover holds.
+    /\ cfgWs = "unknown"
+    \* A repeat changes nothing the mover holds, unless it frees the scope.
+    /\ bound # "unknown" \/ FreesRebound
     /\ AttachAllowed
     /\ \/ /\ exec.holder # "none"
-          /\ exec' = [exec EXCEPT !.holder = "A"]
+          /\ exec' = [exec EXCEPT !.holder = IF FreesRebound THEN "none" ELSE "A"]
        \/ /\ exec.holder = "none" /\ exec.inc < MaxInc
           /\ exec' = [inc |-> exec.inc + 1,
                       holder |-> IF CloseFailedAttach THEN "none" ELSE "A"]
     /\ tok' = tok + 1 /\ tokAtt' = att
     /\ bound' = "unknown"
     /\ reb' = (reb \/ Rebinds)
-    /\ pc' = IF CloseFailedAttach THEN "refused" ELSE "sent"
+    /\ pc' = IF CloseFailedAttach \/ FreesRebound THEN "refused" ELSE "sent"
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
                    replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
                    exBranch, applied, net, answers, aliveX, lastLand, mtip,
                    mtipAtt, mreq, minc, mtok>>
+
+(* The same attach, when the source dies while the executor handles it and    *)
+(* the build fails at the owner link, before the workspace is checked: the    *)
+(* ledger holds an open scope bound to the name and no plane. The source      *)
+(* learns nothing and runs the step again from what is on disk.               *)
+CkAttachUnknownDies ==
+    /\ OwnerDiesInAttach
+    /\ CkOn /\ pc = "sent" /\ aliveX /\ tok < MaxTok
+    /\ cfgWs = "unknown" /\ bound # "unknown"
+    /\ AttachAllowed
+    /\ \/ /\ exec.holder # "none"
+          /\ exec' = [exec EXCEPT !.holder = "A"]
+       \/ /\ exec.holder = "none" /\ exec.inc < MaxInc
+          /\ exec' = [inc |-> exec.inc + 1, holder |-> "A"]
+    /\ tok' = tok + 1 /\ tokAtt' = att
+    /\ bound' = "unknown"
+    /\ reb' = (reb \/ Rebinds)
+    /\ MReset
+    /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
+                   replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
+                   exBranch, applied, net, aliveX, lastLand>>
 
 (* The operator corrects the configuration and restarts the daemon: the    *)
 (* mover's memory is lost and the file is read again at the next run.      *)
@@ -351,6 +381,10 @@ FixConfig ==
     \* attach, not while a landing is under way. A daemon that dies in a landing
     \* is the case MoveCheckoutMutantCrashInLanding records.
     /\ pc \in {"idle", "sent"}
+    \* With CloseReboundUnserved the refusal's advice works, and the operator
+    \* follows it: the name is corrected after the move has freed the scope that
+    \* an attach for the unserved name left open.
+    /\ ~(CloseReboundUnserved /\ exec.holder # "none" /\ bound = "unknown")
     /\ MReset
     /\ UNCHANGED <<vars, L, X1, H0, bound, reb>>
 
@@ -591,7 +625,7 @@ Next2 ==
     \/ Intend2 \/ StopA2 \/ Cut2 \/ Send2 \/ Activate2 \/ LoseReply2
     \/ Retire2 \/ AbortEarly2 \/ RefuseActivate2 \/ AttachB2 \/ OpenB2
     \/ CrashA2 \/ CrashB2 \/ Restart2 \/ CrashX \/ RestartX
-    \/ CkRead \/ CkCapture \/ CkRecord \/ CkSend \/ CkAttach \/ CkAttachUnknown
+    \/ CkRead \/ CkCapture \/ CkRecord \/ CkSend \/ CkAttach \/ CkAttachUnknown \/ CkAttachUnknownDies
     \/ FixConfig \/ CkAsk
     \/ CkResend \/ ExApply \/ ExRefuse \/ LoseAnswer \/ CkReceive \/ CkClose
     \/ CkMark \/ CkRerun
@@ -610,7 +644,8 @@ Spec2 ==
     /\ WF_allv(Activate2) /\ WF_allv(Retire2) /\ WF_allv(Restart2)
     /\ WF_allv(RestartX)
     /\ WF_allv(CkRead) /\ WF_allv(CkCapture) /\ WF_allv(CkRecord)
-    /\ WF_allv(CkSend) /\ WF_allv(CkAttach) /\ WF_allv(CkAsk)
+    /\ WF_allv(CkSend) /\ WF_allv(CkAttach) /\ WF_allv(CkAttachUnknown)
+    /\ WF_allv(CkAsk)
     /\ WF_allv(CkResend) /\ WF_allv(ExApply) /\ WF_allv(CkReceive)
     /\ WF_allv(CkClose) /\ WF_allv(CkMark)
     /\ WF_allv(AbandonLanded) /\ WF_allv(FixConfig)
