@@ -1,4 +1,5 @@
 import core/json
+import gleam/int
 import gleam/list
 import gleam/string
 import gleam/string_tree
@@ -429,6 +430,28 @@ pub fn long_strings_round_trip_test() {
 pub fn a_report_offset_counts_codepoints_test() {
   let assert Error(report) = json.parse("\"日本語\" x")
   assert string.contains(report.subject, "codepoint offset 6")
+}
+
+// A document that fails right after a string reports an offset equal to the
+// number of codepoints in everything before the failure, whatever widths the
+// string's codepoints have. The prefix is the encoded string and the space
+// that follows it.
+pub fn a_report_offset_is_the_prefix_codepoint_count_test() {
+  qcheck.run(generated_config(), gen.small_string(), fn(text) {
+    let prefix = json.to_string(json.String(text)) <> " "
+    let assert Error(report) = json.parse(prefix <> "x")
+      as "the trailing x is refused"
+    let expected = list.length(string.to_utf_codepoints(prefix))
+    assert report.subject == "codepoint offset " <> int.to_string(expected)
+  })
+}
+
+// Astral-plane codepoints are four bytes and a combining accent is two, and
+// each is one codepoint in the offset.
+pub fn a_report_offset_counts_astral_and_combining_test() {
+  let assert Error(report) = json.parse("\"🦊😀e\u{0301}\" x")
+    as "the trailing x is refused"
+  assert report.subject == "codepoint offset 7"
 }
 
 // Key order is the one difference two encoders of the same arguments are

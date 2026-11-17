@@ -511,13 +511,29 @@ fn fail(cursor: Cursor, expected: String) -> CorruptionReport {
   )
 }
 
-// The report keeps counting in codepoints, as it always has, and pays for
-// the count only when there is a report to write.
+// The report counts the offset in codepoints, and pays for the count only
+// when there is a report to write. The consumed prefix of a document that
+// came from a `String` is valid UTF-8, and every codepoint in valid UTF-8
+// has exactly one byte outside the continuation range `0x80..0xBF`, so the
+// codepoint count is the number of such bytes. The walk allocates nothing,
+// which matters because a hostile peer controls how long the prefix is: a
+// list of the prefix's codepoints costs tens of bytes of heap per byte
+// consumed.
 fn codepoint_offset(cursor: Cursor) -> Int {
-  bit_array.slice(cursor.source, 0, cursor.consumed)
-  |> result.try(bit_array.to_string)
-  |> result.map(fn(prefix) { list.length(string.to_utf_codepoints(prefix)) })
-  |> result.unwrap(cursor.consumed)
+  case bit_array.slice(cursor.source, 0, cursor.consumed) {
+    Ok(prefix) -> count_leading_bytes(prefix, 0)
+    Error(Nil) -> cursor.consumed
+  }
+}
+
+// Counts the bytes that are not UTF-8 continuation bytes.
+fn count_leading_bytes(bytes: BitArray, count: Int) -> Int {
+  case bytes {
+    <<byte, rest:bits>> if byte >= 0x80 && byte <= 0xBF ->
+      count_leading_bytes(rest, count)
+    <<_, rest:bits>> -> count_leading_bytes(rest, count + 1)
+    _ -> count
+  }
 }
 
 /// Shows at most 24 codepoints of remaining input in a report.
