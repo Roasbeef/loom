@@ -5480,6 +5480,16 @@ fn apply_removal(
     vm_spec.KeepCookie -> Ok(Nil)
   })
 
+  // The roots and the state disk go before the rest of the directory, so the
+  // `link` record and `deploy/` that say which link a guest has outlive what
+  // they classify. `delete_all` takes entries in directory order, and an `rm`
+  // stopped after `deploy/` but before `root/` left an old guest's root, cookie
+  // and node key included, that the next `up` would keep as an untrusted guest.
+  use Nil <- result.try(list.try_each(
+    [guest.root, guest.next_root, guest.building_root, guest.state_disk],
+    remove_tree_if_present,
+  ))
+
   // The tree is made writable and removed without following a link.
   use Nil <- result.try(remove_tree(guest.directory))
 
