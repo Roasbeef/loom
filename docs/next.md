@@ -311,6 +311,16 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   `vmm-release.yml` job for the runner and `libkrunfw-landlock-linux-x86_64.so.5`,
   a libkrun asset (the runner links it and Ubuntu has none), a `releaseAssets`
   entry for linux/x86_64 and a place for `setup` to put libkrun; Firecracker.
+- **The untrusted link (opt in, 2026-11-17):** `loom vm up --link untrusted`
+  reaches a guest over protocol-change/109's TLS link instead of distribution.
+  A running daemon learns of a new guest through `executors.reload`
+  (protocol-change/116), and the broker tunnel (protocol-change/117, slices 1
+  to 3, wire version 5) carries goal checks, the Changes tab with the peer
+  view, and the session's Git baseline; hooks and remote evolution stay
+  refused. The untrusted step of `daemon_shipped_microvm_test` checks the
+  tunnel (slice 4) and has not yet run against a built guest image. Next: the
+  default flip and the ADR-022 addendum (design note slice 4), then deleting
+  the distribution path from `loom vm` (slice 5).
 
 ## Correction: a Blue-tier entry must name its cyber access program
 

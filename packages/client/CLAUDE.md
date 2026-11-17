@@ -118,8 +118,8 @@ the value walk runs only for a frame over 1,048,576 bytes): the link refuses an
 unfit request `Invalid` and never keeps it, and an unfit owner answer with the
 callback's refused answer; the gateway's `replied` sends an unfit response as
 `Oversized`, so a fetched outcome over the value bound is answered lost and an
-honest executor never loops. A `welcome` of other versions logs both
-wire and both protocol numbers (`untrusted_link.version_mismatch`); when the
+honest executor never loops. A `welcome` of other versions logs the event
+`untrusted_link.version_mismatch` with both wire and both protocol numbers; when the
 protocol versions agree the waiting requests are refused `Unreachable` with a
 text naming both wire versions, otherwise `VersionMismatch(supported: theirs)`.
 
@@ -212,7 +212,8 @@ host; a background program launched, called back and stopped; a placed blob
 and a 40 MiB outcome), `remote/blob_service_test`, `remote/outcome_fetch_test`,
 `remote/untrusted_state_test` (a full then a thin bundle of a repository the
 executor never saw, through the link, into the real plane) and
-`untrusted_config_test`.
+`untrusted_config_test`. The untrusted step of `daemon_shipped_microvm_test`
+runs the tunnel against a live guest (see "Standing microVM guest").
 
 # Evolution callback ownership
 
@@ -308,6 +309,19 @@ with `--link untrusted` (below), starts an orchestrator on the file `up` wrote,
 and checks that a jailed call settles on the guest's kernel, the root holds no
 cookie and no `[distribution]` table, the host's epmd lists no node for it, a
 jailed read of the executor's key returns nothing, and `status` names the link.
+The same step then edits a tracked file and adds one with a second jailed `bash`
+call and checks the three things the broker tunnel serves
+(protocol-change/117), each through the daemon's own session assembly: the
+session's stored `session/git-start` (`session_git.key`) is a `revision` and not
+`unavailable`; the `worktree_diff` observation on the session socket is a
+`ready` board listing both paths; and a `goal_set` with a check that tests for
+the new file records `last_check` at exit status 0 carrying the guest's output
+and workspace path. It does not wait for the goal to complete (the reviewer is
+not asked in that flow, so the advisor's provider has an empty script), and it
+clears the goal before the session stops. On a tree without the tunnel
+the baseline is `unavailable`, the board is `failed` with the broker's refusal
+and the check is refused. It does not observe that hooks stay refused, which
+needs a trust record fixture; `remote/untrusted_end_to_end_test` covers it.
 
 `up --link untrusted` (`UpOptions.link`, `vm_spec.LinkKind`) reaches a guest over
 protocol-change/109's untrusted link instead of distribution; the default is
