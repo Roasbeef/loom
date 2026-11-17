@@ -1,17 +1,17 @@
 # protocol-change/117: the broker tunnel, so non-tool callers reach an untrusted executor
 
-**Status**: PROPOSED 2026-11-16, revised the same day after one independent
-adversarial review ("Review and disposition" below). Not built. It is accepted
-under `docs/execution.md` section 7 once the owner has answered "Decisions for
-the owner".
+**Status**: PROPOSED 2026-11-16, revised 2026-11-16 and 2026-11-17 after one
+independent adversarial review and its re-check ("Review and disposition"
+below). Not built. It is accepted under `docs/execution.md` section 7 once the
+owner has answered "Decisions for the owner".
 **Affects**: the untrusted executor wire of [109](109-untrusted-executors.md)
-(`untrusted_wire.version` 4 to 5): one new request and its reply, one new
-request with no reply, and one new frame from the executor. One new process
-per untrusted executor on the orchestrator (the link's tunnel door). In
-`client`, the non-tool callers of an executor's broker take a clearing
-function in place of a `broker.Broker`, and imported hooks that run on an
-untrusted executor are served under narrower rules. `core/json` gains a parse
-that bounds the number of values. The remote node vocabulary of
+(`untrusted_wire.version` 4 to 5): one new request and its reply, and one new
+frame from the executor. One new process per untrusted executor on the
+orchestrator (the link's tunnel door). In `client`, the non-tool callers of an
+executor's broker take a clearing function in place of a `broker.Broker`; goal
+checks and Git observation are served through the tunnel, and imported hooks
+stay refused on an untrusted executor. `core/json` gains a parse that bounds the
+number of values. The remote node vocabulary of
 [078](078-distributed-runtime.md) and its `protocol.version` (7), `loom.toml`,
 the client control protocol and every Part 1 interface are unchanged, and so
 is a trusted executor's wire.
@@ -31,20 +31,27 @@ executor is untrusted, because they call `broker.clear_call`, `broker.stdin` and
 and the link puts a broker subject whose owner has exited in that place
 (`refusing_broker` (`client/remote/untrusted_link.gleam:556`)):
 
-1. Project hooks: `hookrunner.run` clears each command
-   (`clear_call` (`client/hookrunner.gleam:250`)), wired by
-   `with_imported_hooks` (`client/serve.gleam:273`).
-2. Goal checks, through `tool.broker_runner` in
+1. Goal checks, through `tool.broker_runner` in
    `goal_check_wiring` (`client/serve.gleam:6935`).
-3. The Changes tab (`observe_worktree` (`client/serve.gleam:4752`)) and the peer
+2. The Changes tab (`observe_worktree` (`client/serve.gleam:4752`)) and the peer
    view of the worktree (`peer_observation` (`client/worktree_diff.gleam:1195`)),
    both through `run_git` (`client/worktree_diff.gleam:738`).
-4. The session's Git baseline. `session_git.prepare` probes it once, for a new
+3. The session's Git baseline. `session_git.prepare` probes it once, for a new
    session, and stores the answer (`prepare` (`client/session_git.gleam:33`)).
    Through the refusing broker the stored answer is `Unavailable`.
+4. Project hooks: `hookrunner.run` clears each command
+   (`clear_call` (`client/hookrunner.gleam:250`)), wired by
+   `with_imported_hooks` (`client/serve.gleam:273`).
 
-Each is a regression against a trusted executor, and the untrusted link cannot
-become the default for guests while they are refused.
+The first three are regressions against a trusted executor, and the untrusted
+link cannot become the default for guests while they are refused. This
+proposal serves them.
+
+The fourth stays refused ("Hooks stay refused"). It is not a regression in
+practice. The project's own settings files run only with a trust record that no
+command writes yet, and the operator's user-level hooks, which are tried on a
+trusted guest today, run there with `HOME` naming the operator's home, a path
+the guest does not have, so the commands that name scripts under it fail.
 
 ## What was considered
 
@@ -63,23 +70,42 @@ epochs `clear_call` retries with, `QueryRelay` and the abort sweeps.
 
 A `run` is re-sent after a dropped connection because the executor's host
 admits it by key and joins the call already running. A broker call has no key,
-and a hook or a goal check sent again would run again. A tunnelled call is sent
-on one connection at most.
+and a goal check sent again would run again. A tunnelled call is sent on one
+connection at most.
 
 ### Hold a `clear_call` for the next connection (rejected)
 
 The link could keep a call made while it has no connection and send it after
 the next welcome. A link with a live binding redials with a pause of at most two
-seconds, so holding gains little, and while a guest is down every held hook
-would stall its strand for its whole wait (up to 610 seconds for a hook), where
-a trusted executor that is gone refuses at once.
+seconds, so holding gains little, and while a guest is down every held call
+would stall its caller for its whole wait, where a trusted executor that is gone
+refuses at once.
+
+### A wall timer in the link (rejected)
+
+The link could settle a running call as lost at the spec's wall plus a grace,
+whatever the caller does. With output buffered to the settlement nothing renews
+a caller's wait, and every caller already cancels when its wait ends, so the
+timer is only a backstop. Any grace short enough to matter is below the relay's
+own (`relay_grace_ms` (`broker/dispatch.gleam:68`), five seconds) and would
+report an honest slow kill as lost.
+
+### Wire hooks to the tunnel now (rejected)
+
+No hook source can run through the tunnel until a command writes trust records
+("Hooks stay refused"). Wiring hooks now would ship a path from executor-written
+output into clearance, the run end and the run start that no user can exercise
+and that only a test with a hand-written trust record covers, and it would carry
+a disclosure that is not resolved: `hook_environment`
+(`client/serve.gleam:402`) sets `HOME` to the operator's home for every hook,
+and the session's `transcript_path` usually lies under it.
 
 ### Negotiate the tunnel in `welcome` (rejected)
 
 The executor could announce the tunnel as a flag, so an old executor serves
-tools and refuses only the four callers. 109 refuses any version mismatch at the
-handshake, 110 and 111 kept that rule, and a guest image is built from the same
-release as the host.
+tools and refuses only the tunnelled callers. 109 refuses any version mismatch
+at the handshake, 110 and 111 kept that rule, and a guest image is built from
+the same release as the host.
 
 ### Reach the link through a weft registry address (rejected for now)
 
@@ -110,8 +136,8 @@ Section 5 of the design note is the starting point. Against the code:
 - A hook's `allow` already skips nothing. `ToolPermission`
   (`client/hookdecisions.gleam:95`) maps `allow` to `Proceed`, and
   `hookserve.cleared` (`client/hookserve.gleam:1050`) asks hooks only after the
-  harness has cleared the call. What a guest's hooks add is described under
-  "Hooks on an untrusted executor".
+  harness has cleared the call. The note's step 6 is therefore not built; what a
+  guest's hooks would add is listed under "Hooks stay refused".
 - A session that stored `Unavailable` keeps a Changes tab once the tunnel lands.
   Its working tree is observed afresh on every request; only the commits since
   the session started stay unavailable, because `capture_committed`
@@ -150,9 +176,12 @@ it with `plane.clear_call` applied to `workspace_plane.jobs_clearance_ms`.
 A local plane and a trusted remote one set `clear_call` to
 `fn(spec, events, waiting) { tool.broker_runner(broker:, waiting:)(spec, events) }`
 over the broker they hold today, so their behaviour does not change. An
-untrusted placement sets it to `untrusted_link.tunnel(executor, session)`.
-`WorkspacePlane.broker` stays for the code that holds a broker actor for other
-reasons; on an untrusted placement it is the refusing relay it is today.
+untrusted placement sets it to `untrusted_link.tunnel(executor, session)`, and
+`with_imported_hooks` gives the hook context of an untrusted placement a
+function that answers `Error(BrokerUnavailable)`, so hooks there are refused as
+they are today. `WorkspacePlane.broker` stays for the code that holds a broker
+actor for other reasons; on an untrusted placement it is the refusing relay it
+is today.
 
 Two constraints from other work bind the build. `serve`'s `observe_worktree`
 stays a zero-argument closure handed to `assemble_in`. `worktree_diff.capture_timeout_ms`
@@ -182,7 +211,6 @@ link's answer, if it was sent, stays unread on a subject nobody selects again.
 |---|---|---|---|
 | `clear_call` request | orchestrator | `binding`, `spec`, `waiting_ms` | `cleared` |
 | `cleared` response | executor | `Ok` or a `broker.Refusal` | none |
-| `call_stdin` request | orchestrator | `call` (the `clear_call`'s request id), `data` (base64), `eof` | none |
 | `cancel` frame, existing | orchestrator | `id`; kills the waiter, as for a `run` | none |
 | `call_event` frame, new | executor | `call`, `event`: `output {stream, data}` or `settled {outcome}` | none |
 
@@ -198,22 +226,32 @@ refuses a `waiting_ms` or a `deadline_ms` outside 0 to 2^53, an `argv` of more
 than 4,096 entries, and an `env` of more than 1,024 pairs, as 109's codec
 refuses absurd sizes.
 
+`waiting_ms` is the caller's wait less one second, and at least one
+millisecond, so an honest `NoHelper` answered at the executor's deadline reaches
+the link before the link's own wait ends.
+
+There is no stdin frame. Every caller the tunnel serves writes no input and
+closes stdin at once: `run_git` sends `<<>>` with end of input, as do the goal
+check (`execute`, `client/goalcheck.gleam:225`) and `git_identity.run`. The
+tunnel waiter closes the child's stdin when the call clears, and the tunnel's
+`RunningCall.stdin` does nothing. A caller that needs input, as hooks would,
+needs a frame for it first.
+
 An `output` event carries no `truncated` and no `total_bytes`. The tunnel
 waiter forwards no chunk with no bytes: the helper sends one when a stream's
 admitted bytes reach its cap exactly and the child writes more (`pump`
 (`internal/jail/run.go:668`)), and that chunk says only that truncation began.
-Truncation reaches the callers through the outcome: `hookrunner.settled`
-(`client/hookrunner.gleam:339`) and `worktree_diff.settled` read
+At settlement the link builds each stream's `CallOutput` with `truncated:
+False` and the stream's byte count as `total_bytes`. The collector reads
+`truncated` (`collect_window` (`tools/tool.gleam:1338`)), so truncation
+reaches the callers through the outcome instead: `worktree_diff.settled` reads
 `ExecResult.stdout_truncated` and `stderr_truncated` beside the collector's
 flags, and the goal check keeps a tail and reads no truncation at all.
 
 `cancel` keeps its one 109 meaning, for a `clear_call` as for a `run`: the
-gateway kills the request's waiter. The dispatcher watches the owner of every
-call's `events` subject and cancels the execution when it dies (`caller`
-(`broker/dispatch.gleam:190`)), and the tunnel waiter is that owner. No caller
-waits for the executor's account of a cancelled call: `hookrunner.run` returns
-`NeverSettled` after its cancel, `run_git` returns `NoSettlement`, and the goal
-check records "did not settle". `call_stdin` and `cancel` go out only on an open
+gateway kills the request's waiter. No caller waits for the executor's account
+of a cancelled call: `run_git` returns `NoSettlement` after its cancel, and the
+goal check records "did not settle". `cancel` goes out only on an open
 connection, like `ack`.
 
 ### A tunnelled call on the orchestrator
@@ -225,11 +263,14 @@ from its send until `cleared(Ok)`, and `Running` from then until it is removed.
 
 The link answers a `Clear` at once, and sends nothing, when its connection is
 not open, when the session holds no binding on this link (a link started in
-place of another, 116), when the spec carries grants, when its output or wall
-limit is zero, or its output limit is above `max_call_output_bytes` (1 MiB, the
-hooks' and the goal check's own cap), and when the binding already has 8 entries
-or the link 64. Each is `Error(BrokerUnavailable)` and is logged; no caller in
-the tree sends a spec the link refuses for its shape.
+place of another, 116), when the spec carries grants, when its output limit is
+zero or above `max_call_output_bytes` (1 MiB, the goal check's own cap), when
+the frame would pass `max_frame_bytes` or `max_frame_values`, which the link
+checks where it checks `too_large_to_send`
+(`client/remote/untrusted_link.gleam:823`), and when the binding already has 8
+entries or the link 64. Each is `Error(BrokerUnavailable)` and is logged; no
+caller in the tree sends a spec the link refuses for its shape, and a refused
+request is never kept or re-sent.
 
 Every ordering ends in one stated outcome:
 
@@ -238,12 +279,11 @@ Every ordering ends in one stated outcome:
 | `cleared(Ok)` while `Clearing` | becomes `Running` | `Ok(RunningCall)` | none |
 | `cleared(Error(r))` while `Clearing` | removed | `Error(r)` | none |
 | `waiting` passes while `Clearing` | removed | `Error(BrokerUnavailable)` | `cancel` |
-| `Withdraw(reply)` (case (e) of the review) | removed if held | nothing more | `cancel` if held |
+| `Withdraw(reply)` | removed if held | nothing more | `cancel` if held |
 | `call_event output` while `Running` | stays | nothing yet; the bytes are buffered | none |
 | `call_event settled` while `Running` | removed | one `CallOutput` per stream with bytes, then `CallSettled` | none |
 | `RunningCall.cancel()` | removed | `CallSettled(CallFailed(ExecutionLost(RelayDown)))` | `cancel` |
 | the asker dies | removed | nobody | `cancel` |
-| the wall timer fires while `Running` | removed | `CallSettled(CallFailed(ExecutionLost(RelayDown)))` | `cancel` |
 | the connection drops | removed | `Error(BrokerUnavailable)` if `Clearing`, `CallSettled(CallFailed(ExecutionLost(RelayDown)))` if `Running` | none |
 | `cleared` or `call_event` for an id the link issued and no longer holds | none | nothing | none (dropped) |
 | `cleared` while `Running`, `call_event` while `Clearing`, either for an id never issued or held as another kind of request | none | as for a dropped connection, for every entry | violation, closes the connection |
@@ -257,54 +297,63 @@ second `settled` is therefore dropped, not a violation.
 effect may have run and must not be replayed; its `RelayDown` cause is the link
 standing where a relay would stand.
 
-The wall timer starts at `cleared(Ok)` and runs for the spec's
-`requirements.limits.wall_s` plus `tunnel_grace_ms` (3 s). It is placed in the
-link rather than in the three collectors because the link is the one place every
-tunnelled call passes, and it holds whatever a caller's wait does. The callers'
-waits are idle windows that each `output` would renew (`collect_events`
-(`tools/tool.gleam:1272`)); with output buffered to the settlement and the
-timer in the link, a hostile executor holds an entry for at most its wall and
-three seconds. Three seconds is below the smallest caller grace
-(`worktree_diff.settlement_grace_ms`, five seconds), so the timer fires before
-any caller gives up.
+**Every caller of `ClearCall` bounds its wait and cancels when it ends.**
+`run_git` collects within its remaining deadline plus
+`settlement_grace_ms` and cancels on silence (`client/worktree_diff.gleam:793`);
+the goal check collects within its wall plus its settle grace and cancels
+(`execute` (`client/goalcheck.gleam:225`)); `hookrunner.run`
+(`client/hookrunner.gleam:236`) collects within its timeout plus its settle
+grace and cancels. The
+collector's window renews at each event (`collect_events`
+(`tools/tool.gleam:1272`)), but the link delivers a call's events only at its
+settlement, so before that the window is one wait from the moment the call
+cleared. A cancel or the asker's death removes the entry. The 8-per-binding and
+64-per-link bounds hold whatever a caller does.
 
-The link buffers a `Running` call's output per stream, appending each chunk to
-one binary, and hands it to the caller only at settlement. The four callers
-fold output into a result and show none of it while the call runs, so nothing
-they do changes. The memory the link holds for tunnelled output is the bytes
-themselves, at most 64 entries of two 1 MiB streams, rather than one message per
-chunk in each caller's mailbox, which a stream of one-byte chunks would make
-tens of times larger.
+The link buffers a `Running` call's output per stream and hands it to the
+caller only at settlement. The buffer grows with a bit-array expression,
+`<<buffer:bits, chunk:bits>>`, which the runtime extends in place when the
+buffer is not shared; `bit_array.append` goes through `list_to_bitstring`
+and copies the whole buffer for every chunk. The callers fold output into a
+result and show none of it while the call runs, so nothing they do changes.
+The memory the link holds for tunnelled output is the bytes themselves, at most
+64 entries of two 1 MiB streams, rather than one message per chunk in each
+caller's mailbox, which a stream of one-byte chunks would make tens of times
+larger.
 
 A link that dies, or is replaced by `executors.reload`, settles nothing. Its
-callers' waits end because no event arrives (`hookrunner.NeverSettled`,
-`NoSettlement`, the goal check's "did not settle"), and the executor cancels
-the children when the connection closes.
+callers' waits end and they cancel into a link that is gone, and the executor
+cancels the children when the connection closes.
 
 ### The executor side
 
 Each `clear_call` runs in a tunnel waiter: a process that owns the `events`
 subject the broker is given, clears with `broker.over` on the recorded broker
-subject, writes stdin as `call_stdin` requests arrive, and forwards each
-non-empty chunk and the settlement as `call_event` frames. Its `cleared` reply
-reaches the connection before its first event, because both are messages from
-the waiter to the connection.
+subject, closes the child's stdin, and forwards each non-empty chunk and the
+settlement as `call_event` frames. Its `cleared` reply reaches the connection
+before its first event, because both are messages from the waiter to the
+connection.
 
-The waiter is linked to its connection, and every path by which a connection
-stops (`closed` (`client/remote/untrusted_gateway.gleam:814`), an ended or
-broken socket) kills the connection's tunnel waiters first, because a normal
-stop does not propagate through a link. A waiter killed inside
+The waiter is linked to its connection, so a connection that crashes takes its
+waiters with it. A connection does not trap exits, so a waiter killed while
+linked would take the connection with it: the gateway unlinks a tunnel waiter
+before it kills it for a `cancel`. Every path by which a connection stops
+normally (`closed` (`client/remote/untrusted_gateway.gleam:814`), an ended or
+broken socket) unlinks and kills the connection's tunnel waiters first, because
+a normal stop does not propagate through a link. A waiter killed inside
 `broker.clear_call`, which waits out a congested pool in the caller's own
-process, dies at once. If the broker had already dispatched, the dispatcher's
-watch cancels the child; if not, the executor refuses a dispatch whose `events`
-owner is dead. This is the reverse of a `run`'s waiter, which outlives its
-connection so that the call's outcome reaches the ledger for the re-send.
+process, dies at once. If the broker dispatches the call afterwards, it still
+names the dead waiter as the call's caller, the relay's monitor on that pid
+fires at once (`caller` (`broker/dispatch.gleam:190`)), and the child is
+cancelled just after it starts. This is the reverse of a `run`'s waiter, which
+outlives its connection so that the call's outcome reaches the ledger for the
+re-send.
 
 Over the tunnel, `BrokerUnavailable` does not prove that the command never
 started: a call killed with its connection, or withdrawn while clearing, may
 have started and been cancelled. No caller re-runs on that refusal.
 `goalcheck.admitted` (`client/goalcheck.gleam:279`) retries only
-`OutstandingCapReached`, and `hookrunner` and `run_git` report the refusal.
+`OutstandingCapReached`, and `run_git` reports the refusal.
 
 ### Bounds on what an executor sends
 
@@ -367,64 +416,6 @@ The tunnel waiter builds the spec it clears as follows.
   orchestrator's. The broker composes the requirements onto the base, and
   `RefuseNarrowed` refuses anything the base withholds.
 
-### Hooks on an untrusted executor
-
-A hook that runs on an untrusted executor answers whatever the executor wants:
-its settings bytes are checked against the trust record on the orchestrator,
-but the script a hook command runs is in the executor's workspace and the
-outcome comes back over the link. `hookrunner.Context` gains `site`, `Here` or
-`Tunnelled`, which `with_imported_hooks` sets from the placement, and
-`hookserve` serves a `Tunnelled` context under these rules.
-
-1. **No user-level source.** `hookserve.gather` reads `~/.claude/settings.json`
-   on the orchestrator, and `first_sight` (`client/hookserve.gleam:498`) trusts
-   it with no record. Served through the tunnel, each of its commands would be
-   sent to the executor as the spec's `argv` (`["sh", "-c", command]`, so any
-   URL or token written inline in a command), with `HOME` naming the operator's
-   home (`hook_environment` (`client/serve.gleam:402`)) and the orchestrator's
-   `transcript_path` in every payload; the scripts those commands name are not on
-   the guest, so the hooks cannot work there. A `Tunnelled` context serves no
-   `UserSettings` source and logs one line naming the file it skipped.
-2. **A hook sees only the executor's tools.** `hookserve.tool_gate`
-   (`client/hookserve.gleam:551`) and `hookserve.tool_feedback`
-   (`client/hookserve.gleam:666`) ask no tunnelled hook about a call whose tool
-   is not in `tool_placement.workspace_names`. A `PreToolUse` or `PostToolUse`
-   payload otherwise sends the executor the arguments of calls that ran on the
-   orchestrator (notes, peer messages), which 109 never sends, and a guard on
-   such a tool protects nothing when the executor writes its verdict.
-3. **No rewrite.** In `hookserve.cleared`, a `Rewrite` from a tunnelled hook is a
-   refusal naming the hook, not a call to `recleared`
-   (`client/hookserve.gleam:1117`). A second clearance on guest-chosen arguments
-   can reach an operator's approval prompt, and 109 rules out asking the
-   operator about a call with arguments the executor describes.
-4. **No compaction note.** `compaction_note` (`client/hookserve.gleam:705`)
-   returns `None` for a tunnelled hook. The note is placed at the end of the
-   summarizer's input without a fence, and the summary then replaces history
-   durably, so executor text would outlive the compaction as the session's own
-   account of itself.
-5. **Bounded text.** A tunnelled `Stop` continuation's reason, an `Ask` reason
-   and a `PostToolUse` context pass through `hookdecisions.capped`
-   (`client/hookdecisions.gleam:519`), 10,000 characters, as a deny, feedback
-   and an injection already do. The cap is applied in `hookserve` for a
-   tunnelled context only, so a local hook's text is unchanged.
-
-What remains is accepted. A deny, an exit 2 or an `ask` refuses one call, which
-is denial of service. `updatedToolOutput` changes the result of a call the
-executor ran anyway. `SessionStart` context reaches the model as untrusted text,
-as the census's guidance files do. A `Stop` continuation costs a model turn on
-the orchestrator's provider key and is capped at `stop_block_cap`
-(`client/hookserve.gleam:745`), eight per operation. A hook refused for a bound,
-or lost to a dropped connection, gives no decision, as a hook whose clearance
-fails on a local plane does today.
-
-**What runs in practice.** With rule 1, the sources a tunnelled session can
-serve are the project's two settings files, and `first_sight` serves those only
-with a trust record, which no command writes yet. `LoomInline` has no loader
-that produces entries, and plugins are not located. So when the tunnel lands, no
-hook runs through it unless an operator writes a trust record by hand; the hook
-work in the slices below makes the tunnel safe for the day a trust command
-exists, and delivers no hook a user can run before then.
-
 ### Goal checks, the diff, the baseline and the peer view
 
 A goal check's result is evidence for the reviewer (`CheckResult`
@@ -455,6 +446,54 @@ shows its working-tree changes and, where its commits would be, the stored
 reason. Every session opened on an untrusted executor under 109 holds one: on a
 guest made with the hidden `--link untrusted`, and on every untrusted pod.
 
+### Hooks stay refused, and what wiring them later requires
+
+A session on an untrusted executor runs no imported hook, as today. No source
+could run through the tunnel when it lands. `hookserve.locations`
+(`client/hookserve.gleam:170`) finds three: the operator's
+`~/.claude/settings.json` and the project's two settings files. `first_sight`
+(`client/hookserve.gleam:498`) serves the project's files only with a trust
+record, and no command writes one yet; `LoomInline` has no loader that produces
+entries, and plugins are not located. That leaves the user-level file, which the
+first precondition below excludes.
+
+A hook that ran on an untrusted executor would answer whatever the executor
+wants: its settings bytes are checked against the trust record on the
+orchestrator, but the script a command runs is in the executor's workspace and
+the outcome comes back over the link. A later change that wires hooks to the
+tunnel must first build these preconditions, and they are to be settled with
+the trust command, which decides what trusting a guest's project file means.
+
+1. **No user-level source.** Served through the tunnel, each command of the
+   operator's file would be sent as the spec's `argv` (`["sh", "-c", command]`,
+   so any URL or token written inline in a command), and the scripts those
+   commands name are not on the guest. A session on an untrusted executor
+   serves no `UserSettings` source and logs one line naming the file it
+   skipped.
+2. **A hook sees only the executor's tools.** `hookserve.tool_gate`
+   (`client/hookserve.gleam:551`) and `hookserve.tool_feedback`
+   (`client/hookserve.gleam:666`) ask no tunnelled hook about a call whose tool
+   is not in `tool_placement.workspace_names`. A payload otherwise sends the
+   executor the arguments of calls that ran on the orchestrator (notes, peer
+   messages), which 109 never sends.
+3. **No rewrite.** In `hookserve.cleared`, a `Rewrite` from a tunnelled hook is
+   a refusal naming the hook, not a call to `recleared`
+   (`client/hookserve.gleam:1117`). A second clearance on guest-chosen arguments
+   can reach an operator's approval prompt, and 109 rules out asking the
+   operator about a call with arguments the executor describes.
+4. **No compaction note.** `compaction_note` (`client/hookserve.gleam:705`)
+   returns `None` for a tunnelled hook. The note is placed at the end of the
+   summarizer's input without a fence, and the summary replaces history durably.
+5. **Bounded text.** A tunnelled `Stop` reason, `Ask` reason and `PostToolUse`
+   context pass through `hookdecisions.capped`
+   (`client/hookdecisions.gleam:519`), as a deny, feedback and an injection
+   already do, applied for tunnelled hooks only so local hooks are unchanged.
+6. **No operator home.** A tunnelled hook is given neither the operator's `HOME`
+   (`hook_environment` sets it for every hook) nor a `transcript_path` under
+   it.
+7. **A stdin frame.** A hook reads its payload on stdin, which the tunnel does
+   not carry.
+
 ### Compatibility
 
 A version 4 executor and a version 5 orchestrator, or the reverse, refuse each
@@ -463,9 +502,9 @@ included. Today the link reads only the peer's `protocol.version` from a
 mismatched `welcome` and refuses with `VersionMismatch(supported: theirs)`
 (`greeted` (`client/remote/untrusted_link.gleam:1077`)), whose text names
 protocol versions; on a wire-only mismatch it reads "the executor speaks
-protocol version 7 and this orchestrator does not". The wire slice logs both
-wire and both protocol numbers at every mismatch, and when the protocol numbers
-agree it refuses with `Unreachable` naming both wire numbers.
+protocol version 7 and this orchestrator does not". Slice 2 logs both wire and
+both protocol numbers at every mismatch, and when the protocol numbers agree it
+refuses with `Unreachable` naming both wire numbers.
 
 `loom vm up` replaces a guest root built from other artifacts than the host's
 manifest in place (`root_step` (`client/vm_spec.gleam:1161`)), so the next `up`
@@ -478,59 +517,48 @@ orchestrator and its executors together.
 Everything in 109's threat model stands. This proposal adds, for the sessions
 placed on a hostile executor:
 
-**What it can do.** Return any outcome for a tunnelled call; answer every hook
-about its own tools as it likes (deny, context and continuations within the
-cap, a rewritten result); report a false goal check, a false worktree board, a
-false baseline and a false peer view; hold an entry until the clearance wait
-passes or, once cleared, for the spec's wall and three seconds, which with 8
-entries per binding refuses that session's later hooks and observations for as
-long.
+**What it can do.** Return any outcome for a goal check or a Git call; report a
+false goal check, a false worktree board, a false baseline and a false peer
+view; hold an entry until the clearance wait passes or, once cleared, for at
+most the caller's wait, which with 8 entries per binding refuses that session's
+later checks and observations for as long.
 
 **What it cannot do.** Start a call: only the orchestrator sends `clear_call`.
 Run a call twice: nothing is re-sent. Keep a child running after the
 orchestrator's connection is gone, in a compliant gateway; a hostile one can
 keep its own processes running in any case. Widen the plane's base policy or
 add a grant through a spec. Deliver more output than the orchestrator's cap, or
-make the link hold more than those bytes. Hold an entry past the link's wall
-timer. Receive the operator's user-level hook commands or home path, see the
-arguments of a call that ran on the orchestrator, rewrite any call, or place a
-compaction note. Make a frame or a fetched outcome decode to more than
-`max_frame_values` values.
+make the link hold more than those bytes. Hold an entry past its caller's wait.
+Run a hook, or receive a hook's command, payload or the operator's home path.
+Make a frame or a fetched outcome decode to more than `max_frame_values`
+values.
 
-**Residual risks.**
-
-- The executor sees the hook payloads of its own tools (their arguments, the
-  session id, the orchestrator's transcript path), the goal check command and
-  the Git commands. All but the transcript path describe work it already holds;
-  the path is a file name on the orchestrator and grants nothing.
-- A hook's verdicts about the executor's own tools carry no assurance. An
-  operator who relies on a `PreToolUse` guard must not rely on it for a session
-  on an untrusted executor.
+**Residual risks.** The executor sees the goal check command and the Git
+commands, which describe work it already holds.
 
 ## What it costs
 
-About 1,900 lines of product code and 1,000 of tests: the seam (about 170, with
-`git_identity`), the codec (about 520, most of it `ExecResult`, `ExecFailure`
-and `broker.Refusal`), the link's tunnel table, door, buffer and wall timer
-(about 450), the gateway's waiter and the book's record (about 320), the hook
-rules (about 120), the value bound in `core/json` and its two uses (about 80),
-and the bridge's attach change.
+About 1,650 lines of product code and 850 of tests: the seam (about 170, with
+`git_identity` and the refusing hook function), the codec (about 500, most of
+it `ExecResult`, `ExecFailure` and `broker.Refusal`), the link's tunnel table,
+door and buffer (about 400), the gateway's waiter and the book's record (about
+300), the value bound in `core/json` and its uses on both sides (about 90), and
+the bridge's attach change.
 
 Each executor costs a second process and a second atom. Each output chunk costs
-a frame, and a hook's payload crosses the link as stdin, grown by a third as
-base64. On an untrusted executor, user-level hooks do not run, hooks see only
-the executor's tools and cannot rewrite a call or note a compaction. A version
-4 executor and a version 5 orchestrator no longer work together.
+a frame, grown by a third as base64. A version 4 executor and a version 5
+orchestrator no longer work together.
 
 ### Not carried after this
 
+- Imported hooks on an untrusted executor, until a trust command exists and the
+  seven preconditions above are built.
 - Remote evolution (109's slice 4). The link still sets the census to
   `Uncompiled`.
 - The executor's node report of 085, which the machines view asks over
   distribution.
-- `broker.abort` and `abort_step` through the plane's `broker`. Hooks and goal
-  checks clear under attribution-only operations that nothing aborts.
-- Project hooks in practice, until a command writes trust records.
+- `broker.abort` and `abort_step` through the plane's `broker`. Goal checks
+  clear under an attribution-only operation that nothing aborts.
 - The 109 residual risk of a remembered "for this session" grant from an
   escalation over the link.
 
@@ -538,100 +566,76 @@ the executor's tools and cannot rewrite a call or note a compaction. A version
 
 Each slice lands alone, in this order, and each exit is a check that fails
 without the slice. The default flip of the design note's slice 4 waits for
-slice 5.
+slice 4 here.
 
 1. **The seam.** `workspace_plane.ClearCall`, `WorkspacePlane.clear_call`, and
    `hookrunner.Context`, `worktree_diff.Wiring` and `git_identity.run` taking
    it. **Exit**: a new case in `hookrunner_test` and one in `worktree_diff_test`
    drive the caller through a fake `ClearCall` that records the spec and answers
-   a scripted settlement, and `git_identity`'s test runs unchanged in substance;
-   `make check` is green.
-2. **The hook rules.** `hookrunner.Context.site` and the five rules in
-   `hookserve`, pure and reached only by a `Tunnelled` context, which nothing
-   in production builds yet. **Exit**: `hookserve_test`, with a constructed
-   `Tunnelled` context, shows a `UserSettings` source skipped with its log line,
-   a tunnelled hook not asked about a tool outside `workspace_names`, a
-   tunnelled `Rewrite` refused without a second clearance, no compaction note,
-   and a 20,000-character `Stop` reason capped; and a `Here` context still
-   rewrites and keeps its text uncapped.
-3. **Wire 5, the codec and the value bound.** The new items in
+   a scripted settlement; `make check` is green.
+2. **Wire 5, the codec and the value bound.** The new items in
    `untrusted_wire`, their codec, the bounded parse in `core/json` used by
-   `decode_envelope` and `decode_outcome_bytes`, the gateway's value count
-   beside `fits`, and the version mismatch's log and refusal text. Its gateway
-   answers every `clear_call` with `cleared(Error(BrokerUnavailable))` until
-   slice 4 lands. **Exit**: `remote/untrusted_codec_test` round-trips every new
-   item and every `ExecFailure` and `broker.Refusal` variant, refuses a spec
-   with a `grants` member and each oversized field, and extends the kind
-   matrices so only the diagonal decodes; `core/json_test` parses a document of
-   `max_frame_values` values and refuses one more, on both targets;
-   `remote/untrusted_link_test` refuses a 1,048,577-value frame and answers a
-   fetched outcome over the bound as lost, and its wire-only mismatch names both
-   wire numbers; `remote/untrusted_gateway_test` answers a `clear_call` with
+   `decode_envelope` and `decode_outcome_bytes`, the value count on the link's
+   own sends and beside the gateway's `fits`, and the version mismatch's log and
+   refusal text ("Compatibility"). Its gateway answers every `clear_call` with
+   `cleared(Error(BrokerUnavailable))` until slice 3 lands. **Exit**:
+   `remote/untrusted_codec_test` round-trips every new item and every
+   `ExecFailure` and `broker.Refusal` variant, refuses a spec with a `grants`
+   member and each oversized field, and extends the kind matrices so only the
+   diagonal decodes; `core/json_test` parses a document of `max_frame_values`
+   values and refuses one more, on both targets; `remote/untrusted_link_test`
+   refuses a 1,048,577-value frame, answers a fetched outcome over the bound as
+   lost, and names both wire numbers on a wire-only mismatch;
+   `remote/untrusted_gateway_test` answers a `clear_call` with
    `BrokerUnavailable`.
-4. **The tunnel.** The door and `untrusted_link.tunnel`, the call table, buffer
-   and wall timer, the gateway's waiter and the book's record, and
-   `workspace.build` setting `clear_call` for an untrusted placement. Goal
-   checks, Git and hooks (under slice 2's rules) all reach it. **Exit**:
-   `remote/untrusted_link_test` has the hostile executor send events for an id
-   never issued, for a `run`'s id, for a call still `Clearing`, a `cleared` for
-   a `Running` call, and output past the cap, each closing the connection while
-   the link survives and a `Running` asker hears `ExecutionLost(RelayDown)`; it
-   drops a late `cleared` and a second `settled` without a violation; it drops
-   the connection under a `Running` and a `Clearing` call and asserts nothing is
-   re-sent; it never settles a call and asserts the wall timer settles it lost
-   at wall plus three seconds; it kills an asker, cancels, and withdraws, each
-   sending one `cancel`; it refuses a `Clear` with no connection, with no
-   binding, and a ninth on one binding. `remote/untrusted_gateway_test` with a
-   real broker and helper: a dropped connection cancels the child, including one
-   whose waiter is still clearing against a full pool; `cancel` kills the
-   waiter; a command printing past its cap settles with
-   `ExecResult.stdout_truncated` set and no violation; a plane whose base holds
-   a writable-only root runs a `read_policy` Git call; a spec whose base is
-   wider than the plane's, sent with `ProceedNarrowed`, runs under the plane's
-   base; a binding the orchestrator does not hold is refused.
+3. **The tunnel.** The door and `untrusted_link.tunnel`, the call table and
+   buffer, the gateway's waiter and the book's record, and `workspace.build`
+   setting `clear_call` for an untrusted placement while `with_imported_hooks`
+   sets the refusing function. **Exit**: `remote/untrusted_link_test` has the
+   hostile executor send events for an id never issued, for a `run`'s id, for a
+   call still `Clearing`, a `cleared` for a `Running` call, and output past the
+   cap, each closing the connection while the link survives and a `Running`
+   asker hears `ExecutionLost(RelayDown)`; it drops a late `cleared` and a
+   second `settled` without a violation; it drops the connection under a
+   `Running` and a `Clearing` call and asserts nothing is re-sent; it kills an
+   asker, cancels, and withdraws, each sending one `cancel`; it refuses a `Clear`
+   with no connection, with no binding, and a ninth on one binding.
+   `remote/untrusted_gateway_test` with a real broker and helper: a dropped
+   connection cancels the child, including one whose waiter is still clearing
+   against a full pool; `cancel` kills the waiter and the connection serves the
+   next request; a command printing past its cap settles with
+   `ExecResult.stdout_truncated` set and no violation; a plane whose base holds a
+   writable-only root runs a `read_policy` Git call; a spec whose base is wider
+   than the plane's, sent with `ProceedNarrowed`, runs under the plane's base; a
+   binding the orchestrator does not hold is refused.
    `remote/untrusted_end_to_end_test` runs a goal check, a baseline probe, a
-   worktree diff after a jailed edit, a peer observation, and a project hook
-   under a trust record the test writes, through the link into a real plane.
-5. **The microVM step and the record.** A step of `daemon_shipped_microvm_test`
+   worktree diff after a jailed edit and a peer observation through the link
+   into a real plane, and shows a hook refused.
+4. **The microVM step and the record.** A step of `daemon_shipped_microvm_test`
    on a guest made with `--link untrusted`: the session's baseline is a
-   revision, a jailed `bash` edit shows in the Changes tab against it, and a
-   goal check passes. A pointer addendum on 109, and the "Untrusted executors"
+   revision, a jailed `bash` edit shows in the Changes tab against it, and a goal
+   check passes. A pointer addendum on 109, and the "Untrusted executors"
    section of `packages/client/CLAUDE.md`. **Exit**: the step passes on a host
-   with the microVM tier and fails on the tree before slice 4; `make doc-check`
+   with the microVM tier and fails on the tree before slice 3; `make doc-check`
    passes.
 
 ## Decisions for the owner
 
-1. **Is a version 4 executor refused outright, rather than served without the
-   tunnel?** Recommendation: refuse. Refused, a stale guest's sessions do not
-   open until `loom vm up` upgrades its root; served, they open with tools and
-   without a Changes tab, goal checks or hooks.
-2. **Does a session on an untrusted executor serve no user-level hook source?**
-   Recommendation: serve none, with one logged line. Either way the operator's
-   `~/.claude` hooks do not work in a `--vm` session; served, their command
-   strings and home path are also sent to the guest.
-3. **Do hooks on an untrusted executor see only the executor's tools?**
-   Recommendation: yes. A user's `PreToolUse` or `PostToolUse` hook on a tool
-   that runs on the host does not fire in such a session; otherwise it fires,
-   with an answer the guest writes.
-4. **Is a tunnelled `Rewrite` refused, rather than read as `Proceed`?**
-   Recommendation: refuse. The user sees the call refused with the hook named;
-   read as `Proceed`, the call runs with its unrewritten arguments and no
-   message.
-5. **Is a tunnelled `PreCompact` note dropped?** Recommendation: drop it. The
-   compaction summary of such a session lacks the hook's note; kept, guest text
-   becomes part of the session's durable history.
-6. **Does a session that stored `Unavailable` keep it?** Recommendation: keep
-   it. Such a session's Changes tab shows its working tree and, in place of its
-   commits, the stored reason; probed again, it shows commits since the moment
-   of the probe as if the session had started then.
-7. **Are the hook rules and the hook wiring built now, with the tunnel, though
-   no hook runs through it until a trust command exists?** Recommendation:
-   build them now. The rules are about 120 lines of pure code, and the tunnel
-   reaches hooks through the same seam as everything else, so leaving hooks out
-   needs a branch of its own to keep them refused and a second change to remove
-   it. Users see no difference until a trust command lands; deferred, hooks in a
-   `--vm` session stay refused after it lands, until this work is done.
+1. **Is a stale guest (wire version 4) refused until `loom vm up` upgrades its
+   root, rather than served without the tunnel?** Recommendation: refuse.
+   Refused, the guest's sessions do not open until `up` or `ensure` runs, and
+   the error names both wire versions; served, they open with tools and without
+   a Changes tab or goal checks.
+2. **Do hooks stay refused in sessions on an untrusted executor until a trust
+   command exists and the seven preconditions are built?** Recommendation: yes.
+   Refused, the operator's user-level hooks do not run in a `--vm` session once
+   the untrusted link is the default; today, over distribution, they are tried
+   there with the operator's `HOME`, which names a path the guest does not have,
+   so the ones that name scripts fail either way.
+3. **Does a session that stored `Unavailable` over the link keep it?**
+   Recommendation: keep it. Kept, its Changes tab shows the working tree and,
+   in place of its commits, the stored reason; probed again, it shows commits
+   since the moment of the probe as if the session had started then.
 
 ## Review and disposition
 
@@ -640,22 +644,33 @@ against the code at 206f18fa8, reporting findings only. Each finding was checked
 in the code before it was taken; the two HIGH findings were also checked
 separately by the coordinator of the work.
 
+The same reviewer re-checked the revision at d8a7ac90f on 2026-11-17. It found
+the first round's findings closed except as listed below, confirmed that no
+caller depends on output before settlement, and confirmed that no hook source
+can run through the tunnel, which led to keeping hooks refused.
+
 | Severity | Finding | Disposition | Where it landed |
 |---|---|---|---|
-| HIGH | An honest helper sends an empty chunk with `truncated` when a stream reaches its cap exactly (`pump`), which the draft called a violation; `truncated` was dropped without saying what is delivered | Accepted. The waiter forwards no empty chunk, `truncated` and `total_bytes` are not carried, callers read truncation from the result; the empty-chunk rule is removed | "Frames", "Bounds", slice 4's gateway test |
-| HIGH | User-level hook commands, the operator's home and the transcript path would be sent to the executor (`first_sight` trusts `UserSettings` with no record) | Accepted with change: rule 1, a decision, and a statement of which sources can run in practice | "Hooks on an untrusted executor", decisions 2 and 7 |
-| MEDIUM | The meet against the plane's base drops writable-only roots for `read_policy` specs | Accepted. The meet is taken against the plane's base with writable roots counted readable | "Authority on the executor", slice 4 |
-| MEDIUM | The state table left orderings open: a late `cleared`, a held call that never sent, cancel while clearing, an unbound session, the function's own wait ending | Accepted with change. `Withdrawn` and holding are cut, issued-and-gone frames are dropped, an unbound session is refused, and `Withdraw` closes the last case; every ordering has one row | "A tunnelled call on the orchestrator" |
-| MEDIUM (simplify) | `cancel` with two meanings | Accepted. No caller waits for the executor's account after a cancel, so `cancel` kills the waiter and the link delivers `ExecutionLost(RelayDown)` | "Frames", the table |
-| MEDIUM (simplify) | Holding a `clear_call` for the next connection | Accepted. Refused unless the connection is open; "sent" defined | "What was considered", the table |
-| MEDIUM | A waiter blocked in `clear_call` cannot see its connection drop; `BrokerUnavailable` may follow a start | Accepted. The waiter is linked and killed with its connection, and the text says what the refusal does not prove; no caller re-runs on it | "The executor side" |
-| MEDIUM | Callers' waits are idle windows a hostile executor renews with one-byte chunks | Accepted with change. A wall timer in the link, and output buffered to settlement, which also removes the per-chunk memory cost | "A tunnelled call on the orchestrator", decision 7 of the draft removed |
-| MEDIUM | F5 is not bounded for a fetched outcome, and an honest response over the bound would loop on re-send | Accepted. The bounded parse covers `decode_outcome_bytes`, and the gateway sends an over-count response as `Oversized` | "Bounds" |
-| MEDIUM | The hook enumeration omits `PreCompact`, and `Stop`, `Ask` and context text are uncapped | Accepted. Rules 4 and 5, capped for tunnelled hooks only | "Hooks on an untrusted executor", decision 5 |
-| MEDIUM | The version mismatch names one protocol number, not the wire numbers | Accepted. The sentence states what the code does, and slice 3 logs and names both wire numbers | "Compatibility", slice 3 |
-| LOW | `git_identity.run` is a third reader of `worktree_diff.Wiring`; slice 1's exit passed without the slice | Accepted | "The seam", slice 1 |
-| LOW | Tool payloads carry arguments, not results | Accepted | rule 2 |
+| HIGH | An honest helper sends an empty chunk with `truncated` when a stream reaches its cap exactly (`pump`), which the draft called a violation | Accepted. No empty chunk is forwarded; `truncated` and `total_bytes` are not carried and are rebuilt at settlement | "Frames", "Bounds", slice 3 |
+| HIGH | User-level hook commands, the operator's home and the transcript path would be sent to the executor | Accepted with change: hooks stay refused; the rule is precondition 1 | "Hooks stay refused", decision 2 |
+| MEDIUM | The meet against the plane's base drops writable-only roots for `read_policy` specs | Accepted | "Authority on the executor", slice 3 |
+| MEDIUM | The state table left orderings open | Accepted with change. No held calls, no `Withdrawn`, issued-and-gone frames dropped, unbound sessions refused, `Withdraw` for the function's own wait | "A tunnelled call on the orchestrator" |
+| MEDIUM (simplify) | `cancel` with two meanings | Accepted. `cancel` kills the waiter; the link delivers `ExecutionLost(RelayDown)` | "Frames", the table |
+| MEDIUM (simplify) | Holding a `clear_call` for the next connection | Accepted. Refused unless the connection is open | "What was considered", the table |
+| MEDIUM | A waiter blocked in `clear_call` cannot see its connection drop | Accepted. Linked, and killed with its connection; the refusal does not prove nothing ran | "The executor side" |
+| MEDIUM | Callers' waits are idle windows a hostile executor renews | Accepted with change. Closed by buffering output to the settlement; the wall timer of the revision was later cut | "A tunnelled call on the orchestrator" |
+| MEDIUM | F5 is not bounded for a fetched outcome, and an honest response over the bound would loop | Accepted | "Bounds" |
+| MEDIUM | The hook enumeration omits `PreCompact`; `Stop`, `Ask` and context text are uncapped | Accepted as preconditions 4 and 5 | "Hooks stay refused" |
+| MEDIUM | The version mismatch names one protocol number | Accepted | "Compatibility", slice 2 |
+| LOW | `git_identity.run` reads `worktree_diff.Wiring`; slice 1's exit passed without the slice | Accepted | "The seam", slice 1 |
+| LOW | Tool payloads carry arguments, not results | Accepted | precondition 2 |
 | LOW | Every 109 session on an untrusted pod also stored `Unavailable` | Accepted | "A baseline stored before the tunnel" |
-| LOW | Refusal text stored unclipped in `session/git-start`; the real memory ceiling of buffered output | Accepted. Clipped to 512; buffering in the link makes the ceiling the bytes | "Goal checks, the diff...", "A tunnelled call on the orchestrator" |
-| LOW | The codec's size refusals, the record-before-reply ordering, and a test that named a refusal as a run | Accepted | "Frames", "Authority on the executor", slice 4 |
-| (slices) | Hook rules before the tunnel; the wire slice's gateway answers `BrokerUnavailable` | Accepted | "Slices" |
+| LOW | Refusal text stored unclipped; the real memory ceiling of buffered output | Accepted. Clipped to 512; buffering makes the ceiling the bytes | "Goal checks, the diff...", the buffer paragraph |
+| LOW | The codec's size refusals, the record-before-reply ordering, a test naming a refusal as a run | Accepted | "Frames", "Authority on the executor", slice 3 |
+| (slices) | Hook rules before the tunnel; the wire slice's gateway answers `BrokerUnavailable` | Accepted, then superseded for hooks by the re-check | "Slices" |
+| Re-check, HIGH | A waiter killed for a `cancel` while linked takes the connection down, because a connection does not trap exits | Accepted. The gateway unlinks before it kills | "The executor side", slice 3 |
+| Re-check | "The executor refuses a dispatch whose `events` owner is dead" is not in the code; the call is dispatched and then cancelled | Accepted | "The executor side" |
+| Re-check | The link's wall timer is a backstop whose grace is below the relay's and the hook's kill grace | Accepted. Cut; the invariant that every caller bounds its wait and cancels replaces it | "What was considered", "A tunnelled call on the orchestrator" |
+| Re-check | Wiring hooks ships an unexercised path and an unresolved `HOME` disclosure | Accepted. Hooks stay refused, with seven preconditions for a later change | "Hooks stay refused", decision 2 |
+| Re-check | `bit_array.append` copies the buffer per chunk | Accepted. The buffer grows with a bit-array expression | the buffer paragraph |
+| Re-check, LOW | `CallOutput` fields at settlement; the value count on the link's own sends; `waiting_ms` against the link's own wait | Accepted | "Frames", the table's refusals |
