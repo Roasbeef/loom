@@ -50,6 +50,7 @@ import broker/broker
 import broker/budget
 import broker/exec.{type EnforcementDemand}
 import broker/policy
+import client/bounded_text
 import client/goalstate
 import core/clock.{type Clock}
 import core/ids.{type OpId}
@@ -476,8 +477,16 @@ fn text(bytes: BitArray) -> String {
 /// The broker's own words for a refusal, taken from the rendering the tool
 /// plane already owns rather than reworded here: an operator who has seen a
 /// `bash` call refused should read the same sentence when their check is
-/// refused for the same reason.
+/// refused for the same reason. A refusal that came over the broker tunnel
+/// carries the executor's text, which lands in durable goal state, so the
+/// sentence is cut to `output_tail_chars` bytes (`bounded_text`), never by
+/// walking its graphemes.
 fn refused(refusal: broker.Refusal) -> String {
+  bounded_text.clip(refusal_sentence(refusal), output_tail_chars)
+}
+
+/// The tool plane's own sentence for a refusal.
+fn refusal_sentence(refusal: broker.Refusal) -> String {
   let rendered = tool.refusal_outcome(refusal)
 
   // Unpack refusal text content blocks or default to a generic refusal sentence.

@@ -224,9 +224,11 @@ takes from nowhere but itself ("Authority on the executor"). `outcome` is
 `ExecFailure` variant. Policies use the codec's existing `encode_sandbox_policy`
 (`client/remote/untrusted_codec.gleam:1829`), and a `PolicyRefused` refusal
 reuses `decode_denial` (`client/remote/untrusted_codec.gleam:2902`). The codec
-refuses a `waiting_ms` or a `deadline_ms` outside 0 to 2^53, an `argv` of more
-than 4,096 entries, and an `env` of more than 1,024 pairs, as 109's codec
-refuses absurd sizes.
+refuses a `waiting_ms` above 4,294,967,295, the longest timeout a receive
+takes; a `deadline_ms` above 2^42 epoch milliseconds, because the executor's
+relay arms a timer for the time left to it; an `argv` of more than 4,096
+entries; and an `env` of more than 1,024 pairs, as 109's codec refuses absurd
+sizes. The link refuses the same values before it sends a request.
 
 `waiting_ms` is the caller's wait less one second, and at least one
 millisecond, so an honest `NoHelper` answered at the executor's deadline reaches
@@ -417,6 +419,18 @@ The tunnel waiter builds the spec it clears as follows.
 - `argv`, `env`, `cwd`, `requirements`, `response` and `budget` are the
   orchestrator's. The broker composes the requirements onto the base, and
   `RefuseNarrowed` refuses anything the base withholds.
+
+The executor refuses, with `cleared(Error(BrokerUnavailable))` and before it
+starts a waiter, a spec whose base policy or requirements name a readable or
+writable root that is not a plain absolute path: one with a `.`, a `..` or an
+empty segment, read as bytes. The meet compares roots as text, so a plane
+root `/w` keeps a spec root `/w/..`, and the helper cleans that to `/` when it
+builds the jail. The other path fields cannot widen the plane (protected paths
+are a union, a mount is kept only when it equals one of the base's, the
+scratch is the base's or a tmpfs, and the working directory is not part of the
+policy) and are not checked, so an honest base with an unplain protected path
+still clears. The cause is that `broker/policy.validate` admits uncanonical
+roots; refusing them there is left as a follow-up.
 
 ### Goal checks, the diff, the baseline and the peer view
 
@@ -666,6 +680,11 @@ the first round's findings closed except as listed below, confirmed that no
 caller depends on output before settlement, and confirmed that no hook source
 can run through the tunnel, which led to keeping hooks refused.
 
+A fourth review, of slice 3 as built (`remote/broker-tunnel` at 3f1ba87b3), was
+read-only and found no way for a hostile executor to break the orchestrator
+side; its findings and those of its re-check of the fixes are the last six
+rows.
+
 | Severity | Finding | Disposition | Where it landed |
 |---|---|---|---|
 | HIGH | An honest helper sends an empty chunk with `truncated` when a stream reaches its cap exactly (`pump`), which the draft called a violation | Accepted. No empty chunk is forwarded; `truncated` and `total_bytes` are not carried and are rebuilt at settlement | "Frames", "Bounds", slice 3 |
@@ -691,6 +710,12 @@ can run through the tunnel, which led to keeping hooks refused.
 | Re-check | Wiring hooks ships an unexercised path and an unresolved `HOME` disclosure | Accepted. Hooks stay refused, with seven preconditions for a later change | "Hooks stay refused", decision 2 |
 | Re-check | `bit_array.append` copies the buffer per chunk | Accepted. The buffer grows with a bit-array expression | the buffer paragraph |
 | Re-check, LOW | `CallOutput` fields at settlement; the value count on the link's own sends; `waiting_ms` against the link's own wait | Accepted | "Frames", the table's refusals |
+| Slice 3, MEDIUM | A spec root with a `..` segment survives the textual meet and the helper cleans it into more than the plane holds | Accepted. The executor refuses roots that are not plain absolute paths; `policy.validate` is a follow-up | "Authority on the executor" |
+| Slice 3, MEDIUM | Executor-chosen refusal and failure text is stored at frame size in the peer view's fact, the board and a goal check's reason | Accepted. Clipped by bytes in `worktree_diff.error_message` and the goal check | "Goal checks, the diff, the baseline and the peer view" |
+| Slice 3, MEDIUM (test) | The hook-refused test passed whichever function hooks were given | Accepted. It drives both arms over a recording clearing function | "Hooks stay refused" |
+| Slice 3, LOW | A door replaced between lookup and send leaves an admitted call held for nobody | Accepted. The clearing function sends `Withdraw` when its door goes down | "Reaching the link" |
+| Slice 3 re-check, MEDIUM | The plain-path test split by grapheme clusters, so a slash followed by a combining mark hid a `..` segment | Accepted. The test reads bytes | "Authority on the executor" |
+| Slice 3 re-check, MEDIUM | The plain-path test also judged protected paths, mounts, the scratch and the working directory, which cannot widen and refused honest bases | Accepted. Only readable and writable roots are judged | "Authority on the executor" |
 
 A third review, 2026-11-17, of the integrated slices 1 and 2
 (c62d24f08..b5150d68f), read-only. Its verdict was merge as is; the follow-ups

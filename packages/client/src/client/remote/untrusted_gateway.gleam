@@ -17,6 +17,14 @@
 ////   orchestrator's effect process dying. `cancel` kills the waiter, and the
 ////   host cancels the call. A dropped connection kills no waiter: each waits
 ////   for its answer and exits, so a partition never cancels a call.
+////   A `clear_call` (protocol-change/117) gets a **tunnel waiter** instead,
+////   which is the reverse: linked to its connection, it clears the call on the
+////   plane's broker with `broker.over`, closes the child's stdin, and sends
+////   `cleared` and then every non-empty chunk and the settlement as frames.
+////   A tunnelled call is never re-sent, so its child must not outlive the
+////   connection: a crash takes the waiters with it, every normal stop unlinks
+////   and kills them first (`stopped`), and a `cancel` unlinks one before
+////   killing it so the connection survives.
 //// - **A proxy** per binding stands in for the session's owner port. Its
 ////   subject is the `owner_port` the host is given at attach, so the plane is
 ////   built exactly as for a trusted orchestrator. It sends each owner request
@@ -28,7 +36,11 @@
 ////   proxies, so a reconnection re-points every proxy of that orchestrator,
 ////   and an answer reaches the proxy of the binding it names. One
 ////   orchestrator cannot name another's binding, because the book keys
-////   proxies by the pin the handshake admitted.
+////   proxies by the pin the handshake admitted. It also keeps, per binding,
+////   the plane's broker subject and base policy an attach was answered with,
+////   recorded before the attach's response is sent; a tunnelled call clears on
+////   that broker under the meet of that base with its own, with no grants and
+////   this executor's own demand (`cleared_spec`).
 ////
 //// The executor never dials. A proxy with no connection waits for the
 //// orchestrator to dial again.
@@ -45,18 +57,24 @@
 //// 4. `proxy` is a binding's owner port.
 
 import broker/broker
+import broker/exec
 import broker/internal/call
+import broker/policy.{type SandboxPolicy}
+import client/internal/ffi_os
 import client/internal/ffi_tls_stream.{type Stream}
 import client/remote/address.{type Address}
 import client/remote/blob_service
 import client/remote/blob_transfer
 import client/remote/protocol.{type HostMessage, type OwnerMessage}
 import client/remote/remote_census.{type RemoteCensus}
+import client/remote/tunnel_paths
 import client/remote/untrusted_bridge.{type OwnerReply}
 import client/remote/untrusted_codec
 import client/remote/untrusted_wire.{type Request, type Response}
+import core/clock
 import core/corruption
 import core/json.{type JsonValue}
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -83,9 +101,29 @@ pub type Config {
     /// The keeper of placed blobs (protocol-change/110), or `None` for an
     /// executor that takes none, which refuses every blob request.
     blobs: Option(blob_service.Service),
+    /// The enforcement this executor demands of a tunnelled call
+    /// (protocol-change/117), the setting its planes are built with. The
+    /// orchestrator's spec carries none, so it cannot ask for less.
+    demand: exec.EnforcementDemand,
     /// Where connections, refusals and violations are logged.
     logger: Logger,
   )
+}
+
+/// What the book records for a binding at its attach: the plane's broker and
+/// the base policy it was built with, which a tunnelled call clears on and
+/// under.
+type Plane {
+  Plane(broker: Subject(broker.Msg), base_policy: SandboxPolicy)
+}
+
+/// Whether a tunnel waiter's frame is its last.
+type TunnelEnd {
+  /// More frames follow.
+  Continues
+
+  /// The waiter ends after this frame.
+  Ends
 }
 
 /// A running gateway.
@@ -134,6 +172,15 @@ pub opaque type BookMessage {
 
   /// A connection went down.
   ConnectionDown(down: process.Down)
+
+  /// The plane an attach of `binding` was answered with. The attach's waiter
+  /// asks this, and waits for the reply, before it sends the attach's
+  /// response, so a `clear_call` that follows the response finds the record.
+  Recorded(pin: BitArray, binding: BitArray, plane: Plane, reply: Subject(Nil))
+
+  /// The plane recorded for `binding`, if this orchestrator holds the binding
+  /// and its attach recorded one.
+  PlaneOf(pin: BitArray, binding: BitArray, reply: Subject(Result(Plane, Nil)))
 }
 
 /// What a connection receives.
@@ -149,6 +196,10 @@ pub opaque type ConnectionMessage {
 
   /// A proxy's callback frame, to send as it is.
   Outgoing(frame: BitArray)
+
+  /// A tunnel waiter's frame for tunnelled call `id`: its `cleared`, or one
+  /// of its events. A waiter's last frame removes it.
+  FromTunnel(id: Int, frame: untrusted_wire.Frame, end: TunnelEnd)
 
   /// `hello` took too long.
   HelloExpired
@@ -196,6 +247,11 @@ type Connection {
     blobs: Option(blob_service.Service),
     /// The waiters of requests not yet answered, by request id.
     waiters: Dict(Int, Pid),
+    /// The tunnel waiters of calls not yet settled, by request id. Each is
+    /// linked to this connection (protocol-change/117).
+    tunnels: Dict(Int, Pid),
+    /// The enforcement a tunnelled call is cleared with.
+    demand: exec.EnforcementDemand,
     /// Where things are logged.
     logger: Logger,
   )
@@ -230,6 +286,8 @@ type Proxy {
     owner: Subject(OwnerMessage),
     /// The proxy's control subject.
     control: Subject(ProxyMessage),
+    /// The plane the binding's attach was answered with, once it is.
+    plane: Option(Plane),
   )
 }
 
@@ -303,7 +361,8 @@ pub fn start(config: Config) -> Result(Gateway, String) {
     |> result.replace_error("the untrusted executor listener has no port"),
   )
   use book <- result.try(start_book(config.blobs, config.logger))
-  let served = Served(book:, host: config.host, blobs: config.blobs)
+  let served =
+    Served(book:, host: config.host, blobs: config.blobs, demand: config.demand)
   let acceptor =
     process.spawn(fn() { accepting(listener, served, config.logger) })
   Ok(Gateway(port:, acceptor:))
@@ -315,6 +374,7 @@ type Served {
     book: Subject(BookMessage),
     host: Address(HostMessage(RemoteCensus)),
     blobs: Option(blob_service.Service),
+    demand: exec.EnforcementDemand,
   )
 }
 
@@ -377,6 +437,8 @@ fn connection(
         host: served.host,
         blobs: served.blobs,
         waiters: dict.new(),
+        tunnels: dict.new(),
+        demand: served.demand,
         logger:,
       )
     let selector =
@@ -413,8 +475,15 @@ fn serve(
     Serving(stream:, ..), Replied(id:, response:) ->
       replied(stream, data, id, response)
     Serving(stream:, ..), Outgoing(frame:) -> outgoing(stream, data, frame)
+    Serving(stream:, ..), FromTunnel(id:, frame:, end:) ->
+      outgoing(
+        stream,
+        tunnel_ended(data, id, end),
+        untrusted_codec.encode_frame(frame),
+      )
     _, Replied(id:, ..) ->
       sm.keep(Connection(..data, waiters: dict.delete(data.waiters, id)))
+    _, FromTunnel(id:, end:, ..) -> sm.keep(tunnel_ended(data, id, end))
     _, Begin | _, Inbound(..) | _, Outgoing(..) | _, HelloExpired ->
       sm.keep(data)
   }
@@ -536,7 +605,7 @@ fn framed(
           )
         Error(report) -> closed(stream, data, corruption.describe(report))
       }
-    ffi_tls_stream.Ended | ffi_tls_stream.Broken -> sm.stop()
+    ffi_tls_stream.Ended | ffi_tls_stream.Broken -> stopped(data)
   }
 }
 
@@ -609,12 +678,15 @@ fn waiting(
   // connection dies first, the waiter leaves with `noconnection`, which the
   // host reads as a partition (`untrusted_bridge.ask_host`). A weft run would
   // tie it to a scope this connection owns and kill it with another reason.
-  case untrusted_wire.response_kind(request) {
-    None -> {
+  // A tunnelled call's waiter is the reverse, and is linked (`tunnelled`).
+  case request, untrusted_wire.response_kind(request) {
+    untrusted_wire.ClearCallRequest(binding:, spec:, waiting_ms:), _ ->
+      tunnelled(data, pin, id, binding, spec, waiting_ms)
+    _, None -> {
       let _none = untrusted_bridge.ask_host(host, request, port, carrier)
       data
     }
-    Some(_kind) -> {
+    _, Some(_kind) -> {
       let waiter =
         process.spawn_unlinked(fn() {
           let response =
@@ -669,12 +741,14 @@ fn answer(
     untrusted_wire.OutcomePieceRequest(key:, offset:) ->
       Some(untrusted_bridge.outcome_piece(host, key, offset, carrier))
 
-    // This executor carries no tunnelled call yet, so every clearance is
-    // refused as a broker that cannot be reached. The tunnel replaces this
-    // arm with a waiter that clears the call on the plane's broker under the
-    // binding's recorded base policy and reports it as `call_event` frames.
-    untrusted_wire.ClearCallRequest(..) ->
-      Some(untrusted_wire.ClearedAnswered(Error(broker.BrokerUnavailable)))
+    // The plane an attach was answered with is recorded under its binding
+    // before the response leaves, so a clearance that follows it finds both.
+    untrusted_wire.AttachRequest(binding:, ..) -> {
+      let #(response, census) =
+        untrusted_bridge.ask_attach(host, request, port, carrier)
+      recorded(answering, binding, census)
+      Some(response)
+    }
 
     untrusted_wire.CloseRequest(session:, incarnation:, ..) -> {
       let response = untrusted_bridge.ask_host(host, request, port, carrier)
@@ -728,16 +802,258 @@ fn closed_scope(
 }
 
 /// Cancels request `id` by killing its waiter, which the host reads as the
-/// asker dying and so as an abort.
+/// asker dying and so as an abort. A tunnelled call's waiter is killed the
+/// same way, and the broker's relay reads its death as the caller's, but it
+/// is linked to this connection, which does not trap exits, so it is unlinked
+/// first or its death would end the connection too.
 fn cancelled(data: Connection, id: Int) -> Connection {
   // A request already answered has no waiter left to kill.
-  case dict.get(data.waiters, id) {
-    Ok(waiter) -> {
+  case dict.get(data.waiters, id), dict.get(data.tunnels, id) {
+    Ok(waiter), _ -> {
       process.kill(waiter)
       Connection(..data, waiters: dict.delete(data.waiters, id))
     }
-    Error(Nil) -> data
+    Error(Nil), Ok(tunnel) -> {
+      process.unlink(tunnel)
+      process.kill(tunnel)
+      Connection(..data, tunnels: dict.delete(data.tunnels, id))
+    }
+    Error(Nil), Error(Nil) -> data
   }
+}
+
+/// Tells the book the plane an attach was answered with, and waits for the
+/// book's reply, so the record is in place before the attach's response is
+/// sent. A refused attach records nothing.
+fn recorded(
+  answering: Answering,
+  binding: BitArray,
+  census: Option(RemoteCensus),
+) -> Nil {
+  // Only an attach the host answered has a plane to record.
+  case census {
+    None -> Nil
+    Some(census) -> {
+      let plane =
+        Plane(broker: census.broker, base_policy: census.census.base_policy)
+      let _answered =
+        call.try_call(answering.book, waiting: book_ms, sending: Recorded(
+          pin: answering.pin,
+          binding:,
+          plane:,
+          reply: _,
+        ))
+      Nil
+    }
+  }
+}
+
+/// Starts the waiter of one tunnelled call (protocol-change/117), linked to
+/// this connection. A waiter killed with its connection may be inside
+/// `broker.clear_call`, waiting out a full pool in its own process: it dies at
+/// once, and a call the broker dispatches afterwards still names it as the
+/// caller, so the relay's monitor on it cancels the child as it starts. This
+/// is the reverse of a `run`'s waiter, which outlives its connection so the
+/// call's outcome reaches the ledger for the orchestrator's re-send; a
+/// tunnelled call is never re-sent.
+///
+/// The waiter is hand-rolled (a linked spawn, its pid in `tunnels`, unlink
+/// before kill in `cancelled` and `stopped`) rather than a weft run, and
+/// `docs/weft.md` lists it as a port to make. Its lifetime rule is that every
+/// way a connection stops ends its tunnel waiters: a crash through the link,
+/// and every normal stop through `stopped`. The two plain `sm.stop()` calls
+/// in `handshaken` and `hello` come before `Serving`, when no waiter exists.
+fn tunnelled(
+  data: Connection,
+  pin: BitArray,
+  id: Int,
+  binding: BitArray,
+  spec: untrusted_wire.TunnelSpec,
+  waiting_ms: Int,
+) -> Connection {
+  let book = data.book
+  let demand = data.demand
+  let report = fn(frame, end) {
+    process.send(data.subject, FromTunnel(id:, frame:, end:))
+  }
+
+  // A path that is not plain could survive the meet as text and name more
+  // than the plane holds once the helper cleans it, so the call is refused
+  // before any process is started for it (`tunnel_paths`).
+  case tunnel_paths.plain_spec(spec.base_policy, spec.requirements) {
+    Error(reason) -> {
+      log.warn(data.logger, "untrusted_gateway.tunnel_refused", [
+        field.text("reason", reason),
+      ])
+      report(
+        untrusted_wire.Response(
+          id:,
+          response: untrusted_wire.ClearedAnswered(Error(
+            broker.BrokerUnavailable,
+          )),
+        ),
+        Ends,
+      )
+      data
+    }
+    Ok(Nil) -> {
+      let waiter =
+        process.spawn(fn() {
+          tunnel_waiter(
+            book,
+            pin,
+            binding,
+            spec,
+            waiting_ms,
+            demand,
+            id,
+            report,
+          )
+        })
+      Connection(..data, tunnels: dict.insert(data.tunnels, id, waiter))
+    }
+  }
+}
+
+/// One tunnelled call, in its waiter: the plane recorded for the binding, the
+/// spec this executor clears, its clearance, and its events. The waiter owns
+/// the events subject, and `cleared` reaches the connection before the first
+/// event because both are messages from this one process.
+fn tunnel_waiter(
+  book: Subject(BookMessage),
+  pin: BitArray,
+  binding: BitArray,
+  spec: untrusted_wire.TunnelSpec,
+  waiting_ms: Int,
+  demand: exec.EnforcementDemand,
+  id: Int,
+  report: fn(untrusted_wire.Frame, TunnelEnd) -> Nil,
+) -> Nil {
+  let cleared = fn(answer) {
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ClearedAnswered(answer),
+    )
+  }
+  let plane =
+    call.try_call(book, waiting: book_ms, sending: PlaneOf(
+      pin:,
+      binding:,
+      reply: _,
+    ))
+    |> result.replace_error(Nil)
+    |> result.flatten
+  let events = process.new_subject()
+
+  // A binding this orchestrator does not hold, or one whose attach recorded
+  // no plane, has no broker to clear on.
+  case plane {
+    Error(Nil) -> report(cleared(Error(broker.BrokerUnavailable)), Ends)
+    Ok(plane) -> {
+      let handle =
+        broker.over(plane.broker, clock.from_function(ffi_os.system_time_ms))
+      let executor_spec = cleared_spec(plane, spec, demand)
+
+      // The call clears or is refused; a cleared call's stdin is closed at
+      // once, because no tunnelled caller writes input.
+      case
+        broker.clear_call(handle, executor_spec, events:, waiting: waiting_ms)
+      {
+        Error(refusal) -> report(cleared(Error(refusal)), Ends)
+        Ok(call) -> {
+          broker.stdin(handle, call, data: <<>>, eof: True)
+          report(cleared(Ok(Nil)), Continues)
+          forwarded_events(events, id, report)
+        }
+      }
+    }
+  }
+}
+
+/// The spec this executor clears for a tunnelled call. Its base is the meet
+/// of the plane's base with the orchestrator's, so a spec can narrow the
+/// plane's base and never widen it; the plane's writable roots are counted as
+/// readable for the meet, because the meet intersects the two lists apart and
+/// a Git call's read policy lists a writable root as readable, which the jail
+/// already allows. There are no grants, because a tunnelled call has no
+/// escalation that could approve one, and the demand is this executor's own.
+fn cleared_spec(
+  plane: Plane,
+  spec: untrusted_wire.TunnelSpec,
+  demand: exec.EnforcementDemand,
+) -> broker.CallSpec {
+  let base = plane.base_policy
+  let view =
+    policy.SandboxPolicy(
+      ..base,
+      readable_roots: list.unique(list.append(
+        base.readable_roots,
+        base.writable_roots,
+      )),
+    )
+  let #(base_policy, _narrowed) =
+    policy.compose(base: view, requirements: spec.base_policy, grants: [])
+  broker.CallSpec(
+    op_id: spec.op_id,
+    step_id: spec.step_id,
+    base_policy:,
+    requirements: spec.requirements,
+    grants: [],
+    response: spec.response,
+    demand:,
+    argv: spec.argv,
+    env: spec.env,
+    cwd: spec.cwd,
+    budget: spec.budget,
+  )
+}
+
+/// Forwards a cleared call's events until its settlement. A chunk with no
+/// bytes is not forwarded: the helper sends one when a stream's admitted
+/// bytes reach its cap exactly and the child writes more, to say truncation
+/// began, and the settled result says the same thing.
+fn forwarded_events(
+  events: Subject(broker.CallEvent),
+  id: Int,
+  report: fn(untrusted_wire.Frame, TunnelEnd) -> Nil,
+) -> Nil {
+  let event = fn(event) { untrusted_wire.CallEvent(call: id, event:) }
+
+  // The broker delivers exactly one settlement after a clearance, and it is
+  // the waiter's last frame.
+  case process.receive_forever(events) {
+    broker.CallOutput(stream:, data:, ..) ->
+      case bit_array.byte_size(data) {
+        0 -> forwarded_events(events, id, report)
+        _bytes -> {
+          report(event(untrusted_wire.TunnelOutput(stream:, data:)), Continues)
+          forwarded_events(events, id, report)
+        }
+      }
+    broker.CallSettled(outcome:) ->
+      report(event(untrusted_wire.TunnelSettled(outcome:)), Ends)
+  }
+}
+
+/// Forgets a tunnel waiter whose last frame has arrived.
+fn tunnel_ended(data: Connection, id: Int, end: TunnelEnd) -> Connection {
+  // A waiter that goes on keeps its place.
+  case end {
+    Continues -> data
+    Ends -> Connection(..data, tunnels: dict.delete(data.tunnels, id))
+  }
+}
+
+/// Stops the connection normally. A normal stop does not propagate through a
+/// link, so the tunnel waiters are unlinked and killed first: the executor
+/// must not keep a child running for an orchestrator whose connection is gone.
+/// The other waiters run on.
+fn stopped(data: Connection) -> sm.Next(Phase, Connection, ConnectionMessage) {
+  dict.each(data.tunnels, fn(_id, tunnel) {
+    process.unlink(tunnel)
+    process.kill(tunnel)
+  })
+  sm.stop()
 }
 
 /// Hands an answer to the proxy of the binding it names, if this
@@ -830,7 +1146,8 @@ fn armed(
   }
 }
 
-/// Logs why, closes the socket and stops. The waiters run on.
+/// Logs why, closes the socket and stops. The request waiters run on; the
+/// tunnel waiters are killed (`stopped`).
 fn closed(
   stream: Stream,
   data: Connection,
@@ -840,7 +1157,7 @@ fn closed(
     field.text("reason", reason),
   ])
   ffi_tls_stream.close(stream)
-  sm.stop()
+  stopped(data)
 }
 
 /// Starts the book, linked to the caller.
@@ -905,6 +1222,43 @@ fn booked(book: Book, message: BookMessage) -> actor.Next(Book, BookMessage) {
     Closed(pin:, session:, incarnation:) ->
       actor.continue(closed_binding(book, pin, session, incarnation))
     ConnectionDown(down:) -> actor.continue(departed(book, down))
+
+    // A record lands on the binding's proxy, so it retires with the binding;
+    // a binding retired first records nothing.
+    Recorded(pin:, binding:, plane:, reply:) -> {
+      let book = with_plane(book, pin, binding, plane)
+      process.send(reply, Nil)
+      actor.continue(book)
+    }
+    PlaneOf(pin:, binding:, reply:) -> {
+      dict.get(book.proxies, #(pin, binding))
+      |> result.try(fn(proxy) { option.to_result(proxy.plane, Nil) })
+      |> process.send(reply, _)
+      actor.continue(book)
+    }
+  }
+}
+
+/// Records the plane an attach of `binding` was answered with on the binding's
+/// proxy.
+fn with_plane(
+  book: Book,
+  pin: BitArray,
+  binding: BitArray,
+  plane: Plane,
+) -> Book {
+  // A binding retired before its record arrived records nothing.
+  case dict.get(book.proxies, #(pin, binding)) {
+    Ok(proxy) ->
+      Book(
+        ..book,
+        proxies: dict.insert(
+          book.proxies,
+          #(pin, binding),
+          Proxy(..proxy, plane: Some(plane)),
+        ),
+      )
+    Error(Nil) -> book
   }
 }
 
@@ -1075,7 +1429,13 @@ fn start_proxy(
       logger:,
     ))
     |> actor.selecting(selector)
-    |> actor.returning(Proxy(session:, incarnation:, owner:, control:))
+    |> actor.returning(Proxy(
+      session:,
+      incarnation:,
+      owner:,
+      control:,
+      plane: None,
+    ))
     |> Ok
   })
   |> actor.on_message(proxy)

@@ -348,3 +348,36 @@ pub fn the_cleared_call_is_the_bash_tools_own_test() {
   assert spec.base_policy == policy.workspace_default(workspace)
   assert spec.budget.deadline_ms == 6000
 }
+
+// --- executor text kept bounded (protocol-change/117) ----------------------------
+
+// Over the broker tunnel a refusal's and a failure's text is the executor's, and
+// the reason lands in durable goal state. Megabytes of one letter, or one
+// letter carrying a million combining accents (a single grapheme cluster),
+// still end as a bounded reason.
+pub fn an_executors_refusal_or_failure_ends_as_a_bounded_reason_test() {
+  let texts = [
+    string.repeat("x", 3_000_000),
+    "a" <> string.repeat("\u{0301}", 1_000_000),
+  ]
+  list.each(texts, fn(text) {
+    let seen = process.new_subject()
+    let refused =
+      run(
+        refusing(seen, broker.InvalidPolicy(policy.RelativePath(text))),
+        "make test",
+      )
+    let assert goalstate.DidNotFinish(reason:) = refused.ending
+      as "a refused check did not finish"
+    assert string.byte_size(reason) <= goalcheck.output_tail_chars
+
+    let failed =
+      run(
+        scripted([], broker.CallFailed(exec.RefusedByHelper("e", text)), seen),
+        "make test",
+      )
+    let assert goalstate.DidNotFinish(reason:) = failed.ending
+      as "a failed check did not finish"
+    assert string.byte_size(reason) <= goalcheck.output_tail_chars
+  })
+}

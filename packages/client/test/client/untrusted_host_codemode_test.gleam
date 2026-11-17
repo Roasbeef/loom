@@ -185,6 +185,7 @@ fn drive(seed: String) -> Nil {
       orchestrators: [pair.orchestrator_pin],
       host: started.data,
       blobs: None,
+      demand: exec.PlatformEnforcement,
       logger: log.discard(),
     ))
     as "the gateway starts"
@@ -196,6 +197,7 @@ fn drive(seed: String) -> Nil {
     untrusted_link.start(untrusted_link.Config(
       executor: "pod",
       name:,
+      door: process.new_name("untrusted_link_door"),
       host: "127.0.0.1",
       port: gateway.port,
       pin: pair.executor_pin,
