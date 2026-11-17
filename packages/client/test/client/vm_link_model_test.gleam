@@ -613,7 +613,8 @@ fn execute_up(
     WorldAbsent -> #(None, vm_link.NoTraces)
     WorldGuest(link:, traces:, ..) -> #(link, traces)
   }
-  let settled = vm_link.settle(name_of(guest), record, traces)
+  let settled =
+    vm_link.settle(name_of(guest), "/vm/" <> name_of(guest), record, traces)
 
   // Only a distribution guest is refused, and nothing brings one up.
   case settled, kind_of_slot(slot) {

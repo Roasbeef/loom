@@ -189,16 +189,21 @@ pub fn made(
 /// booted or sent, and the refusal names the three commands that move its work
 /// to a new guest (the owner's ruling of 2026-11-13, ADR-022). No input makes
 /// this answer `Distribution`, which is what keeps every command from making a
-/// new distribution guest or turning an untrusted one into one.
+/// new distribution guest or turning an untrusted one into one. `directory` is
+/// the guest's directory under the vm home, which the refusal names so that a
+/// developer can copy uncommitted edits out of the root before `rm` deletes it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_link.settle("dev", None, vm_link.NoTraces) == Ok(vm_spec.Untrusted)
-/// let assert Error(_) = vm_link.settle("dev", None, vm_link.DeployTrace)
+/// assert vm_link.settle("dev", "/h/vm/dev", None, vm_link.NoTraces)
+///   == Ok(vm_spec.Untrusted)
+/// let assert Error(_) =
+///   vm_link.settle("dev", "/h/vm/dev", None, vm_link.DeployTrace)
 /// ```
 pub fn settle(
   name: String,
+  directory: String,
   record: Option(String),
   traces: Traces,
 ) -> Result(LinkKind, String) {
@@ -207,7 +212,7 @@ pub fn settle(
   // Only a guest made over distribution is refused; everything else, new or
   // not, is brought up on the untrusted link.
   case kind {
-    Some(Distribution) -> Error(retired_refusal(name))
+    Some(Distribution) -> Error(retired_refusal(name, directory))
     Some(Untrusted) | None -> Ok(Untrusted)
   }
 }
@@ -218,7 +223,7 @@ pub fn settle(
 /// only, and `rm` deletes the root that holds everything else, so the words
 /// say where uncommitted edits are, and that a guest still running is stopped
 /// before `rm`, which refuses a running one.
-fn retired_refusal(name: String) -> String {
+fn retired_refusal(name: String, directory: String) -> String {
   "the guest "
   <> name
   <> " was made as a trusted distribution peer of your daemon, so code that "
@@ -226,8 +231,7 @@ fn retired_refusal(name: String) -> String {
   <> "started. Fetch its commits with `loom vm sync --name "
   <> name
   <> "`; that fetches commits only, so copy any uncommitted edits out of "
-  <> "<vm home>/"
-  <> name
+  <> directory
   <> "/root/srv/workspaces/ first. Then stop it with `loom vm down --name "
   <> name
   <> "` if it still runs, remove it with `loom vm rm --name "

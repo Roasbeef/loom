@@ -296,7 +296,8 @@ fn current_manifest(world: World) -> Result(World, statem.Violation) {
 fn settled(world: World, index: Int) -> Result(Settled, statem.Violation) {
   let guest = world_guest(world, index)
   let #(record, traces) = records_of(guest)
-  case vm_link.settle(name_of(index), record, traces), guest.made {
+  let directory = "/h/vm/" <> name_of(index)
+  case vm_link.settle(name_of(index), directory, record, traces), guest.made {
     Ok(vm_spec.Untrusted), _ -> Ok(OnTheLink)
     Ok(vm_spec.Distribution), _ ->
       Error(violation("no-distribution", "settled a guest over distribution"))
@@ -316,10 +317,14 @@ type Settled {
   Refused
 }
 
+// The refusal names the commands and the real directory of the guest's copies,
+// where uncommitted edits are.
 fn names_the_way_on(reason: String, name: String) -> Bool {
   list.all(
     [
       "`loom vm sync --name " <> name <> "`",
+      "/h/vm/" <> name <> "/root/srv/workspaces/",
+      "`loom vm down --name " <> name <> "`",
       "`loom vm rm --name " <> name <> " --yes`",
       "`loom vm up --name " <> name <> "`",
     ],

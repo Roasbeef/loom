@@ -2305,7 +2305,7 @@ fn link_of(guest: Instance, name: String) -> Result(vm_spec.LinkKind, String) {
     vm_link.made(record, traces)
     |> result.map_error(fn(reason) { guest.kind_file <> ": " <> reason }),
   )
-  vm_link.settle(name, record, traces)
+  vm_link.settle(name, guest.directory, record, traces)
 }
 
 /// What a first `up` left in the guest's directory before it recorded a link:

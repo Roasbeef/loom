@@ -35,6 +35,10 @@ import tom
 
 const seed = 20_261_113
 
+// The directory of the guest the refusal names, as `vm_cli` passes it: the
+// guest's own directory under the vm home.
+const guest_dir = "/h/vm/dev"
+
 fn config() -> qcheck.Config {
   qcheck.default_config()
   |> qcheck.with_test_count(300)
@@ -133,7 +137,8 @@ pub fn a_free_recorded_port_is_kept_and_any_other_is_replaced_test() {
 // --- which link a guest has -------------------------------------------------------
 
 pub fn a_new_guest_is_untrusted_test() {
-  assert vm_link.settle("dev", None, vm_link.NoTraces) == Ok(vm_spec.Untrusted)
+  assert vm_link.settle("dev", guest_dir, None, vm_link.NoTraces)
+    == Ok(vm_spec.Untrusted)
 }
 
 pub fn a_guest_made_over_distribution_is_refused_naming_the_way_on_test() {
@@ -142,7 +147,8 @@ pub fn a_guest_made_over_distribution_is_refused_naming_the_way_on_test() {
   list.each(
     [#(None, vm_link.DeployTrace), #(Some("distribution\n"), vm_link.NoTraces)],
     fn(made) {
-      let assert Error(reason) = vm_link.settle("dev", made.0, made.1)
+      let assert Error(reason) =
+        vm_link.settle("dev", guest_dir, made.0, made.1)
         as "a distribution guest is refused"
       assert_names_the_way_on(reason, "dev")
     },
@@ -165,10 +171,7 @@ fn assert_names_the_way_on(reason: String, name: String) -> Nil {
   let assert [between, after_rm] = string.split(after_sync, rm)
     as { "the refusal names " <> rm <> " after sync: " <> reason }
   assert string.contains(between, "commits only")
-  assert string.contains(
-    between,
-    "<vm home>/" <> name <> "/root/srv/workspaces/",
-  )
+  assert string.contains(between, guest_dir <> "/root/srv/workspaces/")
   assert string.contains(between, down)
   assert string.contains(after_rm, up)
     as { "the refusal names " <> up <> " last: " <> reason }
@@ -176,7 +179,7 @@ fn assert_names_the_way_on(reason: String, name: String) -> Nil {
 
 pub fn a_record_that_cannot_be_read_refuses_instead_of_defaulting_test() {
   let assert Error(reason) =
-    vm_link.settle("dev", Some("tls\n"), vm_link.NoTraces)
+    vm_link.settle("dev", guest_dir, Some("tls\n"), vm_link.NoTraces)
     as "an unreadable record is refused"
   assert string.contains(reason, "the link record says")
 }
@@ -205,7 +208,7 @@ pub fn the_settled_link_over_every_record_trace_and_flag_test() {
     list.each(present, fn(credentials) {
       list.each(present, fn(bundles) {
         let traces = vm_link.traces(credentials, bundles)
-        let settled = vm_link.settle("dev", record, traces)
+        let settled = vm_link.settle("dev", guest_dir, record, traces)
         let seen = case settled {
           Ok(vm_spec.Untrusted) -> BroughtUp
           Ok(vm_spec.Distribution) -> BroughtUpOverDistribution
@@ -811,9 +814,11 @@ pub fn the_minted_credentials_complete_a_pinned_handshake_test() {
 pub fn a_guest_with_a_minted_leaf_is_untrusted_even_with_no_record_test() {
   // An untrusted first run that stopped before it recorded its link is resumed
   // as untrusted, and a `deploy/` beside the leaf does not make it refused.
-  assert vm_link.settle("dev", None, vm_link.LeafTrace) == Ok(vm_spec.Untrusted)
+  assert vm_link.settle("dev", guest_dir, None, vm_link.LeafTrace)
+    == Ok(vm_spec.Untrusted)
   assert vm_link.settle(
       "dev",
+      guest_dir,
       None,
       vm_link.traces(vm_spec.Present, vm_spec.Present),
     )
