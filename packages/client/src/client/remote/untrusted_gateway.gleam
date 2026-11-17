@@ -876,7 +876,7 @@ fn tunnelled(
   // A path that is not plain could survive the meet as text and name more
   // than the plane holds once the helper cleans it, so the call is refused
   // before any process is started for it (`tunnel_paths`).
-  case tunnel_paths.plain_spec(spec.base_policy, spec.requirements, spec.cwd) {
+  case tunnel_paths.plain_spec(spec.base_policy, spec.requirements) {
     Error(reason) -> {
       log.warn(data.logger, "untrusted_gateway.tunnel_refused", [
         field.text("reason", reason),

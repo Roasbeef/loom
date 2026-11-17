@@ -6,12 +6,20 @@
 //// spelled `/w/..` is therefore kept under a plane root `/w`, and the helper
 //// cleans it to `/` when it builds the jail, which would give the call more
 //// than the plane holds. The gateway refuses such a call before it clears it,
-//// and this module is the test it applies: every path the meet or the jail
-//// reads must be absolute and made of plain segments, so its text is what the
-//// helper binds.
+//// and this module is the test it applies: every readable and writable root
+//// of the spec's base policy and requirements must be absolute and made of
+//// plain segments, so its text is what the helper binds.
 ////
-//// `plain` judges one path, and `plain_spec` every path-bearing field of a
-//// spec's base policy and requirements, and its working directory.
+//// The other path-bearing fields are not checked, because no spelling of
+//// them can give a call more than the plane holds, and checking them would
+//// refuse honest calls whose census base carries an unplain protected path
+//// (a daemon whose `HOME` is `/` masks `//.loom/vm`). In `policy.meet` the
+//// protected paths are a union, so a spec only adds masks; a mount is kept
+//// only when its path equals one of the base's exactly; the scratch is the
+//// base's own or a fresh tmpfs; and the working directory is not part of the
+//// policy and binds nothing.
+////
+//// `plain` judges one path, and `plain_spec` the roots of a spec.
 
 import broker/policy.{type SandboxPolicy}
 import gleam/bit_array
@@ -61,47 +69,31 @@ fn plain_segment(segment: BitArray) -> Bool {
   segment != <<>> && segment != <<".">> && segment != <<"..">>
 }
 
-/// Every path a tunnelled call's spec names, with the field it is in, is
-/// plain; otherwise the reason names the first one that is not.
+/// Every readable and writable root of a tunnelled call's base policy and
+/// requirements is plain; otherwise the reason names the first field that is
+/// not.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tunnel_paths.plain_spec(spec.base_policy, spec.requirements, spec.cwd)
+/// // tunnel_paths.plain_spec(spec.base_policy, spec.requirements)
 /// ```
 pub fn plain_spec(
   base_policy: SandboxPolicy,
   requirements: SandboxPolicy,
-  cwd: String,
 ) -> Result(Nil, String) {
-  use Nil <- result.try(plain_policy(base_policy, "base policy"))
-  use Nil <- result.try(plain_policy(requirements, "requirements"))
-  each_plain([cwd], "working directory")
+  use Nil <- result.try(plain_roots(base_policy, "base policy"))
+  plain_roots(requirements, "requirements")
 }
 
-/// Every path of one policy: its roots, its protected paths, its mounts and a
-/// scratch directory bound from the host.
-fn plain_policy(policy: SandboxPolicy, named: String) -> Result(Nil, String) {
-  // Only a scratch bound from the host names a path; a tmpfs names none.
-  let scratch = case policy.scratch {
-    policy.ScratchPath(path:) -> [path]
-    policy.ScratchTmpfs -> []
-  }
-
+/// The two root lists of one policy, the only fields the meet keeps by a
+/// prefix test.
+fn plain_roots(policy: SandboxPolicy, named: String) -> Result(Nil, String) {
   use Nil <- result.try(each_plain(
     policy.writable_roots,
     named <> " writable root",
   ))
-  use Nil <- result.try(each_plain(
-    policy.readable_roots,
-    named <> " readable root",
-  ))
-  use Nil <- result.try(each_plain(policy.protected, named <> " protected path"))
-  use Nil <- result.try(each_plain(
-    list.map(policy.mounts, fn(mount) { mount.path }),
-    named <> " mount",
-  ))
-  each_plain(scratch, named <> " scratch")
+  each_plain(policy.readable_roots, named <> " readable root")
 }
 
 /// Whether every path of `paths` is plain, naming the field when one is not.

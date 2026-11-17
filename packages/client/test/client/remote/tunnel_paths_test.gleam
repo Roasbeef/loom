@@ -110,33 +110,44 @@ pub fn each_unplain_spelling_is_refused_test() {
   assert tunnel_paths.plain("/w/\u{301}x")
 }
 
-// Every path-bearing field of either policy, and the working directory, is
-// checked.
-pub fn every_path_field_of_a_spec_is_checked_test() {
+// The roots of either policy are checked, because the meet keeps a root by a
+// prefix test of its text.
+pub fn the_roots_of_both_policies_are_checked_test() {
   let base = workspace_policy.base_policy("/w")
   let bad = "/w/.."
-  assert tunnel_paths.plain_spec(base, base, "/w") == Ok(Nil)
+  assert tunnel_paths.plain_spec(base, base) == Ok(Nil)
   let spoiled = [
     policy.SandboxPolicy(..base, writable_roots: [bad]),
     policy.SandboxPolicy(..base, readable_roots: [bad]),
-    policy.SandboxPolicy(..base, protected: [bad]),
-    policy.SandboxPolicy(..base, scratch: policy.ScratchPath(bad)),
-    policy.SandboxPolicy(..base, mounts: [
-      policy.Mount(
-        path: bad,
-        access: policy.MountReadOnly,
-        requirement: policy.MountRequired,
-      ),
-    ]),
   ]
   list.each(spoiled, fn(spoilt) {
-    let assert Error(_) = tunnel_paths.plain_spec(spoilt, base, "/w")
-      as "a base policy field is checked"
-    let assert Error(_) = tunnel_paths.plain_spec(base, spoilt, "/w")
-      as "a requirements field is checked"
+    let assert Error(_) = tunnel_paths.plain_spec(spoilt, base)
+      as "a base policy root is checked"
+    let assert Error(_) = tunnel_paths.plain_spec(base, spoilt)
+      as "a requirements root is checked"
     Nil
   })
-  let assert Error(_) = tunnel_paths.plain_spec(base, base, "/w/../etc")
-    as "the working directory is checked"
-  Nil
+}
+
+// The fields no spelling can widen pass whatever their spelling: a protected
+// path only adds a mask, a mount is kept only when it equals the base's, and
+// a scratch path is kept only when it equals the base's. A census base that
+// masks `//.loom/vm`, as a daemon whose `HOME` is `/` builds, is honest.
+pub fn the_fields_that_cannot_widen_are_not_checked_test() {
+  let base = workspace_policy.base_policy("/w")
+  let bad = "//.loom/vm"
+  let honest =
+    policy.SandboxPolicy(
+      ..base,
+      protected: [bad, ..base.protected],
+      scratch: policy.ScratchPath("/w/../scratch"),
+      mounts: [
+        policy.Mount(
+          path: "/w//m",
+          access: policy.MountReadOnly,
+          requirement: policy.MountRequired,
+        ),
+      ],
+    )
+  assert tunnel_paths.plain_spec(honest, honest) == Ok(Nil)
 }
