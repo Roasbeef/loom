@@ -315,8 +315,10 @@ call and checks the three things the broker tunnel serves
 session's stored `session/git-start` (`session_git.key`) is a `revision` and not
 `unavailable`; the `worktree_diff` observation on the session socket is a
 `ready` board listing both paths; and a `goal_set` with a check that tests for
-the new file completes with `last_check` at exit status 0 carrying the guest's
-output, which the scripted reviewer's feed repeats. On a tree without the tunnel
+the new file records `last_check` at exit status 0 carrying the guest's output
+and workspace path. It does not wait for the goal to complete (the reviewer is
+not asked in that flow, so the advisor's provider has an empty script), and it
+clears the goal before the session stops. On a tree without the tunnel
 the baseline is `unavailable`, the board is `failed` with the broker's refusal
 and the check is refused. It does not observe that hooks stay refused, which
 needs a trust record fixture; `remote/untrusted_end_to_end_test` covers it.

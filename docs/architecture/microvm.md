@@ -1332,7 +1332,7 @@ epmd lists no node for it, a jailed read of the executor's key returns nothing
 while the certificate beside it is readable, and `status` names the link. A
 second jailed call edits the guest's checkout, and the step then checks the
 stored baseline is a revision, the `worktree_diff` board lists the edited
-paths, and a goal check on the guest passes.
+paths, and a goal's check records exit status 0 with the guest's output.
 
 ## Package registries and toolchains: `--allow` and `--provision`
 
