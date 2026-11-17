@@ -26,6 +26,14 @@
 ////   A link holds none when it starts, so it answers a `Run` or a
 ////   `StartExecution` for a session it holds none for with `NoPlane`
 ////   (`answered_unbound`), and the surface attaches again.
+//// - **Tunnelled calls** (protocol-change/117): the calls a session's non-tool
+////   callers clear on the executor's broker, in a table of their own by
+////   request id (`client/remote/tunnel_calls`), never among the outstanding
+////   requests, because a broker call has no key and is never sent twice. The
+////   callers reach the link through its tunnel door, a second process
+////   registered under `Config.door`, with the clearing function `tunnel`. A
+////   running call's output is buffered per stream and handed over only at its
+////   settlement.
 ////
 //// ## Re-sending
 ////
@@ -59,12 +67,16 @@
 //// A frame that does not decode, a response for an id the link never issued,
 //// a response of the wrong kind, and any frame an orchestrator does not accept
 //// close the connection. The outstanding requests stay and are sent again on
-//// the next one.
+//// the next one. So do the tunnel's violations: an event or a `cleared` for an
+//// id never issued or held as another request, a `cleared` for a running
+//// call, an event for a call still clearing, and more output on a stream than
+//// the spec's limit. A tunnelled call ends with its connection, whatever
+//// ended it.
 ////
 //// ## Flow
 ////
 //// `start` → `name_for` → `address` → `running` → `handle` → `received` →
-//// `admitted`
+//// `admitted` → `tunnel` → `tunnelled` → `stepped_calls`
 ////
 //// 1. `start` registers the name and starts the machine idle; `name_for` is
 ////    the production name, `address` the `Address` a session's `Reach` holds
@@ -74,6 +86,11 @@
 ////    a frame goes to `received`.
 //// 3. `received` dispatches one executor frame, and `admitted` is the check
 ////    every callback passes before an owner sees it.
+//// 4. `tunnel` is a session's clearing function; its door forwards each
+////    clearance, withdraw and cancel, which `tunnelled` checks and hands to
+////    the call table. `stepped_calls` steps the table and applies its effects,
+////    for those messages, for the executor's clearance answers and call
+////    events, for an asker's death and for a dropped connection.
 ////
 //// <!-- transitions: untrusted_link.Phase -->
 //// | From | Event | To |
@@ -86,6 +103,7 @@
 
 import broker/broker
 import broker/internal/ffi_crypto
+import client/clear_call
 import client/host_seam
 import client/internal/ffi_remote
 import client/internal/ffi_tls_stream.{type Stream}
@@ -94,6 +112,7 @@ import client/remote/blob_transfer
 import client/remote/outcome_fetch
 import client/remote/protocol.{type HostMessage, type OwnerMessage}
 import client/remote/remote_census.{type RemoteCensus}
+import client/remote/tunnel_calls
 import client/remote/untrusted_bridge.{type BlobAsk, type Reply}
 import client/remote/untrusted_codec
 import client/remote/untrusted_wire.{type Answer, type Callback, type Request}
@@ -112,7 +131,9 @@ import runtime/effects
 import telemetry/field
 import telemetry/log.{type Logger}
 import tools/codemode as codemode_tool
+import tools/tool
 import weft
+import weft/actor
 import weft/state_machine as sm
 
 /// How to reach one untrusted executor.
@@ -123,6 +144,10 @@ pub type Config {
     /// The name this process registers on the local node, which the session's
     /// `Reach` addresses. Made once per configured executor.
     name: Name(HostMessage(RemoteCensus)),
+    /// The name the link's tunnel door registers (protocol-change/117), which
+    /// a session's clearing function looks up on every call:
+    /// `tunnel_name_for(executor)` in production.
+    door: Name(Tunnel),
     /// The executor's listener host.
     host: String,
     /// The executor's listener port.
@@ -187,7 +212,51 @@ pub opaque type Message {
 
   /// The pause before a redial ended.
   PauseEnded
+
+  /// A session's clearing function, through the tunnel door.
+  Tunnelled(tunnel: Tunnel)
+
+  /// The clearance wait of tunnelled call `id` passed.
+  TunnelWaitPassed(id: Int)
 }
+
+/// What the tunnel door takes from a session's clearing function and hands to
+/// the link (protocol-change/117). Every message names the asker's reply
+/// subject, which is fresh for each call, so a function holding a call made
+/// through a link that has since been replaced names nothing the new link
+/// holds, although the new link mints the same request ids again.
+pub opaque type Tunnel {
+  /// Clear `spec` for `session` on the executor's broker. The link answers
+  /// `reply` within `waiting` milliseconds, and a running call's events go to
+  /// `events`.
+  Clear(
+    session: String,
+    spec: broker.CallSpec,
+    events: Subject(broker.CallEvent),
+    waiting: Int,
+    reply: Subject(Result(Nil, broker.Refusal)),
+  )
+
+  /// The function's own wait ended: forget the call and cancel it.
+  Withdraw(reply: Subject(Result(Nil, broker.Refusal)))
+
+  /// The caller cancelled the running call.
+  CancelCall(reply: Subject(Result(Nil, broker.Refusal)))
+}
+
+/// The link's table of tunnelled calls, over the subjects its askers own.
+type Calls =
+  tunnel_calls.Table(
+    Subject(Result(Nil, broker.Refusal)),
+    Subject(broker.CallEvent),
+  )
+
+/// One effect of the table, over the same subjects.
+type CallEffect =
+  tunnel_calls.Effect(
+    Subject(Result(Nil, broker.Refusal)),
+    Subject(broker.CallEvent),
+  )
 
 /// The machine's data.
 type Data {
@@ -216,6 +285,13 @@ type Data {
     /// The outcome pieces asked for on this connection, each with the id of
     /// the request whose outcome it is part of.
     pieces: Dict(Int, Int),
+    /// Where the tunnel door forwards what sessions send it.
+    tunnels: Subject(Tunnel),
+    /// The tunnelled calls, by request id, apart from `outstanding` so the
+    /// re-send of a new connection never sees one (protocol-change/117).
+    calls: Calls,
+    /// The monitor on each tunnelled call's asker.
+    tunnel_watch: Dict(Int, Monitor),
   )
 }
 
@@ -303,6 +379,9 @@ type Forwarding {
 type Watched {
   /// The process that sent request `id`.
   Asker(id: Int)
+
+  /// The process that asked for tunnelled call `id`.
+  TunnelAsker(id: Int)
 
   /// The owner port of `binding`.
   Port(binding: BitArray)
@@ -417,6 +496,119 @@ pub fn name_for(executor: String) -> Name(HostMessage(RemoteCensus)) {
   ffi_remote.fixed_name("loom_untrusted_executor_" <> executor)
 }
 
+/// The name the tunnel door of the link to `executor` registers in production
+/// (protocol-change/117). It is made from the operator's executor name as
+/// `name_for`'s is, so each name makes two atoms and 116's bound of 1,024
+/// names bounds them at 2,048.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // untrusted_link.tunnel_name_for("review-pod")
+/// ```
+pub fn tunnel_name_for(executor: String) -> Name(Tunnel) {
+  ffi_remote.fixed_name("loom_untrusted_tunnel_" <> executor)
+}
+
+/// The clearing function of `session` on the untrusted executor `executor`:
+/// each call goes through the tunnel door of whichever link is registered for
+/// the executor at the time (protocol-change/117).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let clear = untrusted_link.tunnel("review-pod", session)
+/// // clear(spec, events, 30_000)
+/// ```
+pub fn tunnel(executor: String, session: String) -> clear_call.ClearCall {
+  tunnel_through(tunnel_name_for(executor), session)
+}
+
+/// What one clearance through the door told the clearing function.
+type Heard {
+  /// The link's answer.
+  Heard(answer: Result(Nil, broker.Refusal))
+
+  /// The door went down before it answered.
+  DoorDown
+}
+
+/// `tunnel` through the door registered as `door`. The door is looked up by
+/// name on every call and no pid is held, because `executors.reload` can
+/// replace the link and its door at any time.
+///
+/// A door that is not registered, or dies before the answer, is
+/// `BrokerUnavailable`. The link answers within `waiting`, so the function
+/// waits two seconds more; if that ends, it withdraws the call, and a late
+/// answer stays unread on a subject nobody selects again. A running call's
+/// `stdin` does nothing, because no tunnelled caller writes input and the
+/// executor closes the child's stdin when the call clears; its `cancel` asks
+/// the link to settle the call as lost and to cancel it on the executor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let clear = untrusted_link.tunnel_through(door, session)
+/// ```
+pub fn tunnel_through(
+  door: Name(Tunnel),
+  session: String,
+) -> clear_call.ClearCall {
+  tunnel_waiting(door, session, 2000)
+}
+
+/// `tunnel_through` with the function's own wait set to the link's plus
+/// `slack_ms`. A test passes a negative slack to give a call up while the
+/// link still holds it, which no other ordering reaches.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let impatient = untrusted_link.tunnel_waiting(door, session, -2500)
+/// ```
+@internal
+pub fn tunnel_waiting(
+  door: Name(Tunnel),
+  session: String,
+  slack_ms: Int,
+) -> clear_call.ClearCall {
+  let at = address.Address(node: node.self(), name: door)
+  fn(spec, events, waiting) {
+    // A door that nobody holds is a link that is not running.
+    case process.named(door) {
+      Error(Nil) -> Error(broker.BrokerUnavailable)
+      Ok(pid) -> {
+        let reply = process.new_subject()
+        let watch = process.monitor(pid)
+        address.deliver(at, Clear(session:, spec:, events:, waiting:, reply:))
+        let heard =
+          process.new_selector()
+          |> process.select_map(reply, Heard)
+          |> process.select_specific_monitor(watch, fn(_down) { DoorDown })
+          |> process.selector_receive(int.max(0, waiting + slack_ms))
+        process.demonitor_process(watch)
+
+        // Only the link's own `Ok` is a running call; a silent link is given
+        // the call back so it does not hold it for an asker that has left.
+        case heard {
+          Ok(Heard(Ok(Nil))) ->
+            Ok(
+              tool.RunningCall(stdin: fn(_data, _eof) { Nil }, cancel: fn() {
+                address.deliver(at, CancelCall(reply))
+              }),
+            )
+          Ok(Heard(Error(refusal))) -> Error(refusal)
+          Ok(DoorDown) -> Error(broker.BrokerUnavailable)
+          Error(Nil) -> {
+            address.deliver(at, Withdraw(reply))
+            Error(broker.BrokerUnavailable)
+          }
+        }
+      }
+    }
+  }
+}
+
 /// The `Link` a blob placement drives, for `session`, through the link that
 /// `start_placing` returned `blobs` for (protocol-change/110). Each question
 /// waits at most `within_ms`; a link that is not running, or an answer that is
@@ -524,6 +716,8 @@ fn initialise(
     |> result.map_error(fn(_taken) { "the link's name is already registered" }),
   )
   use broker <- result.try(refusing_broker())
+  let tunnels = process.new_subject()
+  use Nil <- result.try(start_door(config.door, tunnels))
   let dials = process.new_subject()
   let blobs = process.new_subject()
   let data =
@@ -540,6 +734,9 @@ fn initialise(
       forwarding: dict.new(),
       pause_ms: first_pause_ms,
       pieces: dict.new(),
+      tunnels:,
+      calls: tunnel_calls.new(),
+      tunnel_watch: dict.new(),
     )
   Ok(
     sm.initialised(Idle, data)
@@ -548,10 +745,41 @@ fn initialise(
   )
 }
 
+/// Starts the tunnel door: a weft actor linked to this process, registered as
+/// `door`, which forwards everything a clearing function sends it to the
+/// link's `tunnels` subject. The link holds one registered name already, for
+/// the `HostMessage`s, and a process has only one, so the clearing functions
+/// reach the link through a second process. Being linked, the door dies with
+/// the link, and a link started in its place starts a door of its own.
+fn start_door(
+  door: Name(Tunnel),
+  tunnels: Subject(Tunnel),
+) -> Result(Nil, String) {
+  actor.new_with_initialiser(1000, fn(_subject) {
+    use Nil <- result.try(
+      process.register(process.self(), door)
+      |> result.replace_error("the link's tunnel door is already registered"),
+    )
+    actor.initialised(tunnels)
+    |> actor.selecting(
+      process.new_selector() |> process.select(process.named_subject(door)),
+    )
+    |> Ok
+  })
+  |> actor.on_message(fn(tunnels, tunnel) {
+    process.send(tunnels, tunnel)
+    actor.continue(tunnels)
+  })
+  |> actor.start
+  |> result.replace(Nil)
+  |> result.replace_error("the link's tunnel door did not start")
+}
+
 /// A broker subject whose owner has already exited. `broker.clear_call` makes
-/// a monitored call, so every call on it is refused as unavailable at once;
-/// that is how the commands non-tool callers would run through the executor's
-/// broker are refused on an untrusted executor in slice 1.
+/// a monitored call, so every call on it is refused as unavailable at once.
+/// The plane's `broker` of an untrusted placement is this handle, for the code
+/// that holds a broker actor for its own reasons; the non-tool callers clear
+/// through the tunnel instead.
 fn refusing_broker() -> Result(Subject(broker.Msg), String) {
   let handed = process.new_subject()
   process.spawn(fn() { process.send(handed, process.new_subject()) })
@@ -567,6 +795,7 @@ fn selector_of(data: Data) -> process.Selector(Message) {
     |> process.select_map(process.named_subject(data.config.name), Host)
     |> process.select_map(data.blobs, Blob)
     |> process.select_map(data.dials, Dialed)
+    |> process.select_map(data.tunnels, Tunnelled)
     |> process.select_monitors(Down)
     |> ffi_tls_stream.select(Inbound)
   dict.fold(data.forwarding, base, fn(selector, at, forwarding) {
@@ -604,6 +833,9 @@ fn handle(
     _, GreetingExpired -> sm.keep(data)
     Resting, PauseEnded -> rested(data)
     _, PauseEnded -> sm.keep(data)
+    _, Tunnelled(tunnel:) -> tunnelled(phase, data, tunnel)
+    _, TunnelWaitPassed(id:) ->
+      calls_stepped(phase, data, tunnel_calls.WaitPassed(id:))
   }
 }
 
@@ -1194,13 +1426,8 @@ fn received(
           called_back(stream, data, binding, id, body)
         Ok(untrusted_codec.OversizedEnvelope(id:, size:, digest:)) ->
           oversized(stream, data, id, size, digest)
-
-        // This link sends no `clear_call` and so holds no tunnelled call, and
-        // an event for one is a frame an honest executor never sends. The
-        // tunnel replaces this arm with the call table's handling of output
-        // and settlement.
-        Ok(untrusted_codec.CallEventEnvelope(..)) ->
-          violation(stream, data, "an event for a call this link never cleared")
+        Ok(untrusted_codec.CallEventEnvelope(call:, body:)) ->
+          call_evented(stream, data, call, body)
 
         Ok(untrusted_codec.HelloEnvelope(..))
         | Ok(untrusted_codec.WelcomeEnvelope(..))
@@ -1230,6 +1457,7 @@ fn responded(
 ) -> sm.Next(Phase, Data, Message) {
   let issued = id >= 1 && id < data.next_id
   use <- piece_or(stream, data, id, body)
+  use <- tunnel_or(stream, data, id, body)
 
   // A cancel and a response can cross, so a held id that is gone is not a
   // violation; an id this link never minted is.
@@ -1579,7 +1807,15 @@ fn disconnected(data: Data) -> Data {
         Fetching(piece: None, ..) | Whole | Waiting(..) -> pending
       }
     })
-  Data(..data, outstanding:, pieces: dict.new())
+  let data = Data(..data, outstanding:, pieces: dict.new())
+
+  // A tunnelled call was sent on this connection and is never sent on
+  // another, so each ends now for its asker; a dropped connection sends
+  // nothing, so the cancels and the violation the table could return are
+  // empty.
+  let #(data, _cancels, _broke) =
+    stepped_calls(data, tunnel_calls.ConnectionDropped)
+  data
 }
 
 /// A callback: decoded, then checked against its binding, then either
@@ -2104,6 +2340,18 @@ fn went_down(
         Data(..data, watched: dict.delete(data.watched, monitor)),
         binding,
       ))
+
+    // A tunnelled call's asker is gone: nobody hears anything more, and the
+    // executor is told to stop the call.
+    Ok(#(monitor, TunnelAsker(id))) -> {
+      let data =
+        Data(
+          ..data,
+          watched: dict.delete(data.watched, monitor),
+          tunnel_watch: dict.delete(data.tunnel_watch, id),
+        )
+      calls_stepped(phase, data, tunnel_calls.AskerDied(id:))
+    }
   }
 }
 
@@ -2220,6 +2468,376 @@ fn rested(data: Data) -> sm.Next(Phase, Data, Message) {
     True -> dial(data)
     False -> sm.transition(to: Idle, data:)
   }
+}
+
+// --- the broker tunnel (protocol-change/117) ------------------------------------
+
+/// Whether the connection must be asked for its next frame after a step of the
+/// call table: yes when a frame caused the step, no when the step came from
+/// the orchestrator's own side.
+type Reading {
+  /// A frame was taken, so the next one is asked for.
+  ReadNext
+
+  /// No frame was taken; the connection is already armed.
+  AlreadyArmed
+}
+
+/// A message the tunnel door forwarded.
+fn tunnelled(
+  phase: Phase,
+  data: Data,
+  tunnel: Tunnel,
+) -> sm.Next(Phase, Data, Message) {
+  // A clearance is checked and sent; a withdraw and a cancel act on the entry
+  // the asker's reply subject names, if the table still holds it.
+  case tunnel {
+    Clear(session:, spec:, events:, waiting:, reply:) ->
+      clear_asked(phase, data, session, spec, events, waiting, reply)
+    Withdraw(reply:) ->
+      calls_stepped(phase, data, tunnel_calls.Withdrawn(reply:))
+    CancelCall(reply:) ->
+      calls_stepped(phase, data, tunnel_calls.Cancelled(reply:))
+  }
+}
+
+/// A new clearance. It is refused at once, and nothing is sent, when the
+/// connection is not open, when the session holds no binding on this link,
+/// when the spec carries grants or passes the codec's limits, or when its
+/// frame would not fit; the table refuses it for its output limit and its
+/// bounds. An admitted call is sent under the next id, its asker is
+/// monitored, and its clearance wait is armed.
+///
+/// The wire's wait is the caller's less one second, so an honest refusal the
+/// executor answers at its own deadline reaches this link before the link's
+/// own wait ends.
+fn clear_asked(
+  phase: Phase,
+  data: Data,
+  session: String,
+  spec: broker.CallSpec,
+  events: Subject(broker.CallEvent),
+  waiting: Int,
+  reply: Subject(Result(Nil, broker.Refusal)),
+) -> sm.Next(Phase, Data, Message) {
+  let id = data.next_id
+  let checked = {
+    use stream <- result.try(open_stream(phase))
+    use binding <- result.try(
+      dict.get(data.sessions, session)
+      |> result.replace_error("the session holds no binding on this link"),
+    )
+    use Nil <- result.try(shaped(spec, waiting))
+    let request =
+      untrusted_wire.ClearCallRequest(
+        binding:,
+        spec: tunnel_spec(spec),
+        waiting_ms: int.max(1, waiting - 1000),
+      )
+    use frame <- result.map(
+      untrusted_codec.encode_fitting(untrusted_wire.Request(id:, request:))
+      |> result.map_error(fn(unfit) { unfit.reason }),
+    )
+    #(stream, binding, frame)
+  }
+
+  // A refusal here proves nothing was sent; an admitted call is the table's
+  // to refuse or to send.
+  case checked {
+    Error(reason) -> {
+      refuse_tunnel(data, reply, reason)
+      sm.keep(data)
+    }
+    Ok(#(stream, binding, frame)) -> {
+      let limit = spec.requirements.limits.output_bytes
+      let #(calls, effects) =
+        tunnel_calls.step(
+          data.calls,
+          tunnel_calls.Opened(id:, binding:, reply:, events:, limit:),
+        )
+      let #(data, _cancels, _broke) = effected(Data(..data, calls:), effects)
+
+      // Only `SendClear` puts the call on the wire.
+      case list.contains(effects, tunnel_calls.SendClear(id)) {
+        False -> sm.keep(data)
+        True ->
+          sent(stream, admitted_call(data, id, reply), frame)
+          |> sm.with_named_timeout(
+            name: "tunnel-" <> int.to_string(id),
+            after: waiting,
+            sending: TunnelWaitPassed(id),
+          )
+      }
+    }
+  }
+}
+
+/// The stream of an open connection, or why a clearance cannot be sent.
+fn open_stream(phase: Phase) -> Result(Stream, String) {
+  // A tunnelled call is sent on one connection at most, and never held for
+  // the next one.
+  case phase {
+    Open(stream:) -> Ok(stream)
+    Idle | Dialing | Greeting(..) | Resting ->
+      Error("the link has no open connection")
+  }
+}
+
+/// Refuses a spec the executor would refuse by closing the connection, or
+/// that names authority only the executor supplies.
+fn shaped(spec: broker.CallSpec, waiting: Int) -> Result(Nil, String) {
+  let within = fn(millis) {
+    millis >= 0 && millis <= untrusted_codec.max_call_ms
+  }
+  let fits =
+    list.drop(spec.argv, untrusted_codec.max_call_argv) == []
+    && list.drop(spec.env, untrusted_codec.max_call_env) == []
+    && within(waiting)
+    && within(spec.budget.deadline_ms)
+
+  // Grants come only from an approved escalation, which a tunnelled call has
+  // no path to; the sizes are the ones the executor's codec refuses.
+  case spec.grants, fits {
+    [_, ..], _ -> Error("a tunnelled call carries no grants")
+    [], False ->
+      Error(
+        "the call's argv, env, wait or deadline passes what the link carries",
+      )
+    [], True -> Ok(Nil)
+  }
+}
+
+/// The part of a spec the orchestrator chooses, as the wire carries it.
+fn tunnel_spec(spec: broker.CallSpec) -> untrusted_wire.TunnelSpec {
+  untrusted_wire.TunnelSpec(
+    op_id: spec.op_id,
+    step_id: spec.step_id,
+    base_policy: spec.base_policy,
+    requirements: spec.requirements,
+    response: spec.response,
+    argv: spec.argv,
+    env: spec.env,
+    cwd: spec.cwd,
+    budget: spec.budget,
+  )
+}
+
+/// Records an admitted call's id as issued and monitors its asker.
+fn admitted_call(
+  data: Data,
+  id: Int,
+  reply: Subject(Result(Nil, broker.Refusal)),
+) -> Data {
+  let #(data, monitor) =
+    watch(
+      data,
+      process.subject_owner(reply) |> option.from_result,
+      TunnelAsker(id),
+    )
+
+  // An asker whose process cannot be found has no death to read; its entry
+  // still ends by its wait, its settlement or the connection.
+  let tunnel_watch = case monitor {
+    Some(monitor) -> dict.insert(data.tunnel_watch, id, monitor)
+    None -> data.tunnel_watch
+  }
+
+  Data(..data, next_id: id + 1, tunnel_watch:)
+}
+
+/// Logs a clearance refused before anything was sent, and answers it.
+fn refuse_tunnel(
+  data: Data,
+  reply: Subject(Result(Nil, broker.Refusal)),
+  reason: String,
+) -> Nil {
+  log.warn(data.config.logger, "untrusted_link.tunnel_refused", [
+    field.text("executor", data.config.executor),
+    field.text("reason", reason),
+  ])
+  process.send(reply, Error(broker.BrokerUnavailable))
+}
+
+/// A `call_event` frame: decoded, then handed to the table with what the link
+/// knows about the id it names.
+fn call_evented(
+  stream: Stream,
+  data: Data,
+  call: Int,
+  body: json.JsonValue,
+) -> sm.Next(Phase, Data, Message) {
+  let origin = origin_of(data, call)
+
+  // An event that does not decode is a violation like any other frame.
+  case untrusted_codec.decode_call_event(body) {
+    Error(report) -> violation(stream, data, corruption.describe(report))
+    Ok(untrusted_wire.TunnelOutput(stream: output, data: bytes)) ->
+      frame_stepped(
+        stream,
+        data,
+        tunnel_calls.EventOutput(id: call, stream: output, data: bytes, origin:),
+      )
+    Ok(untrusted_wire.TunnelSettled(outcome:)) ->
+      frame_stepped(
+        stream,
+        data,
+        tunnel_calls.EventSettled(id: call, outcome:, origin:),
+      )
+  }
+}
+
+/// Runs `next` unless `id` is a tunnelled call's, whose response is its
+/// `cleared` and is taken here instead.
+fn tunnel_or(
+  stream: Stream,
+  data: Data,
+  id: Int,
+  body: json.JsonValue,
+  next: fn() -> sm.Next(Phase, Data, Message),
+) -> sm.Next(Phase, Data, Message) {
+  // A response for a tunnel id the table no longer holds falls through to
+  // `responded`, which drops it as it drops any response that crossed a
+  // removal.
+  case tunnel_calls.holds(data.calls, id) {
+    False -> next()
+    True ->
+      case untrusted_codec.decode_response(untrusted_wire.ClearedKind, body) {
+        Ok(untrusted_wire.ClearedAnswered(answer:)) ->
+          frame_stepped(
+            stream,
+            data,
+            tunnel_calls.Cleared(id:, answer:, origin: tunnel_calls.Issued),
+          )
+        Ok(_other) | Error(_) ->
+          violation(stream, data, "a tunnelled call's clearance did not decode")
+      }
+  }
+}
+
+/// What the link knows about an id an executor frame names: never issued,
+/// held as another request (a run, a lookup, an outcome piece), or issued and
+/// not another request's.
+fn origin_of(data: Data, id: Int) -> tunnel_calls.Origin {
+  let issued = id >= 1 && id < data.next_id
+  let other =
+    dict.has_key(data.outstanding, id) || dict.has_key(data.pieces, id)
+
+  // The counter is shared by every request, so the two lookups are what tell
+  // a tunnel id apart from another request's.
+  case issued, other {
+    False, _ -> tunnel_calls.Unissued
+    True, True -> tunnel_calls.OtherRequest
+    True, False -> tunnel_calls.Issued
+  }
+}
+
+/// A step of the call table from the orchestrator's side. Its cancels go out
+/// on an open connection only, as `ack` does.
+fn calls_stepped(
+  phase: Phase,
+  data: Data,
+  event: tunnel_calls.Event(
+    Subject(Result(Nil, broker.Refusal)),
+    Subject(broker.CallEvent),
+  ),
+) -> sm.Next(Phase, Data, Message) {
+  let #(data, cancels, broke) = stepped_calls(data, event)
+  on_open(phase, data, fn(stream) {
+    tunnel_sent(stream, data, cancels, broke, AlreadyArmed)
+  })
+}
+
+/// A step of the call table that a frame caused.
+fn frame_stepped(
+  stream: Stream,
+  data: Data,
+  event: tunnel_calls.Event(
+    Subject(Result(Nil, broker.Refusal)),
+    Subject(broker.CallEvent),
+  ),
+) -> sm.Next(Phase, Data, Message) {
+  let #(data, cancels, broke) = stepped_calls(data, event)
+  tunnel_sent(stream, data, cancels, broke, ReadNext)
+}
+
+/// Sends the cancels a step returned, or closes the connection for its
+/// violation, whose entries the table has already ended.
+fn tunnel_sent(
+  stream: Stream,
+  data: Data,
+  cancels: List(BitArray),
+  broke: Option(String),
+  reading: Reading,
+) -> sm.Next(Phase, Data, Message) {
+  let written =
+    list.try_each(cancels, fn(frame) { ffi_tls_stream.send(stream, frame) })
+
+  // A violation closes the connection whatever else the step did; a failed
+  // cancel is a dead connection.
+  case broke, written, reading {
+    Some(reason), _, _ -> violation(stream, data, reason)
+    None, Error(_failure), _ -> rest(stream, data, "a send failed")
+    None, Ok(Nil), ReadNext -> armed(stream, data)
+    None, Ok(Nil), AlreadyArmed -> sm.keep(data)
+  }
+}
+
+/// Steps the call table and applies what does not need the connection: the
+/// answers, the deliveries and the forgotten monitors. It returns the cancel
+/// frames to send and the violation, if the step found one.
+fn stepped_calls(
+  data: Data,
+  event: tunnel_calls.Event(
+    Subject(Result(Nil, broker.Refusal)),
+    Subject(broker.CallEvent),
+  ),
+) -> #(Data, List(BitArray), Option(String)) {
+  let #(calls, effects) = tunnel_calls.step(data.calls, event)
+  effected(Data(..data, calls:), effects)
+}
+
+/// Applies a step's effects in order. `SendClear` is the clearance's own to
+/// act on, in `clear_asked`, because only it holds the frame.
+fn effected(
+  data: Data,
+  effects: List(CallEffect),
+) -> #(Data, List(BitArray), Option(String)) {
+  let #(data, cancels, broke) =
+    list.fold(effects, #(data, [], None), fn(acc, effect) {
+      let #(data, cancels, broke) = acc
+
+      // Each effect is one row's outcome for one asker or one frame.
+      case effect {
+        tunnel_calls.Answer(reply:, answer:) -> {
+          process.send(reply, answer)
+          acc
+        }
+        tunnel_calls.Deliver(events:, event:) -> {
+          process.send(events, event)
+          acc
+        }
+        tunnel_calls.Refuse(reply:, reason:) -> {
+          refuse_tunnel(data, reply, reason)
+          acc
+        }
+        tunnel_calls.SendClear(..) -> acc
+        tunnel_calls.SendCancel(id:) -> #(
+          data,
+          [encoded(untrusted_wire.Cancel(id)), ..cancels],
+          broke,
+        )
+        tunnel_calls.Released(id:) -> #(released_call(data, id), cancels, broke)
+        tunnel_calls.Violation(reason:) -> #(data, cancels, Some(reason))
+      }
+    })
+  #(data, list.reverse(cancels), broke)
+}
+
+/// Forgets the monitor on a tunnelled call's asker once its entry has left.
+fn released_call(data: Data, id: Int) -> Data {
+  let monitor = dict.get(data.tunnel_watch, id) |> option.from_result
+  let data = unwatch(data, monitor)
+  Data(..data, tunnel_watch: dict.delete(data.tunnel_watch, id))
 }
 
 /// A frame's bytes.

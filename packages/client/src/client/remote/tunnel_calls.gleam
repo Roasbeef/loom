@@ -252,6 +252,18 @@ pub fn entries(
   dict.to_list(table.entries)
 }
 
+/// Whether the table holds a call under request `id`, which is how the link
+/// knows to read a response for that id as a `cleared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !tunnel_calls.holds(tunnel_calls.new(), 1)
+/// ```
+pub fn holds(table: Table(reply, events), id: Int) -> Bool {
+  dict.has_key(table.entries, id)
+}
+
 /// Admits a new call or refuses it. The two bounds and the output limit are
 /// the table's to check, because they are about what the table holds.
 fn opened(
