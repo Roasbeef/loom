@@ -41,6 +41,27 @@ pub fn relayed(reason: Option(Ending)) -> Element(message) {
   notice(reason, ending.headline, ending.relayed_advice)
 }
 
+/// The words of `content_unavailable`.
+pub const content_unavailable_words =
+  "The content of this session is not available until the orchestrator that runs it answers."
+
+/// What a page draws in place of the session's content when it has none to draw:
+/// the page of a session on another orchestrator that opened, or reconnected,
+/// while that orchestrator was not answering. The words say the content is
+/// absent and when it will be back, so the empty lane and panes of a model that
+/// was never filled are not drawn as an empty session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ended.content_unavailable()
+/// ```
+pub fn content_unavailable() -> Element(message) {
+  html.p([attribute.class("lane-boundary"), attribute.role("status")], [
+    html.text(content_unavailable_words),
+  ])
+}
+
 /// The notice for a home page that has ended, in the home's words, which name
 /// no session (protocol-change/065). It is `view`'s notice and its classes.
 ///

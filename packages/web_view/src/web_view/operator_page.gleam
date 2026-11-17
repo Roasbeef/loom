@@ -84,6 +84,7 @@ import web_view/sessions
 import web_view/view/archiving
 import web_view/view/context_breakdown
 import web_view/view/controls
+import web_view/view/ended
 import web_view/view/evolution as evolution_view
 import web_view/view/lane
 import web_view/view/memory as memory_view
@@ -414,31 +415,35 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     sidebar_place(model),
     [
       component.crumb(model),
-      lane.navigable(
-        component.pieces(model),
-        component.live(model),
-        component.top(model),
-        Observed(component.OlderRequested),
-        component.latest_action(model, Observed(component.LatestRequested)),
-        lane.WithQueue(
-          lane.Replies(
-            reply: Replying,
-            open: fn(session) { openable(model, session) },
-            name: fn(session) { component.session_name(model, session) },
-          ),
-          fn(input) {
-            component.queue_row(model, input) |> element.map(Observed)
-          },
-        ),
-        component.marks(model),
-        lane.Folds(
-          fn(fold) { Observed(component.FoldToggled(fold)) },
-          fn(key) { Observed(component.MessageToggled(key)) },
-          component.expanded(model),
-        ),
-        component.session_id(model),
-        component.result_links(model),
-      ),
+      case component.content_unavailable(model) {
+        True -> ended.content_unavailable()
+        False ->
+          lane.navigable(
+            component.pieces(model),
+            component.live(model),
+            component.top(model),
+            Observed(component.OlderRequested),
+            component.latest_action(model, Observed(component.LatestRequested)),
+            lane.WithQueue(
+              lane.Replies(
+                reply: Replying,
+                open: fn(session) { openable(model, session) },
+                name: fn(session) { component.session_name(model, session) },
+              ),
+              fn(input) {
+                component.queue_row(model, input) |> element.map(Observed)
+              },
+            ),
+            component.marks(model),
+            lane.Folds(
+              fn(fold) { Observed(component.FoldToggled(fold)) },
+              fn(key) { Observed(component.MessageToggled(key)) },
+              component.expanded(model),
+            ),
+            component.session_id(model),
+            component.result_links(model),
+          )
+      },
       side_panel(model),
       html.footer([attribute.class("dock")], [
         component.plan(model),
@@ -539,7 +544,8 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         False -> element.none()
       },
       // The other orchestrator refuses evolution and the page never reads it, so
-      // a relayed page would show loading words forever.
+      // a relayed page would show loading words forever. It says where the
+      // board is instead.
       case component.route(model) {
         component.Local ->
           evolution_view.view(
@@ -553,7 +559,8 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
               core: ReadingCore,
             ),
           )
-        component.Relayed(..) -> element.none()
+        component.Relayed(..) ->
+          evolution_view.elsewhere(component.session_machine(model))
       },
     ),
     component.needing(model),

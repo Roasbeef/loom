@@ -8162,18 +8162,22 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     shell.Unlisted,
     [
       crumb(model),
-      lane.navigable(
-        pieces(model),
-        live(model),
-        top(model),
-        OlderRequested,
-        latest_action(model, LatestRequested),
-        lane.NoReplies,
-        marks(model),
-        lane.Folds(FoldToggled, MessageToggled, expanded(model)),
-        session_id(model),
-        result_links(model),
-      ),
+      case content_unavailable(model) {
+        True -> ended.content_unavailable()
+        False ->
+          lane.navigable(
+            pieces(model),
+            live(model),
+            top(model),
+            OlderRequested,
+            latest_action(model, LatestRequested),
+            lane.NoReplies,
+            marks(model),
+            lane.Folds(FoldToggled, MessageToggled, expanded(model)),
+            session_id(model),
+            result_links(model),
+          )
+      },
       plan(model),
       html.p([attribute.class("observer-bar")], [
         html.span([attribute.class("pill")], [
@@ -8287,6 +8291,24 @@ pub fn panel(
   memory: Element(message),
   evolution: Element(message),
 ) -> Element(message) {
+  // A page that never held the session's content has none of it to list, and
+  // a pane that said "No edits yet" would be a statement about a session it
+  // has not seen. Its first pane says why it is empty and the rest are bare.
+  use <- bool.lazy_guard(content_unavailable(model), fn() {
+    panel.view(
+      0,
+      ended.content_unavailable(),
+      None,
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+    )
+  })
+
   panel.view(
     strip.count(model.view.strip),
     strip.view(model.view.strip, focus),
@@ -8559,7 +8581,12 @@ pub fn heading(
       model.shared.remote_usage,
       context_actions,
     ),
-    cost: transcript_lines.cost_words(model.shared.usage),
+    // A page with no content has no cost to estimate, and `est $0.00` would
+    // state one.
+    cost: case content_unavailable(model) {
+      True -> ""
+      False -> transcript_lines.cost_words(model.shared.usage)
+    },
     rate: session_model.output_rate_tps(model.shared),
     notice: case model.view.route {
       Local -> ended.view(ended_ending(model.view.status), model.shared.session)
@@ -8619,6 +8646,31 @@ fn context_figure(model: Model(socket)) -> String {
   {
     True -> ""
     False -> words
+  }
+}
+
+/// Whether a page of a session on another orchestrator has ended before it ever
+/// drew the session, for a reason that may clear: the box did not answer when
+/// the page opened, or the link dropped and the browser's reconnect found it
+/// still down. Such a page holds no cut, so everything it could draw from the
+/// session is the empty answer of a model that was never filled, and drawing it
+/// would say the session has no messages, no edits and no cost. A page that did
+/// draw a cut keeps it when its lane ends (`Status.Ended`), and an ending the
+/// person must resolve is final, so neither is this case.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.content_unavailable(model)
+/// ```
+pub fn content_unavailable(model: Model(socket)) -> Bool {
+  case model.view.route, model.view.status, model.shared.captured {
+    Relayed(..), Ended(ending:), None ->
+      case ending.close(ending) {
+        ending.Retry -> True
+        ending.Final -> False
+      }
+    Relayed(..), _, _ | Local, _, _ -> False
   }
 }
 

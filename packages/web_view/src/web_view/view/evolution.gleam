@@ -130,6 +130,51 @@ pub fn view(page: Page, presses: Presses(message)) -> Element(message) {
   )
 }
 
+/// The pane of a page whose session runs on another orchestrator. That box
+/// refuses the evolution read to a page on another machine, so the pane has no
+/// board to draw and no button to press, and says where the board is. `machine`
+/// is the configured orchestrator name, drawn as a text node. It keeps the
+/// pane's classes and id, so the tab button finds it as it finds the board.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // evolution_view.elsewhere("bravo")
+/// ```
+pub fn elsewhere(machine: String) -> Element(message) {
+  html.section(
+    [
+      attribute.class("pane"),
+      attribute.class("pane-evolution"),
+      attribute.class("evolution"),
+      attribute.id("evolution"),
+      attribute.aria_label("Evolution"),
+    ],
+    [
+      html.div([attribute.class("evolution-head")], [
+        html.h2([attribute.class("panel-title")], [html.text("Evolution")]),
+      ]),
+      html.p([attribute.class("lane-boundary")], [
+        html.text(elsewhere_words(machine)),
+      ]),
+    ],
+  )
+}
+
+/// The sentence of `elsewhere`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert evolution_view.elsewhere_words("bravo")
+///   == "This session runs on bravo, so its evolution is shown on its own page there."
+/// ```
+pub fn elsewhere_words(machine: String) -> String {
+  "This session runs on "
+  <> machine
+  <> ", so its evolution is shown on its own page there."
+}
+
 /// The title, how many wait for a person, and the button that reads the board
 /// again. The count is the badge's number, said where the reader who pressed
 /// the tab arrives.
