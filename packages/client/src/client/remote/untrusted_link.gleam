@@ -100,7 +100,6 @@ import client/remote/untrusted_wire.{type Answer, type Callback, type Request}
 import core/corruption
 import core/ids
 import core/json
-import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/node
 import gleam/erlang/process.{type Monitor, type Name, type Pid, type Subject}
@@ -795,8 +794,11 @@ fn queued(
   port: Option(#(String, Subject(OwnerMessage))),
 ) -> sm.Next(Phase, Data, Message) {
   let id = data.next_id
-  let frame = encoded(untrusted_wire.Request(id:, request:))
-  use <- too_large_to_send(data, frame, reply)
+  use frame <- too_large_to_send(
+    data,
+    untrusted_wire.Request(id:, request:),
+    reply,
+  )
   let #(data, monitor) = watch(data, requester, Asker(id))
   let data = bound(data, request, port)
   let pending = Pending(request:, frame:, reply:, monitor:, fetching: Whole)
@@ -817,25 +819,30 @@ fn queued(
 }
 
 /// Refuses a request whose frame is larger than the executor's socket accepts,
-/// instead of keeping it: kept, it would close the connection on every send and
-/// be sent again on every reconnect, and nothing behind it would move. It was
-/// never sent, so the refusal is the honest answer.
+/// or holds more values than the executor's parse admits, instead of keeping
+/// it: kept, it would close the connection on every send and be sent again on
+/// every reconnect, and nothing behind it would move. It was never sent, so
+/// the refusal is the honest answer. A request that fits goes on as its bytes.
 fn too_large_to_send(
   data: Data,
-  frame: BitArray,
+  frame: untrusted_wire.Frame,
   reply: Reply,
-  next: fn() -> sm.Next(Phase, Data, Message),
+  next: fn(BitArray) -> sm.Next(Phase, Data, Message),
 ) -> sm.Next(Phase, Data, Message) {
-  // Every frame the link sends is bounded by what the peer's socket admits.
-  case bit_array.byte_size(frame) > untrusted_wire.max_frame_bytes {
-    True -> {
+  // Every frame the link sends is bounded by what the peer admits.
+  case untrusted_codec.encode_fitting(frame) {
+    Ok(bytes) -> next(bytes)
+    Error(untrusted_codec.Unfit(reason:, ..)) -> {
+      log.warn(data.config.logger, "untrusted_link.request_too_large", [
+        field.text("executor", data.config.executor),
+        field.text("reason", reason),
+      ])
       untrusted_bridge.refuse(
         reply,
-        protocol.Invalid("the request is larger than one frame of the link"),
+        protocol.Invalid("the request does not fit one frame of the link"),
       )
       sm.keep(data)
     }
-    False -> next()
   }
 }
 
@@ -1155,6 +1162,14 @@ fn received(
           called_back(stream, data, binding, id, body)
         Ok(untrusted_codec.OversizedEnvelope(id:, size:, digest:)) ->
           oversized(stream, data, id, size, digest)
+
+        // This link sends no `clear_call` and so holds no tunnelled call, and
+        // an event for one is a frame an honest executor never sends. The
+        // tunnel replaces this arm with the call table's handling of output
+        // and settlement.
+        Ok(untrusted_codec.CallEventEnvelope(..)) ->
+          violation(stream, data, "an event for a call this link never cleared")
+
         Ok(untrusted_codec.HelloEnvelope(..))
         | Ok(untrusted_codec.WelcomeEnvelope(..))
         | Ok(untrusted_codec.RequestEnvelope(..))
@@ -1916,22 +1931,25 @@ fn fitting(
   answer: Option(Answer),
 ) -> Option(Answer) {
   // A tail has no answer and so no frame.
-  let size = case answer {
+  let fits = case answer {
     Some(answer) ->
-      bit_array.byte_size(
-        encoded(untrusted_wire.Answer(binding:, id:, answer:)),
-      )
-    None -> 0
+      untrusted_codec.encode_fitting(untrusted_wire.Answer(
+        binding:,
+        id:,
+        answer:,
+      ))
+      |> result.replace(Nil)
+    None -> Ok(Nil)
   }
 
-  // Only an answer that fits a frame is sent as it is.
-  case size > untrusted_wire.max_frame_bytes {
-    True ->
+  // Only an answer within both of the executor's bounds is sent as it is.
+  case fits {
+    Error(_unfit) ->
       untrusted_bridge.refused_answer(
         callback,
-        "the owner's answer is larger than one frame of the link",
+        "the owner's answer does not fit one frame of the link",
       )
-    False -> answer
+    Ok(Nil) -> answer
   }
 }
 

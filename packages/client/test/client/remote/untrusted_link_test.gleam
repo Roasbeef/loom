@@ -14,6 +14,10 @@
 //// only from the `code_mode` call that makes them, and a start's answer
 //// reaches its worker once across a dropped connection, while a cancel after
 //// the re-send goes out on the new one.
+////
+//// The wire 5 tests (protocol-change/117) hold the link to the value bound on
+//// what it receives, on an outcome it fetches and on what it sends, refuse a
+//// tunnel event the link never asked for.
 
 import broker/framing
 import client/codemode as codemode_wiring
@@ -1701,5 +1705,143 @@ pub fn a_launch_budget_beyond_the_orchestrators_ceiling_is_clamped_test() {
     == untrusted_wire.LaunchAnswered(Ok(json.String("exec-1")))
   assert process.receive(budgets, 2000)
     == Ok(fixtures.execution_terms().within_ms)
+  stop(rig)
+}
+
+// --- wire 5: the value bound, the tunnel's frame and the version (117) -----------
+
+/// A response frame for request `id` whose body is an array of `items` zeros,
+/// so the frame holds `items + 4` values: the frame, its name, its id and the
+/// array.
+fn wide_response(id: Int, items: Int) -> BitArray {
+  bit_array.from_string(
+    "{\"frame\":\"response\",\"id\":"
+    <> int.to_string(id)
+    <> ",\"body\":["
+    <> string.join(list.repeat("0", items), ",")
+    <> "]}",
+  )
+}
+
+// The link reads a response to a request it no longer holds without decoding
+// its body, so the only thing a late response with a wide body can break is
+// the value bound: at the bound it is dropped and the connection stays open,
+// and one value past it is a violation that closes the connection.
+pub fn a_frame_past_the_value_bound_closes_the_connection_test() {
+  let rig = start("value-bound")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let run = fixtures.tool_run("call_1", 0)
+  let #(id, _asker, answers) = run_in_flight(rig, stream, "s1", run)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.RunAnswered(protocol.RunLost),
+    ),
+  )
+  assert process.receive(answers, 5000) == Ok(protocol.RunLost)
+
+  let at_bound = untrusted_wire.max_frame_values - 4
+  rig.send_raw(stream, wide_response(id, at_bound))
+  assert !rig.closed(stream, 3000)
+
+  rig.send_raw(stream, wide_response(id, at_bound + 1))
+  assert rig.closed(stream, 10_000)
+  assert process.is_alive(rig.link)
+  stop(rig)
+}
+
+/// An outcome whose result's details are an array of `items` zeros.
+fn wide_outcome(items: Int) -> effects.ToolOutcome {
+  effects.ToolCompleted(
+    result: message.ToolResultMessage(
+      tool_call_id: "call_1",
+      tool_name: "bash",
+      content: [],
+      details: option.Some(json.Array(list.repeat(json.Int(0), items))),
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ),
+    terminate: False,
+  )
+}
+
+// An outcome is fetched in pieces whose bytes match their digest, so only its
+// decoding can refuse it, and the value bound applies to it as to a frame:
+// one that describes more values than a frame may hold is answered lost.
+pub fn a_fetched_outcome_past_the_value_bound_is_lost_test() {
+  let rig = start("outcome-value-bound")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let #(bytes, size, digest) =
+    encoding_of(wide_outcome(untrusted_wire.max_frame_values))
+  assert size < untrusted_wire.max_piece_bytes
+
+  rig.send(stream, untrusted_wire.Oversized(id:, size:, digest:))
+  let #(piece, at) = piece_request(stream)
+  assert at == 0
+  serve_piece(stream, piece, bytes, size, digest, 0)
+  assert process.receive(answers, 10_000) == Ok(protocol.RunLost)
+  assert !rig.closed(stream, 300)
+  assert process.is_alive(rig.link)
+  stop(rig)
+}
+
+// The link's own request is counted before it is kept: a run whose arguments
+// hold more values than the executor's parse admits would close every
+// connection it was sent on, so it is refused here and never sent.
+pub fn a_request_of_more_values_than_the_bound_is_refused_and_not_kept_test() {
+  let rig = start("request-too-wide")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let run =
+    effects.ToolRun(
+      ..fixtures.tool_run("call_1", 0),
+      arguments: json.Array(list.repeat(
+        json.Int(0),
+        untrusted_wire.max_frame_values,
+      )),
+    )
+
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Run(
+      key: protocol.key_of("s1", run),
+      incarnation: 0,
+      token: <<"token":utf8>>,
+      run:,
+      authority: fixtures.authority(),
+      reply:,
+    ),
+  )
+  let assert Ok(protocol.RunRefused(protocol.Invalid(_reason))) =
+    process.receive(reply, 10_000)
+    as "the run is refused, not sent"
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+// This link clears no tunnelled call yet, so an event for one is a frame an
+// honest executor never sends.
+pub fn a_call_event_closes_the_connection_test() {
+  let rig = start("call-event")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+
+  rig.send(
+    stream,
+    untrusted_wire.CallEvent(
+      call: 1,
+      event: untrusted_wire.TunnelOutput(framing.Stdout, <<"forged">>),
+    ),
+  )
+  assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
   stop(rig)
 }
