@@ -1902,6 +1902,7 @@ pub fn removal_words_its_revoke_without_force_test() {
   assert !string.contains(line, "--force")
   assert string.contains(line, "has sessions placed on it")
   assert string.contains(line, "can no longer be started")
+  assert string.contains(line, "stay in the catalogue")
 
   // A revoke that cannot be signed at all names the key's directory and the
   // command to run again, and says nothing was removed.

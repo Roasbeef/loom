@@ -5406,10 +5406,21 @@ fn signed_revoke(
   )
   let checked = vm_spec.unchecked_revoke_line(name)
 
-  // An entry no daemon took is in the operator's copy, which is reported.
+  // An entry no daemon took is in the operator's copy, which is reported with
+  // what waiting costs: a daemon whose ledger still enrols the name refuses
+  // every reload while an untrusted row of that name exists (`unshadowed` in
+  // `daemon/main`), so each later guest falls back to the stop-or-name path.
   let took = case ledger_cli.delivered(signed) {
     Ok(where_) -> "Handed to " <> where_ <> "."
-    Error(reason) -> "Not handed to a daemon: " <> reason
+    Error(reason) ->
+      "Not handed to a daemon: "
+      <> reason
+      <> " Until it is imported the daemon's ledger still enrols "
+      <> name
+      <> ", so once a new guest "
+      <> name
+      <> " exists the daemon refuses every executors.reload and each new "
+      <> "guest stops an idle daemon or asks for its restart."
   }
 
   [
