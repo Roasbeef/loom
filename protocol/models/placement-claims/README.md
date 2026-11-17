@@ -282,12 +282,16 @@ On TLC 2.19, one worker:
 | `AdmissionMutantFinalKeepsRow.cfg` | `NothingHeldUnplaced` violated | 40 | 25 |
 | `AdmissionMutantRebuildsFinal.cfg` | `BuildsBoundedWhenBroken` violated | 212 | 101 |
 
-`AdmissionMutantFinalKeepsRow.cfg` differs from `AdmissionAlsoBroken.cfg` only in
+The three `Broken` configurations allow three registrations (`MaxMade = 3`), one
+more than `BuildsBoundedWhenBroken` allows builds, so a third registration would be
+counted rather than prevented; the counts are the same as with two, so none is
+reached. `AdmissionMutantFinalKeepsRow.cfg` differs from `AdmissionAlsoBroken.cfg` only in
 `FinalReleases`, so it fails because of that rule. `AdmissionMutantRebuildsFinal.cfg` is the
 first push of this work (18bafa5c2): the tool's poll reads the failed slot draining and asks
 again, the next ask builds again, and the kept reason is cleared, three builds in nine states.
 
-`AdmissionMutantToday.cfg` is the code the drive ran, all three rules off. Its
+`AdmissionMutantToday.cfg` is the code the drive ran: the four rules of the fix
+off and `FinalReleases` on. Its
 trace is run D5: the tool's ask makes the reservation and polls it; the build
 fails for no room and the slot drains; the drain's ask reads the kept failure
 and ends the row (`reserved_refusal`); the tool's next read finds the
@@ -310,6 +314,16 @@ ask in flight is an older question and is not claimed here); a pool that is
 full and broken at once, and a final failure the catalogue did not keep, which
 is a bare reservation that every ask builds again, so it has no bound on builds;
 the seed's transfer and apply, which are the seeded spawn P model's.
+
+The drain here reads the stub and asks in one step, but the code's drain reads
+the stubs once per pass. For a child whose build fails for a final reason, the
+tool can hear the refusal first (the row deleted, the stub `Refused`), and a drain
+ask already sent on the older reading then arrives, finds no row, makes a new
+registration and builds it once. If its poll reads the slot draining it answers
+`NotYetOpen`, and the drain never asks a `Refused` stub again, so that
+reservation's row stays, with no slot and no executor scope, until the parent's
+release or the hourly retention sweep ends it. That case is not modelled, and
+those two exits bound it.
 
 ## Running it
 

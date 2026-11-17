@@ -1771,6 +1771,14 @@ Before this addendum the three "reserved, no slot" rows ended the row (no room) 
   model, which is told to read `agent_roster`. The two late joins of D6 that answered "still
   working" used a handle assembled by hand whose operation was the child's session id, not its
   run's operation, so they name no run; they are not evidence of a lost answer.
+- *A known limit, not modelled.* The model's drain reads the stub and asks in one step; the
+  code's drain reads the stubs once per pass. For a child whose build fails for a final reason,
+  the tool can hear the refusal first (the row deleted, the stub `Refused`), and a drain ask
+  already sent on the older reading of the stubs then arrives, finds no row, makes a new
+  registration and builds it once. If that ask's poll reads the slot draining it answers
+  `NotYetOpen`, and the drain never asks a `Refused` stub again, so that reservation's row stays,
+  holding no slot and no executor scope, until the parent's release or the hourly retention
+  sweep ends it. Those two exits bound it.
 - *Model.* `protocol/models/placement-claims/Admission.tla`, run by `make model-check`. With the
   rules off (`AdmissionMutantToday.cfg`) TLC finds the D5 sequence in six states; with them on
   (`Admission.cfg`) no violation of its properties (no final refusal from no room, the child
