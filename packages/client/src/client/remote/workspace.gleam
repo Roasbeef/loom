@@ -88,6 +88,7 @@
 //// keep the reservation held.
 
 import broker/broker
+import client/clear_call
 import client/distribution
 import client/evolution/machine/remote as remote_machine
 import client/executors
@@ -688,13 +689,18 @@ fn build(
       local_now_ms: received_at_ms,
     )
   let opened = registered.opened
+
+  // The same relay broker answers the call-clearing seam, so a placement on
+  // an executor still ends in the refusing relay for non-tool work.
+  let placed_broker = broker.over(owner_port.broker(port), executor_clock)
   Hands(
     plane: workspace_plane.WorkspacePlane(
       // `run_placed` read this call's authority to route it, and the surface
       // reads it again to send it; the surface owns the send, so the copy
       // handed in here is not used.
       run: fn(run, _authority) { functions.run(run) },
-      broker: broker.over(owner_port.broker(port), executor_clock),
+      broker: placed_broker,
+      clear_call: clear_call.over_broker(placed_broker),
       census: remote.census,
       prompt_facts: fn() { Ok(remote.prompt) },
       resolve_directory: fn(_requested, _mode) {

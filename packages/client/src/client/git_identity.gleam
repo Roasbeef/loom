@@ -446,8 +446,7 @@ fn run(
   let #(requirements, _) = policy.compose(base, requirements, [])
   let events = process.new_subject()
   use call <- result.try(
-    broker.clear_call(
-      wiring.broker,
+    wiring.clear_call(
       broker.CallSpec(
         op_id: operation,
         step_id: "git-identity",
@@ -461,18 +460,18 @@ fn run(
         cwd: wiring.workspace,
         budget: budget.Budget(1, now + 8000),
       ),
-      events:,
-      waiting: 8000,
+      events,
+      8000,
     )
     |> result.replace_error(
       "Git identity preparation was refused by the sandbox",
     ),
   )
-  broker.stdin(wiring.broker, call, data: <<>>, eof: True)
+  call.stdin(<<>>, True)
   use collected <- result.try(
     tool.collect_events(events, waiting: 13_000)
     |> result.map_error(fn(_) {
-      broker.cancel(wiring.broker, call)
+      call.cancel()
       "Git identity preparation did not settle"
     }),
   )
