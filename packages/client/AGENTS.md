@@ -284,9 +284,11 @@ record `<vm home>/<name>/link` and `vm_link.traces` of `link-credentials/` and
 `deploy/`). A new guest, a guest recorded untrusted and one with a minted leaf
 and no record are brought up on the untrusted link; one whose record says
 `distribution`, or that has `deploy/` and no leaf and no record, was made by an
-older loom as a distribution peer and is refused with one sentence naming `loom
-vm sync --name NAME`, `loom vm rm --name NAME --yes` and `loom vm up --name
-NAME`, in that order. `settle` never answers `Distribution`, so no command makes
+older loom as a distribution peer and is refused naming `loom vm sync --name
+NAME` (with where uncommitted edits are), `loom vm down --name NAME` for a guest
+that still runs, `loom vm rm --name NAME --yes` and `loom vm up --name NAME`, in
+that order (`vm_link.retired_refusal`). An unreadable `link` record is named by
+its file. `settle` never answers `Distribution`, so no command makes
 a distribution guest or turns an untrusted one into one. `UpOptions` has no
 link field: `--link untrusted` is accepted and changes nothing, and `--link
 distribution` is refused by the parser (`vm_spec.link_flag`). The verbs that only
@@ -384,7 +386,12 @@ migration step fabricates the host-side traces of two distribution guests
 (bundles only, and a `link` record saying `distribution`), and checks that `up`
 and `ensure` refuse them naming the three commands and change no file, that
 `status` and `list` call them distribution guests, and that `rm --yes` removes
-them. The first guest is removed last, and takes `[executor_link]` and
+them, taking one's `[distribution]` table and trusted row out of a file whose
+untrusted row and other lines stay. A default-daemon step runs `vm ensure` with
+no `--config` beside a daemon on the isolated home's default file and checks
+the answer line, that the same daemon process lists the guest after the
+reload, the fast path of a second `ensure`, and `rm` with the daemon running.
+The first guest is removed last, and takes `[executor_link]` and
 `<vm home>/link/` with it. It does not observe that hooks stay refused, which
 needs a trust record fixture; `remote/untrusted_end_to_end_test` covers it.
 
@@ -422,10 +429,17 @@ through `make_inside` and a rename, and guest text printed through
 `sync`; `--checkout PATH` overrides it and is required for a guest with no record.
 `rm` removes an untrusted guest's row (above), and for a guest made over
 distribution `[executors.<name>]`, and `[distribution]` and the home's cookie only
-when they are this guest's and no other executor remains
-(`distribution_install.without_tables`, `vm_spec.plan_teardown`), with its sealed
-authority directory and ledger revoke as `removal_plan` decides; it refuses a
-running guest, and without `--yes` only lists the workspaces. `sync` needs a
+when they are this guest's and no other trusted executor remains
+(`distribution_install.without_tables`, `vm_spec.plan_teardown`; `read_enrolment`
+leaves untrusted rows out of `other_executors`), with its sealed authority
+directory and ledger revoke as `removal_plan` decides. The revoke is signed with
+`ledger_cli.Forced` (`signed_revoke`, `vm_spec.unchecked_revoke_line`), since a
+guest `up` refuses serves no session again, and a key or ledger copy that cannot
+be used is worded by `vm_spec.rm_revoke_failure`. `apply_removal` deletes the
+roots and `state.img` before the rest of the directory, so the marker that
+classifies a guest outlives them. `list` counts a directory as a guest when
+`made_kind` is not `Ok(None)`, as `other_kinds` does. `rm` refuses a running
+guest, and without `--yes` only lists the workspaces. `sync` needs a
 Git release with upload-pack's lazy-fetch refusal, 2.45.1 or a backport
 (`vm_spec.check_git_version`) and runs it with
 `GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach

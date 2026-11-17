@@ -95,12 +95,21 @@
 ////   up beside a running orchestrator, which reads it through
 ////   `executors.reload` (protocol-change/116), and refuses
 ////   `--link distribution`.
+//// - `loom vm ensure` with no `--config`, which is what `loom --vm` runs,
+////   boots a guest beside a daemon already running on the isolated home's
+////   default `loom.toml`, ends with its `executor=NAME workspace=NAME` line,
+////   and that same daemon process lists the guest without a restart, through
+////   `executors.reload`. A second `ensure` takes the fast path, and `rm` takes
+////   the row out again with the daemon still running. The step runs only when
+////   the launcher's home is the fixture's own (`isolated_home`).
 //// - A guest an older loom made as a distribution peer is refused. Its
 ////   host-side traces are fabricated under the isolated vm home (bundles in
 ////   `deploy/`, and for a second one a `link` record saying `distribution`;
 ////   neither is booted), and `vm up` and `vm ensure` each refuse it naming
 ////   `loom vm sync`, `loom vm rm --yes` and `loom vm up`, and change no file;
-////   `vm rm --yes` then removes it.
+////   `vm rm --yes` then removes it, taking the `up` guest's `[distribution]`
+////   table and trusted row out of a file that also holds an untrusted row,
+////   which stays with every other line.
 ////
 //// ## Running it
 ////
@@ -134,8 +143,9 @@
 ////   the daily verbs, the upgrade and the killed launcher. Then the failing
 ////   script (`failing_script_fails_up`, `guests_are_removed`), the refused
 ////   distribution guests (`old_guests_are_refused`), the second guest
-////   (`untrusted_guest`) and last the removal of the first guest
-////   (`last_guest_takes_the_link`).
+////   (`untrusted_guest`), the guest the default daemon reads
+////   (`default_daemon_reads_the_guest`) and last the removal of the first
+////   guest (`last_guest_takes_the_link`).
 //// - `assert_first_turn`, `assert_never_on_host`, `assert_resumed` and
 ////   `assert_link_files` hold the assertions.
 
@@ -155,6 +165,7 @@ import gleam/option
 import gleam/result
 import gleam/string
 import host/bootstrap as native
+import host/endpoint
 import simplifile
 import support/internal/ffi_proc
 import support/provider_http as provider
@@ -262,9 +273,7 @@ fn first_command(reach: Reach) -> String {
     <> "/creds/key.pem; echo key_status=$?; head -c 27 "
     <> node_dir
     <> "/creds/cert.pem; echo; "
-    <> "echo \"home_entries=$(ls -A "
-    <> node_dir
-    <> "/home | tr '\\n' ' ')\"; "
+    <> home_listing()
     <> "echo \"gh_token=$GH_TOKEN\"; "
     <> "echo \"provisioned=$(cat "
     <> runs_file
@@ -429,6 +438,9 @@ fn fixture(artifacts: Artifacts) -> Nil {
   let _failing_stopped = vm(run, ["down", "--name", run.failing_name])
   let _untrusted_stopped = vm(run, ["down", "--name", run.untrusted_name])
   let _second_stopped = vm(run, ["down", "--name", second_untrusted_name(run)])
+  let _default_stopped =
+    vm(run, ["down", "--name", vm_spec.guest_name_for(default_workspace(run))])
+  retire_default_daemon(run)
   remote_daemons.retire(run.untrusted.paths)
   remote_daemons.retire(run.orchestrator.paths)
   let assert [weft.Completed(0, Nil)] = outcomes
@@ -611,6 +623,7 @@ fn drive(run: Run) -> Nil {
   guests_are_removed(run)
   old_guests_are_refused(run)
   untrusted_guest(run)
+  default_daemon_reads_the_guest(run)
 
   // Last, because the first guest is the one that keeps `[executor_link]` and
   // the link credentials in place for the removals above.
@@ -1579,11 +1592,31 @@ fn old_guest_snapshot(run: Run, names: List(String)) -> String {
 // `distribution` as well.
 fn old_guests_are_refused(run: Run) -> Nil {
   let config = run.directory <> "/old.toml"
-  let model = remote_daemons.model_table("http://127.0.0.1:9")
-  let assert Ok(Nil) = simplifile.write(config, model)
-    as "the old guests' configuration is written"
   let up_name = run.old_name
   let ensure_name = vm_spec.guest_name_for(run.repository)
+
+  // The file holds what a minted distribution guest installed, its
+  // `[distribution]` table and trusted row under the node names `up` gave it,
+  // beside an untrusted row of another guest, which must not keep the
+  // deployment's table alive once its guest is removed.
+  let names = vm_spec.names(up_name)
+  let kept_text =
+    remote_daemons.model_table("http://127.0.0.1:9")
+    <> "\n[executors.newer]\ntrust = \"untrusted\"\n"
+    <> "address = \"127.0.0.1:9\"\npin = \""
+    <> string.repeat("ab", 32)
+    <> "\"\n"
+  let old_tables =
+    "\n[distribution]\nnode = \""
+    <> names.orchestrator_node
+    <> "\"\n\n[executors."
+    <> up_name
+    <> "]\nnode = \""
+    <> names.executor_node
+    <> "\"\n"
+  let model = kept_text <> old_tables
+  let assert Ok(Nil) = simplifile.write(config, model)
+    as "the old guests' configuration is written"
   fabricate_old_guest(run, up_name, option.None)
   fabricate_old_guest(run, ensure_name, option.Some("distribution\n"))
   let before = old_guest_snapshot(run, [up_name, ensure_name])
@@ -1651,8 +1684,10 @@ fn old_guests_are_refused(run: Run) -> Nil {
   }
     as { "vm list names the old guest's link:\n" <> listed }
 
-  // `rm --yes` removes each one, and the file is left as it was, since no
-  // table of theirs is in it.
+  // `rm --yes` removes each one with the distribution teardown. The `up`
+  // guest's two tables leave the file; the untrusted row, the model table and
+  // every other line stay, because an untrusted row does not need
+  // `[distribution]`. The `ensure` guest has no table in it.
   list.each([up_name, ensure_name], fn(name) {
     let removed =
       expect_ok(
@@ -1663,7 +1698,15 @@ fn old_guests_are_refused(run: Run) -> Nil {
     assert simplifile.is_directory(run.vm_home <> "/" <> name) == Ok(False)
       as { "rm removed the old guest " <> name <> ":\n" <> removed }
   })
-  assert read_file(config) == model
+  let after = read_file(config)
+  assert !string.contains(after, "[distribution]")
+    as { "the old guest's [distribution] left the file:\n" <> after }
+  assert !string.contains(after, "[executors." <> up_name <> "]")
+    as { "the old guest's row left the file:\n" <> after }
+  list.each(string.split(kept_text, "\n"), fn(line) {
+    assert string.contains(after, line)
+      as { "rm kept the line " <> line <> ":\n" <> after }
+  })
 }
 
 // The refusal says why, and names `sync`, `rm` and `up` for the guest, in that
@@ -1680,6 +1723,171 @@ fn assert_names_the_way_on(output: String, name: String) -> Nil {
     as { "the refusal names " <> rm <> " after sync:\n" <> output }
   assert string.contains(after_rm, up)
     as { "the refusal names " <> up <> " last:\n" <> output }
+}
+
+// --- a guest the default daemon reads by a reload ----------------------------------
+
+// The isolated home the shipped launcher exports, if the step may act in it.
+// `HOME` is the launcher script's own variable, so the daemon and `vm ensure`
+// live under this directory and never under the developer's real `~/.loom`.
+// The directory must be one the fixture made under `build/shipped-home-`, and
+// must not be the process's own `HOME`.
+fn isolated_home(run: Run) -> Result(String, String) {
+  let home = run.orchestrator.home
+  let real = native.getenv("HOME") |> result.unwrap("")
+  let fixture_made = string.contains(home, "/build/shipped-home-")
+
+  // A home that is the real one, or that is not the fixture's, is a path this
+  // step must never write under.
+  case fixture_made && home != real && real != "" {
+    True -> Ok(home)
+    False ->
+      Error("the launcher's home " <> home <> " is not the fixture's own")
+  }
+}
+
+// The default state directory's paths in the isolated home, which is where
+// `ensure` looks for the user's daemon.
+fn default_paths(home: String) -> endpoint.Paths {
+  let assert Ok(paths) = endpoint.paths(home <> "/.loom")
+    as "the isolated home's default state directory is private"
+  paths
+}
+
+// The workspace the default-daemon step's guest serves: a repository of its
+// own, so its guest is not the migration step's.
+fn default_workspace(run: Run) -> String {
+  run.directory <> "/defaultws"
+}
+
+// What every `loom --vm` takes: `loomd vm ensure` with no `--config`, against
+// the default `loom.toml` of a daemon that already runs. `ensure` boots the
+// guest, writes its row into that file, finds the daemon through its endpoint
+// record, sees that it does not list the guest, and asks it to reload
+// (protocol-change/116). The step checks the answer line, that the same daemon
+// process still runs (its fence is the pid and birth marker it started with),
+// that it now lists the guest, and that `rm` of the guest drops the row again.
+// It runs only when the launcher's home is the fixture's own.
+fn default_daemon_reads_the_guest(run: Run) -> Nil {
+  case isolated_home(run) {
+    Error(reason) ->
+      io.println_error("SKIP " <> label <> " default daemon: " <> reason)
+    Ok(home) -> {
+      let workspace = default_workspace(run)
+      let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+        as "the default step's repository directory is created"
+      let assert Ok(Nil) =
+        simplifile.write(workspace <> "/README.md", "the default step\n")
+        as "the default step's repository has a file"
+      git_in(workspace, ["init", "-q", "-b", "main"])
+      git_in(workspace, ["add", "README.md"])
+      git_in(workspace, [
+        "-c",
+        "user.name=Loom Fixture",
+        "-c",
+        "user.email=fixture@loom.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "initial",
+      ])
+      let name = vm_spec.guest_name_for(workspace)
+
+      // The daemon reads the default file, which holds a model it never calls.
+      let paths = default_paths(home)
+      let config = home <> "/.loom/loom.toml"
+      let assert Ok(Nil) =
+        simplifile.write(
+          config,
+          remote_daemons.model_table("http://127.0.0.1:9"),
+        )
+        as "the default daemon has a configuration"
+      let layout =
+        remote_daemons.Layout(
+          ..run.orchestrator,
+          label: "default",
+          paths:,
+          config:,
+        )
+      let running = remote_daemons.start_plain(layout)
+      let control = remote_daemons.open_control(running)
+      let assert endpoint.Ready(fence:, ..) = running.connected.record
+        as "the default daemon published its endpoint"
+
+      // `ensure` with no `--config`, as the launcher runs it.
+      let ensured =
+        vm(run, ["ensure", "--workspace", workspace, "--github", "off"])
+      io.println_error(
+        label <> " vm ensure (default daemon):\n" <> ensured.output,
+      )
+      assert ensured.status == 0 as { "ensure exits 0:\n" <> ensured.output }
+      let answer = vm_spec.ensure_line(name, "defaultws")
+      assert list.contains(
+        string.split(ensured.output, "\n") |> list.map(string.trim),
+        answer,
+      )
+        as { "ensure ends with " <> answer <> ":\n" <> ensured.output }
+      assert string.contains(read_file(config), "[executors." <> name <> "]")
+        as { "ensure wrote the guest's row into the default file" }
+
+      // The same process runs, and it reads the row without a restart.
+      assert endpoint.is_present(fence) == Ok(True)
+        as "the default daemon was not stopped or restarted"
+      let shown =
+        string.inspect(remote_daemons.command(
+          control,
+          10,
+          "deployment.status",
+          json.Object([]),
+        ))
+      assert string.contains(shown, name)
+        as { "the running daemon lists the guest:\n" <> shown }
+
+      // A second `ensure` finds the guest serving and touches nothing.
+      let again =
+        vm(run, ["ensure", "--workspace", workspace, "--github", "off"])
+      assert again.status == 0
+        as { "the second ensure exits 0:\n" <> again.output }
+      assert string.contains(again.output, "already serving")
+        as { "the second ensure takes the fast path:\n" <> again.output }
+
+      // `rm` takes the row out of the default file and asks the same daemon to
+      // drop the link.
+      let down = vm(run, ["down", "--name", name])
+      assert string.contains(down.output, "Stopped the guest " <> name)
+        as { "the default step's guest stops:\n" <> down.output }
+      let removed =
+        expect_ok(
+          vm(run, ["rm", "--name", name, "--yes"]),
+          "loom vm rm of the default step's guest",
+        )
+      io.println_error(label <> " vm rm (default daemon):\n" <> removed)
+      assert !string.contains(read_file(config), "[executors." <> name <> "]")
+        as { "rm took the row out of the default file" }
+      assert endpoint.is_present(fence) == Ok(True)
+        as "the default daemon still runs after rm"
+      let after =
+        string.inspect(remote_daemons.command(
+          control,
+          20,
+          "deployment.status",
+          json.Object([]),
+        ))
+      assert !string.contains(after, name)
+        as { "the daemon no longer lists the guest:\n" <> after }
+      remote_pair.close_daemons([running])
+      remote_daemons.retire(paths)
+    }
+  }
+}
+
+// Retires a daemon the default-daemon step left on the isolated home, by the
+// pid and birth marker its own endpoint record holds.
+fn retire_default_daemon(run: Run) -> Nil {
+  case isolated_home(run) {
+    Error(_) -> Nil
+    Ok(home) -> remote_daemons.retire(default_paths(home))
+  }
 }
 
 // --- the last guest ------------------------------------------------------------
@@ -2031,9 +2239,17 @@ fn untrusted_command() -> String {
   <> "head -c 27 "
   <> node_dir
   <> "/creds/cert.pem; echo; "
-  <> "echo \"home_entries=$(ls -A "
+  <> home_listing()
+  <> "true"
+}
+
+// Lists the node's home on one line and prints the listing's status first, so
+// a failed `ls` is seen as a failure and not as a home with nothing in it.
+fn home_listing() -> String {
+  "entries=$(ls -A "
   <> node_dir
-  <> "/home | tr '\\n' ' ')\"; true"
+  <> "/home 2>&1); echo \"home_status=$?\"; "
+  <> "echo \"home_entries=$(printf '%s' \"$entries\" | tr '\\n' ' ')\"; "
 }
 
 // A second guest made with no flag, in a configuration of its own. `up` writes
@@ -2408,6 +2624,22 @@ fn assert_link_files(
     string.trim(read_file(link <> "/orchestrator.key")),
   )
 
+  // Neither host key is anywhere in the root, under any name: a body line of
+  // each is searched for over every file, as for the authority key the
+  // distribution guests sealed. `grep` exits 1 when nothing matches. No Git
+  // runs in a guest root.
+  let assert Ok(grep) = ffi_proc.which("grep") as "grep is on PATH"
+  list.each(["ca.key", "orchestrator.key"], fn(file) {
+    let assert [_, body, ..] =
+      string.split(read_file(link <> "/" <> file), "\n")
+      as { file <> " has a body line" }
+    let assert Ok(#(status, output)) =
+      ffi_proc.run(grep, ["-rFla", body, root], in: run.directory)
+      as "grep runs over the guest's root"
+    assert output == "" && status == 1
+      as { "the guest's root holds " <> file <> ": " <> output }
+  })
+
   // The host's epmd has no node for the guest: it was forwarded, not
   // published.
   let assert Ok(epmd) = ffi_proc.which("epmd") as "epmd is on PATH"
@@ -2456,6 +2688,8 @@ fn assert_key_masked(key: String, result: String) -> Nil {
     as { "the jailed call printed a private key:\n" <> result }
   assert string.contains(result, "-----BEGIN CERTIFICATE-----")
     as { "the jailed call read the public certificate:\n" <> result }
+  assert string.contains(result, "home_status=0")
+    as { "the jailed call could list the node's home:\n" <> result }
   assert string.contains(result, "home_entries=")
     as { "the jailed call listed the node's home:\n" <> result }
   assert !string.contains(result, "erlang.cookie")

@@ -713,8 +713,8 @@ fn link_flag(value: String) -> Result(Nil, String) {
       Error(
         "--link distribution is retired for guests, because a guest made as a "
         <> "distribution peer lets code that takes it over run in your daemon "
-        <> "as you. Every guest uses the untrusted link, so run `loom vm up` "
-        <> "with no --link.",
+        <> "as you. Every guest uses the untrusted link, so run it with no "
+        <> "--link.",
       )
     _ ->
       Error(
@@ -2360,21 +2360,53 @@ pub fn ledger_to_stage(
   }
 }
 
-/// A refusal of the revoke `rm` makes, worded for `rm`. The revoke command's
-/// own refusal ends by advising `--force`, which `rm` does not have.
+/// The line `rm` prints about the checks its revoke skipped. `rm` signs the
+/// revoke of a guest made over distribution without the placement check,
+/// because `up` refuses such a guest and `rm` acts only on a stopped one, so no
+/// session can be served on it again; the line says so in place of the revoke
+/// command's own text, which names a `--force` that `rm` does not have.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.rm_revoke_refusal("x\nNothing was signed. Pass --force to revoke anyway.")
-///   == "x\nNothing was signed and nothing was removed."
+/// assert string.contains(vm_spec.unchecked_revoke_line("vm2"), "can no longer be started")
 /// ```
-pub fn rm_revoke_refusal(reason: String) -> String {
-  string.replace(
-    reason,
-    "Nothing was signed. Pass --force to revoke anyway.",
-    "Nothing was signed and nothing was removed.",
-  )
+pub fn unchecked_revoke_line(name: String) -> String {
+  "Not checked: the link graph, whether "
+  <> name
+  <> " owns sessions or has sessions placed on it, and the directory's voters, "
+  <> "because a guest made over distribution can no longer be started."
+}
+
+/// The refusal `rm` gives when the revoke of a guest made over distribution
+/// cannot be signed at all (the key does not open, its ledger copy is locked
+/// by another command or disagrees with the daemon's, say): the reason, that
+/// nothing was removed, where the key and its copy are, and the command to run
+/// once that is fixed. A placement on the guest or a daemon that does not
+/// answer is not such a reason, since `rm` signs without that check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   vm_spec.rm_revoke_failure("vm2", "/h/vm/authority/3f", "locked"),
+///   "loom vm rm --name vm2 --yes",
+/// )
+/// ```
+pub fn rm_revoke_failure(
+  name: String,
+  directory: String,
+  reason: String,
+) -> String {
+  "the revoke of "
+  <> name
+  <> " could not be signed: "
+  <> reason
+  <> ". Nothing was removed. The key and its copy of the ledger are in "
+  <> directory
+  <> "; fix that and run `loom vm rm --name "
+  <> name
+  <> " --yes` again."
 }
 
 /// What a join answers when the daemon did not take the entry it was handed
@@ -4332,7 +4364,8 @@ pub type Enrolment {
     executor_node: Option(String),
     /// The `node` of the `[distribution]` table, when there is one.
     distribution_node: Option(String),
-    /// The names of the other `[executors.*]` tables.
+    /// The names of the other `[executors.*]` tables that may need
+    /// `[distribution]`: every one whose `trust` is not `"untrusted"`.
     other_executors: List(String),
   )
 }
@@ -4340,6 +4373,11 @@ pub type Enrolment {
 /// Reads the enrolment of the guest called `name` out of a `loom.toml`. Empty
 /// text is a file with nothing in it. Text that is not valid TOML is the error,
 /// and `rm` then touches nothing.
+///
+/// An untrusted row is reached over `[executor_link]` and never through
+/// `[distribution]`, so it is not counted among the executors that keep that
+/// table and the cookie. Counting it kept `[distribution]` after the guest whose
+/// `orch/` credentials it names was deleted, and the next daemon start failed.
 ///
 /// ## Examples
 ///
@@ -4356,9 +4394,10 @@ pub fn read_enrolment(text: String, name: String) -> Result(Enrolment, String) {
   )
   let others =
     tom.get_table(document, ["executors"])
-    |> result.map(dict.keys)
-    |> result.unwrap([])
-    |> list.filter(fn(other) { other != name })
+    |> result.lazy_unwrap(dict.new)
+    |> dict.to_list
+    |> list.filter(fn(entry) { entry.0 != name && !untrusted_row(entry.1) })
+    |> list.map(fn(entry) { entry.0 })
     |> list.sort(string.compare)
 
   Ok(Enrolment(
@@ -4368,6 +4407,15 @@ pub fn read_enrolment(text: String, name: String) -> Result(Enrolment, String) {
       |> option.from_result,
     other_executors: others,
   ))
+}
+
+/// Whether an `[executors.*]` table says `trust = "untrusted"`.
+fn untrusted_row(row: tom.Toml) -> Bool {
+  case row {
+    tom.Table(fields) | tom.InlineTable(fields) ->
+      dict.get(fields, "trust") == Ok(tom.String("untrusted"))
+    _ -> False
+  }
 }
 
 /// What the home's `.erlang.cookie` is, compared with the cookie in the

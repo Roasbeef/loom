@@ -1,6 +1,6 @@
 //// The credentials of the untrusted link, minted once and kept on the host.
 ////
-//// `loom vm up --link untrusted` needs three sets of keys. One authority and
+//// `loom vm up` needs three sets of keys for the untrusted link. One authority and
 //// one orchestrator leaf serve every guest of a vm home, because the daemon has
 //// one `[executor_link]` table. Each guest has a leaf of its own, so the
 //// daemon's pin for one guest is useless against another. The authority's key
@@ -153,7 +153,7 @@ fn read_home(vm_home: String) -> Result(Home, String) {
       <> describe(defect)
       <> "). Remove every untrusted guest with `loom vm rm --name NAME --yes`, "
       <> "which removes the directory with the last of them, and run "
-      <> "`loom vm up --link untrusted` again."
+      <> "`loom vm up` again."
     }),
   )
 
@@ -233,7 +233,9 @@ fn read_leaf(home: Home, directory: String) -> Result(Leaf, String) {
       <> describe(defect)
       <> "). Remove the guest with `loom vm rm --name "
       <> name
-      <> " --yes` and run `loom vm up --link untrusted` again."
+      <> " --yes` and run `loom vm up --name "
+      <> name
+      <> "` again."
     }),
   )
   Ok(Leaf(certificate:, key:, pin:))

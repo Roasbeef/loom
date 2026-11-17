@@ -1895,13 +1895,23 @@ fn member_of(
   member
 }
 
-pub fn removal_words_its_revoke_refusal_without_force_test() {
-  let refusal =
-    "revoking x may strand sessions:\n  1 session\n"
-    <> "Nothing was signed. Pass --force to revoke anyway."
-  let worded = vm_spec.rm_revoke_refusal(refusal)
-  assert !string.contains(worded, "--force")
-  assert string.ends_with(worded, "Nothing was signed and nothing was removed.")
+pub fn removal_words_its_revoke_without_force_test() {
+  // `rm` signs without the placement check, and its line says why in place of
+  // the revoke command's text, which names a `--force` that `rm` lacks.
+  let line = vm_spec.unchecked_revoke_line("x")
+  assert !string.contains(line, "--force")
+  assert string.contains(line, "has sessions placed on it")
+  assert string.contains(line, "can no longer be started")
+
+  // A revoke that cannot be signed at all names the key's directory and the
+  // command to run again, and says nothing was removed.
+  let failure =
+    vm_spec.rm_revoke_failure("x", "/h/vm/authority/3f", "the copy is locked")
+  assert string.contains(failure, "the copy is locked")
+  assert string.contains(failure, "Nothing was removed.")
+  assert string.contains(failure, "/h/vm/authority/3f")
+  assert string.ends_with(failure, "run `loom vm rm --name x --yes` again.")
+  assert !string.contains(failure, "--force")
 }
 
 pub fn an_undelivered_entry_fails_the_join_and_names_the_way_on_test() {
@@ -2038,6 +2048,45 @@ pub fn another_executor_keeps_the_shared_tables_and_cookie_test() {
   let assert [line] = plan.left
   assert string.contains(line, "[executors.other]")
   assert string.contains(line, "[distribution] and the cookie stay")
+}
+
+pub fn untrusted_rows_do_not_keep_the_distribution_table_test() {
+  // An old guest's teardown beside untrusted rows: only a row reached over
+  // distribution keeps `[distribution]` and the cookie, whatever else the file
+  // holds. Each case is the extra text, the other executors counted, and
+  // whether the shared tables go.
+  let untrusted =
+    "\n[executors.new]\ntrust = \"untrusted\"\naddress = \"127.0.0.1:41000\"\npin = \"ab\"\n"
+  let inline =
+    "\n[executors]\nflat = { trust = \"untrusted\", address = \"x\" }\n"
+  let trusted = "\n[executors.other]\nnode = \"o@h\"\n"
+  let marked = "\n[executors.marked]\nnode = \"m@h\"\ntrust = \"trusted\"\n"
+  let cases = [
+    #(untrusted, [], vm_spec.RemoveCookie),
+    #(untrusted <> trusted, ["other"], vm_spec.KeepCookie),
+    #(marked, ["marked"], vm_spec.KeepCookie),
+    #("", [], vm_spec.RemoveCookie),
+  ]
+  list.each(cases, fn(case_) {
+    let #(extra, others, cookie) = case_
+    let assert Ok(found) = vm_spec.read_enrolment(enrolled_text(extra), "dev")
+      as { "the enrolment beside " <> extra <> " reads" }
+    assert found.other_executors == others
+      as { "beside " <> extra <> " counted " <> string.inspect(found) }
+    let plan =
+      vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOurs)
+    assert plan.cookie == cookie
+    assert list.contains(plan.tables, ["distribution"])
+      == { cookie == vm_spec.RemoveCookie }
+      as { "beside " <> extra <> " planned " <> string.inspect(plan) }
+  })
+
+  // An inline table of untrusted rows is read the same way. It cannot share
+  // the file with `[executors.dev]`, so it stands alone.
+  let assert Ok(found) =
+    vm_spec.read_enrolment("[distribution]\nnode = \"n\"\n" <> inline, "dev")
+    as "an inline untrusted row reads"
+  assert found.other_executors == []
 }
 
 pub fn a_deployment_that_is_not_the_guests_is_left_test() {
