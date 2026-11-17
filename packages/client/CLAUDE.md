@@ -9559,7 +9559,9 @@ The box's deadline and retention (slice S4):
   nothing on the box ends a child's row because its build failed for want of
   room. A reservation the row names with no slot is built again in the
   registry's turn by the next ask (`manager.unslotted`, through
-  `create_session` under the row's request key), and every status an ask reads
+  `create_session` under the row's request key) unless its kept failure is not a
+  lack of room (`manager.no_room`, which `delegate_host.no_room` calls): then the
+  failed start is the answer and nothing is built. Every status an ask reads
   is classified by `delegate_host.reading`, where only a start that failed for
   another reason and `RecoveryBlocked` are final. On the laptop a spawn answered
   `NotYetOpen` is `peer_mail.NotOpen` (`remote_spawner.spawn_answer`), and

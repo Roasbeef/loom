@@ -16,7 +16,10 @@
 //// site already made, so the answer to the second attempt is the answer to the
 //// first. So a `Requested` stub is attempted at each pass until the orchestrator
 //// answers, and any answer settles it: `Refused` is definitive, and `Unreachable`
-//// leaves the stub where it was.
+//// leaves the stub where it was. `NotOpen`, an orchestrator that answered that
+//// the child's session is not open yet, leaves the stub where it was too, but it
+//// is an answer and not silence, so the same pass still asks that orchestrator
+//// about the children it is running.
 ////
 //// A stub has no time to live. Peer mail's rows are refused after an hour because
 //// a message nobody can deliver stops being worth sending, but a child is

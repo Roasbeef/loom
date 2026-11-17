@@ -218,7 +218,8 @@ turn and every read of one ask can fall between two steps of the other.
 |---|---|
 | `row` | The child's delegate row: none, open or releasing. |
 | `sid`, `regs`, `reg` | The registration the row names, every registration that exists for the child, and the named one's state (reserved or saved). |
-| `kept` | The start failure the catalogue kept: none, no room, or lost (the write failed). |
+| `kept` | The start failure the catalogue kept: none, no room, another reason that no later ask can change, or lost (the write failed). |
+| `builds` | Builds started, counted up to three and only in the configurations with `Broken`. |
 | `slot` | The registry's slot: none, building, closing or running. |
 | `room`, `finished` | A scope is free; another child of the parent has finished and holds its scope until a join collects it. |
 | `ask`, `held` | Each asker's step (idle, polling, about to end the row, done) and the registration it was admitted to. |
@@ -227,10 +228,10 @@ turn and every read of one ask can fall between two steps of the other.
 
 | Action | What it is |
 |---|---|
-| `Admit(a)` | The registry's turn of an ask (`manager.delegate_now`): create, refuse a releasing row, admit a building slot, answer a closing one, or, for a reserved row with no slot, build it again (R1) or do what the code of e128668ee did. |
-| `Read(a)` | One read of an admitted ask's poll (`delegate_host.resident`). A registration that is gone is a final store failure. |
+| `Admit(a)` | The registry's turn of an ask (`manager.delegate_now`): create, refuse a releasing row, admit a building slot, answer a closing one, or, for a reserved row with no slot, answer a final kept failure as it is (KeepsFinal), build it again (R1), or do what the code of e128668ee did. |
+| `Read(a)` | One read of an admitted ask's poll (`delegate_host.resident`). A registration that is gone, and a failed start for a reason no ask can change, are final. |
 | `End(a)` | The end by name that followed a no-room poll before R1. |
-| `BuildEnds`, `Retire` | The build succeeds with a free scope and fails for no room without one; the failed slot drains. |
+| `BuildEnds`, `Retire` | The build succeeds with a free scope and fails for no room without one, or always fails for a final reason with `Broken`; the failed slot drains. |
 | `SkipSpawn`, `Join` | The drain's pass after its spawn step: the join frees a finished child's scope unless the box was marked silent. |
 | `Finish` | Another child finishes. |
 
@@ -245,9 +246,14 @@ reads.
 | `RetryInPlace` | R1: a repeat ask builds the reservation again; nothing ends a row for no room. |
 | `BareAsksAgain` | R2: a reservation with no kept failure asks again. |
 | `AnswerNotSilent` | R3: NotYetOpen does not mark the box silent for the drain's join. |
-| `FinalReleases` | A final refusal ends the child's session (`spawn_seed.ended_unless_asks_again`). |
+| `KeepsFinal` | R1's limit: a reservation whose kept failure is final is not built again (`manager.unslotted`). |
+| `FinalReleases` | A rule the code already had: a final refusal ends the child's session (`spawn_seed.ended_unless_asks_again`). |
 | `RetryMakesNew` | Mutant of R1: the repeat ask makes a new reservation. |
 | `LostFailure` | The catalogue may fail to keep a start failure, once. |
+| `Broken` | Every build fails for a reason no later ask can change. |
+
+The code the second drive ran is `RetryInPlace`, `BareAsksAgain`, `AnswerNotSilent` and
+`KeepsFinal` off with `FinalReleases` on.
 
 ## Properties
 
@@ -256,7 +262,9 @@ reads.
 | `NoRoomNeverFinal` (P1) | Every build fails only for want of room, so no asker is answered a final refusal. |
 | `PlacedOnceRoomFrees` (P2) | With both askers asking and another child finishing, the child is placed and the stub learns its handle. |
 | `OneSessionPerChild` (P3) | At most one registration exists for the child, and a child is started in at most one. |
-| `NothingHeldUnplaced` (P4) | Once the parent has stopped asking with the child unplaced and no ask is in flight, no row, registration or slot is left. |
+| `NothingHeldUnplaced` (P4) | Once the tool has heard the refusal, the drain is not asking and no slot is draining, no row or registration is left. It has a witness only with `Broken`. |
+| `BuildsBoundedWhenBroken` (P5) | With `Broken`, at most two builds start, one for each asker; no registration is built twice. |
+| `RefusedWhenBroken` | With `Broken`, the stub learns the refusal. |
 
 ## Results
 
@@ -265,12 +273,19 @@ On TLC 2.19, one worker:
 | Configuration | Outcome | States generated | Distinct |
 |---|---|---|---|
 | `Admission.cfg` | no error, `PlacedOnceRoomFrees` holds | 240 | 89 |
+| `AdmissionAlsoBroken.cfg` | no error, `RefusedWhenBroken` holds | 263 | 99 |
 | `AdmissionMutantToday.cfg` | `NoRoomNeverFinal` violated, six states | 77 | 43 |
 | `AdmissionMutantEndsOnNoRoom.cfg` | `NoRoomNeverFinal` violated | 77 | 44 |
 | `AdmissionMutantBareIsFinal.cfg` | `NoRoomNeverFinal` violated | 72 | 42 |
 | `AdmissionMutantNotYetOpenSilences.cfg` | `PlacedOnceRoomFrees` violated | 96 | 34 |
 | `AdmissionMutantRetryMakesNew.cfg` | `OneSessionPerChild` violated | 41 | 25 |
-| `AdmissionMutantFinalKeepsRow.cfg` | `NothingHeldUnplaced` violated | 411 | 196 |
+| `AdmissionMutantFinalKeepsRow.cfg` | `NothingHeldUnplaced` violated | 40 | 25 |
+| `AdmissionMutantRebuildsFinal.cfg` | `BuildsBoundedWhenBroken` violated | 212 | 101 |
+
+`AdmissionMutantFinalKeepsRow.cfg` differs from `AdmissionAlsoBroken.cfg` only in
+`FinalReleases`, so it fails because of that rule. `AdmissionMutantRebuildsFinal.cfg` is the
+first push of this work (18bafa5c2): the tool's poll reads the failed slot draining and asks
+again, the next ask builds again, and the kept reason is cleared, three builds in nine states.
 
 `AdmissionMutantToday.cfg` is the code the drive ran, all three rules off. Its
 trace is run D5: the tool's ask makes the reservation and polls it; the build
@@ -285,14 +300,16 @@ registration gone, which the sender takes as final.
 | `AdmissionMutantNotYetOpenSilences` | R3 (runs D3 and D6) | `PlacedOnceRoomFrees` |
 | `AdmissionMutantRetryMakesNew` | R1 done by a new reservation | `OneSessionPerChild` |
 | `AdmissionMutantFinalKeepsRow` | the end of a refused child's session | `NothingHeldUnplaced` |
+| `AdmissionMutantRebuildsFinal` | KeepsFinal | `BuildsBoundedWhenBroken` |
 
 ## What it leaves out
 
 One child and one other child that finishes; one free scope once it is joined;
 no restart of either daemon; no release of the parent (a release that crosses an
-ask in flight is an older question and is not claimed here); no build failure
-other than no room; the seed's transfer and apply, which are the seeded spawn
-P model's.
+ask in flight is an older question and is not claimed here); a pool that is
+full and broken at once, and a final failure the catalogue did not keep, which
+is a bare reservation that every ask builds again, so it has no bound on builds;
+the seed's transfer and apply, which are the seeded spawn P model's.
 
 ## Running it
 

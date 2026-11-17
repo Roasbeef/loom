@@ -1733,7 +1733,7 @@ room unless the row says otherwise.
 | building | admit; poll | wait |
 | failed slot draining (`Stopping`) | `NotYetOpen`, row kept | `NotYetOpen`, row kept |
 | reserved, no slot, no-room failure kept | build the same reservation again; poll | `NotYetOpen`, row kept |
-| reserved, no slot, other failure kept | build again; its poll answers the failure | final `StoreFailure` naming it; `spawn_seed.landed` ends the session |
+| reserved, no slot, other failure kept | no build; the failed start is the answer, which its poll reads as final | final `StoreFailure` naming it; `spawn_seed.landed` ends the session |
 | reserved, no slot, no failure kept | build again; poll | `NotYetOpen`, row kept |
 | running | handle (the call site is adopted) | handle |
 | releasing | final `ParentRunEnded` | `NotYetOpen` |
@@ -1745,9 +1745,18 @@ Before this addendum the three "reserved, no slot" rows ended the row (no room) 
 - *Rule 1.* Nothing ends a child's row because its build failed for want of room. A reservation
   that the row names and that holds no slot is built again by the next ask, in the registry's
   turn, through the creation path under the row's own request key (`manager.unslotted`, which
-  calls `create_session`; `clear_kept_failure` clears the old reason). The child keeps one
+  calls `create_session`; `clear_kept_failure` clears the old reason). A reservation whose kept
+  failure is not a lack of room is not built again: the build would fail the same way and clear
+  the reason, so an ask whose poll read only the slot draining would never be told it.
+  `unslotted` reads the kept failure in the same registry turn and answers the failed start,
+  which the poll reads as final; `manager.no_room` is the one test of which failures pass, and
+  `delegate_host.no_room` is it. A child whose build fails for such a reason has at most two
+  builds, one for each asker: the tool's ask after the drain heard the refusal and ended the
+  row finds no row and makes one, and no registration is built twice. The child keeps one
   registration while it waits. Its row counts against the spawner's `max_sessions` while it
-  waits, as any pending child does, and a deleted parent's release ends it.
+  waits, as any pending child does, and it has three exits: the child is placed, a deleted
+  parent's release ends it, or the hourly retention sweep deletes it once its `last_contact_ms`
+  is older than the spawner's `retain_ms`.
 - *Rule 2.* Every status an ask reads is classified by one total function,
   `delegate_host.reading`. A reservation, a no-room failure, a saved session and a draining
   slot ask the sender to come again; only a start that failed for another reason and
@@ -1763,15 +1772,18 @@ Before this addendum the three "reserved, no slot" rows ended the row (no room) 
   working" used a handle assembled by hand whose operation was the child's session id, not its
   run's operation, so they name no run; they are not evidence of a lost answer.
 - *Model.* `protocol/models/placement-claims/Admission.tla`, run by `make model-check`. With the
-  three rules off (`AdmissionMutantToday.cfg`) TLC finds the D5 sequence in six states; with
-  them on (`Admission.cfg`) no violation of the four properties (no final refusal from no room,
-  the child placed once a finished child is joined, one registration per child, nothing held
-  for an unplaced child whose parent stopped asking). Each rule has a mutant that fails on the
-  property it names. The model's README has the table of mutants.
+  rules off (`AdmissionMutantToday.cfg`) TLC finds the D5 sequence in six states; with them on
+  (`Admission.cfg`) no violation of its properties (no final refusal from no room, the child
+  placed once a finished child is joined, one registration per child). `AdmissionAlsoBroken.cfg`
+  has every build fail for a final reason: the stub learns the refusal, nothing is left for the
+  child once the tool has heard it, and at most two builds start. Each rule has a mutant that
+  fails on the property it names, `AdmissionMutantRebuildsFinal.cfg` among them for the rule
+  that a final failure is not built again. The model's README has the table of mutants.
 - *Tests.* `delegate_host_test`: `two_asks_polling_one_failed_start_are_both_asked_to_come_again_test`
   reproduces D5's text before the change, `a_start_with_no_room_leaves_the_row_for_the_next_ask_test`,
   `a_full_pool_reservation_is_built_again_by_the_next_ask_test` (the test of the 2026-11-14
-  addendum, rewritten for rule 1) and `every_status_an_ask_reads_has_one_answer_test`;
+  addendum, rewritten for rule 1), `a_final_start_failure_is_answered_by_the_next_ask_without_a_build_test`
+  and `every_status_an_ask_reads_has_one_answer_test`;
   `daemon_manager_test`: `a_reserved_delegate_session_is_built_again_by_the_next_message_test`;
   `agency_test`: `a_spawn_answered_not_yet_open_leaves_the_pass_its_join_test`; and
   `daemon_spawn_host_test` asserts the `NotOpen` mapping.
