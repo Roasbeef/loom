@@ -5319,9 +5319,9 @@ fn revocation_line(plan: RemovalPlan, name: String) -> List(String) {
 }
 
 /// Signs the revoke of a guest that joined, with the key on this machine, and
-/// answers the lines that say what happened. The checks of `loom distribution
-/// revoke` apply, so a guest that still owns or holds sessions is refused here
-/// and nothing is removed.
+/// answers the lines that say what happened. The placement check of `loom
+/// distribution revoke` is skipped (`signed_revoke` says why), so only a key or
+/// ledger copy that cannot be used refuses here, and then nothing is removed.
 fn revoke_membership(
   plan: RemovalPlan,
   name: String,
@@ -5331,14 +5331,17 @@ fn revoke_membership(
     NoRevocation -> Ok([])
     RevokeByOperator(..) -> Ok([])
     RevokeWith(directory:, passphrase:) -> {
-      use authority <- result.try(ledger_cli.unlock_at(directory, passphrase))
+      use authority <- result.try(
+        ledger_cli.unlock_at(directory, passphrase)
+        |> result.map_error(vm_spec.rm_revoke_failure(name, directory, _)),
+      )
 
       // A guest the operator's copy already records as revoked is done: the
       // fold would refuse the entry, and the removal must not be stuck on it.
       case revoked_already(plan.config, directory, authority, name) {
         True ->
           Ok([name <> " is already revoked in the ledger; nothing signed."])
-        False -> signed_revoke(authority, name)
+        False -> signed_revoke(authority, directory, name)
       }
     }
   }
@@ -5367,21 +5370,32 @@ fn revoked_already(
 }
 
 /// Signs the revoke of `name` and words what happened.
+///
+/// Only a guest made over distribution has a membership to revoke, `up` and
+/// `ensure` refuse such a guest, and `rm` acts only on one that is stopped, so
+/// the guest can never serve a session again. The revoke is therefore signed
+/// without the placement check: a session still placed on the guest, or a
+/// daemon that cannot be asked, would otherwise refuse the only command that
+/// moves the developer off the guest, with no way on. The output says the
+/// check was skipped and why. A daemon that does not answer leaves the entry in
+/// the operator's copy, and the second line names the import that carries it.
 fn signed_revoke(
   authority: ledger_cli.Authority,
+  directory: String,
   name: String,
 ) -> Result(List(String), String) {
-  use #(signed, checked) <- result.map(
+  use #(signed, _unchecked) <- result.map(
     ledger_cli.revoke_member(
       authority,
       name,
       "removed with loom vm rm",
-      ledger_cli.Checked,
+      ledger_cli.Forced,
       admin.ThisHost(""),
       ledger_cli.socket_connect(),
     )
-    |> result.map_error(vm_spec.rm_revoke_refusal),
+    |> result.map_error(vm_spec.rm_revoke_failure(name, directory, _)),
   )
+  let checked = vm_spec.unchecked_revoke_line(name)
 
   // An entry no daemon took is in the operator's copy, which is reported.
   let took = case ledger_cli.delivered(signed) {
@@ -5438,8 +5452,8 @@ fn apply_removal(
   plan: RemovalPlan,
 ) -> Result(String, String) {
   // The ledger entry of a guest that joined is revoked first, because the
-  // revoke can be refused (the guest still holds sessions) and then nothing
-  // has been removed.
+  // revoke can still fail (a key that does not open, a locked ledger copy) and
+  // then nothing has been removed.
   use revoked <- result.try(revoke_membership(plan, name))
 
   // The enrolment is undone before the files go, so a failure part way leaves

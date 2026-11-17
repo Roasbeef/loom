@@ -1895,13 +1895,23 @@ fn member_of(
   member
 }
 
-pub fn removal_words_its_revoke_refusal_without_force_test() {
-  let refusal =
-    "revoking x may strand sessions:\n  1 session\n"
-    <> "Nothing was signed. Pass --force to revoke anyway."
-  let worded = vm_spec.rm_revoke_refusal(refusal)
-  assert !string.contains(worded, "--force")
-  assert string.ends_with(worded, "Nothing was signed and nothing was removed.")
+pub fn removal_words_its_revoke_without_force_test() {
+  // `rm` signs without the placement check, and its line says why in place of
+  // the revoke command's text, which names a `--force` that `rm` lacks.
+  let line = vm_spec.unchecked_revoke_line("x")
+  assert !string.contains(line, "--force")
+  assert string.contains(line, "has sessions placed on it")
+  assert string.contains(line, "can no longer be started")
+
+  // A revoke that cannot be signed at all names the key's directory and the
+  // command to run again, and says nothing was removed.
+  let failure =
+    vm_spec.rm_revoke_failure("x", "/h/vm/authority/3f", "the copy is locked")
+  assert string.contains(failure, "the copy is locked")
+  assert string.contains(failure, "Nothing was removed.")
+  assert string.contains(failure, "/h/vm/authority/3f")
+  assert string.ends_with(failure, "run `loom vm rm --name x --yes` again.")
+  assert !string.contains(failure, "--force")
 }
 
 pub fn an_undelivered_entry_fails_the_join_and_names_the_way_on_test() {

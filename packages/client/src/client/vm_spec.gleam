@@ -2360,21 +2360,53 @@ pub fn ledger_to_stage(
   }
 }
 
-/// A refusal of the revoke `rm` makes, worded for `rm`. The revoke command's
-/// own refusal ends by advising `--force`, which `rm` does not have.
+/// The line `rm` prints about the checks its revoke skipped. `rm` signs the
+/// revoke of a guest made over distribution without the placement check,
+/// because `up` refuses such a guest and `rm` acts only on a stopped one, so no
+/// session can be served on it again; the line says so in place of the revoke
+/// command's own text, which names a `--force` that `rm` does not have.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.rm_revoke_refusal("x\nNothing was signed. Pass --force to revoke anyway.")
-///   == "x\nNothing was signed and nothing was removed."
+/// assert string.contains(vm_spec.unchecked_revoke_line("vm2"), "can no longer be started")
 /// ```
-pub fn rm_revoke_refusal(reason: String) -> String {
-  string.replace(
-    reason,
-    "Nothing was signed. Pass --force to revoke anyway.",
-    "Nothing was signed and nothing was removed.",
-  )
+pub fn unchecked_revoke_line(name: String) -> String {
+  "Not checked: the link graph, whether "
+  <> name
+  <> " owns sessions or has sessions placed on it, and the directory's voters, "
+  <> "because a guest made over distribution can no longer be started."
+}
+
+/// The refusal `rm` gives when the revoke of a guest made over distribution
+/// cannot be signed at all (the key does not open, its ledger copy is locked
+/// by another command or disagrees with the daemon's, say): the reason, that
+/// nothing was removed, where the key and its copy are, and the command to run
+/// once that is fixed. A placement on the guest or a daemon that does not
+/// answer is not such a reason, since `rm` signs without that check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   vm_spec.rm_revoke_failure("vm2", "/h/vm/authority/3f", "locked"),
+///   "loom vm rm --name vm2 --yes",
+/// )
+/// ```
+pub fn rm_revoke_failure(
+  name: String,
+  directory: String,
+  reason: String,
+) -> String {
+  "the revoke of "
+  <> name
+  <> " could not be signed: "
+  <> reason
+  <> ". Nothing was removed. The key and its copy of the ledger are in "
+  <> directory
+  <> "; fix that and run `loom vm rm --name "
+  <> name
+  <> " --yes` again."
 }
 
 /// What a join answers when the daemon did not take the entry it was handed
