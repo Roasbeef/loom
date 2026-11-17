@@ -3947,7 +3947,10 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   three adders (`scratch`, `jobs`, `lsp_manager`) because `serve` splices
   each into its services tree at its established position; each holds only
   its child specification. `WorkspacePlane` is `run(ToolRun, Authority)` (the
-  workspace half of `wiring.run_tool`), `broker`, `census`, a lazy
+  workspace half of `wiring.run_tool`), `broker` (for the code that holds a
+  broker actor for its own reasons: aborts, code mode, language servers,
+  teardown), `clear_call: ClearCall` (how the owner's non-tool work clears one
+  call: imported hooks, the goal check, the Git observations), `census`, a lazy
   `prompt_facts` (the workspace's guidance files as text and the helper's
   health, so a pinned prompt pays for neither), `resolve_directory`
   (`directories.resolve_addition` against the workspace's filesystem),
@@ -5074,8 +5077,10 @@ question each, and one composition point in `serve`:
   the `Source` it was read from; `notes` reports unsupported kinds and
   no-moment events at load time rather than loading them silently.
 - `client/hookrunner` — one imported command hook as one jailed
-  process through `broker.clear_call`, the worktree observation's own
-  pattern: `sh -c` shell form or `args` exec form, the event JSON on stdin
+  process through `Context.clear_call`, a `clear_call.ClearCall` (the same
+  seam `worktree_diff.Wiring.clear_call` uses; `WorkspacePlane.clear_call` is
+  its source, and `client/clear_call` defines the type because `workspace_plane`
+  imports `worktree_diff`): `sh -c` shell form or `args` exec form, the event JSON on stdin
   closed after, the handler's `timeout` seconds as the wall limit and
   the budget deadline, a timed-out run reporting `WallCancelled` with no
   output for the caller to read a decision out of. `Outcome.capture`
@@ -5514,6 +5519,10 @@ these forks because they define the same modules.
   copied. A write refusal aborts assembly; host code never follows a planted
   tool-home symlink to publish this file. Imported operator hooks keep their
   original HOME and ordinary global Git configuration.
+- **Repository observations clear through `worktree_diff.Wiring.clear_call`,
+  not a broker.** `git_identity` and the diff, baseline and peer observation
+  start Git by calling it and use the returned `RunningCall`'s `stdin` and
+  `cancel`; `workspace_plane.worktree_wiring` takes the plane's `clear_call`.
 - **Jailed Git calls use the host-resolved binary, never the Xcode shim.**
   `serve` fills `worktree_diff.Wiring.git` once per assembly from
   `host_git.program`, and both `git_identity` and `worktree_diff` name it in

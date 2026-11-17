@@ -40,6 +40,7 @@ import broker/broker
 import broker/budget
 import broker/exec
 import broker/policy
+import client/clear_call.{type ClearCall}
 import client/codemode
 import client/daemon/transfer
 import core/clock
@@ -77,8 +78,9 @@ pub type Wiring {
   Wiring(
     /// The attached session's absolute workspace, including a repository subtree.
     workspace: String,
-    /// The session's existing effect broker and helper pool.
-    broker: broker.Broker,
+    /// Clears one observation process; on a local workspace this is the
+    /// session's effect broker, and a placement may supply another.
+    clear_call: ClearCall,
     /// The assembled policy, including state masks and linked Git metadata.
     base_policy: policy.SandboxPolicy,
     /// The session's injected wall clock.
@@ -758,8 +760,7 @@ fn run_git(
     )
   let events = process.new_subject()
   use call <- result.try(
-    broker.clear_call(
-      wiring.broker,
+    wiring.clear_call(
       broker.CallSpec(
         op_id: capture.op_id,
         step_id: "worktree-observation",
@@ -781,19 +782,19 @@ fn run_git(
         cwd: wiring.workspace,
         budget: budget.Budget(1, capture.deadline),
       ),
-      events:,
-      waiting: remaining,
+      events,
+      remaining,
     )
     |> result.map_error(clearance_error),
   )
 
   // No command consumes interactive input. Cancelling on missing settlement
   // requests cleanup; it does not claim that native retirement was observed.
-  broker.stdin(wiring.broker, call, data: <<>>, eof: True)
+  call.stdin(<<>>, True)
   use collected <- result.try(
     tool.collect_events(events, waiting: remaining + settlement_grace_ms)
     |> result.map_error(fn(_) {
-      broker.cancel(wiring.broker, call)
+      call.cancel()
       NoSettlement
     }),
   )

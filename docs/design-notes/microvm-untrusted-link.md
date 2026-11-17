@@ -161,7 +161,7 @@ census the link sets to `Uncompiled`.
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
 | Placed blobs, outcomes over 32 MiB (110) | works | works | nothing |
 | Remote evolution | works when the guest's census says `Compiles` | refused: the link sets `Uncompiled` | 109 slice 4 |
-| Operator directory additions | refused for any remote workspace (`client/remote/workspace.gleam:700` (`resolve_directory`)) | same | same as today |
+| Operator directory additions | refused for any remote workspace (`client/remote/workspace.gleam:706` (`resolve_directory`)) | same | same as today |
 | Permission grants and escalations | works | works; `escalate` must describe the call in flight exactly; the residual risk above applies | nothing |
 | Git author identity | works (`AskGitIdentity`) | works (`GitIdentityCall`) | nothing |
 | Working-directory facts in the prompt | works (census) | works (the wire census carries `workspace_plane.Census` and `PromptFacts`) | nothing |
@@ -248,8 +248,8 @@ What the daemon needs, read from the code:
   (`client/daemon/main.gleam:1230` (`start_untrusted_links`)), registered under
   `untrusted_link.name_for(name)`.
 - `remote/workspace.candidate` sends an untrusted row to the link's name and
-  never needs distribution (`client/remote/workspace.gleam:738` (`candidate`),
-  `client/remote/workspace.gleam:1045` (`untrusted_candidate`)).
+  never needs distribution (`client/remote/workspace.gleam:744` (`candidate`),
+  `client/remote/workspace.gleam:1051` (`untrusted_candidate`)).
 
 ### The guest side
 

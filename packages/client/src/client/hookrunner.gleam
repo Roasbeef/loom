@@ -53,6 +53,7 @@ import broker/broker
 import broker/budget
 import broker/exec.{type EnforcementDemand}
 import broker/policy
+import client/clear_call.{type ClearCall}
 import core/clock.{type Clock}
 import core/glance
 import core/ids.{type OpId}
@@ -90,9 +91,10 @@ pub type Command {
 /// session's jail.
 pub type Context {
   Context(
-    /// The session's broker. The runner borrows it per call the way the
-    /// worktree observation's wiring does, rather than owning a pool.
-    broker: broker.Broker,
+    /// Clears one hook process. The runner borrows it per call the way the
+    /// worktree observation's wiring does, so a placement chooses what
+    /// answers: the session's broker, or a function that refuses.
+    clear_call: ClearCall,
     /// The session's base policy; the derived requirements take their
     /// roots, mounts and network from it, exactly as the bash tool's do.
     base_policy: policy.SandboxPolicy,
@@ -247,23 +249,18 @@ pub fn run(
   let spec = call_spec(ctx, command, now, timeout_s)
   let events = process.new_subject()
 
-  use call <- result_try(broker.clear_call(
-    ctx.broker,
-    spec,
-    events,
-    waiting: wait_ms,
-  ))
+  use call <- result_try(ctx.clear_call(spec, events, wait_ms))
 
   // The event payload is the whole of stdin, closed after: a hook
   // reads one document and exits, and a pipeline that waits on more
   // input would hang against an open pipe.
-  broker.stdin(ctx.broker, call, bit_array.from_string(input), True)
+  call.stdin(bit_array.from_string(input), True)
 
   // Collect broker events until execution settles or cancel on wait timeout.
   case tool.collect_events(events, waiting: wait_ms) {
     Ok(collected) -> Ok(settled(collected))
     Error(Nil) -> {
-      broker.cancel(ctx.broker, call)
+      call.cancel()
       Error(NeverSettled)
     }
   }

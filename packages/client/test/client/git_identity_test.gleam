@@ -8,6 +8,7 @@ import broker/exec
 import broker/executor
 import broker/policy
 import client/catalog
+import client/clear_call
 import client/git_identity
 import client/host_git
 import client/internal/ffi_os
@@ -486,7 +487,7 @@ fn with_fixture_under(
   run(
     worktree_diff.Wiring(
       workspace:,
-      broker: owner,
+      clear_call: clear_call.over_broker(owner),
       base_policy: base,
       clock: wall,
       // Identity assertions do not require delegated cgroups on a Linux test
@@ -520,8 +521,7 @@ fn invoke(
     ids.mint_op(ids.generator(wiring.clock, wiring.entropy()))
   let events = process.new_subject()
   let assert Ok(call) =
-    broker.clear_call(
-      wiring.broker,
+    wiring.clear_call(
       broker.CallSpec(
         op_id: operation,
         step_id: "git-identity-fixture",
@@ -535,11 +535,11 @@ fn invoke(
         cwd: wiring.workspace,
         budget: budget.Budget(1, now + 10_000),
       ),
-      events:,
-      waiting: 5000,
+      events,
+      5000,
     )
     as "the fixture command is admitted"
-  broker.stdin(wiring.broker, call, data: <<>>, eof: True)
+  call.stdin(<<>>, True)
   let assert Ok(collected) = tool.collect_events(events, waiting: 15_000)
     as "the fixture command settles"
   collected
