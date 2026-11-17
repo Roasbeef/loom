@@ -2040,6 +2040,45 @@ pub fn another_executor_keeps_the_shared_tables_and_cookie_test() {
   assert string.contains(line, "[distribution] and the cookie stay")
 }
 
+pub fn untrusted_rows_do_not_keep_the_distribution_table_test() {
+  // An old guest's teardown beside untrusted rows: only a row reached over
+  // distribution keeps `[distribution]` and the cookie, whatever else the file
+  // holds. Each case is the extra text, the other executors counted, and
+  // whether the shared tables go.
+  let untrusted =
+    "\n[executors.new]\ntrust = \"untrusted\"\naddress = \"127.0.0.1:41000\"\npin = \"ab\"\n"
+  let inline =
+    "\n[executors]\nflat = { trust = \"untrusted\", address = \"x\" }\n"
+  let trusted = "\n[executors.other]\nnode = \"o@h\"\n"
+  let marked = "\n[executors.marked]\nnode = \"m@h\"\ntrust = \"trusted\"\n"
+  let cases = [
+    #(untrusted, [], vm_spec.RemoveCookie),
+    #(untrusted <> trusted, ["other"], vm_spec.KeepCookie),
+    #(marked, ["marked"], vm_spec.KeepCookie),
+    #("", [], vm_spec.RemoveCookie),
+  ]
+  list.each(cases, fn(case_) {
+    let #(extra, others, cookie) = case_
+    let assert Ok(found) = vm_spec.read_enrolment(enrolled_text(extra), "dev")
+      as { "the enrolment beside " <> extra <> " reads" }
+    assert found.other_executors == others
+      as { "beside " <> extra <> " counted " <> string.inspect(found) }
+    let plan =
+      vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOurs)
+    assert plan.cookie == cookie
+    assert list.contains(plan.tables, ["distribution"])
+      == { cookie == vm_spec.RemoveCookie }
+      as { "beside " <> extra <> " planned " <> string.inspect(plan) }
+  })
+
+  // An inline table of untrusted rows is read the same way. It cannot share
+  // the file with `[executors.dev]`, so it stands alone.
+  let assert Ok(found) =
+    vm_spec.read_enrolment("[distribution]\nnode = \"n\"\n" <> inline, "dev")
+    as "an inline untrusted row reads"
+  assert found.other_executors == []
+}
+
 pub fn a_deployment_that_is_not_the_guests_is_left_test() {
   let text =
     "[distribution]\nnode = \"mine@host\"\n\n[executors.dev]\nnode = \"mine-exec@host\"\n"

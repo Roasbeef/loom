@@ -4332,7 +4332,8 @@ pub type Enrolment {
     executor_node: Option(String),
     /// The `node` of the `[distribution]` table, when there is one.
     distribution_node: Option(String),
-    /// The names of the other `[executors.*]` tables.
+    /// The names of the other `[executors.*]` tables that may need
+    /// `[distribution]`: every one whose `trust` is not `"untrusted"`.
     other_executors: List(String),
   )
 }
@@ -4340,6 +4341,11 @@ pub type Enrolment {
 /// Reads the enrolment of the guest called `name` out of a `loom.toml`. Empty
 /// text is a file with nothing in it. Text that is not valid TOML is the error,
 /// and `rm` then touches nothing.
+///
+/// An untrusted row is reached over `[executor_link]` and never through
+/// `[distribution]`, so it is not counted among the executors that keep that
+/// table and the cookie. Counting it kept `[distribution]` after the guest whose
+/// `orch/` credentials it names was deleted, and the next daemon start failed.
 ///
 /// ## Examples
 ///
@@ -4356,9 +4362,10 @@ pub fn read_enrolment(text: String, name: String) -> Result(Enrolment, String) {
   )
   let others =
     tom.get_table(document, ["executors"])
-    |> result.map(dict.keys)
-    |> result.unwrap([])
-    |> list.filter(fn(other) { other != name })
+    |> result.lazy_unwrap(dict.new)
+    |> dict.to_list
+    |> list.filter(fn(entry) { entry.0 != name && !untrusted_row(entry.1) })
+    |> list.map(fn(entry) { entry.0 })
     |> list.sort(string.compare)
 
   Ok(Enrolment(
@@ -4368,6 +4375,15 @@ pub fn read_enrolment(text: String, name: String) -> Result(Enrolment, String) {
       |> option.from_result,
     other_executors: others,
   ))
+}
+
+/// Whether an `[executors.*]` table says `trust = "untrusted"`.
+fn untrusted_row(row: tom.Toml) -> Bool {
+  case row {
+    tom.Table(fields) | tom.InlineTable(fields) ->
+      dict.get(fields, "trust") == Ok(tom.String("untrusted"))
+    _ -> False
+  }
 }
 
 /// What the home's `.erlang.cookie` is, compared with the cookie in the
