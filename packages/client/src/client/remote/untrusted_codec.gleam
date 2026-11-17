@@ -4349,8 +4349,8 @@ fn absent(fields: Fields, name: String) -> Result(Nil, CorruptionReport) {
   }
 }
 
-/// Reads an integer wider than 64 bits, which only a value defined as too wide
-/// for 64 bits may be. Its magnitude is held to `wide_int_limit`, because the
+/// Reads an integer of any width up to `wide_int_limit`; only a value defined
+/// as too wide for 64 bits needs more than 64. Its magnitude is held to `wide_int_limit`, because the
 /// parser bounds the digits of a number only by the frame's size, and an
 /// integer of a million digits costs time to parse and again every time a
 /// report that holds it is printed.
