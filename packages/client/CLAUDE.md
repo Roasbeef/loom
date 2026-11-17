@@ -43,7 +43,7 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
 `[executor_listener]` beside `[distribution]`.
 
 - `remote/untrusted_wire` is the frames (`Hello`, `Welcome`, `Request`, `Cancel`,
-  `Response`, `Callback`, `Answer`), 078's requests and owner messages without
+  `Response`, `Callback`, `Answer`, `Oversized`, `CallEvent`), 078's requests and owner messages without
   their subjects, and the reply kinds. `remote/untrusted_codec` is their total JSON
   codec: `decode_envelope` first, then the body against the kind the receiver
   expects. Its lossy encodings are listed in its module doc.
@@ -99,6 +99,31 @@ from the re-sent request's next `Oversized`, runs at most `max_fetches` (2) at
 once, and checks size and digest in `remote/outcome_fetch` before decoding.
 Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 (`RunLost`, `Unknown`), never a refusal that invites a re-run.
+
+Wire version 5 (protocol-change/117, slice 2: the wire, not yet the tunnel).
+`untrusted_wire` adds `ClearCallRequest(binding, spec, waiting_ms)`, whose
+`TunnelSpec` is a `broker.CallSpec` without `grants` and `demand`, its reply
+`ClearedAnswered(Result(Nil, broker.Refusal))` (`ClearedKind`), and the
+executor's frame `CallEvent(call, TunnelOutput(stream, data) |
+TunnelSettled(broker.CallOutcome))`. The codec carries every `ExecResult`
+field, every `ExecFailure` and every `broker.Refusal`; it refuses a spec with a
+`grants` or `demand` member, an `argv` over 4,096 entries, an `env` over 1,024
+pairs, and a `waiting_ms` or `deadline_ms` outside 0 to 2^53; an
+`actor.InitExited(Abnormal(_))` crosses as `InitFailed` with its printed reason.
+`untrusted_wire.max_frame_values` (1,048,576) bounds the JSON values of every
+frame (`decode_envelope`) and of a fetched outcome (`decode_outcome_bytes`)
+through `core/json.parse_bounded`, which refuses during the parse. Each side
+checks its own sends with `untrusted_codec.encode_fitting` (bytes and values;
+the value walk runs only for a frame over 1,048,576 bytes): the link refuses an
+unfit request `Invalid` and never keeps it, and an unfit owner answer with the
+callback's refused answer; the gateway's `replied` sends an unfit response as
+`Oversized`, so a fetched outcome over the value bound is answered lost and an
+honest executor never loops. Until the tunnel lands the gateway answers every
+`clear_call` with `ClearedAnswered(Error(BrokerUnavailable))` and the link
+treats any `CallEvent` as a violation. A `welcome` of other versions logs both
+wire and both protocol numbers (`untrusted_link.version_mismatch`); when the
+protocol versions agree the waiting requests are refused `Unreachable` with a
+text naming both wire versions, otherwise `VersionMismatch(supported: theirs)`.
 
 Reloading the rows (protocol-change/116). `daemon/untrusted_links` is a
 `weft/actor`, started by `prepare_startup` beside `project_book`, that holds the

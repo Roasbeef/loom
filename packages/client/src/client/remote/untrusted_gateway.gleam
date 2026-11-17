@@ -44,6 +44,7 @@
 ////    answers go to proxies, and waiters' replies go out as responses.
 //// 4. `proxy` is a binding's owner port.
 
+import broker/broker
 import broker/internal/call
 import client/internal/ffi_tls_stream.{type Stream}
 import client/remote/address.{type Address}
@@ -56,7 +57,6 @@ import client/remote/untrusted_codec
 import client/remote/untrusted_wire.{type Request, type Response}
 import core/corruption
 import core/json.{type JsonValue}
-import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -523,7 +523,8 @@ fn framed(
         | Ok(untrusted_codec.WelcomeEnvelope(..))
         | Ok(untrusted_codec.ResponseEnvelope(..))
         | Ok(untrusted_codec.CallbackEnvelope(..))
-        | Ok(untrusted_codec.OversizedEnvelope(..)) ->
+        | Ok(untrusted_codec.OversizedEnvelope(..))
+        | Ok(untrusted_codec.CallEventEnvelope(..)) ->
           closed(
             stream,
             data,
@@ -663,6 +664,14 @@ fn answer(
       )
     untrusted_wire.OutcomePieceRequest(key:, offset:) ->
       Some(untrusted_bridge.outcome_piece(host, key, offset, carrier))
+
+    // This executor carries no tunnelled call yet, so every clearance is
+    // refused as a broker that cannot be reached. The tunnel replaces this
+    // arm with a waiter that clears the call on the plane's broker under the
+    // binding's recorded base policy and reports it as `call_event` frames.
+    untrusted_wire.ClearCallRequest(..) ->
+      Some(untrusted_wire.ClearedAnswered(Error(broker.BrokerUnavailable)))
+
     untrusted_wire.CloseRequest(session:, incarnation:, ..) -> {
       let response = untrusted_bridge.ask_host(host, request, port, carrier)
       closed_scope(answering, session, incarnation, response)
@@ -753,10 +762,12 @@ fn routed(
 }
 
 /// A waiter's answer, sent as the response to its request. A response whose
-/// frame would pass `max_frame_bytes` is sent as an `Oversized` instead, which
-/// the orchestrator follows by fetching the outcome in pieces
-/// (protocol-change/110); sent whole, the orchestrator's socket would refuse
-/// it, and the re-send on the next connection would meet the same frame.
+/// frame would pass `max_frame_bytes` or hold more than `max_frame_values`
+/// values is sent as an `Oversized` instead, which the orchestrator follows by
+/// fetching the outcome in pieces (protocol-change/110) or, for a reply that
+/// holds no outcome, answers as lost at once; sent whole, the orchestrator
+/// would refuse it by closing the connection, and the re-send on the next
+/// connection would meet the same frame.
 fn replied(
   stream: Stream,
   data: Connection,
@@ -768,18 +779,23 @@ fn replied(
   // Only a request with a reply has a waiter, and its waiter always replies.
   case response {
     Some(response) -> {
-      let frame =
-        untrusted_codec.encode_frame(untrusted_wire.Response(id:, response:))
-      let fits = bit_array.byte_size(frame) <= untrusted_wire.max_frame_bytes
-      outgoing(stream, data, case fits {
-        True -> frame
-        False ->
+      let fitting =
+        untrusted_codec.encode_fitting(untrusted_wire.Response(id:, response:))
+
+      // A response over either bound goes out as its description. A fetched
+      // outcome is parsed under the same value bound, so one that holds too
+      // many values is answered lost rather than asked for again.
+      let frame = case fitting {
+        Ok(frame) -> frame
+        Error(untrusted_codec.Unfit(bytes:, ..)) ->
           untrusted_codec.encode_frame(untrusted_bridge.oversized(
             id,
             response,
-            frame,
+            bytes,
           ))
-      })
+      }
+
+      outgoing(stream, data, frame)
     }
     None -> sm.keep(data)
   }

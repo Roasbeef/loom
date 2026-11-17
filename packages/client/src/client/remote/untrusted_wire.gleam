@@ -29,6 +29,19 @@
 //// `answer_kind`) instead of trusting a tag the sender chose. A reply of
 //// another kind is a protocol violation, not a value.
 ////
+//// ## The broker tunnel (protocol-change/117)
+////
+//// A session's non-tool callers (goal checks, the Changes tab, the baseline
+//// probe and the peer view) clear calls on the executor's broker. Over this
+//// wire such a call is a `ClearCallRequest` naming the session's binding,
+//// answered by `ClearedAnswered`, after which the executor sends the call's
+//// output and its settlement as `CallEvent` frames under the request's id.
+//// The spec a request carries is a `TunnelSpec`: a `broker.CallSpec` with no
+//// grants and no enforcement demand, which the executor supplies itself, so
+//// the orchestrator cannot send either. `TunnelOutput` carries no truncation
+//// flag and no running total; truncation reaches the caller through the
+//// settled `ExecResult`.
+////
 //// ## Flow
 ////
 //// `response_kind` → `answer_kind` → `census_of` → `remote_census_of`
@@ -41,7 +54,9 @@
 ////    the orchestrator decides for itself.
 
 import broker/broker
-import broker/framing.{type CapOutcome}
+import broker/budget
+import broker/framing.{type CapOutcome, type OutputStream}
+import broker/policy.{type SandboxPolicy}
 import client/escalate
 import client/notice
 import client/owner_services.{
@@ -60,7 +75,7 @@ import client/state_transfer
 import client/wiring.{type Authority}
 import client/workspace_plane
 import codemode/satellite.{type CapDenial}
-import core/ids.{type Seq}
+import core/ids.{type OpId, type Seq}
 import core/json.{type JsonValue}
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
@@ -89,13 +104,26 @@ import tools/tool
 /// would read a plan with no seam. The two versions are refused at the
 /// handshake instead of silently serving a session more modules than its host
 /// offered.
-pub const version = 4
+///
+/// Version 5 added the broker tunnel (protocol-change/117): the request
+/// `ClearCallRequest`, its response `ClearedAnswered`, and the executor's frame
+/// `CallEvent`. Both sides also refuse a frame of more than `max_frame_values`
+/// values, which a version 4 sender does not count.
+pub const version = 5
 
 /// The largest frame either side sends or accepts, in bytes of body. The TLS
 /// socket enforces it before a frame is buffered, so a larger one closes the
 /// connection. It holds the 16 MiB result reservation of 078 once it has grown
 /// by a third as base64, and the envelope around it.
 pub const max_frame_bytes = 33_554_432
+
+/// The most JSON values one frame, or one outcome fetched in pieces, may hold
+/// (protocol-change/117). The byte bound alone lets a frame describe tens of
+/// millions of small values, each of which the parser would build; this bounds
+/// the decoded breadth instead. `untrusted_codec` refuses a received document
+/// past it during the parse, and each side counts its own frames against it
+/// before sending, so an honest sender never sends one the other refuses.
+pub const max_frame_values = 1_048_576
 
 /// The largest piece of a repository state a frame carries, so a
 /// `state_chunk` or a fetched piece fits in a frame with room for its
@@ -114,8 +142,8 @@ pub const binding_bytes = 16
 
 /// One frame, in either direction. Which frames a side accepts is the
 /// receiver's rule, not the type's: an orchestrator accepts only `Welcome`,
-/// `Response`, `Callback` and `Oversized`, and an executor only `Hello`,
-/// `Request`, `Cancel` and `Answer`.
+/// `Response`, `Callback`, `Oversized` and `CallEvent`, and an executor only
+/// `Hello`, `Request`, `Cancel` and `Answer`.
 pub type Frame {
   /// The orchestrator's first frame on a connection.
   Hello(
@@ -156,6 +184,49 @@ pub type Frame {
   /// (`untrusted_codec.encode_outcome_bytes`) is `size` bytes with the SHA-256
   /// `digest`, which the orchestrator fetches with `OutcomePieceRequest`.
   Oversized(id: Int, size: Int, digest: String)
+
+  /// The executor's report on the tunnelled call that `ClearCallRequest` `call`
+  /// cleared: a chunk of its output or its settlement.
+  CallEvent(call: Int, event: TunnelEvent)
+}
+
+/// What the executor reports about a tunnelled call after it cleared.
+pub type TunnelEvent {
+  /// One chunk of the call's output. It carries no truncation flag and no
+  /// running total: the orchestrator counts the bytes itself, and the settled
+  /// `ExecResult` says whether either stream was truncated.
+  TunnelOutput(stream: OutputStream, data: BitArray)
+
+  /// The call settled, exactly as the executor's broker settled it.
+  TunnelSettled(outcome: broker.CallOutcome)
+}
+
+/// The part of a `broker.CallSpec` the orchestrator chooses for a tunnelled
+/// call. The two fields it does not choose are absent rather than ignored: the
+/// executor clears with no grants, because a tunnelled call has no escalation
+/// that could have approved one, and with its own enforcement demand.
+pub type TunnelSpec {
+  TunnelSpec(
+    /// The operation the call is attributed to.
+    op_id: OpId,
+    /// The step within the operation.
+    step_id: String,
+    /// The base the call asks to run under; the executor meets it with the
+    /// plane's own, so it can narrow the plane's base and never widen it.
+    base_policy: SandboxPolicy,
+    /// What the call requires.
+    requirements: SandboxPolicy,
+    /// What the broker does when composition narrows the requirements.
+    response: broker.NarrowingResponse,
+    /// The command to run.
+    argv: List(String),
+    /// The child environment.
+    env: List(#(String, String)),
+    /// The working directory inside the jail.
+    cwd: String,
+    /// The call's pooled budget.
+    budget: budget.Budget,
+  )
 }
 
 /// A `HostMessage` of 078 without its reply subject. Only the requests the
@@ -275,6 +346,12 @@ pub type Request {
   /// `StopExecution`, which has no reply: the orchestrator's record of the
   /// execution has closed.
   StopExecutionRequest(key: Key, incarnation: Int)
+
+  /// Clears one call on the executor's broker for the session `binding` was
+  /// minted for (protocol-change/117). The executor answers `ClearedAnswered`
+  /// within `waiting_ms` and then reports the call as `CallEvent` frames under
+  /// this request's id.
+  ClearCallRequest(binding: BitArray, spec: TunnelSpec, waiting_ms: Int)
 }
 
 /// The census an untrusted executor reports: `RemoteCensus` without the two
@@ -340,6 +417,10 @@ pub type Response {
 
   /// The reply to `OutcomePieceRequest`.
   OutcomePieceAnswered(piece: OutcomePiece)
+
+  /// The reply to `ClearCallRequest`: the call cleared, or the broker's
+  /// refusal.
+  ClearedAnswered(answer: Result(Nil, broker.Refusal))
 }
 
 /// One piece of an encoded tool outcome, or why there is none.
@@ -396,6 +477,9 @@ pub type ResponseKind {
 
   /// `ExecutionAnswered`.
   ExecutionKind
+
+  /// `ClearedAnswered`.
+  ClearedKind
 }
 
 /// An `OwnerMessage` of 078 without its reply subject.
@@ -585,6 +669,7 @@ pub fn response_kind(request: Request) -> Option(ResponseKind) {
     OutcomePieceRequest(..) -> Some(OutcomePieceKind)
     StartExecutionRequest(..) -> Some(ExecutionKind)
     StopExecutionRequest(..) -> None
+    ClearCallRequest(..) -> Some(ClearedKind)
   }
 }
 
