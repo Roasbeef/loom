@@ -447,6 +447,11 @@ pub fn a_restart_in_place_keeps_the_fenced_did_not_run_answer_test() {
 
   assert moved_calls.read(opened) == Ok([])
   assert hands.recover(pending) == effects.NotStarted
+
+  // The recovery stored "did not start" for the key, so the dead runtime's
+  // `Run`, arriving after it under the same token, is refused and never runs.
+  assert hands.plane.run(pending, fixtures.authority())
+    == effects.ToolFailed(reason: protocol.did_not_run_text)
   assert fixtures.run_count(probe, "never_reached_the_executor") == 0
   rig.stop(executor)
 }
@@ -635,6 +640,31 @@ pub fn the_moved_calls_list_is_written_again_from_the_file_test() {
   assert moved_calls.read(opened) == Ok([listed(2)])
   assert !moved_calls.listed(opened, run)
   assert moved_calls.listed(opened, effects.ToolRun(..run, source_index: 2))
+}
+
+// A cell this module did not write is refused rather than read as an empty
+// list, and recovery then takes the answer that cannot be false: every call is
+// treated as listed, so its outcome is told as unknown.
+pub fn a_malformed_moved_calls_cell_is_refused_and_answers_unknown_test() {
+  let opened = store()
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            register.FactCustom,
+            moved_calls.key,
+            register.value(json.String("x")),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the malformed cell is written"
+
+  let assert Error(_reason) = moved_calls.read(opened)
+  assert moved_calls.listed(opened, fixtures.tool_run("any", 0))
 }
 
 pub fn a_call_of_a_finished_operation_is_settled_and_a_garbled_key_is_not_test() {

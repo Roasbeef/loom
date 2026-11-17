@@ -809,6 +809,11 @@ pub fn a_call_in_flight_when_the_move_stopped_the_turn_is_unknown_on_the_receive
       ),
     ])
   assert arrived.recover(in_flight) == effects.OutcomeUnknown
+
+  // An unlisted key is still asked of the executor, which answers it, so the
+  // unknown outcome above is the list's and not a refusal or a lost link.
+  assert arrived.recover(fixtures.tool_run("dispatched_here", 1))
+    == effects.NotStarted
   let assert Ok(Nil) = session.close(opened)
   finish(rig)
 }
