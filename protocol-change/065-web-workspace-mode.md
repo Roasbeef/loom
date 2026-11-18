@@ -2405,10 +2405,20 @@ sign-in's pages, and another principal's, are left alone.
 **What it costs.** Each revocation makes one more call, to the table's actor, which
 waits at most a second. Signing out everywhere ends the page that asked, since
 that page is one of the logins' pages; its next frame shows the page ended and the
-person opens a fresh link. A page opened from a device link, which was meant to
-survive its parent's revocation for the page's own eight hours, no longer does.
+person opens a fresh link. A page opened from a device link is attached to its
+own child login (its ticket is redeemed with no login and the exchange then
+attaches the child's), so revoking the parent does not end it, and revoking the
+child now does, where before it ran to its eight hours. Revoking a parent drops
+its unredeemed device tickets, and refuses a new child login under it
+(`access.issue_login` refuses an issuing login on record as revoked, and the
+table refuses a page's ticket for a login no page holds, which closes the gap
+between a page's check and its mint). It does not cascade to child logins that
+already exist or to their pages, which is unchanged.
+
 The registry check before each relayed piece is a second registry call per frame
-on a relayed page while a piece is due.
+on a relayed page while a piece is due. `still_open` maps any authenticate error,
+a registry timeout included, to `AccessRevoked`, and the per-piece check now takes
+that path per piece as well as per poll. That mapping is not changed here.
 
 **Tests.** `ui_sessions_test` (`ending_a_login_ends_its_pages_and_no_other_test`,
 `ending_every_login_of_a_principal_leaves_the_bearers_pages_test`),

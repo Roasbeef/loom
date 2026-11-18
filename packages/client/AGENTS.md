@@ -1488,7 +1488,13 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   command `credentials.revoke_login` in `server.gleam`. The table drops every
   page and ticket whose `Page.login` names the login (for the all form, whose
   principal matches and whose login is `Some`) and the call returns once it has,
-  so the page's next check finds nothing and it ends as `PageEnded`. A page a
+  so the page's next check finds nothing and it ends as `PageEnded`. A page's
+  own mints (`mint_in`, `mint_device`, `mint_before`, `Minter = ByPage`) are
+  refused in the table's turn when the login they carry is held by no live page,
+  so a revocation landing between a page's check and its mint leaves no ticket;
+  `mint`, `mint_carried` and `mint_resumed` (`ByLauncher`) are not held to a page.
+  `access.issue_login` also refuses a child login whose issuing login is on
+  record as revoked. A page a
   `loom ui` exchange opened is bound to the bearer that asked for the link, so
   the row's revocation alone would not end it; a page with no login
   (`--no-remember`) is the bearer's and is not touched. `ui_feed.pump` also makes
