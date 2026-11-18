@@ -98,7 +98,10 @@ pub type JsonValue {
   /// A JSON string.
   String(value: String)
 
-  /// A JSON number with no fraction or exponent part. Arbitrary precision.
+  /// A JSON number with no fraction or exponent part. Arbitrary precision in
+  /// memory, but `parse` refuses a literal of more than `max_number_digits`
+  /// digits, so `to_string` of an `Int` that wide writes text that will not
+  /// read back.
   Int(value: Int)
 
   /// A JSON number with a fraction or exponent part. Always finite.
@@ -1161,7 +1164,11 @@ fn take_digits(cursor: Cursor) -> Result(#(String, Cursor), CorruptionReport) {
   // The count stops one digit past the cap, so a run over it is recognised
   // without reading the rest of a hostile run.
   case run > max_number_digits {
-    True -> Error(fail(cursor, "at most 4096 digits in a number"))
+    True ->
+      Error(fail(
+        cursor,
+        "at most " <> int.to_string(max_number_digits) <> " digits in a number",
+      ))
     False -> {
       use #(digits, after) <- result.try(cut(cursor, run))
       Ok(#(digits, advance(cursor, after, by: run)))
