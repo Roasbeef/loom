@@ -36,10 +36,35 @@ import session_view/diff_view.{type Kind, type Line}
 /// // diff.view(diff_view.of_lines(["@@ -1 +1 @@", "-a", "+b"]), 0)
 /// ```
 pub fn view(lines: List(Line), cut: Int) -> Element(message) {
-  html.div(
-    [attribute.class("diff")],
-    list.append(list.filter_map(lines, row), note(cut)),
-  )
+  view_with(lines, cut, fn(_, _) { [] })
+}
+
+/// A diff's lines as one box, with whatever `after` returns drawn beneath each
+/// line, given the line's position in `lines` and the line. The review pane
+/// uses it to pin a find under the line it names. A file header line draws
+/// nothing, and nothing is drawn under it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // diff.view_with(lines, 0, fn(_, _) { [] })
+/// ```
+pub fn view_with(
+  lines: List(Line),
+  cut: Int,
+  after: fn(Int, Line) -> List(Element(message)),
+) -> Element(message) {
+  let rows =
+    lines
+    |> list.index_map(fn(line, index) {
+      case row(line) {
+        Ok(drawn) -> [drawn, ..after(index, line)]
+        Error(Nil) -> []
+      }
+    })
+    |> list.flatten
+
+  html.div([attribute.class("diff")], list.append(rows, note(cut)))
 }
 
 /// A diff read from its text, drawn bounded (`diff_view.max_lines`).

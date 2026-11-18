@@ -62,6 +62,9 @@ pub type Loaded {
 
 /// What the page knows of one find's revision, which a close names.
 pub type Revision {
+  /// The record's read is out.
+  Asking
+
   /// The record was read at this revision.
   Revision(number: Int)
 
@@ -217,6 +220,35 @@ pub fn revision_read(
   )
 }
 
+/// Marks the finds whose record has not been asked for as asked, and returns
+/// them, so the page asks for each once. A find whose read is out, answered or
+/// failed is not asked again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert review_pane.ask_revisions(review_pane.closed(), []).1 == []
+/// ```
+pub fn ask_revisions(
+  state: State,
+  finds: List(String),
+) -> #(State, List(String)) {
+  let fresh =
+    finds
+    |> list.unique
+    |> list.filter(fn(find) { !dict.has_key(state.revisions, find) })
+
+  #(
+    State(
+      ..state,
+      revisions: list.fold(fresh, state.revisions, fn(held, find) {
+        dict.insert(held, find, Asking)
+      }),
+    ),
+    fresh,
+  )
+}
+
 /// The paths of the open review in the order it draws them, or none before it
 /// was read.
 ///
@@ -303,7 +335,7 @@ pub fn find_action(
             problem: Some(review_stage_rule.problem_words(problem)),
           )
       }
-    Ok(Unread(_)) | Error(Nil) ->
+    Ok(Unread(_)) | Ok(Asking) | Error(Nil) ->
       State(
         ..state,
         problem: Some(

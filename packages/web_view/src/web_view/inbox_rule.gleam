@@ -22,11 +22,13 @@
 ////
 //// ## Flow
 ////
-//// `kind` → `group` → `grouped` → `selection` → `head`
+//// `kind` → `group` → `grouped` / `grouped_with` → `selection` → `head`
 ////
 //// 1. `kind` reads one report's activity and last message, and `words` says it.
 //// 2. `group` places a kind in one of four groups, and `grouped` collects
 ////    threads into the groups, each ordered by session name.
+////    `grouped_with` also moves the idle sessions whose worktree holds changes
+////    into "To review".
 //// 3. `selection` names the thread the reading pane shows, and `head` words a
 ////    thread's one line.
 //// 4. `landing` and `headline` summarise every report the page holds.
@@ -41,11 +43,17 @@ import web_view/sessions.{type Report}
 /// The longest head, in graphemes, including the ellipsis a cut head ends in.
 pub const head_graphemes = 120
 
-/// The four groups the inbox lists, in the order it draws them.
+/// The five groups the inbox lists, in the order it draws them.
 pub type Group {
   /// A session that is blocked on the owner: an approval is pending, or its
   /// last run failed and only the owner can fix the cause.
   NeedsYou
+
+  /// A finished session whose worktree holds changes: it is idle, it said
+  /// something when it stopped, and the page's read of its tree found files
+  /// (`web_view/review_scan_rule`). Only a page that may read a worktree has
+  /// this group.
+  ToReview
 
   /// An idle session that said something when it stopped. Phase 0 cannot tell
   /// a question from a report, so the group is worded as "waiting" and the
@@ -173,6 +181,7 @@ pub fn group(report: Report) -> Group {
 pub fn group_words(group: Group) -> String {
   case group {
     NeedsYou -> "Needs you"
+    ToReview -> "To review"
     Waiting -> "Waiting"
     Updates -> "Updates"
     Quiet -> "Quiet"
@@ -207,11 +216,28 @@ pub fn landing(reports: List(Report)) -> Landing {
 /// assert inbox_rule.grouped([]) == []
 /// ```
 pub fn grouped(threads: List(Thread)) -> List(#(Group, List(Thread))) {
-  [NeedsYou, Waiting, Updates, Quiet]
+  grouped_with(threads, [])
+}
+
+/// The threads collected as `grouped` does, with the idle threads named in
+/// `reviewing` moved from "Waiting" to "To review". Only an idle thread moves:
+/// a session that is working, failed or waiting on an approval is where its
+/// report puts it whatever its tree holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert inbox_rule.grouped_with([], ["a"]) == []
+/// ```
+pub fn grouped_with(
+  threads: List(Thread),
+  reviewing: List(String),
+) -> List(#(Group, List(Thread))) {
+  [NeedsYou, ToReview, Waiting, Updates, Quiet]
   |> list.filter_map(fn(wanted) {
     let members =
       threads
-      |> list.filter(fn(thread) { group(thread.report) == wanted })
+      |> list.filter(fn(thread) { placed(thread, reviewing) == wanted })
       |> list.sort(by_name)
 
     // A group with no thread is not listed, so the page draws no empty header.
@@ -220,6 +246,14 @@ pub fn grouped(threads: List(Thread)) -> List(#(Group, List(Thread))) {
       [_, ..] -> Ok(#(wanted, members))
     }
   })
+}
+
+/// The group a thread is drawn in once the sessions to review are known.
+fn placed(thread: Thread, reviewing: List(String)) -> Group {
+  case group(thread.report), list.contains(reviewing, thread.id) {
+    Waiting, True -> ToReview
+    other, _ -> other
+  }
 }
 
 /// The identity of the thread the reading pane shows: the chosen one when the

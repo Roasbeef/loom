@@ -264,3 +264,19 @@ pub fn the_landing_agrees_with_the_groups_test() {
     assert { inbox_rule.landing(reports) == inbox_rule.Inbox } == occupied
   })
 }
+
+// A finished session whose worktree holds changes moves from Waiting to To
+// review, and nothing but an idle session with a message ever moves.
+pub fn only_an_idle_session_with_changes_moves_to_review_test() {
+  let idle = thread("a", "idle", report(sessions.Idle, Some("Done.")))
+  let other = thread("b", "other", report(sessions.Idle, Some("Done.")))
+  let working = thread("c", "busy", report(sessions.Working, Some("Doing.")))
+
+  let groups = inbox_rule.grouped_with([idle, other, working], ["a", "c", "z"])
+  assert list.map(groups, fn(entry) { entry.0 })
+    == [inbox_rule.ToReview, inbox_rule.Waiting, inbox_rule.Updates]
+  assert list.map(groups, fn(entry) { list.map(entry.1, fn(t) { t.id }) })
+    == [["a"], ["b"], ["c"]]
+  assert inbox_rule.group_words(inbox_rule.ToReview) == "To review"
+  assert inbox_rule.grouped_with([idle], []) == inbox_rule.grouped([idle])
+}

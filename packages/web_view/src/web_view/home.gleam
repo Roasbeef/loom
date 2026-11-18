@@ -315,6 +315,10 @@ import web_view/projects as feed
 import web_view/relayed
 import web_view/relayed_session
 import web_view/renames
+import web_view/review_feed
+import web_view/review_pane
+import web_view/review_scan_rule
+import web_view/review_stage_rule
 import web_view/saved_attention.{type Saved}
 import web_view/sessions.{
   type Activity, type Entry, type Group, Live, NeedsYou, Working,
@@ -336,6 +340,7 @@ import web_view/view/notice
 import web_view/view/projects as projects_view
 import web_view/view/relayed_session as relayed_view
 import web_view/view/resume.{type Resume}
+import web_view/view/review_thread as review_view
 import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/signins as signins_view
@@ -807,6 +812,15 @@ pub type Attention {
     /// never decides.
     approvals: fn(String, fn(Result(approval_evidence.Evidence, String)) -> Nil) ->
       Nil,
+    /// Starts the read of a running session's worktree as a review
+    /// (protocol-change/123) and returns at once. The answer is the daemon's
+    /// review or its fixed words for why there is none, and arrives as
+    /// `ReviewScanned` or `ReviewRead`. It is `None` on a page whose ceiling is an
+    /// observer's, because the daemon refuses an observer the tree's bytes, and
+    /// then the inbox has no "To review" group and draws no review pane.
+    review: Option(
+      fn(String, fn(Result(review_feed.Review, String)) -> Nil) -> Nil,
+    ),
     /// How the page acts, or nothing for a page that may not: only the daemon's
     /// owner on a page minted to operate is handed it, and the daemon decides
     /// again each time one of its functions runs.
@@ -948,6 +962,16 @@ pub opaque type Model {
     /// How many item threads have been opened, which keys their forms so each
     /// open starts empty.
     item_presses: Int,
+    /// What the page knows of each idle session's worktree, by identity, which
+    /// decides who is "To review" (`web_view/review_scan_rule`). It holds a
+    /// verdict for each session and never a review.
+    reviews: Dict(String, review_scan_rule.Seen),
+    /// The open review thread: its review, what is staged and where a Send
+    /// stands.
+    review: review_pane.State,
+    /// How many review threads have been opened, which keys their forms so each
+    /// open starts empty.
+    review_presses: Int,
     /// The time the last list was read, in Unix milliseconds, which the rows'
     /// ages are counted from.
     now: Int,
@@ -1224,6 +1248,46 @@ pub type Msg {
 
   /// The daemon's word on a retry.
   ItemRetryAnswered(key: attention_rule.Key, answer: thread_send.Answer)
+
+  /// The daemon's answer to the read that decides whether a finished session is
+  /// "To review". The message is the session's last message when the read began.
+  ReviewScanned(
+    session: String,
+    message: String,
+    read: Result(review_feed.Review, String),
+  )
+
+  /// The daemon's answer to the read of the open review thread's worktree.
+  ReviewRead(session: String, read: Result(review_feed.Review, String))
+
+  /// The daemon's answer to the read of a find's record, for its revision.
+  ReviewFindRead(find: String, read: Result(item_pane.Record, String))
+
+  /// A verdict button was pressed.
+  ReviewVerdictChosen(verdict: review_stage_rule.Verdict)
+
+  /// A file's comment form was submitted: the file's path, drawn into the
+  /// handler by the server, and the text.
+  ReviewCommented(path: String, text: String)
+
+  /// A find's form was submitted: the find, the way to close it and a note.
+  ReviewFindStaged(find: String, closure: attention.Closure, note: String)
+
+  /// Take back everything staged in the review.
+  ReviewCleared
+
+  /// Send what the review staged.
+  ReviewSent
+
+  /// The daemon's word on a find close that a review's Send asked for.
+  ReviewClosed(
+    find: String,
+    closure: attention.Closure,
+    outcome: review_pane.Outcome,
+  )
+
+  /// The gateway's word on the prompt a review's Send delivered.
+  ReviewPrompted(answer: thread_send.Answer)
 
   /// The person pressed "Inbox" on the composer or the list: show the centre the
   /// page lands on, which is the inbox while something waits or runs.
@@ -1636,6 +1700,9 @@ pub fn new(start: Start) -> Model {
     evidence: dict.new(),
     item: item_pane.closed(),
     item_presses: 0,
+    reviews: dict.new(),
+    review: review_pane.closed(),
+    review_presses: 0,
     now: 0,
     status: Connecting,
     timer: None,
@@ -1788,7 +1855,8 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Ended(_) -> #(model, effect.none())
         Connecting | Connected -> {
           let next = observed(model, rows)
-          #(next, approving(next))
+          let #(reviewed, reading) = reviewing(next)
+          #(reviewed, effect.batch([approving(reviewed), reading]))
         }
       }
 
@@ -1923,8 +1991,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           selected: Pressed(session),
           presses: model.presses + 1,
           item: item_pane.closed(),
+          review: case model.review.loaded, model.review.session {
+            review_pane.Unavailable(_), Some(held) if held == session ->
+              review_pane.closed()
+            _, _ -> model.review
+          },
         )
-      #(next, approving(next))
+      let #(reviewed, reading) = reviewing(next)
+      #(reviewed, effect.batch([approving(reviewed), reading]))
     }
 
     // A send asks the daemon in a task of its own. A draft with nothing in it
@@ -2058,6 +2132,101 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           effect.none(),
         )
       }
+
+    // A scan's answer is kept as what it found and the review is dropped. The
+    // next due session is read, and the open thread is checked against the new
+    // groups.
+    ReviewScanned(session:, message:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected ->
+          reviewing(
+            Model(
+              ..model,
+              reviews: review_scan_rule.answered(
+                model.reviews,
+                session,
+                message,
+                read,
+              ),
+            ),
+          )
+      }
+
+    ReviewRead(session:, read:) -> #(
+      Model(..model, review: review_pane.loaded(model.review, session, read)),
+      effect.none(),
+    )
+
+    // A find's revision is what a close names, so a close is staged only once
+    // the record was read.
+    ReviewFindRead(find:, read:) -> #(
+      Model(
+        ..model,
+        review: review_pane.revision_read(
+          model.review,
+          find,
+          result.try(read, fn(record) {
+            case record {
+              item_pane.FindRecord(revision:, ..) -> Ok(revision)
+              item_pane.AskRecord(..) -> Error("That record is not a find.")
+            }
+          }),
+        ),
+      ),
+      effect.none(),
+    )
+
+    // A page that may not act ignores every staging message, and the daemon
+    // refuses the frames such a page could not have sent.
+    ReviewVerdictChosen(verdict:) ->
+      staged_review(model, review_pane.verdict(model.review, verdict))
+
+    ReviewCommented(path:, text:) ->
+      staged_review(model, review_pane.comment(model.review, path, text))
+
+    ReviewFindStaged(find:, closure:, note:) ->
+      staged_review(
+        model,
+        review_pane.find_action(model.review, find, closure, note),
+      )
+
+    ReviewCleared -> staged_review(model, review_pane.cleared(model.review))
+
+    ReviewSent ->
+      case acting(model), model.status {
+        Some(act), Connected -> {
+          let #(state, step) = review_pane.send(model.review)
+          #(
+            Model(..model, review: state),
+            review_asking(act, model.review.session, step),
+          )
+        }
+        _, _ -> #(model, effect.none())
+      }
+
+    ReviewClosed(find:, closure:, outcome:) ->
+      case acting(model) {
+        Some(act) -> {
+          let #(state, step) =
+            review_pane.closed_with(model.review, find, closure, outcome)
+          let next = Model(..model, review: state)
+          #(
+            next,
+            effect.batch([
+              review_asking(act, model.review.session, step),
+              attending(next),
+            ]),
+          )
+        }
+        None -> #(model, effect.none())
+      }
+
+    ReviewPrompted(answer:) -> {
+      let next =
+        Model(..model, review: review_pane.prompted(model.review, answer))
+      #(next, attending(next))
+    }
 
     // An item's press opens its thread, for an item the last read still holds.
     // Its record is read by the daemon in a task of its own.
@@ -4940,7 +5109,7 @@ fn selected_session(selection: Selection) -> Option(String) {
 /// nothing when there is none. A default is therefore fixed at the first read
 /// that has a thread, and a thread that later outranks it does not move it.
 fn settled_selection(model: Model) -> Selection {
-  let groups = inbox_rule.grouped(drawn_threads(model))
+  let groups = model_groups(model)
   let chosen = inbox_rule.selection(groups, selected_session(model.selected))
 
   // A press that still stands stays a press; any other thread shown is a
@@ -4980,7 +5149,7 @@ fn something_waits(model: Model) -> Bool {
 /// The running session whose thread the pane shows when its activity says an
 /// approval is pending, which is the one session whose evidence the page reads.
 fn approval_session(model: Model) -> Option(String) {
-  let groups = inbox_rule.grouped(drawn_threads(model))
+  let groups = model_groups(model)
   let shown = inbox_rule.selection(groups, selected_session(model.selected))
 
   // Only a thread whose activity word is an approval has evidence to read.
@@ -5268,7 +5437,7 @@ fn inbox_headline(model: Model, threads: List(inbox_rule.Thread)) -> String {
 /// session from here and the socket admits no new event.
 fn inbox_page(model: Model) -> Element(Msg) {
   let threads = inbox_threads(model)
-  let groups = inbox_rule.grouped(drawn_threads(model))
+  let groups = model_groups(model)
   let chosen = inbox_rule.selection(groups, selected_session(model.selected))
 
   inbox_view.view(inbox_view.Offer(
@@ -5298,7 +5467,243 @@ fn inbox_page(model: Model) -> Element(Msg) {
       None -> None
     },
     attention: attention_threads(model),
+    review: review_offer(model),
   ))
+}
+
+/// The inbox's groups: the threads of the last reads, with the idle sessions
+/// whose worktree holds changes under "To review".
+fn model_groups(
+  model: Model,
+) -> List(#(inbox_rule.Group, List(inbox_rule.Thread))) {
+  inbox_rule.grouped_with(drawn_threads(model), reviewing_ids(model))
+}
+
+/// The idle sessions with a last message, as their identity and that message,
+/// in the order the page lists them: the sessions whose tree could be reviewed.
+fn scan_candidates(model: Model) -> List(#(String, String)) {
+  list.filter_map(inbox_threads(model), fn(thread) {
+    case inbox_rule.kind(thread.report), thread.report.last_message {
+      inbox_rule.Idle, Some(message) -> Ok(#(thread.id, message))
+      inbox_rule.Idle, None
+      | inbox_rule.ApprovalPending, _
+      | inbox_rule.Failed, _
+      | inbox_rule.Working, _
+      | inbox_rule.Settled, _
+      -> Error(Nil)
+    }
+  })
+}
+
+/// The sessions whose last read of their worktree found changes at the message
+/// they say now.
+fn reviewing_ids(model: Model) -> List(String) {
+  review_scan_rule.ready(scan_candidates(model), model.reviews)
+}
+
+/// How the page reads a worktree, or nothing for a page that may not: an
+/// observer's has no review.
+fn review_reader(
+  model: Model,
+) -> Option(fn(String, fn(Result(review_feed.Review, String)) -> Nil) -> Nil) {
+  case model.start.attention {
+    Some(reads) -> reads.review
+    None -> None
+  }
+}
+
+/// Starts the read that decides the next idle session, when one is due and none
+/// is out. A page that cannot read a worktree, and one that is not connected,
+/// read none.
+fn scanning(model: Model) -> #(Model, Effect(Msg)) {
+  case review_reader(model), model.status {
+    Some(read), Connected ->
+      case
+        review_scan_rule.due(scan_candidates(model), model.reviews, model.now)
+      {
+        Some(#(session, message)) -> #(
+          Model(
+            ..model,
+            reviews: review_scan_rule.started(
+              model.reviews,
+              session,
+              message,
+              model.now,
+            ),
+          ),
+          {
+            use dispatch <- effect.from
+            read(session, fn(result) {
+              dispatch(ReviewScanned(session, message, result))
+            })
+          },
+        )
+        None -> #(model, effect.none())
+      }
+    Some(_), Connecting
+    | Some(_), Ended(_)
+    | None, Connecting
+    | None, Connected
+    | None, Ended(_)
+    -> #(model, effect.none())
+  }
+}
+
+/// Opens the review thread of the session the pane shows when it is "To
+/// review" and the review held is not for it, or is for an older message, and
+/// starts the reads: the worktree and the record of each of its finds. A Send
+/// that is out keeps its review, and a thread already open is not read again.
+fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
+  let shown =
+    inbox_rule.selection(model_groups(model), selected_session(model.selected))
+  let message = case shown {
+    Some(id) ->
+      case dict.get(model.reports, id) {
+        Ok(report) -> Some(option.unwrap(report.last_message, ""))
+        Error(Nil) -> None
+      }
+    None -> None
+  }
+  let sending = case model.review.progress {
+    review_pane.Sending(_) -> True
+    review_pane.Resting | review_pane.Settled(_) -> False
+  }
+
+  case review_reader(model), model.start.attention, shown, message, sending {
+    Some(read), Some(reads), Some(id), Some(said), False ->
+      case list.contains(reviewing_ids(model), id) {
+        False -> #(model, effect.none())
+        True -> {
+          let fresh =
+            model.review.session != Some(id)
+            || model.review.read_for != Some(said)
+          let held = case fresh {
+            True -> review_pane.opened(id, said)
+            False -> model.review
+          }
+          let #(asked, finds) =
+            review_pane.ask_revisions(held, session_finds(model, id))
+          let next =
+            Model(..model, review: asked, review_presses: case fresh {
+              True -> model.review_presses + 1
+              False -> model.review_presses
+            })
+
+          #(
+            next,
+            effect.batch([
+              case fresh {
+                True -> {
+                  use dispatch <- effect.from
+                  read(id, fn(result) { dispatch(ReviewRead(id, result)) })
+                }
+                False -> effect.none()
+              },
+              ..list.map(finds, fn(find) {
+                use dispatch <- effect.from
+                reads.record(id, find, fn(result) {
+                  dispatch(ReviewFindRead(find, result))
+                })
+              })
+            ]),
+          )
+        }
+      }
+    _, _, _, _, _ -> #(model, effect.none())
+  }
+}
+
+/// A scan and then an opening, for a model whose reads or selection changed.
+fn reviewing(model: Model) -> #(Model, Effect(Msg)) {
+  let #(scanned, scan) = scanning(model)
+  let #(opened, open) = opening_review(scanned)
+  #(opened, effect.batch([scan, open]))
+}
+
+/// The identifiers of a session's open finds, as the feed last read them.
+fn session_finds(model: Model, session: String) -> List(String) {
+  case dict.get(model.feed, session) {
+    Ok(row) -> list.map(row.finds.items, fn(find) { find.id })
+    Error(Nil) -> []
+  }
+}
+
+/// A staging the pane made, kept only by a page that may act.
+fn staged_review(
+  model: Model,
+  state: review_pane.State,
+) -> #(Model, Effect(Msg)) {
+  case acting(model) {
+    Some(_) -> #(Model(..model, review: state), effect.none())
+    None -> #(model, effect.none())
+  }
+}
+
+/// The effect a step of a review's Send asks: a find close at its revision, the
+/// prompt to the session's main strand, or nothing when the send ended.
+fn review_asking(
+  act: Act,
+  session: Option(String),
+  step: review_pane.Step,
+) -> Effect(Msg) {
+  case session, step {
+    Some(held), review_pane.CloseStep(find:, revision:, closure:) -> {
+      use dispatch <- effect.from
+      act.close(held, find, revision, closure, fn(outcome) {
+        dispatch(
+          ReviewClosed(find, closure, case outcome {
+            Succeeded(words:) -> review_pane.Done(words)
+            Failed(words:) -> review_pane.Refused(words)
+          }),
+        )
+      })
+    }
+    Some(held), review_pane.PromptStep(text:) -> {
+      use dispatch <- effect.from
+      act.strand(held, "main", text, operator.Prompt, fn(answer) {
+        dispatch(ReviewPrompted(answer))
+      })
+    }
+    None, _ | Some(_), review_pane.Halted -> effect.none()
+  }
+}
+
+/// The open review's pane, for the session whose thread is "To review" and
+/// open, on a page that may read a worktree. A page that may act is handed the
+/// controls; one that may only read draws the files and the finds alone.
+fn review_offer(model: Model) -> Option(inbox_view.Reviewed(Msg)) {
+  case review_reader(model), model.review.session {
+    Some(_), Some(session) ->
+      case list.contains(reviewing_ids(model), session) {
+        False -> None
+        True ->
+          Some(inbox_view.Reviewed(
+            session:,
+            pane: review_view.pane(
+              review_view.Offer(
+                state: model.review,
+                finds: case dict.get(model.feed, session) {
+                  Ok(row) -> row.finds.items
+                  Error(Nil) -> []
+                },
+                presses: model.review_presses,
+                acting: case acting(model) {
+                  Some(_) ->
+                    Some(review_view.Acting(
+                      verdict: ReviewVerdictChosen,
+                      comment: ReviewCommented,
+                      find: ReviewFindStaged,
+                      unstage: ReviewCleared,
+                      send: ReviewSent,
+                    ))
+                  None -> None
+                },
+              ),
+            ),
+          ))
+      }
+    _, _ -> None
+  }
 }
 
 /// The message the "Inbox" control sends: whenever the inbox has a thread to

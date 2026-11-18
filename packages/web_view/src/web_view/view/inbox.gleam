@@ -114,7 +114,18 @@ pub type Offer(message) {
     /// The threads of asks, finds and stuck strands, or nothing on a page that
     /// reads no attention feed (`web_view/view/attention_thread`).
     attention: Option(Threads(message)),
+    /// The review pane of the session whose thread is open in "To review", or
+    /// nothing on a page that may not read a worktree
+    /// (`web_view/view/review_thread`).
+    review: Option(Reviewed(message)),
   )
+}
+
+/// A review pane and the session it belongs to. The reading pane draws it for
+/// that session's thread in place of the one-box message field, since the
+/// review's own outbox carries what the owner has to say.
+pub type Reviewed(message) {
+  Reviewed(session: String, pane: Element(message))
 }
 
 /// The attention threads, drawn by `web_view/view/attention_thread`: the rows
@@ -238,7 +249,7 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
         case entry.0 {
           inbox_rule.Quiet -> quiet_line(entry.1)
           inbox_rule.NeedsYou -> group(entry.0, entry.1, needs, offer)
-          inbox_rule.Waiting | inbox_rule.Updates ->
+          inbox_rule.ToReview | inbox_rule.Waiting | inbox_rule.Updates ->
             group(entry.0, entry.1, [], offer)
         }
       }),
@@ -280,7 +291,7 @@ fn group(
     ]),
     html.ul(
       [attribute.class("inbox-threads")],
-      list.append(extra, list.map(threads, row(_, offer))),
+      list.append(extra, list.map(threads, row(_, which, offer))),
     ),
   ])
 }
@@ -298,7 +309,11 @@ fn quiet_line(threads: List(Thread)) -> Element(message) {
 /// One thread's row: a button that shows the thread in the reading pane. Its
 /// eyebrow is the kind's word and the session's name, and its head is the one
 /// line the rule words from the report.
-fn row(thread: Thread, offer: Offer(message)) -> Element(message) {
+fn row(
+  thread: Thread,
+  which: Group,
+  offer: Offer(message),
+) -> Element(message) {
   let kind = inbox_rule.kind(thread.report)
 
   html.li([], [
@@ -312,7 +327,7 @@ fn row(thread: Thread, offer: Offer(message)) -> Element(message) {
       ],
       [
         html.span([attribute.class("inbox-eyebrow")], [
-          html.text(inbox_rule.words(kind) <> " · " <> thread.name),
+          html.text(row_word(kind, which) <> " · " <> thread.name),
         ]),
         html.span([attribute.class("inbox-head")], [
           html.text(inbox_rule.head(thread.report)),
@@ -320,6 +335,18 @@ fn row(thread: Thread, offer: Offer(message)) -> Element(message) {
       ],
     ),
   ])
+}
+
+/// The word a row's eyebrow says: the kind's, except for a finished session
+/// whose tree holds changes, which is a review.
+fn row_word(kind: Kind, which: Group) -> String {
+  case which {
+    inbox_rule.ToReview -> "Review"
+    inbox_rule.NeedsYou
+    | inbox_rule.Waiting
+    | inbox_rule.Updates
+    | inbox_rule.Quiet -> inbox_rule.words(kind)
+  }
 }
 
 /// The reading pane for the selected thread, or an empty node when the groups
@@ -362,10 +389,19 @@ fn reading(
       standing(thread, kind, offer),
       said(thread),
       strands(thread.report.glances),
+      reviewed(thread, offer),
       open_button("Open session ›", thread.id, offer),
       message_field(thread, kind, offer),
     ],
   )
+}
+
+/// The thread's review pane, when the page holds one for this session.
+fn reviewed(thread: Thread, offer: Offer(message)) -> Element(message) {
+  case offer.review {
+    Some(Reviewed(session:, pane:)) if session == thread.id -> pane
+    Some(_) | None -> element.none()
+  }
 }
 
 /// The element that scrolls the pane into view, drawn only for a thread the
@@ -396,9 +432,10 @@ fn message_field(
   kind: Kind,
   offer: Offer(message),
 ) -> Element(message) {
-  case offer.field {
-    None -> element.none()
-    Some(field) ->
+  case offer.field, offer.review {
+    _, Some(Reviewed(session:, ..)) if session == thread.id -> element.none()
+    None, _ -> element.none()
+    Some(field), _ ->
       keyed.div([attribute.class("inbox-send")], [
         #(
           "send-" <> thread.id <> "-" <> int.to_string(field.delivered),

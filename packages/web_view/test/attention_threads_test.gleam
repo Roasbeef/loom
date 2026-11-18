@@ -230,6 +230,7 @@ fn start(
       saved: fn(_, deliver) { deliver(saved) },
       record: fn(_session, id, deliver) { deliver(read_of(id)) },
       approvals: fn(_session, deliver) { deliver(Ok(evidence())) },
+      review: None,
       act:,
     )),
     create: None,
@@ -749,6 +750,7 @@ pub fn a_hostile_strand_name_is_in_no_attribute_test() {
             saved: fn(_, deliver) { deliver([]) },
             record: fn(_session, id, deliver) { deliver(read_of(id)) },
             approvals: fn(_session, deliver) { deliver(Ok(evidence())) },
+            review: None,
             act: case base.attention {
               Some(reads) -> reads.act
               None -> None
