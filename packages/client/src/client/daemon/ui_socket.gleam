@@ -192,6 +192,7 @@
 //// `on_close`.
 
 import broker/token
+import client/daemon/attention_door
 import client/daemon/manager
 import client/daemon/new_folder
 import client/daemon/project_start
@@ -218,6 +219,7 @@ import client/remote_escalation
 import client/remote_feed
 import client/remote_top
 import core/agency_limits
+import core/attention
 import core/ids
 import core/json as wire
 import gleam/bit_array
@@ -2120,6 +2122,76 @@ pub fn thread_send_task(
   )
 }
 
+/// Answers an ask from a home page, or says why not (protocol-change/120). It
+/// is `thread_send_for`'s standing check, the page still open at an operator's
+/// ceiling for the daemon's owner, followed by the door's own steps
+/// (`attention_door.answer`), which read the caller's authority from the registry
+/// again and deliver one prompt to the asking strand before settling the record.
+///
+/// `send` is `message_to_strand` over the page's attachment. It blocks for as
+/// long as the gateway takes, so a page's component never calls it directly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.answer_for(standing, open, reach, send, session, ask, revision, wire)
+/// ```
+@internal
+pub fn answer_ask_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  reach: attention_door.Reach(instance),
+  send: fn(String, String, String, operator.Delivery) -> thread_send.Answer,
+  session: String,
+  ask: String,
+  revision: Int,
+  wire: wire.JsonValue,
+) -> Result(attention_door.Answered, attention_door.AnswerFault) {
+  case authorized_owner(standing, open) {
+    Error(_) ->
+      Error(
+        attention_door.Declined(attention_door.Refusal(
+          "forbidden",
+          "this page cannot answer",
+        )),
+      )
+    Ok(_) ->
+      attention_door.answer(
+        reach,
+        fn(strand, text) { send(session, strand, text, operator.Prompt) },
+        session,
+        ask,
+        revision,
+        wire,
+      )
+  }
+}
+
+/// Closes a find from a home page, or says why not (protocol-change/120), under
+/// the standing check of `answer_for`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.close_find_for(standing, open, reach, session, find, revision, records.Filed)
+/// ```
+@internal
+pub fn close_find_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  reach: attention_door.Reach(instance),
+  session: String,
+  find: String,
+  revision: Int,
+  outcome: attention.Closure,
+) -> Result(Int, attention_door.Refusal) {
+  case authorized_owner(standing, open) {
+    Error(_) ->
+      Error(attention_door.Refusal("forbidden", "this page cannot close a find"))
+    Ok(_) -> attention_door.close_find(reach, session, find, revision, outcome)
+  }
+}
+
 /// Writes the reason of a refusal the page will not be shown to the daemon's
 /// log, as `first_message_sent` does for a first message that did not arrive.
 /// The page is told fixed words only.
@@ -2135,6 +2207,7 @@ fn log_not_accepted(session: String, answer: thread_send.Answer) -> Nil {
     | thread_send.Refused(thread_send.NotHeld)
     | thread_send.Refused(thread_send.NotResident)
     | thread_send.Refused(thread_send.QueueFull)
+    | thread_send.Refused(thread_send.UnknownStrand)
     | thread_send.Refused(thread_send.Unanswered) -> Nil
   }
 }
@@ -8071,17 +8144,20 @@ fn first_message_for(
       thread_send.Refused(thread_send.NotAccepted(reason:)) -> Error(reason)
       thread_send.Refused(thread_send.QueueFull) ->
         Error("the session's queue is full")
+      thread_send.Refused(thread_send.UnknownStrand) ->
+        Error("the strand does not exist")
       thread_send.Refused(thread_send.Unanswered) ->
         Error("the session did not answer in time")
     }
   }
 }
 
-/// What the home sends a session it holds: a `Prompt` or a `Steer` on the main
-/// strand, made from the page's attachment. It serves the first message of a
-/// session the page has just created and every message the inbox sends to a
-/// session that already exists, so a message typed on Home takes one path
-/// whichever it is.
+/// What the home sends a session it holds: a `Prompt` or a `Steer` to one of its
+/// strands, made from the page's attachment. It serves the first message of a
+/// session the page has just created, every message the inbox sends to a
+/// session that already exists and an answer to an ask
+/// (protocol-change/120), so a message typed on Home takes one path whichever
+/// it is.
 ///
 /// It resolves the session as the page's principal (the membership and its
 /// role, the same read a page's ticket makes), finds the resident incarnation
@@ -8090,23 +8166,26 @@ fn first_message_for(
 /// does not hold is `NotHeld`, and a saved one, or one with no gateway, is
 /// `NotResident`.
 ///
+/// A strand the session does not have is `UnknownStrand`, the gateway's own
+/// answer for it and not a refusal of the session as a whole.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.message_to(attachment, gateway_of)("01HX", "go on", operator.Prompt)
+/// // ui_socket.message_to_strand(attachment, gateway_of)("01HX", "sub:main/audit-1a2b", "retry", operator.Prompt)
 /// ```
 @internal
-pub fn message_to(
+pub fn message_to_strand(
   attachment: server.HomeAttachment(instance),
   gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
-) -> fn(String, String, operator.Delivery) -> thread_send.Answer {
+) -> fn(String, String, String, operator.Delivery) -> thread_send.Answer {
   // The page keeps this closure for as long as it is open, so it holds the
   // three values it reads and not the whole attachment.
   let registry = attachment.registry
   let digest = attachment.digest
   let epoch = attachment.epoch
 
-  fn(session, text, delivery) {
+  fn(session, strand, text, delivery) {
     let sent = {
       use #(principal, authority) <- result.try(
         manager.session_authority(registry, digest, session)
@@ -8152,13 +8231,14 @@ pub fn message_to(
       // authority on every request, so the check is capped as the binding is,
       // as a page's relay caps its own.
       let check = authorize_for(registry, epoch, session, incarnation, digest)
-      send_message(
+      send_to_strand(
         hub,
         binding,
         fn() {
           use #(who, held) <- result.map(check())
           #(who, ui_relay.capped(held, access.Operator))
         },
+        strand,
         text,
         delivery,
       )
@@ -8173,7 +8253,26 @@ pub fn message_to(
   }
 }
 
-/// Sends `text` to a gateway as a prompt or a steer to the main strand over an
+/// What the home sends the main strand of a session it holds:
+/// `message_to_strand` with the strand left to the default. A page that names no
+/// strand sends to `main`, so the first-message path and the inbox's message
+/// field are as they were before a strand could be named.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.message_to(attachment, gateway_of)("01HX", "go on", operator.Prompt)
+/// ```
+@internal
+pub fn message_to(
+  attachment: server.HomeAttachment(instance),
+  gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
+) -> fn(String, String, operator.Delivery) -> thread_send.Answer {
+  let send = message_to_strand(attachment, gateway_of)
+  fn(session, text, delivery) { send(session, "main", text, delivery) }
+}
+
+/// Sends `text` to a gateway as a prompt or a steer to `strand` over an
 /// attachment of its own, and detaches. It is the one frame a session page's
 /// composer sends for each delivery, so the gateway does what it does for that
 /// page: the text becomes a user message attributed to the binding's
@@ -8183,9 +8282,10 @@ pub fn message_to(
 /// The answer is `Delivered` only for the gateway's own acceptance of the
 /// message: `admitted` is `Admitted` and `queued` is `Queued`. A full queue is
 /// the gateway's `conflict` carrying `gateway.queue_full_message`, and is
-/// `QueueFull`. Any other refusal, an attachment the gateway refused or a reply
-/// that did not come is `NotAccepted` with the words that say which, for the
-/// log.
+/// `QueueFull`. A strand the session does not have is `UnknownStrand`, the
+/// gateway's own `unknown_strand`. Any other refusal, an attachment the gateway
+/// refused or a reply that did not come is `NotAccepted` with the words that say
+/// which, for the log.
 ///
 /// The text is never interpreted here: it is a JSON string inside the frame, so
 /// it cannot name another command.
@@ -8193,13 +8293,14 @@ pub fn message_to(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.send_message(hub, binding, check, "fix the retry test", operator.Prompt)
+/// // ui_socket.send_to_strand(hub, binding, check, "main", "fix the retry test", operator.Prompt)
 /// ```
 @internal
-pub fn send_message(
+pub fn send_to_strand(
   hub: gateway.Gateway,
   binding: gateway.Binding,
   check: fn() -> Result(#(access.Principal, access.Authority), String),
+  strand: String,
   text: String,
   delivery: operator.Delivery,
 ) -> thread_send.Answer {
@@ -8234,8 +8335,8 @@ pub fn send_message(
           connection,
           session_protocol.encode_command(
             session_protocol.CommandEnvelope(id: 2, command: case delivery {
-              operator.Prompt -> session_protocol.Prompt(strand: "main", text:)
-              operator.Steer -> session_protocol.Steer(strand: "main", text:)
+              operator.Prompt -> session_protocol.Prompt(strand:, text:)
+              operator.Steer -> session_protocol.Steer(strand:, text:)
             }),
           ),
         )
@@ -8249,6 +8350,25 @@ pub fn send_message(
       }
     }
   }
+}
+
+/// Sends `text` to the main strand of a gateway: `send_to_strand` with the
+/// strand left to the default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.send_message(hub, binding, check, "fix the retry test", operator.Prompt)
+/// ```
+@internal
+pub fn send_message(
+  hub: gateway.Gateway,
+  binding: gateway.Binding,
+  check: fn() -> Result(#(access.Principal, access.Authority), String),
+  text: String,
+  delivery: operator.Delivery,
+) -> thread_send.Answer {
+  send_to_strand(hub, binding, check, "main", text, delivery)
 }
 
 /// The answer a gateway's reply frame stands for.
@@ -8276,6 +8396,15 @@ fn answer_of(frame: String) -> thread_send.Answer {
       if code == session_protocol.code_conflict
       && message == gateway.queue_full_message
     -> thread_send.Refused(thread_send.QueueFull)
+
+    // The gateway checks a named strand against the session's own, so a name
+    // that was cut or has gone stale is this answer and not a general refusal.
+    Ok(session_protocol.EventEnvelope(
+      event: session_protocol.ErrorEvent(code:, ..),
+      ..,
+    ))
+      if code == session_protocol.code_unknown_strand
+    -> thread_send.Refused(thread_send.UnknownStrand)
 
     Ok(_) | Error(_) -> unaccepted()
   }

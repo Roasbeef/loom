@@ -60,6 +60,11 @@ pub type Refusal {
   /// The strand's input queue is at its bound (protocol-change/022).
   QueueFull
 
+  /// The message named a strand the session does not have: the gateway's own
+  /// `unknown_strand`, for a name that was cut by a row's bound or has gone
+  /// stale (protocol-change/120). It says nothing about the session declining.
+  UnknownStrand
+
   /// The send did not answer before its deadline. Unlike the others it says
   /// nothing about whether the gateway took the message: it may have arrived.
   Unanswered
@@ -242,6 +247,7 @@ pub fn answer_words(
     Refused(NotResident) -> "Not sent: the session is not running"
     Refused(NotAccepted(_)) -> "Not sent: the session refused it"
     Refused(QueueFull) -> "Not sent: its queue is full"
+    Refused(UnknownStrand) -> "Not sent: that strand no longer exists"
     Refused(Unanswered) ->
       "No answer in time; it may have arrived. Check the session before sending again."
   }
