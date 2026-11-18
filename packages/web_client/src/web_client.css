@@ -118,9 +118,9 @@
     --color-fg-faint: oklch(0.700 0.014 85);
     --color-divider: oklch(0.905 0.008 85);
     --color-current: oklch(0.500 0.190 262);
-    --color-signal: oklch(0.660 0.145 64);
+    --color-signal: oklch(0.645 0.145 64);
     --color-signal-text: oklch(0.510 0.115 58);
-    --color-advisor: oklch(0.660 0.145 64);
+    --color-advisor: oklch(0.645 0.145 64);
     --color-advisor-text: oklch(0.510 0.115 58);
     --color-peer: oklch(0.660 0.170 315);
     --color-peer-text: oklch(0.500 0.200 312);
@@ -155,9 +155,9 @@
   --color-fg-faint: oklch(0.700 0.014 85);
   --color-divider: oklch(0.905 0.008 85);
   --color-current: oklch(0.500 0.190 262);
-  --color-signal: oklch(0.660 0.145 64);
+  --color-signal: oklch(0.645 0.145 64);
   --color-signal-text: oklch(0.510 0.115 58);
-  --color-advisor: oklch(0.660 0.145 64);
+  --color-advisor: oklch(0.645 0.145 64);
   --color-advisor-text: oklch(0.510 0.115 58);
   --color-peer: oklch(0.660 0.170 315);
   --color-peer-text: oklch(0.500 0.200 312);
