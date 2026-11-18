@@ -185,8 +185,10 @@ pub fn decode_bounded(
 /// reason when the value holds more values than the bound or has a map key that
 /// is an array or a map.
 ///
-/// The walk stops at the first value past the bound, so it costs at most
-/// `max_values` steps however large `value` is.
+/// The walk stops at the first value past the bound. One container's entries
+/// are scanned before they are counted, so a single very wide container is
+/// walked whole; the frame's byte limit bounds that (about 0.2 s for an
+/// 8,000,000-pair map).
 ///
 /// ## Examples
 ///

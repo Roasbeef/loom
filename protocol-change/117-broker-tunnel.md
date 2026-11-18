@@ -606,7 +606,12 @@ neither bound; each is now read once with `json.parse_bounded` under
 `max_frame_values` first, which also applies the digit cap. A hook settings
 file crosses as bytes and is parsed by `client/hookcompat`; its two JSON entry
 points now use `json.parse_bounded` under `hookcompat.max_json_values`. The
-TOML shape of a hook file is parsed by `tom` and is not bounded by either.
+TOML shape of a hook file is parsed by `tom` and is not bounded by either, but
+no executor bytes reach it today: the orchestrator chooses each file's shape,
+and every location `hookserve` names is a JSON settings file. `tom.parse` is
+quadratic in an integer's digits (about 0.8 s for 160,000 digits) and raises
+on a much larger one, so a TOML location served by a remote census needs a
+bound first.
 
 ## What it costs
 
