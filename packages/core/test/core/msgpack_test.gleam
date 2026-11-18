@@ -388,3 +388,65 @@ pub fn decode_bounded_spends_one_allowance_across_nesting_test() {
   let assert Ok(_) = msgpack.decode_bounded(both, max_values: 103)
   let assert Error(_) = msgpack.decode_bounded(both, max_values: 60)
 }
+
+/// A map whose single key is the previous map, `levels` deep: `{{{}: nil}: nil}`.
+fn nested_key_maps(levels: Int) -> BitArray {
+  list.fold(sequence.range(1, levels), from: <<0x80>>, with: fn(inner, _) {
+    <<0x81, inner:bits, 0xc0>>
+  })
+}
+
+pub fn decode_bounded_refuses_a_container_key_test() {
+  // A key that is an array or a map is refused as it begins, so a payload
+  // nested through its keys costs no more than reading the first tag.
+  let assert Error(_) =
+    msgpack.decode_bounded(nested_key_maps(200), max_values: 1_048_576)
+  let assert Error(_) =
+    msgpack.decode_bounded(<<0x81, 0x90, 0xc0>>, max_values: 10)
+  let assert Error(_) =
+    msgpack.decode_bounded(<<0x81, 0xdc, 0, 0, 0xc0>>, max_values: 10)
+
+  // Scalar keys, and containers as values, are unaffected.
+  let assert Ok(_) =
+    msgpack.decode_bounded(
+      <<0x82, 0x01, 0x90, 0xa1, "k":utf8, 0x80>>,
+      max_values: 10,
+    )
+}
+
+pub fn check_bounded_agrees_with_decode_bounded_test() {
+  // Each payload is judged the same on its bytes and on its built value.
+  let payloads = [
+    <<0xc0>>,
+    <<0x92, 0x01, 0x02>>,
+    <<0x81, 0x01, 0x91, 0xc0>>,
+    <<0x81, 0x90, 0xc0>>,
+    nested_key_maps(5),
+    nil_array(50),
+  ]
+  list.each(payloads, fn(bytes) {
+    let assert Ok(value) = msgpack.decode(bytes)
+    list.each([0, 1, 2, 3, 4, 51, 52], fn(bound) {
+      assert result_is_ok(msgpack.check_bounded(value, bound))
+        == result_is_ok(msgpack.decode_bounded(bytes, max_values: bound))
+    })
+  })
+}
+
+fn result_is_ok(result: Result(a, b)) -> Bool {
+  case result {
+    Ok(_) -> True
+    Error(_) -> False
+  }
+}
+
+pub fn check_bounded_stops_at_the_bound_test() {
+  let assert Ok(wide) = msgpack.decode(nil_array(100_000))
+  let assert Ok(Nil) = msgpack.check_bounded(wide, 100_001)
+  let assert Error(_) = msgpack.check_bounded(wide, 100_000)
+}
+
+pub fn decode_still_accepts_a_container_key_test() {
+  let payload = nested_key_maps(20)
+  let assert Ok(_) = msgpack.decode(payload)
+}
