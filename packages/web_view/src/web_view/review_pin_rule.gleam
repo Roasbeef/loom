@@ -17,7 +17,7 @@
 ////
 //// ## Flow
 ////
-//// `place` → `at_line` / `loose`
+//// `place` → `at_line`
 ////
 //// 1. `place` walks the review's files in the order the pane draws them and
 ////    gives each the finds that name its path.

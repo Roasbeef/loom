@@ -462,6 +462,7 @@ pub fn closed_with(
               progress: Sending(done: list.append(done, [result]), prompt:),
             ),
           )
+
         // A refused close is dropped with the revision it named, so the next
         // pass over the feed reads the find afresh and the owner stages it
         // again against what is there now. The receipt keeps the refusal.

@@ -2153,6 +2153,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               ),
             )
 
+          // A read that answered goes on to the next session, and a refusal stops.
           case read {
             Ok(_) -> reviewing(next)
             Error(_) -> {
@@ -5655,6 +5656,7 @@ type OpenRead {
 fn reviewing(model: Model) -> #(Model, Effect(Msg)) {
   let #(opened, open, read) = opening_review(model)
 
+  // A fresh open read holds the scan back, and otherwise the scan goes on.
   case read {
     FreshRead -> #(opened, open)
     NoFreshRead -> {
