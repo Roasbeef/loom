@@ -24,8 +24,12 @@
 //// rides for the same reason. `hooks` wraps it with a cast carrying the
 //// operation id and the row's context size, and nothing else happens on
 //// the strand driver's process. This machine resolves the operation's
-//// strand from `op.meta` and ignores the primary `main` strand and the
-//// `advisor` strand: the terminal shows both from data it already has.
+//// strand from `op.meta` and ignores the `advisor` strand, which the
+//// terminal describes from data it already has. The primary `main` strand
+//// is watched: the terminal still draws it from its own data and skips its
+//// glance, but the web view's attention inbox needs a line of what a
+//// working session is doing now, and `sessions.activity`'s `last_message`
+//// is only the last finished turn (`protocol-change/121`).
 ////
 //// # When it asks
 ////
@@ -398,7 +402,7 @@ fn handle(
   }
 }
 
-/// A step on a strand the terminal already covers, or on an operation whose
+/// A step on the advisor strand, or on an operation whose
 /// metadata will not read, books nothing. The metadata read is what turns
 /// the hook's bare operation id into a strand, and it is done here rather
 /// than in the hook so the driver never waits on the store for a label.
@@ -425,18 +429,19 @@ fn stepped(
   }
 }
 
-/// Whether the loop summarizes `strand`. Every strand but the primary
-/// and the advisor, which the terminal describes from data it already
-/// holds.
+/// Whether the loop summarizes `strand`. Every strand but the advisor,
+/// which the terminal describes from data it already holds. The primary is
+/// included so the attention inbox can show current work for `main`.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert glance.is_watched("sub:main/audit-1a2b")
-/// assert !glance.is_watched("main")
+/// assert glance.is_watched("main")
+/// assert !glance.is_watched("advisor")
 /// ```
 pub fn is_watched(strand: String) -> Bool {
-  strand != advisor.primary && strand != advisor.strand
+  strand != advisor.strand
 }
 
 /// Every event ends here: the pure plan, its launches, then exactly one

@@ -1559,10 +1559,13 @@ fn strand_operations(
   })
 }
 
-// The glances a reader may still show, newest first. `core/glance` says a
-// glance describes one operation and is shown only while that operation is
-// its strand's current one, so a cell left behind by a finished task is
-// dropped here rather than reported as present work.
+// The glances a reader may still show: `main`'s first when it has a current
+// one, then the others newest first. `core/glance` says a glance describes
+// one operation and is shown only while that operation is its strand's
+// current one, so a cell left behind by a finished task is dropped here
+// rather than reported as present work. `main` leads because `fit_overview`
+// sheds from the end, and the session's own current work is the line the
+// attention inbox needs last of all to lose.
 /// Builds the bounded set of current peer activity summaries.
 fn current_glances(
   runtime: api.Runtime,
@@ -1581,18 +1584,23 @@ fn current_glances(
       }
     })
     |> dict.from_list
-  cells
-  |> list.filter_map(fn(pair) {
-    use strand <- result.try(glance.strand_of(pair.0))
-    use cell <- result.try(glance.decode(pair.1) |> result.replace_error(Nil))
+  let live =
+    cells
+    |> list.filter_map(fn(pair) {
+      use strand <- result.try(glance.strand_of(pair.0))
+      use cell <- result.try(glance.decode(pair.1) |> result.replace_error(Nil))
 
-    // The current glances state determines which branch is valid for this peer operation.
-    case dict.get(current, strand) == Ok(cell.operation) {
-      True -> Ok(#(strand, cell))
-      False -> Error(Nil)
-    }
-  })
-  |> list.sort(fn(left, right) { int.compare({ right.1 }.at, { left.1 }.at) })
+      // The current glances state determines which branch is valid for this peer operation.
+      case dict.get(current, strand) == Ok(cell.operation) {
+        True -> Ok(#(strand, cell))
+        False -> Error(Nil)
+      }
+    })
+    |> list.sort(fn(left, right) { int.compare({ right.1 }.at, { left.1 }.at) })
+  let #(primary, others) =
+    list.partition(live, fn(pair) { pair.0 == default_strand })
+
+  list.append(primary, others)
   |> list.take(overview_glances)
   |> list.map(glance_line)
   |> Ok

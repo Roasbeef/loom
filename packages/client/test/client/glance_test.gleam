@@ -48,10 +48,10 @@ const sub = "sub:main/audit-1a2b"
 
 // The terminal covers the primary and the advisor itself; every other
 // strand is summarized.
-pub fn the_primary_and_the_advisor_are_not_watched_test() {
+pub fn the_primary_is_watched_and_the_advisor_is_not_test() {
   assert glance.is_watched(sub)
   assert glance.is_watched("review")
-  assert !glance.is_watched("main")
+  assert glance.is_watched("main")
   assert !glance.is_watched("advisor")
 }
 
@@ -122,10 +122,11 @@ pub fn the_summarizer_falls_back_to_the_routed_roles_test() {
 // --- the loop ------------------------------------------------------------------
 
 // The first step of a sub-agent's operation produces a glance for it, and
-// a step on the primary produces nothing. The primary's step is cast
-// first, from this same process, so by the time the sub-agent's cell
-// exists the machine has already handled — and skipped — the primary's.
-pub fn a_sub_agent_step_writes_a_glance_and_main_does_not_test() {
+// so does a step on the primary: the attention inbox needs a line of what
+// `main` is doing now (`protocol-change/121`). Each cell names its own
+// strand's operation, and a sub-agent's request is about the sub-agent's
+// own task.
+pub fn a_sub_agent_step_and_a_main_step_both_write_glances_test() {
   let assert Ok(rig) = a_rig(glancepace.default_pace, fixed_clock())
     as "the glance rig must open"
   let hooked = glance.hooks(hooks.build(hooks.new()), rig.name)
@@ -141,12 +142,15 @@ pub fn a_sub_agent_step_writes_a_glance_and_main_does_not_test() {
   assert written.tokens == 142
   assert written.at == 1_756_000_000_000
 
-  // One request, about the sub-agent's own task, asking for a title.
-  let assert [request] = requests(rig)
-    as "exactly one request must have been made"
-  assert string.contains(request, "Audit the channel funding flow")
-  assert string.contains(request, "TITLE:")
-  assert glance_of(rig, "main") == Error(Nil)
+  let assert poll.Answered(main_cell) =
+    poll.until(within: 5000, every: 20, attempt: fn() {
+      case glance_of(rig, "main") {
+        Ok(found) -> poll.Done(found)
+        Error(Nil) -> poll.Retry
+      }
+    })
+    as "the primary's glance must be written"
+  assert main_cell.operation == ids.op_id_to_string(rig.primary)
   stop(rig)
 }
 

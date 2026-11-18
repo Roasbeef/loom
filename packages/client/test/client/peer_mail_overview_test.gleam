@@ -16,6 +16,7 @@ import core/message
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import machine/strand as machine_strand
 import runtime/api
 import weft/poll
 
@@ -116,5 +117,69 @@ pub fn a_running_strand_is_working_and_shows_only_its_current_glance_test() {
         #("summary", json.String("Reading x")),
       ]),
     ])
+  api.abort(runtime)
+}
+
+// `main`'s glance leads the row even when it is the oldest of five, so the
+// bound of four drops the oldest sub-agent glance rather than main's. The row
+// sheds from the end (`fit_overview`), so being first is also what keeps
+// main's glance last to go when a row is too wide.
+pub fn main_leads_the_glances_and_the_bound_drops_a_sub_agent_test() {
+  let runtime = gateway_test.parked_reserved_fixture(session_id(505)).runtime
+  let assert Ok(main_op) = api.prompt(runtime, [user("refactor")])
+    as "the main prompt is accepted"
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    )
+  let main_glance =
+    glance.Glance(ids.op_id_to_string(main_op), "Main", "Refactoring", 1, 0)
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      glance.key("main"),
+      glance.encode(main_glance),
+    )
+    as "main's glance is written, older than every other"
+  list.each([1, 2, 3, 4], fn(n) {
+    let strand = "sub:main/audit-" <> string.inspect(n)
+    let assert Ok(child) =
+      api.create_strand(
+        runtime,
+        named: strand,
+        configuration:,
+        at: None,
+        brief: [user("audit")],
+      )
+      as "the sub-agent strand is created with an open run"
+    let cell =
+      glance.Glance(ids.op_id_to_string(child), "Audit", "Reading", 10 + n, 0)
+    let assert Ok(Nil) =
+      api.put_reserved_fact(runtime, glance.key(strand), glance.encode(cell))
+      as "the sub-agent's glance is written"
+    Nil
+  })
+
+  let assert poll.Answered(row) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      let row = overview(runtime)
+      case field(row, "state") {
+        json.String("working") -> poll.Done(row)
+        _ -> poll.Retry
+      }
+    })
+    as "the open operations are observed"
+  let assert json.Array(glances) = field(row, "glances")
+    as "glances are an array"
+  let strands = list.map(glances, field(_, "strand"))
+  assert strands
+    == [
+      json.String("main"),
+      json.String("sub:main/audit-4"),
+      json.String("sub:main/audit-3"),
+      json.String("sub:main/audit-2"),
+    ]
   api.abort(runtime)
 }

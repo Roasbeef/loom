@@ -3426,7 +3426,9 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   summarizer, hooks, context_of, is_watched, start, supervised}` — the
   glance loop, one **`weft/state_machine`** per session that writes a
   `core/glance` cell under `client/glance/{strand}` for every running
-  strand but `main` and `advisor`. `hooks(built, name)` wraps the `usage`
+  strand but `advisor`; `main` is included so the web view's attention
+  inbox can show current work (`protocol-change/121`), and the terminal
+  skips it. `hooks(built, name)` wraps the `usage`
   slot with a cast of `Stepped(operation, context)` and captures only the
   name and the inner slot, because the hooks are copied into every strand
   driver. The machine resolves the strand through `notes.strand_of`, asks
@@ -7230,8 +7232,10 @@ under a 2,000 ms deadline; any outcome other than an answer becomes a
 actor and derives `state` (`needs_you` for a pending escalation or a failed,
 stopped main; else `working` when any strand has a current operation; else
 `idle`), counts, main's last run outcome, final assistant text, model, and at
-most four glances whose operation is still current. The recipient bounds its
-row to `peer_mail.overview_row_bytes` (2,300) by shedding glances, then the
+most four glances whose operation is still current, `main`'s first when it
+has one and the others newest first. The recipient bounds its
+row to `peer_mail.overview_row_bytes` (2,300) by shedding glances from the
+end, so `main`'s is the last to go, then the
 message; the server re-checks 2,400 bytes per row and 60,000 per reply.
 
 See [async collaboration](../../docs/async-collaboration.md) for bounds and
