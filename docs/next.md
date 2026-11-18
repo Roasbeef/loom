@@ -270,11 +270,11 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   #214's no-injection line and #1137's owner-pushes ruling for this tier; a
   persistent state disk per guest. `loom vm sync` is #1155.
 - **Several guests, one deployment (2026-11-02; superseded for new guests on
-  2026-11-17, kept for removing old ones):** `loom vm up` minted in ledger
-  mode and seals the authority key under `<vm home>/authority/<id>/`. A
-  `loom.toml` that holds a ledger deployment gets a new guest enrolled through
-  the running daemon (`vm_spec.deployment_state`, `vm_cli.join`,
-  `ledger_cli.enroll_member`); `rm` revokes it (`ledger_cli.revoke_member`) and
+  2026-11-17, bring-up deleted 2026-11-18, `rm` teardown kept for old guests):**
+  `loom vm up` minted in ledger mode and sealed the authority key under
+  `<vm home>/authority/<id>/`. A `loom.toml` that held a ledger deployment got
+  a new guest enrolled through the running daemon (`ledger_cli.enroll_member`);
+  `rm` revokes it (`ledger_cli.revoke_member`, `vm_spec.deployment_state`) and
   removes the minting guest last. A static deployment is refused, and so is a
   join with the daemon down or the key elsewhere. The live test joins a second
   guest and places a session on each. A guest is reached only from the
@@ -328,11 +328,22 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   ADR-022's addendum of 2026-11-17 records the ruling. `daemon_shipped_microvm_test`
   now runs every step on guests made with no flag, plus a migration step over
   fabricated distribution traces; that rewrite has not yet run against a built
-  guest image. Next: deleting the distribution path from `loom vm` after one
-  release (design note slice 5: the mint, join, seal and teardown code, the
-  `--link` no-op and the `daemon=required` retry); hooks over the tunnel once a
-  trust command exists and 117's preconditions are built; remote evolution on a
-  guest with 109's slice 4.
+  guest image.
+- **The distribution bring-up is deleted from `loom vm` (2026-11-18, branch
+  `vm/delete-distribution-up`):** design note slice 5, first part. `bring_up`
+  calls `bring_up_linked` directly. Gone: `deployment`, `begin`, `join`, the
+  ledger staging and authority sealing, `enroll`, `install`, `stage`,
+  `stage_node`, `boot`, `on_link`, `vm_spec.deployment_plan`, the join
+  decisions, `with_loopback_listener`, and the `NeedsDaemon` ending (status 75,
+  `daemon=required`) with the launcher's retry in `tui/vm_ensure`. Kept for old
+  guests: the classifier and the refusal (`vm_link`), `status`, `list`, `logs`,
+  `down` and `sync`, and the whole `rm` teardown (`plan_teardown`, the cookie
+  state, the sealed-key removal and the forced revoke). Kept for the untrusted
+  path: the daemon observation and the stop-or-name fallback for a daemon that
+  cannot reload. Next: the second part of slice 5, deleting the `rm` teardown
+  once an old guest cannot exist; hooks over the tunnel once a trust command
+  exists and 117's preconditions are built; remote evolution on a guest with
+  109's slice 4.
 
 ## Correction: a Blue-tier entry must name its cyber access program
 

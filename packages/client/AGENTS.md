@@ -296,10 +296,11 @@ read a guest (`status`, `list`, `rm`) ask `vm_link.made` through
 `vm_cli.recorded_kind` and `made_kind`, so an old guest is shown as
 `distribution` and removed with the distribution teardown; a directory with no
 record and no traces reads as untrusted, and `other_kinds` does not count it.
-The distribution half of `bring_up` (`deployment`, `enroll`, `stage`, `boot`,
-the mint, join and seal helpers, `vm_spec`'s deployment decisions) is still
-compiled behind `on_link` and is reached by no guest; it is deleted after one
-release.
+`bring_up` calls `bring_up_linked` directly. The distribution half it once had
+(`deployment`, `enroll`, `stage`, `boot`, the mint, join and seal helpers,
+`vm_spec`'s `deployment_plan`, join decisions and `with_loopback_listener`) was
+deleted on 2026-11-18; what remains of that path is the teardown `rm` runs for an
+old guest and the classifier that refuses one.
 
 `bring_up_linked` chooses the port without recording it, works out the merge (a
 refusal leaves no guest), records the kind and port, writes the file, then runs
@@ -405,10 +406,8 @@ workspace. `vm_cli.ensure` settles the link first (`ensure_facts` calls
 `link_of`, so a distribution guest is refused with status 1 even when it
 serves), then observes the guest's process (pid record plus birth marker), the
 console's ready line and the manifest, and `vm_spec.ensure_step` returns
-`AlreadyServing`, `NeedsDaemon`, `NeedsSetup`, `Boot` or `Refuse`: a serving
-guest answers first and nothing else is read or written; `NeedsDaemon` (status
-75 and the last stdout line `daemon=required`) was for a join of a ledger
-deployment and no guest asks for it now; a manifest from another release gets
+`AlreadyServing`, `Boot` or `Refuse`: a serving guest answers first and nothing
+else is read or written; a manifest from another release gets
 `loom vm setup` first (`vm_spec.manifest_action`, which `up` uses too);
 otherwise `vm_cli.bring_up`, the code `up` runs, boots it. The last stdout line
 is `executor=<guest> workspace=<registered name>` (`vm_spec.ensure_line`), and
@@ -447,7 +446,7 @@ Git release with upload-pack's lazy-fetch refusal, 2.45.1 or a backport
 (`vm_spec.check_git_version`) and runs it with
 `GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach
 upload-pack; `--to-guest` bundles `--branches`; `logs` caps its output at 4 MiB;
-and `stage_node` registers every workspace the `checkouts` record names.
+and `stage_linked_node` registers every workspace the `checkouts` record names.
 
 `--allow HOST` and `--provision SCRIPT` are decided in `vm_spec`: `valid_host`
 (the `machine.Spec` rule, refused in `parse`), `encode_allow`/`decode_allow` for
@@ -595,11 +594,8 @@ create the home's only logs `daemon.vm_home_unavailable`, because a daemon with
 a read-only `HOME` works today and `loom vm up` as the same user cannot make the
 directory appear later; `LOOM_VM_HOME` elsewhere is not covered; tests in
 `daemon_state_masks_test`). A node key `loom distribution install` places outside the state
-root is still unmasked for host sessions. `loom vm up` installs a newly
-minted deployment with `listen_address = "127.0.0.1"`
-(`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
-The line is not in the bundle, so a later `loom distribution install` into the
-same file needs `--force`, which drops it.
+root is still unmasked for host sessions. `loom vm up` no longer installs a
+`[distribution]` table, so it writes no loopback listener line.
 `daemon_shipped_microvm_test` proves the mask from
 inside a libkrun guest it boots with `loom vm up` (see "Standing microVM guest");
 it needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
