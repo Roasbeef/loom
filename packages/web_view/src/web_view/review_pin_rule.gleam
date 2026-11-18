@@ -105,6 +105,7 @@ pub fn place(files: List(File), pins: List(Pin)) -> Placed {
           |> list.filter_map(fn(entry) {
             let #(pin, spot) = entry
 
+            // A find with a shown line is an anchor, and any other is loose in its file.
             case spot {
               Some(#(hunk, line)) -> Ok(Anchor(hunk:, line:, find: pin.id))
               None -> Error(Nil)
@@ -114,6 +115,7 @@ pub fn place(files: List(File), pins: List(Pin)) -> Placed {
         loose: list.filter_map(located, fn(entry) {
           let #(pin, spot) = entry
 
+          // A find with a shown line is anchored and so is not loose.
           case spot {
             Some(_) -> Error(Nil)
             None -> Ok(pin.id)

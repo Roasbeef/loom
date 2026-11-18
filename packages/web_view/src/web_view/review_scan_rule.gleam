@@ -109,6 +109,7 @@ pub fn due(
       }
     })
 
+  // A read that is out holds the line, and otherwise the session with the fewest attempts is next.
   case busy {
     True -> None
     False ->
@@ -116,6 +117,7 @@ pub fn due(
       |> list.filter_map(fn(candidate) {
         let #(session, message) = candidate
 
+        // A message already read, or out, or out of tries is not due.
         case attempts(dict.get(seen, session), message) {
           Some(count) -> Ok(#(count, candidate))
           None -> Error(Nil)
@@ -184,6 +186,7 @@ pub fn ready(
   list.filter_map(candidates, fn(candidate) {
     let #(session, message) = candidate
 
+    // Only a read at the current message that found changes is ready.
     case dict.get(seen, session) {
       Ok(Checked(message: read, changes: Changed)) if read == message ->
         Ok(session)

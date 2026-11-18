@@ -2373,6 +2373,8 @@ pub fn review_for(
     manager.authenticate(standing.registry, standing.digest)
     |> result.replace_error(standing_words),
   )
+
+  // The credential must authenticate as the principal the page was admitted for.
   use _ <- result.try(case principal.id == standing.principal {
     True -> Ok(Nil)
     False -> Error(standing_words)

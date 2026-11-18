@@ -410,10 +410,12 @@ pub fn closed_with(
   closure: Closure,
   outcome: Outcome,
 ) -> #(State, Step) {
+  // A close answers only while a Send is out.
   case state.progress {
     Sending(done:) -> {
       let result = CloseResult(find:, closure:, outcome:)
 
+      // A close that was done is applied and the Send goes on, and one refused halts it.
       case outcome {
         Done(_) ->
           step(
@@ -520,6 +522,7 @@ fn step(state: State) -> #(State, Step) {
       {
         Ok(text) -> #(state, PromptStep(text))
         Error(words) -> {
+          // The prompt is composed again, and a refusal ends the Send with nothing delivered.
           let done = case state.progress {
             Sending(done:) -> done
             Resting | Settled(_) -> []

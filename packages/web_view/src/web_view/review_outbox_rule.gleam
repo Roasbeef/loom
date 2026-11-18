@@ -96,6 +96,7 @@ pub fn compose(
   files: List(String),
   staging: Staging,
 ) -> Result(String, Refusal) {
+  // An empty staging has nothing to send.
   use Nil <- result.try(case review_stage_rule.is_empty(staging) {
     True -> Error(NothingStaged)
     False -> Ok(Nil)
@@ -111,6 +112,7 @@ pub fn compose(
     },
   )
 
+  // The verdict, when chosen, opens the prompt.
   let opening = case staging.verdict {
     Some(verdict) ->
       "I reviewed your changes. Verdict: " <> verdict_words(verdict) <> "."
@@ -130,6 +132,7 @@ pub fn compose(
   // The prompt is bounded as the composer is, by bytes.
   let bytes = bit_array.byte_size(bit_array.from_string(text))
 
+  // A prompt past the composer's bound is refused with its size.
   case bytes > composer.prompt_limit {
     True -> Error(TooLong(bytes:))
     False -> Ok(text)
@@ -164,6 +167,7 @@ fn comments_section(files: List(String), staging: Staging) -> List(String) {
       list.find(staging.comments, fn(each) { each.path == path })
     })
 
+  // No staged comment draws no section.
   case ordered {
     [] -> []
     [_, ..] -> [
@@ -191,6 +195,7 @@ fn finds_section(staging: Staging) -> List(String) {
 fn find_line(action: FindAction) -> String {
   let base = action.id <> ": " <> closure_words(action.closure) <> "."
 
+  // The owner's note, when there is one, follows the way the find was closed.
   case action.note {
     Some(note) -> base <> " " <> note
     None -> base

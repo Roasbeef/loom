@@ -5556,6 +5556,8 @@ fn scanning(model: Model) -> #(Model, Effect(Msg)) {
 fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
   let shown =
     inbox_rule.selection(model_groups(model), selected_session(model.selected))
+
+  // The message the shown session last said, which its review is read for.
   let message = case shown {
     Some(id) ->
       case dict.get(model.reports, id) {
@@ -5564,11 +5566,14 @@ fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
       }
     None -> None
   }
+
+  // A Send that is out keeps its review where it is.
   let sending = case model.review.progress {
     review_pane.Sending(_) -> True
     review_pane.Resting | review_pane.Settled(_) -> False
   }
 
+  // A page that may read, a shown thread that is To review and no Send out open the review.
   case review_reader(model), model.start.attention, shown, message, sending {
     Some(read), Some(reads), Some(id), Some(said), False ->
       case list.contains(reviewing_ids(model), id) {
@@ -5577,10 +5582,13 @@ fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
           let fresh =
             model.review.session != Some(id)
             || model.review.read_for != Some(said)
+
+          // A review that is not yet this session's, or is for an older message, is opened afresh.
           let held = case fresh {
             True -> review_pane.opened(id, said)
             False -> model.review
           }
+
           let #(asked, finds) =
             review_pane.ask_revisions(held, session_finds(model, id))
           let next =
@@ -5646,6 +5654,7 @@ fn review_asking(
   session: Option(String),
   step: review_pane.Step,
 ) -> Effect(Msg) {
+  // A step is a find close, the prompt, or nothing more to ask.
   case session, step {
     Some(held), review_pane.CloseStep(find:, revision:, closure:) -> {
       use dispatch <- effect.from

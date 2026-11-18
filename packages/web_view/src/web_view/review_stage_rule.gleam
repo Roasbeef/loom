@@ -171,35 +171,38 @@ pub fn comment(
   case list.contains(files, path), too_long(trimmed) {
     False, _ -> Error(UnknownFile)
     True, True -> Error(TooLong)
-    True, False -> {
-      let others = list.filter(staging.comments, fn(each) { each.path != path })
+    True, False ->
+      Ok(
+        Staging(
+          ..staging,
+          comments: recommented(staging.comments, path, trimmed),
+        ),
+      )
+  }
+}
 
-      case trimmed {
-        "" -> Ok(Staging(..staging, comments: others))
-        _ -> {
-          let entry = FileComment(path:, text: trimmed)
+/// The comments after a file's text was staged: an empty text takes its comment
+/// back, a text for a file that has one replaces it where it stood, and any
+/// other is added last.
+fn recommented(
+  comments: List(FileComment),
+  path: String,
+  text: String,
+) -> List(FileComment) {
+  let entry = FileComment(path:, text:)
+  let held = list.any(comments, fn(each) { each.path == path })
 
-          // A comment staged again keeps the place its file first had.
-          Ok(
-            Staging(
-              ..staging,
-              comments: case
-                list.any(staging.comments, fn(each) { each.path == path })
-              {
-                True ->
-                  list.map(staging.comments, fn(each) {
-                    case each.path == path {
-                      True -> entry
-                      False -> each
-                    }
-                  })
-                False -> list.append(staging.comments, [entry])
-              },
-            ),
-          )
+  // The text and whether the file already has a comment decide the change.
+  case text, held {
+    "", _ -> list.filter(comments, fn(each) { each.path != path })
+    _, True ->
+      list.map(comments, fn(each) {
+        case each.path == path {
+          True -> entry
+          False -> each
         }
-      }
-    }
+      })
+    _, False -> list.append(comments, [entry])
   }
 }
 

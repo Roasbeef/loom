@@ -334,6 +334,7 @@ fn find_action(
   find: attention_feed.Find,
   offer: Offer(message),
 ) -> Element(message) {
+  // A page that may not act draws no form for the find.
   case offer.acting {
     None -> element.none()
     Some(acting) -> {
@@ -545,6 +546,7 @@ fn staged_mark(
 /// The outbox: what is staged, why a stage was refused, what the last Send did
 /// and the buttons. A page that may not act draws a line that says so.
 fn outbox(offer: Offer(message)) -> Element(message) {
+  // A page that may not act draws a line that says so, and no outbox.
   case offer.acting {
     None ->
       html.p([attribute.class("inbox-hold")], [
@@ -552,6 +554,8 @@ fn outbox(offer: Offer(message)) -> Element(message) {
       ])
     Some(acting) -> {
       let state = offer.state
+
+      // A Send that is out disables the buttons.
       let sending = case state.progress {
         review_pane.Sending(_) -> True
         review_pane.Resting | review_pane.Settled(_) -> False
@@ -671,6 +675,7 @@ fn find_submitted(
     decode.list(form_field()),
   )
 
+  // Only the form that was drawn is read back.
   case closing(fields) {
     Ok(#(note, closure)) -> decode.success(stage(id, closure, note))
     Error(Nil) ->
@@ -708,6 +713,7 @@ fn comment_submitted(
     decode.list(form_field()),
   )
 
+  // Only the form that was drawn is read back.
   case fields {
     [#("comment", text)] -> decode.success(stage(path, text))
     _ -> decode.failure(stage(path, ""), "review comment form")
