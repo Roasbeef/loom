@@ -36,7 +36,9 @@ pub type Delivery {
   /// and runs it when the current operation settles.
   Prompt
 
-  /// A `steer`: folded into the operation that is already running.
+  /// A `steer`: stops the operation that is running and runs first, ahead of
+  /// any queued turns (protocol-change/022). The gateway cancels the observed
+  /// operation and holds the steer as the next input to run.
   Steer
 }
 
