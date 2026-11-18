@@ -361,16 +361,19 @@ Section 4 planned four phases. Phase 1 was split across several PRs.
   the path a message typed on the session's page takes, and the owner does not
   edit the words.
 - **A fill-in answer has no separate Other.** Section 4 says every ask also
-  offers Other as free text. A fill-in ask is already free text, so only the
-  choice kinds offer it.
-- **A saved session's row resumes it.** Pressing a saved row resumes the
-  session, and a refusal appears on that row. It does not open the session for
-  reading, because opening a saved session is not done from the page
-  (protocol-change/051).
-- **Home's landing follows a first-round rule.** The first board read decides
-  whether Home lands on the inbox or on the new-session form, and later reads
-  do not change that choice (`web_view/landing_rule`). Section 2.1 said only
-  that the inbox replaces the form when something waits or runs.
+  offers Other as free text. A fill-in ask is already free text, so every kind
+  except fill-in offers it.
+- **A saved session's row resumes it.** A saved session has no page to open,
+  so its row offers "Resume and open": the press resumes the session and then
+  opens its page, as the session list's resume does. A refused resume is shown
+  on that row, and an observer's row has no button.
+- **Home's landing follows a first-round rule.** Home decides once per page
+  load, after every first read it is due has answered: the session list, and
+  then the activity read, the catalogue summary, the attention feed and the
+  project board where they apply. If anything waits or runs it lands on the
+  inbox, and otherwise on the new-session form. Later reads never move it; only
+  the person's clicks do (`web_view/landing_rule`). Section 2.1 said only that
+  the inbox replaces the form when something waits or runs.
 
 Known gaps carried forward:
 
