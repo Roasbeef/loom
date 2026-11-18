@@ -89,8 +89,8 @@ the page's cookie, key and nonce in one actor. A ticket for it is minted
 only by `UiLink` (`client/daemon/server.gleam:3154`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:3601`)). The
-exchange redeems it once (`redeem` (`ui_sessions.gleam:795`)), the page and
+switching to another session (`ticket_for` (`ui_socket.gleam:3224`)). The
+exchange redeems it once (`redeem` (`ui_sessions.gleam:756`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
 order: `loopback_host` (`ui_http.gleam:401`), then `navigation_allowed`
@@ -730,7 +730,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:3171`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:3192`) makes;
 3. `open` (`client/daemon/manager.gleam:2051`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
