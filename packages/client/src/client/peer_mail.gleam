@@ -670,6 +670,7 @@ pub fn handle_reporting(
         Ok(_) -> attention.settled(report, runtime)
         Error(_) -> Nil
       }
+
       answer
     }
     OutboxClaim(source, strand, session, target, id, body) -> {
