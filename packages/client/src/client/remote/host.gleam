@@ -1458,7 +1458,7 @@ fn plane_built(
   // This match resolves built before the enclosing validation continues.
   case built {
     Error(failure) -> {
-      close_unserved(
+      close_unbuilt(
         state,
         session,
         workspace,
@@ -1524,23 +1524,30 @@ fn refusal_of_failure(failure: PlaneFailure) -> Refusal {
   }
 }
 
-// An attach for a workspace the executor does not serve binds the scope to the
-// name in the ledger, and no plane is ever built for it, so no call was admitted
-// and nothing runs. The scope is closed here as cleanly closed, which a scope
-// with no plane would otherwise record as unproven, so that the attach for the
-// corrected workspace meets a closed scope that holds nothing (the ledger rebinds
-// it) and not an open one bound to a name nobody serves. That holds whatever the
-// attach did to the ledger: a scope created or reopened by this attach is
-// closed, and so is one it rebound, which is how a retry meets the open scope an
-// earlier attach left when its build failed before the workspace was checked.
-// A scope that holds a tree record, or results nobody has acknowledged, is not
-// touched. It is a session's own, with a tree and earlier calls, and an executor
-// restarted with the workspace dropped from its configuration must leave it as
-// the operator finds it. Any other build
-// failure leaves the scope open for the next attach to build again, as before.
-/// Closes the scope an attach for an unserved workspace left, as retired, when
-/// the scope holds no tree and no unacknowledged call.
-fn close_unserved(
+// A build that fails before any plane exists leaves the scope its attach
+// admitted open in the ledger, and an open scope counts against the executor's
+// `max_unclean_scopes`. Two failures end there with nothing built and nothing
+// that a later attach could adopt, so the host closes the scope as cleanly
+// retired in the same step that answers the refusal:
+//
+// - An attach for a workspace the executor does not serve binds the scope to the
+//   name in the ledger, and no plane is ever built for it. Left open, the scope
+//   would be bound to a name nobody serves, so the attach for the corrected
+//   workspace would meet it open.
+// - A worktree that Git could not make leaves no tree and no plane. The
+//   orchestrator ends a session that was refused as final and never closes a
+//   scope it holds no plane for, so nothing else would free the slot, and with a
+//   limit of one the executor would stay full until it restarted.
+//
+// A scope created or reopened by this attach is closed, and so is one it rebound
+// when `holds_nothing` finds no tree record and no result nobody has
+// acknowledged. A scope that holds either is a session's own, with a tree and
+// earlier calls, and an executor restarted with the workspace dropped from its
+// configuration must leave it as the operator finds it. Any other build failure
+// leaves the scope open for the next attach to build again, as before.
+/// Closes the scope an attach left when no plane could be built for it, as
+/// retired, when the scope holds no tree and no unacknowledged call.
+fn close_unbuilt(
   state: State(census),
   session: String,
   workspace: String,
@@ -1549,33 +1556,25 @@ fn close_unserved(
   unacked: protocol.Unacked,
   failure: PlaneFailure,
 ) -> Nil {
-  case failure {
-    WorktreeNotMade(..) -> Nil
-    NoPlaneBuilt(reason:) ->
-      case
-        protocol.is_unserved_workspace(reason),
-        holds_nothing(state, session, how, unacked)
-      {
-        True, True -> {
-          let _begun =
-            exec_ledger.begin_close(
-              state.ledger,
-              session,
-              workspace,
-              incarnation,
-            )
-          let _finished =
-            exec_ledger.finish_close(
-              state.ledger,
-              session,
-              workspace,
-              incarnation,
-              exec_ledger.AllRetired,
-            )
-          Nil
-        }
-        True, False | False, _ -> Nil
-      }
+  let nothing_built = case failure {
+    WorktreeNotMade(..) -> True
+    NoPlaneBuilt(reason:) -> protocol.is_unserved_workspace(reason)
+  }
+  case nothing_built, holds_nothing(state, session, how, unacked) {
+    True, True -> {
+      let _begun =
+        exec_ledger.begin_close(state.ledger, session, workspace, incarnation)
+      let _finished =
+        exec_ledger.finish_close(
+          state.ledger,
+          session,
+          workspace,
+          incarnation,
+          exec_ledger.AllRetired,
+        )
+      Nil
+    }
+    True, False | False, _ -> Nil
   }
 }
 
