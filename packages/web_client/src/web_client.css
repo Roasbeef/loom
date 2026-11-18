@@ -652,6 +652,8 @@
   button.inbox-thread:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   button.inbox-thread:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   button.inbox-thread.inbox-selected{border-color:var(--color-divider);background:var(--color-bg-raised);}
+  div.inbox-saved{display:flex;flex-direction:column;gap:2px;box-sizing:border-box;margin:0;padding:8px 10px;border:1px solid var(--color-divider);border-radius:6px;}
+  div.inbox-saved button.inbox-open{margin-top:6px;}
   .inbox-eyebrow{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .inbox-approval .inbox-eyebrow{color:var(--color-signal-text);}
   .inbox-failed .inbox-eyebrow{color:var(--color-danger-text);}

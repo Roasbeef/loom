@@ -5862,6 +5862,27 @@ fn standings(model: Model) -> List(attention_rule.Standing) {
   })
 }
 
+/// The saved sessions the catalogue has a summary for, as the rows the inbox
+/// draws for them, in the order the list shows the sessions.
+fn saved_threads(model: Model) -> List(attention_rule.SavedThread) {
+  list.filter_map(listing.entries(model.groups), fn(entry) {
+    case entry.residency, dict.get(model.saved, entry.id) {
+      sessions.Saved, Ok(saved) ->
+        Ok(attention_rule.SavedThread(
+          session: entry.id,
+          name: sessions.label(entry),
+          saved:,
+        ))
+      sessions.Saved, Error(Nil)
+      | Live, _
+      | sessions.Blocked, _
+      | sessions.FailedStart(_), _
+      | sessions.Moving(_), _
+      -> Error(Nil)
+    }
+  })
+}
+
 /// The inbox's attention threads: the rows that wait on the owner, the finds
 /// and the open thread's pane. Nothing on a page that reads no feed.
 fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
@@ -5876,10 +5897,29 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
         attention_thread.row(item, now, selected, ItemPicked)
       }
 
+      // A saved session's summary is counted in the headline, so each one that
+      // holds something open is a row the person can act on, after the live ones.
+      let saved = saved_threads(model)
+      let saved_row = fn(side) {
+        fn(thread) { attention_thread.saved_row(thread, side, now, Opening) }
+      }
+
       Some(
         inbox_view.Threads(
-          needs: list.map(attention_rule.needs_you(items), row),
-          finds: list.map(attention_rule.finds(items), row),
+          needs: list.append(
+            list.map(attention_rule.needs_you(items), row),
+            list.map(
+              attention_rule.saved_needing(saved),
+              saved_row(attention_thread.SavedNeeding),
+            ),
+          ),
+          finds: list.append(
+            list.map(attention_rule.finds(items), row),
+            list.map(
+              attention_rule.saved_finding(saved),
+              saved_row(attention_thread.SavedFinding),
+            ),
+          ),
           evidence: list.map(dict.to_list(model.evidence), fn(entry) {
             #(entry.0, attention_thread.evidence(entry.1))
           }),

@@ -639,6 +639,54 @@ pub fn a_restart_with_an_approval_pending_is_counted_test() {
   )
 }
 
+// A count the headline states is a row the person can act on: each saved
+// session whose summary holds an approval or an ask is a thread under Needs you,
+// and one with finds is a thread under Finds, each named as text with its
+// counts, its oldest age and one action. The empty-inbox sentence never shows
+// beside them, and a saved session with nothing open has no row.
+pub fn a_saved_summary_is_a_thread_the_headline_counts_test() {
+  let saved = [
+    saved_attention.Saved(
+      session_id: "D",
+      pending_approvals: 1,
+      open_asks: 1,
+      open_finds: 2,
+      oldest_open_at: Some(now - 300_000),
+      updated_at: 9,
+    ),
+    saved_attention.Saved(
+      session_id: "F",
+      pending_approvals: 0,
+      open_asks: 0,
+      open_finds: 0,
+      oldest_open_at: None,
+      updated_at: 9,
+    ),
+  ]
+  let html =
+    drawn(
+      opened(start(
+        [
+          entry("D", "hex <b>release</b>", sessions.Saved),
+          entry("F", "all clear", sessions.Saved),
+        ],
+        [],
+        saved,
+        None,
+      )),
+    )
+
+  assert string.contains(html, "Needs you<span class=\"inbox-count\">1</span>")
+  assert string.contains(html, "Finds<span class=\"inbox-count\">1</span>")
+  assert string.contains(html, "Saved · hex &lt;b&gt;release&lt;/b&gt;")
+  assert string.contains(html, "1 approval, 1 ask pending")
+  assert string.contains(html, "2 finds open")
+  assert string.contains(html, "oldest open 5 min ago")
+  assert string.contains(html, "Open the session&#39;s page ›")
+  assert !string.contains(html, "Saved · all clear")
+  assert !string.contains(html, "Nothing waits on you")
+}
+
 // Every handler an item thread registers is a click or a submit beneath the
 // table's region, which the socket admits already.
 pub fn every_handler_is_beneath_the_table_test() {

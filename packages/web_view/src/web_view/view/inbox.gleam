@@ -197,9 +197,16 @@ pub fn view(offer: Offer(message)) -> Element(message) {
 /// never switches the centre by itself, so it says that nothing waits and offers
 /// the composer. An inbox with threads draws nothing here.
 fn nothing_waits(offer: Offer(message)) -> Element(message) {
-  case list.all(offer.groups, fn(entry) { entry.1 == [] }) {
-    False -> element.none()
-    True ->
+  // The attention rows are threads too: a page that draws an ask, a find or a
+  // saved session's row never says that nothing waits.
+  let rows = case offer.attention {
+    Some(threads) -> list.length(threads.needs) + list.length(threads.finds)
+    None -> 0
+  }
+
+  case rows > 0 || !list.all(offer.groups, fn(entry) { entry.1 == [] }) {
+    True -> element.none()
+    False ->
       html.p([attribute.class("inbox-empty")], [
         html.text("Nothing waits on you right now. "),
         case offer.new_session {

@@ -120,6 +120,19 @@ pub fn the_age_line_says_a_stuck_time_is_a_bound_test() {
     == None
 }
 
+pub fn a_saved_summary_is_worded_by_its_counts_test() {
+  let saved = Saved("s", 1, 2, 0, Some(0), 5)
+  assert attention_rule.needing_words(saved) == "1 approval, 2 asks pending"
+  assert attention_rule.finding_words(saved) == ""
+  assert attention_rule.saved_age(saved, 300_000)
+    == Some("oldest open 5 min ago")
+  assert attention_rule.saved_age(saved, 30_000) == Some("oldest open just now")
+  assert attention_rule.saved_age(Saved("s", 1, 0, 0, None, 5), 300_000) == None
+  assert attention_rule.needing_words(Saved("s", 0, 0, 1, None, 5)) == ""
+  assert attention_rule.finding_words(Saved("s", 0, 0, 1, None, 5))
+    == "1 find open"
+}
+
 pub fn just_now_never_takes_an_ago_test() {
   assert attention_rule.age_line(FindItem("s", find("find-1", 0)), 30_000)
     == Some("noticed just now")

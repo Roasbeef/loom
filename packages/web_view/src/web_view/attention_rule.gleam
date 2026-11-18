@@ -236,6 +236,110 @@ pub fn age_line(item: Item, now: Int) -> Option(String) {
   }
 }
 
+/// A saved session whose catalogue summary holds something open, as the thread
+/// the inbox draws for it: the headline counts that summary, so a count the page
+/// states is a row the person can act on. The name is the catalogue's, which
+/// the owner wrote, and is drawn as a text node.
+pub type SavedThread {
+  SavedThread(
+    /// The session's identity, which its one action opens.
+    session: String,
+    /// The display name the page shows for it.
+    name: String,
+    /// The catalogue's summary of its open work.
+    saved: Saved,
+  )
+}
+
+/// The saved sessions whose summary holds a pending approval or an open ask:
+/// the ones the headline counts as needing the owner. The order given is kept.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_rule.saved_needing([]) == []
+/// ```
+pub fn saved_needing(threads: List(SavedThread)) -> List(SavedThread) {
+  list.filter(threads, fn(each) {
+    each.saved.pending_approvals + each.saved.open_asks > 0
+  })
+}
+
+/// The saved sessions whose summary holds open finds. A session that also
+/// needs the owner is drawn there as well, since each count is its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_rule.saved_finding([]) == []
+/// ```
+pub fn saved_finding(threads: List(SavedThread)) -> List(SavedThread) {
+  list.filter(threads, fn(each) { each.saved.open_finds > 0 })
+}
+
+/// What a saved session's summary says needs the owner, as "1 approval, 1 ask
+/// pending", or nothing when no approval or ask is open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_rule.needing_words(saved) == "1 approval, 2 asks pending"
+/// ```
+pub fn needing_words(saved: Saved) -> String {
+  let parts =
+    list.flatten([
+      counted(saved.pending_approvals, "approval", "approvals"),
+      counted(saved.open_asks, "ask", "asks"),
+    ])
+
+  case parts {
+    [] -> ""
+    [_, ..] -> string.join(parts, ", ") <> " pending"
+  }
+}
+
+/// What a saved session's summary says about its finds, as "2 finds open".
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_rule.finding_words(saved) == "2 finds open"
+/// ```
+pub fn finding_words(saved: Saved) -> String {
+  case counted(saved.open_finds, "find", "finds") {
+    [] -> ""
+    [words, ..] -> words <> " open"
+  }
+}
+
+/// How long the summary's oldest open ask or find has been open, when the
+/// summary has a time: "oldest open 5 min ago", and "oldest open just now" for
+/// a wait under a minute. Approvals carry no raise time, so a session with only
+/// an approval has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_rule.saved_age(saved, 300_000) == Some("oldest open 5 min ago")
+/// ```
+pub fn saved_age(saved: Saved, now: Int) -> Option(String) {
+  option.map(saved.oldest_open_at, fn(at) {
+    case age_words(since: at, now:) {
+      "just now" -> "oldest open just now"
+      words -> "oldest open " <> words <> " ago"
+    }
+  })
+}
+
+/// A count and its noun, or nothing for none.
+fn counted(count: Int, one: String, many: String) -> List(String) {
+  case count {
+    0 -> []
+    1 -> ["1 " <> one]
+    _ -> [int.to_string(count) <> " " <> many]
+  }
+}
+
 /// The counts the headline reads, from what each listed session is known by.
 /// A running session with a row counts its asks and stuck strands live, and an
 /// approval counts one when the activity read says it is pending. A saved

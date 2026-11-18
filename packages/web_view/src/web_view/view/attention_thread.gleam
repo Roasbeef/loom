@@ -128,6 +128,61 @@ pub fn row(
   ])
 }
 
+/// Which of a saved session's two counts a row draws.
+pub type SavedSide {
+  /// The approvals and asks that wait on the owner.
+  SavedNeeding
+
+  /// The open finds.
+  SavedFinding
+}
+
+/// A saved session's row: its name and what the catalogue's summary says is
+/// open, the age of the oldest open record when the summary has one, and the one
+/// action it has, which opens the session's page. The summary is a cache, so
+/// the row says it is the catalogue's and not a live read. The name is the
+/// catalogue's text and is drawn as a text node, and the button sends the
+/// page's open message, which carries the session in the handler and never in
+/// an attribute.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_thread.saved_row(thread, SavedNeeding, now, Opening)
+/// ```
+pub fn saved_row(
+  thread: attention_rule.SavedThread,
+  side: SavedSide,
+  now: Int,
+  open: fn(String) -> message,
+) -> Element(message) {
+  let words = case side {
+    SavedNeeding -> attention_rule.needing_words(thread.saved)
+    SavedFinding -> attention_rule.finding_words(thread.saved)
+  }
+
+  html.li([], [
+    html.div([attribute.class("inbox-saved")], [
+      html.span([attribute.class("inbox-eyebrow")], [
+        html.text("Saved · " <> thread.name),
+      ]),
+      html.span([attribute.class("inbox-head")], [html.text(words)]),
+      case attention_rule.saved_age(thread.saved, now) {
+        Some(age) -> html.span([attribute.class("inbox-age")], [html.text(age)])
+        None -> element.none()
+      },
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("inbox-open"),
+          event.on_click(open(thread.session)),
+        ],
+        [html.text("Open the session's page ›")],
+      ),
+    ]),
+  ])
+}
+
 /// The pane of the open thread, or nothing when the last read no longer holds
 /// it: an answered ask and a closed find leave the list, and their pane with
 /// them.
