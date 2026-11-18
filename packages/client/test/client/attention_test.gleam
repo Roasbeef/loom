@@ -258,13 +258,52 @@ pub fn a_record_carries_the_strands_parent_chain_nearest_first_test() {
 pub fn an_ask_names_a_strand_of_the_session_or_is_refused_test() {
   let runtime = open(path())
   let wired = wiring(runtime)
-  let assert Ok(_) = attention.ask(wired, caller("main"), request(Some("main")))
+  let assert Ok(_) =
+    attention.ask(wired, caller("sub:main/a"), request(Some("main")))
   let assert Ok([ask]) = attention.asks(runtime)
   assert ask.header.routing == records.ToStrand("main")
 
   assert attention.ask(wired, caller("main"), request(Some("nobody")))
     == Error(tool_attention.NoSuchStrand("nobody"))
   let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn an_ask_to_the_asking_strand_itself_is_refused_test() {
+  let runtime = open(path())
+  let assert Error(tool_attention.Invalid(reason)) =
+    attention.ask(wiring(runtime), caller("main"), request(Some("main")))
+  assert string.contains(reason, "your own strand")
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn more_notices_than_the_old_retry_bound_all_land_test() {
+  let runtime = open(path())
+  let wired = wiring(runtime)
+  let results = process.new_subject()
+  list.each(list.repeat(Nil, 12), fn(_) {
+    process.spawn(fn() {
+      process.send(results, attention.notice(wired, caller("main"), notice()))
+    })
+  })
+  let outcomes =
+    list.map(list.repeat(Nil, 12), fn(_) {
+      let assert Ok(outcome) = process.receive(results, 30_000)
+        as "every racer answers"
+      outcome
+    })
+
+  // Every contender has a slot below the bound, so none may fail on the race.
+  assert list.all(outcomes, fn(outcome) { outcome |> result_is_ok })
+  let assert Ok(finds) = attention.finds(runtime)
+  assert list.length(finds) == 12
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+fn result_is_ok(result: Result(a, e)) -> Bool {
+  case result {
+    Ok(_) -> True
+    Error(_) -> False
+  }
 }
 
 pub fn a_session_that_is_not_up_refuses_in_band_test() {

@@ -22,9 +22,10 @@
 //// An `ask` records a question and stops the model, because the answer is a
 //// person's and can take hours. A call held open that long would keep a tool
 //// effect process and the call's budget deadline alive, so the tool returns at
-//// once and `TerminateRun` ends the run. `Exclusive` is what makes that sound:
-//// the planner ends a run only if every call in the batch terminates, and an
-//// exclusive call is alone in its batch.
+//// once and `TerminateRun` ends the run. The planner ends a run only if every
+//// call in the batch terminates, and `Exclusive` only keeps the scheduler from
+//// starting another call beside this one, so the reply also tells the model
+//// to end its turn, which stops a mixed batch too.
 ////
 //// A `notice` is a note the model leaves while it works. It never waits and
 //// never ends anything. It is `Concurrent`, so two in one batch may run
@@ -53,6 +54,7 @@ import core/attention.{
   Recommended,
 }
 import core/json.{type JsonValue}
+import gleam/bit_array
 import gleam/bool
 import gleam/int
 import gleam/list
@@ -345,8 +347,8 @@ fn run_ask(
 /// The outcome of a recorded ask: its id, and the end of the run.
 ///
 /// `TerminateRun` is what makes the strand idle with an open ask. The planner
-/// ends a run only if every call in the batch terminates, and the tool's
-/// `Exclusive` mode keeps this call alone in its batch.
+/// ends a run only if every call in the batch terminates, so the text also
+/// says to end the turn, for a batch that held another call.
 ///
 /// ## Examples
 ///
@@ -355,7 +357,11 @@ fn run_ask(
 /// ```
 pub fn ask_outcome(id: String) -> ToolOutcome {
   let recorded =
-    tool.success("asked as " <> id)
+    tool.success(
+      "asked as "
+      <> id
+      <> ". End your turn now; the answer arrives later as a message from the person.",
+    )
     |> tool.with_details(json.Object([#("id", json.String(id))]))
   tool.ToolOutcome(..recorded, terminate: tool.TerminateRun)
 }
@@ -508,11 +514,11 @@ fn kind_of(
       use min <- result.try(integer(fields, "min", 1, name))
       use max <- result.try(integer(fields, "max", list.length(options), name))
       use <- bool.lazy_guard(
-        when: min < 0 || min > max || max > list.length(options),
+        when: min < 0 || min > max || max < 1 || max > list.length(options),
         return: fn() {
           Error(
             name
-            <> ": `multiple` needs 0 <= min <= max <= the number of options ("
+            <> ": `multiple` needs 0 <= min <= max, 1 <= max <= the number of options ("
             <> int.to_string(list.length(options))
             <> "), got min "
             <> int.to_string(min)
@@ -902,19 +908,32 @@ pub fn notice_request(args: JsonValue) -> Result(NoticeRequest, String) {
   Ok(NoticeRequest(kind:, text:, path:, line:))
 }
 
-/// A workspace-relative path: non-empty, not absolute, no `..` segment.
-fn relative_path(path: String) -> Result(String, String) {
+/// The most bytes a `path` may carry. A path is a locator, and the record is
+/// shown to a person, so this is far above any real workspace path.
+const max_path_bytes = 512
+
+/// A workspace-relative path: non-empty, at most `max_path_bytes`, not
+/// absolute, no `..` segment. The check is on the trimmed text, so a leading
+/// space cannot hide a leading slash, and the trimmed text is what is kept.
+fn relative_path(given: String) -> Result(String, String) {
+  let path = string.trim(given)
   let segments = string.split(path, on: "/")
+  let oversize = byte_size(path) > max_path_bytes
 
   // Empty, absolute and parent-escaping paths are refused, each with its own
   // words, because each is a different mistake.
   case path, string.starts_with(path, "/"), list.contains(segments, "..") {
     "", _, _ -> Error("`path` is empty")
+    _, _, _ if oversize -> Error("`path` is longer than 512 bytes")
     _, True, _ ->
       Error("`path` must be relative to the workspace, not absolute")
     _, _, True -> Error("`path` must not contain `..`")
     _, False, False -> Ok(path)
   }
+}
+
+fn byte_size(text: String) -> Int {
+  bit_array.byte_size(<<text:utf8>>)
 }
 
 // --- refusals --------------------------------------------------------------

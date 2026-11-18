@@ -145,7 +145,8 @@ pub fn no_schema_field_takes_markup_or_a_question_identifier_test() {
 pub fn a_recorded_ask_returns_its_id_and_ends_the_run_test() {
   let outcome = ask_tool().run(a_ctx(), ask_args([confirm("Retry?")]))
   assert !outcome.is_error
-  assert text_of(outcome) == "asked as ask-0123456789"
+  assert string.starts_with(text_of(outcome), "asked as ask-0123456789")
+  assert string.contains(text_of(outcome), "End your turn now")
   assert outcome.terminate == tool.TerminateRun
   assert outcome.details
     == Some(json.Object([field("id", json.String("ask-0123456789"))]))
@@ -401,9 +402,12 @@ pub fn min_and_max_are_checked_against_the_option_count_test() {
   }
   assert result_ok(attention.ask_request(multiple(0, 2)))
   assert result_ok(attention.ask_request(multiple(2, 2)))
-  refused_with(multiple(-1, 2), "0 <= min <= max <= the number of options (2)")
+  refused_with(multiple(-1, 2), "1 <= max <= the number of options (2)")
   refused_with(multiple(2, 1), "got min 2 and max 1")
   refused_with(multiple(0, 3), "got min 0 and max 3")
+
+  // A `multiple` that may pick at most none is a question nobody can answer.
+  refused_with(multiple(0, 0), "got min 0 and max 0")
 }
 
 pub fn min_max_and_format_are_refused_on_other_kinds_test() {
@@ -597,6 +601,30 @@ pub fn a_path_must_be_relative_without_dot_dot_test() {
   notice_refused(with_path("../x"), "must not contain `..`")
   notice_refused(with_path("a/../../x"), "must not contain `..`")
   notice_refused(with_path(""), "`path` is empty")
+}
+
+pub fn a_path_is_checked_trimmed_and_bounded_test() {
+  let with_path = fn(path) {
+    json.Object([
+      field("kind", json.String("bug")),
+      field("text", json.String("x")),
+      field("path", json.String(path)),
+    ])
+  }
+
+  // A leading space cannot hide the slash, and what is kept is trimmed.
+  notice_refused(with_path(" /etc/passwd"), "must be relative to the workspace")
+  notice_refused(with_path(" ../x"), "must not contain `..`")
+  notice_refused(with_path("   "), "`path` is empty")
+  let assert Ok(request) = attention.notice_request(with_path(" src/a.gleam "))
+  assert request.path == Some("src/a.gleam")
+
+  // 512 bytes pass and 513 do not.
+  assert result_ok(attention.notice_request(with_path(string.repeat("p", 512))))
+  notice_refused(
+    with_path(string.repeat("p", 513)),
+    "`path` is longer than 512 bytes",
+  )
 }
 
 pub fn a_line_needs_a_path_and_is_at_least_one_test() {

@@ -138,7 +138,7 @@ refusal_outcome, refusal_code, describe}` — the `ask` and `notice` tools
 fills and the code-mode door shares. `ask` puts one to four typed questions
 to the owner (or a strand), records the ask, replies `asked as <id>` and ends
 the run: `TerminateRun`, `replay: Never`, `execution: Exclusive`, which is what
-keeps the call alone in its batch. A refusal continues the run. `notice`
+keeps the scheduler from starting another call beside it, and the reply says to end the turn so a mixed batch stops too. A refusal continues the run. `notice`
 records a find, replies `noted as <id>` and continues: `Concurrent`. The
 description says an ask must never request a secret and that credentials go
 through grants and approvals. The arguments are decoded here, from the bounds

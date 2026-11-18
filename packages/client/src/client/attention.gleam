@@ -3,13 +3,13 @@
 ////
 //// ## Flow
 ////
-//// `seam` → `ask` or `notice` → `insert` → `try_insert`
+//// `seam` → `ask` or `notice` → `try_insert`
 ////
 //// 1. `seam` closes over a `Wiring` and answers the tools' `Attention` seam.
 //// 2. `ask` and `notice` build the record's header from the caller's own
 ////    durable coordinates, the call's clock and the strand's lineage, then
-////    hand the encoded record to `insert`.
-//// 3. `insert` reads the prefix's guard cell and its records, refuses at the
+////    hand the encoded record to `try_insert`.
+//// 3. `try_insert` reads the prefix's guard cell and its records, refuses at the
 ////    open bound, and commits the new record, the guard's replacement and the
 ////    removal of any retired settled record in one transaction.
 //// 4. A lost race re-reads and decides again, a bounded number of times.
@@ -59,10 +59,11 @@ import tools/agent.{type Caller}
 import tools/attention as tool_attention
 
 /// How many times an insertion that lost its race to another insertion reads
-/// and decides again. Two or three callers contend at most, since asks are
-/// `Exclusive` per batch, so four re-reads are ample and the bound exists only
-/// so a fault cannot spin.
-const attempts = 4
+/// and decides again. The guard is session-wide and a `notice` is `Concurrent`,
+/// so any number of calls can contend, but each round has one winner, so
+/// `attempts` at least as large as the contenders always succeeds. Sixteen is
+/// above any batch a model plans, and the bound exists so a fault cannot spin.
+const attempts = 16
 
 /// How far up the lineage the parent chain is followed. The spawning depth cap
 /// is far below it; the bound only ends a ledger that held a cycle.
@@ -122,10 +123,10 @@ pub fn ask(
   request: tool_attention.AskRequest,
 ) -> Result(String, tool_attention.Refusal) {
   use runtime <- result.try(borrow(wiring))
-  use routing <- result.try(routing_of(runtime, request.to))
+  use routing <- result.try(routing_of(runtime, caller.strand, request.to))
   let #(now, _clock) = clock.read(wiring.clock)
   let parents = parents_of(runtime, caller.strand)
-  insert(
+  try_insert(
     runtime,
     wiring.entropy,
     now,
@@ -146,6 +147,7 @@ pub fn ask(
       )
       |> attention.encode_ask
     },
+    attempts,
   )
 }
 
@@ -164,7 +166,7 @@ pub fn notice(
   use runtime <- result.try(borrow(wiring))
   let #(now, _clock) = clock.read(wiring.clock)
   let parents = parents_of(runtime, caller.strand)
-  insert(
+  try_insert(
     runtime,
     wiring.entropy,
     now,
@@ -187,6 +189,7 @@ pub fn notice(
       )
       |> attention.encode_find
     },
+    attempts,
   )
 }
 
@@ -249,10 +252,18 @@ fn header(
 /// because an ask for a strand that does not exist could never be answered.
 fn routing_of(
   runtime: api.Runtime,
+  caller_strand: String,
   to: Option(String),
 ) -> Result(attention.Routing, tool_attention.Refusal) {
   case to {
     None -> Ok(attention.ToOwner)
+
+    // An ask to the asking strand itself could never be answered: the answer
+    // would arrive in the run that has ended its turn waiting for it.
+    Some(name) if name == caller_strand ->
+      Error(tool_attention.Invalid(
+        "`to` names your own strand; leave it out to ask the owner",
+      ))
     Some(name) ->
       case api.strands(runtime) {
         Ok(known) ->
@@ -311,18 +322,8 @@ type Lane {
 /// Records one record of a lane, refusing at the open bound.
 ///
 /// `encode` builds the payload once the id is minted. The whole read, count
-/// and write is retried when another insertion moved the guard in between.
-fn insert(
-  runtime: api.Runtime,
-  entropy: fn() -> Int,
-  now: Int,
-  lane: Lane,
-  encode: fn(String) -> JsonValue,
-) -> Result(String, tool_attention.Refusal) {
-  try_insert(runtime, entropy, now, lane, encode, attempts)
-}
-
-/// One attempt of `insert`, with `left` attempts remaining including this one.
+/// and write is retried when another insertion moved the guard in between,
+/// with `left` attempts remaining including this one.
 fn try_insert(
   runtime: api.Runtime,
   entropy: fn() -> Int,
@@ -388,6 +389,8 @@ fn inserted_before(cell: Option(api.FactCell)) -> Int {
 }
 
 /// Reads the cells under a prefix that name a record, leaving out the guard.
+/// The guard shares the prefix but is not a record, and a listing must not
+/// count it.
 fn read_prefix(
   runtime: api.Runtime,
   prefix: String,
