@@ -222,10 +222,16 @@ pub fn age_words(since since: Int, now now: Int) -> String {
 pub fn age_line(item: Item, now: Int) -> Option(String) {
   case item, since(item) {
     StuckItem(..), Some(at) ->
-      Some("stuck since at least " <> age_words(since: at, now:) <> " ago")
+      Some(case age_words(since: at, now:) {
+        "just now" -> "stuck just now"
+        words -> "stuck since at least " <> words <> " ago"
+      })
     AskItem(..), Some(at) -> Some("waiting " <> age_words(since: at, now:))
     FindItem(..), Some(at) ->
-      Some("noticed " <> age_words(since: at, now:) <> " ago")
+      Some(case age_words(since: at, now:) {
+        "just now" -> "noticed just now"
+        words -> "noticed " <> words <> " ago"
+      })
     _, None -> None
   }
 }

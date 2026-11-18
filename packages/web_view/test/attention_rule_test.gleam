@@ -120,6 +120,20 @@ pub fn the_age_line_says_a_stuck_time_is_a_bound_test() {
     == None
 }
 
+pub fn just_now_never_takes_an_ago_test() {
+  assert attention_rule.age_line(FindItem("s", find("find-1", 0)), 30_000)
+    == Some("noticed just now")
+  assert attention_rule.age_line(FindItem("s", find("find-1", 0)), 300_000)
+    == Some("noticed 5 min ago")
+  assert attention_rule.age_line(
+      StuckItem("s", Stuck(strand: "x", failed_at: Some(0))),
+      30_000,
+    )
+    == Some("stuck just now")
+  assert attention_rule.age_line(AskItem("s", ask("ask-1", 0)), 30_000)
+    == Some("waiting just now")
+}
+
 pub fn a_key_names_one_item_and_a_stale_key_names_none_test() {
   let items = attention_rule.items([#("s", row([ask("ask-1", 1)], [], []))])
   let key = attention_rule.key_of(AskItem("s", ask("ask-1", 1)))
