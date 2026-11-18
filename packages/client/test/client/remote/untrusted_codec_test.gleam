@@ -2695,3 +2695,38 @@ pub fn drawn_tunnel_items_round_trip_test() {
     assert through(frame) == Ok(frame)
   })
 }
+
+// --- the msgpack value bound (117, residual risks) ---------------------------
+
+/// The base64 of an array32 holding `items` nils, which is `items + 1` msgpack
+/// values in `items + 5` bytes.
+fn nil_array_base64(items: Int) -> String {
+  let nils = bit_array.concat(list.repeat(<<0xc0>>, items))
+  bit_array.base64_encode(<<0xdd, items:size(32), nils:bits>>, True)
+}
+
+/// A capability callback whose arguments are the base64 text given.
+fn call_with_args(args: String) -> JsonValue {
+  parsed(
+    "{\"kind\":\"capability\",\"call\":{\"strand\":\"main\",\"op_id\":\""
+    <> ids.op_id_to_string(op())
+    <> "\",\"step_id\":\"s\",\"source_index\":0,\"seam\":\"workspace\",\"cap\":\"c\",\"args\":\""
+    <> args
+    <> "\",\"ordinal\":0}}",
+  )
+}
+
+pub fn msgpack_inside_base64_is_held_to_the_value_bound_test() {
+  // The bound counts the array and each nil in it.
+  let at_bound = untrusted_wire.max_msgpack_values - 1
+
+  let assert Ok(_callback) =
+    untrusted_codec.decode_callback(call_with_args(nil_array_base64(at_bound)))
+    as "A payload of exactly the bound's values is accepted."
+  let assert Error(report) =
+    untrusted_codec.decode_callback(
+      call_with_args(nil_array_base64(at_bound + 1)),
+    )
+    as "One value past the bound is refused."
+  assert string.contains(report.expected, "number of values")
+}

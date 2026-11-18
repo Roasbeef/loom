@@ -50,6 +50,7 @@ import client/workspace_policy
 import codemode/satellite
 import core/json
 import core/message
+import core/msgpack
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -2517,5 +2518,44 @@ pub fn a_deadline_is_held_to_what_the_relays_timer_accepts_test() {
   assert process.receive(told, 5000)
     == Ok(Answered(Error(broker.BrokerUnavailable)))
   assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+// --- the msgpack value bound (117, residual risks) ----------------------------
+
+/// A capability call whose msgpack arguments are an array of `items` nils.
+fn call_with_nil_array(items: Int) -> untrusted_wire.Callback {
+  untrusted_wire.CapabilityCall(
+    owner_services.OwnerCapCall(
+      ..fixtures.capability_call(),
+      args: msgpack.ArrayValue(list.repeat(msgpack.NilValue, items)),
+    ),
+  )
+}
+
+// A frame of a megabyte or two holds one base64 string, so the JSON bound sees
+// it as one value; only the msgpack bound can refuse what it expands to. A
+// payload at the bound is decoded and answered, and one past it is a violation
+// that closes the connection.
+pub fn a_msgpack_payload_past_the_value_bound_closes_the_connection_test() {
+  let rig = start("msgpack-bound")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, binding:) = attach(rig, "s1", port, None)
+  let at_bound = untrusted_wire.max_msgpack_values - 1
+
+  // The call is answered, with a denial or a result, so the link decoded it.
+  let assert untrusted_wire.CapabilityAnswered(_answer) =
+    called(stream, binding, 1, call_with_nil_array(at_bound))
+
+  rig.send(
+    stream,
+    untrusted_wire.Callback(
+      binding:,
+      id: 2,
+      callback: call_with_nil_array(at_bound + 1),
+    ),
+  )
+  assert rig.closed(stream, 30_000)
+  assert process.is_alive(rig.link)
   stop(rig)
 }

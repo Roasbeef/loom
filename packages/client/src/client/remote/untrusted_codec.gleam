@@ -12,7 +12,9 @@
 //// The executor is assumed hostile, so every decoder is total. A frame is
 //// parsed by `core/json`, which bounds nesting, refuses a duplicated key and
 //// refuses a document of more than `untrusted_wire.max_frame_values` values
-//// before it has built them (`json.parse_bounded`);
+//// before it has built them (`json.parse_bounded`). A msgpack value carried in
+//// a base64 string is one JSON value, so `msgpack_of` decodes it with
+//// `msgpack.decode_bounded` under `untrusted_wire.max_msgpack_values`;
 //// every field is then read through a helper that answers with a
 //// `CorruptionReport` when it is absent, of the wrong JSON type, out of range,
 //// or not canonical base64. Ids are at least 1, offsets and sizes are not
@@ -1839,8 +1841,8 @@ fn encode_sandbox_policy(policy: sandbox_policy.SandboxPolicy) -> JsonValue {
 fn decode_sandbox_policy(
   value: JsonValue,
 ) -> Result(sandbox_policy.SandboxPolicy, CorruptionReport) {
-  use bytes <- result.try(bytes_of(value, "base_policy"))
-  sandbox_policy.decode(bytes)
+  use policy <- result.try(msgpack_of(value, "base_policy"))
+  sandbox_policy.from_msgpack(policy)
 }
 
 /// The JSON of one hook settings file: its path and what was read.
@@ -4309,8 +4311,8 @@ fn policy_of(
   value: JsonValue,
   on: String,
 ) -> Result(sandbox_policy.SandboxPolicy, CorruptionReport) {
-  use bytes <- result.try(bytes_of(value, on))
-  sandbox_policy.decode(bytes)
+  use policy <- result.try(msgpack_of(value, on))
+  sandbox_policy.from_msgpack(policy)
 }
 
 /// Reads a clearance wait in milliseconds, from 0 to `max_call_wait_ms`.
@@ -4574,13 +4576,19 @@ fn encode_msgpack(value: msgpack.MsgPackValue) -> JsonValue {
   }
 }
 
-/// Reads a msgpack value from the base64 of its bytes.
+/// Reads a msgpack value from the base64 of its bytes, of at most
+/// `untrusted_wire.max_msgpack_values` values.
+///
+/// The JSON parse counts the base64 string as one value, so this decode is the
+/// only bound on what the string expands to. A payload past it is refused by
+/// the first value over, before the rest is read, so a hostile string costs
+/// the decode no more than the bound's worth of work.
 fn msgpack_of(
   value: JsonValue,
   on: String,
 ) -> Result(msgpack.MsgPackValue, CorruptionReport) {
   use bytes <- result.try(bytes_of(value, on))
-  msgpack.decode(bytes)
+  msgpack.decode_bounded(bytes, max_values: untrusted_wire.max_msgpack_values)
 }
 
 // --- primitives -------------------------------------------------------------------
