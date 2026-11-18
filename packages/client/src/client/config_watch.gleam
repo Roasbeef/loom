@@ -11,11 +11,11 @@
 ////
 //// ## Flow
 ////
-//// `start` → `observe` → `read` → `settle`
+//// `start` → `observe` → `read_text` → `session_view` → `settle`
 ////
 //// 1. `start` runs one weft actor per session, in the session's restartable
 ////    service tier, which observes the file once a tick.
-//// 2. `observe` reads it with `read`, which is bounded: a file that is not a
+//// 2. `observe` reads it with `read_text`, which is bounded: a file that is not a
 ////    regular file, is too large, or does not read as text is unreadable, and an
 ////    unreadable file changes nothing, so a save that is half written or a file
 ////    moved away keeps the session as it is.
@@ -33,15 +33,20 @@
 //// not needed; the opposite order could miss a save forever. The race is closed
 //// toward the reopen.
 
+import client/untrusted_config
 import gleam/bit_array
 import gleam/bool
 import gleam/crypto
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import simplifile
 import telemetry/field
 import telemetry/log.{type Logger}
+import tom
 import weft/actor
 
 /// The largest configuration file the watcher reads; a larger one is treated
@@ -81,8 +86,14 @@ type State {
     applied: Option(String),
     // A changed fingerprint read once, waiting for a second read to agree.
     seen: Option(String),
-    // A changed fingerprint whose text failed the check, so it is logged once.
+    // The SHA-256 of the raw text that failed the check, so it is logged once.
+    // It is keyed on the text, not the view: the check also validates the tables
+    // the view leaves out, so a fix made only in one of them must be judged
+    // again.
     refused: Option(String),
+    // The raw text hash of the last read and the view digest computed from it,
+    // so an unchanged file costs a read and a hash and no parse.
+    last: Option(#(String, String)),
     notify: fn() -> Nil,
     logger: Logger,
   )
@@ -138,9 +149,9 @@ pub fn tick(watcher: Subject(Message)) -> Nil {
   process.call(watcher, 5000, Probe)
 }
 
-/// The fingerprint a watcher compares: the SHA-256 of the file's text, in hex,
-/// or `Error(Nil)` for a file that is missing, not a regular file, larger than
-/// `max_file_bytes`, or not text.
+/// The fingerprint a watcher compares: the SHA-256, in hex, of what a session
+/// reads from the file (`session_view`), or `Error(Nil)` for a file that is
+/// missing, not a regular file, larger than `max_file_bytes`, or not text.
 ///
 /// ## Examples
 ///
@@ -149,7 +160,7 @@ pub fn tick(watcher: Subject(Message)) -> Nil {
 /// ```
 ///
 pub fn fingerprint(path: String) -> Result(String, Nil) {
-  read(path) |> result.map(fn(pair) { pair.0 })
+  read_text(path) |> result.map(view_digest)
 }
 
 /// Builds an actor builder for config watcher.
@@ -163,6 +174,7 @@ fn new(
     applied: source.baseline,
     seen: None,
     refused: None,
+    last: None,
     notify:,
     logger:,
   )
@@ -185,21 +197,30 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
 /// Performs one observation pass on the configured file.
 ///
-/// One read, judged. The text is read before the fingerprint is compared, but it
-/// is checked only once two reads agree, so a file saved in pieces costs reads
-/// and never a parse of a half-written document.
+/// One read, judged. The text is read before the fingerprint is compared, but the
+/// loader sees it only once two reads agree, so a file saved in pieces costs
+/// reads and never a check of a half-written text.
 fn observe(state: State) -> State {
   // Read file from disk and compare fingerprint.
-  case read(state.source.path) {
+  case read_text(state.source.path) {
     Error(Nil) -> State(..state, seen: None)
-    Ok(#(digest, text)) -> {
+    Ok(text) -> {
+      let raw = hash(text)
+
+      // The view is parsed only when the bytes changed since the last read.
+      let digest = case state.last {
+        Some(#(last_raw, last_view)) if last_raw == raw -> last_view
+        _ -> view_digest(text)
+      }
+
+      let state = State(..state, last: Some(#(raw, digest)))
       let now = Some(digest)
 
       // Settle change once two consecutive reads agree on new digest.
       case now == state.applied, now == state.seen {
         True, _ -> State(..state, seen: None)
         False, False -> State(..state, seen: now)
-        False, True -> settle(state, digest, text)
+        False, True -> settle(state, digest, raw, text)
       }
     }
   }
@@ -208,30 +229,35 @@ fn observe(state: State) -> State {
 /// Settles an agreed-upon configuration text and notifies the hub if valid.
 ///
 /// A text two reads agreed on. One that passes is now the session's, and the hub
-/// is told; one that fails is remembered so it is logged once and not parsed on
-/// every tick.
-fn settle(state: State, digest: String, text: String) -> State {
+/// is told; one that fails is remembered by the hash of its text so it is logged
+/// once and not checked on every tick.
+fn settle(state: State, digest: String, raw: String, text: String) -> State {
   let path = field.text("path", state.source.path)
 
-  // Verify if content was already refused, or check text schema.
-  case Some(digest) == state.refused, state.source.check(text) {
-    True, _ -> State(..state, seen: None)
-    False, Ok(Nil) -> {
+  // A text already refused is not checked again.
+  use <- bool.guard(
+    when: Some(raw) == state.refused,
+    return: State(..state, seen: None),
+  )
+
+  // Otherwise the loader judges it.
+  case state.source.check(text) {
+    Ok(Nil) -> {
       log.info(state.logger, "config.changed", [path])
       state.notify()
       State(..state, applied: Some(digest), seen: None, refused: None)
     }
-    False, Error(_) -> {
+    Error(_) -> {
       log.warn(state.logger, "config.refused", [path])
-      State(..state, seen: None, refused: Some(digest))
+      State(..state, seen: None, refused: Some(raw))
     }
   }
 }
 
-/// Reads the file and computes its SHA-256 fingerprint if within limits.
+/// Reads the file's text if it is within limits.
 ///
 /// The bounded read: the size is asked of the file before a byte is read.
-fn read(path: String) -> Result(#(String, String), Nil) {
+fn read_text(path: String) -> Result(String, Nil) {
   use info <- result.try(
     simplifile.file_info(path) |> result.replace_error(Nil),
   )
@@ -240,9 +266,99 @@ fn read(path: String) -> Result(#(String, String), Nil) {
       || info.size > max_file_bytes,
     return: Error(Nil),
   )
-  use text <- result.try(simplifile.read(path) |> result.replace_error(Nil))
-  let digest =
-    crypto.hash(crypto.Sha256, bit_array.from_string(text))
-    |> bit_array.base16_encode
-  Ok(#(digest, text))
+  simplifile.read(path) |> result.replace_error(Nil)
+}
+
+/// The SHA-256 of a text, in hex.
+fn hash(text: String) -> String {
+  crypto.hash(crypto.Sha256, bit_array.from_string(text))
+  |> bit_array.base16_encode
+}
+
+/// The fingerprint of what a session reads from a text.
+fn view_digest(text: String) -> String {
+  hash(session_view(text))
+}
+
+/// The text a fingerprint is taken of: the parsed document in a fixed order,
+/// without the tables only the daemon reads.
+///
+/// Two texts with the same view give a session the same values, which is what
+/// lets the watcher ignore the difference. One of them may still be refused by
+/// the validators of the tables left out, which is why a refusal is remembered
+/// by the text and not by the view. A text that does not parse is returned as
+/// it is, so the old rule (the whole text, settled by two reads, then checked)
+/// applies to it unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // config_watch.session_view("[executors.a]\nnode = \"x@h\"\n")
+/// //   == config_watch.session_view("")
+/// ```
+///
+@internal
+pub fn session_view(text: String) -> String {
+  // A text that is not a TOML document has no tables to leave out, so it stands
+  // for itself; a document is rendered without the daemon's tables.
+  case tom.parse(text) {
+    Error(_) -> text
+    Ok(document) -> {
+      // A session reads the key paths of the two untrusted-link tables and
+      // nothing else in them; a table the reader refuses names none, exactly as
+      // `serve.link_secrets` would find.
+      let masked =
+        untrusted_config.from_document(document)
+        |> result.map(untrusted_config.secret_files)
+        |> result.unwrap([])
+
+      document
+      |> dict.drop(daemon_tables)
+      |> render_fields
+      |> string.append("\nmasked keys: " <> string.inspect(masked))
+    }
+  }
+}
+
+/// The top-level tables a session never reads a value from. `executor_link` and
+/// `executor_listener` are here because the view carries their one read, the
+/// key paths, apart from the tables themselves.
+const daemon_tables = [
+  "executors", "distribution", "executor_link", "executor_listener",
+]
+
+/// Renders a table's entries ordered by key, so two documents that hold the
+/// same values render the same whatever order the file wrote them in.
+fn render_fields(fields: Dict(String, tom.Toml)) -> String {
+  fields
+  |> dict.to_list
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> list.map(fn(entry) { string.inspect(entry.0) <> "=" <> render(entry.1) })
+  |> string.join(";")
+}
+
+/// Renders one value. Containers recurse; every scalar is its own `inspect`,
+/// which is exact for each of them.
+fn render(value: tom.Toml) -> String {
+  case value {
+    tom.Table(fields) -> "table{" <> render_fields(fields) <> "}"
+    tom.InlineTable(fields) -> "inline{" <> render_fields(fields) <> "}"
+    tom.Array(items) -> "[" <> string.join(list.map(items, render), ",") <> "]"
+    tom.ArrayOfTables(rows) ->
+      "tables["
+      <> string.join(
+        list.map(rows, fn(row) { "{" <> render_fields(row) <> "}" }),
+        ",",
+      )
+      <> "]"
+    tom.Int(_)
+    | tom.Float(_)
+    | tom.Infinity(_)
+    | tom.Nan(_)
+    | tom.Bool(_)
+    | tom.String(_)
+    | tom.Date(_)
+    | tom.Time(_)
+    | tom.DateTime(..) -> string.inspect(value)
+  }
 }
