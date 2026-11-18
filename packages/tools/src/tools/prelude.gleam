@@ -25,6 +25,7 @@
 //// names the file that moved:
 ////
 ////   5816fc74c9ad456210316687f1f3169919cbee4c8e8b0e484caf1716b6b8db48  packages/cap/src/cap/actor.gleam
+////   97d04b38582ed6ff9e4027ee92d1010a510b2b4d26f11824ff7db1615d8084fd  packages/cap/src/cap/attention.gleam
 ////   73e82f83d61ecead880a5b8d63b5bbbd1bc8564cf814196fa197189d51edd598  packages/cap/src/cap/evolution.gleam
 ////   215a3ee1f03e0eff219cb883816afc22a914b25983feebdd681a8c4b6aaf996e  packages/cap/src/cap/execution.gleam
 ////   1023007f1155f92e80a7aa5b2af956929d4d123d491696a379bad82e205aee68  packages/cap/src/cap/fs.gleam
@@ -49,7 +50,7 @@
 ////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam
 ////   eefe3ffc20ce42f1645ccb4058927df05445301f4fb31aee2831c679c0385d37  packages/tools/dev/gen_prelude/wrap.gleam
 ////
-//// Body digest (every line after the marker): 8f47f26b012c1766fd9817518e1b43c3190ed26be232ee7ee46ce9979cf45036
+//// Body digest (every line after the marker): 237b6d5a19ed04d787b91a4095fc5223192bfa44774ac7777a08ccf23faf9ee3
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -137,6 +138,183 @@ pub fn spawn(a, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 pub fn spawn_bounded(a, Int, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 /// Stop the actor after this message.
 pub fn stop() -> Next(a)
+",
+  ),
+  #(
+    "cap/attention",
+    "### cap/attention
+Questions for the owner and notes about what a program saw, as the `ask`
+and `notice` tools record them.
+
+/// One option of a `choose`, `choose_many` or `checklist` question.
+pub type Alternative {
+  Alternative(label: String, note: option.Option(String), emphasis: Emphasis)
+}
+/// A refusal, a validation failure, or a transport failure.
+pub type AttentionError {
+  /// The host refused this call, retaining its error code and
+  /// explanation. An out-of-bound argument and a full inbox arrive here.
+  AttentionDenied(code: String, message: String)
+  /// The host could not be reached or answered with an invalid value.
+  AttentionUnavailable(reason: String)
+}
+/// Whether the model suggests an option.
+pub type Emphasis {
+  /// The option you suggest. At most one per question.
+  Recommended
+  /// An option with no suggestion attached.
+  Plain
+}
+/// What a note is.
+pub type Find {
+  /// A hazard.
+  Risk
+  /// An improvement.
+  Idea
+  /// A defect that is not yours to fix now.
+  Bug
+  /// Something you wonder about and will not stop to ask. A question that
+  /// needs an answer before work continues is an `ask`.
+  Wondering
+}
+/// What a `fill` question expects the text to be. None names a secret.
+pub type Format {
+  /// A short line of text.
+  ShortText
+  /// A paragraph.
+  LongText
+  /// A file path.
+  FilePath
+  /// A number, carried as the text the person typed.
+  Number
+  /// A URL.
+  Url
+}
+/// What a question asks of the person.
+pub type Kind {
+  /// Yes or no. The answer is `true` or `false`.
+  Confirm
+  /// One of two to eight options. The answer is its label.
+  Choose(options: List(Alternative))
+  /// Between `min` and `max` of the options, where `0 <= min <= max <=
+  /// the number of options`. The answer is a list of labels.
+  ChooseMany(options: List(Alternative), min: Int, max: Int)
+  /// Any subset of two to eight items, possibly none. The answer is a
+  /// list of labels.
+  Checklist(options: List(Alternative))
+  /// Text of the stated format. The answer is a string.
+  Fill(format: Format)
+}
+/// One question: what is asked, at most 300 characters, and what the
+/// person gives. Every question also accepts a free-text Other, answered
+/// as `null` with its text beside it, so do not add an option for it.
+pub type Question {
+  Question(prompt: String, kind: Kind)
+}
+/// An option with a label and nothing else.
+///
+///  ## Examples
+///
+///  ```gleam
+///  attention.alternative(\"main\")
+///  ```
+///
+pub fn alternative(String) -> Alternative
+/// Puts one to four questions to the owner, or to a strand of this
+/// session when `to` names one, and returns the ask's id. It records the
+/// ask and returns at once, and it does not end your turn: end it
+/// yourself after the program returns. The answer arrives later as a
+/// message from the person holding one fenced JSON object. At most 32
+/// asks may be open at once. Capability: attention.ask. The execution
+/// allows at most 8 calls.
+///
+///  ## Examples
+///
+///  ```gleam
+///  attention.ask([attention.confirm(\"Retry?\")], to: None, why: None)
+///  ```
+///
+pub fn ask(List(Question), to: option.Option(String), why: option.Option(String)) -> Result(String, AttentionError)
+/// A question answered with any subset of the items, possibly none.
+///
+///  ## Examples
+///
+///  ```gleam
+///  attention.checklist(\"Which of these may I delete?\", [
+///    attention.alternative(\"build/\"),
+///    attention.alternative(\"node_modules/\"),
+///  ])
+///  ```
+///
+pub fn checklist(String, List(Alternative)) -> Question
+/// A question answered with one of the options.
+///
+///  ## Examples
+///
+///  ```gleam
+///  attention.choose(\"Which branch?\", [
+///    attention.alternative(\"main\"),
+///    attention.alternative(\"topic\"),
+///  ])
+///  ```
+///
+pub fn choose(String, List(Alternative)) -> Question
+/// A question answered with between `min` and `max` of the options.
+///
+///  ## Examples
+///
+///  ```gleam
+///  attention.choose_many(
+///    \"Which files?\",
+///    [attention.alternative(\"a.gleam\"), attention.alternative(\"b.gleam\")],
+///    min: 1,
+///    max: 2,
+///  )
+///  ```
+///
+pub fn choose_many(String, List(Alternative), min: Int, max: Int) -> Question
+/// A yes-or-no question.
+///
+///  ## Examples
+///
+///  ```gleam
+///  attention.confirm(\"Retry the build?\")
+///  ```
+///
+pub fn confirm(String) -> Question
+/// A one-line rendering of an `AttentionError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert attention.error_text(attention.AttentionUnavailable(\"no channel\"))
+///    == \"attention unavailable: no channel\"
+///  ```
+///
+///
+pub fn error_text(AttentionError) -> String
+/// A question answered with text.
+///
+///  ## Examples
+///
+///  ```gleam
+///  attention.fill(\"Where should it go?\", attention.FilePath)
+///  ```
+///
+pub fn fill(String, Format) -> Question
+/// Records a note about something you saw outside the task and returns
+/// its id. It never stops anything, and you cannot edit or close it.
+/// `path` is relative to the workspace, and `line` needs a `path`. At
+/// most 128 notices may be open at once. Capability: attention.notice.
+/// The execution allows at most 32 calls.
+///
+///  ## Examples
+///
+///  ```gleam
+///  attention.notice(attention.Bug, \"No backoff.\", path: Some(\"src/retry.gleam\"), line: Some(41))
+///  ```
+///
+pub fn notice(Find, String, path: option.Option(String), line: option.Option(Int)) -> Result(String, AttentionError)
 ",
   ),
   #(
@@ -4058,6 +4236,79 @@ pub type Next(a) {
 /// The handler answers it with `reply`; the program never sees a raw
 /// `Subject`.
 pub type Reply(a)
+",
+  ),
+  #(
+    "cap/attention",
+    "### cap/attention
+Questions for the owner and notes about what a program saw, as the `ask`
+and `notice` tools record them.
+
+/// One option of a `choose`, `choose_many` or `checklist` question.
+pub type Alternative {
+  Alternative(label: String, note: option.Option(String), emphasis: Emphasis)
+}
+/// A refusal, a validation failure, or a transport failure.
+pub type AttentionError {
+  /// The host refused this call, retaining its error code and
+  /// explanation. An out-of-bound argument and a full inbox arrive here.
+  AttentionDenied(code: String, message: String)
+  /// The host could not be reached or answered with an invalid value.
+  AttentionUnavailable(reason: String)
+}
+/// Whether the model suggests an option.
+pub type Emphasis {
+  /// The option you suggest. At most one per question.
+  Recommended
+  /// An option with no suggestion attached.
+  Plain
+}
+/// What a note is.
+pub type Find {
+  /// A hazard.
+  Risk
+  /// An improvement.
+  Idea
+  /// A defect that is not yours to fix now.
+  Bug
+  /// Something you wonder about and will not stop to ask. A question that
+  /// needs an answer before work continues is an `ask`.
+  Wondering
+}
+/// What a `fill` question expects the text to be. None names a secret.
+pub type Format {
+  /// A short line of text.
+  ShortText
+  /// A paragraph.
+  LongText
+  /// A file path.
+  FilePath
+  /// A number, carried as the text the person typed.
+  Number
+  /// A URL.
+  Url
+}
+/// What a question asks of the person.
+pub type Kind {
+  /// Yes or no. The answer is `true` or `false`.
+  Confirm
+  /// One of two to eight options. The answer is its label.
+  Choose(options: List(Alternative))
+  /// Between `min` and `max` of the options, where `0 <= min <= max <=
+  /// the number of options`. The answer is a list of labels.
+  ChooseMany(options: List(Alternative), min: Int, max: Int)
+  /// Any subset of two to eight items, possibly none. The answer is a
+  /// list of labels.
+  Checklist(options: List(Alternative))
+  /// Text of the stated format. The answer is a string.
+  Fill(format: Format)
+}
+/// One question: what is asked, at most 300 characters, and what the
+/// person gives. Every question also accepts a free-text Other, answered
+/// as `null` with its text beside it, so do not add an option for it.
+pub type Question {
+  Question(prompt: String, kind: Kind)
+}
 ",
   ),
   #(
