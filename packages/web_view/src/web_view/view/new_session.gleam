@@ -131,6 +131,9 @@ pub type Presses(message) {
     open: fn(String) -> message,
     /// The link to the full session list was pressed.
     listing: message,
+    /// The link back to the inbox was pressed. It is `None` on a page whose
+    /// inbox is not what it would land on, which draws no link.
+    inbox: Option(message),
   )
 }
 
@@ -318,10 +321,31 @@ pub fn view(pane: Pane(message)) -> Element(message) {
             ],
             [html.text("Show the full session list")],
           ),
+          ..inbox_link(pane.presses.inbox)
         ]),
       ]),
     ]),
   ])
+}
+
+/// The link back to the inbox, drawn after the link to the full list when the
+/// page has an inbox to return to, and nothing otherwise.
+fn inbox_link(inbox: Option(message)) -> List(Element(message)) {
+  // The control exists only on a page that has an inbox to return to.
+  case inbox {
+    None -> []
+    Some(back) -> [
+      html.text(" "),
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("link-button"),
+          event.on_click(back),
+        ],
+        [html.text("Back to the inbox")],
+      ),
+    ]
+  }
 }
 
 /// The phone's banner: the session that most needs the person, with a count of

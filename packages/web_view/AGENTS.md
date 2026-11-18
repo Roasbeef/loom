@@ -224,7 +224,46 @@ page keys and nonces, and the relay into the session's gateway.
   table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
   component's process) for a ticket, and `Linked(answer)` becomes the `to`
   attribute of the centre's last child, a hidden `<loom-switch>`, or a refusal
-  `home_table.Note` beside the row. The centre's first child is an empty node, so
+  `home_table.Note` beside the row. **The attention inbox** (phase 0): the home's
+  `Start.activity` hands over `sessions.Report`s (`activity`, `last_message`,
+  `glances`; all model text, drawn as text nodes only) and `Model` keeps them in
+  `reports` beside the narrow `activity` dict the sidebar and `listing` read.
+  `inbox_rule` (pure, no Lustre) decides `Group` (`NeedsYou | Waiting | Updates |
+  Quiet`), `Kind`, `head`, `headline`, the ordering by name and `landing`
+  (`Inbox` when any session needs the owner, failed, works or is idle with a last
+  message; else `Form`). `view/inbox` draws the grouped list and a reading pane
+  inside the centre's body (so at `table_path`); `home.centre_body` shows it when
+  `landed_inbox` holds: pane `NewSession` or `SessionList`, `centre_choice` is
+  `Landed` (`ShowingNew`, `ShowingList` and `Composed` set `Chose`), and the
+  landing is `Inbox`. The first `Observed` alone decides it (`Awaiting` becomes
+  `Landed` or `Chose`), so a later read never replaces a composer being typed in;
+  `inbox_return` offers "Inbox" instead. `Model.selected` is a `Selection`
+  (`Unchosen | Defaulted(id) | Pressed(id)`): the default is fixed at the first
+  read with a thread and does not move, and the shown thread keeps its previous
+  report when one read omits it while its session is still listed (`observed`).
+  `InboxOpened(id)` presses a thread (an id the reports no longer hold falls back
+  to the first thread). A pending
+  approval is named and sent to the session's page, never drawn; "Open session"
+  sends `Opening`, so the inbox adds no admission. **Messaging a thread**
+  (protocol-change/118): `Start.thread_send` is `Some` only for the owner's
+  operating home (`ui_socket.home_thread_send_capability`); with it each thread
+  ends in a form (`view/inbox` `Field`) of one `draft` box and submit buttons
+  named `delivery` (`prompt` or `steer`), whose handler carries the thread's
+  session so the browser names neither. `web_view/thread_send` (pure) holds the
+  vocabulary: `choices(kind)` (Send for idle or failed, Queue and Steer for
+  working, Send alone with a note that a message starts a turn and decides nothing, for an approval),
+  `delivery`, `sendable` (non-blank and at most `composer.prompt_limit` bytes),
+  the `Answer` (`Delivered(Admitted | Queued)` or `Refused(NotHeld | NotResident
+  | NotAccepted(reason) | QueueFull)`) and the `Outbox` words, which never carry
+  the reason. `ThreadSubmitted` is honoured for a connected page with the
+  capability, a sendable draft, a session the last read reports and no send out;
+  `ThreadAnswered` settles the outbox, and a delivered answer bumps
+  `Model.delivered`, which keys the box so it is drawn empty. The form submits
+  beneath `table_path`, which `home_owner_accepts` already admits for
+  `Submitting`, so no admission is added. `ShowingInbox` sets `centre_choice`
+  back to `Landed`; `inbox_return` offers it ("‹ Inbox" in `home_table`,
+  "Back to the inbox" in the composer) only on a chosen list or composer while
+  `inbox_rule.landing` is `Inbox`. The centre's first child is an empty node, so
   the table keeps its path; what the page says about a press is a `Note`
   (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
   its workspace's heading when the row is gone, or under `Sessions`, and it

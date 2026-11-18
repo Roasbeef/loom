@@ -142,7 +142,7 @@ pub fn an_operator_submits_a_prompt_to_main_test() {
   assert component.drafts(model) == 1
 }
 
-// A steer is folded into the operation that is running, so the page offers
+// A steer stops the operation that is running and runs first, so the page offers
 // it only while one is, and the engine sends one only then: on an idle
 // strand the same words are an ordinary prompt.
 pub fn a_steer_is_sent_as_a_steer_test() {

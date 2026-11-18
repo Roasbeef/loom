@@ -64,6 +64,7 @@ import host/claim
 import host/login
 import mist
 import session_view/move_candidates
+import session_view/operator as session_operator
 import session_view/transcript_image
 import simplifile
 import sqlight
@@ -90,6 +91,7 @@ import web_view/peer_links
 import web_view/renames
 import web_view/sessions
 import web_view/signins
+import web_view/thread_send
 import weft
 import weft/poll
 
@@ -381,9 +383,10 @@ fn fixture_lasting_with_root(
             Switching ->
               case
                 req.get_header(request, "x-switch-target"),
-                req.get_header(request, "x-create-workspace")
+                req.get_header(request, "x-create-workspace"),
+                req.get_header(request, "x-send-session")
               {
-                Ok(target), _ ->
+                Ok(target), _, _ ->
                   opening_from_home(
                     sessions,
                     request,
@@ -392,7 +395,7 @@ fn fixture_lasting_with_root(
                     open,
                     target,
                   )
-                Error(Nil), Ok(workspace) ->
+                Error(Nil), Ok(workspace), _ ->
                   creating_from_home(
                     sessions,
                     request,
@@ -401,7 +404,9 @@ fn fixture_lasting_with_root(
                     open,
                     workspace,
                   )
-                Error(Nil), Error(Nil) ->
+                Error(Nil), Error(Nil), Ok(session) ->
+                  sending_from_home(request, attachment, seen, open, session)
+                Error(Nil), Error(Nil), Error(Nil) ->
                   with_page(
                     homed(
                       ready.state_root,
@@ -790,6 +795,65 @@ fn creating_from_home(
         Ok(creations.Unstarted(..) as unstarted) ->
           reported(stub(292, string.inspect(unstarted)), reach)
         Ok(creations.Unsent(path)) -> reported(stub(293, path), reach)
+        Error(Nil) -> stub(298, "the task never answered")
+      }
+    }
+  }
+}
+
+// The home's upgrade as the inbox's message field asks: the capability the
+// socket hands a page (`home_thread_send_capability`) is consulted first, and a
+// page with none is answered 289 unless `x-send-force` asks the daemon anyway, as
+// a forged message from a page that was wrongly handed the capability would. The
+// request is run in the task the page uses (`thread_send_task`) over the
+// daemon's own resolution of the session (`message_to`), with no gateway to
+// reach, and answered 290 and the answer if it was delivered, or 291 and the
+// refusal. The text, the delivery and the ended page come from headers.
+fn sending_from_home(
+  request,
+  attachment: server.HomeAttachment(String),
+  seen: server.PageGrant,
+  open: fn() -> Result(Int, Nil),
+  session: String,
+) {
+  let ceiling = seen.grant.ceiling
+  let open = case req.get_header(request, "x-switch-ended") {
+    Ok(_) -> fn() { Error(Nil) }
+    Error(Nil) -> open
+  }
+  let standing = ui_socket.home_standing(attachment, seen)
+  let text = result.unwrap(req.get_header(request, "x-send-text"), "go on")
+  let delivery = case req.get_header(request, "x-send-delivery") {
+    Ok("steer") -> session_operator.Steer
+    Ok(_) | Error(Nil) -> session_operator.Prompt
+  }
+  let ask = fn(session, text, delivery, deliver) {
+    ui_socket.thread_send_task(
+      standing,
+      open,
+      ui_socket.message_to(attachment, fn(_) { Error(Nil) }),
+      session,
+      text,
+      delivery,
+      deliver,
+    )
+  }
+  let capability =
+    ui_socket.home_thread_send_capability(attachment.principal, ceiling, ask)
+  let asked = case capability, req.get_header(request, "x-send-force") {
+    Some(ask), _ -> Some(ask)
+    None, Ok(_) -> Some(ask)
+    None, Error(Nil) -> None
+  }
+  case asked {
+    None -> stub(289, "no capability")
+    Some(ask) -> {
+      let answers = process.new_subject()
+      ask(session, text, delivery, fn(answer) { process.send(answers, answer) })
+      case process.receive(answers, 10_000) {
+        Ok(thread_send.Delivered(_) as answer) ->
+          stub(290, string.inspect(answer))
+        Ok(thread_send.Refused(refusal)) -> stub(291, string.inspect(refusal))
         Error(Nil) -> stub(298, "the task never answered")
       }
     }
@@ -5166,6 +5230,187 @@ pub fn an_ended_home_creates_nothing_test() {
     assert refused.body == "NotOwner"
     assert session_count(ready, credential) == before
   })
+}
+
+// The whole path through the router for the inbox's message field
+// (protocol-change/118): the owner's operating home resolves the session as its
+// principal. A session the registry does not hold is `NotHeld`, and one it holds
+// that is saved, or whose gateway is not running, is `NotResident`, so the page
+// can word each. Nothing is sent by either, since there is no gateway to send to.
+pub fn an_owners_home_resolves_the_session_it_sends_to_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "send-held", 1201)
+    let home = enter(port, operator_home(port, credential))
+    let send = fn(target) {
+      home_socket(port, home, [#("x-send-session", target)])
+    }
+
+    // Held and resident, with no gateway behind it in this rig.
+    let resident = send(session)
+    assert resident.status == 291
+    assert resident.body == "NotResident"
+
+    // Held and saved.
+    saved(ready, session)
+    let stopped = send(session)
+    assert stopped.status == 291
+    assert stopped.body == "NotResident"
+
+    // Not held at all.
+    let unknown = send("01HXNOSUCHSESSION")
+    assert unknown.status == 291
+    assert unknown.body == "NotHeld"
+  })
+}
+
+// A member's operator home and an observer's home are handed no capability, and
+// a forged send that reaches the daemon anyway is refused from the grant the page
+// holds, whatever the frame said. A page that has ended is refused the same way.
+pub fn a_members_and_an_observers_home_send_nothing_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "send-refused", 1202)
+    let operator = [#("page", json.String("operator"))]
+    let grant = member(ready, "ui-sender", session, access.Operator)
+    let members_home = enter(port, home_link(port, grant, operator))
+    let observers_home = enter(port, home_link(port, credential, []))
+
+    list.each([members_home, observers_home], fn(home) {
+      let plain = home_socket(port, home, [#("x-send-session", session)])
+      assert plain.status == 289
+      let forced =
+        home_socket(port, home, [
+          #("x-send-session", session),
+          #("x-send-force", "yes"),
+        ])
+      assert forced.status == 291
+      assert forced.body == "NotHeld"
+    })
+
+    let owners_home = enter(port, operator_home(port, credential))
+    let ended =
+      home_socket(port, owners_home, [
+        #("x-send-session", session),
+        #("x-switch-ended", "yes"),
+      ])
+    assert ended.status == 291
+    assert ended.body == "NotHeld"
+  })
+}
+
+// A draft with nothing in it, or over the bound, is refused by the daemon
+// whatever the page checked, and the words are the gateway-side refusal's, not a
+// resolution failure: the session is never looked up.
+pub fn an_empty_or_oversized_message_is_not_sent_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "send-bounds", 1203)
+    let home = enter(port, operator_home(port, credential))
+
+    list.each(["   ", "", string.repeat("m", 16_385)], fn(text) {
+      let refused =
+        home_socket(port, home, [
+          #("x-send-session", session),
+          #("x-send-text", text),
+        ])
+      assert refused.status == 291
+      assert string.starts_with(refused.body, "NotAccepted")
+    })
+  })
+}
+
+// `thread_send_for` against the real registry: the page's standing is judged
+// before `send` is asked, so a page that may not send reaches nobody, and an
+// owner's page reaches `send` with exactly the session, the text and the delivery
+// it was given.
+pub fn a_send_is_asked_only_for_an_owners_operating_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let send = fn(session, text, delivery) {
+      process.send(asked, #(session, text, delivery))
+      thread_send.Delivered(thread_send.Queued)
+    }
+
+    assert ui_socket.thread_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Steer,
+      )
+      == thread_send.Delivered(thread_send.Queued)
+    assert process.receive(asked, 0)
+      == Ok(#("S1", "go on", session_operator.Steer))
+
+    // Each of an observer's ceiling, another principal's page and an ended page
+    // is `NotHeld`, and none reaches `send`.
+    let refused = thread_send.Refused(thread_send.NotHeld)
+    assert ui_socket.thread_send_for(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
+    assert ui_socket.thread_send_for(
+        ui_socket.Standing(..standing, principal: "someone-else"),
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
+    assert ui_socket.thread_send_for(
+        standing,
+        fn() { Error(Nil) },
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
+
+    // A revoked credential authenticates as nobody.
+    revoke(ready.state_root, credential)
+    assert ui_socket.thread_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// The task answers whether or not the send does: one that finishes is delivered
+// as it answered, and one that outlasts its deadline is delivered as not
+// accepted, so an outbox that says "Sending…" is always settled.
+pub fn a_send_that_outlasts_its_deadline_is_answered_test() {
+  let answers = process.new_subject()
+  ui_socket.thread_send_within(
+    fn() { thread_send.Delivered(thread_send.Admitted) },
+    2000,
+    fn(answer) { process.send(answers, answer) },
+  )
+  assert process.receive(answers, 5000)
+    == Ok(thread_send.Delivered(thread_send.Admitted))
+
+  ui_socket.thread_send_within(
+    fn() {
+      process.sleep(10_000)
+      thread_send.Delivered(thread_send.Admitted)
+    },
+    50,
+    fn(answer) { process.send(answers, answer) },
+  )
+  assert process.receive(answers, 5000)
+    == Ok(thread_send.Refused(thread_send.Unanswered))
 }
 
 // The steps of `create_for` against the real registry, one at a time, with a

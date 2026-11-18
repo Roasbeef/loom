@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:533-187`).
+Source: `handle` (`client/daemon/server.gleam:539-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -2667,7 +2667,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:8027`).
+   is `stale_approval`. Source: (`client/gateway.gleam:8033`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).

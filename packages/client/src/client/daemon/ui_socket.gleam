@@ -237,6 +237,7 @@ import lustre
 import lustre/server_component
 import mist
 import session_view/connection_event
+import session_view/operator
 import session_view/snapshot
 import session_view/text_hygiene
 import session_view/transcript_image
@@ -270,6 +271,7 @@ import web_view/remembered
 import web_view/renames
 import web_view/sessions
 import web_view/signins
+import web_view/thread_send
 import web_view/worktrees
 import weft
 import weft/poll
@@ -932,6 +934,28 @@ pub fn upgrade_home(
       },
     )
 
+  // The inbox's message field (protocol-change/118) is the owner's alone and
+  // is built as the creation is. Its form submits beneath `home.table_path`,
+  // which the owner's socket already admits, so no admission is added; the
+  // capability is what makes the field exist, and `thread_send_for` is what
+  // decides each press.
+  let thread_sending =
+    home_thread_send_capability(
+      attachment.principal,
+      ceiling,
+      fn(session, text, delivery, deliver) {
+        thread_send_task(
+          standing,
+          open,
+          message_to(attachment, gateway_of),
+          session,
+          text,
+          delivery,
+          deliver,
+        )
+      },
+    )
+
   // The model profiles the new-session forms offer (protocol-change/076) are the
   // owner's creation capability's own concern, so only a page that holds it is
   // told of them. The read is of the daemon's configuration file, made here in
@@ -1218,6 +1242,7 @@ pub fn upgrade_home(
           },
           rename,
           managing,
+          thread_sending,
           creating,
           profiles,
           models,
@@ -1473,7 +1498,10 @@ fn admit_live(
       sessions: fn(deliver) {
         listed_task(role, fn() { listed(registry, credential) }, deliver)
       },
-      activity: session_activity_for(role, attachment.activity),
+      activity: session_activity_for(
+        role,
+        server.states_of(attachment.activity),
+      ),
       open: fn(session) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, session) })
       },
@@ -1953,6 +1981,179 @@ pub fn home_create_capability(
   }
 }
 
+/// The capability to send a message to a session from the inbox on Home that a
+/// home page minted for `principal` with `ceiling` is handed: `ask` for the
+/// daemon's owner on a page minted to operate, and none for any other, so a
+/// member's home and an observer's draw no message field
+/// (protocol-change/118). It is built as `home_create_capability` is, and the
+/// daemon checks both facts again when the request runs (`thread_send_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_thread_send_capability(member, access.Operator, ask) == None
+/// ```
+@internal
+pub fn home_thread_send_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  ask: fn(String, String, operator.Delivery, fn(thread_send.Answer) -> Nil) ->
+    Nil,
+) -> Option(
+  fn(String, String, operator.Delivery, fn(thread_send.Answer) -> Nil) -> Nil,
+) {
+  // Only the owner at the operator's ceiling may send, as for a creation.
+  case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator -> Some(ask)
+    access.OwnerPrincipal, access.Observer
+    | access.MemberPrincipal, access.Operator
+    | access.MemberPrincipal, access.Observer
+    -> None
+  }
+}
+
+/// The longest a message to a session may take to be answered: the gateway's
+/// attachment waits up to five seconds and each of the two requests up to six,
+/// so a send that has not answered in twenty seconds is not going to.
+const thread_send_ms = 20_000
+
+/// Sends one message from a home page to a session its principal holds, or says
+/// why not (protocol-change/118). The page sends the session's identity, the
+/// text and a delivery, and nothing else: whose message it is, is the page's
+/// principal, which the daemon reads from the grant it holds and never from a
+/// frame.
+///
+/// Each step is the daemon's and is made afresh:
+///
+/// 0. The asking page must still be open (`open`), have an operator's ceiling,
+///    and its credential must still authenticate as the daemon's owner
+///    (`authorized_owner`). Any failure is `NotHeld`, so a page learns nothing
+///    else about its standing.
+/// 1. The text must hold something besides whitespace and fit the bound
+///    (`thread_send.sendable`), though the page already checked it.
+/// 2. `send` is the delivery, which resolves the session as the page's principal
+///    (`message_to`).
+///
+/// It blocks the calling process for as long as the gateway takes, so a page's
+/// component never calls it directly: `thread_send_task` runs it in a run of its
+/// own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.thread_send_for(standing, open, send, session, "go on", operator.Prompt)
+/// ```
+@internal
+pub fn thread_send_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  send: fn(String, String, operator.Delivery) -> thread_send.Answer,
+  session: String,
+  text: String,
+  delivery: operator.Delivery,
+) -> thread_send.Answer {
+  case authorized_owner(standing, open), thread_send.sendable(text) {
+    Error(_), _ -> thread_send.Refused(thread_send.NotHeld)
+    Ok(_), False ->
+      thread_send.Refused(thread_send.NotAccepted(
+        "the message is empty or too long",
+      ))
+    Ok(_), True -> send(session, text, delivery)
+  }
+}
+
+/// Runs `thread_send_for` in a weft run of its own that returns at once, and
+/// delivers its answer as the run's last act, so the page's runtime never waits
+/// on the gateway. The run is linked to the page's runtime as `manage_task`'s
+/// is: a page that goes away cancels it, and a message the gateway has already
+/// taken is the gateway's.
+///
+/// The send itself runs under a deadline (`thread_send_ms`) inside that run, and
+/// the answer is delivered whether the send finished or not, so an outbox that
+/// says "Sending…" is always settled. A send that missed its deadline is
+/// `NotAccepted`, and the message may or may not have reached the gateway: the
+/// words say only that the session did not accept it in time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.thread_send_task(standing, open, send, session, "go on", operator.Prompt, deliver)
+/// ```
+@internal
+pub fn thread_send_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  send: fn(String, String, operator.Delivery) -> thread_send.Answer,
+  session: String,
+  text: String,
+  delivery: operator.Delivery,
+  deliver: fn(thread_send.Answer) -> Nil,
+) -> Nil {
+  thread_send_within(
+    fn() { thread_send_for(standing, open, send, session, text, delivery) },
+    thread_send_ms,
+    fn(answer) {
+      log_not_accepted(session, answer)
+      deliver(answer)
+    },
+  )
+}
+
+/// Writes the reason of a refusal the page will not be shown to the daemon's
+/// log, as `first_message_sent` does for a first message that did not arrive.
+/// The page is told fixed words only.
+fn log_not_accepted(session: String, answer: thread_send.Answer) -> Nil {
+  case answer {
+    thread_send.Refused(thread_send.NotAccepted(reason:)) ->
+      log.warn(
+        log.erlang(threshold: level.Info),
+        "daemon.thread_send_not_accepted",
+        [field.ident("session", session), field.text("reason", reason)],
+      )
+    thread_send.Delivered(_)
+    | thread_send.Refused(thread_send.NotHeld)
+    | thread_send.Refused(thread_send.NotResident)
+    | thread_send.Refused(thread_send.QueueFull)
+    | thread_send.Refused(thread_send.Unanswered) -> Nil
+  }
+}
+
+/// `thread_send_task` with the deadline as an argument and the send as a thunk,
+/// so a test can give a send that never answers and a short deadline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.thread_send_within(fn() { answer }, 20_000, deliver)
+/// ```
+@internal
+pub fn thread_send_within(
+  attempt: fn() -> thread_send.Answer,
+  within: Int,
+  deliver: fn(thread_send.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        let outcomes =
+          weft.new([fn() { Ok(attempt()) }])
+          |> weft.deadline(within)
+          |> weft.start
+
+        // A deadline kills the send, so the answer is delivered either way:
+        // an unanswered send says so, because the gateway may have taken it.
+        case outcomes {
+          [weft.Completed(value: answer, ..)] -> deliver(answer)
+          _ -> deliver(thread_send.Refused(thread_send.Unanswered))
+        }
+
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
 /// The capability to read and edit the owner's recent folders that a home page
 /// minted for `principal` with `ceiling` is handed (protocol-change/074): `ask`
 /// for the daemon's owner on a page minted to operate, and none for any other,
@@ -2203,6 +2404,9 @@ fn admit_home(
   resuming: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
   rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
   managing: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
+  thread_sending: Option(
+    fn(String, String, operator.Delivery, fn(thread_send.Answer) -> Nil) -> Nil,
+  ),
   creating: Option(
     fn(
       creations.Place,
@@ -2262,6 +2466,7 @@ fn admit_home(
       activity: home_activity(attachment.activity),
       rename:,
       manage: managing,
+      thread_send: thread_sending,
       create: creating,
       profiles:,
       models:,
@@ -4471,7 +4676,8 @@ pub fn forget_for(
 /// once, so the page's runtime never waits for the sessions to answer;
 /// `deliver` is called, from that run, with what `ask` returned.
 ///
-/// `ask` is the daemon's `sessions.activity` read (`server.activity_states`),
+/// `ask` is the daemon's `sessions.activity` read (`server.home_activity`, whose
+/// answers are reports, or `server.session_activity`, whose are states),
 /// which asks every named session concurrently under one deadline of its own
 /// and leaves out any that did not answer, so the run ends within that
 /// deadline. The run is linked to the calling process, which is the page's
@@ -4487,9 +4693,9 @@ pub fn forget_for(
 /// ```
 @internal
 pub fn activity_task(
-  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ask: fn(List(String)) -> List(#(String, answer)),
   ids: List(String),
-  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+  deliver: fn(List(#(String, answer))) -> Nil,
 ) -> Nil {
   read_task(deliver, fn() { ask(ids) })
 }
@@ -7807,130 +8013,207 @@ fn authorize_for(
 }
 
 /// What the home sends a new session as its first message: the daemon's own path
-/// for the owner's page, made from the page's attachment. It resolves the session
-/// as the page's principal (the membership and its role, the same read a page's
-/// ticket makes), finds the resident incarnation and its gateway, and sends the text
-/// as a prompt to the main strand under a binding with the page's authority capped
-/// at Operator, as every page's is.
+/// for the owner's page, which is `message_to` with a `Prompt`. A refusal is
+/// worded for the daemon's log, since the creation keeps the session whether or
+/// not the message arrived (`first_message_sent`).
 fn first_message_for(
   attachment: server.HomeAttachment(instance),
   gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
 ) -> fn(String, String) -> Result(Nil, String) {
+  let send = message_to(attachment, gateway_of)
+
   fn(session, text) {
-    use #(principal, authority) <- result.try(
-      manager.session_authority(attachment.registry, attachment.digest, session)
-      |> result.replace_error("the session is not held"),
-    )
-    use view <- result.try(
-      manager.get(attachment.registry, session)
-      |> result.replace_error("the session is not available"),
-    )
-
-    // This branch resolves view status before the operation continues.
-    use incarnation <- result.try(case view.status {
-      manager.Resident(incarnation) -> Ok(incarnation)
-      _ -> Error("the session is not running")
-    })
-
-    use instance <- result.try(
-      manager.resolve_incarnation(attachment.registry, session, incarnation)
-      |> result.replace_error("the session is not available"),
-    )
-    use hub <- result.try(
-      gateway_of(instance) |> result.replace_error("the session has no gateway"),
-    )
-    let binding =
-      gateway.Binding(
-        session_id: session,
-        epoch: attachment.epoch,
-        incarnation:,
-        connection_id: "web-first-" <> hex_entropy(8),
-        principal:,
-        authority: ui_relay.capped(authority, access.Operator),
-        digest: attachment.digest,
-        signin: None,
-        door: gateway.PageDoor,
-      )
-
-    // The gateway compares what the check answers with the binding's authority
-    // on every request, so the check is capped as the binding is, as a page's
-    // relay caps its own.
-    let check =
-      authorize_for(
-        attachment.registry,
-        attachment.epoch,
-        session,
-        incarnation,
-        attachment.digest,
-      )
-    first_prompt(
-      hub,
-      binding,
-      fn() {
-        use #(who, held) <- result.map(check())
-        #(who, ui_relay.capped(held, access.Operator))
-      },
-      text,
-    )
+    case send(session, text, operator.Prompt) {
+      thread_send.Delivered(_) -> Ok(Nil)
+      thread_send.Refused(thread_send.NotHeld) ->
+        Error("the session is not held")
+      thread_send.Refused(thread_send.NotResident) ->
+        Error("the session is not running")
+      thread_send.Refused(thread_send.NotAccepted(reason:)) -> Error(reason)
+      thread_send.Refused(thread_send.QueueFull) ->
+        Error("the session's queue is full")
+      thread_send.Refused(thread_send.Unanswered) ->
+        Error("the session did not answer in time")
+    }
   }
 }
 
-/// Sends `text` to a gateway as a prompt to the main strand over an attachment of
-/// its own, and detaches. It is the one frame a session page's composer sends, so
-/// the gateway does what it does for that page: the text becomes a user message,
-/// attributed to the binding's principal, and a run starts or the message queues.
-/// The answer is `Ok` only for the gateway's own acceptance of the message
-/// (`admitted` or `queued`); a refusal, an attachment the gateway refused or a
-/// reply that did not come is the words saying so, and the caller keeps the session.
+/// What the home sends a session it holds: a `Prompt` or a `Steer` on the main
+/// strand, made from the page's attachment. It serves the first message of a
+/// session the page has just created and every message the inbox sends to a
+/// session that already exists, so a message typed on Home takes one path
+/// whichever it is.
 ///
-/// The text is never interpreted here: it is a JSON string inside the frame, so it
-/// cannot name another command.
+/// It resolves the session as the page's principal (the membership and its
+/// role, the same read a page's ticket makes), finds the resident incarnation
+/// and its gateway, and sends under a binding whose authority is the held
+/// authority capped at Operator, as every page's is. A session the principal
+/// does not hold is `NotHeld`, and a saved one, or one with no gateway, is
+/// `NotResident`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.first_prompt(hub, binding, check, "fix the retry test")
+/// // ui_socket.message_to(attachment, gateway_of)("01HX", "go on", operator.Prompt)
 /// ```
 @internal
-pub fn first_prompt(
+pub fn message_to(
+  attachment: server.HomeAttachment(instance),
+  gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
+) -> fn(String, String, operator.Delivery) -> thread_send.Answer {
+  // The page keeps this closure for as long as it is open, so it holds the
+  // three values it reads and not the whole attachment.
+  let registry = attachment.registry
+  let digest = attachment.digest
+  let epoch = attachment.epoch
+
+  fn(session, text, delivery) {
+    let sent = {
+      use #(principal, authority) <- result.try(
+        manager.session_authority(registry, digest, session)
+        |> result.replace_error(thread_send.NotHeld),
+      )
+      use view <- result.try(
+        manager.get(registry, session)
+        |> result.replace_error(thread_send.NotResident),
+      )
+
+      // Only a resident incarnation has a gateway to send to.
+      use incarnation <- result.try(case view.status {
+        manager.Resident(incarnation) -> Ok(incarnation)
+        manager.Reserved
+        | manager.FailedStart(..)
+        | manager.Saved
+        | manager.Opening(..)
+        | manager.Stopping(..)
+        | manager.RecoveryBlocked(..) -> Error(thread_send.NotResident)
+      })
+
+      use instance <- result.try(
+        manager.resolve_incarnation(registry, session, incarnation)
+        |> result.replace_error(thread_send.NotResident),
+      )
+      use hub <- result.map(
+        gateway_of(instance) |> result.replace_error(thread_send.NotResident),
+      )
+      let binding =
+        gateway.Binding(
+          session_id: session,
+          epoch:,
+          incarnation:,
+          connection_id: "web-send-" <> hex_entropy(8),
+          principal:,
+          authority: ui_relay.capped(authority, access.Operator),
+          digest:,
+          signin: None,
+          door: gateway.PageDoor,
+        )
+
+      // The gateway compares what the check answers with the binding's
+      // authority on every request, so the check is capped as the binding is,
+      // as a page's relay caps its own.
+      let check = authorize_for(registry, epoch, session, incarnation, digest)
+      send_message(
+        hub,
+        binding,
+        fn() {
+          use #(who, held) <- result.map(check())
+          #(who, ui_relay.capped(held, access.Operator))
+        },
+        text,
+        delivery,
+      )
+    }
+
+    // A refusal while resolving the session is an answer like any other, so
+    // the caller never has to tell a failed lookup from a failed send.
+    case sent {
+      Ok(answer) -> answer
+      Error(refusal) -> thread_send.Refused(refusal)
+    }
+  }
+}
+
+/// Sends `text` to a gateway as a prompt or a steer to the main strand over an
+/// attachment of its own, and detaches. It is the one frame a session page's
+/// composer sends for each delivery, so the gateway does what it does for that
+/// page: the text becomes a user message attributed to the binding's
+/// principal, and a run starts, or the message is held (a prompt after the
+/// turn, a steer first, which also stops the turn).
+///
+/// The answer is `Delivered` only for the gateway's own acceptance of the
+/// message: `admitted` is `Admitted` and `queued` is `Queued`. A full queue is
+/// the gateway's `conflict` carrying `gateway.queue_full_message`, and is
+/// `QueueFull`. Any other refusal, an attachment the gateway refused or a reply
+/// that did not come is `NotAccepted` with the words that say which, for the
+/// log.
+///
+/// The text is never interpreted here: it is a JSON string inside the frame, so
+/// it cannot name another command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.send_message(hub, binding, check, "fix the retry test", operator.Prompt)
+/// ```
+@internal
+pub fn send_message(
   hub: gateway.Gateway,
   binding: gateway.Binding,
   check: fn() -> Result(#(access.Principal, access.Authority), String),
   text: String,
-) -> Result(Nil, String) {
-  use connection <- result.try(gateway.attach_authenticated(
-    hub,
-    binding,
-    check,
-    fn(_) { Nil },
-    fn() { Nil },
-    fn() { Nil },
-    process.self(),
-  ))
-
-  // The gateway answers a mutation only to an attachment that has subscribed, as
-  // a page's lane does before it sends anything. The snapshot the subscribe
-  // starts goes to the sink, which drops it.
-  let reply = {
-    use _ <- result.try(gateway.connection_request(
-      connection,
-      session_protocol.encode_command(session_protocol.CommandEnvelope(
-        id: 1,
-        command: session_protocol.Subscribe(binding.session_id, None),
-      )),
-    ))
-    gateway.connection_request(
-      connection,
-      session_protocol.encode_command(session_protocol.CommandEnvelope(
-        id: 2,
-        command: session_protocol.Prompt(strand: "main", text:),
-      )),
+  delivery: operator.Delivery,
+) -> thread_send.Answer {
+  let attached =
+    gateway.attach_authenticated(
+      hub,
+      binding,
+      check,
+      fn(_) { Nil },
+      fn() { Nil },
+      fn() { Nil },
+      process.self(),
     )
+
+  // A gateway that would not attach the page has refused it and nothing was
+  // sent; only an attached page goes on to subscribe and send.
+  case attached {
+    Error(reason) -> thread_send.Refused(thread_send.NotAccepted(reason))
+    Ok(connection) -> {
+      // The gateway answers a mutation only to an attachment that has
+      // subscribed, as a page's lane does before it sends anything. The
+      // snapshot the subscribe starts goes to the sink, which drops it.
+      let reply = {
+        use _ <- result.try(gateway.connection_request(
+          connection,
+          session_protocol.encode_command(session_protocol.CommandEnvelope(
+            id: 1,
+            command: session_protocol.Subscribe(binding.session_id, None),
+          )),
+        ))
+        gateway.connection_request(
+          connection,
+          session_protocol.encode_command(
+            session_protocol.CommandEnvelope(id: 2, command: case delivery {
+              operator.Prompt -> session_protocol.Prompt(strand: "main", text:)
+              operator.Steer -> session_protocol.Steer(strand: "main", text:)
+            }),
+          ),
+        )
+      }
+      gateway.connection_detach(connection)
+
+      // The detach above is made before the reply is read, so no path leaks it.
+      case reply {
+        Ok(frame) -> answer_of(frame)
+        Error(reason) -> thread_send.Refused(thread_send.NotAccepted(reason))
+      }
+    }
   }
-  gateway.connection_detach(connection)
+}
 
-  use frame <- result.try(reply)
-
+/// The answer a gateway's reply frame stands for.
+fn answer_of(frame: String) -> thread_send.Answer {
   // This branch resolves session_protocol decode_event frame before the operation continues.
   case session_protocol.decode_event(frame) {
     Ok(session_protocol.EventEnvelope(
@@ -7939,10 +8222,29 @@ pub fn first_prompt(
     )) ->
       // This branch resolves list key_find fields status before the operation continues.
       case list.key_find(fields, "status") {
-        Ok(wire.String("admitted")) | Ok(wire.String("queued")) -> Ok(Nil)
-        _ -> Error("the session did not accept the message")
+        Ok(wire.String("admitted")) ->
+          thread_send.Delivered(thread_send.Admitted)
+        Ok(wire.String("queued")) -> thread_send.Delivered(thread_send.Queued)
+        _ -> unaccepted()
       }
 
-    _ -> Error("the session did not accept the message")
+    // The one conflict that means the strand's queue is at its bound. Every
+    // other refusal is the gateway declining for a reason of its own.
+    Ok(session_protocol.EventEnvelope(
+      event: session_protocol.ErrorEvent(code:, message:, ..),
+      ..,
+    ))
+      if code == session_protocol.code_conflict
+      && message == gateway.queue_full_message
+    -> thread_send.Refused(thread_send.QueueFull)
+
+    Ok(_) | Error(_) -> unaccepted()
   }
+}
+
+/// The refusal for a reply that was not an acceptance and not a full queue.
+fn unaccepted() -> thread_send.Answer {
+  thread_send.Refused(thread_send.NotAccepted(
+    "the session did not accept the message",
+  ))
 }

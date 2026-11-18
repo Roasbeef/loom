@@ -191,6 +191,7 @@ fn start_with(projects: option.Option(home.Projects)) -> home.Start {
     activity: fn(_, _) { Nil },
     rename: None,
     manage: None,
+    thread_send: None,
     create: None,
     folders: None,
     elsewhere: None,

@@ -4473,3 +4473,123 @@ origin's words and its press sets `__Secure-loom_ui` and
 `__Secure-loom_login` with `Secure`. `client/ui_http_test` covers the routes
 and `posted_ticket`; `web_view/page_test` covers the document and its
 escaping. A real drive from a phone through Tailscale Serve has not been run.
+
+## Addendum: the attention inbox on Home (2026-11-18)
+
+Phase 0 of the attention inbox (`docs/design-notes/attention-inbox/README.md`)
+adds a region to the owner's Home page. The page's wire, the home socket's
+admission rules and the page's capabilities are unchanged, except for the
+thread-send capability that
+[protocol-change/118](118-inbox-thread-send.md) adds.
+
+### What the page adds
+
+The page adds an inbox region: a list of threads, grouped by what each
+needs, and a reading pane for the selected thread. The region is drawn
+inside Home's existing table region, so it stays beneath `home.table_path`
+(`web_view/home.gleam:345`).
+
+The landing rule is as follows. The inbox replaces the new-session form only
+when at least one session is waiting or running. When nothing waits and
+nothing runs, the form stays, as it does on a first run. A "New session"
+control is always available.
+
+### The click paths
+
+Selecting a thread is a click beneath `home.table_path`. `home_accepts`
+(`client/daemon/ui_socket.gleam:2187`) admits a click there for every home
+through `home_row_path` (`client/daemon/ui_socket.gleam:2312`), whether the
+home is an owner's, a member's or an observer's.
+
+The message field's submit is beneath `home.table_path`. `home_owner_accepts`
+(`client/daemon/ui_socket.gleam:2215`) admits a submit there for the owner's
+operating home (`Submitting`). The socket of any other home does not admit
+it: a member's home and an observer-ceiling home use `home_accepts`, which
+admits a submit only beneath `home.signins_path`.
+
+No admission rule changes. An observer's socket admits no submit, and a
+submit anywhere outside `home.table_path` and `home.signins_path` is still
+dropped, as is a batch that contains one.
+
+### What the page shows
+
+For each running session the page shows what the daemon's `sessions.activity`
+read (protocol-change/050) returns: the session's last finished turn and the
+glances of its strands. The daemon reduced that row to one state word before.
+Now the home's read hands the page one `sessions.Report` for each session that
+answered: the state, the `last_message` and the `glances`
+(`activity_reports` and `report_of` in `client/daemon/server.gleam`, reached
+through `home_activity`). The row's other fields (the model, the working
+strands, the approval count beyond telling a failed run from an approval) still
+do not leave the daemon, and the session page's sidebar and the admin page's
+dots still receive the state word alone (`activity_states`). The read stays
+within the bounds it already has: 2,000 ms for the slowest resident
+(`activity_deadline_ms`) and 2,400 bytes for a row (`activity_row_bytes`).
+A `last_message` that is not a string is no message, and a glance that is not
+an object of three strings is dropped alone, so a malformed field never costs a
+session its state.
+
+The text in the row was produced by a session. It is untrusted. The page
+draws it as text nodes only, as the rest of this document requires. The page
+does not claim that an idle session's last message is a question. It shows
+the message and says nothing about its intent.
+
+### What the page refuses
+
+- The page draws no approval content on Home and no control that answers an
+  approval. A thread whose session has a pending approval says that an
+  approval is pending, and offers a link to the session's own page, whose
+  dock is where an approval is decided.
+- The page draws no ages. The activity row carries no time, so any age shown
+  in phase 0 would be invented.
+- Each count says what it reads. A count of running sessions counts running
+  sessions only. A count of saved sessions says "saved" and does not claim
+  that they were checked.
+
+### What was considered
+
+- **Reading each session's lane for the thread.** That opens a gateway
+  attachment for every session on every refresh. The activity read is one
+  bounded request that the daemon already makes, and a saved session is left
+  out of it without being opened.
+- **A new top-level region outside the table.** That needs a new path
+  constant and a new rule in `home_event`
+  (`client/daemon/ui_socket.gleam:2254`). A region beneath
+  `home.table_path` needs neither.
+
+### Cost
+
+One new view region and its tests. One field added to what the home passes
+from the activity read to its component. No new route, no new frame and no
+new admitted path. The thread-send capability is costed in
+[protocol-change/118](118-inbox-thread-send.md).
+
+### Verification
+
+`client/test/client/ui_socket_test.gleam` pins the admission set:
+
+- `the_home_socket_admits_only_a_click_on_a_row_test` (`:341`) pins that a
+  member's home admits clicks on rows and nothing else.
+- `the_home_socket_admits_a_rename_submit_only_for_an_owner_test` (`:1096`)
+  pins that a submit beneath `home.table_path` is admitted for the owner's
+  home and dropped for every other home, and that a submit outside the table
+  is dropped for all.
+- `only_an_owners_operating_home_may_create_test` (`:1177`) pins the
+  capability's `Some` and `None` cases, which the thread-send capability
+  repeats.
+- `every_home_socket_admits_a_submit_beneath_the_account_panel_test`
+  (`:1658`) pins that the only submit a non-owner home admits is beneath
+  `home.signins_path`.
+
+The message field adds two more (protocol-change/118):
+
+- `only_an_owners_operating_home_is_handed_the_thread_send_capability_test`
+  (`:1194`) pins the capability's `Some` for the owner at the Operator ceiling
+  and `None` for the rest.
+- `the_inbox_message_form_needs_no_new_admission_test` (`:1214`) pins that a
+  browsing home refuses a submit beneath `home.table_path`, that a submitting
+  home accepts it, that the "Inbox" control is a click every home admits, and
+  that neither is admitted outside the table.
+
+The inbox's own view tests are in `web_view/test/inbox_view_test.gleam`. A real
+drive of the inbox in a browser has not been run.

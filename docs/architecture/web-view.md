@@ -274,12 +274,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:572`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:578`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7623`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7833`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1066,10 +1066,59 @@ What each running session is doing is a second read, started by every list that
 answers: `Start.activity` hands the ids (at most 24) to
 `ui_socket.activity_task`, a weft run linked to the runtime that calls
 `server.home_activity`, which is the control command's `sessions.activity`
-(protocol-change/050) reduced to one state word per session. The runtime never
-waits for it, the answer comes back as `Observed`, and the read covers only
-the ids the page's credential holds, re-derived in the registry at each read
-(050's addendum on members).
+(protocol-change/050) as one `sessions.Report` per session: the activity, the
+final text of the main strand's last finished run (`last_message`, clipped to 280
+bytes) and the strands' `Glance`s. The runtime never waits for it, the answer
+comes back as `Observed`, and the read covers only the ids the page's credential
+holds, re-derived in the registry at each read (050's addendum on members). The
+session page's sidebar and the admin page's dots stay on the narrow state word
+(`server.session_activity`), so the message and the glances reach the home page
+alone. Every field a report holds that a session wrote is untrusted model text,
+and the home draws it only as text nodes.
+
+#### The attention inbox
+
+The home's centre lands on an inbox when something waits or runs
+(`web_view/inbox_rule.landing`): a grouped thread list beside a reading pane
+(`view/inbox`, drawn into the centre's body, so it sits at `home.table_path`).
+The groups are `Needs you` (an approval is pending, or the last run failed),
+`Waiting` (idle with a last message, phase 0's stand-in for asks and review: the
+page words it as the last thing said and never claims a question), `Updates`
+(working) and `Quiet` (idle and silent, folded to one line of names). A thread
+is ordered by session name, because phase 0 has no times and prints no age. The
+headline says what it read: "2 need you · in 6 running sessions; saved sessions
+not checked". The reading pane shows the kind's word, the session and its
+workspace, the last message under the label "The agent's last finished turn,
+untrusted text", and the strands' glances. A pending approval is named and
+sent to the session's own page; nothing of the approval, and no deciding
+control, is drawn on Home.
+
+The landing yields to the person: `Model.centre_choice` becomes `Chose` on
+"New session", the list link or any composer control, and the inbox never
+overrides it again. The first activity read alone decides the landing; a page
+that landed on the composer keeps it when a later read finds something waiting
+(it offers an "Inbox" control), and the thread shown by default stays shown. When
+nothing waits or runs the page lands on the composer as before, and an observer's page lands on the same inbox read-only. Pressing a
+thread is `InboxOpened`; "Open session" and "Decide on the session's page" send
+`Opening`, the message a list row sends, and every handler is a click beneath
+`home.table_path`, which `ui_socket.home_accepts` already admits, so the inbox
+adds no admission rule and no frame.
+
+Each thread of the owner's operating home ends in a message field
+(protocol-change/118): one box and the buttons the session's state offers (Send
+for idle or failed, Queue and Steer for working, Send with a note that a message
+starts a new turn and does not decide it for a pending approval, since the
+approval parks and the strand is idle). The press is a submit beneath
+`home.table_path`, which `home_owner_accepts` admits for the owner's home and
+`home_accepts` does not, so a member's home and an observer's draw no field and
+the socket would drop the event. The daemon re-derives the page's standing and
+the 16,384-byte bound at the press, resolves the session as the page's principal,
+and sends a `Prompt` or a `Steer` on strand `main` as a message typed on the
+session's own page. The outbox says nothing before a send, then "Sending…", "Delivered to
+(session) · admitted", "· queued" or "· steering: …", or one of five fixed refusals; none
+carries text from the session or the gateway. Once the person has chosen the
+list or the composer, an "Inbox" control returns to the landing centre while the
+landing rule still says inbox.
 
 ### Navigation: home to session and back
 

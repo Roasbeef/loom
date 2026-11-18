@@ -1513,6 +1513,20 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   `Start.rename`, and a home that holds either gets `home_owner_accepts` (a
   `submit` beneath `home.table_path`, plus the clicks `home_accepts` takes), one
   rule for both forms; every other home gets `home_accepts`.
+  The owner's home also messages a session it holds from the inbox
+  (protocol-change/118). `home_thread_send_capability` is built as the creation
+  capability is and passed as `Start.thread_send`; `thread_send_for` re-derives
+  the page (`authorized_owner`) and the bound (`thread_send.sendable`) at the
+  press, and `thread_send_task` runs it in a weft run with a 20 s inner
+  deadline, delivering `NotAccepted` if the send misses it. The send is
+  `message_to(attachment, gateway_of)`: `manager.session_authority` (`NotHeld`),
+  a resident incarnation and its gateway (`NotResident`), a binding capped at
+  Operator, then `send_message`, the old `first_prompt` generalised to `Prompt`
+  or `Steer` on strand `main`, which answers a closed `thread_send.Answer`
+  (`admitted` is `Admitted`, `queued` is `Queued`, the `conflict` carrying
+  `gateway.queue_full_message` is `QueueFull`, anything else `NotAccepted`).
+  A new session's first message from the home composer goes through the same
+  function with `Prompt` (`first_message_for` wraps it).
   `create_for(standing, tickets, open, create, folder, place, name, sharing,
   within:)` re-derives the page from the grant: `authorized_owner` (open, the
   epoch check, Operator ceiling, the credential authenticates as the page's
