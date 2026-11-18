@@ -650,8 +650,9 @@ pub type Transport(socket) {
   Transport(
     /// Starts opening the connection and returns at once. Frames go to
     /// `inbox` as `connection_event.Message`s, and the outcome of the open
-    /// is sent to `opened`, once: the handle the lane writes to, or why the
-    /// connection was refused. It must not block, because it runs inside
+    /// is sent to `opened`: first the handle the lane writes to, or why the
+    /// connection was refused. A relayed transport may later send one more
+    /// refusal, when a held page's standing ends. It must not block, because it runs inside
     /// the component's start, which Lustre bounds at one second.
     connect: fn(
       Subject(connection_event.Message),
@@ -1283,7 +1284,10 @@ pub type Msg(socket) {
   /// The transport opened.
   Opened(socket: socket)
 
-  /// The transport refused to open.
+  /// The transport refused to open, or, for a relayed page held through an
+  /// outage, found that the page's own standing ended afterwards. The status
+  /// becomes that ending whatever it was, which is how a held page that has
+  /// already drawn a waiting notice learns that it is over.
   Refused(reason: String)
 
   /// The selector over the transport's two subjects was handed to the runtime,
@@ -1712,8 +1716,9 @@ pub fn update(
       |> peers_due(at)
     }
 
-    // The relay could not attach. Whatever the gateway said is not drawn:
-    // a reason that names no ending stands for a session that is not open.
+    // The relay could not attach, or a held page's standing ended after it
+    // had attached. Whatever the gateway said is not drawn: a reason that
+    // names no ending stands for a session that is not open.
     Refused(reason:) -> #(
       Model(
         ..model,

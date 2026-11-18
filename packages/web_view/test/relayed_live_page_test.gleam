@@ -324,6 +324,25 @@ pub fn a_relayed_page_keeps_its_content_when_its_link_drops_test() {
   assert !string.contains(html, ended.content_unavailable_words)
 }
 
+// A held page whose own standing ends while it waits is told so on the
+// transport's open subject, since its lane has failed and ignores a later
+// close. It keeps the rows it drew and replaces the waiting notice with the
+// ending, which is final, so the socket's close is the last the browser sees.
+pub fn a_held_page_whose_standing_ended_draws_that_ending_test() {
+  let model =
+    page_fixture.run(dropped(), operator_page.update, [
+      operator_page.Observed(
+        component.Refused(ending.reason(ending.AccessRevoked)),
+      ),
+    ])
+  assert component.status(model) == component.Ended(ending.AccessRevoked)
+
+  let html = drawn(model)
+  assert string.contains(html, ending.headline(ending.AccessRevoked))
+  assert !string.contains(html, ending.headline(ending.ConnectionFailed))
+  assert string.contains(html, "question 1")
+}
+
 // Input that cannot reach the box is refused with the draft kept, not accepted
 // into a lane that is gone.
 pub fn a_relayed_page_whose_link_dropped_refuses_input_test() {

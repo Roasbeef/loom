@@ -778,7 +778,8 @@ fn websocket(
             }
 
           // The gateway ended the page. The relay has already told the
-          // component, which reduces the close as it arrives and sends the
+          // component or, for a held page, the wait has (`ui_wait.announced`),
+          // and the component reduces the close as it arrives and sends the
           // patch that draws the ended state; closing now could drop that
           // patch, which reaches this socket through the component rather
           // than from the relay. `ended_grace_ms` covers the component's
@@ -1465,8 +1466,18 @@ fn admit_live(
   let transport =
     component.Transport(
       connect: fn(inbox, opened) {
+        // A held page's component has already drawn the ending that held it,
+        // and a lane that has failed ignores a later close, so the wait cannot
+        // tell the component through `inbox`. `opened` is the one subject the
+        // component reads for the whole life of the page, and a refusal sent
+        // on it replaces the status, so the ending the wait finds is told
+        // there before the socket closes (`ui_wait.announced`).
+        let held =
+          ui_wait.announced(awaiting, fn(standing) {
+            process.send(opened, Error(ending.reason(standing)))
+          })
         connect_feed(relay, target, reach, still_open, inbox, opened, fn(why) {
-          report_ending(signals, why, lead, awaiting)
+          report_ending(signals, why, lead, held)
         })
       },
       transmit: ui_feed.transmit,

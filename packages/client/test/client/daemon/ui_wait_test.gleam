@@ -144,3 +144,38 @@ pub fn a_page_refused_as_a_wait_pauses_before_it_asks_test() {
   let assert Ok(_) = process.receive(asked, patience_ms) as "the ask"
   let assert Ok(Nil) = process.receive(done, patience_ms) as "the close"
 }
+
+// A page whose standing ended while it waited is told the ending before the
+// wait reports, because the report closes the socket for good. The probe's
+// answers are not told, since they say nothing the page's notice lacks.
+pub fn a_page_is_told_the_standing_that_ended_its_wait_test() {
+  let told = process.new_subject()
+  let tell = fn(why) { process.send(told, why) }
+
+  let revoked =
+    ui_wait.announced(fn() { ui_wait.Standing(ending.AccessRevoked) }, tell)
+  assert revoked() == ui_wait.Standing(ending.AccessRevoked)
+  assert process.receive(told, 0) == Ok(ending.AccessRevoked)
+
+  let silent = ui_wait.announced(fn() { ui_wait.Silent }, tell)
+  assert silent() == ui_wait.Silent
+  let answering = ui_wait.announced(fn() { ui_wait.Answering }, tell)
+  assert answering() == ui_wait.Answering
+  assert process.receive(told, 0) == Error(Nil)
+}
+
+// The wait tells the page before it reports, since the report is what closes
+// the socket. Both go to one subject from the same run, so the order holds.
+pub fn the_page_is_told_before_the_wait_reports_test() {
+  let order = process.new_subject()
+  let awaiting =
+    ui_wait.announced(fn() { ui_wait.Standing(ending.AccessRevoked) }, fn(_) {
+      process.send(order, "told")
+    })
+  ui_wait.start(short(), ui_wait.AskAtOnce, awaiting, fn(_) {
+    process.send(order, "done")
+  })
+
+  assert process.receive(order, patience_ms) == Ok("told")
+  assert process.receive(order, patience_ms) == Ok("done")
+}

@@ -33,11 +33,13 @@
 ////
 //// ## Flow
 ////
-//// `start` → `checked` → `attempt` → `reach_of`
+//// `start` → `checked` → `announced` → `attempt` → `reach_of`
 ////
 //// 1. `start` runs the polling loop in a weft run and reports the end of
 ////    the wait once.
-//// 2. `checked` puts the page's own standing before the question.
+//// 2. `checked` puts the page's own standing before the question, and
+////    `announced` tells the page the ending when the standing is what ended
+////    the wait.
 //// 3. `attempt` turns one answer of the question into the loop's step, and
 ////    `reach_of` words a relay call's result as that answer.
 
@@ -136,6 +138,40 @@ pub fn checked(
   case open() {
     Error(why) -> Standing(why)
     Ok(Nil) -> probe()
+  }
+}
+
+/// The same question, with the page told when its own standing is what ended
+/// the wait. `told` is called with the ending before the answer is returned, so
+/// whatever it hands the page is in flight before the socket is asked to close.
+///
+/// A page that is held has already drawn the ending that held it, and a close
+/// with a final code ends the browser's reconnecting, so a page whose standing
+/// ended while it waited would otherwise stay on the notice it had, with no
+/// way to learn that it is over.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let awaiting =
+///   ui_wait.announced(fn() { ui_wait.Standing(ending.PageEnded) }, fn(_) { Nil })
+/// assert awaiting() == ui_wait.Standing(ending.PageEnded)
+/// ```
+pub fn announced(
+  awaiting: fn() -> Reach,
+  told: fn(Ending) -> Nil,
+) -> fn() -> Reach {
+  fn() {
+    let reach = awaiting()
+
+    // Only a standing that ended has an ending to tell. An answer or silence
+    // is about the box, and the page's notice already says what it knows.
+    case reach {
+      Standing(why) -> told(why)
+      Answering | Silent -> Nil
+    }
+
+    reach
   }
 }
 
