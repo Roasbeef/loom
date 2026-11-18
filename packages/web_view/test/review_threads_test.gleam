@@ -235,6 +235,7 @@ fn start_for(
         deliver(Ok(approval_evidence.Evidence(count: 0, items: [])))
       },
       review:,
+      review_pause_ms: 5,
       act:,
     )),
     create: None,
@@ -493,6 +494,10 @@ pub fn a_refused_close_sends_no_prompt_test() {
   let html = drawn(model)
   assert string.contains(html, find_id <> " (dismissed): That find changed.")
   assert string.contains(html, "Nothing was sent to the agent.")
+
+  // The refused find's revision was dropped and read again at once, so the
+  // find offers its form and is not left waiting for the next refresh.
+  assert !string.contains(html, "Reading the find…")
 }
 
 // An oversized review is refused on the page, with nothing sent or closed.
@@ -585,7 +590,7 @@ fn review_stage_verdict() -> review_stage_rule.Verdict {
   review_stage_rule.RequestChanges
 }
 
-// A page that is staged says what opening another thread discards, with the
+// A page that is staged says what opening another review discards, with the
 // session's name as text.
 pub fn the_outbox_says_what_opening_another_thread_discards_test() {
   let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
@@ -594,13 +599,13 @@ pub fn the_outbox_says_what_opening_another_thread_discards_test() {
   let staged = run(model, home.ReviewVerdictChosen(review_stage_verdict()))
   assert string.contains(
     drawn(staged),
-    "Staged items for web ui are discarded if you open another thread.",
+    "Staged items for web ui are discarded if you open another review.",
   )
 }
 
-// The receipt of a delivered Send stays when the session moves on to working,
-// and goes only when the person opens another thread.
-pub fn the_receipt_outlives_the_session_going_back_to_work_test() {
+// The receipt of a delivered Send stays while the session works on the prompt,
+// whose last message is still what it was, and goes when the agent next speaks.
+pub fn the_receipt_goes_when_the_agent_next_speaks_test() {
   let acted = process.new_subject()
   let model = settled_owner(acted, home.Succeeded("Closed as fixed."))
   let sent =
@@ -609,19 +614,73 @@ pub fn the_receipt_outlives_the_session_going_back_to_work_test() {
     |> run(home.ReviewSent)
   assert string.contains(drawn(sent), "Delivered to the session · queued")
 
-  // A later activity read finds the session working on the prompt.
-  let later =
+  // A later activity read finds the session working on the prompt, and its last
+  // finished message is the one the review was read for.
+  let working =
     run(
       sent,
       home.Observed([
-        #("A", Report(sessions.Working, Some("Looking at it."), [])),
+        #("A", Report(sessions.Working, Some("Done <b>it</b>."), [])),
         #("B", Report(sessions.Idle, Some("Nothing changed."), [])),
       ]),
     )
-  let html = drawn(later)
+  let html = drawn(working)
   assert !string.contains(html, "To review<span")
   assert string.contains(html, "Changes to review")
   assert string.contains(html, "Delivered to the session · queued")
+
+  // The turn ends with a new message: the hunks and the receipt were for what
+  // it said before, and they go.
+  let spoke =
+    run(
+      working,
+      home.Observed([
+        #("A", Report(sessions.Idle, Some("Capped the wait."), [])),
+        #("B", Report(sessions.Idle, Some("Nothing changed."), [])),
+      ]),
+    )
+  assert !string.contains(drawn(spoke), "Delivered to the session · queued")
+}
+
+// A refusal for the allowance sets the scan's timer once, however many refusals
+// follow before it fires, and the scan goes on when it does.
+pub fn a_refusal_schedules_exactly_one_rearm_test() {
+  let allowance = gate()
+
+  // Nothing is granted until the test refills the allowance.
+  let refused = fn(_session, deliver) {
+    case process.call(allowance, 1000, Take) {
+      Granted -> deliver(Ok(review()))
+      Denied -> deliver(Error(scan.busy_words))
+    }
+  }
+  let timer = process.new_subject()
+  let listed = [entry("S1", "n1"), entry("S2", "n2")]
+  let answered = list.take(five(), 2)
+
+  // The allowance is spent before the page asks, so the first read is refused.
+  process.send(allowance, Drain)
+  let model =
+    run(
+      home.new(start_for(listed, answered, Some(refused), None)),
+      home.ReviewTimerReady(timer),
+    )
+  let model = run(model, home.TimerReady(process.new_subject()))
+
+  // A second refusal before the timer fires sets no second timer.
+  let model = run(model, home.Observed(answered))
+  assert process.receive(timer, 200) == Ok(Nil)
+  assert process.receive(timer, 100) == Error(Nil)
+
+  // The timer fires with the allowance refilled, and both sessions are read.
+  process.send(allowance, Refill)
+  let model = run(model, home.ReviewTicked)
+  process.send(allowance, Refill)
+  let model = run(model, home.Observed(answered))
+  assert string.contains(
+    drawn(model),
+    "To review<span class=\"inbox-count\">2</span>",
+  )
 }
 
 // No attribute value, anywhere on the page, holds a path, a line of the diff,
@@ -666,6 +725,7 @@ fn attribute_values(html: String) -> List(String) {
 pub type Gate {
   Take(reply: Subject(Grant))
   Refill
+  Drain
   Count(reply: Subject(Int))
 }
 
@@ -702,6 +762,7 @@ fn gate_loop(inbox: Subject(Gate), left: Int, asked: Int) -> Nil {
         }
       }
     Refill -> gate_loop(inbox, 2, asked)
+    Drain -> gate_loop(inbox, 0, asked)
     Count(reply:) -> {
       process.send(reply, asked)
       gate_loop(inbox, left, asked)

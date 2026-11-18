@@ -821,6 +821,11 @@ pub type Attention {
     review: Option(
       fn(String, fn(Result(review_feed.Review, String)) -> Nil) -> Nil,
     ),
+    /// How long the page waits after the daemon refuses a read for the
+    /// credential's allowance before it reads again, in milliseconds: the
+    /// allowance's window and a margin (`ui_sessions.worktree_read_window_ms`),
+    /// so the allowance has refilled when the read is asked again.
+    review_pause_ms: Int,
     /// How the page acts, or nothing for a page that may not: only the daemon's
     /// owner on a page minted to operate is handed it, and the daemon decides
     /// again each time one of its functions runs.
@@ -972,6 +977,12 @@ pub opaque type Model {
     /// How many review threads have been opened, which keys their forms so each
     /// open starts empty.
     review_presses: Int,
+    /// The timer that starts the scan again after the allowance refused a read,
+    /// known once the runtime has made it.
+    review_timer: Option(Subject(Nil)),
+    /// Whether that timer is already set. One is outstanding at most, so a run
+    /// of refusals sets it once.
+    review_rearm: Rearm,
     /// The time the last list was read, in Unix milliseconds, which the rows'
     /// ages are counted from.
     now: Int,
@@ -1256,6 +1267,13 @@ pub type Msg {
     message: String,
     read: Result(review_feed.Review, String),
   )
+
+  /// The runtime made the timer that starts the review scan again after the
+  /// allowance refused a read.
+  ReviewTimerReady(timer: Subject(Nil))
+
+  /// The scan's timer fired: read the next due session.
+  ReviewTicked
 
   /// The daemon's answer to the read of the open review thread's worktree.
   ReviewRead(session: String, read: Result(review_feed.Review, String))
@@ -1703,6 +1721,8 @@ pub fn new(start: Start) -> Model {
     reviews: dict.new(),
     review: review_pane.closed(),
     review_presses: 0,
+    review_timer: None,
+    review_rearm: Unscheduled,
     now: 0,
     status: Connecting,
     timer: None,
@@ -1774,13 +1794,16 @@ fn wire() -> Effect(Msg) {
   use dispatch, timer <- server_component.select
   let relay_timer = process.new_subject()
   let side_timer = process.new_subject()
+  let review_timer = process.new_subject()
   dispatch(TimerReady(timer))
   dispatch(RelayTimerReady(relay_timer))
   dispatch(SideTimerReady(side_timer))
+  dispatch(ReviewTimerReady(review_timer))
   process.new_selector()
   |> process.select_map(timer, fn(_) { Ticked })
   |> process.select_map(relay_timer, fn(_) { RelayTicked })
   |> process.select_map(side_timer, fn(_) { SideTicked })
+  |> process.select_map(review_timer, fn(_) { ReviewTicked })
 }
 
 /// Applies one message.
@@ -1926,6 +1949,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // served. A page with no orchestrator has nothing to read.
     SideTimerReady(timer:) ->
       side_reading(Model(..model, side_timer: Some(timer)))
+
+    ReviewTimerReady(timer:) -> #(
+      Model(..model, review_timer: Some(timer)),
+      effect.none(),
+    )
+
+    // The timer fires once for a run of refusals, and the scan goes on from the
+    // session the refusal left unread.
+    ReviewTicked ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected ->
+          reviewing(Model(..model, review_rearm: Unscheduled))
+      }
 
     SideTicked ->
       case model.status {
@@ -2156,9 +2193,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           // A read that answered goes on to the next session, and a refusal stops.
           case read {
             Ok(_) -> reviewing(next)
-            Error(_) -> {
+            Error(words) -> {
               let #(opened, open, _) = opening_review(next)
-              #(opened, open)
+              let #(armed, arm) = rearming(opened, words)
+              #(armed, effect.batch([open, arm]))
             }
           }
         }
@@ -2222,11 +2260,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           let #(state, step) =
             review_pane.closed_with(model.review, find, closure, outcome)
           let next = Model(..model, review: state)
+
+          // A close the daemon refused dropped its revision, so the find is
+          // read again now and not at the next refresh.
+          let #(reopened, reopen, _) = opening_review(next)
           #(
-            next,
+            reopened,
             effect.batch([
               review_asking(act, model.review.session, step),
-              attending(next),
+              attending(reopened),
+              reopen,
             ]),
           )
         }
@@ -5579,7 +5622,7 @@ fn opening_review(model: Model) -> #(Model, Effect(Msg), OpenRead) {
   }
 
   // A Send that is out keeps its review where it is, and so does the receipt of
-  // one that settled, until the person opens another thread. Both are
+  // one that settled, until the agent next speaks. Both are
   // `ReviewClosed` and `ReviewPrompted`'s only way to find the session: they
   // carry none, and the Sending guard is what makes them safe, since a close or
   // a prompt that answers while no Send is out changes nothing.
@@ -5637,6 +5680,46 @@ fn opening_review(model: Model) -> #(Model, Effect(Msg), OpenRead) {
         }
       }
     _, _, _, _, _ -> #(model, effect.none(), NoFreshRead)
+  }
+}
+
+/// Whether the scan's re-arm timer is set.
+type Rearm {
+  /// No timer is set.
+  Unscheduled
+
+  /// One is set, and no other is until it fires.
+  Scheduled
+}
+
+/// Sets the timer that starts the scan again, once, after the daemon refused a
+/// read for the credential's allowance. Any other failure waits for the next
+/// list or activity read, since a pause does not mend it. A page whose timer the
+/// runtime has not made, and one with a timer already set, set none.
+fn rearming(model: Model, words: String) -> #(Model, Effect(Msg)) {
+  // Only a refusal for the allowance is mended by waiting.
+  case
+    words == review_scan_rule.busy_words,
+    model.review_timer,
+    model.review_rearm
+  {
+    True, Some(timer), Unscheduled -> #(
+      Model(..model, review_rearm: Scheduled),
+      {
+        use _ <- effect.from
+        let _ =
+          process.send_after(
+            timer,
+            option.map(model.start.attention, fn(reads) {
+              reads.review_pause_ms
+            })
+              |> option.unwrap(0),
+            Nil,
+          )
+        Nil
+      },
+    )
+    True, _, _ | False, _, _ -> #(model, effect.none())
   }
 }
 
@@ -5716,11 +5799,20 @@ fn review_asking(
 }
 
 /// Whether the open review is still drawn: its session is To review, or a Send
-/// is out or has settled for it. A session that moves on to working after its
-/// prompt is delivered keeps its receipt until the person opens another thread.
+/// is out for it, or a Send has settled and the session has not spoken since. A
+/// session that goes back to work on the prompt keeps its receipt, since its
+/// last message stays what it was while the turn runs, and the receipt goes when
+/// the agent next speaks: the hunks and the staging belong to what it said
+/// before.
 fn review_listed(model: Model, session: String) -> Bool {
   case model.review.progress {
-    review_pane.Sending(..) | review_pane.Settled(_) -> True
+    review_pane.Sending(..) -> True
+    review_pane.Settled(_) ->
+      case dict.get(model.reports, session) {
+        Ok(report) ->
+          Some(option.unwrap(report.last_message, "")) == model.review.read_for
+        Error(Nil) -> False
+      }
     review_pane.Resting -> list.contains(reviewing_ids(model), session)
   }
 }

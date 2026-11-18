@@ -82,7 +82,7 @@ pub type Offer(message) {
     /// The open review's state.
     state: State,
     /// The session's display name, which the owner wrote. It is drawn as a text
-    /// node in the line that says what opening another thread discards.
+    /// node in the line that says what opening another review discards.
     name: String,
     /// The session's open finds, as the attention feed read them.
     finds: List(attention_feed.Find),
@@ -580,7 +580,7 @@ fn outbox(offer: Offer(message)) -> Element(message) {
                 html.text(
                   "Staged items for "
                   <> offer.name
-                  <> " are discarded if you open another thread.",
+                  <> " are discarded if you open another review.",
                 ),
               ]),
             ])

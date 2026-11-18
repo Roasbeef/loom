@@ -998,6 +998,7 @@ pub fn upgrade_home(
             approvals_for(attachment.attention_reach, session)
           })
         },
+        review_pause_ms: ui_sessions.worktree_read_window_ms + 500,
         review: Some(fn(session, deliver) {
           read_task(deliver, fn() {
             review_for(standing, open, attachment.review, session)
