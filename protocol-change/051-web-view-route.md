@@ -4669,3 +4669,96 @@ tag and tint on stream rows, the phone bar's count, and (with seed
 20261118) that the handlers are exactly the unopened insights.
 `client/ui_socket_test` pins the admission above and what stays refused.
 `web_client/jump_rule_test` pins which click jumps and where.
+
+## Addendum: the attention threads (2026-11-18)
+
+Phase 1 of the attention inbox draws the feed's records as threads on Home
+(`docs/design-notes/attention-inbox/README.md`, sections 2.1 and 2.2;
+[120](120-attention-feed.md), [122](122-attention-catalogue-summary.md)). Under
+"Needs you" the inbox lists one thread for each open ask routed to the owner and
+one for each stuck strand, longest wait first. A "Finds" group lists the open
+finds. A press on a row opens its thread in the reading pane, whose record the
+daemon reads in full (`attention_door.read_stored`).
+
+### What the page may do
+
+All of it is an event beneath `home.table_path`, so the socket's admission set
+is the one the message field already has and no frame, path constant or rule is
+added.
+
+| Control | Event | Admitted for |
+|---|---|---|
+| A thread's row | click | every home |
+| An ask's form, "Stage the answer" | submit | the owner's operating home |
+| The note form, "Stage the message" | submit | the owner's operating home |
+| Send, Clear, Close (Fixed, Filed, Dismiss), Retry | click | every home, acted on only where the capability is |
+
+A click is admitted everywhere because the component ignores it unless the page
+holds `Start.attention.act`, which only the daemon's owner on a page minted to
+operate is handed (`ui_socket.home_attention_capability`). A member's home and
+an observer's draw the thread and its record, with no form, no staging, no
+outbox and no Send, and the daemon refuses the submits such a page could not
+have drawn. Every act runs the standing check again
+(`ui_socket.answer_ask_for`, `close_find_for`, `strand_send_for`), and the
+door reads authority from the registry at each press.
+
+### What the page draws and what it does not
+
+- Every word a session wrote (an ask's questions, an option's label and note, a
+  find's text and path, a strand's name) is a text node. No attribute, class or
+  key carries it. A control's name is a question's key (`q1` to `q4`), an
+  option's value is its position, and a thread is selected by a key the server
+  drew into the handler, never one the browser names.
+- A form submit is read back by `web_view/answer_rule` and checked by the
+  daemon's own rule, `core/attention_answer.check`, before anything is staged.
+  A refusal is worded from the rule's fixed words and names the question.
+- Nothing reaches the session until Send. Send answers at the revision the page
+  read, delivers one prompt to the asking strand, settles the record, and then
+  delivers the staged note to the strand. A refused answer leaves the outbox as
+  it was. A prompt that was delivered and not settled says that the ask may
+  still be open.
+- A message to a strand the session no longer has is the gateway's own
+  `unknown_strand`, worded "Not sent: that strand no longer exists".
+- Retry on a stuck strand sends a fixed prompt to that strand through
+  `message_to_strand`, the path a message typed on the session's page takes.
+  There is no other retry path to reuse.
+- An approval is still named and sent to the session's own page. Nothing
+  decides one from Home.
+
+### What the counts read
+
+Home reads the feed for running sessions and the catalogue's summary
+(`home_saved_attention`) for saved sessions, skipping sessions whose custody is
+moving, blocked or failed to start. The headline says how many sessions it read
+live, how many it took from the catalogue and how many no source answered for.
+A summary that counts something takes a page that nothing chose away from the
+composer to the inbox, so a restart with an approval pending is still counted
+and shown.
+
+### What was considered
+
+- **A new daemon command to read an approval's escalation record.** The README
+  asks the pane to list the approval's tool, command, network, wanted grant and
+  policy. `attention.read` serves asks and finds only, and
+  [120](120-attention-feed.md) rejects approvals in the feed, so the evidence
+  needs a command that does not exist. It is not added here, and the approval
+  thread is unchanged from phase 0.
+- **Staging in the browser.** The outbox lives in the server model so that a
+  second tab and a reload see what is staged, and so the form's fields are
+  checked by the daemon's rule before they are kept.
+
+### Cost
+
+One capability on `home.Start`, a pure rule for items and counts, a pure rule
+for the form, and one view module. No new route, frame or admitted path.
+
+### Verification
+
+`client/test/client/ui_socket_test.gleam` pins
+`only_an_owners_operating_home_may_act_on_attention_test` (the act is the
+owner's and the reads are everyone's) and
+`the_attention_forms_need_no_new_admission_test` (a browsing home refuses the
+submits and admits the clicks, and nothing outside the table is admitted).
+`client/test/client/ui_route_test.gleam` pins the strand send's standing check
+and the door's words. `web_view/test/attention_threads_test.gleam` drives the
+page, observer included. A real drive in a browser has not been run.

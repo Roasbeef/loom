@@ -284,12 +284,14 @@ pub fn tally(standings: List(Standing)) -> Tally {
 ///   == "1 needs you · 2 finds · 3 running sessions read live, 4 saved from the catalogue"
 /// ```
 pub fn headline(tally: Tally) -> String {
+  // The count is worded for none, one and many.
   let first = case tally.needing {
     0 -> "Nothing needs you"
     1 -> "1 needs you"
     many -> int.to_string(many) <> " need you"
   }
 
+  // Finds are worded the same way, and none says nothing.
   let finds = case tally.finds {
     0 -> ""
     1 -> " · 1 find"
@@ -304,6 +306,7 @@ pub fn headline(tally: Tally) -> String {
     <> int.to_string(tally.from_catalogue)
     <> " saved from the catalogue"
 
+  // Sessions that no source answered for are said last.
   let unread = case tally.unread {
     0 -> ""
     many -> ", " <> int.to_string(many) <> " not checked"
@@ -331,6 +334,7 @@ fn plural(count: Int, one: String, many: String) -> String {
 /// Orders two items by wait: the older time first, a known time before an
 /// unknown one, then by session and by identity.
 fn by_wait(left: Item, right: Item) -> order.Order {
+  // A known time ranks before an unknown one, and the older of two known times first.
   let times = case since(left), since(right) {
     Some(a), Some(b) -> int.compare(a, b)
     Some(_), None -> order.Lt
@@ -338,6 +342,7 @@ fn by_wait(left: Item, right: Item) -> order.Order {
     None, None -> order.Eq
   }
 
+  // A tie in time falls to the session and then the identity, so two reads agree.
   case times {
     order.Eq ->
       case string.compare(session_of(left), session_of(right)) {

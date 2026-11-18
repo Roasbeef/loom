@@ -111,6 +111,24 @@ pub type Offer(message) {
     /// The message field of each thread, or nothing on a page that holds no
     /// capability to send: a member's home and an observer's draw no field.
     field: Option(Field(message)),
+    /// The threads of asks, finds and stuck strands, or nothing on a page that
+    /// reads no attention feed (`web_view/view/attention_thread`).
+    attention: Option(Threads(message)),
+  )
+}
+
+/// The attention threads, drawn by `web_view/view/attention_thread`: the rows
+/// that wait on the owner, the rows of finds and the pane of the open one.
+pub type Threads(message) {
+  Threads(
+    /// One row for each ask and stuck strand, longest wait first. They sit at
+    /// the head of "Needs you".
+    needs: List(Element(message)),
+    /// One row for each open find, under their own heading.
+    finds: List(Element(message)),
+    /// The pane of the open item thread, which replaces the session's reading
+    /// pane while one is open.
+    pane: Option(Element(message)),
   )
 }
 
@@ -145,7 +163,10 @@ pub fn view(offer: Offer(message)) -> Element(message) {
     nothing_waits(offer),
     html.div([attribute.class("inbox-body")], [
       threads_list(offer),
-      reading_pane(offer),
+      case offer.attention {
+        Some(Threads(pane: Some(open), ..)) -> open
+        Some(Threads(pane: None, ..)) | None -> reading_pane(offer)
+      },
     ]),
     html.button(
       [
@@ -186,34 +207,79 @@ fn nothing_waits(offer: Offer(message)) -> Element(message) {
 /// The grouped list: a section for each group that holds threads and has
 /// something to open, and one folded line for the quiet ones.
 fn threads_list(offer: Offer(message)) -> Element(message) {
+  // The attention rows lead the group that waits on the owner.
+  let needs = case offer.attention {
+    Some(threads) -> threads.needs
+    None -> []
+  }
+
+  // The finds follow the groups under a heading of their own.
+  let finds = case offer.attention {
+    Some(threads) -> threads.finds
+    None -> []
+  }
+
+  // The attention rows sit in "Needs you", which is drawn when only they fill
+  // it, and the finds follow the groups under a heading of their own.
+  let has_needs_group =
+    list.any(offer.groups, fn(entry) { entry.0 == inbox_rule.NeedsYou })
+
+  // The attention rows sit in Needs you, which is drawn when only they fill it.
+  let groups = case has_needs_group, needs {
+    False, [_, ..] -> [#(inbox_rule.NeedsYou, []), ..offer.groups]
+    True, _ | False, [] -> offer.groups
+  }
+
   html.div(
     [attribute.class("inbox-list")],
-    list.map(offer.groups, fn(entry) {
-      case entry.0 {
-        inbox_rule.Quiet -> quiet_line(entry.1)
-        inbox_rule.NeedsYou | inbox_rule.Waiting | inbox_rule.Updates ->
-          group(entry.0, entry.1, offer)
-      }
-    }),
+    list.append(
+      list.map(groups, fn(entry) {
+        case entry.0 {
+          inbox_rule.Quiet -> quiet_line(entry.1)
+          inbox_rule.NeedsYou -> group(entry.0, entry.1, needs, offer)
+          inbox_rule.Waiting | inbox_rule.Updates ->
+            group(entry.0, entry.1, [], offer)
+        }
+      }),
+      [finds_group(finds)],
+    ),
   )
+}
+
+/// The finds under their heading, or nothing when there are none.
+fn finds_group(rows: List(Element(message))) -> Element(message) {
+  case rows {
+    [] -> element.none()
+    [_, ..] ->
+      html.section([attribute.class("inbox-group")], [
+        html.h3([attribute.class("inbox-group-head")], [
+          html.text("Finds"),
+          html.span([attribute.class("inbox-count")], [
+            html.text(int.to_string(list.length(rows))),
+          ]),
+        ]),
+        html.ul([attribute.class("inbox-threads")], rows),
+      ])
+  }
 }
 
 /// One group's header, with its count, over its threads.
 fn group(
   which: Group,
   threads: List(Thread),
+  extra: List(Element(message)),
   offer: Offer(message),
 ) -> Element(message) {
   html.section([attribute.class("inbox-group")], [
     html.h3([attribute.class("inbox-group-head")], [
       html.text(inbox_rule.group_words(which)),
       html.span([attribute.class("inbox-count")], [
-        html.text(int.to_string(list.length(threads))),
+        html.text(int.to_string(list.length(threads) + list.length(extra))),
       ]),
     ]),
     html.ul(
       [attribute.class("inbox-threads")],
-      list.map(threads, row(_, offer)),
+      list.append(extra, list.map(threads, row(_, offer))),
     ),
   ])
 }

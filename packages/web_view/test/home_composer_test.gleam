@@ -117,6 +117,7 @@ fn owner(asked: Asked) -> home.Start {
     rename: None,
     manage: None,
     thread_send: None,
+    attention: None,
     create: Some(recording(asked)),
     folders: None,
     elsewhere: None,

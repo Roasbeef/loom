@@ -192,6 +192,7 @@ fn start_with(projects: option.Option(home.Projects)) -> home.Start {
     rename: None,
     manage: None,
     thread_send: None,
+    attention: None,
     create: None,
     folders: None,
     elsewhere: None,

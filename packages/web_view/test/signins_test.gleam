@@ -74,6 +74,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     rename: None,
     manage: None,
     thread_send: None,
+    attention: None,
     create: None,
     folders: None,
     elsewhere: None,

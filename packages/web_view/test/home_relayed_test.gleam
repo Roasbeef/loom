@@ -133,6 +133,7 @@ fn start(visiting: option.Option(home.Visit)) -> home.Start {
     rename: None,
     manage: None,
     thread_send: None,
+    attention: None,
     create: None,
     folders: None,
     elsewhere: None,

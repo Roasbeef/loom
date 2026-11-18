@@ -673,6 +673,18 @@
   .inbox-reveal{display:none;}
   .inbox-empty{margin:0 0 14px 0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
   .inbox-send{margin-top:2px;}
+  /* The attention threads (view/attention_thread): an item row's age, an ask's
+     questions as fixed components, and the outbox. No accent bars. */
+  .inbox-age{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  p.inbox-age{margin:0;}
+  p.inbox-place{margin:0;font:12px/1.4 var(--font-mono,monospace);overflow-wrap:anywhere;}
+  .inbox-questions{display:flex;flex-direction:column;gap:12px;margin:0;}
+  fieldset.inbox-question{display:flex;flex-direction:column;gap:6px;min-width:0;margin:0;padding:10px 12px;border:1px solid var(--color-divider);border-radius:6px;}
+  fieldset.inbox-question legend{padding:0 4px;font:600 13px/1.4 var(--font-sans);}
+  label.inbox-option{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px;min-height:32px;overflow-wrap:anywhere;}
+  .inbox-mark{color:var(--color-current);font:12px/1.4 var(--font-sans);}
+  .inbox-note{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .inbox-outbox-list ul{margin:0 0 6px 0;padding:0 0 0 18px;overflow-wrap:anywhere;}
   form.inbox-form{margin:0;}
   .inbox-form .cbar{justify-content:flex-end;flex-wrap:wrap;}
   .inbox-form .place-send{margin:0;}

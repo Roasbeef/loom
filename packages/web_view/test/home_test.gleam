@@ -80,6 +80,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     rename: None,
     manage: None,
     thread_send: None,
+    attention: None,
     create: None,
     folders: None,
     elsewhere: None,

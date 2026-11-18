@@ -90,6 +90,7 @@ fn start(
     rename: None,
     manage: None,
     thread_send: None,
+    attention: None,
     create: None,
     folders: None,
     elsewhere: None,

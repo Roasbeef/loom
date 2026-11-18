@@ -19,13 +19,15 @@
 ////
 //// ## Flow
 ////
-//// `stage` → `wire` → `core/attention_answer.check` → `lines`
+//// `field_name` → `other_name` → `position` → `stage` → `wire`
 ////
-//// 1. `stage` reads the form's pairs into the wire object question by
-////    question, refusing a name the form does not have.
-//// 2. The daemon's rule checks the object against the ask.
-//// 3. `lines` words each checked value for the outbox, so the person sees
-////    what Send will deliver.
+//// 1. The view names each control with `field_name`, its Other text with
+////    `other_name`, and each option with `position`.
+//// 2. `stage` reads the form's pairs into the wire object with `wire`, question
+////    by question, refusing a name the form does not have.
+//// 3. The daemon's rule, `core/attention_answer.check`, checks the object
+////    against the ask, and the checked values are worded as the outbox's lines
+////    so the person sees what Send will deliver.
 
 import core/attention.{type Ask, type Question}
 import core/attention_answer
@@ -234,11 +236,14 @@ fn controls(
 ) -> Result(Given, Problem) {
   let key = question.key
   let chosen = values_of(fields, field_name(question))
+
+  // Only one Other field is read, because the form draws one for each question.
   let typed = case values_of(fields, other_name(question)) {
     [text] -> text
     [] | [_, ..] -> ""
   }
 
+  // Each kind takes the controls its component draws, and a question left blank is unanswered.
   case question.kind, chosen {
     _, [] ->
       case question.kind {
@@ -316,6 +321,7 @@ fn known_names(
       [field_name(question), other_name(question)]
     })
 
+  // A name the ask's form does not draw can only come from a forged submit.
   case list.find(fields, fn(field) { !list.contains(names, field.0) }) {
     Ok(_) -> Error(Problem("form", "no such field"))
     Error(Nil) -> Ok(Nil)
@@ -325,6 +331,7 @@ fn known_names(
 /// One outbox line for a question: its prompt, then what the checked value
 /// says. Both are drawn as text nodes.
 fn line(question: Question, value: Result(attention.Value, Nil)) -> String {
+  // The checked value is worded the way the person gave it.
   let said = case value {
     Ok(attention.Yes) -> "Yes"
     Ok(attention.No) -> "No"

@@ -76,6 +76,7 @@ fn page(
     rename: None,
     manage: None,
     thread_send: None,
+    attention: None,
     create:,
     folders: None,
     elsewhere: None,
