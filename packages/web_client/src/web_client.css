@@ -2165,6 +2165,9 @@
   .pane-strands{display:flex;flex-direction:column;reading-flow:flex-visual;}
   .pane-strands > section.lifted{order:-1;margin:0 0 16px 0;min-width:0;font:12px/1.45 var(--font-sans);}
   .lift-groups{display:flex;flex-direction:column;gap:10px;min-width:0;}
+  .lift-status{margin:8px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .lift .inbox-questions{margin:6px 0 0 0;}
+  .lift .inbox-questions .place-send{align-self:flex-start;}
   .lift-group-title{margin:0 0 4px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   .lift-needs .lift-group-title{color:var(--color-signal-text);}
   ul.lift-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;min-width:0;}

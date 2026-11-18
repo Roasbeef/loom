@@ -95,6 +95,7 @@ pub fn decode(value: JsonValue) -> Result(Evidence, Nil) {
   use inner <- result.try(list.key_find(fields, "approvals"))
   use inner <- result.try(object(inner))
 
+  // A count is a whole number of records, and anything else is no count.
   use count <- result.try(case list.key_find(inner, "count") {
     Ok(json.Int(count)) if count >= 0 -> Ok(count)
     Ok(_) | Error(Nil) -> Error(Nil)

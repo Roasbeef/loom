@@ -122,6 +122,8 @@ pub fn an_empty_group_draws_nothing_test() {
       dock: lifted.InDock,
       names: fn(_) { None },
       open: None,
+      under: fn(_) { element.none() },
+      status: "",
     )
   let html = element.to_string(lifted.view(only_insights))
   assert string.contains(html, "Insights")
@@ -378,6 +380,8 @@ pub fn handlers_are_the_unopened_insights_and_pins_never_fold_test() {
           dock: lifted.InDock,
           names: fn(_) { None },
           open: Some(fn(key) { key }),
+          under: fn(_) { element.none() },
+          status: "",
         ))
       let html = element.to_string(view)
       let unopened = list.filter(keys, fn(key) { !list.contains(opened, key) })

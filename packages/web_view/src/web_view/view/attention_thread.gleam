@@ -247,24 +247,43 @@ fn ask_form(ask: attention.Ask, offer: Offer(message)) -> Element(message) {
         ]),
       ])
     Some(acting) ->
-      html.form(
-        [
-          attribute.class("inbox-questions"),
-          event.on("submit", fields_of(acting.stage))
-            |> event.prevent_default,
-        ],
-        list.flatten([
-          list.map(ask.questions, question),
-          [
-            problem(offer.state),
-            html.button(
-              [attribute.type_("submit"), attribute.class("place-send")],
-              [html.text("Stage the answer")],
-            ),
-          ],
-        ]),
-      )
+      answer_form(ask, offer.state.problem, "Stage the answer", acting.stage)
   }
+}
+
+/// An ask's questions as a form, one fixed component for each question's kind,
+/// the refusal of the last submit in the rule's fixed words, and one submit
+/// button. The inbox's pane stages the answer with it and the session page's
+/// rail sends it, so both draw the same controls and read them back with the
+/// same rule (`web_view/answer_rule`). The form is the caller's to place only
+/// for a page that may answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_thread.answer_form(ask, None, "Send the answer", Submitted)
+/// ```
+pub fn answer_form(
+  ask: attention.Ask,
+  refused: Option(answer_rule.Problem),
+  label: String,
+  submit: fn(List(#(String, String))) -> message,
+) -> Element(message) {
+  html.form(
+    [
+      attribute.class("inbox-questions"),
+      event.on("submit", fields_of(submit)) |> event.prevent_default,
+    ],
+    list.flatten([
+      list.map(ask.questions, question),
+      [
+        problem(refused),
+        html.button([attribute.type_("submit"), attribute.class("place-send")], [
+          html.text(label),
+        ]),
+      ],
+    ]),
+  )
 }
 
 /// One question with its component, chosen by the question's kind.
@@ -621,8 +640,8 @@ fn staged_answer(state: State) -> List(Element(message)) {
 }
 
 /// Why the last stage was refused, in the daemon's rule's fixed words.
-fn problem(state: State) -> Element(message) {
-  case state.problem {
+fn problem(refused: Option(answer_rule.Problem)) -> Element(message) {
+  case refused {
     Some(answer_rule.Problem(key:, words:)) ->
       html.p([attribute.class("inbox-standing"), attribute.role("alert")], [
         html.text(answer_rule.number(key) <> ": " <> words),

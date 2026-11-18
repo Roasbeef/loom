@@ -482,7 +482,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 
       // The phone's sheet comes last so no admitted path moves; the
       // stylesheet orders it above the dock.
-      component.sheet(model, lift),
+      component.sheet(model, lift, Observed),
     ],
     component.panel(
       model,

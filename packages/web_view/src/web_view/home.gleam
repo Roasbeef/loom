@@ -4978,6 +4978,8 @@ fn approval_session(model: Model) -> Option(String) {
 // ask nothing.
 /// Triggers the read of the shown thread's approval evidence.
 fn approving(model: Model) -> Effect(Msg) {
+  // A page that reads the feed and shows an approval's thread asks for its
+  // evidence once it has connected.
   case model.start.attention, model.status, approval_session(model) {
     Some(reads), Connected, Some(session) -> {
       use dispatch <- effect.from

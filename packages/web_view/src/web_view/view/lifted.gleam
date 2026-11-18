@@ -114,6 +114,14 @@ pub type Rail(message) {
     /// The message a press on an unopened insight sends, given its key. It
     /// is `None` for the sheet, whose rows are not handlers.
     open: Option(fn(String) -> message),
+    /// What the page draws under a row, given its key: an open ask's form on a
+    /// page that may answer, and nothing for every other row. The sheet draws
+    /// the same, so the phone answers as the rail does.
+    under: fn(String) -> Element(message),
+    /// The page's word on the last answer, or empty. It is drawn after the
+    /// groups, so no path of the rail moves, and it keeps the rail on screen
+    /// after the last row it describes has left.
+    status: String,
   )
 }
 
@@ -153,6 +161,13 @@ fn target(pieces: List(turns.Piece), row: Lifted, dock: Dock) -> String {
     | attention.SubagentResult(..), _
     | attention.PeerMessage(..), _
     -> row_of(pieces, row.key)
+
+    // A record of the session's own is not a row of the lane, so a press has
+    // nowhere to jump.
+    attention.AskPending, _
+    | attention.StuckStrand(..), _
+    | attention.FindOpen(..), _
+    -> ""
   }
 }
 
@@ -242,9 +257,23 @@ pub fn piece_key(piece: turns.Piece) -> String {
 /// // lifted.view(lifted.Rail([], [], "main", lifted.InDock, None))
 /// ```
 pub fn view(rail: Rail(message)) -> Element(message) {
-  case rail.items {
-    [] -> element.none()
-    items ->
+  case rail.items, rail.status {
+    [], "" -> element.none()
+    [], status ->
+      html.section(
+        [
+          attribute.class("lifted"),
+          attribute.aria_label("Lifted from this session"),
+        ],
+        [
+          html.h2([attribute.class("panel-title")], [
+            html.text("Lifted from this session"),
+          ]),
+          groups(rail, []),
+          answered(status),
+        ],
+      )
+    items, status ->
       html.section(
         [
           attribute.class("lifted"),
@@ -255,8 +284,22 @@ pub fn view(rail: Rail(message)) -> Element(message) {
             html.text("Lifted from this session"),
           ]),
           groups(rail, items),
+          answered(status),
         ],
       )
+  }
+}
+
+/// The page's word on the last answer, drawn after the groups so that the
+/// groups keep the child positions the socket admits presses at. Nothing when
+/// there is none.
+fn answered(status: String) -> Element(message) {
+  case status {
+    "" -> element.none()
+    words ->
+      html.p([attribute.class("lift-status"), attribute.role("status")], [
+        html.text(words),
+      ])
   }
 }
 
@@ -376,6 +419,7 @@ fn row(item: Item, rail: Rail(message)) -> Element(message) {
         decide(lifted, rail.dock),
       ],
     ),
+    rail.under(lifted.key),
   ])
 }
 
@@ -443,6 +487,9 @@ fn decide(row: Lifted, dock: Dock) -> Element(message) {
     | attention.FailedTurn, _
     | attention.SubagentResult(..), _
     | attention.PeerMessage(..), _
+    | attention.AskPending, _
+    | attention.StuckStrand(..), _
+    | attention.FindOpen(..), _
     -> element.none()
   }
 }
@@ -455,6 +502,9 @@ fn kind_word(row: Lifted) -> String {
     attention.FailedTurn -> "Failed"
     attention.SubagentResult(..) -> "Result"
     attention.PeerMessage(..) -> "Peer"
+    attention.AskPending -> "Ask"
+    attention.StuckStrand(..) -> "Stuck"
+    attention.FindOpen(..) -> "Find"
   }
 }
 
@@ -471,5 +521,8 @@ fn source_words(rail: Rail(message), row: Lifted) -> String {
     attention.PeerMessage(session:, ..) ->
       rail.names(session) |> option.unwrap("another session")
     attention.FailedStep | attention.FailedTurn -> rail.strand
+    attention.AskPending -> ""
+    attention.StuckStrand(strand:) -> strand
+    attention.FindOpen(kind:) -> kind
   }
 }
