@@ -300,7 +300,7 @@ html.phone .totals{flex:none}
   </header>
   <main id="main">
     <nav class="rail" aria-label="Inbox and sessions">
-      <p class="away">Back at <b>14:20</b>. Last seen 11:05.</p>
+      <p class="away"><b>14:20</b> · 6 running sessions</p>
       <button class="folder on" data-inbox><span>Everything, by need</span></button>
       <button class="folder need" data-inbox><span>Needs you</span><span class="n" id="n-need">4</span></button>
       <button class="folder" data-inbox><span>To review</span><span class="n" id="n-rev">2</span></button>
@@ -324,7 +324,7 @@ html.phone .totals{flex:none}
       <div class="ghead need"><span>Needs you · <span id="c-need">4</span></span><small>agents stopped for you</small></div>
       <button class="row" data-open="appr" data-g="need"><span class="unread"></span>
         <span class="r1"><span class="nm">storage/branch-index-repair</span><span class="age long">1h 22m</span></span>
-        <span class="r2"><span class="kind">Approval</span><span class="sj">proc.run sqlite3 integrity_check, write to ~/.loom</span></span><span class="rcpt"></span></button>
+        <span class="r2"><span class="kind">Approval</span><span class="sj">proc.run · wants a write grant</span></span><span class="rcpt"></span></button>
       <button class="row" data-open="pod" data-g="need"><span class="unread"></span>
         <span class="r1"><span class="nm">aegis · runner/pod-reach</span><span class="age long">3h 00m</span></span>
         <span class="r2"><span class="kind">Ask</span><span class="sj">The runner pod has no /tmp write. Which way?</span></span><span class="rcpt"></span></button>
@@ -371,7 +371,7 @@ html.phone .totals{flex:none}
     <button class="back">‹ Inbox</button>
     <div class="eyebrow"><span class="kind">Approval</span><span>storage/branch-index-repair · main · loom</span><span>· waiting since 12:58</span></div>
     <h1>May this program run <code>sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</code> with write access to <code>~/.loom</code>?</h1>
-    <div class="meta"><b>Bob</b> (operator) is viewing this session. First decision wins.</div>
+    <div class="meta">Read from the escalation record at seq 41. Any owner or operator may decide; the first decision wins.</div>
     <h2>What it asks for</h2>
     <div class="card"><table class="kv">
       <tr><td>Tool</td><td><code>code_mode</code> program, call <code>proc.run</code></td></tr>
@@ -439,7 +439,7 @@ html.phone .totals{flex:none}
     <button class="opt" data-stage="coord" data-key="2" data-excl="ans" data-label="Separate Done list"><span class="top"><span class="num">2</span><span class="lbl">Separate Done list</span></span></button>
     <button class="opt" data-stage="coord" data-key="3" data-excl="ans" data-label="Hide after 24h"><span class="top"><span class="num">3</span><span class="lbl">Hide after 24h</span></span></button>
     <div class="msg"><h2>Add a message to coord/web-inbox</h2>
-    <textarea class="ta msgta" data-thread="coord" placeholder="It is running: a message here is a steer or a queued prompt…"></textarea></div>
+    <textarea class="ta msgta" data-thread="coord" placeholder="It is running: a message here is queued until this turn ends…"></textarea></div>
   </div>
   <div class="outbox" data-thread="coord" data-to="coord/web-inbox · main">
     <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose an option or write a message.</span><div class="items"></div></div><button class="send" disabled>Send &amp; next ›</button></div>
@@ -460,7 +460,7 @@ html.phone .totals{flex:none}
       <tr><td>Rate-limit end</td><td>not reported by the provider</td></tr></table></div>
     <h2>Send it a nudge</h2>
     <button class="opt" data-stage="stuck" data-key="1" data-excl="ans" data-label="“Retry the last step.”"><span class="top"><span class="num">1</span><span class="lbl">Retry the last step</span><span class="rec">recommended</span></span><span class="why">Sends exactly: “Retry the last step.”</span></button>
-    <button class="opt" data-stage="stuck" data-key="2" data-excl="ans" data-label="Tell coord/web-inbox to take it back"><span class="top"><span class="num">2</span><span class="lbl">Tell the coordinator to take it back</span></span><span class="why">Posts to coord/web-inbox so it can reassign or wait.</span></button>
+    <div class="hint" style="margin:2px 0 0">To have the coordinator reassign it, use <button class="link" data-open="coord">coord/web-inbox's thread</button>.</div>
     <div class="msg"><h2>Or message sub:mockup-b</h2>
     <textarea class="ta msgta" data-thread="stuck" placeholder="In your own words…"></textarea></div>
   </div>
@@ -534,9 +534,9 @@ make: *** [lint] Error 2</div>
     <button class="opt" data-stage="pr" data-key="back" data-excl="ans" data-label="Send back: fix the check and both comments"><span class="top"><span class="num">1</span><span class="lbl">Send back to the worker</span><span class="rec">recommended</span></span><span class="why">Fix the check and both of Bob's comments. It is a code failure.</span></button>
     <div class="acts" style="margin-top:4px"><button class="b" data-stage="pr" data-key="recheck" data-excl="ans" data-label="Recheck">Recheck</button><button class="b" data-stage="pr" data-key="stop" data-excl="ans" data-label="Stop the ticket">Stop</button><button class="b" data-stage="pr" data-key="close" data-excl="ans" data-label="Close the ticket">Close</button><button class="b dis" disabled title="Publishing is off for this project">Publish</button></div>
     <div class="msg"><h2>Or message wp-j/vetting-lint</h2>
-    <textarea class="ta msgta" data-thread="pr" placeholder="It is running: a message here is a steer or a queued prompt…"></textarea></div>
+    <textarea class="ta msgta" data-thread="pr" placeholder="It is running: a message here is queued until this turn ends…"></textarea></div>
   </div>
-  <div class="outbox" data-thread="pr" data-to="T-41 · wp-j/vetting-lint">
+  <div class="outbox" data-thread="pr" data-to="ticket T-41 (and its worker, for a message)">
     <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Choose a move or write a message.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
     <div class="state"><span class="receipt"></span></div>
   </div>
@@ -562,7 +562,7 @@ make: *** [lint] Error 2</div>
     <div class="how"><span class="hint">Deliver as</span>
       <button class="b sm staged" data-stage="upa" data-key="queue" data-excl="how" data-label="as a queued prompt">Queue</button>
       <button class="b sm" data-stage="upa" data-key="steer" data-excl="how" data-label="as a steer">Steer</button>
-      <span class="hint">Queue waits for this turn to end. Steer stops the current step and runs first.</span></div></div>
+      <span class="hint">Queue waits for this turn to end. Steer stops the current turn and runs first.</span></div></div>
   </div>
   <div class="outbox" data-thread="upa" data-to="sub:mockup-a">
     <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Write a message.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
@@ -588,7 +588,7 @@ make: *** [lint] Error 2</div>
     <div class="how"><span class="hint">Deliver as</span>
       <button class="b sm staged" data-stage="lint" data-key="queue" data-excl="how" data-label="as a queued prompt">Queue</button>
       <button class="b sm" data-stage="lint" data-key="steer" data-excl="how" data-label="as a steer">Steer</button>
-      <span class="hint">Queue waits for this turn to end. Steer stops the current step and runs first.</span></div></div>
+      <span class="hint">Queue waits for this turn to end. Steer stops the current turn and runs first.</span></div></div>
   </div>
   <div class="outbox" data-thread="lint" data-to="wp-j/vetting-lint · main">
     <div class="compose" style="display:contents"><div class="to"><b>Not sent.</b> <span class="empty">Write a message.</span><div class="items"></div></div><button class="send" disabled>Send</button></div>
@@ -608,7 +608,7 @@ make: *** [lint] Error 2</div>
       <div class="tr anch" id="a-c-1340"><span class="t">13:40</span><div class="bd"><span class="who">coord/web-inbox <span class="mk">lifted · Ask</span></span>Before mockup-a builds the fold logic I need one call from you: should closed items fold under open ones, or move to a separate “Done” list? I'll keep the parts that don't depend on it moving.</div></div>
       <div class="tr anch" id="a-c-1352"><span class="t">13:52</span><div class="bd"><div class="tool"><span class="strand">sub:mockup-b</span> turn failed · provider 429 rate limit <span class="st bad">stuck</span></div><span class="mk" style="margin-left:0">lifted · Stuck</span></div></div>
       <div class="tr"><span class="t">14:06</span><div class="bd"><div class="tool"><span class="strand">sub:mockup-a</span> fs_edit web_view/inbox.gleam <span class="add">+84</span> <span class="st ok">ok</span></div></div></div>
-      <div class="tr ins" id="a-c-1212"><span class="t">14:12</span><div class="bd"><div class="tool"><span class="strand">sub:mockup-a</span> bash make check-web_view · 1 failing: fold_order_test <span class="st bad">exit 2</span></div><span class="mk" style="margin-left:0">lifted · Check</span></div></div>
+      <div class="tr ins" id="a-c-1212"><span class="t">14:12</span><div class="bd"><div class="tool"><span class="strand">sub:mockup-a</span> bash make check-web_view · 1 failing: fold_order_test <span class="st bad">exit 2</span></div><span class="mk" style="margin-left:0">lifted · Failed</span></div></div>
       <div class="tr ins" id="a-c-1415"><span class="t">14:15</span><div class="bd"><span class="who">sub:mockup-a <span class="mk">lifted · Find</span></span>Noted while here: <code>list_region</code> rebuilds every row on each feed tick. Keying the rows by record id would let Lustre skip the unchanged ones. Outside this task, so I left it.</div></div>
       <div class="tr"><span class="t">14:19</span><div class="bd"><span class="who">coord/web-inbox · writing</span>mockup-a's failing test is the fold-order fixture, which waits on your answer about closed items. I'm holding that file and letting it start the reading pane, which does not depend on the order<span class="caret"></span><div class="gen">generating · 8 s · request 3 of this turn</div></div></div>
     </div>
@@ -616,7 +616,7 @@ make: *** [lint] Error 2</div>
     <div class="lcompose">
       <div class="to">To <b>coord/web-inbox · main</b> · running</div>
       <textarea class="ta" placeholder="Message the coordinator…"></textarea>
-      <div class="row2"><span class="hint">Queue waits for this turn to end. Steer stops the current step and runs first.</span><button class="b">Queue</button><button class="b">Steer</button></div>
+      <div class="row2"><span class="hint">Queue waits for this turn to end. Steer stops the current turn and runs first.</span><button class="b">Queue</button><button class="b">Steer</button></div>
     </div>
   </div>
   <aside class="lift" aria-label="Lifted from this session">
@@ -633,7 +633,7 @@ make: *** [lint] Error 2</div>
     <div class="li need">
       <div class="lh"><span class="kind">Stuck</span><span>13:52 · sub:mockup-b</span><button class="jump" data-jump="a-c-1352">↑ in stream</button></div>
       <div class="p">Rate-limited at 13:52; nothing has retried. The provider gave no reset time.</div>
-      <div class="acts"><button class="b sm">Retry the last step</button><button class="b sm">Tell coord to take it back</button></div>
+      <div class="acts"><button class="b sm">Retry the last step</button></div>
     </div>
     <h3><span>Insights · 3</span><small>fold once read</small></h3>
     <button class="li" data-fold>
@@ -643,16 +643,16 @@ make: *** [lint] Error 2</div>
       <div class="acts"><span class="b sm">File issue</span><span class="b sm">Dismiss</span></div>
     </button>
     <button class="li" data-fold>
-      <div class="lh"><span class="kind">Check</span><span>14:12 · sub:mockup-a</span><span class="jump" data-jump="a-c-1212">↑ in stream</span></div>
-      <div class="p"><code>make check-web_view</code> exit 2: <code>fold_order_test</code> fails. The coordinator links it to your open ask.</div>
-      <div class="sum">check-web_view exit 2 · fold_order_test</div>
+      <div class="lh"><span class="kind">Failed</span><span>14:12 · sub:mockup-a</span><span class="jump" data-jump="a-c-1212">↑ in stream</span></div>
+      <div class="p"><code>bash make check-web_view</code> exited 2: <code>fold_order_test</code> fails.</div>
+      <div class="sum">make check-web_view exited 2 · fold_order_test</div>
     </button>
     <button class="li seen" data-fold>
       <div class="lh"><span class="kind">Result</span><span>12:20 · sub:fact-sheet</span><span class="jump" data-jump="a-c-1220">↑ in stream</span></div>
       <div class="p">Settled; returned a 510-line fact sheet.</div>
       <div class="sum">Settled, fact sheet returned (510 lines)</div>
     </button>
-    <p class="rule">Asks, approvals and stuck strands stay pinned here until they are answered. Finds, check results, sub-agent results and errors fold to one line once read. Each opens its place in the stream.</p>
+    <p class="rule">Asks, approvals and stuck strands stay pinned here until they are answered. Finds, failed calls and turns, sub-agent results and peer messages fold to one line once opened. Each opens its place in the stream.</p>
   </aside>
 </section>
 

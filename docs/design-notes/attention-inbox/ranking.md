@@ -355,13 +355,19 @@ The owner did not take option 1. On the questions of section 6 they ruled:
 4. Reviewing a diff is part of this work, in phase 1, reading worktree hunks.
    This is (b), taken without first running section 8's test. The ranking had
    recommended (a) for the first three phases.
-5. Question 5 is (c) for now. The owner will choose between (a) and (b)
-   before phase 2.
+5. Question 5 (README section 3, question 6) is (c) for now. The owner will
+   choose between (a) and (b) before phase 2.
 
 The owner added two things that no concept drew: a live mode that keeps the
 stream and lifts out items in a rail beside it, and a message field on every
 thread, including an Updates group for sessions that are working with nothing
-asked. Neither changes section 7. The message field needs a thread-send
-command that carries free text and a delivery mode (queue or steer). That
-command is the same one section 7 already ties to the feed.
+asked. The message field needs a thread-send command that carries free text
+and a delivery mode (queue or steer). Section 7 decides the answer command in
+the feed proposal; phase 0 instead proposes the command alone, for free text,
+and the feed proposal later extends it to answers that name a revision.
+
+The approval stance is narrowed in one respect. No row, card face or feed head
+carries a deciding control or the action text, as before. An approval thread's
+pane may show the record's content, read per record at a revision from phase
+1, as evidence beside a jump to the session's own card. It never decides.
 

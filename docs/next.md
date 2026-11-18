@@ -235,8 +235,9 @@ callers but does not force the original check-to-monitor scheduling window.
 The work to make it first class (#1167, with #1168 for its GitHub controls on
 the page) is paused by the owner. Three stacked branches are pushed and
 unreviewed: `project/warm-template`, `project/visible-failures` and
-`project/project-settings`. The attention-inbox bracket below plans to take only
-the pure half of `visible-failures`. The bullets that follow describe #1164 as
+`project/project-settings`. The attention-inbox section above leaves open
+whether to take the pure half of `visible-failures` or merge `warm-template`
+first. The bullets that follow describe #1164 as
 it landed.
 
 One router session decides what becomes work for a repository, and each piece

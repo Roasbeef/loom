@@ -70,6 +70,10 @@ sessions under "Watch live", then a line saying what the counts read.
 Dark captures are [`final-inbox-dark.png`](screens/final-inbox-dark.png) and
 [`final-live-dark.png`](screens/final-live-dark.png).
 
+The mockup draws the page as it stands after phase 2. Ages, asks with
+options, finds, the stuck strand and a ticket's check output do not exist in
+phase 0; section 4 says what each phase can show.
+
 ### 2.1 The inbox is where you land
 
 The inbox is concept C's thread list with its reading pane. Rows are grouped
@@ -85,12 +89,15 @@ opens its hunks from the worktree, with a find pinned at its line and one
 comment field per file. One outbox at the foot of the pane names the target
 and lists every staged item, and nothing reaches the agent until Send.
 
-An approval thread shows the evidence and does not decide. It lists the tool,
+An approval thread shows the evidence and does not decide. Its row names the
+tool and says that a grant is wanted, and never carries the action text. From
+phase 1 the pane reads the escalation record at a revision and lists the tool,
 the command, the network, the wanted grant and the policy, and whatever has
 happened in that session since it asked (in the scenario, a peer message, with
-its origin and time and no claim about its relevance). Its one action is
-"Decide on the session's page", which opens the live mode with the card in its
-dock.
+its origin and time and no claim about its relevance). In phase 0, which has
+only the activity row's count, it says that an approval is pending. Either way
+its one action is "Decide on the session's page", which opens the live mode
+with the card in its dock.
 
 The inbox replaces the home page's new-session form only when something waits
 or runs. On a first run, and when nothing waits, the form stays. "New session"
@@ -103,33 +110,38 @@ strand. A message stages into the same outbox as everything else, so one Send
 carries an answer and a note together, and the outbox says exactly what goes.
 
 The **Updates** group exists for this. It lists sessions and strands that are
-working with nothing asked. Their thread shows the agent's latest message, its
-last few steps and links to watch it live or to the related ask. The message
-field there offers the two delivery modes the session page already has:
+working with nothing asked. Their thread shows what the session is doing now
+(its strands' glances), its last few steps and links to watch it live or to
+the related ask. The message field there offers the two delivery modes the
+session page already has:
 
 - **Queue** waits for the current turn to end.
-- **Steer** stops the current step and runs first (protocol-change/022).
+- **Steer** stops the current turn and runs first (protocol-change/022).
 
-A message to an idle session is an ordinary prompt. A message to a session
-stopped on an approval is queued behind it, and the outbox says so. Whichever
-way it goes, the message enters through the gateway like a prompt typed on the
-session's own page, so that page shows it as a held input until it is taken.
+Other threads queue a message when their session is busy; the choice is
+offered on Updates, where steering is the point. A message to an idle session
+is an ordinary prompt. A message to a session stopped on an approval is queued
+behind it, and the outbox says so. Every message enters through the gateway
+like a prompt typed on the session's own page, so a busy session's page shows
+it as a held input until it is taken. The daemon bounds that queue
+(protocol-change/022), so a Send can be refused, and the outbox then says so.
 
 ### 2.3 The live mode is for watching one session
 
 The live mode opens from "Watch live" in the rail, from a thread's "Watch
 live" link, or from "Decide on the session's page". The stream is A2's
 transcript and stays live and central, with the live region and the composer
-(Send, Queue, Steer) unchanged.
+unchanged, including the buttons A2 draws for the session's state.
 
-A rail on the right, "Lifted from this session", lifts out what matters as it
-arrives:
+A rail on the right, "Lifted from this session", holds two groups:
 
 - **Needs you** holds asks, approvals and stuck strands. Each is pinned until it
   is answered. An ask is answered in the rail, because this is that session's
   own page.
-- **Insights** holds finds, check results, sub-agent results, errors and peer
-  messages. Each folds to one line once read.
+- **Insights** holds finds, failed tool calls and turns, sub-agent results and
+  peer messages, and from phase 2 a ticket's check result. Each folds to one
+  line once opened. The page holds that in its own model and does not persist
+  it, since there is no seen cursor.
 
 Each lifted item opens its place in the stream, and its row in the stream
 carries a small "lifted" marker. Only rows that need the owner are tinted.
@@ -156,9 +168,8 @@ you · 3 insights").
    first version reads the worktree's hunks and the agent's last message. Finds
    are pinned at their lines once agents can record them. There is no review
    record, no line-anchored comment and no local draft.
-5. **What is the live monitoring mode?** A rail beside the stream (section 2.3).
-   Asks, approvals and stuck strands stay pinned until answered. Finds, check
-   results, sub-agent results, errors and peer messages fold once read.
+5. **What is the live monitoring mode?** A rail beside the stream. Section
+   2.3 says what pins and what folds.
 6. **How does project mode's "check failed" stage reach `main`?** For now, it
    does not. The inbox draws an unknown `person/…` stage as its raw word, and
    `main` already files any `person/` stage under Needs you, so the ticket
@@ -178,26 +189,27 @@ you · 3 insights").
    - `project/project-settings`' proposals, such as a `check` proposed from
      the repository.
 
-   Each is a decision only a person can make, so each is a natural kind of
-   thread. #1168 is where they reach the web. A follow-up note should map each
+   Each is a decision only a person can make, so each can be a thread. #1168 is where they reach the web. A follow-up note should map each
    to a thread kind, its actions, its role gates and its phase, holding #1168's
    four unchanging rules.
 
 ## 4. The build, in phases
 
-Each phase is shippable alone, and each says what it can honestly show.
+Each phase is shippable alone, and each says what it can show.
 
 **Phase 0: existing signals.** The inbox is a region of Home, owner-only and
-already admitted by `ui_socket`. It reads `sessions.activity` and, for the
-owner, the project board. The daemon stops dropping the row's `last_message`
-and `glances` (`client/daemon/server.gleam`, `state_of`), so each session's
-last words and its strands' one-line glances reach the page. What it can show:
+already admitted by `ui_socket`. It reads `sessions.activity` and the project
+board. The daemon stops dropping the row's `last_message` and `glances`
+(`client/daemon/server.gleam`, `state_of`), so each session's last finished
+turn and its strands' one-line glances reach the page. What it can show:
 
 - the sessions whose word is *needs you* (today, a pending approval or main
   failed while idle);
-- idle sessions with their last message, as a "Waiting" group of sessions
-  rather than asks;
-- working sessions as Updates, showing their last message and glances;
+- idle sessions with their last message, as a "Waiting" group of sessions,
+  which stands in for asks and To review until phase 1;
+- working sessions as Updates, showing their strands' glances and, labelled as
+  such, the last finished turn's message. Nothing writes a glance for `main`,
+  so a working session with no other strands shows only that it is working;
 - `person/*` project tickets, with the existing answer box.
 
 It prints no ages, because the row carries no time, and its headline says
@@ -205,19 +217,35 @@ It prints no ages, because the row carries no time, and its headline says
 rail can lift what a session's own transcript already records: its pending
 approval, failed tool calls and turns, sub-agent results and peer messages.
 That is a pure classifier over lane entries in `session_view`. A message from
-a thread needs a thread-send command, since Home is bound to no session. That
-command, with the inbox's click paths as an addendum to protocol-change/051,
-is this phase's whole protocol cost.
+a thread needs a thread-send command, since Home is bound to no session. Phase
+0 proposes it alone, for free text; the feed proposal in phase 1 extends it to
+answers that name a revision. That command, with the inbox's click paths as an
+addendum to protocol-change/051, is this phase's whole protocol cost.
 
-**Phase 1: records and threads.** Agents record asks, tasks and finds with a
-creation time, a routing field, a transcript anchor and the parent chain. The
-classifier lives in `session_view/attention`, and the feed carries identities
-and heads, never content (its protocol change decides scope, bounds and
-resumption). With these, asks become threads with options, finds pin at their
-lines, ages and ranking by wait time work, and the stuck delegate appears. The
-review pane lands in this phase, reading worktree hunks. The durable catalogue
-summary lands too, and the first acceptance test is a daemon restart with an
-approval pending.
+**Phase 1: records and threads.** Agents record asks and finds through two
+new tools:
+
+- `ask` puts a question to the owner, or to a named strand, with one to four
+  options, an optional recommended one and a short note per option saying
+  what it does. The strand then waits for the answer. Project mode's
+  `project_report` question becomes the same record.
+- `notice` records a risk, idea or bug seen outside the task, with a kind, a
+  short text and an optional path and line. It does not stop work.
+
+Everything else stays derived by the harness, because a model asked by prompt
+to report its own state does so unreliably: stuck strands, failed calls,
+approvals, peer messages and sub-agent results already have records. The
+harness also starts writing a glance for `main`, so Updates show current work,
+and the per-session read serves an Update's last few steps. The prompt gains
+one line telling the model to ask with `ask` rather than in prose.
+
+The classifier lives in `session_view/attention`, and the feed carries
+identities and heads, never content (its protocol change decides scope,
+bounds and resumption). With these, asks become threads with options, finds
+pin at their lines, ages and ranking by wait time work, the stuck delegate
+appears, and an approval thread shows its evidence. The review pane lands in
+this phase, reading worktree hunks. The durable catalogue summary lands too,
+with section 5's restart test.
 
 **Phase 2: project tickets as threads.** The ticket thread shows its stage, its
 question, its PR, its diff stat, its check result and output, and offers
@@ -234,7 +262,8 @@ coordinator's context card, and the meta layer's decisions as threads per
 [`ranking.md`](ranking.md) section 7 has the full list. The short form:
 
 - **Records.** Agents record an ask, a task or a find with a creation time, a
-  routing field, a transcript anchor and the parent chain.
+  routing field, a transcript anchor and the parent chain, and on a find an
+  optional path and line.
 - **The classifier.** One "whose move is it" function lives in
   `session_view`, shared by the sidebar, the inbox, the live rail and the
   project board.
@@ -257,7 +286,7 @@ The final mockup corrects the last two of these.
   run 18 to 19.
 - **Wait times.** No phase-0 page can show them. The activity row carries no
   time, and an escalation's `asked` is a count, not a time. The final mockup
-  draws the phase-1 page, which has them.
+  draws the page after phase 2, which has them.
 - **Stuck delegates.** These are invisible today, because failure is judged
   from `main` only. The final mockup draws them from phase 1.
 - **Peer messages.** Three concept mockups say the 13:15 peer message is
