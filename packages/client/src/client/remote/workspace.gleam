@@ -603,18 +603,22 @@ fn opened_by_attach(stored: Option(Scope)) -> Bool {
   }
 }
 
-// The words for a scope bound to another workspace than the one named. An open
-// scope keeps its workspace, and so does a closed one with a tree, so the
-// corrected name is not taken until the scope is closed without a tree. The way
-// there is to name the bound workspace again, so that the move ends and closes
-// the scope, and then to correct the name.
+// The words for a scope bound to another workspace than the one named. The
+// executor takes another workspace only for a scope that is closed cleanly and
+// holds no tree, so this is shown for a scope that is open, that is closing, that
+// was closed without proof that its children are gone, or that holds a tree. A
+// closed scope with no tree never gets here: the executor rebinds it, and the
+// source learns an unrecorded close from the executor first. The way out for an
+// open scope is to name the bound workspace again, so that the move ends and
+// closes the scope, and then to correct the name, which needs no second round.
 /// The operator's words for a refusal of a scope bound to another workspace.
 fn mismatch_words(bound: String) -> String {
   unavailable(
     "the executor's scope for this session is bound to the workspace `"
     <> bound
-    <> "`, which an earlier move named, and the scope is open or holds a tree there, "
-    <> "so it keeps that workspace. Set checkout_workspace back to `"
+    <> "`, which an earlier move named. A scope keeps its workspace while it is open, "
+    <> "is closing, was closed without proof that its children are gone, or holds a tree there. "
+    <> "If it is open, set checkout_workspace back to `"
     <> bound
     <> "`, move again so that the move ends and closes the scope, then correct the name and move. "
     <> "A scope that still holds a tree after that close keeps its workspace for as long as the tree exists",
@@ -644,27 +648,50 @@ fn learn_unrecorded_close(
   // This match resolves asked before the surrounding protocol step continues.
   // This match resolves asked before the enclosing validation continues.
   case asked {
-    Ok(outcome) -> {
-      let updated =
-        scope.Scope(held, Some(outcome), Some(candidate.executor.name))
+    Ok(outcome) -> record_learned_close(registered, candidate, held, outcome)
 
-      // This match resolves scope.write(registered.opened, updated) before the surrounding protocol step continues.
-      case scope.write(registered.opened, updated) {
-        Ok(Nil) -> attach_to(registered, Some(updated), candidate, Healed)
-        Error(reason) -> Error(Failed(unavailable(reason)))
-      }
-    }
+    // The executor judges a close by the workspace it names before it looks at
+    // the scope. The attach that brought us here was told the scope is at this
+    // incarnation, which for a workspace the scope is not bound to happens only
+    // when the scope is closed cleanly and holds no tree (`workspace_for_attach`
+    // would otherwise have refused the attach for its workspace). Such a scope
+    // is one the host closed as empty, as it does for an attach for an unserved
+    // name that a rebound attach cannot close from here. The same question under
+    // the workspace the executor names is then a read of a closed scope, and
+    // its answer lets the attach rebind to the corrected name.
     Error(CloseRefused(refusal: protocol.WorkspaceMismatch(stored: bound))) ->
-      Error(Refused(mismatch_words(bound)))
+      case request_close(registered.session, bound, candidate.reach, held, 2) {
+        Ok(outcome) ->
+          record_learned_close(registered, candidate, held, outcome)
+        Error(CloseRefused(..)) -> Error(Refused(mismatch_words(bound)))
+        Error(CloseUnanswered) -> Error(Failed(stale_words(held, registered)))
+      }
     Error(CloseRefused(..)) | Error(CloseUnanswered) ->
-      Error(
-        Failed(refused(
-          protocol.StaleIncarnation(stored: held),
-          held,
-          registered.session,
-        )),
-      )
+      Error(Failed(stale_words(held, registered)))
   }
+}
+
+// Records the close the executor reported for the incarnation the record left
+// open, and attaches again from the updated record.
+/// Writes the learned close into the scope record and attaches once more.
+fn record_learned_close(
+  registered: Registered,
+  candidate: Candidate,
+  held: Int,
+  outcome: protocol.CloseOutcome,
+) -> Result(Hands, Attempt) {
+  let updated = scope.Scope(held, Some(outcome), Some(candidate.executor.name))
+
+  // This match resolves scope.write(registered.opened, updated) before the surrounding protocol step continues.
+  case scope.write(registered.opened, updated) {
+    Ok(Nil) -> attach_to(registered, Some(updated), candidate, Healed)
+    Error(reason) -> Error(Failed(unavailable(reason)))
+  }
+}
+
+/// The words for a stale incarnation whose close could not be learned.
+fn stale_words(held: Int, registered: Registered) -> String {
+  refused(protocol.StaleIncarnation(stored: held), held, registered.session)
 }
 
 /// Build keeps this client operation’s decoding or state decision in one place.
