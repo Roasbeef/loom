@@ -245,7 +245,7 @@ page keys and nonces, and the relay into the session's gateway.
   named `delivery` (`prompt` or `steer`), whose handler carries the thread's
   session so the browser names neither. `web_view/thread_send` (pure) holds the
   vocabulary: `choices(kind)` (Send for idle or failed, Queue and Steer for
-  working, Queue alone with "held behind the approval" for an approval),
+  working, Send alone with a note that a message starts a turn and decides nothing, for an approval),
   `delivery`, `sendable` (non-blank and at most `composer.prompt_limit` bytes),
   the `Answer` (`Delivered(Admitted | Queued)` or `Refused(NotHeld | NotResident
   | NotAccepted(reason) | QueueFull)`) and the `Outbox` words, which never carry

@@ -28,10 +28,12 @@ pub fn each_state_offers_the_buttons_that_make_sense_test() {
   assert thread_send.choices(inbox_rule.Settled) == [thread_send.Send]
   assert thread_send.choices(inbox_rule.Working)
     == [thread_send.Queue, thread_send.Steer]
-  assert thread_send.choices(inbox_rule.ApprovalPending) == [thread_send.Queue]
+  assert thread_send.choices(inbox_rule.ApprovalPending) == [thread_send.Send]
 
   assert thread_send.hold_note(inbox_rule.ApprovalPending)
-    == Some("held behind the approval")
+    == Some(
+      "This session is waiting on an approval. A message starts a new turn now; it does not decide the approval.",
+    )
   assert thread_send.hold_note(inbox_rule.Working) == None
   assert thread_send.hold_note(inbox_rule.Idle) == None
 }
@@ -64,62 +66,82 @@ pub fn a_draft_is_sendable_when_it_says_something_and_fits_test() {
 // Each state of the outbox has its words, drawn for the thread the outbox is
 // about; another thread reads as unsent.
 pub fn the_outbox_has_fixed_words_for_each_state_test() {
-  assert thread_send.words(thread_send.Unsent, "A", "web ui") == "Not sent"
-  assert thread_send.words(thread_send.Sending("A"), "A", "web ui")
+  assert thread_send.words(thread_send.Unsent, "A", "web ui") == ""
+  assert thread_send.words(
+      thread_send.Sending("A", operator.Prompt),
+      "A",
+      "web ui",
+    )
     == "Sending…"
   assert thread_send.words(
-      thread_send.Settled("A", Delivered(Admitted)),
+      thread_send.Settled("A", operator.Prompt, Delivered(Admitted)),
       "A",
       "web ui",
     )
     == "Delivered to web ui · admitted"
   assert thread_send.words(
-      thread_send.Settled("A", Delivered(Queued)),
+      thread_send.Settled("A", operator.Prompt, Delivered(Queued)),
       "A",
       "web ui",
     )
     == "Delivered to web ui · queued"
   assert thread_send.words(
-      thread_send.Settled("A", Refused(NotHeld)),
+      thread_send.Settled("A", operator.Prompt, Refused(NotHeld)),
       "A",
       "web ui",
     )
     == "Not sent: this home no longer holds that session"
   assert thread_send.words(
-      thread_send.Settled("A", Refused(NotResident)),
+      thread_send.Settled("A", operator.Prompt, Refused(NotResident)),
       "A",
       "web ui",
     )
     == "Not sent: the session is not running"
   assert thread_send.words(
-      thread_send.Settled("A", Refused(NotAccepted("anything"))),
+      thread_send.Settled(
+        "A",
+        operator.Prompt,
+        Refused(NotAccepted("anything")),
+      ),
       "A",
       "web ui",
     )
     == "Not sent: the session refused it"
   assert thread_send.words(
-      thread_send.Settled("A", Refused(QueueFull)),
+      thread_send.Settled("A", operator.Prompt, Refused(QueueFull)),
       "A",
       "web ui",
     )
     == "Not sent: its queue is full"
 
   assert thread_send.words(
-      thread_send.Settled("A", Refused(Unanswered)),
+      thread_send.Settled("A", operator.Prompt, Refused(Unanswered)),
       "A",
       "web ui",
     )
-    == "No answer in time; it may have arrived — check the session before sending again"
+    == "No answer in time; it may have arrived. Check the session before sending again."
+
+  // A delivered steer says what a steer does, and a delivered prompt does not.
+  assert thread_send.words(
+      thread_send.Settled("A", operator.Steer, Delivered(Queued)),
+      "A",
+      "web ui",
+    )
+    == "Delivered to web ui · steering: it stops the current turn and runs next"
 
   // An outbox about another session says nothing of this one.
-  assert thread_send.words(thread_send.Sending("B"), "A", "web ui")
-    == "Not sent"
   assert thread_send.words(
-      thread_send.Settled("B", Delivered(Queued)),
+      thread_send.Sending("B", operator.Prompt),
       "A",
       "web ui",
     )
-    == "Not sent"
+    == ""
+  assert thread_send.words(
+      thread_send.Settled("B", operator.Prompt, Delivered(Queued)),
+      "A",
+      "web ui",
+    )
+    == ""
 }
 
 // Whatever reason the daemon keeps for its log, the words a page draws carry
@@ -134,7 +156,7 @@ pub fn a_refusal_reason_never_reaches_the_words_test() {
     let reason = "§§" <> text <> "§§"
     let words =
       thread_send.words(
-        thread_send.Settled("A", Refused(NotAccepted(reason))),
+        thread_send.Settled("A", operator.Prompt, Refused(NotAccepted(reason))),
         "A",
         "web ui",
       )

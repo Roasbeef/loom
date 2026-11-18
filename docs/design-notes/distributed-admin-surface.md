@@ -57,7 +57,7 @@ tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:96`). The web home is told only the names
 (`HomeAttachment`, `client/daemon/server.gleam:343`, whose `executors` field is
 `List(String)`), draws them in a select, and asks the owner to type the workspace
-name (`CreatingRemote`, `web_view/home.gleam:1156`). The terminal builds a
+name (`CreatingRemote`, `web_view/home.gleam:1164`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot
 change it inside a running terminal. Neither client can show whether an executor
 answers, is full, or contradicts its declaration. That is learned at the attach,

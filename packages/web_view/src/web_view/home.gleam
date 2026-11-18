@@ -831,6 +831,14 @@ pub opaque type Model {
     /// person's reading or typing. A choice that left the list falls back to the
     /// first thread (`inbox_rule.selection`).
     selected: Selection,
+    /// How many threads the person has pressed, which keys the element that
+    /// scrolls the reading pane into view, so each press does.
+    presses: Int,
+    /// The last report of the selected thread, kept apart from `reports` so a
+    /// read that omits it does not blank the pane while its session is still
+    /// listed. It is drawn for that thread alone: the headline, the groups'
+    /// counts and the landing are counted from the fresh read.
+    shown: Option(#(String, sessions.Report)),
     /// Whether the person has chosen a centre. The first read decides what the
     /// page lands on: the inbox when something waits or runs, and the composer
     /// otherwise, and the landing is not changed by a later read, because
@@ -1467,6 +1475,8 @@ pub fn new(start: Start) -> Model {
     activity: dict.new(),
     reports: dict.new(),
     selected: Unchosen,
+    presses: 0,
+    shown: None,
     centre_choice: Awaiting,
     outbox: thread_send.Unsent,
     delivered: 0,
@@ -1737,7 +1747,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Founded(orchestrator:, founding:) -> founded(model, orchestrator, founding)
 
     InboxOpened(session:) -> #(
-      Model(..model, selected: Pressed(session)),
+      Model(..model, selected: Pressed(session), presses: model.presses + 1),
       effect.none(),
     )
 
@@ -1748,14 +1758,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     ThreadSubmitted(session:, text:, delivery:) ->
       case model.start.thread_send, model.status, model.outbox {
         Some(send), Connected, thread_send.Unsent
-        | Some(send), Connected, thread_send.Settled(_, _)
+        | Some(send), Connected, thread_send.Settled(..)
         ->
           case
             thread_send.sendable(text),
             dict.has_key(model.reports, session)
           {
             True, True -> #(
-              Model(..model, outbox: thread_send.Sending(session)),
+              Model(..model, outbox: thread_send.Sending(session, delivery)),
               {
                 use dispatch <- effect.from
                 send(session, text, delivery, fn(answer) {
@@ -1765,26 +1775,45 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             )
             True, False | False, _ -> #(model, effect.none())
           }
-        Some(_), Connected, thread_send.Sending(_)
+        Some(_), Connected, thread_send.Sending(..)
         | Some(_), Connecting, _
         | Some(_), Ended(_), _
         | None, _, _
         -> #(model, effect.none())
       }
 
-    // The daemon's word on a send. A delivered message leaves an empty box, and
-    // a refusal keeps the draft and says why in fixed words.
-    ThreadAnswered(session:, answer:) -> #(
-      Model(
-        ..model,
-        outbox: thread_send.Settled(session, answer),
-        delivered: case answer {
-          thread_send.Delivered(_) -> model.delivered + 1
-          thread_send.Refused(_) -> model.delivered
-        },
-      ),
-      effect.none(),
-    )
+    // The daemon's word on a send. A refusal keeps the draft and says why in
+    // fixed words. A delivered message leaves an empty box and changes what the
+    // session is doing, so the page asks for a fresh read at once and the
+    // buttons follow the new state rather than waiting for the next list.
+    ThreadAnswered(session:, answer:) -> {
+      // The answer does not carry the delivery, so it is the one the outbox
+      // recorded when the send went out; a stray answer reads as a prompt.
+      let sent = case model.outbox {
+        thread_send.Sending(out, delivery) if out == session -> delivery
+        thread_send.Sending(..)
+        | thread_send.Settled(..)
+        | thread_send.Unsent -> operator.Prompt
+      }
+
+      // A delivery changes the session's state and asks for a fresh read; a
+      // refusal changes nothing about it.
+      case answer {
+        thread_send.Delivered(_) -> {
+          let next =
+            Model(
+              ..model,
+              outbox: thread_send.Settled(session, sent, answer),
+              delivered: model.delivered + 1,
+            )
+          #(next, observing(next))
+        }
+        thread_send.Refused(_) -> #(
+          Model(..model, outbox: thread_send.Settled(session, sent, answer)),
+          effect.none(),
+        )
+      }
+    }
 
     ShowingInbox -> #(Model(..model, centre_choice: Landed), effect.none())
 
@@ -3905,14 +3934,26 @@ fn following(model: Model, listing: Listing) -> Effect(Msg) {
 /// is gone from the page, and a closed page keeps the last list it drew with
 /// the notice beside it, as a session's page keeps its last capture.
 fn answered(model: Model, listing: Listing) -> Model {
+  // Only a list that was read changes the groups; an unread one changes
+  // nothing and a closed page keeps what it drew.
   case listing {
-    Listed(entries:) ->
-      Model(
-        ..model,
-        groups: sessions.grouped(list.take(entries, sessions.listed_limit)),
-        now: model.start.now(),
-        status: Connected,
-      )
+    Listed(entries:) -> {
+      let listed =
+        Model(
+          ..model,
+          groups: sessions.grouped(list.take(entries, sessions.listed_limit)),
+          now: model.start.now(),
+          status: Connected,
+        )
+
+      // A list with no running session asks for no activity, so no answer will
+      // come to decide the landing; waiting for a much later one would replace
+      // a composer the person is typing in. The composer is the landing.
+      case listed.centre_choice, running_sessions(listed) {
+        Awaiting, 0 -> Model(..listed, centre_choice: Chose)
+        Awaiting, _ | Landed, _ | Chose, _ -> listed
+      }
+    }
     Unread -> model
     Closed(ending:) -> Model(..model, status: Ended(ending:))
   }
@@ -4248,20 +4289,48 @@ fn inbox_threads(model: Model) -> List(inbox_rule.Thread) {
     case entry.residency {
       Live ->
         dict.get(model.reports, entry.id)
-        |> result.map(fn(report) {
-          inbox_rule.Thread(
-            id: entry.id,
-            name: sessions.label(entry),
-            workspace: entry.workspace,
-            report:,
-          )
-        })
+        |> result.map(thread_of(entry, _))
       sessions.Saved
       | sessions.Blocked
       | sessions.FailedStart(_)
       | sessions.Moving(_) -> Error(Nil)
     }
   })
+}
+
+/// One session as the inbox draws it, from its catalogue row and a report.
+fn thread_of(entry: Entry, report: sessions.Report) -> inbox_rule.Thread {
+  inbox_rule.Thread(
+    id: entry.id,
+    name: sessions.label(entry),
+    workspace: entry.workspace,
+    report:,
+  )
+}
+
+/// The threads the inbox draws: the fresh read's, and the selected thread's kept
+/// report when the fresh read omits it. Only the groups and the reading pane
+/// use it; counts and the landing use `inbox_threads`.
+fn drawn_threads(model: Model) -> List(inbox_rule.Thread) {
+  let fresh = inbox_threads(model)
+
+  // The kept report stands in only for a thread the fresh read left out.
+  case model.shown {
+    Some(#(id, report)) ->
+      case list.any(fresh, fn(thread) { thread.id == id }) {
+        True -> fresh
+        False ->
+          case
+            list.find(listing.entries(model.groups), fn(entry) {
+              entry.id == id && entry.residency == Live
+            })
+          {
+            Ok(entry) -> list.append(fresh, [thread_of(entry, report)])
+            Error(Nil) -> fresh
+          }
+      }
+    None -> fresh
+  }
 }
 
 /// What the page's reports say it would land on: the inbox when something waits
@@ -4272,35 +4341,20 @@ fn would_land(model: Model) -> inbox_rule.Landing {
   )
 }
 
-/// Applies the daemon's answer to the activity read. It replaces the reports
-/// whole, with two exceptions that keep what the person is looking at in place:
-/// the thread the pane shows keeps its previous report when one read leaves it
-/// out and the session is still listed, since a slow session is not a gone one;
-/// and the first answer decides the landing (`first_landing`) and fixes the
-/// default thread (`settled_selection`).
+/// Applies the daemon's answer to the activity read. The reports, and so the
+/// states, the headline's count and the landing, are the fresh answer alone. The
+/// one exception is the thread the pane shows, whose last report is kept in
+/// `shown` when one read leaves it out and its session is still listed, since a
+/// slow session is not a gone one. The first answer decides the landing
+/// (`first_landing`) and fixes the default thread (`settled_selection`).
 fn observed(model: Model, rows: List(#(String, sessions.Report))) -> Model {
   let fresh = dict.from_list(rows)
-
-  // Only the selected thread is kept across a read that omits it, so a
-  // session that really left is not held in the page's memory.
-  let kept = case selected_session(model.selected) {
-    Some(id) ->
-      case dict.has_key(fresh, id), dict.get(model.reports, id) {
-        False, Ok(previous) ->
-          case still_running(model, id) {
-            True -> dict.insert(fresh, id, previous)
-            False -> fresh
-          }
-        True, _ | False, Error(Nil) -> fresh
-      }
-    None -> fresh
-  }
-
   let read =
     Model(
       ..model,
-      activity: dict.map_values(kept, fn(_, report) { report.activity }),
-      reports: kept,
+      activity: dict.map_values(fresh, fn(_, report) { report.activity }),
+      reports: fresh,
+      shown: shown_report(model, fresh),
     )
 
   Model(
@@ -4310,6 +4364,39 @@ fn observed(model: Model, rows: List(#(String, sessions.Report))) -> Model {
   )
 }
 
+/// The report to keep for the selected thread: its fresh one, or else the one
+/// kept before while its session is still a running row of the page's list.
+fn shown_report(
+  model: Model,
+  fresh: Dict(String, sessions.Report),
+) -> Option(#(String, sessions.Report)) {
+  case selected_session(model.selected) {
+    None -> None
+    Some(id) ->
+      case dict.get(fresh, id) {
+        Ok(report) -> Some(#(id, report))
+        Error(Nil) ->
+          case still_running(model, id) {
+            True -> previous_report(model, id)
+            False -> None
+          }
+      }
+  }
+}
+
+/// The last report the page held for `id`: the previous read's, or the one
+/// kept for it already.
+fn previous_report(
+  model: Model,
+  id: String,
+) -> Option(#(String, sessions.Report)) {
+  case dict.get(model.reports, id), model.shown {
+    Ok(report), _ -> Some(#(id, report))
+    Error(Nil), Some(#(held, _) as kept) if held == id -> Some(kept)
+    Error(Nil), Some(_) | Error(Nil), None -> None
+  }
+}
+
 /// Whether the page's own list still shows `id` as a running session.
 fn still_running(model: Model, id: String) -> Bool {
   list.any(listing.entries(model.groups), fn(entry) {
@@ -4317,9 +4404,12 @@ fn still_running(model: Model, id: String) -> Bool {
   })
 }
 
-/// The first answer decides where the page lands, and no later one changes it:
-/// the inbox when something waits or runs, and otherwise the composer or the
-/// list as a choice, with the "Inbox" control for when something does.
+/// The first answer decides where the page lands: the inbox when something
+/// waits or runs, and otherwise the composer or the list as a choice. After
+/// that the page only leaves the inbox: when every session goes quiet it turns
+/// the landing into a choice, so a session that starts working later does not
+/// put the inbox back over a composer the person is typing in. The "Inbox"
+/// control is the way back.
 fn first_landing(model: Model) -> CentreChoice {
   case model.centre_choice {
     Awaiting ->
@@ -4327,7 +4417,11 @@ fn first_landing(model: Model) -> CentreChoice {
         inbox_rule.Inbox -> Landed
         inbox_rule.Form -> Chose
       }
-    Landed -> Landed
+    Landed ->
+      case would_land(model) {
+        inbox_rule.Inbox -> Landed
+        inbox_rule.Form -> Chose
+      }
     Chose -> Chose
   }
 }
@@ -4345,7 +4439,7 @@ fn selected_session(selection: Selection) -> Option(String) {
 /// nothing when there is none. A default is therefore fixed at the first read
 /// that has a thread, and a thread that later outranks it does not move it.
 fn settled_selection(model: Model) -> Selection {
-  let groups = inbox_rule.grouped(inbox_threads(model))
+  let groups = inbox_rule.grouped(drawn_threads(model))
   let chosen = inbox_rule.selection(groups, selected_session(model.selected))
 
   // A press that still stands stays a press; any other thread shown is a
@@ -4381,7 +4475,7 @@ fn landed_inbox(model: Model) -> Bool {
 /// session from here and the socket admits no new event.
 fn inbox_page(model: Model) -> Element(Msg) {
   let threads = inbox_threads(model)
-  let groups = inbox_rule.grouped(threads)
+  let groups = inbox_rule.grouped(drawn_threads(model))
   let chosen = inbox_rule.selection(groups, selected_session(model.selected))
 
   inbox_view.view(
@@ -4400,6 +4494,7 @@ fn inbox_page(model: Model) -> Element(Msg) {
       pick: InboxOpened,
       open: Opening,
       all_sessions: ShowingList,
+      presses: model.presses,
       field: case model.start.thread_send {
         Some(_) ->
           Some(inbox_view.Field(

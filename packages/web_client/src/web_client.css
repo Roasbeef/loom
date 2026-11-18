@@ -649,6 +649,7 @@
   /* The thread's message field and its outbox. The form is the composer's own
      card; its buttons sit together at the right, the note on what a message
      waits behind at the left, and the outbox reads under it as quiet text. */
+  .inbox-reveal{display:none;}
   .inbox-send{margin-top:2px;}
   form.inbox-form{margin:0;}
   .inbox-form .cbar{justify-content:flex-end;flex-wrap:wrap;}

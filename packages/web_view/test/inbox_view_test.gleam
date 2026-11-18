@@ -341,23 +341,27 @@ fn box_keys(model: home.Model) -> List(String) {
 }
 
 // Each state of a thread offers the buttons that fit it: an approval a Queue
-// alone with the words that say what it waits behind, an idle session one Send,
-// a working one a Queue and a Steer.
+// Send alone with the words that say a message starts a turn and decides nothing
+// (the approval parks and detaches, so the strand is idle), an idle session one
+// Send, a working one a Queue and a Steer.
 pub fn each_state_offers_its_own_buttons_test() {
   let model = opened(sending(process.new_subject(), reports()))
 
   // The default thread is the approval's.
   let approval = drawn(model)
-  assert string.contains(approval, "held behind the approval")
-  assert string.contains(approval, ">Queue</button>")
+  assert string.contains(
+    approval,
+    "This session is waiting on an approval. A message starts a new turn now; it does not decide the approval.",
+  )
+  assert string.contains(approval, ">Send</button>")
   assert !string.contains(approval, ">Steer</button>")
-  assert !string.contains(approval, ">Send</button>")
+  assert !string.contains(approval, ">Queue</button>")
 
   let idle = drawn(run(model, home.InboxOpened("A")))
   assert string.contains(idle, ">Send</button>")
   assert !string.contains(idle, ">Queue</button>")
   assert !string.contains(idle, ">Steer</button>")
-  assert !string.contains(idle, "held behind the approval")
+  assert !string.contains(idle, "waiting on an approval")
 
   let working = drawn(run(model, home.InboxOpened("C")))
   assert string.contains(working, ">Queue</button>")
@@ -395,13 +399,13 @@ pub fn a_page_without_the_capability_draws_no_field_test() {
   assert drawn(forged) == drawn(model)
 }
 
-// The outbox says "Not sent" before, "Sending…" while the daemon works, and the
+// The outbox says nothing before a send, "Sending…" while the daemon works, and the
 // fixed words of each answer after, for the thread the message went to.
 pub fn the_outbox_words_each_state_test() {
   let asked = process.new_subject()
   let model = opened(sending(asked, reports()))
   let model = run(model, home.InboxOpened("A"))
-  assert string.contains(drawn(model), "Not sent<")
+  assert !string.contains(drawn(model), "Not sent")
 
   let model = run(model, home.ThreadSubmitted("A", "go on", operator.Prompt))
   assert received(asked) == [#("A", "go on", operator.Prompt)]
@@ -437,9 +441,14 @@ pub fn the_outbox_words_each_state_test() {
     "Not sent: its queue is full",
   )
 
-  // Another thread reads as unsent while this one's is out.
+  assert string.contains(
+    said(thread_send.Refused(thread_send.Unanswered)),
+    "No answer in time; it may have arrived. Check the session before sending again.",
+  )
+
+  // Another thread says nothing while this one's is out.
   let other = drawn(run(model, home.InboxOpened("C")))
-  assert string.contains(other, "Not sent<")
+  assert !string.contains(other, "Not sent")
   assert !string.contains(other, "Sending…")
 }
 
@@ -687,4 +696,140 @@ pub fn a_slow_session_keeps_its_last_report_test() {
 
   assert string.contains(drawn(later), "Update · docs sweep · /src/loom</p>")
   assert string.contains(drawn(later), "reading the spec")
+}
+
+// --- landing, kept reports, steering and revealing ---------------------------
+
+// After the first read lands on the inbox, a read that finds every session
+// quiet turns the landing into a choice. A session that starts working later
+// does not put the inbox back over the composer the person may be typing in;
+// the "Inbox" control is the way back.
+pub fn the_inbox_does_not_return_over_a_composer_test() {
+  let quiet = [#("A", Report(sessions.Idle, None, []))]
+  let model = opened(creating())
+  assert string.contains(drawn(model), "<h1>Inbox</h1>")
+
+  let settled = run(model, home.Observed(quiet))
+  assert !string.contains(drawn(settled), "<h1>Inbox</h1>")
+
+  let later = run(settled, home.Observed(reports()))
+  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
+  assert string.contains(drawn(later), "Back to the inbox")
+}
+
+// A list with no running session asks for no activity, so no read will decide
+// the landing. The page takes the composer as chosen at once, so a much later
+// read does not replace it.
+pub fn a_page_with_nothing_running_settles_on_the_composer_test() {
+  let saved = [entry("D", "hex release", Saved)]
+  let model =
+    opened(
+      home.Start(
+        ..start(home.OperatorCeiling, reports()),
+        sessions: fn(deliver) { deliver(home.Listed(saved)) },
+        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+      ),
+    )
+  let listed =
+    run(model, home.Answered(home.reads(model), home.Listed(listing())))
+  let later = run(listed, home.Observed(reports()))
+
+  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
+  assert string.contains(drawn(later), "Back to the inbox")
+}
+
+// A kept report is drawn for its thread but is not counted as read: the
+// headline counts what the fresh answer holds.
+pub fn a_kept_report_is_not_counted_as_fresh_test() {
+  let headline = fn(html) {
+    let assert Ok(#(_, rest)) = string.split_once(html, "inbox-headline\">")
+    let assert Ok(#(words, _)) = string.split_once(rest, "</p>")
+    words
+  }
+  let fresh_only = list.filter(reports(), fn(row) { row.0 != "C" })
+  let model = opened(start(home.OperatorCeiling, reports()))
+  let kept = run(run(model, home.InboxOpened("C")), home.Observed(fresh_only))
+
+  assert string.contains(drawn(kept), "reading the spec")
+  assert headline(drawn(kept))
+    == headline(drawn(run(model, home.Observed(fresh_only))))
+  assert headline(drawn(kept)) != headline(drawn(model))
+}
+
+// A delivered steer says what a steer does, since the gateway answers it
+// "queued" as it does a queued prompt.
+pub fn a_delivered_steer_is_worded_as_a_steer_test() {
+  let asked = process.new_subject()
+  let model = run(opened(sending(asked, reports())), home.InboxOpened("C"))
+  let out = run(model, home.ThreadSubmitted("C", "stop", operator.Steer))
+  let html =
+    drawn(run(
+      out,
+      home.ThreadAnswered("C", thread_send.Delivered(thread_send.Queued)),
+    ))
+
+  assert string.contains(
+    html,
+    "Delivered to docs sweep · steering: it stops the current turn and runs next",
+  )
+  assert !string.contains(html, "· queued")
+}
+
+// A delivered send changes what the session is doing, so the page asks for a
+// fresh activity read at once and the buttons follow the new state. A refusal
+// asks for nothing.
+pub fn a_delivered_send_asks_for_a_fresh_read_test() {
+  let reads = process.new_subject()
+  let asked = process.new_subject()
+  let recording =
+    home.Start(..sending(asked, reports()), activity: fn(ids, deliver) {
+      process.send(reads, ids)
+      deliver(reports())
+    })
+  let model = run(opened(recording), home.InboxOpened("A"))
+  let _ = received_reads(reads)
+
+  let out = run(model, home.ThreadSubmitted("A", "go", operator.Prompt))
+  let refused =
+    run(
+      out,
+      home.ThreadAnswered("A", thread_send.Refused(thread_send.QueueFull)),
+    )
+  assert received_reads(reads) == []
+
+  let _ =
+    run(
+      out,
+      home.ThreadAnswered("A", thread_send.Delivered(thread_send.Admitted)),
+    )
+  assert list.length(received_reads(reads)) == 1
+  let _ = refused
+}
+
+fn received_reads(reads: Subject(List(String))) -> List(List(String)) {
+  case process.receive(reads, 0) {
+    Ok(ids) -> [ids, ..received_reads(reads)]
+    Error(Nil) -> []
+  }
+}
+
+// A press brings the pane on screen through `<loom-reveal>`, which a phone
+// needs because the pane sits below the list. A default thread asks for
+// nothing, and the pane is a section so the reveal scrolls it and not the whole
+// inbox.
+pub fn a_press_reveals_the_pane_test() {
+  let model = opened(start(home.OperatorCeiling, reports()))
+  assert !string.contains(drawn(model), "loom-reveal")
+
+  let pressed = run(model, home.InboxOpened("A"))
+  assert string.contains(
+    drawn(pressed),
+    "<loom-reveal data-lustre-key=\"reveal-1\">",
+  )
+
+  // Each press is a new element, so the pane is brought on screen again, even
+  // for the thread already shown.
+  let again = run(pressed, home.InboxOpened("A"))
+  assert string.contains(drawn(again), "data-lustre-key=\"reveal-2\"")
+  assert string.contains(drawn(pressed), "<section class=\"inbox-reading")
 }

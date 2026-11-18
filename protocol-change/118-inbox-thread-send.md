@@ -117,10 +117,14 @@ The buttons depend on the state the session's report gives the inbox:
 |---|---|
 | idle, failed, or nothing said | Send (a `Prompt`) |
 | working | Queue (a `Prompt`, held after the turn) and Steer (a `Steer`) |
-| an approval is pending | Queue alone, with the words "held behind the approval" |
+| an approval is pending | Send, with the words "This session is waiting on an approval. A message starts a new turn now; it does not decide the approval." |
 
-The page names the button it expects and does not enforce it: the gateway
-decides from the strand's state whether a prompt starts a turn or waits. Every
+An approval-pending session offers Send, not Queue, because the approval parks
+and detaches: the strand is idle, so a prompt is admitted and starts a turn at
+once rather than waiting behind the approval (observed in a live drive). The
+message does not decide the approval. The page names the button it expects and
+does not enforce it: the gateway decides from the strand's state whether a
+prompt starts a turn or waits. Every
 message is the owner's own prompt, attributed as one typed on the session's
 page.
 
@@ -187,17 +191,18 @@ message's refusals are) and is never drawn.
 
 | Answer | Words |
 |---|---|
-| before any send | Not sent |
+| before any send, or for another thread | (nothing) |
 | the task is running | Sending… |
 | `Delivered(Admitted)` | Delivered to (session) · admitted |
-| `Delivered(Queued)` | Delivered to (session) · queued |
+| `Delivered(Queued)` of a prompt | Delivered to (session) · queued |
+| `Delivered(Queued)` of a steer | Delivered to (session) · steering: it stops the current turn and runs next |
 | `NotHeld`: the principal does not hold the session, or the capability fails at the press | Not sent: this home no longer holds that session |
 | `NotResident`: the session is saved, or not running | Not sent: the session is not running |
 | `NotAccepted(reason)`: the gateway refused the message | Not sent: the session refused it |
 | `QueueFull`: the queue bound was reached | Not sent: its queue is full |
-| `Unanswered`: no answer before the 20-second deadline; the gateway may have taken the message | No answer in time; it may have arrived — check the session before sending again |
+| `Unanswered`: no answer before the 20-second deadline; the gateway may have taken the message | No answer in time; it may have arrived. Check the session before sending again. |
 
-After `Delivered` the message field clears. After a refusal it keeps the draft.
+After `Delivered` the message field clears and the page asks for a fresh activity read, so the buttons follow the session's new state. After a refusal it keeps the draft.
 
 "Delivered" means only that the gateway admitted or queued the message. It
 does not mean that the session read it, or that a turn ran.
