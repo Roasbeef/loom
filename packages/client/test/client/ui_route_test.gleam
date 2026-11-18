@@ -5551,6 +5551,58 @@ pub fn the_doors_words_reach_the_page_as_fixed_words_test() {
     == home.Failed("Not closed: the record changed")
 }
 
+// A rail's answer needs the page open, and then the door's own authority:
+// an ended page is declined as `forbidden` before anything is sent, and a
+// session the credential does not hold is told no such session, with nothing
+// sent either way (protocol-change/120).
+pub fn a_rail_answer_needs_an_open_page_and_the_doors_authority_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let send = fn(strand, text) {
+      process.send(asked, #(strand, text))
+      thread_send.Delivered(thread_send.Admitted)
+    }
+    let reach =
+      attention_door.Reach(
+        registry: ready.registry,
+        digest: standing.digest,
+        endpoint: fn(_) { None },
+      )
+
+    assert ui_socket.page_answer_for(
+        reach,
+        fn() { Error(Nil) },
+        send,
+        "S1",
+        "ask-0123456789",
+        1,
+        json.Object([]),
+      )
+      == Error(
+        attention_door.Declined(attention_door.Refusal(
+          "forbidden",
+          "this page cannot answer",
+        )),
+      )
+
+    let assert Error(attention_door.Declined(attention_door.Refusal(
+      code: "not_found",
+      ..,
+    ))) =
+      ui_socket.page_answer_for(
+        reach,
+        page_open,
+        send,
+        "S1",
+        "ask-0123456789",
+        1,
+        json.Object([]),
+      )
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
 // The task answers whether or not the send does: one that finishes is delivered
 // as it answered, and one that outlasts its deadline is delivered as not
 // accepted, so an outbox that says "Sending…" is always settled.

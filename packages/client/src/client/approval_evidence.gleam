@@ -18,7 +18,7 @@
 //// `read` → `item` → `wanted_line`
 ////
 //// 1. `read` lists the escalation records and keeps the pending ones in id
-////    order, at most `max_items`, with the total as a count.
+////    order, a few of them, with the total as a count.
 //// 2. `item` words one record at the revision of its cell.
 //// 3. `wanted_line` turns one wanted grant, in the escalation vocabulary, into a
 ////    kind and a short detail.
@@ -158,6 +158,7 @@ fn field_text(value: JsonValue, name: String) -> String {
 /// The wanted grants of a denial as `{kind, detail}` objects, in order and at
 /// most `max_wanted`.
 fn wanted_of(denial: JsonValue) -> List(JsonValue) {
+  // A denial with no wanted list wants nothing the page can list.
   let wanted = case denial {
     json.Object(fields) ->
       case list.key_find(fields, "wanted") {
@@ -187,6 +188,8 @@ fn wanted_of(denial: JsonValue) -> List(JsonValue) {
 /// ```
 pub fn wanted_line(grant: JsonValue) -> JsonValue {
   let kind = field_text(grant, "grant")
+
+  // Each kind of grant keeps the member that says what it is about.
   let detail = case kind {
     "writable_root" | "readable_root" -> field_text(grant, "path")
     "env" -> field_text(grant, "name")

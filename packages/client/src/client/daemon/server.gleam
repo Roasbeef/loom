@@ -535,6 +535,16 @@ pub type Attachment(instance) {
     models: fn() -> List(String),
     /// Configured profile names for the same completion table.
     profiles: fn() -> List(String),
+    /// Asks the named sessions what they need from a person
+    /// (`sessions.attention`, protocol-change/120), as the home's own feed read
+    /// does, with the page's credential. A session page asks for its own
+    /// session alone, for the rail's open asks, stuck strands and finds. It
+    /// blocks for up to the read's deadline, so the page runs it from a task.
+    attention: fn(List(String)) -> List(#(String, page_attention.Row)),
+    /// What an answer to an ask needs to reach the session as the page's
+    /// credential (`attention_door`). The door reads authority from the
+    /// registry at each answer and never from the page.
+    attention_reach: attention_door.Reach(instance),
   )
 }
 
@@ -2545,6 +2555,8 @@ fn resident_upgrade(
                   profiles.names(config.domain_configuration)
                   |> result.unwrap([])
                 },
+                attention: home_attention(config, state.registry, digest),
+                attention_reach: attention_reach(config, state.registry, digest),
               ),
             )
           root.release(config.daemon, permit)

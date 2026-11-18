@@ -256,6 +256,7 @@ import telemetry/owner
 import web_view/actions
 import web_view/admin
 import web_view/approval_evidence
+import web_view/attention_feed as page_attention
 import web_view/component
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
@@ -1625,6 +1626,7 @@ fn admit_live(
       manage: None,
       logins: None,
       peers: None,
+      attention: None,
     )
   let start = live_start(target, reach, attachment.principal.id, transport)
 
@@ -2458,6 +2460,126 @@ pub fn close_outcome(
   }
 }
 
+/// The row a session's own page reads for its rail: the feed row of the one
+/// session, or fixed words when the daemon had none for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.own_row(attachment.attention, "0198...")
+/// ```
+@internal
+pub fn own_row(
+  read: fn(List(String)) -> List(#(String, page_attention.Row)),
+  session: String,
+) -> Result(page_attention.Row, String) {
+  case read([session]) {
+    [#(_, row), ..] -> Ok(row)
+    [] -> Error("The session did not answer.")
+  }
+}
+
+/// The capability to answer an ask from the live rail that a session page of
+/// `role` is handed: `answer` for an operator's page (a member operator or the
+/// owner) and none for an observer's, which then draws no form and whose socket
+/// admits no submit. The daemon reads authority again at each answer
+/// (`attention_door.answer`), whatever this page was handed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.rail_answer_capability(Observing, answer) == None
+/// ```
+@internal
+pub fn rail_answer_capability(role: Role, answer: answer) -> Option(answer) {
+  case role {
+    Operating | Owning -> Some(answer)
+    Observing -> None
+  }
+}
+
+/// Answers an ask from a session's own page, or says why not
+/// (protocol-change/120). The page must still be open, and the door reads the
+/// caller's authority from the registry, so only the owner and an Operator
+/// member are answered. `send` delivers the one prompt to the asking strand
+/// over the page's own gateway attachment, and it blocks for as long as the
+/// gateway takes, so a page's component never calls it directly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.page_answer_for(reach, open, send, session, ask, revision, form)
+/// ```
+@internal
+pub fn page_answer_for(
+  reach: attention_door.Reach(instance),
+  open: fn() -> Result(Int, Nil),
+  send: fn(String, String) -> thread_send.Answer,
+  session: String,
+  ask: String,
+  revision: Int,
+  form: wire.JsonValue,
+) -> Result(attention_door.Answered, attention_door.AnswerFault) {
+  case open() {
+    Error(_) ->
+      Error(
+        attention_door.Declined(attention_door.Refusal(
+          "forbidden",
+          "this page cannot answer",
+        )),
+      )
+    Ok(_) -> attention_door.answer(reach, send, session, ask, revision, form)
+  }
+}
+
+/// Sends a prompt to a strand of the page's own session over the page's own
+/// gateway attachment, under a binding of its own that carries the page's
+/// ceiling, as the home's send does. The text is a JSON string inside the frame
+/// and is never interpreted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.page_strand_send(attach)("main", "Answer to ask-...")
+/// ```
+@internal
+pub fn page_strand_send(
+  attach: ui_relay.Attach,
+) -> fn(String, String) -> thread_send.Answer {
+  fn(strand, text) {
+    send_to_strand(
+      attach.hub,
+      gateway.Binding(
+        ..attach.binding,
+        connection_id: "web-answer-" <> hex_entropy(8),
+        authority: ui_relay.capped(attach.binding.authority, attach.ceiling),
+      ),
+      fn() {
+        use #(who, held) <- result.map(attach.check())
+        #(who, ui_relay.capped(held, attach.ceiling))
+      },
+      strand,
+      text,
+      operator.Prompt,
+    )
+  }
+}
+
+/// The page's own word for an outcome the home's words already say.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.rail_outcome(home.Failed("no")) == component.AnswerFailed("no")
+/// ```
+@internal
+pub fn rail_outcome(outcome: home.ActOutcome) -> component.AnswerOutcome {
+  case outcome {
+    home.Succeeded(words:) -> component.AnswerSent(words)
+    home.Failed(words:) -> component.AnswerFailed(words)
+  }
+}
+
 /// Writes the reason of a refusal the page will not be shown to the daemon's
 /// log, as `first_message_sent` does for a first message that did not arrive.
 /// The page is told fixed words only.
@@ -3065,6 +3187,38 @@ fn admit(
   let registry = attachment.registry
   let credential = attachment.digest
   let principal = attachment.principal.id
+
+  // The rail's reads are every page's, and its answer is an operator's page's
+  // alone (protocol-change/051, the addendum "the live rail, answered"). The
+  // reach is built from the page's own standing, as the home's is.
+  let rail_attention =
+    component.Attention(
+      read: fn(deliver) {
+        read_task(deliver, fn() {
+          own_row(attachment.attention, attachment.session_id)
+        })
+      },
+      record: fn(id, deliver) {
+        read_task(deliver, fn() {
+          record_for(attachment.attention_reach, attachment.session_id, id)
+        })
+      },
+      answer: rail_answer_capability(role, fn(ask, revision, form, deliver) {
+        read_task(deliver, fn() {
+          page_answer_for(
+            reach_of(standing, attachment.attention_reach.endpoint),
+            open,
+            page_strand_send(attach),
+            attachment.session_id,
+            ask,
+            revision,
+            form,
+          )
+          |> answer_outcome
+          |> rail_outcome
+        })
+      }),
+    )
   let transport =
     component.Transport(
       connect: fn(inbox, opened) {
@@ -3096,6 +3250,7 @@ fn admit(
       worktree:,
       manage: managing,
       peers: peer_links,
+      attention: Some(rail_attention),
       logins: logins_capability(role, fn(logins, deliver) {
         read_task(deliver, fn() {
           ended_logins(

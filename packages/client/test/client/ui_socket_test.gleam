@@ -57,6 +57,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       rename: None,
       shareable: None,
       peers: None,
+      attention: None,
       worktree: None,
       logins: None,
       manage: None,
@@ -1352,6 +1353,38 @@ pub fn the_attention_forms_need_no_new_admission_test() {
     assert !ui_socket.home_accepts(submit_on(path))
     assert !ui_socket.home_owner_accepts(submit_on(path))
   })
+}
+
+// The live rail's answer is an operator's page's alone (protocol-change/051,
+// the addendum "the live rail, answered"). The form's submit is at the exact path
+// `component.rail_submit` names. An operator's and an owner's socket admit it, an
+// observer's socket refuses it whatever its shape and admits only the insight's
+// click it always admitted, and the capability to answer is handed to an
+// observer's page never.
+pub fn only_an_operators_rail_answers_an_ask_test() {
+  let form = component.rail_path <> "\t1\t0\t1\t0\t1"
+  let press = component.rail_path <> "\t1\t1\t1\t0\t0"
+
+  // The path is the one the predicate names, and a click's path is not it.
+  assert component.rail_submit(form)
+  assert !component.rail_submit(press)
+  assert component.rail_click(press)
+
+  // An operator's page and the owner's admit the submit.
+  assert ui_socket.operator_accepts(submit_on(form))
+  assert ui_socket.owner_accepts(submit_on(form))
+
+  // An observer's refuses it, at the form's path and at every other beneath the
+  // rail, and still admits the insight's press.
+  assert !ui_socket.observer_accepts(submit_on(form))
+  assert !ui_socket.observer_accepts(submit_on(component.rail_path))
+  assert !ui_socket.observer_accepts(click_on(form))
+  assert ui_socket.observer_accepts(click_on(press))
+
+  // The capability itself is withheld from an observer.
+  assert ui_socket.rail_answer_capability(ui_socket.Observing, 1) == None
+  assert ui_socket.rail_answer_capability(ui_socket.Operating, 1) == Some(1)
+  assert ui_socket.rail_answer_capability(ui_socket.Owning, 1) == Some(1)
 }
 
 // Only the owner's operating home is handed the recent-folders capability.
