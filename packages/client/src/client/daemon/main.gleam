@@ -4425,10 +4425,14 @@ pub fn diagnose_start(
   outcome
   |> result.map_error(fn(reason) {
     let #(stage_name, class, detail) = start_class(stage, reason)
+
+    // The level is the only difference between a retried lack of room and a
+    // failure that nothing retries.
     let write = case manager.no_room(reason) {
       True -> log.warn
       False -> log.error
     }
+
     write(
       logger,
       "daemon.session_start_failed",

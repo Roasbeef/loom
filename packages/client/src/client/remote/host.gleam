@@ -1556,10 +1556,15 @@ fn close_unbuilt(
   unacked: protocol.Unacked,
   failure: PlaneFailure,
 ) -> Nil {
+  // Only these two failures are known to leave nothing a later attach could
+  // adopt. Any other failure is left for the next attach to build again.
   let nothing_built = case failure {
     WorktreeNotMade(..) -> True
     NoPlaneBuilt(reason:) -> protocol.is_unserved_workspace(reason)
   }
+
+  // Closing needs both: the build left nothing, and the scope holds no tree
+  // and no result that somebody has yet to acknowledge.
   case nothing_built, holds_nothing(state, session, how, unacked) {
     True, True -> {
       let _begun =
