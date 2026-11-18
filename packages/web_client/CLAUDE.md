@@ -687,7 +687,14 @@ sends the server nothing.
   `danger-text`) in either theme, or if a rule sets `color:` from a mark
   token, `--hue` or `fg-faint`. It has its own self-test. `on-danger` (the
   tab badge's text) is held against `danger`, and `bg` against `fg` for the
-  filled primary buttons.
+  filled primary buttons. The tokens are written as `oklch(L C H)` (hex is
+  still read), and the same script holds the palette's design. It checks five
+  things: every value is inside sRGB; text has an APCA lightness contrast of
+  Lc 60, and `fg` Lc 90; the surfaces step in OKLCH lightness; the four
+  status-mark pairs stay 0.10 apart in OKLab for deuteranopia and protanopia
+  as well as normal vision; and marks are 3:1 on `bg` and `bg-raised`
+  (`docs/design-notes/web-design.md`, section 5.1). A new value has to clear
+  those checks, not only the ratio.
 - **The monospace face is for code.** Labels, rows and headings are
   `--font-sans`; `--font-mono` is for code, paths, tags, diffs and tool
   output. `scripts/web_client_css_check.sh`, run by `make lint`, fails a rule

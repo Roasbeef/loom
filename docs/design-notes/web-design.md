@@ -586,6 +586,35 @@ token.
 at 12 px, which is what the stylesheet has. The page loads no fonts, and
 nothing changes.
 
+### 5.1 Addendum (2026-11-18): the palette is rebuilt in OKLCH
+
+The hex values in the table above are the palette as first built. The
+owner asked for a pass that improves the page's legibility and looks more
+current, and the values were measured before anything changed. The A2
+palette passed the 4.5:1 rule everywhere, but:
+
+- In the dark theme, quiet and status text had an APCA lightness contrast
+  of Lc 43 to 48. WCAG's ratio overstates contrast on dark surfaces, and
+  body text needs about Lc 60.
+- The dark surfaces were 0.014 apart in OKLCH lightness from page to sunk,
+  so the sidebar and the page read as one surface.
+- The dark neutrals mixed a cool surface (hue 264) with warm text (hue 89).
+- `current` and `peer` were 0.061 apart in OKLab for normal vision and 0.012
+  for protanopia. In the light theme, added and removed were 0.049 apart for
+  deuteranopia, the most common colour-vision deficiency.
+- Every light text token sat between 4.53 and 4.84:1, at the floor.
+
+The tokens are now written as `oklch(L C H)`, with the same names, so no
+class changed. Each theme has one neutral hue: a cool 262 in the dark theme,
+and the warm paper's 85 in the light theme. The surfaces step by a fixed
+lightness, at least 0.03 in the dark theme and 0.02 in the light one. Text
+clears Lc 60, and Lc 90 for `fg`. The status marks are spaced in lightness as
+well as hue. `scripts/web_client_contrast_check.sh` holds all of this as
+rules 6 to 10, beside the existing five. Its self-test plants one violation
+per rule, and the A2 palette fails 61 of the new checks. The values, the
+rationale and the thresholds are in the stylesheet's token comment and the
+script's header. The table above is kept as the record of the first build.
+
 ## 6. Security and protocol
 
 The rules that decide what a page may do are in 051 and its addenda, and in
