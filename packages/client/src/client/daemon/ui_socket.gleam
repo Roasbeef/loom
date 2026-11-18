@@ -7686,9 +7686,9 @@ fn read_task_for(read) {
   fn(deliver) { read_task(deliver, read) }
 }
 
-// A session page's sidebar draws one state for each session and nothing a
-// session said, so a page that is handed the home's reports (a live page the
-// home opened) keeps only their activity before the page can see them.
+/// A session page's sidebar draws one state for each session and nothing a
+/// session said, so a page that is handed the home's reports (a live page the
+/// home opened) keeps only their activity before the page can see them.
 fn states_only(
   reports: fn(List(String)) -> List(#(String, sessions.Report)),
 ) -> fn(List(String)) -> List(#(String, sessions.Activity)) {

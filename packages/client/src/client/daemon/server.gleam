@@ -6596,13 +6596,16 @@ pub fn report_of(
 ) -> Result(#(String, listed_sessions.Report), Nil) {
   use #(id, doing) <- result.try(state_of(row))
 
+  // Only an object carries the extras, and `state_of` already took one.
   case row {
     json.Object(fields) -> {
+      // A message of any type but a string is no message.
       let last_message = case list.key_find(fields, "last_message") {
         Ok(json.String(text)) -> Some(text)
         Ok(_) | Error(Nil) -> None
       }
 
+      // Each glance is read alone, so one malformed glance costs only itself.
       let glances = case list.key_find(fields, "glances") {
         Ok(json.Array(items)) -> list.filter_map(items, glance_of)
         Ok(_) | Error(Nil) -> []
@@ -6622,6 +6625,7 @@ pub fn report_of(
 /// One glance of a row, or nothing for a value that is not an object with a
 /// string strand, title and summary.
 fn glance_of(item: JsonValue) -> Result(listed_sessions.Glance, Nil) {
+  // A glance is an object of three strings and nothing else.
   case item {
     json.Object(fields) -> {
       use strand <- result.try(text_field(fields, "strand"))
