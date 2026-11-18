@@ -434,6 +434,42 @@ pub fn an_observer_socket_drops_a_click_on_a_marker_test() {
   assert ui_socket.observer_accepts(click_at(component.strip_path <> "\t3\t0"))
 }
 
+// The live rail's one handler is an unopened insight's press, beneath
+// `component.rail_path` (protocol-change/051, the addendum on the live rail).
+// An observer's socket admits a click there and nothing else new: not the
+// rail's own path, a path that shares its digits, its neighbours in the
+// Strands pane, another event, or a batch. The operator's admits the click
+// as it admits any click that is not an owner's control.
+pub fn the_rail_admits_an_insights_click_and_nothing_else_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let insight = component.rail_path <> "\t0\t1\t0\t0"
+  assert ui_socket.observer_accepts(click_at(insight, "click"))
+  assert ui_socket.operator_accepts(click_at(insight, "click"))
+  assert ui_socket.owner_accepts(click_at(insight, "click"))
+
+  list.each(
+    [
+      click_at(component.rail_path, "click"),
+      click_at(component.rail_path <> "0\t1", "click"),
+      click_at("0\t3\t0\t3\t0", "click"),
+      click_at("0\t3\t0\t5\t0", "click"),
+      click_at(insight, "submit"),
+      click_at(insight, "keydown"),
+      click_at(insight, "input"),
+      "{\"kind\":3,\"messages\":[" <> click_at(insight, "click") <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
 pub fn an_operator_socket_accepts_only_its_two_events_test() {
   assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"click\"}")
   assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"submit\"}")
