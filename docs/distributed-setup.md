@@ -2050,7 +2050,8 @@ Do not use the flag while the session is live: the executor would lose the scope
 under a session that is using it, and children the session started would keep
 running. A scope that holds a worktree keeps its record, and the tree stays on
 disk. The command prints the path, and `loom executor release --worktrees`
-removes it. The orchestrator's log has a `workspace.close_lost` warning naming
+removes a tree with no changes; a tree with changes needs `--force-session
+SESSION`. The orchestrator's log has a `workspace.close_lost` warning naming
 the session, the executor and the incarnation for each close that went
 unanswered.
 

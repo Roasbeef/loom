@@ -289,6 +289,37 @@ pub fn a_running_executor_daemon_stops_the_command_before_the_ledger_opens_test(
   assert releases(directory) == []
 }
 
+pub fn an_interrupted_tree_record_is_not_promised_to_a_sweep_test() {
+  let directory = state_with("open-creating", exec_ledger.Open)
+  let assert Ok(ledger) = exec_ledger.open(directory <> "/exec-ledger.db")
+    as "the ledger reopens"
+  let assert Ok(Nil) =
+    exec_ledger.record_tree(
+      ledger,
+      exec_ledger.Tree(
+        session:,
+        workspace: "/work",
+        path: directory <> "/worktrees/repo/" <> session,
+        branch: "loom/" <> session,
+        state: exec_ledger.Creating,
+      ),
+    )
+    as "the tree record is written"
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
+
+  let assert Ok(told) =
+    executor_cli.run([
+      "release",
+      session,
+      "--processes-gone",
+      "--state-dir",
+      directory,
+    ])
+
+  assert string.contains(told, "left from an interrupted attempt")
+  assert !string.contains(told, "--force-session")
+}
+
 pub fn a_running_executor_daemon_stops_the_flagged_command_too_test() {
   let directory = state_with("running-gone", exec_ledger.Open)
   let assert Ok(paths) = endpoint.paths(directory)

@@ -1331,7 +1331,8 @@ every child retired, as for any release, and the record keeps `open` as the stat
 it was in. A session that still exists reopens at the next incarnation on its next
 open. Do not use the flag for a session that is running. A scope that holds a
 worktree keeps its record and its tree; the command prints the path, and
-`--worktrees` removes the tree.
+`--worktrees` removes a tree with no changes, and a tree with changes needs
+`--force-session SESSION`.
 
 The command holds the state directory's daemon reservation while it runs and leaves
 that record behind when it exits. A daemon started during the release is refused

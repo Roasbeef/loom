@@ -478,7 +478,11 @@ fn described(
 /// Names a worktree the release left, or says nothing when there is none.
 fn tree_note(session: String, tree: Option(exec_ledger.Tree)) -> String {
   case tree {
-    Some(held) if held.state != exec_ledger.Removed ->
+    // The sweep settles only `Present` and `Kept` rows, so those are the trees
+    // the operator can be told it removes.
+    Some(held)
+      if held.state == exec_ledger.Present || held.state == exec_ledger.Kept
+    ->
       " The session's worktree "
       <> held.path
       <> " (branch "
@@ -487,6 +491,13 @@ fn tree_note(session: String, tree: Option(exec_ledger.Tree)) -> String {
       <> " PATH` removes a tree with no changes, and adds `--force-session "
       <> session
       <> "` for one that has them."
+
+    // A `Creating` or `Removing` row is what an interrupted attempt left, and
+    // `--worktrees` does not settle it.
+    Some(held) if held.state != exec_ledger.Removed ->
+      " A worktree record is left from an interrupted attempt ("
+      <> held.path
+      <> "); `--worktrees` does not settle it."
     Some(_) | None -> ""
   }
 }
