@@ -4927,8 +4927,10 @@ admitted, queued, or refused.
   and the agent's last message under a label that says it is untrusted. No
   attribute, class, label, placeholder or key carries any of it. A form's controls
   are named by fixed words (`comment`, `note`, `closure`), a form is keyed by the
-  session, the open count and its position, and the handlers close over the path
-  and the find's identifier on the server.
+  session, the open count and its position, and a find's form also carries the
+  find's identifier, which the daemon minted (`find-` and ten hexadecimal digits)
+  and no session wrote. The handlers close over the path and the find's
+  identifier on the server.
 - A form's submit is read back strictly: a comment form is exactly one `comment`
   field, a find form exactly a `note` and a `closure` that is `fixed`, `filed` or
   `dismissed`. A comment on a path the review does not hold is refused and not
