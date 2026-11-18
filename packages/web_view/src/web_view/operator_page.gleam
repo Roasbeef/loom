@@ -1157,9 +1157,9 @@ fn role_text(role: snapshot.Role) -> String {
 }
 
 /// An idle strand takes one Send; a busy one takes a Queue, which the daemon
-/// holds and runs after the current operation, or a Steer, which folds into
-/// it. Each is a submit button naming its delivery, so the one pressed
-/// travels with the form.
+/// holds and runs after the current operation, or a Steer, which stops the
+/// operation and runs first (protocol-change/022). Each is a submit button
+/// naming its delivery, so the one pressed travels with the form.
 fn actions(activity: component.Activity) -> List(Element(Msg(socket))) {
   case activity {
     component.Idle -> [submit_button("prompt", "Send", "send")]
