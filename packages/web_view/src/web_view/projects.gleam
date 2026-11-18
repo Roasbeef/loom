@@ -97,6 +97,21 @@ pub type Closing {
   )
 }
 
+/// What the daemon said to a stop or a retry of a ticket, the two acts a ticket
+/// thread offers that have no other outcome than done or refused.
+pub type Acted {
+  /// The daemon recorded the act.
+  Acted
+
+  /// The daemon refused it. The code is the daemon's, such as `bad_request` for
+  /// a ticket that has already ended; the page words it with
+  /// `web_view/ticket_rule.refusal_words`.
+  Declined(
+    /// The daemon's error code.
+    code: String,
+  )
+}
+
 /// A project as the page holds it: its id, its workspace, and its board once
 /// the reply decoded.
 pub type Loaded {

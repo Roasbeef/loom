@@ -1197,6 +1197,16 @@ pub fn upgrade_home(
               close_for(standing, open, feed, project, ticket)
             })
           },
+          stop: fn(project, ticket, deliver) {
+            read_task(deliver, fn() {
+              stop_ticket_for(standing, open, feed, project, ticket)
+            })
+          },
+          retry: fn(project, ticket, deliver) {
+            read_task(deliver, fn() {
+              retry_ticket_for(standing, open, feed, project, ticket)
+            })
+          },
         ),
       )
     })
@@ -5204,6 +5214,53 @@ pub fn close_for(
   case authorized_owner(standing, open) {
     Ok(_) -> feed.close(project, ticket)
     Error(_) -> page_projects.NotClosed("forbidden")
+  }
+}
+
+/// Stops a ticket for the owner's page, withdrawing its mandate. The owner check
+/// runs first, as for a close, and a page that fails it stops nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.stop_ticket_for(standing, open, feed, "p1", "t-a")
+/// ```
+@internal
+pub fn stop_ticket_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+  project: String,
+  ticket: String,
+) -> page_projects.Acted {
+  // The check comes before the actor, so a page that may not stop writes
+  // nothing to a project's ledger.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.stop(project, ticket)
+    Error(_) -> page_projects.Declined("forbidden")
+  }
+}
+
+/// Asks for a new worker on a stalled ticket for the owner's page, after the
+/// same owner check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.retry_ticket_for(standing, open, feed, "p1", "t-a")
+/// ```
+@internal
+pub fn retry_ticket_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+  project: String,
+  ticket: String,
+) -> page_projects.Acted {
+  // The check comes before the actor, as it does for a stop.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.retry(project, ticket)
+    Error(_) -> page_projects.Declined("forbidden")
   }
 }
 

@@ -782,6 +782,12 @@ pub type Projects {
     /// the function the daemon's word goes to. The daemon keeps the ticket's
     /// mandate, so a later message can resume it.
     close: fn(String, String, fn(feed.Closing) -> Nil) -> Nil,
+    /// Stops a ticket, withdrawing its mandate: the project, the ticket and the
+    /// function the daemon's word goes to. Only a ticket thread on the inbox
+    /// sends it.
+    stop: fn(String, String, fn(feed.Acted) -> Nil) -> Nil,
+    /// Asks for a new worker on a stalled ticket, with the same arguments.
+    retry: fn(String, String, fn(feed.Acted) -> Nil) -> Nil,
   )
 }
 

@@ -20,14 +20,15 @@
 ////
 //// ## Flow
 ////
-//// `feed` → `boards` → `ticket_of` → `answered` → `closed`
+//// `feed` → `boards` → `ticket_of` → `answered` → `closed` → `acted`
 ////
 //// 1. `feed` is the daemon's offer to a page, or nothing when there is no
 ////    project table.
 //// 2. `boards` reads each running project's first page, building each body
 ////    with `board_body`.
-//// 3. `ticket_of` reads one ticket, and `answered` and `closed` record an
-////    answer and a close, all named by ids the page took from a board it holds.
+//// 3. `ticket_of` reads one ticket, and `answered`, `closed` and `acted` record
+////    an answer, a close, and a stop or a retry, all named by ids the page took
+////    from a board it holds.
 
 import client/daemon/project_book
 import client/daemon/project_host
@@ -49,6 +50,10 @@ pub type Feed {
     answer: fn(String, String, Int, String) -> projects.Answer,
     /// A close of a ticket whose work the owner accepted.
     close: fn(String, String) -> projects.Closing,
+    /// A stop of a ticket, which withdraws its mandate.
+    stop: fn(String, String) -> projects.Acted,
+    /// A request for a new worker on a stalled ticket.
+    retry: fn(String, String) -> projects.Acted,
   )
 }
 
@@ -69,6 +74,12 @@ pub fn feed(control: Option(project_start.Control)) -> Option(Feed) {
         answered(held, project, ticket, seq, text)
       },
       close: fn(project, ticket) { closed(held, project, ticket) },
+      stop: fn(project, ticket) {
+        acted(held, project, ticket, project_host.stop_ticket)
+      },
+      retry: fn(project, ticket) {
+        acted(held, project, ticket, project_host.retry)
+      },
     )
   })
 }
@@ -142,6 +153,25 @@ fn closed(
       case project_host.close_ticket(handle, ticket, "owner") {
         Ok(Nil) -> projects.Closed
         Error(_) -> projects.NotClosed("bad_request")
+      }
+  }
+}
+
+/// The actor's word on a stop or a retry, which take the same arguments and
+/// answer the same way, as the page needs it: done, or refused with the code
+/// the control command would answer.
+fn acted(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+  act: fn(project_host.Handle, String, String) -> Result(Nil, String),
+) -> projects.Acted {
+  case project_book.get(control.book, project) {
+    Error(Nil) -> projects.Declined("not_found")
+    Ok(handle) ->
+      case act(handle, ticket, "owner") {
+        Ok(Nil) -> projects.Acted
+        Error(_) -> projects.Declined("bad_request")
       }
   }
 }

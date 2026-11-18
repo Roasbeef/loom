@@ -292,6 +292,23 @@ pub fn the_feed_closes_a_ticket_and_says_so_when_it_cannot_test() {
   stop(handle)
 }
 
+pub fn the_feed_stops_and_retries_a_ticket_and_says_so_when_it_cannot_test() {
+  let handle = start("feed-stop")
+  let _ = asking(handle)
+  let assert Some(feed) = ui_projects.feed(Some(controlled(handle)))
+
+  // A project or ticket the table does not hold is `not_found` or refused, and
+  // nothing is recorded for it.
+  assert feed.stop("nope", "t-a") == page_projects.Declined("not_found")
+  assert feed.retry("nope", "t-a") == page_projects.Declined("not_found")
+  assert feed.retry("p1", "t-missing") == page_projects.Declined("bad_request")
+
+  // A ticket the project does not hold cannot be stopped, and one it holds is.
+  assert feed.stop("p1", "t-missing") == page_projects.Declined("bad_request")
+  assert feed.stop("p1", "t-a") == page_projects.Acted
+  stop(handle)
+}
+
 fn controlled(handle: project_host.Handle) -> project_start.Control {
   let assert Ok(book) = project_book.start() as "the table starts"
   project_book.put(book, handle)

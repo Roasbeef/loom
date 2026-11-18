@@ -24,6 +24,7 @@ import client/daemon/server
 import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_origin
+import client/daemon/ui_projects
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/daemon_claim_test
@@ -89,6 +90,7 @@ import web_view/names
 import web_view/orchestrators as relayed_roster
 import web_view/page
 import web_view/peer_links
+import web_view/projects as page_projects
 import web_view/renames
 import web_view/sessions
 import web_view/signins
@@ -11256,5 +11258,49 @@ pub fn a_review_is_read_only_for_a_page_that_may_operate_test() {
     assert ui_socket.review_for(standing, page_open, review, "S1")
       == Error("an observer cannot read it")
     assert process.receive(asked, 0) == Ok("S1")
+  })
+}
+
+// A stop or a retry of a ticket from Home is the owner's alone. A page whose
+// standing check fails (a read-only page, a member at Operator, an ended page)
+// reaches no actor and is told `forbidden`, so a project's ledger is written by
+// nothing a member or an observer could press (protocol-change/051, the
+// addendum on project tickets on Home).
+pub fn a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test() {
+  fixture(fn(ready, _, _) {
+    let reached = process.new_subject()
+    let feed =
+      ui_projects.Feed(
+        boards: fn() { page_projects.Unread },
+        ticket: fn(_, _) { page_projects.TicketUnread },
+        answer: fn(_, _, _, _) { page_projects.Refused("unused") },
+        close: fn(_, _) { page_projects.NotClosed("unused") },
+        stop: fn(project, ticket) {
+          process.send(reached, "stop " <> project <> " " <> ticket)
+          page_projects.Acted
+        },
+        retry: fn(project, ticket) {
+          process.send(reached, "retry " <> project <> " " <> ticket)
+          page_projects.Acted
+        },
+      )
+    let #(standing, _) = standing_of(ready, "ui-ticket-member", access.Operator)
+
+    list.each(
+      [
+        #(standing, page_open),
+        #(ui_socket.Standing(..standing, ceiling: access.Observer), page_open),
+        #(standing, fn() { Error(Nil) }),
+      ],
+      fn(page) {
+        assert ui_socket.stop_ticket_for(page.0, page.1, feed, "p1", "t-a")
+          == page_projects.Declined("forbidden")
+        assert ui_socket.retry_ticket_for(page.0, page.1, feed, "p1", "t-a")
+          == page_projects.Declined("forbidden")
+      },
+    )
+
+    // No refused page reached an actor.
+    assert process.receive(reached, 0) == Error(Nil)
   })
 }
