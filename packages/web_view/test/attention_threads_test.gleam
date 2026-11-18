@@ -847,3 +847,39 @@ pub fn the_first_summary_decides_an_unprompted_composer_test() {
     "<h1>Inbox</h1>",
   )
 }
+
+// With no saved session in the list no summary is coming, so nothing decides the
+// composer but the person: a session saved later, with something pending, does
+// not take the page to the inbox over it. The first list is empty and a later
+// one holds the saved session, as when another process saves one.
+pub fn a_composer_with_no_saved_session_listed_stays_the_persons_test() {
+  let later =
+    saved_attention.Saved(
+      session_id: "D",
+      pending_approvals: 1,
+      open_asks: 1,
+      open_finds: 0,
+      oldest_open_at: None,
+      updated_at: 9,
+    )
+  let lists = process.new_subject()
+  process.send(lists, [])
+  process.send(lists, [entry("D", "hex release", sessions.Saved)])
+  let base = start([], [], [later], None)
+  let model =
+    opened(
+      home.Start(..base, sessions: fn(deliver) {
+        case process.receive(lists, 0) {
+          Ok(entries) -> deliver(home.Listed(entries))
+          Error(Nil) ->
+            deliver(home.Listed([entry("D", "hex release", sessions.Saved)]))
+        }
+      }),
+    )
+  assert !string.contains(drawn(model), "<h1>Inbox</h1>")
+
+  // The next list holds the saved session, its summary is read, and the person's
+  // composer is still the person's.
+  let refreshed = run(model, home.Ticked)
+  assert !string.contains(drawn(refreshed), "<h1>Inbox</h1>")
+}
