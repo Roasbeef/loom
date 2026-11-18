@@ -911,6 +911,13 @@ type Message(instance) {
     Subject(Result(List(#(String, catalogue.Custody)), Error)),
   )
 
+  /// The attention summaries of a page of sessions, saved or resident, read in
+  /// one registry turn (protocol-change/122). A session with no row is left out.
+  AttentionFor(
+    List(String),
+    Subject(Result(List(#(String, catalogue.AttentionSummary)), Error)),
+  )
+
   /// The owner's request to hand a session to the orchestrator named, under the
   /// operation identity the caller minted: the caller, the epoch, the session,
   /// the destination, the identity and which sessions may leave.
@@ -2988,6 +2995,29 @@ pub fn custodies(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Reads the attention summary of each session named, in one registry turn,
+/// without opening any of them (protocol-change/122).
+///
+/// The answer pairs each identity that has a row with its summary, in the order
+/// asked. A session whose summary was never made has no pair, which is how a
+/// saved session that was never checked differs from one with nothing open. The
+/// caller bounds `ids` to one listing page and has already dropped the sessions
+/// its credential does not hold.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.attention_for(registry, [session_id]) == Ok([])
+/// ```
+@internal
+pub fn attention_for(
+  manager: Manager(instance),
+  ids: List(String),
+) -> Result(List(#(String, catalogue.AttentionSummary)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: AttentionFor(ids, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Begins handing a session to the orchestrator `to` under the move `op`, as
 /// the owner, in one registry turn: the intent is committed and the session's
 /// slot is stopped together, so no runtime can open the store after the intent
@@ -3725,6 +3755,14 @@ fn handle(
         })
         |> result.map_error(Catalogue)
       process.send(reply, read)
+      sm.keep(book)
+    }
+    AttentionFor(ids, reply) -> {
+      process.send(
+        reply,
+        catalogue.attention_for(book.catalogue, ids)
+          |> result.map_error(Catalogue),
+      )
       sm.keep(book)
     }
     BeginMove(caller, epoch, id, to, op, departure, reply) -> {

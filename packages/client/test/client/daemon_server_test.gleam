@@ -42,6 +42,7 @@ import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws.{type Socket}
 import tui/connection
 import tui/daemon/protocol as terminal_protocol
+import web_view/saved_attention
 import web_view/sessions
 import weft
 import weft/poll
@@ -2902,4 +2903,112 @@ pub fn a_model_with_no_config_file_is_refused_as_unknown_test() {
 fn catalogue_page(ready: root.Ready(String)) {
   manager.page(ready.registry, after: "")
   |> result.map(fn(page) { page.1 })
+}
+
+// A home page's attention read is the catalogue's summary rows for the sessions
+// its credential holds, resident or saved. A session with no row has no entry,
+// a member is answered only for what it holds, and an identity that is not held
+// reads exactly as one the catalogue has never heard of.
+pub fn a_homes_attention_read_is_the_held_summaries_test() {
+  let #(held, _) = ids.mint_session(ids.generator(clock.fixed(0), 821))
+  let #(unread, _) = ids.mint_session(ids.generator(clock.fixed(0), 822))
+  let #(absent, _) = ids.mint_session(ids.generator(clock.fixed(0), 823))
+  let held_id = ids.session_id_to_string(held)
+  let unread_id = ids.session_id_to_string(unread)
+  let absent_id = ids.session_id_to_string(absent)
+  fixture_with_peers(
+    limits.defaults,
+    fn(_) { None },
+    fn(_daemon, ready, _, credential) {
+      list.each([#(held_id, 821), #(unread_id, 822)], fn(pair) {
+        let assert Ok(_) =
+          manager.create(
+            ready.registry,
+            manager.Creation(
+              pair.0,
+              ready.state_root,
+              pair.0,
+              "",
+              None,
+              None,
+              "",
+              "",
+              agency_limits.empty,
+            ),
+            directory: ready.sessions_directory,
+            generator: ids.generator(clock.fixed(0), pair.1),
+          )
+          as "the session is created"
+        Nil
+      })
+      let digest_of = fn(token) {
+        let assert Ok(digest) =
+          token
+          |> bit_array.from_string
+          |> bootstrap.sha256
+          |> bit_array.base16_encode
+          |> string.lowercase
+          |> access.credential_digest
+          as "digest is valid"
+        digest
+      }
+      let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+        as "fixture administration opens the durable catalogue"
+      let assert Ok(holder) =
+        access.create_member(
+          store,
+          "holder",
+          "Holder",
+          digest_of("holder-token"),
+        )
+        as "member exists"
+      let assert Ok(_) =
+        access.create_member(
+          store,
+          "bystander",
+          "Bystander",
+          digest_of("bystander-token"),
+        )
+        as "member exists"
+      assert access.grant(store, holder.id, held_id, access.Observer) == Ok(Nil)
+      assert catalogue.close(store) == Ok(Nil)
+
+      // Only the held session has a row. The write is a cast and the read
+      // queues behind it in the registry's turn.
+      manager.record_attention(
+        ready.registry,
+        held_id,
+        catalogue.AttentionSummary(
+          pending_approvals: 1,
+          open_asks: 0,
+          open_finds: 2,
+          oldest_open_at: Some(30),
+          updated_at: 40,
+        ),
+      )
+      let expected = [
+        saved_attention.Saved(held_id, 1, 0, 2, Some(30), 40),
+      ]
+      let asked = [held_id, unread_id, absent_id]
+
+      // The owner holds every session: the one with a row answers, the one
+      // never read and the unknown identity leave no entry.
+      let read = server.home_attention(ready.registry, digest_of(credential))
+      assert read(asked) == expected
+
+      // A member is answered for what it holds and nothing else.
+      let held_read =
+        server.home_attention(ready.registry, digest_of("holder-token"))
+      assert held_read(asked) == expected
+      assert held_read([unread_id]) == []
+
+      // A member holding nothing gets what an unknown identity gets, and so
+      // does a credential the catalogue does not know.
+      let bystander =
+        server.home_attention(ready.registry, digest_of("bystander-token"))
+      assert bystander(asked) == []
+      assert server.home_attention(ready.registry, digest_of("nobody"))(asked)
+        == []
+    },
+  )
 }

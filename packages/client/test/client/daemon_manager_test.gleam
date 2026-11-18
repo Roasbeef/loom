@@ -3055,3 +3055,42 @@ pub fn domain_source_corruption_never_returns_an_authorized_prefix_test() {
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
+
+pub fn the_registry_records_an_attention_summary_without_opening_the_session_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = saved(store, 871)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+
+  // A session whose summary was never made has no pair.
+  assert manager.attention_for(registry, [record.id]) == Ok([])
+
+  // The report is a cast, handled in the registry's turn, so the read from
+  // this process queues behind it. The session stays saved throughout.
+  let summary =
+    catalogue.AttentionSummary(
+      pending_approvals: 1,
+      open_asks: 2,
+      open_finds: 0,
+      oldest_open_at: option.Some(40),
+      updated_at: 50,
+    )
+  manager.record_attention(registry, record.id, summary)
+  assert manager.attention_for(registry, [record.id, "no-such-session"])
+    == Ok([#(record.id, summary)])
+  let assert Ok(manager.View(status: manager.Saved, ..)) =
+    manager.get(registry, record.id)
+    as "the summary write does not open the session"
+
+  // A report for a session that is not registered is dropped and breaks nothing.
+  manager.record_attention(registry, "no-such-session", summary)
+  assert manager.attention_for(registry, [record.id])
+    == Ok([#(record.id, summary)])
+
+  // A later report replaces the first.
+  let lowered = catalogue.AttentionSummary(..summary, pending_approvals: 0)
+  manager.record_attention(registry, record.id, lowered)
+  assert manager.attention_for(registry, [record.id])
+    == Ok([#(record.id, lowered)])
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}

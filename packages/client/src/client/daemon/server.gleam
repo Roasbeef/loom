@@ -127,6 +127,7 @@ import web_view/image
 import web_view/machines
 import web_view/page
 import web_view/placements
+import web_view/saved_attention
 import web_view/sessions as listed_sessions
 import web_view/tool_result
 import weft
@@ -6491,6 +6492,50 @@ pub fn home_activity(
   fn(ids) {
     let asked = list.take(ids, protocol.activity_limit)
     activity_reports(config, registry, held(registry, digest, asked))
+  }
+}
+
+/// The attention summaries a home page is handed for the sessions its
+/// credential holds, saved or resident (protocol-change/122).
+///
+/// Membership is derived here, in the registry, at the moment of each read,
+/// by the same check `home_activity` makes, so a member learns the counts of the
+/// sessions it holds and no others. One registry turn reads every row, and no
+/// session is opened. A session with no row, or whose row does not decode, has
+/// no entry, which is how the page tells "not checked" from "nothing open". A
+/// failed read answers nothing for every session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_attention(registry, digest)(["0198..."])
+/// ```
+@internal
+pub fn home_attention(
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(List(String)) -> List(saved_attention.Saved) {
+  // The listing is one catalogue page, so the read keeps its first ones too.
+  fn(ids) {
+    let asked = list.take(ids, listed_sessions.listed_limit)
+
+    // A failed read answers nothing, which the page draws as every listed
+    // session not checked and never as a session with nothing open.
+    case manager.attention_for(registry, held(registry, digest, asked)) {
+      Ok(rows) ->
+        list.filter_map(rows, fn(row) {
+          let #(id, summary) = row
+          saved_attention.from_row(
+            session_id: id,
+            pending_approvals: summary.pending_approvals,
+            open_asks: summary.open_asks,
+            open_finds: summary.open_finds,
+            oldest_open_at: summary.oldest_open_at,
+            updated_at: summary.updated_at,
+          )
+        })
+      Error(_) -> []
+    }
   }
 }
 
