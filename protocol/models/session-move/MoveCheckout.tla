@@ -309,15 +309,18 @@ CkSend ==
 (* question by workspace before it looks at the scope, so the question under  *)
 (* the corrected name is refused for the workspace the scope is bound to.     *)
 (* StaleOpen is that state. The rule `LearnsUnderBound` asks again under the  *)
-(* workspace the executor names, which is a read of a closed scope.           *)
+(* workspace the executor names, which it answers with the stored outcome.   *)
 (*                                                                         *)
 (* srec is "open" after CkAttachUnknownDies, which writes the record before   *)
 (* the attach, and stays "open" through the retry that frees the scope: that  *)
 (* retry is a rebound attach, and `close_if_opened` records a close only for  *)
 (* an attach that created or reopened the scope. A later attach that learns   *)
-(* the close, or that reopens the scope, makes it "closed". The landing's    *)
-(* close records on every path, so CkAttach sets "closed"; a crash inside a   *)
-(* landing, which would leave it "open", is MoveCheckoutMutantCrashInLanding. *)
+(* the close, or that reopens the scope, makes it "closed". CkAttach sets    *)
+(* "closed" as a simplification: in the code `attach_to` writes an open      *)
+(* record before every attach, and `close_scope` records nothing on a        *)
+(* refusal or no answer, so a record can stay "open" after a landing. The    *)
+(* simplification has no effect on any result here. A crash inside a landing *)
+(* is MoveCheckoutMutantCrashInLanding.                                      *)
 (***************************************************************************)
 StaleOpen == srec = "open" /\ exec.holder = "none"
 
@@ -727,7 +730,8 @@ AbandonRestores ==
 (* After the retry that closes an unserved, empty scope, the next move with a *)
 (* served name is accepted with no further operator step: a closed scope    *)
 (* with no tree is not refused for the workspace it was bound to, whatever  *)
-(* the source's record says.                                                *)
+(* the source's record says. It restates the third conjunct of            *)
+(* AbandonRestores for this trace, so that a violation names it.            *)
 ClosedEmptyScopeTakesTheNextName ==
     (exec.holder = "none" /\ exBranch = -1 /\ cfgWs = "good" /\ bound # "none")
         => AttachAllowed
