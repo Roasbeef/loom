@@ -211,7 +211,7 @@ pub fn saved_row(
         }
         None -> element.none()
       },
-      option.unwrap(offer.said(thread.session), element.none()),
+      option.lazy_unwrap(offer.said(thread.session), element.none),
     ]),
   ])
 }
