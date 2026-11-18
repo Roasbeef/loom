@@ -63,17 +63,40 @@ pub type Changes {
   Unchanged
 }
 
-/// What the page knows of one session's worktree, for the message the session
-/// last said.
-pub type Seen {
+/// What a successful read found for one message.
+pub type Verdict {
+  Verdict(
+    /// The last message the session said when the read was made.
+    message: String,
+    /// Whether the worktree held anything to review.
+    changes: Changes,
+  )
+}
+
+/// What is outstanding for a session beside its verdict.
+pub type Pending {
+  /// Nothing is out and nothing has failed since the verdict.
+  NoRead
+
   /// A read is out, begun at `since` (Unix milliseconds).
   Reading(message: String, since: Int)
 
-  /// A read answered.
-  Checked(message: String, changes: Changes)
-
-  /// The read was refused or failed `attempts` times in a row.
+  /// The read was failed `attempts` times in a row.
   Failed(message: String, attempts: Int)
+}
+
+/// What the page knows of one session's worktree.
+///
+/// The verdict is the last successful read and outlives everything that
+/// happens after it: a read that is out, a read that failed and a refusal for
+/// the credential's allowance all replace `pending` and leave `verdict`
+/// alone. Only a read that answers replaces a verdict, so a session does not
+/// move between "To review" and "Waiting" because the daemon was busy. A
+/// verdict counts for the message it was read for and no other, and a session
+/// whose message moves on is not ready until the new message is read, but one
+/// whose message returns to the read one is ready again at once.
+pub type Seen {
+  Seen(verdict: Option(Verdict), pending: Pending)
 }
 
 /// Whether a review holds anything to read. A repository that is not a
@@ -109,9 +132,9 @@ pub fn due(
   // A read that is out and not stale holds the line.
   let busy =
     list.any(dict.values(seen), fn(each) {
-      case each {
+      case each.pending {
         Reading(since:, ..) -> now - since < stale_ms
-        Checked(..) | Failed(..) -> False
+        NoRead | Failed(..) -> False
       }
     })
 
@@ -149,12 +172,20 @@ pub fn started(
   message: String,
   now: Int,
 ) -> Dict(String, Seen) {
-  dict.insert(seen, session, Reading(message:, since: now))
+  dict.insert(
+    seen,
+    session,
+    Seen(
+      verdict: verdict_of(seen, session),
+      pending: Reading(message:, since: now),
+    ),
+  )
 }
 
 /// Records what a read of `session` for `message` found. A read that failed
-/// counts as one more attempt for that message, unless the daemon refused it for
-/// the credential's allowance, which leaves the session as if it were unread.
+/// counts as one more attempt for that message, and a refusal for the
+/// credential's allowance counts as none; either leaves the session's verdict
+/// as it was.
 ///
 /// ## Examples
 ///
@@ -167,28 +198,51 @@ pub fn answered(
   message: String,
   read: Result(Review, String),
 ) -> Dict(String, Seen) {
+  let before = verdict_of(seen, session)
+
   case read {
-    Error(words) if words == busy_words -> dict.delete(seen, session)
-    Ok(_) | Error(_) -> answered_for(seen, session, message, read)
+    Ok(review) ->
+      dict.insert(
+        seen,
+        session,
+        Seen(
+          verdict: Some(Verdict(message:, changes: changes_in(review))),
+          pending: NoRead,
+        ),
+      )
+
+    // The refusal says nothing about the session: a session with no verdict is
+    // as if unread, and one with a verdict keeps it.
+    Error(words) if words == busy_words ->
+      case before {
+        Some(_) ->
+          dict.insert(seen, session, Seen(verdict: before, pending: NoRead))
+        None -> dict.delete(seen, session)
+      }
+
+    Error(_) ->
+      dict.insert(
+        seen,
+        session,
+        Seen(
+          verdict: before,
+          pending: Failed(message:, attempts: case dict.get(seen, session) {
+            Ok(Seen(pending: Failed(message: failed, attempts:), ..))
+              if failed == message
+            -> attempts + 1
+            Ok(_) | Error(Nil) -> 1
+          }),
+        ),
+      )
   }
 }
 
-/// What a read that was not refused for the allowance found.
-fn answered_for(
-  seen: Dict(String, Seen),
-  session: String,
-  message: String,
-  read: Result(Review, String),
-) -> Dict(String, Seen) {
-  dict.insert(seen, session, case read {
-    Ok(review) -> Checked(message:, changes: changes_in(review))
-    Error(_) ->
-      Failed(message:, attempts: case dict.get(seen, session) {
-        Ok(Failed(message: before, attempts:)) if before == message ->
-          attempts + 1
-        Ok(_) | Error(Nil) -> 1
-      })
-  })
+/// The verdict a session holds, if it has one.
+fn verdict_of(seen: Dict(String, Seen), session: String) -> Option(Verdict) {
+  case dict.get(seen, session) {
+    Ok(Seen(verdict:, ..)) -> verdict
+    Error(Nil) -> None
+  }
 }
 
 /// The sessions whose last read was at the message they say now and found
@@ -206,11 +260,11 @@ pub fn ready(
   list.filter_map(candidates, fn(candidate) {
     let #(session, message) = candidate
 
-    // Only a read at the current message that found changes is ready.
-    case dict.get(seen, session) {
-      Ok(Checked(message: read, changes: Changed)) if read == message ->
+    // Only a verdict for the current message that found changes is ready.
+    case verdict_of(seen, session) {
+      Some(Verdict(message: read, changes: Changed)) if read == message ->
         Ok(session)
-      Ok(_) | Error(Nil) -> Error(Nil)
+      Some(_) | None -> Error(Nil)
     }
   })
 }
@@ -222,10 +276,16 @@ pub fn ready(
 fn attempts(held: Result(Seen, Nil), message: String) -> Option(Int) {
   case held {
     Error(Nil) -> Some(0)
-    Ok(Reading(message: read, ..)) if read != message -> Some(0)
-    Ok(Checked(message: read, ..)) if read != message -> Some(0)
-    Ok(Failed(message: read, ..)) if read != message -> Some(0)
-    Ok(Failed(attempts:, ..)) if attempts < max_attempts -> Some(attempts)
-    Ok(Reading(..)) | Ok(Checked(..)) | Ok(Failed(..)) -> None
+    Ok(Seen(verdict: Some(Verdict(message: read, ..)), ..)) if read == message ->
+      None
+    Ok(Seen(pending: NoRead, ..)) -> Some(0)
+    Ok(Seen(pending: Reading(message: read, ..), ..)) if read != message ->
+      Some(0)
+    Ok(Seen(pending: Failed(message: read, ..), ..)) if read != message ->
+      Some(0)
+    Ok(Seen(pending: Failed(attempts:, ..), ..)) if attempts < max_attempts ->
+      Some(attempts)
+    Ok(Seen(pending: Reading(..), ..)) | Ok(Seen(pending: Failed(..), ..)) ->
+      None
   }
 }

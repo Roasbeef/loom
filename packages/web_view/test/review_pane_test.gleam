@@ -72,6 +72,46 @@ pub fn a_session_is_read_once_for_each_message_test() {
   assert scan.ready(said_more, seen) == []
 }
 
+// A verdict is the last successful read, and nothing after it removes it: not
+// a read that is out, not a failure, not a refusal for the allowance.
+pub fn a_verdict_survives_a_read_that_is_out_fails_or_is_refused_test() {
+  let candidates = [#("a", "m1")]
+  let seen =
+    scan.answered(dict.new(), "a", "m1", Ok(review(review_feed.Head, ["x"], 0)))
+
+  // The message moves on and a read starts: the new message is not ready, and
+  // the old one coming back is, with no read in between.
+  let reading = scan.started(seen, "a", "m2", 5)
+  assert scan.ready([#("a", "m2")], reading) == []
+  assert scan.ready(candidates, reading) == ["a"]
+
+  // A refusal for the allowance leaves the verdict, and a failure does too.
+  let refused = scan.answered(reading, "a", "m2", Error(scan.busy_words))
+  assert scan.ready(candidates, refused) == ["a"]
+  assert dict.size(refused) == 1
+  let failed = scan.answered(reading, "a", "m2", Error("boom"))
+  assert scan.ready(candidates, failed) == ["a"]
+
+  // The message that came back is already known, so it is not read again.
+  assert scan.due(candidates, reading, 10_000) == None
+
+  // Only a read that answers replaces the verdict.
+  let empty =
+    scan.answered(reading, "a", "m1", Ok(review(review_feed.Head, [], 0)))
+  assert scan.ready(candidates, empty) == []
+}
+
+pub fn a_refusal_for_a_session_never_read_leaves_it_unread_test() {
+  let seen =
+    scan.answered(
+      scan.started(dict.new(), "a", "m1", 0),
+      "a",
+      "m1",
+      Error(scan.busy_words),
+    )
+  assert dict.size(seen) == 0
+}
+
 pub fn a_clean_tree_is_not_ready_test() {
   let seen =
     scan.answered(dict.new(), "a", "m", Ok(review(review_feed.Head, [], 0)))
