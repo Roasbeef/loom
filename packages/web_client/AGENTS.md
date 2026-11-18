@@ -101,6 +101,16 @@ renders again just for it:
   the arriving strand's (`follow_rule.arriving`), following the tail for a
   strand left at the bottom or never seen. Nothing is stored outside the
   element.
+- `<loom-follow>` also carries the live rail's jump (`jump_rule`). It listens
+  for `click` on the document and, when the path holds an element with
+  `data-loom-jump`, resolves it: `dock` scrolls `footer.dock` into view, and any
+  other value is a transcript row's key, looked up among the `data-loom-row`
+  elements of the button's own tree by string comparison (`jump_rule.resolve`,
+  a `#` suffix falling back to the turn's key). A found row is scrolled to the
+  middle (`ffi_dom.scroll_into_view_centered`), the reader becomes `Reading`,
+  and the row carries `data-loom-jumped` for `jump_rule.marked_for` (900 ms); a
+  row not on the page changes nothing. A jump closes the enclosing
+  `details[data-loom-sheet]` (the phone sheet). Nothing is sent to the server.
 - `<loom-composer returned="<n>">` wraps the operator's
   editor, the server's uncontrolled textarea, which is its default slot.
   It lists the slash commands as the draft grows, sends the draft on

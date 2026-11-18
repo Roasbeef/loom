@@ -2142,6 +2142,57 @@
     .session-open,li.session:not(:has(>.session-open)){min-height:48px;}
   }
   @media (prefers-reduced-motion:reduce){*:not(.arming):not(.arm-note){transition:none!important;animation:none!important;}}
+
+  /* The live rail, "Lifted from this session" (web_view/view/lifted). It is the
+     Strands pane's last child, so the paths the socket admits do not move, and
+     it is ordered first on screen: the pane is a flex column read in visual
+     order, as the Session pane is. A needs-you row takes the waiting pill's
+     tint and an insight the raised surface. Neither has an accent bar or a
+     shadow. An insight is open (wrapped, with its jump hint) until pressed
+     once, then folded to one line. */
+  .pane-strands{display:flex;flex-direction:column;reading-flow:flex-visual;}
+  .pane-strands > section.lifted{order:-1;margin:0 0 16px 0;min-width:0;font:12px/1.45 var(--font-sans);}
+  .lift-groups{display:flex;flex-direction:column;gap:10px;min-width:0;}
+  .lift-group-title{margin:0 0 4px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  .lift-needs .lift-group-title{color:var(--color-signal-text);}
+  ul.lift-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;min-width:0;}
+  li.lift{min-width:0;}
+  .lift-press{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 8px;width:100%;box-sizing:border-box;margin:0;padding:6px 8px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:inherit;text-align:left;cursor:pointer;}
+  .lift-press:not([data-loom-jump]){cursor:default;}
+  .lift-press:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .lift-pinned .lift-press{border-color:color-mix(in srgb,var(--color-signal) 35%,transparent);background:var(--color-pill-wait-bg);}
+  .lift-kind{font-weight:600;}
+  .lift-source{min-width:0;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .lift-head{grid-column:1 / -1;min-width:0;overflow-wrap:anywhere;}
+  .lift-go{grid-column:1 / -1;color:var(--color-signal-text);font-weight:500;}
+  .lift-open .lift-press[data-loom-jump]::after{content:"\2191  in stream";grid-column:1 / -1;color:var(--color-fg-quiet);font-size:11px;}
+  .lift-folded .lift-press{display:flex;align-items:baseline;gap:6px;}
+  .lift-folded .lift-source{flex:0 1 auto;max-width:40%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+  .lift-folded .lift-head{flex:1 1 0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+
+  /* A lifted row in the stream is tagged, and tinted only when it needs the
+     owner. A row a jump lands on is marked for a moment (web_client/follow). */
+  .lift-tag{position:absolute;top:0;right:0;font:500 10px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  .tl-row.needs-you > .tl-body{border-radius:6px;background:var(--color-pill-wait-bg);}
+  .tl-row.needs-you > .lift-tag{color:var(--color-signal-text);}
+  .tl-row[data-loom-jumped] > .tl-body{border-radius:6px;background:color-mix(in srgb,var(--color-current) 10%,transparent);}
+
+  /* The phone's bar and sheet. Wide frames draw the rail in the panel and hide
+     these; below 980px the panel is a row of cards, the rail is hidden, and the
+     bar sits above the dock and opens the same rows as a sheet over the
+     transcript. The sheet is a native details element, so opening it is the
+     browser's. */
+  details.lift-sheet{display:none;}
+  @media (max-width:979px){
+    .pane-strands > section.lifted{display:none;}
+    details.lift-sheet{display:block;order:1;position:relative;z-index:5;flex:0 0 auto;margin:8px 0 0 0;font:12px/1.45 var(--font-sans);}
+    main.centre > footer.dock,main.centre > .observer-bar{order:2;}
+    summary.lift-bar{list-style:none;cursor:pointer;box-sizing:border-box;min-height:44px;display:flex;align-items:center;padding:8px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg);font-weight:500;}
+    summary.lift-bar::-webkit-details-marker{display:none;}
+    summary.lift-bar:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+    details.lift-sheet[open] > .lift-sheet-body{position:absolute;left:0;right:0;bottom:100%;max-height:50dvh;overflow-y:auto;box-sizing:border-box;margin:0 0 6px 0;padding:12px;border:1px solid var(--color-divider);border-radius:12px 12px 0 0;background:var(--color-bg-raised);}
+    .lift-sheet .lift-press{min-height:44px;}
+  }
 }
 
 /* Explicit result pages keep large lines readable within the viewport. */
