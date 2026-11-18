@@ -68,8 +68,9 @@ pub type Offer(message) {
     /// What the answer form's submit sends: the question's sequence number it
     /// was drawn with, and the text.
     answer: fn(Int, String) -> message,
-    /// What the confirmation's button sends.
-    confirm: message,
+    /// What the confirmation's button sends, given the ticket's address and the
+    /// act it asks about. Both are drawn into the handler.
+    confirm: fn(Key, Control) -> message,
     /// What the confirmation's "Keep" sends.
     keep: message,
   )
@@ -300,9 +301,22 @@ fn controls(offer: Offer(message)) -> Element(message) {
         html.text("Only the owner's operating page can act on a ticket."),
       ])
     ticket_rule.Operating, ticket_rule.Asked(control), _ ->
-      confirmation(offer, control)
-    ticket_rule.Operating, ticket_rule.Unasked, [] -> element.none()
-    ticket_rule.Operating, ticket_rule.Unasked, [_, ..] ->
+      case list.contains(offer.controls, control) {
+        True -> confirmation(offer, control)
+        False -> buttons_row(offer, buttons)
+      }
+    ticket_rule.Operating, ticket_rule.Unasked, _ -> buttons_row(offer, buttons)
+  }
+}
+
+/// A button for each control left, or nothing when none is.
+fn buttons_row(
+  offer: Offer(message),
+  buttons: List(Control),
+) -> Element(message) {
+  case buttons {
+    [] -> element.none()
+    [_, ..] ->
       html.div(
         [attribute.class("cbar")],
         list.map(buttons, fn(control) {
@@ -333,7 +347,7 @@ fn confirmation(offer: Offer(message), control: Control) -> Element(message) {
           attribute.type_("button"),
           attribute.class("place-send"),
           attribute.disabled(offer.opened.progress == ticket_rule.Sending),
-          event.on_click(offer.confirm),
+          event.on_click(offer.confirm(offer.opened.key, control)),
         ],
         [html.text("Confirm: " <> ticket_rule.control_words(control))],
       ),

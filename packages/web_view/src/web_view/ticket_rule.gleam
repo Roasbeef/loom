@@ -21,7 +21,9 @@
 //// - A thread is acted on only by a page that may operate. The page's
 ////   standing is the owner at the Operator ceiling, which the home already
 ////   derives for its other acts, and an observing page gets the thread with no
-////   controls. The daemon checks the owner again at every press.
+////   controls. A real observer's or member's page holds no projects capability
+////   and so never reads a board; the observer-with-a-thread case is one a test
+////   builds. The daemon checks the owner again at every press.
 //// - Stop and Close end a ticket's work and cannot be undone, so each asks
 ////   for one more click on a button that names the act. Retry and Answer are
 ////   sent at once: a retry asks for a new worker, and an answer is a person's
@@ -50,7 +52,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import session_view/project_board.{type Detail, type Ticket} as board
 import session_view/text_hygiene
-import web_view/projects.{type Loaded}
+import web_view/projects.{type Acted, type Loaded, Acted, Declined}
 
 /// A ticket's address: its project's id and its own, both values the page took
 /// from a board it holds. The browser never names one.
@@ -136,18 +138,6 @@ pub type Notice {
     /// The words for the refusal, which are the daemon's code made into a
     /// sentence and nothing a person or a worker wrote.
     words: String,
-  )
-}
-
-/// The daemon's word on an act.
-pub type Outcome {
-  /// The act was recorded.
-  Done
-
-  /// The daemon refused it, with its error code.
-  Declined(
-    /// The daemon's code, such as `conflict` or `bad_request`.
-    code: String,
   )
 }
 
@@ -383,6 +373,26 @@ pub fn cancelled(opened: Opened) -> Opened {
   Opened(..opened, confirm: Unasked)
 }
 
+/// Drops a confirmation for an act the ticket no longer offers the page, which a
+/// read of the ticket can bring about. The pane then draws the controls again
+/// and a late press on the old confirmation finds nothing to confirm.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ticket_rule.reconciled(opened, ticket_rule.Operating)
+/// ```
+pub fn reconciled(opened: Opened, standing: Standing) -> Opened {
+  case opened.confirm, opened.detail {
+    Asked(control), Some(read) ->
+      case allowed(read.ticket, standing, control) {
+        True -> opened
+        False -> Opened(..opened, confirm: Unasked)
+      }
+    Asked(_), None | Unasked, _ -> opened
+  }
+}
+
 /// Marks an act as out, clearing the confirmation and the last notice.
 fn sending(opened: Opened) -> Opened {
   Opened(..opened, progress: Sending, confirm: Unasked, notice: None)
@@ -395,18 +405,18 @@ fn sending(opened: Opened) -> Opened {
 /// ## Examples
 ///
 /// ```gleam
-/// // ticket_rule.settled(opened, ticket_rule.Close, ticket_rule.Done)
+/// // ticket_rule.settled(opened, ticket_rule.Close, ticket_rule.Acted)
 /// ```
-pub fn settled(opened: Opened, control: Control, outcome: Outcome) -> Opened {
+pub fn settled(opened: Opened, control: Control, outcome: Acted) -> Opened {
   case outcome, control {
-    Done, Answer(_) ->
+    Acted, Answer(_) ->
       Opened(
         ..opened,
         progress: Resting,
         notice: Some(Told(done_words(control))),
         answered: opened.answered + 1,
       )
-    Done, Close | Done, Retry | Done, Stop ->
+    Acted, Close | Acted, Retry | Acted, Stop ->
       Opened(
         ..opened,
         progress: Resting,
@@ -420,6 +430,11 @@ pub fn settled(opened: Opened, control: Control, outcome: Outcome) -> Opened {
       )
   }
 }
+
+/// The words for an act the project did not answer in time. The act was queued
+/// and may still be recorded, so the person is told to read before trying again.
+pub const unanswered_words =
+  "The project did not answer in time. Reread the ticket before trying again; the act may still be recorded."
 
 /// The words for an act the daemon recorded.
 ///
@@ -455,6 +470,7 @@ pub fn refusal_words(control: Control, code: String) -> String {
     Retry, "not_found" | Stop, "not_found" -> "That ticket no longer exists."
     Retry, "forbidden" -> "Only the owner can retry a project's ticket."
     Stop, "forbidden" -> "Only the owner can stop a project's ticket."
+    Retry, "unanswered" | Stop, "unanswered" -> unanswered_words
     Retry, "bad_request" -> "That ticket cannot be retried now."
     Stop, "bad_request" ->
       "That ticket cannot be stopped: it has ended or was already stopped."

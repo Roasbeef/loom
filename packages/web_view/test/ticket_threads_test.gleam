@@ -21,6 +21,7 @@ import lustre/effect
 import lustre/element.{type Element}
 import web_view/home
 import web_view/projects as feed
+import web_view/saved_attention
 import web_view/sessions.{Entry, Live}
 import web_view/signins
 import web_view/ticket_rule
@@ -286,6 +287,11 @@ fn picked(model: home.Model, id: String) -> home.Model {
   run(model, home.TicketThreadPicked(key(id)))
 }
 
+// The press on a confirmation, as the page draws it.
+fn confirm(id: String, control: ticket_rule.Control) -> home.Msg {
+  home.TicketActConfirmed(key(id), control)
+}
+
 // Whether two lists hold the same asks. The page starts the read of the ticket
 // and the read of the boards after an act in no order a test should depend on.
 fn same(got: List(Asked), want: List(Asked)) -> Bool {
@@ -388,8 +394,10 @@ pub fn presses_the_list_does_not_hold_ask_nothing_test() {
   let _ = drain(asked)
 
   let _ = run(model, home.TicketAnswerSent(7, "sqlite"))
-  let _ = run(model, home.TicketControlPressed(ticket_rule.Stop))
-  let _ = run(model, home.TicketControlPressed(ticket_rule.Close))
+  let stop = run(model, home.TicketControlPressed(ticket_rule.Stop))
+  let _ = run(stop, confirm("t-check", ticket_rule.Stop))
+  let close = run(model, home.TicketControlPressed(ticket_rule.Close))
+  let _ = run(close, confirm("t-check", ticket_rule.Close))
   assert drain(asked) == []
 
   let ask = picked(model, "t-ask")
@@ -413,10 +421,10 @@ pub fn stop_needs_one_confirm_click_test() {
 
   let kept = run(asking, home.TicketActKept)
   assert !string.contains(drawn(kept), "this cannot be undone")
-  let _ = run(kept, home.TicketActConfirmed)
+  let _ = run(kept, confirm("t-ask", ticket_rule.Stop))
   assert drain(asked) == []
 
-  let stopped = run(asking, home.TicketActConfirmed)
+  let stopped = run(asking, confirm("t-ask", ticket_rule.Stop))
   assert same(drain(asked), [
     Stopped("p1", "t-ask"),
     ReadTicket("p1", "t-ask"),
@@ -435,7 +443,7 @@ pub fn close_needs_one_confirm_click_and_a_refusal_is_shown_test() {
   let asking = run(model, home.TicketControlPressed(ticket_rule.Close))
   assert drain(asked) == []
 
-  let after = run(asking, home.TicketActConfirmed)
+  let after = run(asking, confirm("t-pub", ticket_rule.Close))
   assert same(drain(asked), [
     Closed("p1", "t-pub"),
     ReadTicket("p1", "t-pub"),
@@ -467,7 +475,7 @@ pub fn a_refused_stop_is_shown_in_words_test() {
   let #(model, _) = owner(Says(..accepting(), act: feed.Declined("forbidden")))
   let model = picked(model, "t-ask")
   let asking = run(model, home.TicketControlPressed(ticket_rule.Stop))
-  let after = run(asking, home.TicketActConfirmed)
+  let after = run(asking, confirm("t-ask", ticket_rule.Stop))
 
   assert string.contains(drawn(after), "Only the owner can stop a project")
 }
@@ -493,7 +501,8 @@ pub fn an_observer_sees_the_thread_and_has_no_controls_test() {
   let _ = run(model, home.TicketAnswerSent(7, "sqlite"))
   let _ = run(model, home.TicketControlPressed(ticket_rule.Stop))
   let _ = run(model, home.TicketControlPressed(ticket_rule.Close))
-  let _ = run(model, home.TicketActConfirmed)
+  let _ = run(model, confirm("t-ask", ticket_rule.Stop))
+  let _ = run(model, confirm("t-ask", ticket_rule.Close))
   assert drain(asked) == []
 }
 
@@ -560,6 +569,125 @@ pub fn the_answer_form_is_keyed_by_ticket_and_question_test() {
   assert string.contains(drawn(after), "ticket-answer-p1-t-ask-7-1")
 }
 
+// A confirmation sends only what it was drawn for: a press that names another
+// act or another ticket than the one asked about sends nothing, and an act the
+// daemon stops listing between the arming and the confirm is dropped with its
+// question.
+pub fn a_confirmation_sends_nothing_the_list_no_longer_holds_test() {
+  let #(model, asked) = owner(accepting())
+  let armed =
+    run(picked(model, "t-ask"), home.TicketControlPressed(ticket_rule.Stop))
+  let _ = drain(asked)
+
+  let _ = run(armed, confirm("t-ask", ticket_rule.Close))
+  let _ = run(armed, confirm("t-pub", ticket_rule.Stop))
+  assert drain(asked) == []
+
+  // The ticket is read again and the daemon no longer lists a stop.
+  let changed =
+    run(
+      armed,
+      home.TicketThreadRead(
+        key("t-ask"),
+        feed.TicketHeard(
+          json.Object([
+            #("project", json.String("p1")),
+            #("revision", json.Int(13)),
+            #(
+              "ticket",
+              ticket(
+                "t-ask",
+                "person/answer",
+                "pick",
+                ["answer", "close"],
+                Some(7),
+              ),
+            ),
+            #("assignments", json.Array([])),
+            #("inputs", json.Array([])),
+          ]),
+        ),
+      ),
+    )
+  assert !string.contains(drawn(changed), "Confirm: Stop")
+  let _ = run(changed, confirm("t-ask", ticket_rule.Stop))
+  assert drain(asked) == []
+}
+
+// Pressing the row of the open ticket again reads it again and keeps what the
+// thread holds, so an act that is out stays out.
+pub fn pressing_the_open_row_again_keeps_the_thread_test() {
+  let #(model, asked) = owner(accepting())
+  let armed =
+    run(picked(model, "t-ask"), home.TicketControlPressed(ticket_rule.Stop))
+  let _ = drain(asked)
+
+  let again = picked(armed, "t-ask")
+  assert string.contains(drawn(again), "Confirm: Stop")
+  assert drain(asked) == [ReadTicket("p1", "t-ask")]
+}
+
+// --- landing -----------------------------------------------------------------
+
+fn empty_board() -> json.JsonValue {
+  json.Object([
+    #("project", json.String("p1")),
+    #("revision", json.Int(1)),
+    #("total", json.Int(0)),
+    #("tickets", json.Array([])),
+  ])
+}
+
+fn quiet_projects(asked: Subject(Asked)) -> home.Projects {
+  home.Projects(..projects_for(asked, accepting()), boards: fn(deliver) {
+    deliver(feed.Heard([feed.Listed("p1", "/src/loom", empty_board())]))
+  })
+}
+
+fn saved_entry() -> sessions.Entry {
+  Entry(
+    id: "D",
+    name: "hex release",
+    workspace: "/src/loom",
+    created_at: 100_000,
+    residency: sessions.Saved,
+    subtitle: None,
+    role: None,
+    project: None,
+    executor: None,
+  )
+}
+
+// A page that lists one saved session, so a catalogue summary is due, and reads
+// the feed. `summary` is what the catalogue's read does when asked.
+fn with_summary(
+  projects: home.Projects,
+  summary: fn(fn(List(saved_attention.Saved)) -> Nil) -> Nil,
+) -> home.Start {
+  home.Start(
+    ..start_with(home.OperatorCeiling, Some(projects)),
+    sessions: fn(deliver) { deliver(home.Listed([saved_entry()])) },
+    attention: Some(home.Attention(
+      feed: fn(_, deliver) { deliver([]) },
+      saved: fn(_, deliver) { summary(deliver) },
+      record: fn(_, _, deliver) { deliver(Error("none")) },
+      approvals: fn(_, deliver) { deliver(Error("none")) },
+      act: None,
+    )),
+  )
+}
+
+fn waiting_summary() -> saved_attention.Saved {
+  saved_attention.Saved(
+    session_id: "D",
+    pending_approvals: 1,
+    open_asks: 1,
+    open_finds: 0,
+    oldest_open_at: Some(5),
+    updated_at: 9,
+  )
+}
+
 // A page with no running session lands on the inbox when its first board read
 // holds a ticket waiting on a person, with no press: the board takes part in the
 // landing as the first catalogue summary does.
@@ -581,20 +709,9 @@ pub fn a_ticket_only_page_lands_on_the_inbox_test() {
 // ticket that appears in a later read never covers it.
 pub fn a_later_board_never_covers_a_settled_composer_test() {
   let asked = process.new_subject()
-  let empty =
-    json.Object([
-      #("project", json.String("p1")),
-      #("revision", json.Int(1)),
-      #("total", json.Int(0)),
-      #("tickets", json.Array([])),
-    ])
-  let quiet =
-    home.Projects(..projects_for(asked, accepting()), boards: fn(deliver) {
-      deliver(feed.Heard([feed.Listed("p1", "/src/loom", empty)]))
-    })
   let start =
     home.Start(
-      ..start_with(home.OperatorCeiling, Some(quiet)),
+      ..start_with(home.OperatorCeiling, Some(quiet_projects(asked))),
       sessions: fn(deliver) { deliver(home.Listed([])) },
     )
   let model = run(home.new(start), home.TimerReady(process.new_subject()))
@@ -609,4 +726,50 @@ pub fn a_later_board_never_covers_a_settled_composer_test() {
       ),
     )
   assert !string.contains(drawn(later), "Ticket ·")
+}
+
+// With a summary still to come the first empty board leaves the composer open to
+// it, and a ticket in the next board read does not take the page over: the
+// first board read is the only one that decides.
+pub fn the_first_board_alone_decides_while_a_summary_is_due_test() {
+  let asked = process.new_subject()
+  let start = with_summary(quiet_projects(asked), fn(_) { Nil })
+  let model = run(home.new(start), home.TimerReady(process.new_subject()))
+  assert !string.contains(drawn(model), "Ticket ·")
+
+  let later =
+    run(
+      model,
+      home.BoardsRead(
+        home.board_reads(model),
+        feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]),
+      ),
+    )
+  assert !string.contains(drawn(later), "Ticket ·")
+}
+
+// An empty first summary and then a board with no ticket settle the centre at
+// once: a later summary that counts something no longer covers the composer.
+pub fn an_empty_summary_and_an_empty_board_settle_the_centre_test() {
+  let asked = process.new_subject()
+  let start = with_summary(quiet_projects(asked), fn(deliver) { deliver([]) })
+  let model = run(home.new(start), home.TimerReady(process.new_subject()))
+
+  let later = run(model, home.SavedRead([waiting_summary()]))
+  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
+}
+
+// A board read that tells nothing still ends the wait for the first board, so
+// the composer is settled by the summary that follows.
+pub fn an_unread_board_still_ends_the_wait_test() {
+  let asked = process.new_subject()
+  let unread =
+    home.Projects(..projects_for(asked, accepting()), boards: fn(deliver) {
+      deliver(feed.Unread)
+    })
+  let start = with_summary(unread, fn(deliver) { deliver([]) })
+  let model = run(home.new(start), home.TimerReady(process.new_subject()))
+
+  let later = run(model, home.SavedRead([waiting_summary()]))
+  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
 }

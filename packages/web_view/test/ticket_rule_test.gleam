@@ -6,10 +6,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/project_board as board
-import web_view/projects
+import web_view/projects.{Acted, Declined}
 import web_view/ticket_rule.{
-  Answer, Asked, Close, Confirming, Declined, Done, Nothing, Operating, Resting,
-  Retry, Send, Sending, Stop, Unasked, Watching,
+  Answer, Asked, Close, Confirming, Nothing, Operating, Resting, Retry, Send,
+  Sending, Stop, Unasked, Watching,
 }
 
 fn ticket(
@@ -170,11 +170,11 @@ pub fn the_daemons_word_becomes_the_panes_notice_test() {
       ticket_rule.Opened(..ticket_rule.open(key()), confirm: Asked(Close)),
     )
 
-  let closed = ticket_rule.settled(out, Close, Done)
+  let closed = ticket_rule.settled(out, Close, Acted)
   assert closed.progress == Resting
   assert closed.notice == Some(ticket_rule.Told("Ticket closed."))
 
-  let answered = ticket_rule.settled(out, Answer(7), Done)
+  let answered = ticket_rule.settled(out, Answer(7), Acted)
   assert answered.answered == 1
   let refused = ticket_rule.settled(out, Answer(7), Declined("conflict"))
   assert refused.answered == 0

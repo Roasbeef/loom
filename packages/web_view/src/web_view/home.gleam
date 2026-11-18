@@ -957,6 +957,8 @@ pub opaque type Model {
     /// Whether the first board read, which takes part in the landing, has
     /// answered.
     board_state: BoardState,
+    /// Whether the first catalogue summary has answered.
+    summary_state: SummaryState,
     /// What the inbox's outbox says: nothing sent, a message out to a session,
     /// or the daemon's answer to the last one (`thread_send.Outbox`). There is
     /// one outbox, so a second message waits for the first's answer.
@@ -1129,6 +1131,16 @@ pub type BoardState {
 
   /// The first board read has answered, or the page lists no projects.
   BoardsSettled
+}
+
+/// Whether the first catalogue summary has answered, so the landing can tell a
+/// summary that counted nothing from one that has not come.
+pub type SummaryState {
+  /// No summary has answered yet.
+  SummaryPending
+
+  /// A summary has answered, empty or not.
+  SummarySettled
 }
 
 /// Whether the page has decided its centre. The decision is made once per page
@@ -1351,8 +1363,10 @@ pub type Msg {
   /// it was drawn with and the text.
   TicketAnswerSent(seq: Int, text: String)
 
-  /// The confirmation of a Stop or a Close was pressed: do what was asked.
-  TicketActConfirmed
+  /// The confirmation of a Stop or a Close was pressed: do what was asked. The
+  /// ticket and the act were drawn into the handler, and the page honours the
+  /// press only when both are still what it asked about.
+  TicketActConfirmed(key: ticket_rule.Key, control: ticket_rule.Control)
 
   /// The confirmation's "Keep" was pressed: take the question back.
   TicketActKept
@@ -1361,7 +1375,7 @@ pub type Msg {
   TicketActSettled(
     key: ticket_rule.Key,
     control: ticket_rule.Control,
-    outcome: ticket_rule.Outcome,
+    outcome: feed.Acted,
   )
 
   /// The person pressed "Inbox" on the composer or the list: show the centre the
@@ -1772,6 +1786,7 @@ pub fn new(start: Start) -> Model {
       Some(_) -> BoardsPending
       None -> BoardsSettled
     },
+    summary_state: SummaryPending,
     outbox: thread_send.Unsent,
     delivered: 0,
     feed: dict.new(),
@@ -2191,6 +2206,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               saved: dict.from_list(
                 list.map(rows, fn(row) { #(row.session_id, row) }),
               ),
+              summary_state: SummarySettled,
             )
           #(
             Model(
@@ -2585,7 +2601,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             Model(
               ..model,
               item: item_pane.closed(),
-              ticket: Some(ticket_rule.open(key)),
+              ticket: Some(thread_reopened(model.ticket, key)),
             ),
             key,
           )
@@ -2607,19 +2623,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     // The confirmation sends the act it asked about, if the daemon still lists
     // it for the ticket.
-    TicketActConfirmed ->
-      case model.ticket {
-        Some(opened) ->
-          case ticket_rule.confirmed(opened) {
-            ticket_rule.Send(next, control) ->
-              ticket_acted(model, next, control, "")
-            ticket_rule.Confirming(_) | ticket_rule.Nothing -> #(
-              model,
-              effect.none(),
-            )
-          }
-        None -> #(model, effect.none())
-      }
+    TicketActConfirmed(key:, control:) -> ticket_confirmed(model, key, control)
 
     TicketActKept ->
       case model.ticket {
@@ -2642,8 +2646,9 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               ticket: Some(ticket_rule.settled(opened, control, outcome)),
             )
           let #(next, reading) = reading_ticket_thread(next, key)
+          let #(next, boards) = reading_boards(next)
 
-          #(next, effect.batch([reading, reading_boards(next)]))
+          #(next, effect.batch([reading, boards]))
         }
         Some(_) | None -> #(model, effect.none())
       }
@@ -2925,10 +2930,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case serial == model.board_reads, model.start.projects, read {
         True, Some(_), feed.Heard(projects: listed) ->
           boards_heard(model, feed.decode(listed))
-        True, Some(_), feed.Unread | True, None, _ | False, _, _ -> #(
-          model,
+
+        // A read that told nothing, or that a newer one overtook, still ends the
+        // wait for the first board, so the composer is not held open for ever.
+        True, Some(_), feed.Unread | False, Some(_), _ -> #(
+          board_landed(model, model.boards),
           effect.none(),
         )
+        True, None, _ | False, None, _ -> #(model, effect.none())
       }
 
     // A ticket's button opens its page, on a page that lists projects and only
@@ -4509,7 +4518,7 @@ fn quiet_list(model: Model) -> Bool {
   case model.status {
     Connected ->
       running_sessions(model) == 0
-      && !{ summary_due(model) && dict.is_empty(model.saved) }
+      && !{ summary_due(model) && model.summary_state == SummaryPending }
     Connecting | Ended(_) -> False
   }
 }
@@ -4533,16 +4542,20 @@ fn reading_ticket_thread(
 
 /// Starts a read of the projects' boards, so the list shows what an act changed
 /// without waiting for the next timer.
-fn reading_boards(model: Model) -> Effect(Msg) {
+fn reading_boards(model: Model) -> #(Model, Effect(Msg)) {
   // A page with no projects capability has no board to read.
   case model.start.projects {
     Some(Projects(boards:, ..)) -> {
-      use dispatch <- effect.from
-      let serial = model.board_reads
+      // The serial is bumped as a list read bumps it, so a read this one
+      // overtakes is dropped.
+      let serial = model.board_reads + 1
 
-      boards(fn(read) { dispatch(BoardsRead(serial, read)) })
+      #(Model(..model, board_reads: serial), {
+        use dispatch <- effect.from
+        boards(fn(read) { dispatch(BoardsRead(serial, read)) })
+      })
     }
-    None -> effect.none()
+    None -> #(model, effect.none())
   }
 }
 
@@ -4558,7 +4571,13 @@ fn ticket_thread_heard(
     feed.TicketHeard(detail: document) ->
       case board.decode_detail(document) {
         Ok(detail) -> #(
-          Model(..model, ticket: Some(ticket_rule.heard(opened, detail))),
+          Model(
+            ..model,
+            ticket: Some(ticket_rule.reconciled(
+              ticket_rule.heard(opened, detail),
+              ticket_standing(model),
+            )),
+          ),
           effect.none(),
         )
         Error(_) -> #(
@@ -4636,6 +4655,56 @@ fn ticket_stepped(
   }
 }
 
+/// The thread to show for a press on a row: the one already open when the row
+/// is its own, so a re-press keeps what is out and only reads again, and a new
+/// one otherwise.
+fn thread_reopened(
+  held: Option(ticket_rule.Opened),
+  key: ticket_rule.Key,
+) -> ticket_rule.Opened {
+  case held {
+    Some(opened) if opened.key == key -> opened
+    Some(_) | None -> ticket_rule.open(key)
+  }
+}
+
+/// The press on a confirmation. It goes through the same gate as a press on a
+/// control: the page must be connected and operate, the thread must be the one
+/// the confirmation was drawn for, and the act must still be listed for the
+/// ticket as it now stands. A confirmation that fails any of these sends
+/// nothing.
+fn ticket_confirmed(
+  model: Model,
+  key: ticket_rule.Key,
+  control: ticket_rule.Control,
+) -> #(Model, Effect(Msg)) {
+  // The open ticket, the page's connection and its standing say whether this
+  // page may act at all; only then is the confirmation itself judged.
+  case open_ticket(model), model.status, ticket_standing(model) {
+    Some(#(opened, ticket)), Connected, ticket_rule.Operating ->
+      case
+        opened.key == key
+        && opened.confirm == ticket_rule.Asked(control)
+        && ticket_rule.allowed(ticket, ticket_rule.Operating, control)
+      {
+        True ->
+          case ticket_rule.confirmed(opened) {
+            ticket_rule.Send(next, sent) -> ticket_acted(model, next, sent, "")
+            ticket_rule.Confirming(_) | ticket_rule.Nothing -> #(
+              model,
+              effect.none(),
+            )
+          }
+        False -> #(model, effect.none())
+      }
+    Some(_), Connected, ticket_rule.Watching
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
 /// An answer from the thread's form. An empty answer asks nothing, and one past
 /// the box's limit is refused here in words. Past that the daemon is the
 /// authority: an answer to a question that has since changed is refused there.
@@ -4684,12 +4753,7 @@ fn ticket_acted(
       let settle = fn(outcome) {
         dispatch(TicketActSettled(key, control, outcome))
       }
-      let acted = fn(told) {
-        settle(case told {
-          feed.Acted -> ticket_rule.Done
-          feed.Declined(code:) -> ticket_rule.Declined(code)
-        })
-      }
+      let acted = settle
 
       // Each act goes through its own capability, and each answer is read into
       // the rule's one outcome.
@@ -4697,15 +4761,15 @@ fn ticket_acted(
         ticket_rule.Answer(seq) ->
           answer(key.project, key.ticket, seq, text, fn(told) {
             settle(case told {
-              feed.Recorded -> ticket_rule.Done
-              feed.Refused(code:) -> ticket_rule.Declined(code)
+              feed.Recorded -> feed.Acted
+              feed.Refused(code:) -> feed.Declined(code)
             })
           })
         ticket_rule.Close ->
           close(key.project, key.ticket, fn(told) {
             settle(case told {
-              feed.Closed -> ticket_rule.Done
-              feed.NotClosed(code:) -> ticket_rule.Declined(code)
+              feed.Closed -> feed.Acted
+              feed.NotClosed(code:) -> feed.Declined(code)
             })
           })
         ticket_rule.Retry -> retry(key.project, key.ticket, acted)
