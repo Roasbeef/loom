@@ -822,34 +822,164 @@ pub fn a_note_that_failed_after_a_settled_answer_stays_in_view_test() {
   assert string.contains(html, ">Send<")
 }
 
-// A composer shown because nothing ran is the person's after the first summary:
-// a summary that counts nothing makes it theirs, and a later one that counts
-// something does not cover it.
-pub fn the_first_summary_decides_an_unprompted_composer_test() {
-  let none_waiting =
-    saved_attention.Saved(
-      session_id: "D",
-      pending_approvals: 0,
-      open_asks: 0,
-      open_finds: 0,
-      oldest_open_at: None,
-      updated_at: 9,
-    )
+fn none_waiting() -> saved_attention.Saved {
+  saved_attention.Saved(
+    session_id: "D",
+    pending_approvals: 0,
+    open_asks: 0,
+    open_finds: 0,
+    oldest_open_at: None,
+    updated_at: 9,
+  )
+}
+
+fn approval_waiting() -> saved_attention.Saved {
+  saved_attention.Saved(..none_waiting(), pending_approvals: 1, open_asks: 1)
+}
+
+// A page that can start a session, so the composer is its centre unless the
+// inbox is. The feed answers with nothing open, and `saved` and `activity` are
+// what the catalogue's read and the activity read do when they are asked, so a
+// test can hold either back and deliver it as a message.
+fn composing(
+  listing: List(Entry),
+  activity: fn(fn(List(#(String, sessions.Report))) -> Nil) -> Nil,
+  saved: fn(fn(List(saved_attention.Saved)) -> Nil) -> Nil,
+) -> home.Start {
+  let base = start(listing, [], [], None)
+
+  home.Start(
+    ..base,
+    create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+    activity: fn(_, deliver) { activity(deliver) },
+    attention: Some(home.Attention(
+      feed: fn(_, deliver) { deliver([]) },
+      saved: fn(_, deliver) { saved(deliver) },
+      record: fn(_session, id, deliver) { deliver(read_of(id)) },
+      approvals: fn(_session, deliver) { deliver(Ok(evidence())) },
+      review: None,
+      review_pause_ms: 0,
+      act: None,
+    )),
+  )
+}
+
+// A running session that is quiet beside a saved one.
+fn quiet_and_saved() -> List(Entry) {
+  [
+    entry("A", "web ui", Live),
+    entry("D", "hex release", sessions.Saved),
+  ]
+}
+
+fn quiet_report() -> List(#(String, sessions.Report)) {
+  [#("A", Report(sessions.Idle, None, []))]
+}
+
+// A saved session with nothing pending lands the composer once its summary has
+// answered, and a later summary that counts something does not cover it. The
+// "Inbox" control is how the person gets to what arrived.
+pub fn a_summary_that_counts_nothing_lands_the_composer_test() {
   let model =
-    opened(start(
-      [entry("D", "hex release", sessions.Saved)],
-      [],
-      [none_waiting],
-      None,
-    ))
+    opened(
+      composing(
+        [entry("D", "hex release", sessions.Saved)],
+        fn(_) { Nil },
+        fn(deliver) { deliver([none_waiting()]) },
+      ),
+    )
+  let html = drawn(model)
+  assert string.contains(html, "<h1>New session</h1>")
+  assert !string.contains(html, "<h1>Inbox</h1>")
+  assert !string.contains(html, "Back to the inbox")
+
+  let later = drawn(run(model, home.SavedRead([approval_waiting()])))
+  assert string.contains(later, "<h1>New session</h1>")
+  assert !string.contains(later, "<h1>Inbox</h1>")
+  assert string.contains(later, "Back to the inbox")
+}
+
+// The activity read answers first and says the one running session is quiet,
+// which on its own lands the composer. The saved session's summary has not come,
+// so the round is still open, and the summary that does come counts an approval
+// pending: the page lands on the inbox, as it does when the summary is first.
+pub fn a_quiet_activity_read_does_not_land_the_composer_over_a_summary_test() {
+  let model =
+    opened(
+      composing(
+        quiet_and_saved(),
+        fn(deliver) { deliver(quiet_report()) },
+        fn(_) { Nil },
+      ),
+    )
+
+  // The round is waiting for the summary: nothing is decided yet.
   assert !string.contains(drawn(model), "<h1>Inbox</h1>")
 
+  let landed = drawn(run(model, home.SavedRead([approval_waiting()])))
+  assert string.contains(landed, "<h1>Inbox</h1>")
+  assert !string.contains(landed, "<h1>New session</h1>")
+}
+
+// The same page with the reads the other way round: the summary counts an
+// approval first, and the activity read that follows says quiet. Either order
+// lands the inbox.
+pub fn the_summary_before_the_activity_read_lands_the_inbox_test() {
+  let model =
+    opened(
+      composing(quiet_and_saved(), fn(_) { Nil }, fn(deliver) {
+        deliver([approval_waiting()])
+      }),
+    )
+  assert !string.contains(drawn(model), "<h1>Inbox</h1>")
+
+  let landed = drawn(run(model, home.Observed(quiet_report())))
+  assert string.contains(landed, "<h1>Inbox</h1>")
+}
+
+// When nothing waits across the reads the round was owed, the composer is
+// decided, and no read that comes afterwards covers it: not an ask, a find, an
+// approval in a summary, or a session that now works.
+pub fn a_decided_composer_is_never_covered_by_a_later_read_test() {
+  let model =
+    opened(
+      composing(
+        quiet_and_saved(),
+        fn(deliver) { deliver(quiet_report()) },
+        fn(deliver) { deliver([none_waiting()]) },
+      ),
+    )
+  assert string.contains(drawn(model), "<h1>New session</h1>")
+
   let later =
-    saved_attention.Saved(..none_waiting, pending_approvals: 1, open_asks: 1)
-  assert !string.contains(
-    drawn(run(model, home.SavedRead([later]))),
-    "<h1>Inbox</h1>",
-  )
+    model
+    |> run(home.FeedRead(feed_rows()))
+    |> run(home.SavedRead([approval_waiting()]))
+    |> run(home.Observed([#("A", Report(sessions.Working, None, []))]))
+  let html = drawn(later)
+
+  assert string.contains(html, "<h1>New session</h1>")
+  assert !string.contains(html, "<h1>Inbox</h1>")
+}
+
+// A composer decided on a page that held nothing waiting still offers the
+// inbox as soon as its only content is a saved summary that counts something.
+pub fn the_inbox_control_shows_on_a_decided_composer_with_a_summary_test() {
+  let model =
+    opened(
+      composing(
+        [entry("D", "hex release", sessions.Saved)],
+        fn(_) { Nil },
+        fn(deliver) { deliver([none_waiting()]) },
+      ),
+    )
+  let calm = drawn(model)
+  assert string.contains(calm, "<h1>New session</h1>")
+  assert !string.contains(calm, "Back to the inbox")
+
+  let html = drawn(run(model, home.SavedRead([approval_waiting()])))
+  assert string.contains(html, "<h1>New session</h1>")
+  assert string.contains(html, "Back to the inbox")
 }
 
 // With no saved session in the list no summary is coming, so nothing decides the

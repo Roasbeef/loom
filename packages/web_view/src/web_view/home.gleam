@@ -306,6 +306,7 @@ import web_view/elsewhere
 import web_view/ending.{type Ending}
 import web_view/inbox_rule
 import web_view/item_pane
+import web_view/landing_rule
 import web_view/listing
 import web_view/names
 import web_view/orchestrators
@@ -949,16 +950,15 @@ pub opaque type Model {
     /// states and the landing are counted from the fresh read alone.
     shown: Option(#(String, sessions.Report)),
     /// Which centre the page shows, decided once. It is `Awaiting` until the
-    /// first decisive answer, then the inbox or the composer by the landing
-    /// rule, and no later read changes it: a read that is missed or late must
-    /// not replace a pane or a composer the person is using. After that only
-    /// the person's clicks change it.
+    /// first round of reads is complete (`round`), then the inbox or the
+    /// composer by the landing rule, and no later read changes it: a read that
+    /// is missed or late must not replace a pane or a composer the person is
+    /// using. After that only the person's clicks change it.
     centre_choice: CentreChoice,
-    /// Whether the first board read, which takes part in the landing, has
-    /// answered.
-    board_state: BoardState,
-    /// Whether the first catalogue summary has answered.
-    summary_state: SummaryState,
+    /// Which first reads the page is still owed and which have answered. The
+    /// centre is decided when the last one answers (`landing_rule`), whatever
+    /// order they came in.
+    round: landing_rule.Round,
     /// What the inbox's outbox says: nothing sent, a message out to a session,
     /// or the daemon's answer to the last one (`thread_send.Outbox`). There is
     /// one outbox, so a second message waits for the first's answer.
@@ -1121,35 +1121,18 @@ pub type OpenTicket {
   )
 }
 
-/// Whether the first board read has answered. It takes part in the landing the
-/// way the first catalogue summary does, so a ticket waiting on a person can
-/// take a page with no running session to the inbox.
-pub type BoardState {
-  /// The page lists projects and no board has answered yet. The landing waits
-  /// for it, as it waits for the first catalogue summary.
-  BoardsPending
-
-  /// The first board read has answered, or the page lists no projects.
-  BoardsSettled
-}
-
-/// Whether the first catalogue summary has answered, so the landing can tell a
-/// summary that counted nothing from one that has not come.
-pub type SummaryState {
-  /// No summary has answered yet.
-  SummaryPending
-
-  /// A summary has answered, empty or not.
-  SummarySettled
-}
-
 /// Whether the page has decided its centre. The decision is made once per page
-/// load, by the first decisive answer: an activity read (the inbox when
-/// something waits or runs, the composer otherwise, `inbox_rule.landing`) or a
-/// list with no running session (the composer). After that the person's clicks
-/// are the only thing that change it.
+/// load, when the last read of the first round has answered (`landing_rule`):
+/// the inbox when anything across the round's reads waits or runs, the composer
+/// otherwise. After that the person's clicks are the only thing that change it.
+///
+/// | state | the round's last read answers | a later read answers | the person presses |
+/// | --- | --- | --- | --- |
+/// | `Awaiting` | `Decided` by what the round gathered | stays `Awaiting` until the round closes | `Decided` as pressed |
+/// | `Decided` | stays as it is | stays as it is | `Decided` as pressed |
 pub type CentreChoice {
-  /// No decisive answer has come, so the page shows the composer or the list.
+  /// The round of first reads is not complete, so the page shows the composer
+  /// or the list.
   Awaiting
 
   /// The centre is decided.
@@ -1782,11 +1765,10 @@ pub fn new(start: Start) -> Model {
     presses: 0,
     shown: None,
     centre_choice: Awaiting,
-    board_state: case start.projects {
-      Some(_) -> BoardsPending
-      None -> BoardsSettled
-    },
-    summary_state: SummaryPending,
+    round: landing_rule.open(case start.projects {
+      Some(_) -> landing_rule.Due
+      None -> landing_rule.NotDue
+    }),
     outbox: thread_send.Unsent,
     delivered: 0,
     feed: dict.new(),
@@ -2187,48 +2169,32 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.status {
         Ended(_) -> #(model, effect.none())
         Connecting | Connected -> #(
-          Model(..model, feed: dict.from_list(rows)),
+          arrived(
+            Model(..model, feed: dict.from_list(rows)),
+            landing_rule.FeedSource,
+          ),
           effect.none(),
         )
       }
 
     // The catalogue's summaries replace the last ones whole. They can arrive
     // when nothing runs, after a restart, and a summary that counts something
-    // is what puts the inbox over the composer on a page that has not been
-    // chosen away from yet.
+    // is part of what the first round decides the centre by.
     SavedRead(rows:) ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> {
-          let read =
+        Connecting | Connected -> #(
+          arrived(
             Model(
               ..model,
               saved: dict.from_list(
                 list.map(rows, fn(row) { #(row.session_id, row) }),
               ),
-              summary_state: SummarySettled,
-            )
-          #(
-            Model(
-              ..read,
-              centre_choice: case
-                read.centre_choice,
-                would_land(read),
-                summary_decides(read)
-              {
-                Awaiting, inbox_rule.Inbox, _ -> Decided(InboxCentre)
-
-                // The first summary decides for a list with nothing running:
-                // the inbox when something waits, and otherwise the composer,
-                // so a later read cannot cover what the person types in it.
-                Awaiting, inbox_rule.Form, True -> Decided(FormCentre)
-                Awaiting, inbox_rule.Form, False | Decided(_), _, _ ->
-                  read.centre_choice
-              },
             ),
-            effect.none(),
-          )
-        }
+            landing_rule.SummarySource,
+          ),
+          effect.none(),
+        )
       }
 
     // The evidence replaces what the page held for that session. It is kept
@@ -2932,9 +2898,9 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           boards_heard(model, feed.decode(listed))
 
         // A read that told nothing, or that a newer one overtook, still ends the
-        // wait for the first board, so the composer is not held open for ever.
+        // wait for the first board, so the round is not held open for ever.
         True, Some(_), feed.Unread | False, Some(_), _ -> #(
-          board_landed(model, model.boards),
+          arrived(model, landing_rule.BoardsSource),
           effect.none(),
         )
         True, None, _ | False, None, _ -> #(model, effect.none())
@@ -4478,51 +4444,6 @@ fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
   #(model, effect)
 }
 
-/// Whether the first board read is still to come, so the landing may not settle
-/// on the composer yet.
-fn boards_pending(model: Model) -> Bool {
-  model.board_state == BoardsPending
-}
-
-/// The model once a board read has answered. The first read takes part in the
-/// landing, once, as the first catalogue summary does: while the centre is
-/// undecided a ticket waiting on a person lands the inbox, and a read that finds
-/// none settles the composer for a list with nothing running unless a summary is
-/// still to come. A centre that is decided never moves.
-fn board_landed(model: Model, boards: List(feed.Loaded)) -> Model {
-  let read = Model(..model, boards:, board_state: BoardsSettled)
-
-  // Only the first read decides; every later one leaves the centre as it is.
-  case model.board_state {
-    BoardsSettled -> model
-    BoardsPending ->
-      Model(
-        ..read,
-        centre_choice: case
-          read.centre_choice,
-          something_waits(read),
-          quiet_list(read)
-        {
-          Awaiting, True, _ -> Decided(InboxCentre)
-          Awaiting, False, True -> Decided(FormCentre)
-          Awaiting, False, False | Decided(_), _, _ -> read.centre_choice
-        },
-      )
-  }
-}
-
-/// Whether the list has answered with nothing running and no summary still to
-/// come, so no later read will decide the centre and the composer is the
-/// landing.
-fn quiet_list(model: Model) -> Bool {
-  case model.status {
-    Connected ->
-      running_sessions(model) == 0
-      && !{ summary_due(model) && model.summary_state == SummaryPending }
-    Connecting | Ended(_) -> False
-  }
-}
-
 /// Starts the read of the open ticket thread's ticket from the daemon's own
 /// task.
 fn reading_ticket_thread(
@@ -4786,14 +4707,14 @@ fn boards_heard(
   model: Model,
   boards: List(feed.Loaded),
 ) -> #(Model, Effect(Msg)) {
-  let landed = board_landed(model, boards)
-
   // Equal boards mean the revision did not move, because a revision is part of
   // what a decoded board holds.
   case boards == model.boards {
-    True -> #(landed, effect.none())
+    True -> #(arrived(model, landing_rule.BoardsSource), effect.none())
     False -> {
-      let model = Model(..landed, boards:)
+      // The boards are stored before the round hears of them, so a ticket they
+      // hold is part of what the round decides by.
+      let model = arrived(Model(..model, boards:), landing_rule.BoardsSource)
 
       // A ticket page is refreshed only when it is open and stale, so a board
       // that moved elsewhere costs the open page nothing. The same holds for
@@ -5111,19 +5032,22 @@ fn answered(model: Model, listing: Listing) -> Model {
           status: Connected,
         )
 
-      // A list with no running session asks for no activity, so no answer will
-      // come to decide the landing. The composer is the landing, unless a
-      // catalogue summary or the first board read is still to come: either may
-      // say something waits, and it decides the centre when it arrives.
-      case listed.centre_choice, running_sessions(listed) {
-        Awaiting, 0 ->
-          case summary_due(listed) || boards_pending(listed) {
-            True -> listed
-            False -> Model(..listed, centre_choice: Decided(FormCentre))
-          }
-        Awaiting, _ | Decided(_), _ -> listed
-      }
+      // The list says which of the reads that follow it the page will ask, and
+      // the round waits for those and decides when the last has answered.
+      let #(round, close) =
+        landing_rule.listed(
+          listed.round,
+          activity: activity_reading(listed),
+          summary: summary_reading(listed),
+          feed: feed_reading(listed),
+        )
+
+      concluded(Model(..listed, round:), close)
     }
+
+    // A list that could not be read is no answer to wait on: the reads that
+    // depend on it cannot be known to be due, and the timer reads again. The
+    // round stays open, so the first list that is read decides with the rest.
     Unread -> model
     Closed(ending:) -> Model(..model, status: Ended(ending:))
   }
@@ -5517,11 +5441,30 @@ fn summary_due(model: Model) -> Bool {
   }
 }
 
-/// Whether the next summary is the answer that decides the centre: nothing
-/// runs, so no activity read will come, a summary is due, and no board read is
-/// still to come that could hold a ticket.
-fn summary_decides(model: Model) -> Bool {
-  running_sessions(model) == 0 && summary_due(model) && !boards_pending(model)
+/// The activity read the list started: due when the list holds a running
+/// session, because `observing` asks nothing for a page with none.
+fn activity_reading(model: Model) -> landing_rule.Reading {
+  case running_sessions(model) {
+    0 -> landing_rule.NotDue
+    _ -> landing_rule.Due
+  }
+}
+
+/// The summary read the list started, due as `summary_due` says.
+fn summary_reading(model: Model) -> landing_rule.Reading {
+  case summary_due(model) {
+    True -> landing_rule.Due
+    False -> landing_rule.NotDue
+  }
+}
+
+/// The feed read the list started: due when the page reads the feed and the list
+/// holds a running session, since `attending` asks the feed for those alone.
+fn feed_reading(model: Model) -> landing_rule.Reading {
+  case model.start.attention, running_sessions(model) {
+    None, _ | Some(_), 0 -> landing_rule.NotDue
+    Some(_), _ -> landing_rule.Due
+  }
 }
 
 /// Whether the inbox has anything to show: a thread drawn from a report, or an
@@ -5530,21 +5473,44 @@ fn inbox_has_content(model: Model) -> Bool {
   drawn_threads(model) != [] || something_waits(model)
 }
 
-/// What the page's reports say it would land on: the inbox when something waits
-/// or runs, and the composer otherwise (`inbox_rule.landing`).
-fn would_land(model: Model) -> inbox_rule.Landing {
-  let reports =
-    inbox_rule.landing(
-      list.map(inbox_threads(model), fn(thread) { thread.report }),
-    )
+/// What the first round has gathered, as the landing rule reads it: the reports
+/// of the running sessions, and what waits in the feed, the catalogue and the
+/// boards. Something waiting in the feed or the catalogue lands on the inbox even
+/// when no session runs, which is a restart with an approval pending.
+fn picture(model: Model) -> landing_rule.Picture {
   let tally = attention_rule.tally(standings(model))
 
-  // Something waiting in the feed or the catalogue lands on the inbox even when
-  // no session runs, which is a restart with an approval pending.
-  case reports, tally.needing + tally.finds + waiting_tickets(model) {
-    inbox_rule.Inbox, _ -> inbox_rule.Inbox
-    inbox_rule.Form, 0 -> inbox_rule.Form
-    inbox_rule.Form, _ -> inbox_rule.Inbox
+  landing_rule.Picture(
+    reports: list.map(inbox_threads(model), fn(thread) { thread.report }),
+    needing: tally.needing,
+    finds: tally.finds,
+    tickets: waiting_tickets(model),
+  )
+}
+
+/// The model once a first-round read has answered: the round records it and,
+/// if it was the last one due, the centre is decided by what the round gathered.
+/// A read that answers when the round is complete, or after the person chose a
+/// centre, changes no centre.
+fn arrived(model: Model, source: landing_rule.Source) -> Model {
+  let #(round, close) = landing_rule.answer(model.round, source)
+
+  concluded(Model(..model, round:), close)
+}
+
+/// The model once a round has taken an answer. Only the answer that closes the
+/// round decides, and only for a page that has not been chosen away from.
+fn concluded(model: Model, close: landing_rule.Close) -> Model {
+  case close, model.centre_choice {
+    landing_rule.Closes, Awaiting ->
+      Model(
+        ..model,
+        centre_choice: Decided(case landing_rule.landing(picture(model)) {
+          inbox_rule.Inbox -> InboxCentre
+          inbox_rule.Form -> FormCentre
+        }),
+      )
+    landing_rule.Closes, Decided(_) | landing_rule.Continues, _ -> model
   }
 }
 
@@ -5552,7 +5518,7 @@ fn would_land(model: Model) -> inbox_rule.Landing {
 /// states and the headline's count, are the fresh answer alone. The one
 /// exception is the thread the pane shows, whose last report is kept in `shown`
 /// when one read leaves it out and its session is still listed, since a slow
-/// session is not a gone one. The first answer decides the landing (`landing`)
+/// session is not a gone one. The answer takes part in the first round (`arrived`)
 /// and fixes the default thread (`settled_selection`); no later answer changes
 /// the centre.
 fn observed(model: Model, rows: List(#(String, sessions.Report))) -> Model {
@@ -5565,7 +5531,9 @@ fn observed(model: Model, rows: List(#(String, sessions.Report))) -> Model {
       shown: shown_report(model, fresh),
     )
 
-  Model(..read, selected: settled_selection(read), centre_choice: landing(read))
+  let settled = Model(..read, selected: settled_selection(read))
+
+  arrived(settled, landing_rule.ActivitySource)
 }
 
 /// The report to keep for the selected thread: its fresh one, or else the one
@@ -5606,19 +5574,6 @@ fn still_running(model: Model, id: String) -> Bool {
   list.any(listing.entries(model.groups), fn(entry) {
     entry.id == id && entry.residency == Live
   })
-}
-
-/// The centre after a read: the first answer decides, by the landing rule over
-/// what it said, and a centre that is decided stays as it is.
-fn landing(model: Model) -> CentreChoice {
-  case model.centre_choice {
-    Awaiting ->
-      case would_land(model) {
-        inbox_rule.Inbox -> Decided(InboxCentre)
-        inbox_rule.Form -> Decided(FormCentre)
-      }
-    Decided(_) as decided -> decided
-  }
 }
 
 /// The session a selection names, if it names one.

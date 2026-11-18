@@ -708,7 +708,10 @@ pub fn a_ticket_only_page_lands_on_the_inbox_test() {
 }
 
 // A page whose first board read held nothing settles on the composer, and a
-// ticket that appears in a later read never covers it.
+// ticket that appears in a later read never covers it. The page is the list, as
+// a page that cannot create is, so the "Inbox" control is the evidence: it shows
+// once the later board holds a ticket, which proves the read was applied, and
+// the inbox is still not the centre.
 pub fn a_later_board_never_covers_a_settled_composer_test() {
   let asked = process.new_subject()
   let start =
@@ -717,7 +720,7 @@ pub fn a_later_board_never_covers_a_settled_composer_test() {
       sessions: fn(deliver) { deliver(home.Listed([])) },
     )
   let model = run(home.new(start), home.TimerReady(process.new_subject()))
-  assert !string.contains(drawn(model), "Ticket ·")
+  assert !string.contains(drawn(model), "\u{2039} Inbox")
 
   let later =
     run(
@@ -727,42 +730,44 @@ pub fn a_later_board_never_covers_a_settled_composer_test() {
         feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]),
       ),
     )
-  assert !string.contains(drawn(later), "Ticket ·")
+  let html = drawn(later)
+  assert string.contains(html, "\u{2039} Inbox")
+  assert !string.contains(html, "<h1>Inbox</h1>")
+  assert !string.contains(html, "Ticket \u{b7}")
 }
 
-// With a summary still to come the first empty board leaves the composer open to
-// it, and a ticket in the next board read does not take the page over: the
-// first board read is the only one that decides.
-pub fn the_first_board_alone_decides_while_a_summary_is_due_test() {
+// A board that holds a ticket and answers before the summary is not lost when
+// the summary arrives: the round decides on the last read with everything it
+// gathered, and the ticket lands the inbox though the summary counted nothing.
+pub fn a_ticket_that_came_before_the_summary_lands_the_inbox_test() {
   let asked = process.new_subject()
-  let start = with_summary(quiet_projects(asked), fn(_) { Nil })
+  let start = with_summary(projects_for(asked, accepting()), fn(_) { Nil })
   let model = run(home.new(start), home.TimerReady(process.new_subject()))
-  assert !string.contains(drawn(model), "Ticket ·")
+  assert !string.contains(drawn(model), "<h1>Inbox</h1>")
 
-  let later =
-    run(
-      model,
-      home.BoardsRead(
-        home.board_reads(model),
-        feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]),
-      ),
-    )
-  assert !string.contains(drawn(later), "Ticket ·")
+  let decided = run(model, home.SavedRead([]))
+  let html = drawn(decided)
+  assert string.contains(html, "<h1>Inbox</h1>")
+  assert string.contains(html, "4 tickets need you")
 }
 
 // An empty first summary and then a board with no ticket settle the centre at
 // once: a later summary that counts something no longer covers the composer.
+// The control to the inbox appears with it, which shows the later summary was
+// read and the page still did not move.
 pub fn an_empty_summary_and_an_empty_board_settle_the_centre_test() {
   let asked = process.new_subject()
   let start = with_summary(quiet_projects(asked), fn(deliver) { deliver([]) })
   let model = run(home.new(start), home.TimerReady(process.new_subject()))
+  assert !string.contains(drawn(model), "\u{2039} Inbox")
 
-  let later = run(model, home.SavedRead([waiting_summary()]))
-  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
+  let later = drawn(run(model, home.SavedRead([waiting_summary()])))
+  assert !string.contains(later, "<h1>Inbox</h1>")
+  assert string.contains(later, "\u{2039} Inbox")
 }
 
-// A board read that tells nothing still ends the wait for the first board, so
-// the composer is settled by the summary that follows.
+// A board read that tells nothing still counts as the board's answer, so the
+// round closes on the summary that follows and decides the composer.
 pub fn an_unread_board_still_ends_the_wait_test() {
   let asked = process.new_subject()
   let unread =
@@ -771,7 +776,37 @@ pub fn an_unread_board_still_ends_the_wait_test() {
     })
   let start = with_summary(unread, fn(deliver) { deliver([]) })
   let model = run(home.new(start), home.TimerReady(process.new_subject()))
+  assert !string.contains(drawn(model), "\u{2039} Inbox")
 
-  let later = run(model, home.SavedRead([waiting_summary()]))
-  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
+  let later = drawn(run(model, home.SavedRead([waiting_summary()])))
+  assert !string.contains(later, "<h1>Inbox</h1>")
+  assert string.contains(later, "\u{2039} Inbox")
+}
+
+// The "Inbox" control shows on a decided composer whose only content is a
+// ticket: the board that arrives after the decision is not a landing, and it is
+// reachable.
+pub fn the_inbox_control_shows_for_a_ticket_on_a_decided_composer_test() {
+  let asked = process.new_subject()
+  let start =
+    home.Start(
+      ..start_with(home.OperatorCeiling, Some(quiet_projects(asked))),
+      sessions: fn(deliver) { deliver(home.Listed([])) },
+      create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+    )
+  let model = run(home.new(start), home.TimerReady(process.new_subject()))
+  let calm = drawn(model)
+  assert string.contains(calm, "<h1>New session</h1>")
+  assert !string.contains(calm, "Back to the inbox")
+
+  let later =
+    drawn(run(
+      model,
+      home.BoardsRead(
+        home.board_reads(model),
+        feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]),
+      ),
+    ))
+  assert string.contains(later, "<h1>New session</h1>")
+  assert string.contains(later, "Back to the inbox")
 }
