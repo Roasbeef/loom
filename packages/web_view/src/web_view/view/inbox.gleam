@@ -327,10 +327,12 @@ fn row(
       ],
       [
         html.span([attribute.class("inbox-eyebrow")], [
-          html.text(row_word(kind, which) <> " · " <> thread.name),
+          html.text(
+            row_word(kind, which) <> " · " <> inbox_rule.shown_name(thread),
+          ),
         ]),
         html.span([attribute.class("inbox-head")], [
-          html.text(inbox_rule.head(thread.report)),
+          html.text(inbox_rule.thread_head(thread)),
         ]),
       ],
     ),

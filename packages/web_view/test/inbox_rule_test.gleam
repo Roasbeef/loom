@@ -125,6 +125,20 @@ pub fn the_head_falls_back_in_order_test() {
     == "Quiet"
 }
 
+// A row that has nothing to say names its session, never the bare kind word.
+pub fn a_thread_with_nothing_said_is_headed_by_its_name_test() {
+  let quiet = report(sessions.Working, None)
+  assert inbox_rule.thread_head(thread("abcdef0123", "build", quiet)) == "build"
+  assert inbox_rule.thread_head(thread("abcdef0123", " ", quiet))
+    == "Session abcdef01"
+  assert inbox_rule.thread_head(thread(
+      "abcdef0123",
+      "build",
+      report(sessions.Idle, Some("Done.")),
+    ))
+    == "Done."
+}
+
 pub fn a_long_head_is_cut_inside_the_cap_test() {
   let exact = string.repeat("a", inbox_rule.head_graphemes)
   assert inbox_rule.head(report(sessions.Idle, Some(exact))) == exact

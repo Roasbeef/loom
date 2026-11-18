@@ -312,6 +312,45 @@ pub fn head(report: Report) -> String {
   cut(line)
 }
 
+/// The name a thread is drawn under: its own, or "Session " and the first eight
+/// characters of its identity when it has none, the words `sessions.label`
+/// gives an unnamed session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let report = sessions.Report(sessions.Idle, option.None, [])
+/// let thread = inbox_rule.Thread("abcdef012345", " ", "", report)
+/// assert inbox_rule.shown_name(thread) == "Session abcdef01"
+/// ```
+pub fn shown_name(thread: Thread) -> String {
+  case string.trim(thread.name) {
+    "" -> "Session " <> string.slice(thread.id, 0, 8)
+    named -> named
+  }
+}
+
+/// A thread's one-line head: `head` when the report says anything, and
+/// otherwise the session's name, so a row never reads as a bare kind word such
+/// as "Update" that names no session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let report = sessions.Report(sessions.Working, option.None, [])
+/// let thread = inbox_rule.Thread("abcdef012345", "build", "", report)
+/// assert inbox_rule.thread_head(thread) == "build"
+/// ```
+pub fn thread_head(thread: Thread) -> String {
+  let report = thread.report
+
+  // The report's own words win; the name stands in only when it has none.
+  case first_line(report), newest_summary(report) {
+    None, None -> cut(shown_name(thread))
+    _, _ -> head(report)
+  }
+}
+
 /// The headline over the list: how many sessions need the owner, and what the
 /// count read. `running` is how many running sessions the page lists and
 /// `reports` is what the daemon answered for, which may be fewer, since the read
