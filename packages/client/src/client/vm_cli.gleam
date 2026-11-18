@@ -18,18 +18,19 @@
 //// - `setup` runs the `loom-vm` that ships beside the daemon to install the
 ////   artifacts for a release or a build tree, trying each tag the running
 ////   build may be published under (`install_artifacts`).
-//// - `up` reads and checks the manifest, installing the running build's
-////   release first when there is none (`installed_manifest`), finds the
-////   workspace, settles the deployment (`deployment`: mint one, `join` the
-////   ledger deployment the configuration holds, or refuse a static one),
-////   installs the orchestrator of a minted one (`enroll`), stages the guest
-////   root (`stage`) and boots it (`boot`).
+//// - `up` settles the guest's link first (`link_of`), which refuses a guest an
+////   older loom made as a distribution peer, then reads and checks the
+////   manifest, installing the running build's release first when there is
+////   none (`installed_manifest`), finds the workspace, mints the link's
+////   credentials and writes the guest's row (`enroll_linked`), stages the
+////   guest root (`stage_with`) and boots it (`launch_guest`), all through
+////   `bring_up_linked`. The distribution path (`deployment`, `enroll`, `stage`,
+////   `boot`) is reached by no guest now and is deleted after one release.
 //// - `ensure` makes the guest of one workspace ready for `loom --vm`: it names
 ////   the guest after the workspace (`vm_spec.guest_name_for`), reads the
 ////   facts (`ensure_facts`), lets `vm_spec.ensure_step` decide, and boots
 ////   through `bring_up`, the same code `up` runs. Its last line of standard
-////   output names the executor and workspace, and status 75 with
-////   `daemon=required` says only a running daemon is missing (`ensure`).
+////   output names the executor and workspace (`ensure`).
 //// - `down` signals the recorded process and waits for it (`down`).
 //// - `status` reports what the pid file, the process table and the host epmd
 ////   say (`status`).
@@ -62,47 +63,30 @@
 //// Everything of one guest lives in `<vm home>/<name>/`, where the vm home is
 //// `$LOOM_VM_HOME` or `~/.loom/vm`:
 ////
-//// - `deploy/` holds the two provisioned bundles and the public ledger. A
-////   second `up` reads the bundles again rather than minting new certificates,
-////   so the orchestrator's installed configuration keeps matching the executor
-////   it trusts. A guest minted before the membership ledger holds `/1` bundles
-////   that list their peers; they are read and installed as they were, and are
-////   never converted.
-//// - `orch/` holds the orchestrator's installed credentials. A guest that joined
-////   its daemon's deployment has none and no orchestrator bundle: the daemon is
-////   already a member, and its configuration is not touched.
+//// - `link` records that the guest is on the untrusted link, `link-port` the
+////   host loopback port its row names, and `link-credentials/` its own leaf
+////   and key (`client/vm_link_pki`), minted first. The vm home's `link/` holds
+////   the link authority and the orchestrator's leaf, shared by every guest.
 //// - `root/` is the guest's own clone of the exported guest root, and
-////   `state.img` is the disk its executor keeps its ledger and scopes on. A
-////   second `up` boots both again, so whatever the guest wrote into its
-////   checkout and the sessions its executor holds survive `down`; `--fresh`
-////   replaces both. `down` leaves them for the user to read.
+////   `state.img` is the disk its executor keeps its scopes on. A second `up`
+////   boots both again, so whatever the guest wrote into its checkout and the
+////   sessions its executor holds survive `down`; `--fresh` replaces both.
+////   `down` leaves them for the user to read.
 //// - `loom-vm.pid` names the process and its birth marker, and `loom-vm.log`
 ////   holds the guest's console.
 ////
-//// ## The authority key
+//// ## Guests made over distribution
 ////
-//// `up` mints a deployment in ledger mode (protocol-change/086), so a node can
-//// be enrolled into it later without minting everything again. The authority
-//// key that signs the ledger is sealed under
-//// `<vm home>/authority/<deployment id>/` with `client/authority_key`, beside
-//// the authority certificate, the operator's copy of the ledger, the cookie
-//// and a `passphrase` file `up` generated (32 bytes from the production
-//// entropy source, mode 0600). A standing guest has no terminal, and the file
-//// is what a later `loom distribution enroll --passphrase-file` reads.
-////
-//// That directory is outside every guest root and no bundle that reaches the
-//// guest holds the key: the executor's bundle has its own node key and the
-//// deployment's cookie. The daemon's jails mask `~/.loom/vm` and the state
-//// root's `vm` (`workspace_policy`), so the directory is out of reach of
-//// jailed tools under either. A `$LOOM_VM_HOME` elsewhere is not masked, and
-//// the key and its passphrase are then readable by any process of the user.
-//// `rm` deletes the directory with the guest that minted it, unless another
-//// guest's bundle names the same deployment.
-////
-//// The orchestrator's bundle goes into the user's `loom.toml` the way `loom
-//// distribution install` puts it: it merges `[distribution]` and
-//// `[executors.<name>]`, and refuses a file that already holds a different
-//// deployment instead of replacing it.
+//// A guest an older loom made is a distribution peer of the daemon. Its
+//// directory holds `deploy/`, the provisioned bundles, and, when it minted its
+//// deployment, `orch/`; its root holds the executor's node key and cookie,
+//// and a deployment it minted has its authority key sealed under
+//// `<vm home>/authority/<deployment id>/` beside a generated `passphrase`. `up`
+//// and `ensure` refuse such a guest (`vm_link.settle`), and `status`, `list`,
+//// `logs`, `down`, `sync` and `rm` treat it as they always did; `rm` undoes
+//// its `[distribution]` and `[executors.<name>]` tables, its cookie, its
+//// sealed key and its ledger membership as `vm_spec.plan_teardown` and
+//// `removal_plan` decide.
 ////
 //// ## Why the process is signalled by birth marker
 ////
@@ -158,9 +142,8 @@ pub const usage =
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
                   [--allow HOST]... [--provision SCRIPT]
-                  [--link distribution|untrusted]
        loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
-                      [--config PATH] [--link distribution|untrusted]
+                      [--config PATH]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -181,12 +164,16 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             --from-build DIR records a build tree (packages/vmm/build). A
             development build has no release: build the artifacts in a
             checkout and run `make vmm-install-dev`.
-  up        Make the guest a member of your daemon's deployment. A loom.toml
-            with no deployment gets a two-node ledger deployment, with the
-            orchestrator enrolled as [executors.NAME]. A loom.toml that holds a
-            ledger deployment gets the guest enrolled in it through the running
-            daemon, which derives [executors.NAME] from the ledger with no
-            restart and no change to the file. Then clone the guest root, copy
+  up        Make the guest an untrusted executor of your daemon. The daemon
+            reaches it over a pinned TLS link that is not Erlang distribution,
+            so the guest holds no cookie and code that takes it over reaches
+            no code in your daemon. The first up mints a private link
+            authority under the vm home and writes [executor_link] and
+            [executors.NAME] into loom.toml beside whatever is there; it never
+            replaces a table that differs, and leaves [distribution] as it is.
+            A daemon that is already running is asked to read the new row; it
+            is stopped, or named, only when it predates that command or
+            refuses it. Then clone the guest root, copy
             the workspace into it, boot the guest with `loom-vm run` and wait until
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
@@ -197,13 +184,15 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             copy gets a repository of its own. With no artifacts installed it
             first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
-            loom.toml to enroll in (default ~/.loom/loom.toml).
-            A static deployment is refused, and so is a ledger deployment when
-            its daemon is not running or its authority key is not on this
-            machine. Each guest has its own NAME, so several can run at once.
+            loom.toml to write (default ~/.loom/loom.toml). Each guest has its
+            own NAME, so several can run at once.
             A guest that ran before keeps its root, the checkouts in it and its
             state disk, so `down` and `up` resume where it stopped. --fresh
-            replaces all three.
+            replaces all three. A guest an older loom made as an Erlang
+            distribution peer is refused, naming `loom vm sync`, `loom vm rm`
+            and `loom vm up`, which move its work to a new guest. A session on
+            a guest runs no project hooks and no remote evolution:
+            docs/architecture/microvm.md says why.
             --github chooses where loom-vm reads the token its credential proxy
             injects: gh (the default) runs `gh auth token`, env reads
             LOOM_VM_GITHUB_TOKEN, and off gives the guest no network beyond
@@ -222,17 +211,6 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             in loom-vm.log. A failing script fails up, and the next up runs it
             again. A resume skips a script that succeeded, and refuses a new
             one: add --fresh. Use --allow for the hosts it needs.
-            --link untrusted reaches the guest over a pinned TLS link that is
-            not Erlang distribution, so the guest holds no cookie and its
-            takeover reaches no code in your daemon. It mints a private link
-            authority under the vm home, writes [executor_link] and
-            [executors.NAME] into loom.toml beside whatever is there (it never
-            replaces a table that differs, and leaves [distribution] as it is),
-            and needs no deployment, ledger or running daemon. A daemon that is
-            already running reads the new row only when it restarts. The link
-            is recorded and kept for the guest's life; `distribution` is the
-            default. The link lacks project hooks, goal checks and the Changes
-            tab for now: docs/architecture/microvm.md lists them.
   ensure    Make the guest of one workspace ready, which is what `loom --vm`
             runs. The guest is named after DIR (default: the current
             directory): its last segment and six digits of its path, so every
@@ -243,34 +221,35 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             --github, --allow and --config mean what they mean for up, and a
             resume keeps the access and hosts the guest was started with. A
             guest that already serves ignores --github and --allow, and says
-            so. A guest whose root came from another release, or whose
-            executor is still booting, is refused with the command to run.
+            so. A guest whose root came from another release, whose executor
+            is still booting, or that an older loom made as a distribution
+            peer, is refused with the commands to run.
             Progress goes to standard error. The last line of standard output
             is `executor=NAME workspace=NAME`, the words `loom --executor E
-            --workspace W` takes. Exit status 75 with the line `daemon=required`
-            means the only thing missing is a running daemon, which ensure
-            never starts: start one and run it again. It fails, leaving the
-            guest up, when a daemon that holds sessions must restart to read the
-            deployment this call installed.
+            --workspace W` takes. It fails, leaving the guest up, when a
+            running daemon cannot read the guest's row without a restart.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
-  status    Say whether the guest runs, where it is registered and what it
-            holds.
+  status    Say whether the guest runs, which link it was made with, where it
+            is reached and what it holds.
   logs      Print the last lines of the guest's console log, loom-vm.log:
             100, or --lines N, and at most the last 4 MiB of them. There is
             no follow mode.
   list      Print one line for each guest under the vm home: its name,
-            whether it runs, and its workspaces.
-  rm        Delete a stopped guest and undo its enrolment. It removes
-            [executors.NAME] from loom.toml (--config PATH, default
-            ~/.loom/loom.toml), and the [distribution] table and the home's
+            whether it runs, the link it was made with (untrusted, or
+            distribution for a guest an older loom made, which up refuses),
+            and its workspaces.
+  rm        Delete a stopped guest and undo its enrolment in loom.toml
+            (--config PATH, default ~/.loom/loom.toml). For a guest on the
+            untrusted link it removes [executors.NAME], and [executor_link]
+            with the vm home's link credentials when no other untrusted guest
+            remains. A guest an older loom made as a distribution peer loses
+            its [executors.NAME], and the [distribution] table and the home's
             .erlang.cookie only when they are this guest's deployment's and no
-            other [executors.*] table remains; otherwise it leaves them and
-            says so. A guest that joined a ledger deployment is revoked with
-            the key, when it is on this machine, and otherwise rm prints the
-            revoke to run. A guest that others joined is removed last. A guest
-            on the untrusted link has nothing to revoke: rm removes its
-            [executors.NAME] table, and [executor_link] with the vm home's
-            link credentials when no other untrusted guest remains. Every other line of loom.toml is kept. A running guest is
+            other trusted [executors.*] table remains; otherwise rm leaves them and
+            says so. Such a guest that joined a ledger deployment is revoked
+            with the key, when it is on this machine, and otherwise rm prints
+            the revoke to run; one that others joined is removed last. Every
+            other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
             the workspaces and the local branches that origin lacks.
@@ -308,6 +287,8 @@ pub fn main(arguments: List(String)) -> Nil {
   // command uses, so a script can tell a refused `up` from a started one. The
   // one other ending is `ensure` finding only a daemon missing: its reason is
   // on standard error, and standard output holds the line a launcher matches.
+  // Only a guest joining a ledger deployment took that ending, and none does
+  // now that every guest is on the untrusted link, so nothing reaches it.
   case finish(arguments) {
     Printed(text) -> io.println(text)
     Failed(reason) -> {
@@ -773,6 +754,12 @@ fn up(options: UpOptions) -> Result(String, String) {
 /// the boot path exists once.
 fn bring_up(options: UpOptions) -> Result(Upped, String) {
   use vm_home <- result.try(vm_home())
+  let guest = instance(vm_home, options.name)
+
+  // The link is settled first, from the host's records alone, so a guest made
+  // over distribution is refused before a manifest is installed, a file is
+  // written or a daemon is asked anything.
+  use kind <- result.try(link_of(guest, options.name))
   use manifest <- result.try(installed_manifest(vm_home))
   use Nil <- result.try(vm_spec.check_revision(
     manifest,
@@ -780,7 +767,6 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   ))
   use workspace <- result.try(workspace_of(options))
   let names = vm_spec.names(options.name)
-  let guest = instance(vm_home, options.name)
   use Nil <- result.try(refuse_running(guest, options.name))
   use Nil <- result.try(refuse_stranded(
     guest,
@@ -801,8 +787,9 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   let options = UpOptions(..options, allow:)
 
   // A guest on the untrusted link has no deployment to settle, and shares only
-  // the checks above and the root, state and boot steps below.
-  use kind <- result.try(link_of(guest, options))
+  // the checks above and the root, state and boot steps below. `settle` never
+  // answers `Distribution`, so the distribution half below is reached by no
+  // guest; it is deleted with the rest of that path after one release.
   use <- on_link(kind, fn() {
     bring_up_linked(LinkedUp(
       manifest:,
@@ -1054,8 +1041,11 @@ fn restart_check(upped: Upped) -> Result(Nil, String) {
 /// `restart_check` for a guest on the untrusted link. In the default
 /// configuration the daemon is asked which executors it holds, and one that
 /// does not hold the guest has not read its row, whether this call wrote the
-/// row or an earlier call did and then failed to boot. A configuration other
-/// than the default belongs to a daemon that cannot be asked, as for any guest.
+/// row or an earlier call did and then failed to boot. Such a daemon is asked
+/// to reload (protocol-change/116), and the refusal that says to restart it
+/// is given only when it cannot reload: it predates the command, refused it, or
+/// could not bring the guest's link up. A configuration other than the default
+/// belongs to a daemon that cannot be asked, as for any guest.
 fn untrusted_restart_check(upped: Upped) -> Result(Nil, String) {
   let enrolled = upped.enrolled
 
@@ -1065,25 +1055,40 @@ fn untrusted_restart_check(upped: Upped) -> Result(Nil, String) {
     OtherConfigFile -> distribution_restart_check(enrolled)
     DefaultConfigFile ->
       case untrusted_need(upped) {
-        vm_link.MustRestart -> vm_spec.restart_refusal(daemon_outcome())
+        vm_link.MustReload -> reload_or_refuse(upped.options.name)
         vm_link.NeedsNothing -> Ok(Nil)
       }
   }
 }
 
-/// Whether the default daemon must restart to reach an untrusted guest: the
-/// decision of `vm_link.daemon_need`, from what the row's state is and what the
-/// daemon says it holds. A daemon is asked only about a row that was already
-/// there.
-fn untrusted_need(upped: Upped) -> vm_link.DaemonNeed {
-  let name = upped.options.name
+/// Asks the default daemon to reload and prints what changed on standard
+/// error, so `ensure`'s own line stays alone on standard output. A daemon that
+/// holds the guest's row afterwards needs nothing; any other answer is the old
+/// path, which stops an idle daemon and refuses with the command that stops a
+/// busy one.
+fn reload_or_refuse(name: String) -> Result(Nil, String) {
+  let report = vm_link.reload_report(name, reload_daemon())
+  list.each(report.lines, io.println_error)
 
-  // A row this call wrote is unread without asking anyone.
-  case upped.enrolled.row {
-    Resumed -> vm_link.daemon_need(vm_link.RowStanding, daemon_saw(), name)
-    Written | Derived ->
-      vm_link.daemon_need(vm_link.RowChanged, vm_link.SawNoDaemon, name)
+  // The old path runs exactly as it did before the command existed.
+  case report.old_path {
+    vm_link.OldPathSkipped -> Ok(Nil)
+    vm_link.OldPathRuns -> vm_spec.restart_refusal(daemon_outcome())
   }
+}
+
+/// Whether the default daemon is asked to reload to reach an untrusted guest:
+/// the decision of `vm_link.daemon_need`, from what the row's state is and what
+/// the daemon says it holds. A row this call wrote is unread whatever the
+/// daemon holds, but whether a daemon runs at all is still observed.
+fn untrusted_need(upped: Upped) -> vm_link.DaemonNeed {
+  // A row this call wrote or derived is changed; a resumed one is standing.
+  let rows = case upped.enrolled.row {
+    Resumed -> vm_link.RowStanding
+    Written | Derived -> vm_link.RowChanged
+  }
+
+  vm_link.daemon_need(rows, daemon_saw(), upped.options.name)
 }
 
 /// What the default daemon says it holds: nothing when none runs, the names of
@@ -1158,7 +1163,10 @@ fn ensure_facts(
   let names = vm_spec.names(name)
   let guest = instance(vm_home, name)
   use state <- result.try(process_state(guest) |> result.map_error(Refused))
-  use kind <- result.try(link_of(guest, options) |> result.map_error(Refused))
+
+  // A guest made over distribution is refused here, before `ensure_step`, so
+  // even one that serves is not handed to `loom --vm`.
+  use kind <- result.try(link_of(guest, name) |> result.map_error(Refused))
 
   // The record's process is read through its birth marker, so a stale record
   // is no process, and the node's epmd registration is read beside it.
@@ -2081,8 +2089,8 @@ type Row {
 
   // A resume: an earlier `up` wrote it and this one found it still in the
   // file, so this `up` changed nothing the daemon reads. A daemon that started
-  // since has read it; `ensure` therefore never asks such a daemon to restart,
-  // and `up` says so in its report.
+  // since has read it. `up` and `ensure` ask such a daemon to restart only
+  // when it says it runs without the table.
   Resumed
 
   // The ledger gives the daemon the row when the guest is a member, and the
@@ -2283,38 +2291,57 @@ type LinkedUp {
   )
 }
 
-/// The link this command gives the guest: the one its `link` record says, one
-/// that bundles imply, or the one `--link` asks for when the guest is new
-/// (`vm_link.settle`). A guest never changes its link, so a mismatch refuses
-/// before anything is written.
-fn link_of(
-  guest: Instance,
-  options: UpOptions,
-) -> Result(vm_spec.LinkKind, String) {
+/// The link `up` and `ensure` give the guest, which is the untrusted one, or
+/// the refusal for a guest made over distribution (`vm_link.settle`). It reads
+/// only the host's records beside the guest, so a refusal comes before
+/// anything is written, booted or sent.
+fn link_of(guest: Instance, name: String) -> Result(vm_spec.LinkKind, String) {
   use record <- result.try(read_record(guest.kind_file))
-  vm_link.settle(options.name, record, traces_of(guest), options.link)
+  let traces = traces_of(guest)
+
+  // A record that cannot be read is named by its file first; the refusal of an
+  // old guest is a sentence of its own and comes from `settle` as it is.
+  use _ <- result.try(
+    vm_link.made(record, traces)
+    |> result.map_error(fn(reason) { guest.kind_file <> ": " <> reason }),
+  )
+  vm_link.settle(name, guest.directory, record, traces)
 }
 
 /// What a first `up` left in the guest's directory before it recorded a link:
-/// the leaf an untrusted `up` mints, or the bundles a distribution `up` writes.
+/// the leaf an untrusted `up` mints, or the bundles a distribution `up` wrote.
 fn traces_of(guest: Instance) -> vm_link.Traces {
-  let leaf = is_plain_directory(guest.link_credentials)
-  let bundles = is_plain_directory(guest.deploy)
+  vm_link.traces(
+    directory_presence(guest.link_credentials),
+    directory_presence(guest.deploy),
+  )
+}
 
-  // The leaf is looked for first: it is minted before anything else of an
-  // untrusted guest exists, so it names the link of a run that stopped early.
-  case leaf, bundles {
-    True, _ -> vm_link.LeafTrace
-    False, True -> vm_link.DeployTrace
-    False, False -> vm_link.NoTraces
+/// Whether `path` is a real directory, as the presence `vm_link.traces` takes.
+/// A link where the directory belongs is no directory.
+fn directory_presence(path: String) -> vm_spec.Presence {
+  case is_plain_directory(path) {
+    True -> vm_spec.Present
+    False -> vm_spec.Absent
   }
 }
 
-/// The link a guest was made with, for the commands that only read it. A guest
-/// with no record and no trace of a first run is a distribution guest.
+/// The link a guest was made with, for the commands that only read it. A
+/// directory with no record and no trace of a first run is one `up` would
+/// make an untrusted guest of, so it is read as one.
 fn recorded_kind(guest: Instance) -> Result(vm_spec.LinkKind, String) {
+  use made <- result.try(made_kind(guest))
+  Ok(option.unwrap(made, vm_spec.Untrusted))
+}
+
+/// The link a guest was made with, or none when no `up` left a sign of it
+/// (`vm_link.made`).
+fn made_kind(
+  guest: Instance,
+) -> Result(option.Option(vm_spec.LinkKind), String) {
   use record <- result.try(read_record(guest.kind_file))
-  vm_link.settle("", record, traces_of(guest), None)
+  vm_link.made(record, traces_of(guest))
+  |> result.map_error(fn(reason) { guest.kind_file <> ": " <> reason })
 }
 
 /// The text of a record file the host wrote, or none when it is absent.
@@ -2652,8 +2679,9 @@ fn stage_linked_node(
   })
 }
 
-/// What `up` tells the user about a guest on the untrusted link. The daemon
-/// has no reload command yet, so a row that changed reaches it at its next
+/// What `up` tells the user about a guest on the untrusted link. A running
+/// daemon is asked to reload and says what it did; one that cannot reload is
+/// handled as before, and a daemon that is not running reads the row at its
 /// start.
 fn linked_report(upped: Upped, restart: Restart) -> String {
   let Upped(options:, workspace:, port:, enrolled:, ..) = upped
@@ -2703,6 +2731,9 @@ fn linked_daemon_lines(name: String, restart: Restart) -> List(String) {
   case restart {
     NoRestart -> []
     Daemon(outcome, _) -> vm_link.daemon_lines(name, outcome)
+    Reloaded(lines:, stopped: None) -> spaced(lines)
+    Reloaded(lines:, stopped: Some(outcome)) ->
+      list.append(spaced(lines), vm_link.daemon_lines(name, outcome))
     OtherDaemon(_) -> [
       "A daemon already running with that file must restart to reach the guest.",
       "",
@@ -2710,21 +2741,43 @@ fn linked_daemon_lines(name: String, restart: Restart) -> List(String) {
   }
 }
 
-/// What `up` does about the user's daemon after a guest: nothing for an
-/// untrusted guest whose row was already there, and otherwise what a newly
-/// installed deployment asks, which is the one decision to stop an idle daemon
-/// and leave a busy one running.
+/// A block of lines followed by the blank line that ends a paragraph, or
+/// nothing for no lines.
+fn spaced(lines: List(String)) -> List(String) {
+  case lines {
+    [] -> []
+    _ -> list.append(lines, [""])
+  }
+}
+
+/// What `up` does about the user's daemon after a guest: for an untrusted
+/// guest, ask a running daemon that has not read the row to reload, and only
+/// when it cannot do that, what a newly installed deployment asks, which is the
+/// one decision to stop an idle daemon and leave a busy one running.
 fn restart_of(upped: Upped) -> Restart {
-  // The default daemon is asked about an untrusted guest's standing row; a
+  // The default daemon is asked about an untrusted guest's row; a
   // configuration other than the default has a daemon `up` cannot ask.
   case upped.link, upped.enrolled.file, upped.enrolled.row {
     vm_spec.Untrusted, DefaultConfigFile, _ ->
       case untrusted_need(upped) {
-        vm_link.MustRestart -> Daemon(daemon_outcome(), vm_spec.Installed)
+        vm_link.MustReload -> reloaded(upped.options.name)
         vm_link.NeedsNothing -> NoRestart
       }
     vm_spec.Untrusted, OtherConfigFile, Resumed -> NoRestart
     _, _, _ -> restart_after(upped.enrolled)
+  }
+}
+
+/// Asks the default daemon to reload, and does the old path after it only when
+/// the reload did not leave the daemon holding the guest's row. The old path is
+/// run after the answer is read, because a daemon it stops can no longer say.
+fn reloaded(name: String) -> Restart {
+  let report = vm_link.reload_report(name, reload_daemon())
+
+  // The old path runs only when the reload did not leave the row held.
+  case report.old_path {
+    vm_link.OldPathSkipped -> Reloaded(report.lines, None)
+    vm_link.OldPathRuns -> Reloaded(report.lines, Some(daemon_outcome()))
   }
 }
 
@@ -2741,9 +2794,10 @@ fn on_untrusted_report(
   }
 }
 
-/// The `status` lines about how the guest is reached: the node and the host's
-/// epmd entry for a distribution guest, and the link, its address and the
-/// guest's pin for an untrusted one.
+/// The `status` lines about how the guest is reached: the link, then the node
+/// and the host's epmd entry for a distribution guest, and the address and
+/// the guest's pin for an untrusted one. The first line names the link either
+/// way, so a developer can tell an old guest that `up` refuses.
 fn link_lines(
   guest: Instance,
   names: vm_spec.Names,
@@ -2753,6 +2807,7 @@ fn link_lines(
   // port and a pin recorded beside the guest.
   case kind {
     vm_spec.Distribution -> [
+      "link:       distribution, retired: `loom vm up` refuses this guest",
       "node:       " <> names.executor_node,
       "epmd:       " <> epmd_line(names),
     ]
@@ -3285,6 +3340,7 @@ fn stranded_in(
       guest.state_disk,
       prefixes,
     )
+    |> list.sort(int.compare)
   #(pids, vm_spec.certainty_of(runner))
 }
 
@@ -4033,18 +4089,36 @@ type Restart {
   // read its configuration before the guest existed; after a resume it has
   // nothing new to read.
   Daemon(vm_spec.DaemonOutcome, vm_spec.Table)
+
+  // A running daemon was asked to reload an untrusted guest's row: the lines
+  // that say what it changed, and what `up` then did about a daemon that could
+  // not reload, which is `None` when the reload left it holding the row.
+  Reloaded(lines: List(String), stopped: option.Option(vm_spec.DaemonOutcome))
 }
 
 /// Does what `up` does about the daemon, which can stop an idle one, and
 /// answers the outcome. It runs after the guest booted, since a failed `up`
 /// must not have stopped a daemon.
 fn restart_after(enrolled: Enrolled) -> Restart {
+  // A derived row asks nothing of any daemon. A written or resumed row asks
+  // the daemon that reads its file, and only the default file's daemon can be
+  // found and acted on.
   case enrolled.row, enrolled.file {
     Derived, _ -> NoRestart
     Written, OtherConfigFile -> OtherDaemon(vm_spec.Installed)
     Resumed, OtherConfigFile -> OtherDaemon(vm_spec.AlreadyThere)
     Written, DefaultConfigFile -> Daemon(daemon_outcome(), vm_spec.Installed)
-    Resumed, DefaultConfigFile -> Daemon(daemon_outcome(), vm_spec.AlreadyThere)
+    Resumed, DefaultConfigFile -> {
+      // The daemon is asked before anything is done about it. One that never
+      // read the table an earlier `up` installed must still restart, and a
+      // daemon this `up` stopped could no longer say.
+      let table = case daemon_lacks_distribution() {
+        True -> vm_spec.Installed
+        False -> vm_spec.AlreadyThere
+      }
+
+      Daemon(daemon_outcome(), table)
+    }
   }
 }
 
@@ -4104,6 +4178,9 @@ fn daemon_lines(restart: Restart) -> List(String) {
   case restart {
     NoRestart -> []
     Daemon(outcome, table) -> vm_spec.daemon_note(outcome, table)
+
+    // Only an untrusted guest is reloaded, and its report is `linked_report`.
+    Reloaded(lines:, ..) -> spaced(lines)
     OtherDaemon(vm_spec.Installed) -> [
       "A daemon already running with that file must restart to use the guest.",
       "",
@@ -4200,6 +4277,14 @@ fn ask_daemon(command: String) -> Result(core_json.JsonValue, String) {
     [body] -> Ok(body)
     _ -> Error("the daemon's reply to " <> command <> " is not one body")
   }
+}
+
+/// Asks the default daemon to reread its configuration and bring the links of
+/// its untrusted executors to match (protocol-change/116), and classifies what
+/// came back. The reply body is decoded by `executor_reload.decode`, which is
+/// total, so a daemon that answers anything else is `NoAnswer`.
+fn reload_daemon() -> vm_link.ReloadResult {
+  vm_link.reload_result(ask_daemon("executors.reload"))
 }
 
 // How long `up` waits for a drained daemon's process to go. The daemon's own
@@ -4698,19 +4783,17 @@ fn guests() -> Result(String, String) {
       Error(vm_home <> " is unreadable: " <> simplifile.describe_error(error))
   })
 
-  // A guest directory has a valid name, is a directory of its own and holds
-  // the deployment `up` provisions first, or the `link` record an untrusted
-  // guest has instead. The manifest and the artifact cache that share the home
-  // are neither.
+  // A guest directory has a valid name, is a directory of its own and holds a
+  // sign that an `up` made it (`made_kind`, the same reading `rm` counts the
+  // other guests by), or a record that cannot be read, which is listed as
+  // unknown rather than hidden. The manifest, the artifact cache and the link
+  // credentials that share the home are none of these.
   let names =
     entries
     |> list.filter(fn(entry) {
       result.is_ok(vm_spec.valid_existing_name(entry))
       && is_plain_directory(vm_home <> "/" <> entry)
-      && {
-        is_plain_directory(vm_home <> "/" <> entry <> "/deploy")
-        || bootstrap.path_exists(instance(vm_home, entry).kind_file)
-      }
+      && made_kind(instance(vm_home, entry)) != Ok(None)
     })
     |> list.sort(string.compare)
   let width =
@@ -4729,8 +4812,9 @@ fn guests() -> Result(String, String) {
   }
 }
 
-/// A guest's name, whether it runs and its workspaces, in aligned columns. A
-/// guest with no pid file is stopped.
+/// A guest's name, whether it runs, the link it was made with and its
+/// workspaces, in aligned columns. A guest with no pid file is stopped, and a
+/// `distribution` guest is one `up` refuses.
 fn guest_line(vm_home: String, name: String, width: Int) -> String {
   let guest = instance(vm_home, name)
 
@@ -4742,9 +4826,17 @@ fn guest_line(vm_home: String, name: String, width: Int) -> String {
     Error(_) -> "unknown"
   }
 
+  // A record that cannot be read is said to be so, never guessed.
+  let link = case recorded_kind(guest) {
+    Ok(kind) -> vm_link.kind_word(kind)
+    Error(_) -> "unknown"
+  }
+
   string.pad_end(name, width, " ")
   <> "  "
   <> string.pad_end(state, 7, " ")
+  <> "  "
+  <> string.pad_end(link, 12, " ")
   <> "  "
   <> workspace_line(guest)
 }
@@ -4768,7 +4860,20 @@ type RemovalPlan {
     // The vm home's link credentials, when this is the last untrusted guest
     // and nothing needs them any more.
     link_home: option.Option(String),
+    // Whether a running daemon is asked to reload once the row is gone.
+    daemon: AfterRemoval,
   )
+}
+
+// What `rm` asks of the default daemon after it took a row out of the file.
+type AfterRemoval {
+  // The guest has no row for a daemon to read, or the file is not the one the
+  // default daemon reads.
+  LeaveDaemon
+
+  // An untrusted guest's row left the default file, so a running daemon is
+  // asked to stop its link (protocol-change/116).
+  ReloadDaemon
 }
 
 // A guest that joined its daemon's deployment is a member of the ledger, and
@@ -4912,6 +5017,7 @@ fn removal_plan(
     authority: removable_authority(vm_home, name),
     revocation:,
     link_home: None,
+    daemon: LeaveDaemon,
   ))
 }
 
@@ -4924,6 +5030,7 @@ fn linked_removal_plan(
   guest: Instance,
   name: String,
   config: String,
+  home: String,
 ) -> Result(RemovalPlan, String) {
   use text <- result.try(read_or_empty(config))
   use others <- result.try(other_kinds(vm_home, name))
@@ -4953,6 +5060,18 @@ fn linked_removal_plan(
     False -> Some(removal.text)
   }
 
+  // The default daemon holds a row only for the file it reads, and a file that
+  // did not change has no row to drop.
+  use default <- result.try(
+    bootstrap.absolute_path(distribution_install.default_config(home)),
+  )
+
+  // A daemon is asked only when the default file changed.
+  let daemon = case rewritten, config == default {
+    Some(_), True -> ReloadDaemon
+    _, _ -> LeaveDaemon
+  }
+
   // The vm home's credentials go with the last untrusted guest, and only when
   // no table names them any more: an operator's own untrusted row keeps
   // `[executor_link]`, and the files it names.
@@ -4973,13 +5092,15 @@ fn linked_removal_plan(
     authority: None,
     revocation: NoRevocation,
     link_home:,
+    daemon:,
   ))
 }
 
-/// The links of the guests other than `name`, from their `link` records. A
-/// directory with no record is a distribution guest, and a record that cannot
-/// be read counts as untrusted, so the shared credentials are kept rather than
-/// removed under a guest that may still need them.
+/// The links of the guests other than `name`, from their `link` records and
+/// traces. A directory with neither, such as the vm home's own `link/`, is no
+/// guest and is not counted, and a record that cannot be read counts as
+/// untrusted, so the shared credentials are kept rather than removed under a
+/// guest that may still need them.
 fn other_kinds(
   vm_home: String,
   name: String,
@@ -4995,9 +5116,12 @@ fn other_kinds(
     |> list.filter(fn(entry) {
       entry != name && result.is_ok(vm_spec.valid_existing_name(entry))
     })
-    |> list.map(fn(entry) {
-      recorded_kind(instance(vm_home, entry))
-      |> result.unwrap(vm_spec.Untrusted)
+    |> list.filter_map(fn(entry) {
+      case made_kind(instance(vm_home, entry)) {
+        Ok(Some(kind)) -> Ok(kind)
+        Ok(None) -> Error(Nil)
+        Error(_) -> Ok(vm_spec.Untrusted)
+      }
     }),
   )
 }
@@ -5014,7 +5138,7 @@ fn planned_removal(
 
   // The guest's own link says what undoing it means.
   case kind {
-    vm_spec.Untrusted -> linked_removal_plan(vm_home, guest, name, config)
+    vm_spec.Untrusted -> linked_removal_plan(vm_home, guest, name, config, home)
     vm_spec.Distribution -> removal_plan(vm_home, guest, name, config, home)
   }
 }
@@ -5204,9 +5328,9 @@ fn revocation_line(plan: RemovalPlan, name: String) -> List(String) {
 }
 
 /// Signs the revoke of a guest that joined, with the key on this machine, and
-/// answers the lines that say what happened. The checks of `loom distribution
-/// revoke` apply, so a guest that still owns or holds sessions is refused here
-/// and nothing is removed.
+/// answers the lines that say what happened. The placement check of `loom
+/// distribution revoke` is skipped (`signed_revoke` says why), so only a key or
+/// ledger copy that cannot be used refuses here, and then nothing is removed.
 fn revoke_membership(
   plan: RemovalPlan,
   name: String,
@@ -5216,14 +5340,17 @@ fn revoke_membership(
     NoRevocation -> Ok([])
     RevokeByOperator(..) -> Ok([])
     RevokeWith(directory:, passphrase:) -> {
-      use authority <- result.try(ledger_cli.unlock_at(directory, passphrase))
+      use authority <- result.try(
+        ledger_cli.unlock_at(directory, passphrase)
+        |> result.map_error(vm_spec.rm_revoke_failure(name, directory, _)),
+      )
 
       // A guest the operator's copy already records as revoked is done: the
       // fold would refuse the entry, and the removal must not be stuck on it.
       case revoked_already(plan.config, directory, authority, name) {
         True ->
           Ok([name <> " is already revoked in the ledger; nothing signed."])
-        False -> signed_revoke(authority, name)
+        False -> signed_revoke(authority, directory, name)
       }
     }
   }
@@ -5252,26 +5379,48 @@ fn revoked_already(
 }
 
 /// Signs the revoke of `name` and words what happened.
+///
+/// Only a guest made over distribution has a membership to revoke, `up` and
+/// `ensure` refuse such a guest, and `rm` acts only on one that is stopped, so
+/// the guest can never serve a session again. The revoke is therefore signed
+/// without the placement check: a session still placed on the guest, or a
+/// daemon that cannot be asked, would otherwise refuse the only command that
+/// moves the developer off the guest, with no way on. The output says the
+/// check was skipped and why. A daemon that does not answer leaves the entry in
+/// the operator's copy, and the second line names the import that carries it.
 fn signed_revoke(
   authority: ledger_cli.Authority,
+  directory: String,
   name: String,
 ) -> Result(List(String), String) {
-  use #(signed, checked) <- result.map(
+  use #(signed, _unchecked) <- result.map(
     ledger_cli.revoke_member(
       authority,
       name,
       "removed with loom vm rm",
-      ledger_cli.Checked,
+      ledger_cli.Forced,
       admin.ThisHost(""),
       ledger_cli.socket_connect(),
     )
-    |> result.map_error(vm_spec.rm_revoke_refusal),
+    |> result.map_error(vm_spec.rm_revoke_failure(name, directory, _)),
   )
+  let checked = vm_spec.unchecked_revoke_line(name)
 
-  // An entry no daemon took is in the operator's copy, which is reported.
+  // An entry no daemon took is in the operator's copy, which is reported with
+  // what waiting costs: a daemon whose ledger still enrols the name refuses
+  // every reload while an untrusted row of that name exists (`unshadowed` in
+  // `daemon/main`), so each later guest falls back to the stop-or-name path.
   let took = case ledger_cli.delivered(signed) {
     Ok(where_) -> "Handed to " <> where_ <> "."
-    Error(reason) -> "Not handed to a daemon: " <> reason
+    Error(reason) ->
+      "Not handed to a daemon: "
+      <> reason
+      <> " Until it is imported the daemon's ledger still enrols "
+      <> name
+      <> ", so once a new guest "
+      <> name
+      <> " exists the daemon refuses every executors.reload and each new "
+      <> "guest stops an idle daemon or asks for its restart."
   }
 
   [
@@ -5323,8 +5472,8 @@ fn apply_removal(
   plan: RemovalPlan,
 ) -> Result(String, String) {
   // The ledger entry of a guest that joined is revoked first, because the
-  // revoke can be refused (the guest still holds sessions) and then nothing
-  // has been removed.
+  // revoke can still fail (a key that does not open, a locked ledger copy) and
+  // then nothing has been removed.
   use revoked <- result.try(revoke_membership(plan, name))
 
   // The enrolment is undone before the files go, so a failure part way leaves
@@ -5333,6 +5482,10 @@ fn apply_removal(
     Some(text) -> write_private(plan.config, text)
     None -> Ok(Nil)
   })
+
+  // A running daemon is asked to drop the link as soon as the row is gone, so
+  // the file and the daemon disagree for as short a time as the command allows.
+  let daemon_lines = removal_daemon_lines(plan, name)
 
   // The cookie goes after the tables that name it, and only when the plan
   // found it to be this guest's deployment's.
@@ -5346,6 +5499,16 @@ fn apply_removal(
       })
     vm_spec.KeepCookie -> Ok(Nil)
   })
+
+  // The roots and the state disk go before the rest of the directory, so the
+  // `link` record and `deploy/` that say which link a guest has outlive what
+  // they classify. `delete_all` takes entries in directory order, and an `rm`
+  // stopped after `deploy/` but before `root/` left an old guest's root, cookie
+  // and node key included, that the next `up` would keep as an untrusted guest.
+  use Nil <- result.try(list.try_each(
+    [guest.root, guest.next_root, guest.building_root, guest.state_disk],
+    remove_tree_if_present,
+  ))
 
   // The tree is made writable and removed without following a link.
   use Nil <- result.try(remove_tree(guest.directory))
@@ -5380,10 +5543,31 @@ fn apply_removal(
         _ -> []
       },
       list.map(plan.teardown.left, fn(line) { "Left in place: " <> line }),
-      enrolment_notice(plan),
+      daemon_lines,
     ]),
     "\n",
   ))
+}
+
+/// What `rm` tells the user about the daemon after a guest's row left the file.
+/// An untrusted guest's row is dropped by a running daemon that is asked to
+/// reload, and the entries it names are printed. A daemon that cannot reload
+/// leaves the notice that it keeps the enrolment until it restarts.
+fn removal_daemon_lines(plan: RemovalPlan, name: String) -> List(String) {
+  // Only a row removed from the default file has a daemon to ask, and only a
+  // daemon that is running can be asked.
+  case plan.daemon, running_fence() {
+    ReloadDaemon, Some(_) -> {
+      let report = vm_link.removal_report(name, reload_daemon())
+
+      // A failed stop keeps the notice that the daemon holds the row.
+      case report.old_path {
+        vm_link.OldPathSkipped -> report.lines
+        vm_link.OldPathRuns -> list.append(report.lines, enrolment_notice(plan))
+      }
+    }
+    ReloadDaemon, None | LeaveDaemon, _ -> enrolment_notice(plan)
+  }
 }
 
 /// The reminder that a running daemon keeps the enrolment until it restarts,

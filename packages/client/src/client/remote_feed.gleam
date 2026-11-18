@@ -5,10 +5,11 @@
 //// box attaches to the session's gateway the way a page socket does, holds
 //// the frames the gateway writes to that attachment in a numbered queue, and
 //// the laptop pulls them with a long poll and sends the lane's frames back one
-//// piece at a time. The four operations are revisions of the stable peer
-//// exchange (protocol-change/105): `108.attach.1`, `108.feed.1`, `108.send.1`
-//// and `108.detach.1`. This module holds the plain data their bodies and
-//// answers carry, the bounds both ends hold, and the total decoders for each.
+//// piece at a time. The five operations are revisions of the stable peer
+//// exchange (protocol-change/105): `108.attach.1`, `108.feed.1`, `108.send.1`,
+//// `108.detach.1` and `108.worktree.1`. This module holds the plain data their
+//// bodies and answers carry, the bounds both ends hold, and the total decoders
+//// for each.
 //// It has no process in it and does no I/O, as `client/remote_top` has none, so
 //// both orchestrators compile the same module and the laptop's feed adapter
 //// can start from it without reading the box.
@@ -36,10 +37,23 @@
 //// least `min_piece_bytes`, so a peer cannot hold the box's memory in cells by
 //// sending a frame a byte at a time.
 ////
+//// ## The workspace observation
+////
+//// `108.worktree.1` asks the box for what its own page's Changes tab draws: the
+//// daemon's bounded observation of the session's Git working tree. It touches
+//// none of what the other four keep. The feed's queue, cursor, lease and pieces
+//// are as they were, and the answer is one object, at most `max_worktree_bytes`
+//// of JSON, that the box decides for the feed's own standing. The observation
+//// is clipped where it is made (`client/worktree_diff` holds the board to
+//// `board_byte_limit` and marks a cut in `extent` and `omitted`), so the answer
+//// never needs a piece of its own, and `observed` refuses a board over the bound
+//// rather than cutting it again.
+////
 //// ## Flow
 ////
 //// `is_revision` → `encode_request` → `decode_request` → `encode_attached` →
-//// `decode_attached` → `encode_answer` → `decode_answer` → `declining`
+//// `decode_attached` → `encode_answer` → `decode_answer` → `observed` →
+//// `encode_observation` → `decode_observation` → `declining`
 ////
 //// 1. `is_revision` says whether a revision belongs to this vocabulary, so the
 ////    stable endpoint can route it before it reads a body.
@@ -48,7 +62,9 @@
 //// 3. `encode_attached` and `decode_attached` are the two ends of an attach
 ////    answer.
 //// 4. `encode_answer` and `decode_answer` are the two ends of a poll answer.
-//// 5. `declining` is the host of a daemon that serves no feed.
+//// 5. `observed`, `encode_observation` and `decode_observation` are the bound, the
+////    encoding and the total decoder of a workspace observation's answer.
+//// 6. `declining` is the host of a daemon that serves no feed.
 
 import client/remote_top.{type FeedEnd, type Placement, type Refusal}
 import core/json.{type JsonValue}
@@ -69,9 +85,12 @@ pub const send_revision = "108.send.1"
 /// The revision that ends a feed.
 pub const detach_revision = "108.detach.1"
 
-/// The four revisions, in the order the exchange advertises them.
+/// The revision that reads the box's observation of the session's workspace.
+pub const worktree_revision = "108.worktree.1"
+
+/// The five revisions, in the order the exchange advertises them.
 pub const revisions = [
-  "108.attach.1", "108.feed.1", "108.send.1", "108.detach.1",
+  "108.attach.1", "108.feed.1", "108.send.1", "108.detach.1", "108.worktree.1",
 ]
 
 /// The longest a poll may ask the box to hold it, in milliseconds.
@@ -126,6 +145,12 @@ pub const max_pieces = 64
 /// daemon's default budget of 536,870,912, about 42 percent, where a page's 64 MiB
 /// charge would have taken all of it.
 pub const feed_charge_bytes = 28_049_408
+
+/// The most bytes of JSON a workspace observation's board may have. It is the
+/// bound `session_view/worktree_view.decode` holds a board to, so a board the
+/// answer admits is one the page can read, and it is far below the stable
+/// exchange's envelope of 1,048,576 bytes, so an answer is always one frame.
+pub const max_worktree_bytes = 48_000
 
 /// The most bytes of one name, identity or label text the decoders accept.
 pub const max_text_bytes = 512
@@ -194,13 +219,19 @@ pub type Request {
     /// The feed's token.
     feed: String,
   )
+
+  /// `108.worktree.1`.
+  WorktreeRequest(
+    /// The feed's token.
+    feed: String,
+  )
 }
 
 /// What the box says of a session when it opens a feed on it: the heading's
 /// words, in the bounds and the shape of a `TopSessions` row.
 pub type Label {
   Label(
-    /// The session's name, its first prompt once it has one.
+    /// The session's name, as its own page's heading draws it.
     name: String,
     /// Where the session's tools run.
     placement: Placement,
@@ -235,7 +266,26 @@ pub type Answer {
   )
 }
 
-/// The box's answers to the four operations, as closures the daemon fills. The
+/// What the box says of the session's workspace to a feed that asked.
+pub type Observation {
+  /// The box's observation, the board `client/worktree_diff.to_json` encodes,
+  /// which the page reads with `session_view/worktree_view.decode`.
+  Observed(
+    /// The board, at most `max_worktree_bytes` of JSON.
+    board: JsonValue,
+  )
+
+  /// The box does not show the workspace to this feed: its standing is an
+  /// observer's, or it no longer passes the check. The page lists the agent's
+  /// own edits and draws no reason, as it does for a page that holds no read.
+  Withheld
+
+  /// The box could not make an observation it would stand behind. The text of
+  /// why is never sent, because a repository's own words can be in it.
+  Unreadable
+}
+
+/// The box's answers to the five operations, as closures the daemon fills. The
 /// node is the one the exchange took from the caller's reply subject, never a
 /// field of the body, so a body cannot name another spawner.
 pub type Host {
@@ -250,6 +300,10 @@ pub type Host {
     /// Ends a feed, given the node and the token. Ending a feed that is gone
     /// is not a refusal.
     detach: fn(String, String) -> Result(Nil, Refusal),
+    /// Observes the session's workspace for a feed, given the node and the
+    /// token. It may run Git, so it waits as long as the observation's own
+    /// deadline.
+    worktree: fn(String, String) -> Result(Observation, Refusal),
   )
 }
 
@@ -269,6 +323,7 @@ pub fn declining() -> Host {
     poll: fn(node, _poll) { Error(remote_top.UnknownSpawner(node:)) },
     send: fn(node, _piece) { Error(remote_top.UnknownSpawner(node:)) },
     detach: fn(node, _feed) { Error(remote_top.UnknownSpawner(node:)) },
+    worktree: fn(node, _feed) { Error(remote_top.UnknownSpawner(node:)) },
   )
 }
 
@@ -315,6 +370,7 @@ pub fn revision_of(request: Request) -> String {
     PollRequest(..) -> feed_revision
     SendRequest(..) -> send_revision
     DetachRequest(..) -> detach_revision
+    WorktreeRequest(..) -> worktree_revision
   }
 }
 
@@ -344,7 +400,8 @@ pub fn encode_request(request: Request) -> JsonValue {
         json.Int(total),
         json.String(text),
       ])
-    DetachRequest(feed:) -> json.Array([json.String(feed)])
+    DetachRequest(feed:) | WorktreeRequest(feed:) ->
+      json.Array([json.String(feed)])
   }
 }
 
@@ -389,6 +446,8 @@ pub fn decode_request(
       decode_piece(feed, n, offset, total, piece)
     "108.detach.1", json.Array([feed]) ->
       token(feed) |> result.map(DetachRequest)
+    "108.worktree.1", json.Array([feed]) ->
+      token(feed) |> result.map(WorktreeRequest)
     _, _ -> Error("the body is not one the revision takes")
   }
 }
@@ -557,6 +616,98 @@ fn end_word(why: FeedEnd) -> String {
     remote_top.FeedLapsed -> "lapsed"
     remote_top.FeedStopped -> "stopped"
     remote_top.FeedRevoked -> "revoked"
+  }
+}
+
+// --- the workspace observation -----------------------------------------------------
+
+/// The answer for a board the box observed: `Observed` when its JSON is within
+/// `max_worktree_bytes`, and `Unreadable` when it is not. A board is never cut
+/// here, because the observation was already clipped to its own budget where it
+/// was made, and cutting JSON again would leave a board that does not read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_feed.observed(json.Object([])) == remote_feed.Observed(json.Object([]))
+/// ```
+pub fn observed(board: JsonValue) -> Observation {
+  case within_worktree_bound(board) {
+    True -> Observed(board:)
+    False -> Unreadable
+  }
+}
+
+/// Whether a board's JSON is within `max_worktree_bytes`.
+fn within_worktree_bound(board: JsonValue) -> Bool {
+  string.byte_size(json.to_string(board)) <= max_worktree_bytes
+}
+
+/// Encodes the answer to a workspace observation: an object whose `read` is
+/// `seen`, `withheld` or `unreadable`, and which carries the `board` only for
+/// `seen`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_feed.encode_observation(remote_feed.Withheld) == {"read": "withheld"}
+/// ```
+pub fn encode_observation(observation: Observation) -> JsonValue {
+  case observation {
+    Observed(board:) ->
+      json.Object([#("read", json.String("seen")), #("board", board)])
+    Withheld -> json.Object([#("read", json.String("withheld"))])
+    Unreadable -> json.Object([#("read", json.String("unreadable"))])
+  }
+}
+
+/// Reads the answer to a workspace observation. `read` is one of the three
+/// words, a `seen` answer carries a `board` object within `max_worktree_bytes`,
+/// and anything else is refused whole. The board's own fields are read by the
+/// page's decoder (`session_view/worktree_view.decode`), which refuses a board
+/// that does not read, so nothing of the box's text is drawn before both agree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_feed.decode_observation(remote_feed.encode_observation(observation)) == Ok(observation)
+/// ```
+pub fn decode_observation(value: JsonValue) -> Result(Observation, String) {
+  use fields <- result.try(object(value, "the workspace answer"))
+  use read <- result.try(member(fields, "read"))
+
+  // The word picks the answer, and only a `seen` one carries a board.
+  case read {
+    json.String("seen") -> {
+      use board <- result.try(member(fields, "board"))
+      seen_board(board)
+    }
+    json.String("withheld") -> Ok(Withheld)
+    json.String("unreadable") -> Ok(Unreadable)
+    json.String(_)
+    | json.Null
+    | json.Bool(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Array(_)
+    | json.Object(_) -> Error("read is not a known word")
+  }
+}
+
+/// Reads the board of a `seen` answer: an object within the bound.
+fn seen_board(board: JsonValue) -> Result(Observation, String) {
+  case board {
+    json.Object(_) ->
+      case within_worktree_bound(board) {
+        True -> Ok(Observed(board:))
+        False -> Error("the workspace board is over its bound")
+      }
+    json.Null
+    | json.Bool(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.String(_)
+    | json.Array(_) -> Error("the workspace board is not an object")
   }
 }
 

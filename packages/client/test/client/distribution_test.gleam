@@ -7,6 +7,8 @@ import client/catalog
 import client/daemon/distribution_cli
 import client/distribution
 import client/internal/ffi_os
+import client/move_checkout
+import client/node_report
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import gleam/dict
 import gleam/int
@@ -396,6 +398,24 @@ pub fn start_without_an_epmd_reports_the_port_not_credentials_test() {
   assert string.contains(message, "ERL_EPMD_PORT")
   assert string.contains(message, "ERL_EPMD_ADDRESS")
   assert !string.contains(message, "credential")
+}
+
+// A move to a stopped executor stalls on this fault. The stall text is the
+// mover's own words followed by the fault's, and the reason is cut at
+// `max_reason_bytes`, so the fault must say the peer is not reachable and
+// still fit whole behind the longest prefix the move step puts before it.
+pub fn an_unreachable_peer_stalls_a_move_with_a_whole_sentence_test() {
+  let fault = distribution.describe(distribution.Unavailable)
+  assert string.contains(fault, "could not be reached")
+  assert string.contains(fault, "stopped")
+  assert !string.contains(fault, "epmd")
+
+  let stall =
+    move_checkout.describe(move_checkout.Unfinished(
+      move_checkout.Sending,
+      fault,
+    ))
+  assert node_report.cut_reason(stall) == stall
 }
 
 pub fn a_listen_port_that_is_taken_is_a_start_failure_not_credentials_test() {

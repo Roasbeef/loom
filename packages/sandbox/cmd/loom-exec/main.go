@@ -18,6 +18,8 @@
 //	                probe fails.
 //	--probe-socket  (internal) attempt socket(AF_INET, SOCK_STREAM) and
 //	                report; the self-test's network-off witness.
+//	--probe-loopback (internal) the Linux witness for network mode
+//	                loopback: raw socket calls reporting their errno.
 //	--probe-setsid  (internal) leave the process group with setsid(2) and
 //	                then hold stdout open; the self-test's witness that a
 //	                session escape does not outlive the jail.
@@ -80,6 +82,8 @@ func main() {
 		}
 	case args[0] == "--probe-socket":
 		probeSocket()
+	case args[0] == "--probe-loopback":
+		probeLoopback(args[1:])
 	case args[0] == "--probe-setsid":
 		probeSetsid()
 	case args[0] == "--probe-fork":
@@ -96,7 +100,7 @@ func main() {
 const usage = `usage: loom-exec [--self-test] [--allow-unenforced] [--cgroup-base DIR]
 Server mode (no arguments) expects a SandboxPolicyV1 on fd 3 and the
 framing protocol on stdin/stdout. --exec, --probe-socket and
---probe-setsid and --probe-fork are internal. --allow-unenforced serves anyway on a
+--probe-setsid and --probe-fork and --probe-loopback are internal. --allow-unenforced serves anyway on a
 platform with no jail (Windows and unknown targets); without it such a build refuses
 to serve at all. --cgroup-base names a delegated, process-empty cgroup v2
 directory to create per-exec cgroups under (` + cgroup.BaseEnvVar + ` does

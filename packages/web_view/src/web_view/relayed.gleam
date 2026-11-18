@@ -50,6 +50,53 @@ import gleam/option.{type Option}
 import session_view/remote_transcript
 import web_view/listing
 
+/// Why the page shows the transcript of a relayed session and not the live
+/// session page (protocol-change/108, "Version skew and the fallback page").
+pub type Fallback {
+  /// The orchestrator runs a Loom without the live session page, so the live
+  /// feed's revisions were absent from its features answer.
+  Absent
+
+  /// The orchestrator refused the live page because its table serves this
+  /// session as a transcript (`page = "paged"`).
+  Served
+
+  /// The page says nothing about why: the orchestrator would not attach for a
+  /// reason that has its own words.
+  Unsaid
+}
+
+/// The one fixed sentence the transcript page draws beneath its heading to say
+/// which mode it is in, or `None` when it has nothing to add. The orchestrator's
+/// name is the operator's own text and is drawn as a text node.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert relayed.fallback_words(relayed.Served, "box")
+///   == option.Some("Showing the transcript only, because box serves this session as a transcript.")
+/// ```
+pub fn fallback_words(
+  fallback: Fallback,
+  orchestrator: String,
+) -> Option(String) {
+  case fallback {
+    Absent ->
+      option.Some(
+        "Showing the transcript only, because "
+        <> orchestrator
+        <> " runs a Loom without the live session page.",
+      )
+    Served ->
+      option.Some(
+        "Showing the transcript only, because "
+        <> orchestrator
+        <> " serves this session as a transcript.",
+      )
+    Unsaid -> option.None
+  }
+}
+
 /// What a relayed session is doing, as the box's list says it. A session the
 /// owner archived is not listed, so there is no word for it.
 pub type Activity {

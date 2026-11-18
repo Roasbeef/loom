@@ -10,7 +10,7 @@
          wait_for_sigterm/0, halt/1, constant_time_equal/2,
          create_exclusive_private_file/2, platform/0,
          terminate_supervisor/2, code_root_dir/0, erts_version/0,
-         inflate_gzip/2, run_capture/3]).
+         inflate_gzip/2, run_capture/3, read_stdin_line/1]).
 
 %% gen_event callbacks (the SIGTERM relay).
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
@@ -172,6 +172,30 @@ wait_for_sigterm() ->
 
 halt(Code) ->
     erlang:halt(Code).
+
+%% One line of standard input, at most Max bytes. A longer line is
+%% drained to its newline so the caller's line count stays true, and is
+%% reported as too_long without its bytes. Reads one byte at a time so the
+%% bound holds in memory, not only in what is returned.
+read_stdin_line(Max) ->
+    _ = io:setopts(standard_io, [binary]),
+    read_stdin_line(Max, <<>>, 0, false).
+
+read_stdin_line(Max, Acc, Size, Over) ->
+    case io:get_chars(standard_io, '', 1) of
+        eof when Size =:= 0, not Over -> end_of_input;
+        eof when Over -> too_long;
+        eof -> {text, Acc};
+        {error, _} -> end_of_input;
+        <<"\n">> when Over -> too_long;
+        <<"\n">> -> {text, Acc};
+        _ when Over -> read_stdin_line(Max, Acc, Size, true);
+        _ when Size >= Max ->
+            read_stdin_line(Max, <<>>, 0, true);
+        Byte when is_binary(Byte) ->
+            read_stdin_line(Max, <<Acc/binary, Byte/binary>>, Size + 1, false);
+        _ -> end_of_input
+    end.
 
 %% sys:terminate/3 against a running OTP supervisor: the only graceful
 %% external stop a supervisor offers, and the one gleam_otp's

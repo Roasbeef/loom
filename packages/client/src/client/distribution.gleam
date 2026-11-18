@@ -685,10 +685,14 @@ pub fn describe(failure: Fault) -> String {
       <> "machine runs the same node name, that the node name's host "
       <> "resolves here, and that [distribution].listen_address, if set, is "
       <> "an address of this machine"
+
+    // A dial that fails says only that the peer did not answer, so the text
+    // claims no more. It is also kept short on purpose: a move stall carries
+    // it after "the checkout failed while sending the state to the executor",
+    // and `node_report.cut_reason` bounds the whole reason at 200 bytes.
     Unavailable ->
-      "OTP could not start distribution or reach the peer; check that epmd is "
-      <> "reachable, the listen port is free, and the peer pins and "
-      <> "certificates match"
+      "the peer could not be reached: it may be stopped, or its node name, "
+      <> "pins or certificates may not match"
     TimedOut -> "the distribution connection did not settle in time"
   }
 }

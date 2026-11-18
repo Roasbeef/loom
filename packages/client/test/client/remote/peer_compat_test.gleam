@@ -102,9 +102,10 @@ pub fn features_bind_correlation_version_and_bounded_revisions_test() {
     )
   assert features.epoch == "epoch-a"
   assert features.build == "build-test"
-  assert list.length(features.revisions) == 12
+  assert list.length(features.revisions) == 13
   assert list.contains(features.revisions, "094.stop.1")
   assert list.contains(features.revisions, "108.feed.1")
+  assert list.contains(features.revisions, "108.worktree.1")
   assert peer_codec.decode_response(
       answer,
       "another",

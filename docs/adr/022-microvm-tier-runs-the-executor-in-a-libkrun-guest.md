@@ -322,3 +322,71 @@ Three consequences are recorded here so they are not rediscovered.
   or in any bundle that reaches a guest. The daemon's jails mask `~/.loom/vm`
   and the state root's `vm`, so the key is out of reach of jailed tools there; a
   `LOOM_VM_HOME` elsewhere is not masked.
+
+## Addendum, 2026-11-17: guests are untrusted executors
+
+*Added 2026-11-17. The owner ruled on 2026-11-13. D1 to D7 are unchanged. This
+supersedes, for every guest `loom vm up` and `loom --vm` make, the link of the
+first 2026-11-01 addendum (the orchestrator dials the guest by its node name
+through `loom-vm run --publish`), the developer-path addendum's two-node
+deployment and its ruling that the local daemon becomes a distribution member,
+and the 2026-11-02 addendum on minting and joining in ledger mode. The other
+rulings of those addenda (the credential proxy, the persistent state disk, the
+prebuilt artifacts and the revision check) are unchanged, and so is the
+2026-11-01 addendum on prebuilt artifacts.*
+
+**Decision.** `loom vm up` and `loom vm ensure` reach every guest over
+protocol-change/109's untrusted link. The guest daemon has
+`[executor_listener]` and never `[distribution]`; the host daemon has one
+`[executor_link]` table per vm home and one `trust = "untrusted"` row per guest,
+whose address is a host loopback port reserved once per guest, recorded in
+`<vm home>/<name>/link-port` and forwarded by `loom-vm run --forward`. One link
+authority and one orchestrator leaf per vm home live under `<vm home>/link/`,
+each guest has its own leaf under `<vm home>/<name>/link-credentials/`, and both
+sides pin. A running daemon learns of a new or moved row through the owner-only
+`executors.reload` (protocol-change/116). No cookie, epmd registration, ledger
+or authority key is involved, and no daemon restarts unless the running daemon
+cannot reload (it predates the command, refuses it, or cannot bring the guest's
+link up), when an idle one is stopped and a busy one is named as before. There is no flag to choose another
+link: `--link untrusted` is accepted and changes nothing, and `--link
+distribution` is refused. There is no `--trusted` escape.
+
+A guest made over distribution by an older loom is refused, not resumed or
+converted. `up` and `ensure` read its host-side records (a `link` record that
+says `distribution`, or `deploy/` bundles with no link credentials and no
+record) before anything is written, booted or sent, and answer with a refusal
+that names `loom vm sync --name NAME`, `loom vm down --name NAME` for a guest
+that still runs, `loom vm rm --name NAME --yes` and `loom vm up --name NAME`, in
+that order. `status`, `list`, `logs`, `down`, `sync` and `rm` handle such a guest
+as before, and `rm` keeps its distribution teardown (tables, cookie, sealed key,
+ledger revoke) for one release, after which the distribution path of `loom vm`
+is deleted. `rm` signs the ledger revoke of such a guest without the check for
+sessions placed on it, because a guest `up` refuses can never serve one again.
+
+**Why.** Over distribution, the guest's `loom` user holds the executor's
+cookie and key, and the distribution connection the orchestrator dials is
+symmetric, so a takeover of the guest ran code in the host daemon as the
+developer. That was verified on 2026-11-13 against the nightly of ebae32cf2: a
+plain Erlang node holding the three files `up` staged got the host user's name
+back from an `rpc:call` into the host daemon. The tier exists to contain kernel
+exploits, and distribution cannot express a partly trusted peer (109, "Harden
+distribution"). The link also removes the join's need for the authority key and
+a running daemon, and the first guest's need for a daemon restart. The default
+waited for the broker tunnel (protocol-change/117), because a session's Git
+baseline is probed once at its first open and stored: a guest session opened
+before the tunnel kept no Changes tab for its life.
+
+**What it costs.** The guest is not a deployment member: the ledger cannot move
+its sessions between orchestrators, and the daemon does not ask it for the
+executor's node report (protocol-change/085). A session on a guest runs no
+imported hook, because the plane's `hooks` is `HooksRefused`, and wiring hooks
+to the tunnel waits for the preconditions protocol-change/117 lists under "Hooks
+stay refused" and for a trust command. Remote evolution on a guest waits for
+109's slice 4, since the link sets the executor's evolution census to
+`Uncompiled`. Goal checks, the Changes tab with its baseline and the peer view of
+the worktree ride the broker tunnel. Every reply pays a JSON encode and a total
+decode, and placed bytes grow by a third as base64. A guest made over
+distribution is rebuilt rather than kept: its root and state disk go with `rm`,
+and only its commits survive, through `sync`. The libkrun VMM escape of the
+Consequences section is unchanged: a guest kernel exploit that escapes the VMM
+still lands in `loom-vm` as the developer.

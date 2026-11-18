@@ -373,6 +373,7 @@ pub fn a_private_session_draws_one_sentence_and_no_button_test() {
         sharing: sharing,
         opening: component.FromLink,
         machine: "laptop",
+        route: component.Local,
       ),
       transport: component.Transport(
         ..start.transport,

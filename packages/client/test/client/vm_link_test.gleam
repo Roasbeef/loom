@@ -1,5 +1,6 @@
-//// The decisions behind `loom vm up --link untrusted`, held still: the flag,
-//// the guest's link and port records, the merge of `[executor_link]` and a
+//// The decisions behind `loom vm up` on the untrusted link, held still: the
+//// retired `--link distribution`, which link a guest is brought up on and the
+//// refusal of one made over distribution, the guest's link and port records, the merge of `[executor_link]` and a
 //// guest's row into a `loom.toml`, the executor's own configuration, the
 //// credentials `up` mints, and the mask that keeps a listener's key from a
 //// jail. Nothing here boots a guest; `daemon_shipped_microvm_test` does that.
@@ -10,6 +11,7 @@
 //// leaf the way the link does. Properties draw from a fixed seed.
 
 import client/distribution
+import client/executor_reload
 import client/executors
 import client/internal/ffi_pki
 import client/internal/ffi_tls_stream
@@ -22,7 +24,7 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import qcheck
@@ -33,6 +35,10 @@ import tom
 
 const seed = 20_261_113
 
+// The directory of the guest the refusal names, as `vm_cli` passes it: the
+// guest's own directory under the vm home.
+const guest_dir = "/h/vm/dev"
+
 fn config() -> qcheck.Config {
   qcheck.default_config()
   |> qcheck.with_test_count(300)
@@ -41,27 +47,37 @@ fn config() -> qcheck.Config {
 
 // --- the flag ----------------------------------------------------------------
 
-pub fn the_link_flag_reads_both_words_and_refuses_others_test() {
-  let assert Ok(vm_spec.Up(options)) =
-    vm_spec.parse(["up", "--link", "untrusted"])
-  assert options.link == Some(vm_spec.Untrusted)
+pub fn link_untrusted_is_accepted_and_changes_nothing_test() {
+  // Every guest is on the untrusted link, so naming it is the default spelled
+  // out: the options are the ones the command without the flag has.
+  let assert Ok(vm_spec.Up(flagged)) =
+    vm_spec.parse(["up", "--link", "untrusted", "--name", "dev"])
+  let assert Ok(vm_spec.Up(plain)) = vm_spec.parse(["up", "--name", "dev"])
+  assert flagged == plain
 
-  let assert Ok(vm_spec.Up(options)) =
-    vm_spec.parse(["up", "--link", "distribution"])
-  assert options.link == Some(vm_spec.Distribution)
-
-  let assert Ok(vm_spec.Up(options)) = vm_spec.parse(["up"])
-  assert options.link == None
-
-  let assert Error(reason) = vm_spec.parse(["up", "--link", "tls"])
-  assert string.contains(reason, "distribution or untrusted")
+  let assert Ok(vm_spec.Ensure(flagged)) =
+    vm_spec.parse(["ensure", "--link", "untrusted", "--github", "off"])
+  let assert Ok(vm_spec.Ensure(plain)) =
+    vm_spec.parse(["ensure", "--github", "off"])
+  assert flagged == plain
+  assert plain.github == Some(vm_spec.GitHubOff)
 }
 
-pub fn ensure_takes_the_link_flag_too_test() {
-  let assert Ok(vm_spec.Ensure(options)) =
-    vm_spec.parse(["ensure", "--link", "untrusted", "--github", "off"])
-  assert options.link == Some(vm_spec.Untrusted)
-  assert options.github == Some(vm_spec.GitHubOff)
+pub fn link_distribution_is_refused_saying_why_test() {
+  // Neither verb can be asked for a distribution guest, so no command line
+  // makes one.
+  list.each(["up", "ensure"], fn(verb) {
+    let assert Error(reason) = vm_spec.parse([verb, "--link", "distribution"])
+      as { verb <> " refuses --link distribution" }
+    assert string.contains(reason, "--link distribution is retired")
+    assert string.contains(reason, "run in your daemon as you")
+    assert string.contains(reason, "run it with no --link")
+    assert !string.contains(reason, "`loom vm up`")
+  })
+
+  let assert Error(reason) = vm_spec.parse(["up", "--link", "tls"])
+    as "an unknown link is refused"
+  assert string.contains(reason, "--link takes only untrusted")
 }
 
 pub fn a_guest_cannot_be_named_for_the_vm_homes_link_directory_test() {
@@ -70,18 +86,17 @@ pub fn a_guest_cannot_be_named_for_the_vm_homes_link_directory_test() {
 
 // --- the records ---------------------------------------------------------------
 
-pub fn a_link_record_round_trips_and_a_missing_one_is_distribution_test() {
+pub fn a_link_record_round_trips_test() {
   list.each([vm_spec.Distribution, vm_spec.Untrusted], fn(kind) {
-    assert vm_link.decode_kind(Some(vm_link.encode_kind(kind))) == Ok(kind)
+    assert vm_link.decode_kind(vm_link.encode_kind(kind)) == Ok(kind)
   })
-  assert vm_link.decode_kind(None) == Ok(vm_spec.Distribution)
 }
 
 pub fn decoding_a_link_record_is_total_and_names_only_the_two_kinds_test() {
   qcheck.run(config(), qcheck.string(), fn(text) {
     // Whatever the text, the answer is a kind named by the text or an error;
     // it is never a default that could turn an untrusted guest trusted.
-    case vm_link.decode_kind(Some(text)) {
+    case vm_link.decode_kind(text) {
       Ok(kind) -> {
         assert string.trim(text) == vm_link.kind_word(kind)
       }
@@ -121,75 +136,158 @@ pub fn a_free_recorded_port_is_kept_and_any_other_is_replaced_test() {
 
 // --- which link a guest has -------------------------------------------------------
 
-pub fn a_new_guest_takes_the_flag_and_defaults_to_distribution_test() {
-  assert vm_link.settle("dev", None, vm_link.NoTraces, Some(vm_spec.Untrusted))
+pub fn a_new_guest_is_untrusted_test() {
+  assert vm_link.settle("dev", guest_dir, None, vm_link.NoTraces)
     == Ok(vm_spec.Untrusted)
-  assert vm_link.settle("dev", None, vm_link.NoTraces, None)
-    == Ok(vm_spec.Distribution)
 }
 
-pub fn an_existing_guest_keeps_its_link_when_no_flag_is_given_test() {
-  assert vm_link.settle("dev", Some("untrusted\n"), vm_link.NoTraces, None)
-    == Ok(vm_spec.Untrusted)
-
-  // Bundles with no record are a guest made before the record existed.
-  assert vm_link.settle("dev", None, vm_link.DeployTrace, None)
-    == Ok(vm_spec.Distribution)
+pub fn a_guest_made_over_distribution_is_refused_naming_the_way_on_test() {
+  // Bundles with no record are a guest made before the record existed, which
+  // is how every distribution guest looks; a record saying so is the same.
+  list.each(
+    [#(None, vm_link.DeployTrace), #(Some("distribution\n"), vm_link.NoTraces)],
+    fn(made) {
+      let assert Error(reason) =
+        vm_link.settle("dev", guest_dir, made.0, made.1)
+        as "a distribution guest is refused"
+      assert_names_the_way_on(reason, "dev")
+    },
+  )
 }
 
-pub fn a_guest_asked_to_change_its_link_is_refused_naming_fresh_and_rm_test() {
-  let assert Error(reason) =
-    vm_link.settle(
-      "dev",
-      Some("untrusted\n"),
-      vm_link.NoTraces,
-      Some(vm_spec.Distribution),
-    )
-  assert string.contains(reason, "--fresh")
-  assert string.contains(reason, "loom vm rm --name dev --yes")
+// The refusal says why, and names the three commands in the order a developer
+// runs them: the commits come back before the guest that holds them goes.
+fn assert_names_the_way_on(reason: String, name: String) -> Nil {
+  assert string.contains(reason, "trusted distribution peer of your daemon")
+  let sync = "`loom vm sync --name " <> name <> "`"
+  let rm = "`loom vm rm --name " <> name <> " --yes`"
+  let up = "`loom vm up --name " <> name <> "`"
+  let down = "`loom vm down --name " <> name <> "`"
+  let assert [_, after_sync] = string.split(reason, sync)
+    as { "the refusal names " <> sync <> ": " <> reason }
 
-  assert result.is_error(vm_link.settle(
-    "dev",
-    None,
-    vm_link.DeployTrace,
-    Some(vm_spec.Untrusted),
-  ))
+  // Between `sync` and `rm`: where uncommitted edits are, and the `down` a
+  // running guest needs, since `rm` refuses one.
+  let assert [between, after_rm] = string.split(after_sync, rm)
+    as { "the refusal names " <> rm <> " after sync: " <> reason }
+  assert string.contains(between, "commits only")
+  assert string.contains(between, guest_dir <> "/root/srv/workspaces/")
+  assert string.contains(between, down)
+  assert string.contains(after_rm, up)
+    as { "the refusal names " <> up <> " last: " <> reason }
 }
 
 pub fn a_record_that_cannot_be_read_refuses_instead_of_defaulting_test() {
-  assert result.is_error(vm_link.settle(
-    "dev",
-    Some("tls\n"),
-    vm_link.NoTraces,
-    None,
-  ))
+  let assert Error(reason) =
+    vm_link.settle("dev", guest_dir, Some("tls\n"), vm_link.NoTraces)
+    as "an unreadable record is refused"
+  assert string.contains(reason, "the link record says")
 }
 
-pub fn the_link_a_guest_settles_on_never_disagrees_with_what_it_has_test() {
-  let records = [None, Some("distribution\n"), Some("untrusted\n")]
-  let bundles = [vm_link.DeployTrace, vm_link.NoTraces]
-  let asks = [None, Some(vm_spec.Distribution), Some(vm_spec.Untrusted)]
+pub fn the_settled_link_over_every_record_trace_and_flag_test() {
+  let records = [
+    None,
+    Some("distribution\n"),
+    Some("untrusted\n"),
+    Some("tls\n"),
+  ]
+  let present = [vm_spec.Present, vm_spec.Absent]
+  let flags = [[], ["--link", "untrusted"]]
 
-  // Every combination: a settled kind is what the guest was made with, or the
-  // flag for a guest that was made with nothing.
+  // The flag reaches no decision: `up` with and without it parses to the same
+  // options, so the kind below is the whole answer for both.
+  list.each(flags, fn(flag) {
+    let assert Ok(vm_spec.Up(options)) =
+      vm_spec.parse(["up", "--name", "dev", ..flag])
+    let assert Ok(vm_spec.Up(plain)) = vm_spec.parse(["up", "--name", "dev"])
+    assert options == plain
+  })
+
+  // Every record against every combination of leaf and bundles.
   list.each(records, fn(record) {
-    list.each(bundles, fn(bundle) {
-      list.each(asks, fn(asked) {
-        case vm_link.settle("dev", record, bundle, asked) {
-          Ok(kind) -> {
-            assert asked == None || asked == Some(kind)
-            case record {
-              Some(text) -> {
-                assert vm_link.decode_kind(Some(text)) == Ok(kind)
-              }
-              None -> Nil
+    list.each(present, fn(credentials) {
+      list.each(present, fn(bundles) {
+        let traces = vm_link.traces(credentials, bundles)
+        let settled = vm_link.settle("dev", guest_dir, record, traces)
+        let seen = case settled {
+          Ok(vm_spec.Untrusted) -> BroughtUp
+          Ok(vm_spec.Distribution) -> BroughtUpOverDistribution
+          Error(reason) ->
+            case string.contains(reason, "the link record says") {
+              True -> Unreadable
+              False -> Retired
             }
+        }
+        assert seen == expected_link(record, credentials, bundles)
+          as {
+            string.inspect(#(record, credentials, bundles))
+            <> " settled "
+            <> string.inspect(settled)
           }
-          Error(_) -> Nil
+
+        // No combination brings a guest up over distribution, and only a guest
+        // `made` calls a distribution guest is refused with the way on.
+        assert settled != Ok(vm_spec.Distribution)
+        case vm_link.made(record, traces) {
+          Ok(Some(vm_spec.Distribution)) -> {
+            let assert Error(reason) = settled
+              as "a distribution guest is refused"
+            assert_names_the_way_on(reason, "dev")
+          }
+          Ok(_) -> {
+            assert settled == Ok(vm_spec.Untrusted)
+          }
+          Error(_) -> {
+            assert result.is_error(settled)
+          }
         }
       })
     })
   })
+}
+
+// What `settle` did with one guest, coarsely enough to write a table of.
+type Settled {
+  BroughtUp
+  BroughtUpOverDistribution
+  Retired
+  Unreadable
+}
+
+// The table the settled link is held to, written out rather than computed: a
+// record decides, then the leaf, then the bundles, and only a distribution
+// guest or an unreadable record refuses.
+fn expected_link(
+  record: Option(String),
+  credentials: vm_spec.Presence,
+  bundles: vm_spec.Presence,
+) -> Settled {
+  case record, credentials, bundles {
+    Some("untrusted\n"), _, _ -> BroughtUp
+    Some("distribution\n"), _, _ -> Retired
+    Some(_), _, _ -> Unreadable
+    None, vm_spec.Present, _ -> BroughtUp
+    None, vm_spec.Absent, vm_spec.Present -> Retired
+    None, vm_spec.Absent, vm_spec.Absent -> BroughtUp
+  }
+}
+
+pub fn traces_prefer_the_leaf_test() {
+  assert vm_link.traces(vm_spec.Present, vm_spec.Present) == vm_link.LeafTrace
+  assert vm_link.traces(vm_spec.Present, vm_spec.Absent) == vm_link.LeafTrace
+  assert vm_link.traces(vm_spec.Absent, vm_spec.Present) == vm_link.DeployTrace
+  assert vm_link.traces(vm_spec.Absent, vm_spec.Absent) == vm_link.NoTraces
+}
+
+pub fn the_read_only_verbs_still_see_a_distribution_guest_test() {
+  // `status`, `list` and `rm` read the kind with `made`, so an old guest is
+  // shown and removed as what it is, and a directory no `up` touched is none.
+  assert vm_link.made(None, vm_link.DeployTrace)
+    == Ok(Some(vm_spec.Distribution))
+  assert vm_link.made(Some("distribution\n"), vm_link.LeafTrace)
+    == Ok(Some(vm_spec.Distribution))
+  assert vm_link.made(None, vm_link.LeafTrace) == Ok(Some(vm_spec.Untrusted))
+  assert vm_link.made(None, vm_link.NoTraces) == Ok(None)
 }
 
 // --- the pin ---------------------------------------------------------------------
@@ -714,18 +812,17 @@ pub fn the_minted_credentials_complete_a_pinned_handshake_test() {
 // --- a leaf that is left behind -----------------------------------------------------------
 
 pub fn a_guest_with_a_minted_leaf_is_untrusted_even_with_no_record_test() {
-  // An untrusted first run that stopped before it recorded its link, resumed
-  // with no flag, stays untrusted and is never made a distribution guest.
-  assert vm_link.settle("dev", None, vm_link.LeafTrace, None)
+  // An untrusted first run that stopped before it recorded its link is resumed
+  // as untrusted, and a `deploy/` beside the leaf does not make it refused.
+  assert vm_link.settle("dev", guest_dir, None, vm_link.LeafTrace)
     == Ok(vm_spec.Untrusted)
-  assert vm_link.settle("dev", None, vm_link.LeafTrace, Some(vm_spec.Untrusted))
+  assert vm_link.settle(
+      "dev",
+      guest_dir,
+      None,
+      vm_link.traces(vm_spec.Present, vm_spec.Present),
+    )
     == Ok(vm_spec.Untrusted)
-  assert result.is_error(vm_link.settle(
-    "dev",
-    None,
-    vm_link.LeafTrace,
-    Some(vm_spec.Distribution),
-  ))
 }
 
 // --- what a removal leaves --------------------------------------------------------------------
@@ -786,26 +883,169 @@ pub fn lines_the_user_wrote_after_the_guests_tables_stay_test() {
 
 // --- whether the daemon has read the row ---------------------------------------------------------
 
-pub fn a_changed_row_always_needs_a_restart_and_a_standing_one_when_unlisted_test() {
+pub fn a_running_daemon_is_asked_to_reload_for_a_changed_row_or_an_unlisted_one_test() {
   let changed = vm_link.RowChanged
   let standing = vm_link.RowStanding
-  assert vm_link.daemon_need(changed, vm_link.SawNoDaemon, "dev")
-    == vm_link.MustRestart
+
+  // A changed row is unread by any daemon that was running before it, whatever
+  // that daemon lists.
   assert vm_link.daemon_need(changed, vm_link.SawExecutors(["dev"]), "dev")
-    == vm_link.MustRestart
+    == vm_link.MustReload
+  assert vm_link.daemon_need(changed, vm_link.SawUnanswered, "dev")
+    == vm_link.MustReload
 
   // A standing row is unread by a daemon that does not hold the guest, which is
   // a first `up` whose boot failed after the row was written.
   assert vm_link.daemon_need(standing, vm_link.SawExecutors(["other"]), "dev")
-    == vm_link.MustRestart
+    == vm_link.MustReload
   assert vm_link.daemon_need(standing, vm_link.SawExecutors(["dev"]), "dev")
     == vm_link.NeedsNothing
 
-  // No daemon, or none that answers, is not claimed to lack the row.
+  // No daemon is asked anything, and one that does not answer is not claimed
+  // to lack a row that was already there.
+  assert vm_link.daemon_need(changed, vm_link.SawNoDaemon, "dev")
+    == vm_link.NeedsNothing
   assert vm_link.daemon_need(standing, vm_link.SawNoDaemon, "dev")
     == vm_link.NeedsNothing
   assert vm_link.daemon_need(standing, vm_link.SawUnanswered, "dev")
     == vm_link.NeedsNothing
+}
+
+fn reply(
+  entries: List(#(String, executor_reload.Change)),
+) -> vm_link.ReloadResult {
+  vm_link.Answered(
+    executor_reload.Reply(
+      list.map(entries, fn(entry) { executor_reload.Entry(entry.0, entry.1) }),
+    ),
+  )
+}
+
+pub fn a_reply_that_holds_the_guests_row_runs_no_old_path_test() {
+  let report =
+    vm_link.reload_report(
+      "dev",
+      reply([
+        #("dev", executor_reload.Started),
+        #("other", executor_reload.Unchanged),
+      ]),
+    )
+  assert report.old_path == vm_link.OldPathSkipped
+  assert report.lines
+    == ["Your daemon started its link to untrusted executor dev."]
+
+  // Every kept state of the guest's own entry is a row the daemon holds.
+  list.each([executor_reload.Restarted, executor_reload.Unchanged], fn(change) {
+    assert vm_link.reload_report("dev", reply([#("dev", change)])).old_path
+      == vm_link.OldPathSkipped
+  })
+}
+
+pub fn a_row_that_changed_without_the_users_doing_is_named_test() {
+  let report =
+    vm_link.reload_report(
+      "dev",
+      reply([
+        #("dev", executor_reload.Unchanged),
+        #("gone", executor_reload.Stopped),
+        #("moved", executor_reload.Restarted),
+        #("new", executor_reload.Started),
+      ]),
+    )
+  assert report.old_path == vm_link.OldPathSkipped
+  assert list.length(report.lines) == 3
+  assert list.all(["gone", "moved", "new"], fn(name) {
+    list.any(report.lines, string.contains(_, name))
+  })
+  assert !list.any(report.lines, string.contains(_, "dev"))
+}
+
+pub fn a_failed_stopped_or_missing_own_entry_runs_the_old_path_test() {
+  let failed =
+    vm_link.reload_report("dev", reply([#("dev", executor_reload.Failed)]))
+  assert failed.old_path == vm_link.OldPathRuns
+  assert list.length(failed.lines) == 1
+
+  // The wording does not claim the old link was left alone: a failed
+  // replacement may have stopped it.
+  assert list.all(failed.lines, fn(line) {
+    !string.contains(line, "left that link as it was")
+    && string.contains(line, "the next reload tries again")
+  })
+
+  // After an `up`, a guest whose own entry is `stopped` has no link serving it.
+  let stopped =
+    vm_link.reload_report("dev", reply([#("dev", executor_reload.Stopped)]))
+  assert stopped.old_path == vm_link.OldPathRuns
+  assert list.length(stopped.lines) == 1
+
+  let missing =
+    vm_link.reload_report("dev", reply([#("other", executor_reload.Started)]))
+  assert missing.old_path == vm_link.OldPathRuns
+  assert list.length(missing.lines) == 1
+}
+
+pub fn a_daemon_that_predates_refuses_or_is_silent_runs_the_old_path_test() {
+  let predates = vm_link.reload_report("dev", vm_link.PredatesReload)
+  assert predates == vm_link.ReloadReport([], vm_link.OldPathRuns)
+
+  let refused =
+    vm_link.reload_report(
+      "dev",
+      vm_link.RefusedReload("reload_invalid", Some("the file has a bad row")),
+    )
+  assert refused.old_path == vm_link.OldPathRuns
+  assert list.any(refused.lines, string.contains(_, "the file has a bad row"))
+
+  let silent = vm_link.reload_report("dev", vm_link.NoAnswer("timed out"))
+  assert silent.old_path == vm_link.OldPathRuns
+  assert list.any(silent.lines, string.contains(_, "timed out"))
+}
+
+pub fn a_removal_needs_no_old_path_unless_its_own_link_failed_test() {
+  // The removed guest's link is stopped, or the daemon never held it.
+  assert vm_link.removal_report(
+      "dev",
+      reply([#("dev", executor_reload.Stopped)]),
+    )
+    == vm_link.ReloadReport(
+      [
+        "Your daemon stopped its link to untrusted executor dev, whose row is gone.",
+      ],
+      vm_link.OldPathSkipped,
+    )
+  assert vm_link.removal_report("dev", reply([])).old_path
+    == vm_link.OldPathSkipped
+
+  // A link that could not be stopped is still held, so the notice stays.
+  assert vm_link.removal_report(
+      "dev",
+      reply([#("dev", executor_reload.Failed)]),
+    ).old_path
+    == vm_link.OldPathRuns
+
+  // A daemon that predates the command says nothing here.
+  assert vm_link.removal_report("dev", vm_link.PredatesReload)
+    == vm_link.ReloadReport([], vm_link.OldPathRuns)
+}
+
+pub fn the_exchange_is_classified_by_what_it_returned_test() {
+  let good = executor_reload.encode(executor_reload.Reply([]))
+  assert vm_link.reload_result(Ok(good))
+    == vm_link.Answered(executor_reload.Reply([]))
+  assert vm_link.reload_result(Error("bad_request")) == vm_link.PredatesReload
+  assert vm_link.reload_result(Error("reload_invalid: no good"))
+    == vm_link.RefusedReload("reload_invalid", Some("no good"))
+  assert vm_link.reload_result(Error("forbidden"))
+    == vm_link.RefusedReload("forbidden", None)
+  assert vm_link.reload_result(Error("unavailable"))
+    == vm_link.RefusedReload("unavailable", None)
+  assert vm_link.reload_result(Error("no daemon"))
+    == vm_link.NoAnswer("no daemon")
+
+  // A body that is not a reply is no answer, and never a partial one.
+  let assert vm_link.NoAnswer(_) = vm_link.reload_result(Ok(json.Object([])))
+    as "a body without executors is no answer"
 }
 
 pub fn the_executors_a_daemon_lists_are_read_from_its_deployment_status_test() {

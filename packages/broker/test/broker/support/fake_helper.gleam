@@ -466,6 +466,7 @@ fn exec_start(
             Some(exec_policy) ->
               case exec_policy.network {
                 policy.NetworkOff -> "off"
+                policy.NetworkLoopback -> "loopback"
                 policy.NetworkProxy(..) -> "proxy"
                 policy.NetworkFull -> "full"
               }

@@ -180,7 +180,7 @@ Two pieces of wiring in `client/serve` make the pushes reach the shipped
 binary. It starts one `commit_forwarder` (`client/gateway.gleam:1998`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
-`tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:4911`), so
+`tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:4937`), so
 every token reaches the gateway as a `ProviderDelta` while the bounded
 preview remains available to a terminal that attaches in the middle of an
 answer. The outer tap's second observer feeds the block summarizer's live
@@ -403,7 +403,7 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`session_view/session_channel.gleam:1903`) starts the catch-up at the
+`send_queued` (`session_view/session_channel.gleam:1909`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
 `tick` (`session_view/session_channel.gleam:1479`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number

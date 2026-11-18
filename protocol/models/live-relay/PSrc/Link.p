@@ -71,10 +71,12 @@ machine Link {
 
     on eBreak do {
       cut = 1;
+      announce eCut;
     }
 
     on eHeal do {
       cut = 0;
+      announce eHealed;
     }
 
     // A tick releases the delayed messages. A message still held when a

@@ -1,4 +1,5 @@
-//// The decisions behind `loom vm up --link untrusted`, with no effect in them.
+//// The decisions behind `loom vm up`, which reaches every new guest over the
+//// untrusted link, with no effect in them.
 ////
 //// A guest reached over the untrusted link (protocol-change/109) is not a
 //// distribution peer. The host daemon dials the guest's executor listener over
@@ -15,14 +16,18 @@
 ////
 //// ## Flow
 ////
-//// - `settle` picks the guest's link from its record, the traces of a first run and the
-////   `--link` flag, and refuses to change it.
+//// - `settle` decides the link a guest is brought up on from its record and
+////   the traces of a first run (`traces`, `made`): the untrusted link, or a
+////   refusal for a guest made as a distribution peer.
 //// - `port_step` decides whether the recorded loopback port is kept or a new
 ////   one is reserved.
 //// - `install` merges `[executor_link]` and the guest's row into the host's
 ////   configuration, and `uninstall` takes them out again.
 //// - `guest_config` and `staging` are what the guest's root holds: a listener
 ////   that admits the orchestrator's pin, three credential files, and no cookie.
+//// - `daemon_need` decides whether the default daemon is asked to reload, and
+////   `reload_result` and `reload_report` turn its answer into the lines to print
+////   and the question of whether the old stop-or-name path still runs.
 //// - `daemon_lines` and `status_lines` word what a developer is told.
 ////
 //// ## Two rules for the host's `loom.toml`
@@ -43,6 +48,7 @@
 import client/distribution.{type CredentialFiles}
 import client/distribution_bundle
 import client/distribution_install
+import client/executor_reload
 import client/internal/ffi_pki
 import client/vm_spec.{
   type DaemonOutcome, type LinkKind, Distribution, Untrusted,
@@ -85,37 +91,31 @@ pub fn encode_kind(kind: LinkKind) -> String {
   }
 }
 
-/// Reads the `link` record. A guest with no record is a distribution guest,
-/// which is what every guest made before the record existed is, so those guests
-/// are unchanged. Text that names neither kind is an error, never a default: a
-/// record that cannot be read must not turn an untrusted guest into a trusted
-/// one.
+/// Reads the text of a `link` record. Text that names neither kind is an
+/// error, never a default: a record that cannot be read must not turn an
+/// untrusted guest into a trusted one, and must not let a distribution guest
+/// pass for an untrusted one either.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_link.decode_kind(None) == Ok(vm_spec.Distribution)
-/// assert vm_link.decode_kind(Some("untrusted\n")) == Ok(vm_spec.Untrusted)
+/// assert vm_link.decode_kind("untrusted\n") == Ok(vm_spec.Untrusted)
 /// ```
-pub fn decode_kind(record: Option(String)) -> Result(LinkKind, String) {
-  case record {
-    None -> Ok(Distribution)
-    Some(text) ->
-      case string.trim(text) {
-        "distribution" -> Ok(Distribution)
-        "untrusted" -> Ok(Untrusted)
-        other ->
-          Error(
-            "the link record says "
-            <> string.inspect(string.slice(other, 0, 40))
-            <> ", not distribution or untrusted",
-          )
-      }
+pub fn decode_kind(text: String) -> Result(LinkKind, String) {
+  case string.trim(text) {
+    "distribution" -> Ok(Distribution)
+    "untrusted" -> Ok(Untrusted)
+    other ->
+      Error(
+        "the link record says "
+        <> string.inspect(string.slice(other, 0, 40))
+        <> ", not distribution or untrusted",
+      )
   }
 }
 
 /// What a guest's directory holds that a first `up` leaves before it records a
-/// link: the bundles a distribution `up` writes, or the leaf an untrusted `up`
+/// link: the bundles a distribution `up` wrote, or the leaf an untrusted `up`
 /// mints. Either says which link the guest was started with even when the run
 /// stopped before it wrote the `link` record.
 pub type Traces {
@@ -129,72 +129,120 @@ pub type Traces {
   LeafTrace
 }
 
-/// The link a guest has after this command: the one it was made with, or the
-/// one `--link` asks for when it is new.
+/// The traces of a guest's directory, from whether it holds the untrusted
+/// leaf's `link-credentials/` and the distribution bundles' `deploy/`.
 ///
-/// A guest keeps its link for life. A guest with a `link` record has that
-/// kind; one with distribution bundles and no record is a distribution guest,
-/// and one with a minted leaf is an untrusted guest; one with neither is new
-/// and takes the flag, defaulting to distribution. A flag that names the other kind is refused, because the guest's root, its row
-/// and its credentials all belong to one kind, and `--fresh` replaces the root
-/// and the disk but not the host's configuration.
+/// The leaf decides when both are there: it is minted before anything else of
+/// an untrusted guest exists, and no `up` has minted one for a guest that had
+/// bundles.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let new = vm_link.settle("dev", None, vm_link.NoTraces, Some(vm_spec.Untrusted))
-/// assert new == Ok(vm_spec.Untrusted)
+/// assert vm_link.traces(vm_spec.Absent, vm_spec.Present) == vm_link.DeployTrace
 /// ```
-pub fn settle(
-  name: String,
-  record: Option(String),
-  traces: Traces,
-  requested: Option(LinkKind),
-) -> Result(LinkKind, String) {
-  use made <- result.try(made_with(record, traces))
-
-  // A new guest takes the flag; an existing one keeps what it has.
-  case made, requested {
-    None, None -> Ok(Distribution)
-    None, Some(asked) -> Ok(asked)
-    Some(kind), None -> Ok(kind)
-    Some(kind), Some(asked) if kind == asked -> Ok(kind)
-    Some(kind), Some(asked) -> Error(mixed_refusal(name, kind, asked))
+pub fn traces(
+  credentials: vm_spec.Presence,
+  bundles: vm_spec.Presence,
+) -> Traces {
+  case credentials, bundles {
+    vm_spec.Present, _ -> LeafTrace
+    vm_spec.Absent, vm_spec.Present -> DeployTrace
+    vm_spec.Absent, vm_spec.Absent -> NoTraces
   }
 }
 
-/// The kind a guest was made with, or none when it is new.
-fn made_with(
+/// The kind a guest was made with, or none when its directory holds no sign
+/// that any `up` made it.
+///
+/// A record decides. Without one, the traces of a first run say which link it
+/// was: the bundles of a distribution guest, which every guest made before the
+/// record existed has, or the leaf of an untrusted run that stopped before it
+/// wrote the record. The read-only verbs ask this, so a guest made over
+/// distribution keeps being shown and removed as one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_link.made(None, vm_link.DeployTrace) == Ok(Some(vm_spec.Distribution))
+/// assert vm_link.made(None, vm_link.NoTraces) == Ok(None)
+/// ```
+pub fn made(
   record: Option(String),
   traces: Traces,
 ) -> Result(Option(LinkKind), String) {
-  // A record decides. Without one, the traces of a first run say which link it
-  // was, so a flagless `up` after an interrupted untrusted one resumes it as
-  // untrusted and never as a distribution guest.
   case record, traces {
-    Some(_), _ -> decode_kind(record) |> result.map(Some)
+    Some(text), _ -> decode_kind(text) |> result.map(Some)
     None, DeployTrace -> Ok(Some(Distribution))
     None, LeafTrace -> Ok(Some(Untrusted))
     None, NoTraces -> Ok(None)
   }
 }
 
-/// The refusal for a guest asked to change its link.
-fn mixed_refusal(name: String, made: LinkKind, asked: LinkKind) -> String {
-  "the guest "
-  <> name
-  <> " was made with the "
-  <> kind_word(made)
-  <> " link and keeps it, even under `--fresh`, which replaces the root and the "
-  <> "disk and leaves the daemon's configuration as it is. Remove it with "
-  <> "`loom vm rm --name "
-  <> name
-  <> " --yes` and run `loom vm up --link "
-  <> kind_word(asked)
-  <> "` again."
+/// The link `up` and `ensure` bring a guest up on, which is always the
+/// untrusted one, or the refusal for a guest made as a distribution peer.
+///
+/// A new guest and an untrusted one get the untrusted link. A guest made over
+/// distribution holds the executor's cookie and node key in its root, so code
+/// that takes over the guest can run in the host daemon as the developer; it
+/// is refused rather than resumed or converted, before anything is written,
+/// booted or sent, and the refusal names the three commands that move its work
+/// to a new guest (the owner's ruling of 2026-11-13, ADR-022). No input makes
+/// this answer `Distribution`, which is what keeps every command from making a
+/// new distribution guest or turning an untrusted one into one. `directory` is
+/// the guest's directory under the vm home, which the refusal names so that a
+/// developer can copy uncommitted edits out of the root before `rm` deletes it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_link.settle("dev", "/h/vm/dev", None, vm_link.NoTraces)
+///   == Ok(vm_spec.Untrusted)
+/// let assert Error(_) =
+///   vm_link.settle("dev", "/h/vm/dev", None, vm_link.DeployTrace)
+/// ```
+pub fn settle(
+  name: String,
+  directory: String,
+  record: Option(String),
+  traces: Traces,
+) -> Result(LinkKind, String) {
+  use kind <- result.try(made(record, traces))
+
+  // Only a guest made over distribution is refused; everything else, new or
+  // not, is brought up on the untrusted link.
+  case kind {
+    Some(Distribution) -> Error(retired_refusal(name, directory))
+    Some(Untrusted) | None -> Ok(Untrusted)
+  }
 }
 
-/// The word `--link` and `status` use for a kind.
+/// The refusal for a guest made over distribution: why it is not started, and
+/// the commands in the order a developer needs them, so its commits are
+/// fetched before the guest that holds them is deleted. `sync` fetches commits
+/// only, and `rm` deletes the root that holds everything else, so the words
+/// say where uncommitted edits are, and that a guest still running is stopped
+/// before `rm`, which refuses a running one.
+fn retired_refusal(name: String, directory: String) -> String {
+  "the guest "
+  <> name
+  <> " was made as a trusted distribution peer of your daemon, so code that "
+  <> "takes it over could run in the daemon as you, and it is no longer "
+  <> "started. Fetch its commits with `loom vm sync --name "
+  <> name
+  <> "`; that fetches commits only, so copy any uncommitted edits out of "
+  <> directory
+  <> "/root/srv/workspaces/ first. Then stop it with `loom vm down --name "
+  <> name
+  <> "` if it still runs, remove it with `loom vm rm --name "
+  <> name
+  <> " --yes`, which deletes that root, and make it again on the untrusted "
+  <> "link with `loom vm up --name "
+  <> name
+  <> "`."
+}
+
+/// The word the `link` record, `status` and `list` use for a kind.
 ///
 /// ## Examples
 ///
@@ -528,8 +576,8 @@ fn link_refusal(file: String) -> String {
   <> " already has an [executor_link] table that names files other than "
   <> "this vm home's link credentials. A daemon has one [executor_link] table, "
   <> "so a guest made here cannot share another authority's: its certificate "
-  <> "would not chain to that authority, and `loom vm up --link untrusted` "
-  <> "never replaces the table. Give `--config` another file for this guest, "
+  <> "would not chain to that authority, and `loom vm up` never replaces "
+  <> "the table. Give `--config` another file for this guest, "
   <> "or remove the table from this one if nothing else uses it."
 }
 
@@ -538,7 +586,7 @@ fn row_refusal(file: String, row: Row) -> String {
   file
   <> " already has [executors."
   <> row.name
-  <> "] with other values. `loom vm up --link untrusted` never replaces it. "
+  <> "] with other values. `loom vm up` never replaces it. "
   <> "If an earlier guest wrote it, `loom vm rm --name "
   <> row.name
   <> " --yes` removes it; otherwise remove it from the file, or give "
@@ -881,39 +929,224 @@ pub type DaemonSaw {
   SawExecutors(names: List(String))
 }
 
-/// Whether the default daemon has to restart to reach the guest.
+/// Whether the default daemon is asked to reread its configuration to reach
+/// the guest.
 pub type DaemonNeed {
-  MustRestart
+  /// A daemon runs and has not read the guest's row, or this command changed
+  /// it.
+  MustReload
+
+  /// No daemon runs, or the daemon already holds the row as the file has it.
   NeedsNothing
 }
 
-/// Decides whether the default daemon has to restart for an untrusted guest.
-/// A daemon reads its rows only at its start, so a row this command wrote is
-/// unread by any daemon already running. A row that was already there is read
-/// when the daemon lists the guest by name, and unread when it does not: that
-/// is a first `up` whose boot failed after the row was written, and a daemon
-/// started before it. A daemon that is absent or does not answer is never
-/// claimed to lack the row. The question is not whether the daemon runs with
-/// distribution, which an untrusted guest never needs.
+/// Decides whether the default daemon is asked to run `executors.reload` for
+/// an untrusted guest (protocol-change/116). A running daemon is asked when
+/// this command changed the guest's row, because no daemon can have read it, or
+/// when the row was already there and the daemon does not list the guest: a
+/// first `up` whose boot failed after the row was written, and a daemon that
+/// started before it. A daemon that does not answer the listing is not claimed
+/// to lack a row that was already there. A daemon that is not running reads the
+/// file when it starts, so it is never asked.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert vm_link.daemon_need(vm_link.RowStanding, vm_link.SawExecutors([]), "dev")
-///   == vm_link.MustRestart
+///   == vm_link.MustReload
 /// ```
 pub fn daemon_need(rows: Rows, saw: DaemonSaw, name: String) -> DaemonNeed {
-  // A changed row is unread whatever the daemon says; a standing one is read
-  // only if the daemon holds it.
+  // Nothing is asked of a daemon that is not there; of one that is, a changed
+  // row is unread whatever it says and a standing one is read only if listed.
   case rows, saw {
-    RowChanged, _ -> MustRestart
+    _, SawNoDaemon -> NeedsNothing
+    RowChanged, SawUnanswered | RowChanged, SawExecutors(_) -> MustReload
     RowStanding, SawExecutors(names) ->
       case list.contains(names, name) {
         True -> NeedsNothing
-        False -> MustRestart
+        False -> MustReload
       }
-    RowStanding, SawNoDaemon | RowStanding, SawUnanswered -> NeedsNothing
+    RowStanding, SawUnanswered -> NeedsNothing
   }
+}
+
+/// What came of asking the daemon to run `executors.reload`.
+pub type ReloadResult {
+  /// The daemon answered and its reply decoded.
+  Answered(reply: executor_reload.Reply)
+
+  /// The daemon does not know the command, which is how a daemon older than
+  /// protocol-change/116 answers.
+  PredatesReload
+
+  /// The daemon refused the call. `message` is the reason, when the refusal
+  /// carried one.
+  RefusedReload(code: String, message: Option(String))
+
+  /// No usable answer came: the exchange failed, or the body did not decode.
+  NoAnswer(reason: String)
+}
+
+/// Whether the old path still has to run: stop a daemon that holds no session,
+/// or name the command that stops one that does.
+pub type OldPath {
+  /// The daemon holds the row, so nothing is stopped.
+  OldPathSkipped
+
+  /// The daemon was not made to hold the row, so the stop-or-name path runs.
+  OldPathRuns
+}
+
+/// What `up` reports about a reload: the lines to print, and whether the old
+/// path still runs.
+pub type ReloadReport {
+  ReloadReport(lines: List(String), old_path: OldPath)
+}
+
+/// Classifies what the exchange for `executors.reload` returned. The refusal
+/// strings are the ones `host/access` reports: a bare code, or
+/// `reload_invalid: ` followed by the daemon's reason.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_link.reload_result(Error("bad_request")) == vm_link.PredatesReload
+/// ```
+pub fn reload_result(
+  asked: Result(core_json.JsonValue, String),
+) -> ReloadResult {
+  // A body must decode as a reply before it is believed; a refusal is read
+  // from the text the access layer made of it.
+  case asked {
+    Ok(body) ->
+      case executor_reload.decode(body) {
+        Ok(reply) -> Answered(reply)
+        Error(reason) ->
+          NoAnswer("the reply to executors.reload was not readable: " <> reason)
+      }
+    Error("bad_request") -> PredatesReload
+    Error("reload_invalid: " <> reason) ->
+      RefusedReload("reload_invalid", Some(reason))
+    Error("reload_invalid") -> RefusedReload("reload_invalid", None)
+    Error("forbidden") -> RefusedReload("forbidden", None)
+    Error("not_found") -> RefusedReload("not_found", None)
+    Error("unavailable") -> RefusedReload("unavailable", None)
+    Error(reason) -> NoAnswer(reason)
+  }
+}
+
+/// Words what a reload did, and decides whether the old path still has to run
+/// for the guest called `name`.
+///
+/// Every entry that is not `unchanged` gets a line, whichever guest it names,
+/// so a row that changed without this command's doing is seen. The old path
+/// runs when the daemon was not made to hold the guest's row: it predates the
+/// command, refused it, did not answer, or answered with the guest's entry
+/// `failed`, `stopped` or missing. A `stopped` entry after `up` means the
+/// daemon found no row for the guest, or took it out, so no link serves it. A
+/// refusal's reason is printed before it does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let report = vm_link.reload_report("dev", vm_link.PredatesReload)
+/// assert report.old_path == vm_link.OldPathRuns
+/// ```
+pub fn reload_report(name: String, result: ReloadResult) -> ReloadReport {
+  case result {
+    Answered(reply:) ->
+      ReloadReport(
+        lines: changed_lines(reply),
+        old_path: case own_change(name, reply) {
+          Some(executor_reload.Failed) | Some(executor_reload.Stopped) | None ->
+            OldPathRuns
+          Some(executor_reload.Started)
+          | Some(executor_reload.Restarted)
+          | Some(executor_reload.Unchanged) -> OldPathSkipped
+        },
+      )
+    PredatesReload -> ReloadReport(lines: [], old_path: OldPathRuns)
+    RefusedReload(code:, message:) ->
+      ReloadReport(
+        lines: [
+          "Your daemon refused to reload its executors ("
+          <> option.unwrap(message, code)
+          <> ").",
+        ],
+        old_path: OldPathRuns,
+      )
+    NoAnswer(reason:) ->
+      ReloadReport(
+        lines: [
+          "Your daemon did not answer the request to reload its executors ("
+          <> reason
+          <> ").",
+        ],
+        old_path: OldPathRuns,
+      )
+  }
+}
+
+/// The report for the reload `rm` sends after it took a guest's row out of the
+/// file. The guest's own entry is `stopped` in a reply, or absent when the
+/// daemon never held it, and neither leaves a daemon to restart; only a
+/// `failed` entry does. A daemon that predates the command needs nothing from
+/// `rm` beyond the notice `rm` has always printed, so it has no lines here.
+/// `OldPathRuns` means that notice is still printed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let result = vm_link.Answered(executor_reload.Reply([]))
+/// assert vm_link.removal_report("dev", result).old_path == vm_link.OldPathSkipped
+/// ```
+pub fn removal_report(name: String, result: ReloadResult) -> ReloadReport {
+  case result {
+    Answered(reply:) ->
+      ReloadReport(
+        lines: changed_lines(reply),
+        old_path: case own_change(name, reply) {
+          Some(executor_reload.Failed) -> OldPathRuns
+          Some(_) | None -> OldPathSkipped
+        },
+      )
+    PredatesReload | RefusedReload(..) | NoAnswer(..) ->
+      reload_report(name, result)
+  }
+}
+
+/// The change the reply names for `name`, if it lists it.
+fn own_change(
+  name: String,
+  reply: executor_reload.Reply,
+) -> Option(executor_reload.Change) {
+  list.find(reply.executors, fn(entry) { entry.name == name })
+  |> result.map(fn(entry) { entry.change })
+  |> option.from_result
+}
+
+/// One line for every entry of the reply that is not `unchanged`.
+fn changed_lines(reply: executor_reload.Reply) -> List(String) {
+  list.filter_map(reply.executors, fn(entry) {
+    let who = "untrusted executor " <> entry.name
+
+    // Each change that happened is one sentence; an unchanged row is silent.
+    case entry.change {
+      executor_reload.Unchanged -> Error(Nil)
+      executor_reload.Started ->
+        Ok("Your daemon started its link to " <> who <> ".")
+      executor_reload.Restarted ->
+        Ok("Your daemon restarted its link to " <> who <> ".")
+      executor_reload.Stopped ->
+        Ok("Your daemon stopped its link to " <> who <> ", whose row is gone.")
+      executor_reload.Failed ->
+        Ok(
+          "Your daemon could not bring its link to "
+          <> who
+          <> " to match the file, and the next reload tries again.",
+        )
+    }
+  })
 }
 
 /// The names of the executor rows a daemon's `deployment.status` body lists
@@ -957,9 +1190,11 @@ fn name_of(entry: core_json.JsonValue) -> Result(String, Nil) {
 // --- what the developer is told ------------------------------------------------------
 
 /// The lines `up` ends with about the daemon after it changed the guest's row.
-/// A daemon reads its rows at start and has no reload command yet, so one that
-/// is running must restart; an idle one was stopped by the same step
-/// `up` takes for a newly installed deployment.
+/// What `up` says when a reload could not make the daemon read the row: a
+/// daemon that predates the command, refused it, or did not answer reads its
+/// rows only at its start, so an idle one was stopped by the same step `up`
+/// takes for a newly installed deployment and a busy one is named the command
+/// that stops it.
 ///
 /// ## Examples
 ///
@@ -970,10 +1205,9 @@ pub fn daemon_lines(name: String, outcome: DaemonOutcome) -> List(String) {
   vm_spec.daemon_note_about(
     outcome,
     "the guest's row",
-    "It read its configuration before [executors."
+    "It has not read [executors."
       <> name
-      <> "] was written, and it has no reload command yet, so it must restart "
-      <> "to reach the guest.",
+      <> "], so it must restart to reach the guest.",
     vm_spec.Installed,
   )
 }

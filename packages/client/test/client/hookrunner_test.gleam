@@ -5,18 +5,22 @@
 
 import broker/broker
 import broker/exec
+import broker/framing
 import broker/policy
 import broker/token
+import client/clear_call
 import client/hookrunner
 import client/internal/ffi_os
 import client/serve
 import client/workspace_policy
 import core/clock
 import core/ids
+import gleam/erlang/process
 import gleam/int
 import gleam/option.{None, Some}
 import host/bootstrap
 import simplifile
+import support/fake_clear_call
 
 pub fn shell_form_hook_runs_and_reports_test() {
   let #(ctx, _helper) = fixture()
@@ -241,7 +245,7 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
   let demand = exec.BestEffort
   #(
     hookrunner.Context(
-      broker: broker_actor,
+      clear_call: clear_call.over_broker(broker_actor),
       base_policy: base,
       op_id:,
       step_id: "hookcompat-fixture",
@@ -266,4 +270,112 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
 // the scripts it writes would land in a directory they did not ask for.
 fn operator_home(workspace: String) -> String {
   workspace <> "-home"
+}
+
+// A context that reaches no broker: the clearing function is the fake the
+// test passes, and nothing else in the context is read by the runner except
+// to build the spec the fake records.
+fn fake_context(clear: clear_call.ClearCall) -> hookrunner.Context {
+  let wall = clock.fixed(at: 1_000_000)
+  let #(op_id, _generator) = ids.mint_op(ids.generator(wall, seed: 117))
+  hookrunner.Context(
+    clear_call: clear,
+    base_policy: policy.workspace_default("/fixture"),
+    op_id:,
+    step_id: "fake-seam",
+    workspace: "/fixture",
+    env: [#("HOOK_MARKER", "seen")],
+    demand: exec.BestEffort,
+    clock: wall,
+    session_id: "fake-seam",
+    transcript_path: "/fixture/session.db",
+  )
+}
+
+fn exited_with(code: Int) -> broker.CallOutcome {
+  broker.CallExited(exec.ExecResult(
+    code:,
+    signal: 0,
+    stdout_bytes: 9,
+    stderr_bytes: 0,
+    stdout_truncated: False,
+    stderr_truncated: False,
+    enforcement: [],
+    degraded: False,
+    wall_ms: 4,
+    timed_out: False,
+    cancelled: False,
+  ))
+}
+
+/// The runner reaches its process only through the function it was handed:
+/// the fake sees the spec and the clearance wait, receives the payload on
+/// stdin and closes it, and its scripted settlement is what the runner
+/// reports.
+pub fn the_runner_clears_through_the_function_it_was_given_test() {
+  let probe = process.new_subject()
+  let clear =
+    fake_clear_call.answering(probe, fn(_spec) {
+      [
+        broker.CallOutput(framing.Stdout, <<"decision\n":utf8>>, 9, False),
+        broker.CallSettled(exited_with(3)),
+      ]
+    })
+  let cmd = hookrunner.Command("echo decision", None, Some(5))
+
+  let assert Ok(outcome) =
+    hookrunner.run(fake_context(clear), cmd, "{\"event\":1}", 30)
+    as "a scripted settlement reaches the runner's outcome"
+  assert outcome.code == 3
+  assert outcome.stdout == "decision\n"
+  assert outcome.ending == hookrunner.RanToExit
+
+  let assert Ok(fake_clear_call.Cleared(spec:, waiting:)) =
+    process.receive(probe, 100)
+    as "the fake was asked to clear one call"
+  assert spec.argv == ["sh", "-c", "echo decision"]
+  assert spec.cwd == "/fixture"
+  assert spec.step_id == "fake-seam"
+  assert spec.env == [#("HOOK_MARKER", "seen")]
+  assert spec.budget.deadline_ms == 1_000_000 + 5000
+
+  // The wait is the hook's wall plus the runner's settlement grace.
+  assert waiting == 5000 + 10_000
+  assert process.receive(probe, 100)
+    == Ok(fake_clear_call.StdinFinal(<<"{\"event\":1}":utf8>>))
+  assert process.receive(probe, 10) == Error(Nil)
+}
+
+/// A refusal from the function is the runner's `Refused`, verbatim, and the
+/// runner never writes stdin to a call that was not cleared.
+pub fn a_refusal_from_the_function_is_reported_verbatim_test() {
+  let refuse = fn(_spec, _events, _waiting) { Error(broker.BrokerUnavailable) }
+
+  assert hookrunner.run(
+      fake_context(refuse),
+      hookrunner.Command("true", None, Some(1)),
+      "{}",
+      30,
+    )
+    == Error(hookrunner.Refused(broker.BrokerUnavailable))
+}
+
+/// A call that never settles ends the runner's bounded wait with
+/// `NeverSettled`, and the runner cancels through the handle it was given.
+pub fn a_call_that_never_settles_is_cancelled_through_the_handle_test() {
+  let probe = process.new_subject()
+  let clear = fake_clear_call.answering(probe, fn(_spec) { [] })
+  let cmd = hookrunner.Command("sleep 30", None, Some(1))
+
+  // The wait is the one-second wall plus the runner's ten-second grace.
+  assert hookrunner.run(fake_context(clear), cmd, "{}", 30)
+    == Error(hookrunner.NeverSettled)
+
+  let assert Ok(fake_clear_call.Cleared(_, waiting:)) =
+    process.receive(probe, 100)
+    as "the call was cleared first"
+  assert waiting == 11_000
+  assert process.receive(probe, 100)
+    == Ok(fake_clear_call.StdinFinal(<<"{}":utf8>>))
+  assert process.receive(probe, 100) == Ok(fake_clear_call.Cancelled)
 }

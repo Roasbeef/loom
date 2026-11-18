@@ -12,22 +12,57 @@
 //// while nobody was connected, or is stopped by a cancel. The executor's proxy
 //// carries a launch to the orchestrator and refuses an answer of another kind
 //// as it would a lost one.
+////
+//// Wire 5 (protocol-change/117): a response past the value bound goes out as
+//// its description, as one past the byte bound does.
+////
+//// The tunnel (protocol-change/117) runs against the production broker and a
+//// real helper: a dropped connection cancels its tunnelled children, including
+//// one whose waiter was still waiting out a full pool; a `cancel` kills only
+//// the waiter, and the connection serves on; output past its cap settles as
+//// truncated without an empty chunk; a read policy keeps the plane's
+//// writable-only roots; a spec cannot widen the plane's base; and a binding
+//// the orchestrator does not hold is refused.
 
+import broker/broker
+import broker/budget
+import broker/exec
+import broker/executor
+import broker/framing
+import broker/policy
+import client/catalog
 import client/internal/ffi_tls_stream.{type Stream}
+import client/owner_services
+import client/remote/blob_transfer
 import client/remote/host
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/untrusted_codec
 import client/remote/untrusted_gateway
 import client/remote/untrusted_wire
+import client/serve
+import client/workspace_plane
+import client/workspace_policy
+import client/worktree_diff
+import core/clock
+import core/ids.{type Seq}
 import core/json
+import core/message
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
-import gleam/option.{None}
+import gleam/int
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
+import host/bootstrap
 import runtime/effects.{type ToolRun}
+import simplifile
+import support/enforcement
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator
 import support/untrusted_rig as rig
+import support/worktree_rig
 import telemetry/log
 
 const token = <<"token":utf8>>
@@ -57,6 +92,7 @@ fn start(label: String) -> Rig {
       orchestrators: [pair.orchestrator_pin],
       host: executor.address,
       blobs: None,
+      demand: exec.PlatformEnforcement,
       logger: log.discard(),
     ))
     as "the gateway starts"
@@ -254,6 +290,7 @@ fn start_programs(label: String) -> Programs {
       orchestrators: [pair.orchestrator_pin],
       host: executor.address,
       blobs: None,
+      demand: exec.PlatformEnforcement,
       logger: log.discard(),
     ))
     as "the gateway starts"
@@ -386,4 +423,774 @@ pub fn a_launch_answered_with_the_wrong_kind_is_refused_as_unanswered_test() {
     as "an interaction's answer never answers a launch"
   assert string.contains(reason, "did not answer the launch")
   assert string.contains(reason, fixtures.handle_of(fixtures.execution_terms()))
+}
+
+// --- wire 5 (protocol-change/117) ------------------------------------------------
+
+/// A gateway over a plane whose every call completes with `outcome`.
+fn start_answering(label: String, outcome: effects.ToolOutcome) -> Rig {
+  let pair = rig.pair(label)
+  let workers = process.new_subject()
+  let census = remote_orchestrator.census(remote_orchestrator.standard_tools())
+  // The outcome is a few megabytes, so the host reserves what a real one does.
+  let executor =
+    remote_orchestrator.start_holding(
+      fn(_spec: host.AttachSpec) {
+        Ok(host.Plane(
+          run: fn(_run, _authority) { outcome },
+          census:,
+          children: fn(builder) { builder },
+          close: fn(retire_children) {
+            let _retired = retire_children()
+            protocol.AllRetired
+          },
+          execute: fn(_start) { json.Null },
+          abort_step: fn(_op, _step) { Nil },
+          evolution: None,
+          state: None,
+        ))
+      },
+      host.default_max_result_bytes,
+    )
+  let assert Ok(gateway) =
+    untrusted_gateway.start(untrusted_gateway.Config(
+      address: "127.0.0.1",
+      port: 0,
+      credentials: pair.executor,
+      orchestrators: [pair.orchestrator_pin],
+      host: executor.address,
+      blobs: None,
+      demand: exec.PlatformEnforcement,
+      logger: log.discard(),
+    ))
+    as "the gateway starts"
+  Rig(pair:, executor:, gateway:, workers:)
+}
+
+// A clearance under a binding this orchestrator does not hold has no plane to
+// clear on: it is answered as a broker that cannot be reached, and the
+// connection serves the next request.
+pub fn a_clear_call_for_a_binding_not_held_is_refused_test() {
+  let rig = start("clear-call")
+  let stream = rig.hello(rig.gateway.port, rig.pair)
+  attach(stream)
+
+  let spec =
+    untrusted_wire.TunnelSpec(
+      op_id: fixtures.tool_run("check", 0).operation,
+      step_id: "goal-check:1",
+      base_policy: workspace_policy.base_policy("/work"),
+      requirements: workspace_policy.base_policy("/work"),
+      response: broker.RefuseNarrowed,
+      argv: ["git", "status"],
+      env: [],
+      cwd: "/work",
+      budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
+    )
+  rig.send(
+    stream,
+    untrusted_wire.Request(
+      id: 2,
+      request: untrusted_wire.ClearCallRequest(
+        binding: <<2:size(128)>>,
+        spec:,
+        waiting_ms: 1000,
+      ),
+    ),
+  )
+  let assert Ok(untrusted_codec.ResponseEnvelope(id: 2, body:)) =
+    rig.next(stream)
+    as "the clearance is answered"
+  assert untrusted_codec.decode_response(untrusted_wire.ClearedKind, body)
+    == Ok(untrusted_wire.ClearedAnswered(Error(broker.BrokerUnavailable)))
+  assert !rig.closed(stream, 300)
+  stop(rig)
+}
+
+// A response far inside the byte bound but past the value bound goes out as
+// its description, as one past the byte bound does, so the orchestrator never
+// receives a frame it must refuse by closing the connection, and never re-sends
+// a request whose answer would close it again.
+pub fn a_response_past_the_value_bound_goes_out_as_oversized_test() {
+  let outcome =
+    effects.ToolCompleted(
+      result: message.ToolResultMessage(
+        tool_call_id: "wide",
+        tool_name: "bash",
+        content: [],
+        details: Some(
+          json.Array(list.repeat(json.Int(0), untrusted_wire.max_frame_values)),
+        ),
+        usage: None,
+        added_tool_names: None,
+        is_error: False,
+        timestamp: 0,
+      ),
+      terminate: False,
+    )
+  let rig = start_answering("wide-response", outcome)
+  let stream = rig.hello(rig.gateway.port, rig.pair)
+  attach(stream)
+
+  rig.send(stream, run_request(2, fixtures.tool_run("wide", 0)))
+  let bytes = untrusted_codec.encode_outcome_bytes(outcome)
+  assert bit_array.byte_size(bytes) < untrusted_wire.max_frame_bytes
+  assert rig.next(stream)
+    == Ok(untrusted_codec.OversizedEnvelope(
+      id: 2,
+      size: bit_array.byte_size(bytes),
+      digest: blob_transfer.digest_of(bytes),
+    ))
+  stop(rig)
+}
+
+// --- callbacks past the frame bounds ------------------------------------------
+
+/// A plane whose every call writes `value` to a fact cell through its owner
+/// and reports what the write came to.
+fn putting(
+  results: Subject(Result(Seq, owner_services.FactFault)),
+  value: json.JsonValue,
+) -> host.PlaneFactory(RemoteCensus) {
+  fn(spec: host.AttachSpec) {
+    let owner = spec.owner
+    Ok(host.Plane(
+      run: fn(run, _authority) {
+        process.send(results, owner.facts.put("job/wide", value, None))
+        fixtures.expected_outcome(run)
+      },
+      census: remote_orchestrator.census(remote_orchestrator.standard_tools()),
+      children: fn(builder) { builder },
+      close: fn(retire_children) {
+        let _retired = retire_children()
+        protocol.AllRetired
+      },
+      execute: fn(_start) { json.Null },
+      abort_step: fn(_op, _step) { Nil },
+      evolution: None,
+      state: None,
+    ))
+  }
+}
+
+/// Attaches a gateway over a plane that writes an array of `items` zeros to a
+/// fact cell during its call, and sends that call.
+fn start_putting(
+  label: String,
+  items: Int,
+  results: Subject(Result(Seq, owner_services.FactFault)),
+) -> #(Programs, Stream) {
+  let pair = rig.pair(label)
+  let executor =
+    remote_orchestrator.start(putting(
+      results,
+      json.Array(list.repeat(json.Int(0), items)),
+    ))
+  let assert Ok(gateway) =
+    untrusted_gateway.start(untrusted_gateway.Config(
+      address: "127.0.0.1",
+      port: 0,
+      credentials: pair.executor,
+      orchestrators: [pair.orchestrator_pin],
+      host: executor.address,
+      blobs: None,
+      demand: exec.PlatformEnforcement,
+      logger: log.discard(),
+    ))
+    as "the gateway starts"
+  let programs =
+    Programs(
+      pair:,
+      executor:,
+      gateway:,
+      launches: process.new_subject(),
+      started: process.new_subject(),
+    )
+  let stream = rig.hello(gateway.port, pair)
+  attach(stream)
+  rig.send(stream, run_request(2, fixtures.tool_run("put", 0)))
+  #(programs, stream)
+}
+
+// How many zeros fill a fact-put callback to exactly the value bound: the
+// callback's own frame holds the same values as the one with an empty array,
+// less the array's one.
+fn items_to_the_bound() -> Int {
+  let frame =
+    untrusted_wire.Callback(
+      binding: <<1:size(128)>>,
+      id: 1,
+      callback: untrusted_wire.FactPutCall(
+        key: "job/wide",
+        value: json.Array([]),
+        expected: None,
+      ),
+    )
+  let assert Ok(text) = bit_array.to_string(untrusted_codec.encode_frame(frame))
+    as "the frame is text"
+  let assert Ok(document) = json.parse(text) as "the frame parses"
+  untrusted_wire.max_frame_values - json.count_values(document)
+}
+
+// A callback of more values than a frame may hold is not sent, because the
+// orchestrator would close the connection over it and re-send everything. The
+// plane that asked hears a failure, and the connection goes on to answer the
+// call that was in flight.
+pub fn a_callback_past_the_value_bound_is_not_sent_and_fails_its_asker_test() {
+  let results = process.new_subject()
+  let #(rig, stream) =
+    start_putting("callback-over", items_to_the_bound() + 1, results)
+
+  let assert Ok(Error(_fault)) = process.receive(results, 20_000)
+    as "the asker hears a failure"
+  let assert Ok(untrusted_codec.ResponseEnvelope(id: 2, ..)) = rig.next(stream)
+    as "no callback was sent, and the call is answered on the same connection"
+  assert !rig.closed(stream, 300)
+  stop_programs(rig)
+}
+
+// A callback of exactly the bound goes out as a callback.
+pub fn a_callback_at_the_value_bound_is_sent_test() {
+  let results = process.new_subject()
+  let #(rig, stream) =
+    start_putting("callback-at", items_to_the_bound(), results)
+
+  let assert Ok(untrusted_codec.CallbackEnvelope(body:, ..)) = rig.next(stream)
+    as "the callback is sent"
+  let assert Ok(untrusted_wire.FactPutCall(key: "job/wide", ..)) =
+    untrusted_codec.decode_callback(body)
+    as "it is the fact put"
+  assert process.receive(results, 100) == Error(Nil)
+  stop_programs(rig)
+}
+
+// --- the broker tunnel (protocol-change/117) -------------------------------------
+
+/// A gateway over a host whose plane's broker is the production broker and
+/// pool, with one helper, over a private workspace.
+type Real {
+  Real(
+    pair: rig.Pair,
+    executor: remote_orchestrator.Executor,
+    gateway: untrusted_gateway.Gateway,
+    broker: broker.Broker,
+    service: executor.Executor,
+    workspace: String,
+    base: policy.SandboxPolicy,
+    path: String,
+  )
+}
+
+/// Runs `run` against a real plane whose base `shape` makes from the
+/// workspace and the system's read roots, when the helper enforces here.
+fn with_real_plane(
+  label: String,
+  shape: fn(String, List(String)) -> policy.SandboxPolicy,
+  run: fn(Real, Stream) -> Nil,
+) -> Nil {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner has a package working directory"
+  let assert Ok(repository) = bootstrap.canonical_directory(here <> "/../..")
+    as "the source repository locates the built helper"
+  case enforcement.probe(repository <> "/bin/loom", "tunnel " <> label) {
+    enforcement.EnforcementAbsent -> Nil
+    enforcement.EnforcementLive -> {
+      // The jail replaces /tmp with scratch, so /var/tmp keeps the
+      // workspace's path the same inside it.
+      let directory =
+        "/var/tmp/loom-tunnel-"
+        <> int.to_string(bootstrap.current_process_id())
+        <> "-"
+        <> label
+        <> "-"
+        <> int.to_string(bootstrap.system_time_ms())
+      let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+        as "the test owns a workspace"
+      let assert Ok(workspace) = bootstrap.canonical_directory(directory)
+        as "the policy uses absolute paths"
+      let #(reads, path) = system_reads()
+      let base = shape(workspace, reads)
+      let assert Ok(#(_pool, plane_broker, service)) =
+        serve.start_effect_plane(
+          helper: repository <> "/bin/loom-exec",
+          base_policy: base,
+          tmp_dir: workspace <> "/.helper",
+          size: 1,
+          clock: clock.from_function(bootstrap.system_time_ms),
+        )
+        as "the production broker and pool start"
+      let real =
+        real_gateway(label, workspace, base, plane_broker, service, path)
+      let stream = rig.hello(real.gateway.port, real.pair)
+      attach(stream)
+      run(real, stream)
+      stop_real(real)
+    }
+  }
+}
+
+/// The read roots and `PATH` a jailed Git needs here. Apple ships the real Git
+/// with Xcode, and `/usr/bin/git` is a launcher whose discovery needs host
+/// preferences, so only the developer tree is admitted and its binary comes
+/// first.
+fn system_reads() -> #(List(String), String) {
+  let developer_usr = "/Applications/Xcode.app/Contents/Developer/usr"
+  case simplifile.is_directory(developer_usr) {
+    Ok(True) -> #(
+      [developer_usr],
+      developer_usr <> "/bin:/usr/bin:/bin:/usr/local/bin",
+    )
+    Ok(False) | Error(_) -> #([], "/usr/local/bin:/usr/bin:/bin")
+  }
+}
+
+/// A plane base whose workspace is readable and writable.
+fn readable_workspace(
+  workspace: String,
+  reads: List(String),
+) -> policy.SandboxPolicy {
+  let base = workspace_policy.base_policy_for(workspace, catalog.WorkspaceReads)
+  policy.SandboxPolicy(..base, readable_roots: [workspace, ..reads])
+}
+
+/// A plane base whose workspace is writable only, as a linked worktree's Git
+/// directory or a short tool tmpdir is.
+fn writable_only_workspace(
+  workspace: String,
+  reads: List(String),
+) -> policy.SandboxPolicy {
+  let base = workspace_policy.base_policy_for(workspace, catalog.WorkspaceReads)
+  policy.SandboxPolicy(..base, readable_roots: reads)
+}
+
+fn real_gateway(
+  label: String,
+  workspace: String,
+  base: policy.SandboxPolicy,
+  plane_broker: broker.Broker,
+  service: executor.Executor,
+  path: String,
+) -> Real {
+  let pair = rig.pair("tunnel-" <> label)
+  let workers = process.new_subject()
+  let census =
+    remote_orchestrator.census_over(
+      remote_orchestrator.standard_tools(),
+      broker.subject(plane_broker),
+    )
+  let census =
+    remote_census.RemoteCensus(
+      ..census,
+      census: workspace_plane.Census(
+        ..census.census,
+        workspace:,
+        base_policy: base,
+      ),
+    )
+  let executor = remote_orchestrator.start(holding(workers, census))
+  let assert Ok(gateway) =
+    untrusted_gateway.start(untrusted_gateway.Config(
+      address: "127.0.0.1",
+      port: 0,
+      credentials: pair.executor,
+      orchestrators: [pair.orchestrator_pin],
+      host: executor.address,
+      blobs: None,
+      demand: exec.PlatformEnforcement,
+      logger: log.discard(),
+    ))
+    as "the gateway starts"
+  Real(
+    pair:,
+    executor:,
+    gateway:,
+    broker: plane_broker,
+    service:,
+    workspace:,
+    base:,
+    path:,
+  )
+}
+
+fn stop_real(real: Real) -> Nil {
+  process.unlink(real.gateway.acceptor)
+  process.kill(real.gateway.acceptor)
+  remote_orchestrator.stop(real.executor)
+  broker.stop(real.broker)
+  let _closed =
+    executor.close(
+      real.service,
+      draining: executor.drain_ms,
+      helpers: executor.helpers_ms,
+    )
+  Nil
+}
+
+/// A spec for `argv` in the workspace, under step `step` so each call has a
+/// budget of its own, with a per-stream output limit.
+fn real_spec(
+  real: Real,
+  step: String,
+  argv: List(String),
+  output_bytes: Int,
+) -> untrusted_wire.TunnelSpec {
+  let requirements =
+    policy.SandboxPolicy(
+      ..real.base,
+      limits: policy.Limits(..real.base.limits, output_bytes:, wall_s: 60),
+    )
+  untrusted_wire.TunnelSpec(
+    op_id: fixtures.tool_run("check", 0).operation,
+    step_id: step,
+    base_policy: real.base,
+    requirements:,
+    response: broker.RefuseNarrowed,
+    argv:,
+    env: [#("PATH", real.path), #("HOME", "/nonexistent")],
+    cwd: real.workspace,
+    budget: budget.Budget(1, bootstrap.system_time_ms() + 60_000),
+  )
+}
+
+fn send_clear(
+  stream: Stream,
+  id: Int,
+  spec: untrusted_wire.TunnelSpec,
+  waiting_ms: Int,
+) -> Nil {
+  rig.send(
+    stream,
+    untrusted_wire.Request(
+      id:,
+      request: untrusted_wire.ClearCallRequest(
+        binding: <<1:size(128)>>,
+        spec:,
+        waiting_ms:,
+      ),
+    ),
+  )
+}
+
+/// Reads the next frame as the `cleared` of request `id`.
+fn cleared_within(
+  stream: Stream,
+  id: Int,
+  within_ms: Int,
+) -> Result(Nil, broker.Refusal) {
+  let assert Ok(frame) = rig.next_raw(stream, within_ms)
+    as "the clearance is answered"
+  let assert Ok(untrusted_codec.ResponseEnvelope(id: answered, body:)) =
+    untrusted_codec.decode_envelope(frame)
+    as "the answer is a response"
+  assert answered == id
+  let assert Ok(untrusted_wire.ClearedAnswered(answer)) =
+    untrusted_codec.decode_response(untrusted_wire.ClearedKind, body)
+    as "the response is a clearance"
+  answer
+}
+
+/// Reads call `id`'s events until its settlement.
+fn settlement(
+  stream: Stream,
+  id: Int,
+  chunks: List(#(framing.OutputStream, BitArray)),
+) -> #(List(#(framing.OutputStream, BitArray)), broker.CallOutcome) {
+  let assert Ok(frame) = rig.next_raw(stream, 30_000) as "the call reports"
+  let assert Ok(untrusted_codec.CallEventEnvelope(call:, body:)) =
+    untrusted_codec.decode_envelope(frame)
+    as "the report is a call event"
+  assert call == id
+  let assert Ok(event) = untrusted_codec.decode_call_event(body)
+    as "the event decodes"
+  case event {
+    untrusted_wire.TunnelOutput(stream: output, data:) ->
+      settlement(stream, id, [#(output, data), ..chunks])
+    untrusted_wire.TunnelSettled(outcome:) -> #(list.reverse(chunks), outcome)
+  }
+}
+
+fn stdout_of(chunks: List(#(framing.OutputStream, BitArray))) -> BitArray {
+  list.fold(chunks, <<>>, fn(all, chunk) {
+    case chunk.0 {
+      framing.Stdout -> <<all:bits, { chunk.1 }:bits>>
+      framing.Stderr -> all
+    }
+  })
+}
+
+/// Runs `echo ready` as call `id` and checks it clears and prints, which a
+/// pool of one helper does only once every earlier call has let it go.
+fn echoes(real: Real, stream: Stream, id: Int) -> Nil {
+  send_clear(
+    stream,
+    id,
+    real_spec(real, "echo-" <> int.to_string(id), ["/bin/echo", "ready"], 4096),
+    15_000,
+  )
+  assert cleared_within(stream, id, 20_000) == Ok(Nil)
+  let #(chunks, outcome) = settlement(stream, id, [])
+  assert stdout_of(chunks) == <<"ready\n">>
+  let assert broker.CallExited(result:) = outcome as "the echo exits"
+  assert result.code == 0
+}
+
+// A dropped connection kills its tunnel waiters, and with them the children:
+// the running one, and one whose waiter was still waiting out the full pool.
+// The pool has one helper, so the next connection's call clears only if both
+// let it go.
+pub fn a_dropped_connection_cancels_the_tunnelled_children_test() {
+  use real, first <- with_real_plane("dropped", readable_workspace)
+  send_clear(
+    first,
+    2,
+    real_spec(real, "sleep-a", ["/bin/sleep", "60"], 4096),
+    15_000,
+  )
+  assert cleared_within(first, 2, 20_000) == Ok(Nil)
+  send_clear(
+    first,
+    3,
+    real_spec(real, "sleep-b", ["/bin/sleep", "60"], 4096),
+    15_000,
+  )
+  assert rig.next_raw(first, 500) == Error("silent")
+
+  ffi_tls_stream.close(first)
+  let second = rig.hello(real.gateway.port, real.pair)
+  echoes(real, second, 4)
+}
+
+// `cancel` kills the waiter, which is unlinked first: a linked waiter killed
+// by its own connection would take the connection with it, and the next
+// request would find no one to serve it.
+pub fn a_cancel_kills_the_tunnel_waiter_and_the_connection_serves_on_test() {
+  use real, stream <- with_real_plane("cancel", readable_workspace)
+  send_clear(
+    stream,
+    2,
+    real_spec(real, "sleep", ["/bin/sleep", "60"], 4096),
+    15_000,
+  )
+  assert cleared_within(stream, 2, 20_000) == Ok(Nil)
+  rig.send(stream, untrusted_wire.Cancel(2))
+  echoes(real, stream, 3)
+}
+
+// A command that prints past its cap settles with `stdout_truncated`, and the
+// chunk with no bytes the helper sends at the cap is not forwarded, so the
+// bytes the orchestrator sees never pass the limit it set.
+pub fn a_command_printing_past_its_cap_settles_truncated_test() {
+  use real, stream <- with_real_plane("truncated", readable_workspace)
+  send_clear(
+    stream,
+    2,
+    real_spec(
+      real,
+      "loud",
+      ["/bin/sh", "-c", "head -c 5000 /dev/zero | tr '\\000' x"],
+      64,
+    ),
+    15_000,
+  )
+  assert cleared_within(stream, 2, 20_000) == Ok(Nil)
+  let #(chunks, outcome) = settlement(stream, 2, [])
+  assert list.all(chunks, fn(chunk) { bit_array.byte_size(chunk.1) > 0 })
+  assert bit_array.byte_size(stdout_of(chunks)) <= 64
+  let assert broker.CallExited(result:) = outcome as "the command exits"
+  assert result.stdout_truncated
+  assert !rig.closed(stream, 300)
+}
+
+// A Git call clears under the read policy the diff uses, which lists the
+// plane's writable-only workspace as readable. The meet counts the plane's
+// writable roots as readable, so the root is kept and the call runs.
+pub fn a_writable_only_root_runs_a_read_policy_git_call_test() {
+  use real, stream <- with_real_plane("read-policy", writable_only_workspace)
+  let _initialized = worktree_rig.git(real.workspace, ["init", "--quiet"])
+  let read = worktree_diff.read_policy(real.base)
+  let spec =
+    untrusted_wire.TunnelSpec(
+      ..real_spec(
+        real,
+        "git",
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        4096,
+      ),
+      base_policy: read,
+      requirements: policy.SandboxPolicy(
+        ..read,
+        limits: policy.Limits(..read.limits, output_bytes: 4096, wall_s: 60),
+      ),
+    )
+  send_clear(stream, 2, spec, 15_000)
+  assert cleared_within(stream, 2, 20_000) == Ok(Nil)
+  let #(chunks, outcome) = settlement(stream, 2, [])
+  assert stdout_of(chunks) == <<"true\n">>
+  let assert broker.CallExited(result:) = outcome as "git exits"
+  assert result.code == 0
+}
+
+// A spec that asks for a wider base than the plane's runs under the plane's:
+// a file outside the plane's roots cannot be read, though the spec names its
+// directory and proceeds when narrowed.
+pub fn a_wider_spec_base_runs_under_the_planes_base_test() {
+  use real, stream <- with_real_plane("wider", readable_workspace)
+  let outside =
+    "/var/tmp/loom-tunnel-outside-"
+    <> int.to_string(bootstrap.current_process_id())
+    <> "-"
+    <> int.to_string(bootstrap.system_time_ms())
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(outside)
+    as "the outside directory exists"
+  let assert Ok(outside) = bootstrap.canonical_directory(outside)
+    as "the outside directory is absolute"
+  let assert Ok(Nil) = simplifile.write(outside <> "/secret", "SECRET")
+    as "the secret is written"
+  let wide =
+    policy.SandboxPolicy(..real.base, readable_roots: [
+      outside,
+      ..real.base.readable_roots
+    ])
+  let spec =
+    untrusted_wire.TunnelSpec(
+      ..real_spec(real, "wide", ["/bin/cat", outside <> "/secret"], 4096),
+      base_policy: wide,
+      requirements: policy.SandboxPolicy(
+        ..wide,
+        limits: policy.Limits(..wide.limits, output_bytes: 4096, wall_s: 60),
+      ),
+      response: broker.ProceedNarrowed,
+    )
+  send_clear(stream, 2, spec, 15_000)
+  assert cleared_within(stream, 2, 20_000) == Ok(Nil)
+  let #(chunks, outcome) = settlement(stream, 2, [])
+  assert !string.contains(
+    bit_array.to_string(stdout_of(chunks)) |> result.unwrap(""),
+    "SECRET",
+  )
+  let assert broker.CallExited(result:) = outcome as "cat exits"
+  assert result.code != 0
+
+  // The same wide spec reads a file inside the plane's roots, so the refusal
+  // above is the plane's base at work and not a `cat` that cannot run.
+  let assert Ok(Nil) = simplifile.write(real.workspace <> "/inside", "INSIDE")
+    as "the inside file is written"
+  send_clear(
+    stream,
+    3,
+    untrusted_wire.TunnelSpec(..spec, step_id: "wide-inside", argv: [
+      "/bin/cat",
+      real.workspace <> "/inside",
+    ]),
+    15_000,
+  )
+  assert cleared_within(stream, 3, 20_000) == Ok(Nil)
+  let #(inside, outcome) = settlement(stream, 3, [])
+  assert stdout_of(inside) == <<"INSIDE">>
+  let assert broker.CallExited(result:) = outcome as "the inside cat exits"
+  assert result.code == 0
+}
+
+// A root that is not a plain absolute path could pass the meet as text and
+// name more than the plane holds once the helper cleans it, so each spelling
+// is refused before anything runs: the marker the command would write is
+// never made.
+pub fn a_spec_with_an_unplain_root_is_refused_and_runs_nothing_test() {
+  use real, stream <- with_real_plane("unplain", readable_workspace)
+  let spellings = [
+    real.workspace <> "/..",
+    real.workspace <> "/../etc",
+    real.workspace <> "/./x",
+    real.workspace <> "//x",
+  ]
+  list.index_map(spellings, fn(root, index) {
+    let id = index + 2
+    let marker = real.workspace <> "/marker-" <> int.to_string(id)
+    unplain_sent(real, stream, id, root, marker)
+    assert cleared_within(stream, id, 20_000) == Error(broker.BrokerUnavailable)
+    assert simplifile.is_file(marker) == Ok(False)
+  })
+
+  // A relative root does not get that far: the policy's own total decoder
+  // refuses it, and a request that does not decode closes the connection.
+  let marker = real.workspace <> "/marker-relative"
+  unplain_sent(real, stream, 9, "work", marker)
+  assert rig.closed(stream, 5000)
+  assert simplifile.is_file(marker) == Ok(False)
+}
+
+/// Sends a call that would write `marker`, with `root` added to the writable
+/// roots of both its base and its requirements.
+fn unplain_sent(
+  real: Real,
+  stream: Stream,
+  id: Int,
+  root: String,
+  marker: String,
+) -> Nil {
+  let wide =
+    policy.SandboxPolicy(..real.base, writable_roots: [
+      root,
+      ..real.base.writable_roots
+    ])
+  let spec =
+    untrusted_wire.TunnelSpec(
+      ..real_spec(
+        real,
+        "unplain-" <> int.to_string(id),
+        ["/usr/bin/touch", marker],
+        4096,
+      ),
+      base_policy: wide,
+      requirements: policy.SandboxPolicy(
+        ..wide,
+        limits: policy.Limits(..wide.limits, output_bytes: 4096, wall_s: 60),
+      ),
+    )
+  send_clear(stream, id, spec, 15_000)
+}
+
+/// A plane base like `writable_only_workspace` that also masks a protected
+/// path spelled with an empty segment, as a daemon whose `HOME` is `/`
+/// builds `//.loom/vm`.
+fn unplain_protected_workspace(
+  workspace: String,
+  reads: List(String),
+) -> policy.SandboxPolicy {
+  let base = writable_only_workspace(workspace, reads)
+  policy.SandboxPolicy(..base, protected: ["//.loom/vm", ..base.protected])
+}
+
+// The census base goes back whole in an honest Git call, unplain protected
+// path and all, and a working directory spelled with a `.` segment binds
+// nothing: only the roots are judged, so the call runs and returns real
+// output.
+pub fn an_unplain_protected_path_in_the_base_does_not_refuse_a_git_call_test() {
+  use real, stream <- with_real_plane(
+    "unplain-protected",
+    unplain_protected_workspace,
+  )
+  let _initialized = worktree_rig.git(real.workspace, ["init", "--quiet"])
+  let read = worktree_diff.read_policy(real.base)
+  let spec =
+    untrusted_wire.TunnelSpec(
+      ..real_spec(
+        real,
+        "git",
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        4096,
+      ),
+      base_policy: read,
+      requirements: policy.SandboxPolicy(
+        ..read,
+        limits: policy.Limits(..read.limits, output_bytes: 4096, wall_s: 60),
+      ),
+      cwd: real.workspace <> "/.",
+    )
+  send_clear(stream, 2, spec, 15_000)
+  assert cleared_within(stream, 2, 20_000) == Ok(Nil)
+  let #(chunks, outcome) = settlement(stream, 2, [])
+  assert stdout_of(chunks) == <<"true\n">>
+  let assert broker.CallExited(result:) = outcome as "git exits"
+  assert result.code == 0
 }

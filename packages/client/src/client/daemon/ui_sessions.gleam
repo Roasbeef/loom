@@ -440,8 +440,8 @@ type Message {
   Attach(cookie: String, login: Issuer, reply: Subject(Nil))
   LoginOf(cookie: String, reply: Subject(Option(Issuer)))
   Lookup(cookie: String, reply: Subject(Result(#(Page, Int), Nil)))
-  Register(cookie: String, images: Images)
-  Read(cookie: String, reply: Subject(Result(Images, Nil)))
+  Register(cookie: String, scope: String, images: Images)
+  Read(cookie: String, scope: String, reply: Subject(Result(Images, Nil)))
   Sizes(reply: Subject(#(Int, Int)))
   Reserve(
     allowance: Allowance,
@@ -472,7 +472,7 @@ type State {
     opened: Int,
     /// The readers of each live page's images, by the digest of its cookie:
     /// the newest socket's, since a reload replaces the socket a page had.
-    readers: Dict(String, Images),
+    readers: Dict(String, Dict(String, Images)),
     /// The instants of the invitations each credential's pages have asked
     /// for inside `invite_window_ms`, newest first, keyed by the
     /// credential's fingerprint. A credential with none has no entry.
@@ -860,7 +860,27 @@ pub fn register_images(
   cookie: String,
   images: Images,
 ) -> Nil {
-  process.send(sessions.subject, Register(cookie, images))
+  register_images_for(sessions, cookie, "", images)
+}
+
+/// As `register_images`, for one scope of the page behind `cookie`. A cookie
+/// can stand behind more than one live page when pages of different sessions share
+/// it, as the tabs of one home do, and each tab's reader is kept under the session
+/// it draws, so a newer tab never replaces an older tab's reader and one tab's
+/// images are never read from another's lane (protocol-change/108).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.register_images_for(sessions, cookie, "box/0198", reader)
+/// ```
+pub fn register_images_for(
+  sessions: Sessions,
+  cookie: String,
+  scope: String,
+  images: Images,
+) -> Nil {
+  process.send(sessions.subject, Register(cookie, scope, images))
 }
 
 /// The reader of the images of the page behind `cookie`, when the page is
@@ -872,7 +892,23 @@ pub fn register_images(
 /// // ui_sessions.images(sessions, cookie)
 /// ```
 pub fn images(sessions: Sessions, cookie: String) -> Result(Images, Nil) {
-  call.try_call(sessions.subject, waiting: 1000, sending: Read(cookie, _))
+  images_for(sessions, cookie, "")
+}
+
+/// The reader registered under `scope` for the page behind `cookie`, as
+/// `register_images_for` left it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.images_for(sessions, cookie, "box/0198")
+/// ```
+pub fn images_for(
+  sessions: Sessions,
+  cookie: String,
+  scope: String,
+) -> Result(Images, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Read(cookie, scope, _))
   |> result.unwrap(Error(Nil))
 }
 
@@ -1182,14 +1218,25 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // A reader is recorded only for a page that is live now. The page's socket
     // registers from its own process after the router admitted it, so a page
     // that ended in between has no place to leave one.
-    Register(cookie:, images:) -> {
+    Register(cookie:, scope:, images:) -> {
       let key = digest(cookie)
 
       // Associate image reader only with currently live session entries.
       case live(state.sessions, key, now) {
         Ok(_) ->
           actor.continue(
-            State(..state, readers: dict.insert(state.readers, key, images)),
+            State(
+              ..state,
+              readers: dict.insert(
+                state.readers,
+                key,
+                dict.insert(
+                  result.lazy_unwrap(dict.get(state.readers, key), dict.new),
+                  scope,
+                  images,
+                ),
+              ),
+            ),
           )
         Error(Nil) -> actor.continue(state)
       }
@@ -1197,12 +1244,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     // A reader is found only through a live page, so one whose page ended is
     // never handed out before the sweep removes it.
-    Read(cookie:, reply:) -> {
+    Read(cookie:, scope:, reply:) -> {
       let key = digest(cookie)
 
       // Find registered reader only if session is live in storage.
       let found = case live(state.sessions, key, now) {
-        Ok(_) -> dict.get(state.readers, key)
+        Ok(_) ->
+          dict.get(state.readers, key)
+          |> result.try(dict.get(_, scope))
         Error(Nil) -> Error(Nil)
       }
 

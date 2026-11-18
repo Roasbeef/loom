@@ -352,7 +352,7 @@ pub fn spawn_receiver_logs_only_fixed_refusal_classes_test() {
 }
 
 // The sending call records the typed answer before it becomes model-facing
-// prose, while retryable answers continue to mean unreachable.
+// prose, while retryable answers log nothing.
 pub fn spawn_sender_logs_only_fixed_refusal_classes_test() {
   let records = process.new_subject()
   let logger = log.new(sink: log.to_subject(records), threshold: level.Warning)
@@ -401,13 +401,16 @@ pub fn spawn_sender_logs_only_fixed_refusal_classes_test() {
     field.text("class", "tool_outside_ceiling"),
   )
   assert !string.contains(string.inspect(third.fields), canary)
+
+  // A session not open yet is an answer that is retried, and not silence, so
+  // the drain still asks the same orchestrator about its other children.
   assert remote_spawner.spawn_answer(
       Ok(Error(remote_spawn.NotYetOpen(canary))),
       logger,
       call_site(),
       Some("box@100.64.0.9"),
     )
-    == Error(peer_mail.Unreachable)
+    == Error(peer_mail.NotOpen)
   assert process.receive(records, 0) == Error(Nil)
 
   let destination = peer_mail.Refused("unconfigured-canary")

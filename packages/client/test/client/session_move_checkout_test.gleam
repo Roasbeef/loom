@@ -31,6 +31,7 @@ import client/executors
 import client/internal/ffi_os
 import client/jobs
 import client/move_checkout
+import client/moved_calls
 import client/orchestrators.{CheckoutTarget}
 import client/remote/address.{type Address}
 import client/remote/host
@@ -54,6 +55,7 @@ import client/state_transfer.{type Link, Link}
 import client/workspaces
 import client/worktree_git
 import core/clock
+import core/ids
 import gleam/bit_array
 import gleam/erlang/atom
 import gleam/erlang/node
@@ -65,12 +67,14 @@ import gleam/otp/actor
 import gleam/string
 import host/bootstrap
 import provider/secret
+import runtime/effects
 import session/session
 import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
 import storage/exec_ledger
+import support/remote_fixtures as fixtures
 import support/remote_orchestrator as host_rig
 import support/state_rig
 import support/worktree_rig.{git, write}
@@ -586,6 +590,11 @@ fn begin_as(rig: Rig, operation: String) -> catalogue.Pending {
 // A second operation, for a move asked for again.
 const second_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9f"
 
+// A third and a fourth, for a move asked for again after each of two abandons.
+const third_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8da0"
+
+const fourth_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8da1"
+
 // --- what a finished move leaves ---------------------------------------------------------
 
 fn assert_moved(rig: Rig) -> Nil {
@@ -626,6 +635,13 @@ fn assert_directory_untouched(rig: Rig) -> Nil {
 // The receiver opens the session on the executor, as the daemon would, and the
 // tree it finds there.
 fn attach_on_receiver(rig: Rig) -> workspace.Hands {
+  let #(arrived, opened) = open_on_receiver(rig)
+  let assert Ok(Nil) = session.close(opened)
+  arrived
+}
+
+// The receiver's open, with its store left open for what recovery reads.
+fn open_on_receiver(rig: Rig) -> #(workspace.Hands, session.Session) {
   let assert Ok(opened) =
     session.open_sqlite(
       path: target_file(rig),
@@ -660,8 +676,7 @@ fn attach_on_receiver(rig: Rig) -> workspace.Hands {
       logger: log.discard(),
     ))
     as "the receiver attaches to the executor"
-  let assert Ok(Nil) = session.close(opened)
-  arrived
+  #(arrived, opened)
 }
 
 // --- the happy path ----------------------------------------------------------------------
@@ -764,6 +779,47 @@ pub fn a_checkout_that_was_placed_leaves_a_clean_close_for_the_six_steps_test() 
   let assert Ok(cell) =
     scope.read_at(target_file(rig), "inspector", clock.fixed(at: 9000))
   assert cell == Some(scope.Scope(1, Some(protocol.AllRetired), Some("box")))
+  finish(rig)
+}
+
+// The move stopped a turn with a call in flight. The call ran in the source's
+// directory, and the executor the receiver attaches to never saw it, so its
+// ledger would fence the key and the model would be told the call did not run.
+// The receiver tells it the outcome is unknown instead, which is what the same
+// session would have been told had it restarted on the source.
+pub fn a_call_in_flight_when_the_move_stopped_the_turn_is_unknown_on_the_receiver_test() {
+  let rig = start("in-flight", InWorktrees, 0)
+  let in_flight = fixtures.tool_run("ran_in_the_directory", 0)
+  let assert Ok(source) =
+    session.open_sqlite(
+      path: source_file(rig),
+      owner: "runtime",
+      lease_ttl_ms: 30_000,
+      clock: clock.fixed(at: 2000),
+    )
+    as "the source session opens"
+  fixtures.hold_pending(source, in_flight)
+  let assert Ok(Nil) = session.close(source)
+
+  let move = begin(rig)
+  assert session_mover.drive(plain(rig), move) == Finished
+  let #(arrived, opened) = open_on_receiver(rig)
+
+  assert moved_calls.read(opened)
+    == Ok([
+      moved_calls.Call(
+        op: ids.op_id_to_string(in_flight.operation),
+        step: in_flight.step_id,
+        source_index: 0,
+      ),
+    ])
+  assert arrived.recover(in_flight) == effects.OutcomeUnknown
+
+  // An unlisted key is still asked of the executor, which answers it, so the
+  // unknown outcome above is the list's and not a refusal or a lost link.
+  assert arrived.recover(fixtures.tool_run("dispatched_here", 1))
+    == effects.NotStarted
+  let assert Ok(Nil) = session.close(opened)
   finish(rig)
 }
 
@@ -1233,16 +1289,107 @@ pub fn an_attach_refused_for_the_scopes_workspace_abandons_the_move_test() {
 
 // An executor restarted with a workspace dropped from its configuration answers
 // the attach of a session that is bound to it with a scope that is rebound and a
-// plane that cannot be built. The scope is a session's own, so the host leaves it
-// open, and the source, whose record shows no close, does not close it either.
-pub fn a_rebound_scope_for_an_unserved_workspace_is_left_open_test() {
-  let rig = start("rebound-unserved", InWorktrees, 0)
+// plane that cannot be built. A scope that holds a tree is a session's own, so the
+// host leaves it open, and the source, whose record shows no close, does not
+// close it either.
+pub fn a_rebound_scope_that_holds_a_tree_keeps_its_unserved_workspace_test() {
+  let rig = start("rebound-unserved-tree", InWorktrees, 0)
   let move = begin(rig)
   open_scope_in(rig, "nosuch")
+  let assert Ok(Nil) =
+    exec_ledger.record_tree(
+      executor_ledger(rig),
+      exec_ledger.Tree(
+        session: rig.session,
+        workspace: "nosuch",
+        path: "/elsewhere/tree",
+        branch: "loom/" <> rig.session,
+        state: exec_ledger.Present,
+      ),
+    )
   unclosed_record(rig)
   let assert Aborted(reason) = session_mover.drive(named(rig, "nosuch"), move)
   assert string.contains(reason, "nosuch")
   assert executor_scope(rig).state == exec_ledger.Open
+  finish(rig)
+}
+
+// The other evidence that a session worked in a rebound scope is a call whose
+// result the executor cannot give: the attach reports it as lost, and the host
+// leaves the scope open for the same reason as for a tree.
+pub fn a_rebound_scope_with_a_lost_result_keeps_its_unserved_workspace_test() {
+  let rig = start("rebound-unserved-lost", InWorktrees, 0)
+  let move = begin(rig)
+  open_scope_in(rig, "nosuch")
+  let key =
+    exec_ledger.Key(
+      session: rig.session,
+      op: "earlier-op",
+      step: "step",
+      source_index: 0,
+    )
+
+  // One connection for both writes: opening a ledger is the executor's restart
+  // recovery and turns the live runs of an earlier connection into lost ones.
+  let ledger = executor_ledger(rig)
+  let assert Ok(exec_ledger.Fresh) =
+    exec_ledger.admit(
+      ledger,
+      key,
+      1,
+      token(1),
+      "bash",
+      1024,
+      exec_ledger.default_limits(),
+    )
+    as "a call is admitted"
+  let assert Ok(Nil) = exec_ledger.mark_unknown(ledger, key)
+    as "its result is lost"
+  unclosed_record(rig)
+  let assert Aborted(reason) = session_mover.drive(named(rig, "nosuch"), move)
+  assert string.contains(reason, "nosuch")
+  assert executor_scope(rig).state == exec_ledger.Open
+  finish(rig)
+}
+
+// A scope that an attach for an unserved name left open, because the source died
+// while the executor handled the attach and the build failed at the owner link,
+// holds nothing: no plane was built and no tree was made. The retry is a rebound
+// attach, which the host used to leave open, so the scope could not be freed and
+// the refusal's recovery went round in a circle. The host closes it now, on the
+// path that finds the name unserved, so the move ends with a closed scope, and
+// the recovery the refusal gives works: name the bound workspace again, then
+// correct the name.
+pub fn an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test() {
+  let rig = start("open-unserved", InWorktrees, 0)
+  let move = begin(rig)
+  open_scope_in(rig, "nosuch")
+  unclosed_record(rig)
+
+  // The retry under the same name meets the unserved workspace and ends the move.
+  let assert Aborted(reason) = session_mover.drive(named(rig, "nosuch"), move)
+  assert string.contains(reason, "nosuch")
+  assert executor_scope(rig).state == exec_ledger.Closed(exec_ledger.AllRetired)
+
+  // The record still shows no close, so the corrected name is asked about the
+  // close under a workspace the scope is not bound to, and is refused with the
+  // workspace to set back.
+  let corrected = begin_as(rig, second_op)
+  let assert Aborted(refusal) = session_mover.drive(plain(rig), corrected)
+  assert string.contains(refusal, "bound to the workspace `nosuch`")
+
+  // Setting it back is the recovery the refusal gives. The close is learned and
+  // recorded, and the move ends again with the scope closed.
+  let set_back = begin_as(rig, third_op)
+  let assert Aborted(_) = session_mover.drive(named(rig, "nosuch"), set_back)
+  let assert Ok(Some(cell)) =
+    scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
+  assert cell.closed == Some(protocol.AllRetired)
+
+  // The corrected name then lands the checkout at the next incarnation.
+  let landing = begin_as(rig, fourth_op)
+  assert session_mover.drive(plain(rig), landing) == Finished
+  assert_moved_as(rig, fourth_op)
   finish(rig)
 }
 

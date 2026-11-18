@@ -908,6 +908,7 @@ fn readable_network(network: json.JsonValue) -> String {
     case mode {
       "full" -> Ok("net · any host")
       "off" -> Ok("net · off")
+      "loopback" -> Ok("net · loopback only")
       "proxy" -> {
         // Handle the `readable_network` branch dispatch.
         use allowed <- result.try(case field(fields, "allow") {

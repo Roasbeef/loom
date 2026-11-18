@@ -281,16 +281,17 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   `vm_spec.guest_name_for`, run by `loomd vm ensure` (`vm_cli.ensure`,
   `vm_spec.ensure_step`) and found again from the directory alone. Guests stay
   standing `loom-vm run` processes outside the daemon; no daemon-owned guest
-  and no pool driver was chosen. `ensure` exits 75 with `daemon=required` when
-  a second guest's join needs a daemon that is not running, and the launcher
-  starts one and runs it again once (`tui/vm_ensure`). Not done: the web
+  and no pool driver was chosen. `ensure` refuses a guest an older loom made
+  over distribution, naming `loom vm sync`, `loom vm rm --yes` and `loom vm
+  up`; the launcher's `daemon=required` retry (`tui/vm_ensure`) is kept but no
+  guest asks for it, since none joins a deployment. Not done: the web
   new-session form; stopping idle guests; reattaching a session after a guest
   restart (`remote/reattach-after-executor-restart`). Progress is live on the
   interactive launch (standard error to `/dev/tty` through `/bin/sh`) and shown
   at the end for `loom run --vm`. The live check passed on a real release build:
-  cold, warm, a second and a third workspace, and the daemon-required retry;
-  the guest's move to the untrusted executor link (protocol-change/109) will
-  replace the mint, join and restart machinery.
+  cold, warm, a second and a third workspace, and the daemon-required retry,
+  all before guests moved to the untrusted link (below); it has not been
+  repeated since.
 - **What a developer runs (the long form):** `loom-vm setup --release TAG` (or
   `make vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`,
   then `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and
@@ -320,7 +321,8 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   agent pushes from the guest through the credential proxy, superseding
   #214's no-injection line and #1137's owner-pushes ruling for this tier; a
   persistent state disk per guest. `loom vm sync` is #1155.
-- **Several guests, one deployment (2026-11-02):** `loom vm up` mints in ledger
+- **Several guests, one deployment (2026-11-02; superseded for new guests on
+  2026-11-17, kept for removing old ones):** `loom vm up` minted in ledger
   mode and seals the authority key under `<vm home>/authority/<id>/`. A
   `loom.toml` that holds a ledger deployment gets a new guest enrolled through
   the running daemon (`vm_spec.deployment_state`, `vm_cli.join`,
@@ -363,6 +365,26 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   `vmm-release.yml` job for the runner and `libkrunfw-landlock-linux-x86_64.so.5`,
   a libkrun asset (the runner links it and Ubuntu has none), a `releaseAssets`
   entry for linux/x86_64 and a place for `setup` to put libkrun; Firecracker.
+- **The untrusted link is the default (owner, 2026-11-13; built 2026-11-17,
+  branch `vm/untrusted-default`):** `loom vm up`, `loom vm ensure` and so
+  `loom --vm` reach every guest over protocol-change/109's TLS link, with no
+  flag (`vm_link.settle`). `--link untrusted` is accepted as a no-op for one
+  release and no longer advertised; `--link distribution` is refused. A guest
+  an older loom made over distribution is refused before anything is written,
+  naming `loom vm sync`, `loom vm rm --yes` and `loom vm up`; `status` and
+  `list` show its link, and `rm` keeps its distribution teardown. A running
+  daemon learns of a new guest through `executors.reload`
+  (protocol-change/116), and the broker tunnel (protocol-change/117, wire
+  version 5) carries goal checks, the Changes tab with the peer view, and the
+  session's Git baseline; imported hooks and remote evolution stay refused.
+  ADR-022's addendum of 2026-11-17 records the ruling. `daemon_shipped_microvm_test`
+  now runs every step on guests made with no flag, plus a migration step over
+  fabricated distribution traces; that rewrite has not yet run against a built
+  guest image. Next: deleting the distribution path from `loom vm` after one
+  release (design note slice 5: the mint, join, seal and teardown code, the
+  `--link` no-op and the `daemon=required` retry); hooks over the tunnel once a
+  trust command exists and 117's preconditions are built; remote evolution on a
+  guest with 109's slice 4.
 
 ## Correction: a Blue-tier entry must name its cyber access program
 

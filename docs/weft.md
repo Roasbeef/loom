@@ -185,6 +185,14 @@ reasons, and name the primitive in the commit:
   drain_registry` sequences *across* driver restarts; weft's model is one
   generation, and no primitive covers a chain of scopes for one logical
   resource.
+- **The untrusted gateway's tunnel waiter is hand-rolled, as a port still
+  to make.** `remote/untrusted_gateway.tunnelled` starts one linked process
+  per tunnelled call (protocol-change/117), keeps its pid by request id, and
+  unlinks then kills it on a `cancel` and on every normal stop of its
+  connection. Weft already covers the shape: one run per call with
+  `cancel_with` a per-id signal and `cancel_when_exits` the connection,
+  relayed with `start_relayed`, the task sending its events to the
+  connection as it goes. The follow-up is that port.
 - **Producer-side backpressure is not `postpone`.** `cap/actor`'s parked
   senders await an admission acknowledgement; weft has no bounded-mailbox
   primitive, and the sandbox prelude's surface is deliberately narrow.

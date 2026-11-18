@@ -43,7 +43,7 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
 `[executor_listener]` beside `[distribution]`.
 
 - `remote/untrusted_wire` is the frames (`Hello`, `Welcome`, `Request`, `Cancel`,
-  `Response`, `Callback`, `Answer`), 078's requests and owner messages without
+  `Response`, `Callback`, `Answer`, `Oversized`, `CallEvent`), 078's requests and owner messages without
   their subjects, and the reply kinds. `remote/untrusted_codec` is their total JSON
   codec: `decode_envelope` first, then the body against the kind the receiver
   expects. Its lossy encodings are listed in its module doc.
@@ -60,7 +60,10 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
   asker is the record's worker, `StopExecutionRequest` a cast like `AckRequest`,
   and `about_work` admits a capability or `Holds` at an outstanding start's site
   (`at_work`) and a `LaunchExecutionCall` or `InteractExecutionCall` only from a
-  `code_mode` run in flight.
+  `code_mode` run in flight. A `Run` or a `StartExecution` for a session the link
+  holds no binding for (a link started in place of a dead one) is answered
+  `NoPlane` by `answered_unbound` and never sent, so the surface attaches again
+  and mints one (protocol-change/116); no other message is held to a binding.
 - `remote/untrusted_gateway` is the acceptor, one `weft/state_machine` per
   connection (the handshake runs there, not in the acceptor), a waiter per request
   (unlinked, and exiting with `noconnection` when its connection dies, so a
@@ -97,6 +100,105 @@ once, and checks size and digest in `remote/outcome_fetch` before decoding.
 Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
 (`RunLost`, `Unknown`), never a refusal that invites a re-run.
 
+Wire version 5 (protocol-change/117). `untrusted_wire` adds `ClearCallRequest(binding, spec, waiting_ms)`, whose
+`TunnelSpec` is a `broker.CallSpec` without `grants` and `demand`, its reply
+`ClearedAnswered(Result(Nil, broker.Refusal))` (`ClearedKind`), and the
+executor's frame `CallEvent(call, TunnelOutput(stream, data) |
+TunnelSettled(broker.CallOutcome))`. The codec carries every `ExecResult`
+field, every `ExecFailure` and every `broker.Refusal`; it refuses a spec with a
+`grants` or `demand` member, an `argv` over 4,096 entries, an `env` over 1,024
+pairs, a `waiting_ms` outside 0 to 2^32 - 1 (`max_call_wait_ms`, a receive's
+longest timeout), and a `deadline_ms` outside 0 to 2^42 (the relay arms a timer for it); an
+`actor.InitExited(Abnormal(_))` crosses as `InitFailed` with its printed reason.
+`untrusted_wire.max_frame_values` (1,048,576) bounds the JSON values of every
+frame (`decode_envelope`) and of a fetched outcome (`decode_outcome_bytes`)
+through `core/json.parse_bounded`, which refuses during the parse. Each side
+checks its own sends with `untrusted_codec.encode_fitting` (bytes and values;
+the value walk runs only for a frame over 1,048,576 bytes): the link refuses an
+unfit request `Invalid` and never keeps it, and an unfit owner answer with the
+callback's refused answer; the gateway's `replied` sends an unfit response as
+`Oversized`, so a fetched outcome over the value bound is answered lost and an
+honest executor never loops. A `welcome` of other versions logs the event
+`untrusted_link.version_mismatch` with both wire and both protocol numbers; when the
+protocol versions agree the waiting requests are refused `Unreachable` with a
+text naming both wire versions, otherwise `VersionMismatch(supported: theirs)`.
+
+The broker tunnel (protocol-change/117). An untrusted placement's
+`WorkspacePlane.clear_call` is `untrusted_link.tunnel(executor, session)`
+(`remote/workspace.build`; a trusted one keeps `clear_call.over_broker`), and
+its `hooks` is `HooksRefused`, so `serve.hook_clear_call` gives imported hooks a
+function that answers `BrokerUnavailable`. The baseline probe clips a refusal to
+512 characters before `session/git-start` stores it. **The door**: each link
+starts a `weft/actor` linked to it and registered as `Config.door`
+(`tunnel_name_for(executor)` in production) that forwards `Tunnel` messages
+(`Clear`, `Withdraw`, `CancelCall`, each keyed by the asker's fresh reply
+subject) to the link; `tunnel_through` looks the door up by name on every
+call, monitors it, waits `waiting` plus two seconds and withdraws on its own
+timeout. `untrusted_links` clears the door's name (`Links.door`) as it clears
+the link's. **The call table** is `remote/tunnel_calls`, pure: `step(table,
+event) -> #(table, effects)` over `Opened`, `Cleared`, `EventOutput`,
+`EventSettled`, `WaitPassed`, `Withdrawn`, `Cancelled`, `AskerDied` and
+`ConnectionDropped`, with effects `Answer`, `Deliver`, `SendClear`,
+`SendCancel`, `Refuse`, `Released` and `Violation`; the link applies them
+(`stepped_calls`, `effected`). Entries live apart from `outstanding`, so
+nothing tunnelled is re-sent; a frame names an `Origin` (`Unissued`,
+`OtherRequest`, `Issued`, from `origin_of`), and only an issued id the table no
+longer holds is dropped. The link refuses a `Clear` at once with no open
+connection, no binding for the session, grants, or a spec past the codec's
+exported limits (`max_call_argv`, `max_call_env`, `max_call_ms`) or
+`encode_fitting`; the table refuses an output limit of zero or over
+`max_call_output_bytes` (1 MiB), a ninth entry on a binding
+(`max_per_binding`) and a 65th on the link (`max_per_link`). **The buffer**:
+output is held per stream with `<<buffer:bits, chunk:bits>>` and delivered at
+settlement as one `CallOutput(truncated: False)` per stream with bytes, then
+`CallSettled`; a stream past the spec's `output_bytes` is a violation. The wire
+wait is the caller's less one second. **The gateway**: at attach,
+`untrusted_bridge.ask_attach` answers the host's census beside the response,
+and the attach's waiter records `Plane(broker, base_policy)` on the binding's
+proxy with the book's `Recorded` call before replying; `PlaneOf` answers it, and
+nothing for a binding not held or retired. Each `clear_call` runs in a **tunnel
+waiter** linked to its connection (`tunnelled`, `tunnel_waiter`): it clears
+with `broker.over` under `cleared_spec` (the meet of the plane's base, writable
+roots also readable, with the spec's base; no grants; `Config.demand`), closes
+stdin, sends `cleared` first, and forwards each non-empty chunk and the
+settlement as `FromTunnel` messages. `cancelled` unlinks a tunnel waiter before
+killing it, and `stopped` unlinks and kills every tunnel waiter on each normal
+stop. **Tests**: `remote/tunnel_calls_model_test` (statem, hostile frames and
+both bounds), `remote/untrusted_link_test` (hand-driven hostile executor over
+TLS), `remote/untrusted_gateway_test` (production broker and helper),
+`remote/untrusted_end_to_end_test` (goal check, baseline, diff after a jailed
+edit, peer view, hook refused) and `remote/untrusted_reload_test` (a call in
+flight across a replaced link).
+
+Reloading the rows (protocol-change/116). `daemon/untrusted_links` is a
+`weft/actor`, started by `prepare_startup` beside `project_book`, that holds the
+untrusted `executors.Executor` rows and the pid of each row's link and unlinks
+every link it starts (a reload reads each pid with `is_alive`, logs a dead one
+and starts it again). `reconcile(registry, load)` runs `load` inside the actor,
+checks `executor_reload.check_rows` and `check_names`, plans with
+`executor_reload.plan` and performs each step before one three second deadline
+(`reconcile_ms`) that starts before `load`; a row not reached is `Failed` and
+stays as it was. A link start (one second of its own) is begun, and an old link
+killed, only when that much of the deadline is left. Before it starts a link it
+kills whatever holds the link's registered name and waits for the name with
+`weft/poll`. The caller's wait and `rows`' wait are four seconds, above the
+turn's bound, because the actor answers one message at a time. `rows` answers
+the roster's untrusted rows, and `[]` when the actor does not answer.
+`daemon/main.executor_roster` is a read at each use of the trusted rows from start
+and `untrusted_links.rows`, sorted by name; in ledger mode it goes through
+`ledger_rows.executor_roster_over`, so a derived row is unaffected. `start_untrusted`
+is the registry's first reconcile. `executors.reload` is `protocol.ReloadExecutors`;
+`server.Config.executors_reload` holds `main.executors_reload_for`, which reads and
+decodes the file with `decode_startup`, applies `executor_reload.link_rule` to
+canonical paths under `Config.vm_directories` (the vm directories that existed at
+start, as `ensure_vm_homes` returned them) and dials with the table it checked, and
+refuses an untrusted name the ledger enrols, answering `reload_invalid` with the
+reason. `link_rule` lets a file drop the started table only when it holds no
+untrusted row (`loom vm rm` of the last guest). `client/executor_reload` is the
+pure part and owns the reply codec. Tests: `executor_reload_test`,
+`daemon/untrusted_links_test`, `daemon_executors_reload_test` and
+`remote/untrusted_reload_test`.
+
 Invariants: nothing on either side calls `binary_to_term`; every response is
 decoded against its request's kind; a callback reaches an owner port only through
 `admitted`; a waiter's death is the only abort the host sees from this link; a
@@ -110,7 +212,8 @@ host; a background program launched, called back and stopped; a placed blob
 and a 40 MiB outcome), `remote/blob_service_test`, `remote/outcome_fetch_test`,
 `remote/untrusted_state_test` (a full then a thin bundle of a repository the
 executor never saw, through the link, into the real plane) and
-`untrusted_config_test`.
+`untrusted_config_test`. The untrusted step of `daemon_shipped_microvm_test`
+runs the tunnel against a live guest (see "Standing microVM guest").
 
 # Evolution callback ownership
 
@@ -162,112 +265,161 @@ actual startup repeats validation and can still fail on runtime resources.
 list | rm | sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
 private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
-the artifact manifest decoder and revision check, the two-node
-`distribution_plan.Plan`, the guest's `loom.toml`, the `loom-vm run` and `cp`
-argument lists, `scrub_git_config`, the pid-file codec, the `epmd -names`
-reader and the daily verbs' decisions (`printable`, the checkouts record,
-`fetch_arguments`, `bundle_arguments`, `unpushed_branches`, `read_enrolment`,
-`plan_teardown`), and, for the join of a guest into a ledger deployment,
-`deployment_state` (`NoDeployment`, `LedgerDeployment`, `StaticDeployment`,
-read with `distribution.parse`), `guest_enrollment` (the `ledger_operator.Enrollment`
-of the guest) and `bundle_deployment`, `orchestrator_membership` (the daemon's member name from its installed ledger) and `joined_teardown`. `up` decides from `deployment_state` before minting anything: no deployment mints, a ledger deployment is joined (`vm_cli.join` enrols `guest_enrollment` through `ledger_cli.enroll_member` and `ledger_cli.socket_connect` on the running default daemon, with `ledger_cli.unlock_at` on the sealed key; `rm` revokes with `revoke_member`), and a static one is refused. `up` mints in
-ledger mode with `distribution_provision.provision_ledger` and seals the
-authority key with `authority_key.keep` under `<vm home>/authority/<id>/`
-beside a generated `passphrase` file (`vm_cli.seal_authority`); `stage_ledger`
-puts the bundle's ledger at `creds/ledger.log` in the guest root only when the
-root has none; `rm` deletes the authority directory with the guest
-(`removable_authority`). The directory is under the vm home that
-`workspace_policy` masks. `client/vm_cli` performs them with `distribution_provision`,
-`distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
-`reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
-`uname`, `git` and `epmd`, `host/access` (`raw_request`, `execute`) for the
-daemon's `status` and `daemon.shutdown`, and `weft/poll`. It adds no FFI. Tests: `client/vm_cli_test`,
-which covers the pure decisions, and `daemon_shipped_microvm_test`, the live
-boot, which needs the built artifacts. The latter assembles a build tree of
-links, runs `loom-vm setup --from-build` into a private `LOOM_VM_HOME`, and
-drives `vm up`, a scripted turn through an orchestrator on the configuration
-`up` wrote, `vm down`, `vm status`, `vm up` again and a second turn. It checks
-the GitHub placeholder, that a fake token given as `LOOM_VM_GITHUB_TOKEN` is
-nowhere under the guest's files, that the guest's root is a directory and not a
-link to the export, and, with `LOOM_VM_GITHUB_LIVE=1`, that `api.github.com`
-answers `/zen` 200 and `/user` 401 through the proxy. The first `up` also gives
-`--allow deb.debian.org` and `--provision` of a script that appends a line to a
-file in the guest root: a jailed call reads it, reaches the host and is refused
-another, `up --provision` on the provisioned guest is refused naming `--fresh`,
-and the resume (no flags) keeps the allowed host and leaves one line in the file.
-The same run then drives `vm list`, `vm logs`, a commit made by a jailed call
-that arrives through `vm sync` as `refs/remotes/vm/*` (in the checkout `up`
-recorded and in a `--checkout` scratch one), a hostile `.git/config` and hook
-planted by a jailed call whose marker never appears on the host after `vm sync`
-(with a control repository showing the marker would be writable), `vm sync
---to-guest` read back by a jailed `git fetch`, a refused second guest, and `vm rm`
-of the idle and failing guests under the isolated home. Its last step boots a guest
-with `--link untrusted` (below), starts an orchestrator on the file `up` wrote,
-and checks that a jailed call settles on the guest's kernel, the root holds no
-cookie and no `[distribution]` table, the host's epmd lists no node for it, a
-jailed read of the executor's key returns nothing, and `status` names the link.
+the artifact manifest decoder and revision check, the guest's `loom.toml`, the
+`loom-vm run` and `cp` argument lists, `scrub_git_config`, the pid-file codec,
+the `epmd -names` reader and the daily verbs' decisions (`printable`, the
+checkouts record, `fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
+`read_enrolment`, `plan_teardown`). `client/vm_link` holds the decisions of the
+untrusted link, which every guest `up` and `ensure` make is on
+(protocol-change/109; ADR-022, the addendum of 2026-11-17). `client/vm_cli`
+performs them with `vm_link_pki`, `distribution_install` (the table merge),
+`host/bootstrap` (`spawn_server`, `process_identity`, `reserve_loopback_port`),
+`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname`, `git` and `epmd`,
+`host/access` (`raw_request`, `execute`) for the daemon's `status`,
+`executors.reload` and `daemon.shutdown`, and `weft/poll`. It adds no FFI.
 
-`up --link untrusted` (`UpOptions.link`, `vm_spec.LinkKind`) reaches a guest over
-protocol-change/109's untrusted link instead of distribution; the default is
-still `distribution` and its code is unchanged. `bring_up` settles the kind first
-(`vm_cli.link_of` over `vm_link.settle`: the host-owned record
-`<vm home>/<name>/link`, bundles, and the flag; absent record and bundles mean
-distribution, and a guest never changes its link) and branches once, in
-`vm_cli.on_link`, to `bring_up_linked`. `client/vm_link` is the pure part: the
-`link` and `link-port` record codecs (total), `port_step`, `install` and
-`uninstall` of `[executor_link]` and the guest's row (a table that differs is
-refused; only the guest's own row at another port, identified by its pin, is
-replaced; nothing else in the file changes), the guest's `[executor_listener]`
-configuration and `staging` (no cookie, no ledger), and the daemon and status
-wording. `client/vm_link_pki` mints the authority and leaves under
-`<vm home>/link/` and `<vm home>/<name>/link-credentials/` with `ffi_pki`, each
-directory built as `<dir>.minting` and renamed whole. `bring_up_linked` chooses
-the port without recording it, works out the merge (a refusal leaves no guest),
-records the kind and port, writes the file, then runs `stage_with` and
-`launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd entry), which are
-the shared halves of `stage` and `boot`. A changed row is applied by the
-daemon only at its next start (`daemon/main.start_untrusted`), so `restart_of`
-reuses `restart_after`: an idle default daemon is stopped, a busy one is
-left and named. `rm` plans through `linked_removal_plan`; `ensure` reads the
-console's ready line in place of epmd (`vm_link.registration`). The executor's
-jails mask the listener's key and the link's key (`executor_plane.masked_files`).
-`bring_up_linked` runs the shared part (`enroll_linked`: credentials, port, merge,
-records, file) under `with_link_lock` (`<vm home>/link.lock`, after any guest
-lock), and `rm` plans and applies under it. `vm_link_pki` checks each leaf with
-`ffi_pki.inspect` against the current authority. `vm_link.Traces` lets a guest
-directory with `link-credentials/` and no record settle as untrusted.
-`vm_link.uninstall` removes the guest's row only on its pin and reports whether
-`[executor_link]` remains (`LinkTable`), which decides whether `rm` removes the
-credentials. `restart_check` and `restart_of` ask an untrusted guest
-`vm_link.daemon_need`, from `deployment.status`'s `placements.executors`
-(`vm_link.listed_executors`), and never `daemon_lacks_distribution`. A command
-with no `--name` means the directory's guest when no guest is named `vm`
-(`vm_cli.named`, `vm_spec.default_guest`). `serve.link_secrets` masks the link
-keys in every managed session's jail.
-Tests: `vm_link_test` (codecs, merge properties against the daemon's own readers,
-a pinned handshake with the minted credentials), `vm_link_model_test` (a `statem`
-model of one home with guests of both kinds), and `executor_mask_test`.
+**The link.** `bring_up` settles the link first, before the manifest is read or
+anything is written (`vm_cli.link_of` over `vm_link.settle`, from the host-owned
+record `<vm home>/<name>/link` and `vm_link.traces` of `link-credentials/` and
+`deploy/`). A new guest, a guest recorded untrusted and one with a minted leaf
+and no record are brought up on the untrusted link; one whose record says
+`distribution`, or that has `deploy/` and no leaf and no record, was made by an
+older loom as a distribution peer and is refused naming `loom vm sync --name
+NAME` (with where uncommitted edits are), `loom vm down --name NAME` for a guest
+that still runs, `loom vm rm --name NAME --yes` and `loom vm up --name NAME`, in
+that order (`vm_link.retired_refusal`). An unreadable `link` record is named by
+its file. `settle` never answers `Distribution`, so no command makes
+a distribution guest or turns an untrusted one into one. `UpOptions` has no
+link field: `--link untrusted` is accepted and changes nothing, and `--link
+distribution` is refused by the parser (`vm_spec.link_flag`). The verbs that only
+read a guest (`status`, `list`, `rm`) ask `vm_link.made` through
+`vm_cli.recorded_kind` and `made_kind`, so an old guest is shown as
+`distribution` and removed with the distribution teardown; a directory with no
+record and no traces reads as untrusted, and `other_kinds` does not count it.
+The distribution half of `bring_up` (`deployment`, `enroll`, `stage`, `boot`,
+the mint, join and seal helpers, `vm_spec`'s deployment decisions) is still
+compiled behind `on_link` and is reached by no guest; it is deleted after one
+release.
+
+`bring_up_linked` chooses the port without recording it, works out the merge (a
+refusal leaves no guest), records the kind and port, writes the file, then runs
+`stage_with` and `launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd
+entry). `client/vm_link` is the pure part: the `link` and `link-port` record
+codecs (total), `port_step`, `install` and `uninstall` of `[executor_link]` and
+the guest's row (a table that differs is refused; only the guest's own row at
+another port, identified by its pin, is replaced; nothing else in the file
+changes), the guest's `[executor_listener]` configuration and `staging` (no
+cookie, no ledger), and the daemon and status wording. `client/vm_link_pki`
+mints the authority and leaves under `<vm home>/link/` and
+`<vm home>/<name>/link-credentials/` with `ffi_pki`, each directory built as
+`<dir>.minting` and renamed whole, and checks each leaf with `ffi_pki.inspect`
+against the current authority. `bring_up_linked` runs the shared part
+(`enroll_linked`: credentials, port, merge, records, file) under
+`with_link_lock` (`<vm home>/link.lock`, after any guest lock), and `rm` plans
+and applies under it.
+
+A running default daemon is asked to reload (`executors.reload`,
+protocol-change/116): `restart_of` and `untrusted_restart_check` ask
+`vm_link.daemon_need` (from `deployment.status`'s `placements.executors`,
+`vm_link.listed_executors`), send the command through `vm_cli.reload_daemon` and
+read the reply with `vm_link.reload_result` and `reload_report`, which prints one
+line for every entry that is not `unchanged`. Only a daemon that predates the
+command, refuses it, does not answer, or reports the guest's own link `failed`,
+`stopped` or absent gets the earlier path (`daemon_outcome`: an idle daemon is
+stopped, a busy one is left and named). `rm` sends the reload after it rewrites
+the file (`removal_daemon_lines`, `vm_link.removal_report`).
+`host/access.refusal_code` keeps the message of a `reload_invalid` refusal. `rm`
+plans an untrusted guest through `linked_removal_plan`: `vm_link.uninstall`
+removes the guest's row only on its pin and reports whether `[executor_link]`
+remains (`LinkTable`), which decides whether `rm` removes the credentials.
+`ensure` reads the console's ready line in place of epmd
+(`vm_link.registration`). The executor's jails mask the listener's key and the
+link's key (`executor_plane.masked_files`), and `serve.link_secrets` masks the
+link keys in every managed session's jail. `status` prints a `link:` line for
+either kind (`vm_cli.link_lines`, `vm_link.status_lines`), and `list` a link
+column. A command with no `--name` means the directory's guest when no guest is
+named `vm` (`vm_cli.named`, `vm_spec.default_guest`).
+
+Tests: `vm_cli_test`, which covers the pure decisions and the usage;
+`vm_link_test` (the retired flag, the settled link over every record, leaf,
+bundles and flag, the refusal's wording, codecs, merge properties against the
+daemon's own readers, a pinned handshake with the minted credentials);
+`vm_link_model_test` (a `statem` model of one home with three guests, the third
+of which can start out as a distribution guest, stopped or running: `up` of it
+changes nothing, and no command makes a distribution guest); and
+`executor_mask_test`. `daemon_shipped_microvm_test` is the live boot, which
+needs the built artifacts. It assembles a build tree of links, runs `loom-vm
+setup --from-build` into a private `LOOM_VM_HOME`, and drives every step on
+guests made with no `--link`: `vm up`, which writes `[executor_link]` and the
+guest's row and no `[distribution]` table and stages no cookie, a scripted turn
+through an orchestrator started on that file with no distribution options file,
+`vm down`, `vm status` (the link and its port, no epmd line), `vm up` again with
+the port and row unchanged and a second turn through the same orchestrator. It
+checks that the first jailed call cannot read the listener's key while the
+certificate beside it is readable, the GitHub placeholder, that a fake token
+given as `LOOM_VM_GITHUB_TOKEN` is nowhere under the guest's files, that the
+guest's root is a directory and not a link to the export, and, with
+`LOOM_VM_GITHUB_LIVE=1`, that `api.github.com` answers `/zen` 200 and `/user` 401
+through the proxy. The first `up` also gives `--allow deb.debian.org` and
+`--provision` of a script that appends a line to a file in the guest root: a
+jailed call reads it, reaches the host and is refused another, `up --provision`
+on the provisioned guest is refused naming `--fresh`, and the resume (no flags)
+keeps the allowed host and leaves one line in the file. The same run then drives
+`vm list` (with the link column), `vm logs`, a commit made by a jailed call that
+arrives through `vm sync` as `refs/remotes/vm/*` (in the checkout `up` recorded
+and in a `--checkout` scratch one), a hostile `.git/config` and hook planted by a
+jailed call whose marker never appears on the host after `vm sync` (with a
+control repository showing the marker would be writable), `vm sync --to-guest`
+read back by a jailed `git fetch`, a second workspace, the upgrade in place, a
+killed launcher, and a failing `--provision` script whose guest `vm rm` then
+removes after listing its workspaces. A second guest in a configuration of its
+own serves the broker tunnel (protocol-change/117), each through the daemon's
+own session assembly: the session's stored `session/git-start`
+(`session_git.key`) is a `revision` and not `unavailable`; the `worktree_diff`
+observation on the session socket is a `ready` board listing both edited paths;
+and a `goal_set` with a check that tests for the new file records `last_check`
+at exit status 0 carrying the guest's output and workspace path. It does not
+wait for the goal to complete, and clears it before the session stops. A third
+guest is brought up beside that daemon with `--link untrusted` spelled out,
+read with `executors.reload`, and its jailed call sees its own leaf's digest. A
+migration step fabricates the host-side traces of two distribution guests
+(bundles only, and a `link` record saying `distribution`), and checks that `up`
+and `ensure` refuse them naming the three commands and change no file, that
+`status` and `list` call them distribution guests, and that `rm --yes` removes
+them, taking one's `[distribution]` table and trusted row out of a file whose
+untrusted row and other lines stay. A default-daemon step runs `vm ensure` with
+no `--config` and the default vm home (`~/.loom/vm` of the isolated home)
+beside a daemon on that home's default file with no `[executor_link]`, and
+checks the answer line, that the reload was not refused, that the same daemon
+process lists the guest after it, the fast path of a second `ensure`, and `rm`
+of that vm home's last guest, which takes `[executor_link]` and the
+credentials too, with the daemon running.
+The first guest is removed last, and takes `[executor_link]` and
+`<vm home>/link/` with it. It does not observe that hooks stay refused, which
+needs a trust record fixture; `remote/untrusted_end_to_end_test` covers it.
 
 `ensure` is what `loom --vm` runs (`tui/vm_ensure`). `vm_spec.guest_name_for`
 names the guest of a workspace from its canonical path (slug, then six hex
 digits of the SHA-256, at most `name_limit` bytes), so there is one guest per
-workspace. `vm_cli.ensure` observes the guest's process (pid record plus birth
-marker), the host epmd and the manifest, and `vm_spec.ensure_step` returns
+workspace. `vm_cli.ensure` settles the link first (`ensure_facts` calls
+`link_of`, so a distribution guest is refused with status 1 even when it
+serves), then observes the guest's process (pid record plus birth marker), the
+console's ready line and the manifest, and `vm_spec.ensure_step` returns
 `AlreadyServing`, `NeedsDaemon`, `NeedsSetup`, `Boot` or `Refuse`: a serving
-guest answers first and nothing else is read or written; a join of an existing
-ledger deployment with no daemon answers `NeedsDaemon` before any setup, as
-exit status 75 and the last stdout line `daemon=required`; a manifest from
-another release gets `loom vm setup` first (`vm_spec.manifest_action`, which
-`up` uses too); otherwise `vm_cli.bring_up`, the code `up` runs, boots it. The
-last stdout line is `executor=<guest> workspace=<registered name>`
-(`vm_spec.ensure_line`), and progress goes to stderr one line per step. After a
-boot that installed a deployment, `vm_spec.restart_refusal` turns a daemon left
-running into one error sentence; a resumed or joined guest (`Row::Resumed`,
-`Derived`) asks for no restart. `up` records `--github` in
-`<vm home>/<name>/github` (`vm_spec.effective_github`, `encode_github`,
-`decode_github`); `UpOptions.github` is an `Option`, `None` meaning not given.
-Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a `statem` model over
-the pure decisions.
+guest answers first and nothing else is read or written; `NeedsDaemon` (status
+75 and the last stdout line `daemon=required`) was for a join of a ledger
+deployment and no guest asks for it now; a manifest from another release gets
+`loom vm setup` first (`vm_spec.manifest_action`, which `up` uses too);
+otherwise `vm_cli.bring_up`, the code `up` runs, boots it. The last stdout line
+is `executor=<guest> workspace=<registered name>` (`vm_spec.ensure_line`), and
+progress goes to stderr one line per step. After a boot, `restart_check` asks a
+running daemon to reload, and `vm_spec.restart_refusal` turns a daemon that
+cannot reload and is left running into one error sentence. `up` records
+`--github` in `<vm home>/<name>/github` (`vm_spec.effective_github`,
+`encode_github`, `decode_github`); `UpOptions.github` is an `Option`, `None`
+meaning not given. Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
+`statem` model over the pure decisions with a distribution guest in some
+starting configurations.
 
 `logs`, `list`, `rm` and `sync` read the guest's root, which model-influenced code
 writes, so they treat it as untrusted: no `git` with a working directory in the
@@ -278,10 +430,19 @@ through `make_inside` and a rename, and guest text printed through
 `vm_spec.printable`. `up` records each copy's developer checkout in
 `<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
 `sync`; `--checkout PATH` overrides it and is required for a guest with no record.
-`rm` removes `[executors.<name>]`, and `[distribution]` and the home's cookie only
-when they are this guest's and no other executor remains
-(`distribution_install.without_tables`, `vm_spec.plan_teardown`), refuses a
-running guest, and without `--yes` only lists the workspaces. `sync` needs a
+`rm` removes an untrusted guest's row (above), and for a guest made over
+distribution `[executors.<name>]`, and `[distribution]` and the home's cookie only
+when they are this guest's and no other trusted executor remains
+(`distribution_install.without_tables`, `vm_spec.plan_teardown`; `read_enrolment`
+leaves untrusted rows out of `other_executors`), with its sealed authority
+directory and ledger revoke as `removal_plan` decides. The revoke is signed with
+`ledger_cli.Forced` (`signed_revoke`, `vm_spec.unchecked_revoke_line`), since a
+guest `up` refuses serves no session again, and a key or ledger copy that cannot
+be used is worded by `vm_spec.rm_revoke_failure`. `apply_removal` deletes the
+roots and `state.img` before the rest of the directory, so the marker that
+classifies a guest outlives them. `list` counts a directory as a guest when
+`made_kind` is not `Ok(None)`, as `other_kinds` does. `rm` refuses a running
+guest, and without `--yes` only lists the workspaces. `sync` needs a
 Git release with upload-pack's lazy-fetch refusal, 2.45.1 or a backport
 (`vm_spec.check_git_version`) and runs it with
 `GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach
@@ -343,32 +504,34 @@ a plain tree, then `own_repository` clones it `--no-checkout --no-local`
 into `<root>/srv/loom-node/git-staging`, moves that `.git` over the copy's,
 restores `HEAD` and `origin` from the worktree (`vm_spec.head_target`,
 `head_arguments`, `origin_arguments`), resets the index, and removes the copy if
-any copy step fails. At the end, when the deployment is in the exact default
-`loom.toml` (a first `up` or a resume), `up` asks the user's daemon how many
-sessions it holds. `vm_spec.daemon_step` decides: a count of zero means
-`daemon.shutdown` and a note that the next `loom` starts it; any session, or no
-count, means no stop and a `kill -TERM <pid>` line. `daemon_shipped_microvm_test`
-proves the idle stop on its isolated home.
+any copy step fails. When a daemon cannot reload and the row is in the exact
+default `loom.toml`, `up` asks that daemon how many sessions it holds and
+`vm_spec.daemon_step` decides: a count of zero means `daemon.shutdown` and a note
+that the next `loom` starts it; any session, or no count, means no stop and a
+`kill -TERM <pid>` line.
 
 Invariants that break things when violated:
 
-- A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `root.next/` (only during an upgrade), `root.building/` and
-  `workspace.building/` (only while `up` makes a clone or a copy), `state.img`, `allow`, `github`, `checkouts`,
-  `root-revision`, `provision`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
-  `~/.loom/vm`.
-- `up` reads the bundles in `deploy/` again instead of minting new ones, so the
-  orchestrator's installed pins keep matching the executor's certificate.
-- The install is `RefuseExisting`: a `loom.toml` that holds another
-  deployment, or a cookie that differs, is refused and never replaced.
+- A guest's files all live under `<vm home>/<name>/`: `link`, `link-port`,
+  `link-credentials/`, `root/`, `root.next/` (only during an upgrade),
+  `root.building/` and `workspace.building/` (only while `up` makes a clone or
+  a copy), `state.img`, `allow`, `github`, `checkouts`, `root-revision`,
+  `provision`, `loom-vm.pid` and `loom-vm.log`, and for a guest made over
+  distribution `deploy/` and `orch/`. The vm home's `link/` holds what every
+  guest shares. `LOOM_VM_HOME` overrides `~/.loom/vm`.
+- `up` and `ensure` never bring a guest up over distribution: `vm_link.settle`
+  refuses a guest made that way before anything is written, booted or sent,
+  and answers `Untrusted` for every other.
+- A table of the user's `loom.toml` that differs from what `up` would write is
+  refused and never replaced; only the guest's own row, identified by its pin,
+  moves to another port.
 - The manifest's revision must be `dev` or the running build's commit; a
   release build installs the right one first, and only a development build
   refuses.
-- `ensure` on a serving guest writes nothing: it reads the pid record, epmd, the
-  console log, the manifest, `loom.toml` and the daemon record, and refuses a root
-  of another release. Everything else runs under `<vm home>/<name>.lock` and
-  decides again once it holds it. `NeedsDaemon` is decided before anything is
-  written, and a cookie conflict before any bundle is.
+- `ensure` on a serving guest writes nothing: it reads the link record, the pid
+  record, the console log, the manifest, `loom.toml` and the daemon record, and
+  refuses a root of another release. Everything else runs under
+  `<vm home>/<name>.lock` and decides again once it holds it.
 - `up` never stops a daemon that holds a session, and never starts one.
 - A linked worktree's copy never keeps a `.git` file or an `origin` that names
   a host path; any failed copy step removes the copy, because a resumed `up`
@@ -422,7 +585,16 @@ included, also masks the state root's `vm` directory, the home's `.loom/vm`
 and the home's `.erlang.cookie` (`workspace_policy.lazy_masks`,
 `node_home_masks`): `loom vm up` keeps each guest's bundles and its
 executor's key and cookie there, and the cookie is every distributed
-daemon's. A node key `loom distribution install` places outside the state
+daemon's. The daemon creates the home's `.loom/vm` and the state root's `vm`
+(mode 0700, only when missing, never changed when present) in `prepare_startup`
+through `main.ensure_vm_homes`, before distribution, the states or any jail, so
+a policy built later masks both even when the first guest comes after the
+session began (`workspace_policy.vm_home_directories` names them as a
+`VmHomes`; a failure to create the state root's stops the start, a failure to
+create the home's only logs `daemon.vm_home_unavailable`, because a daemon with
+a read-only `HOME` works today and `loom vm up` as the same user cannot make the
+directory appear later; `LOOM_VM_HOME` elsewhere is not covered; tests in
+`daemon_state_masks_test`). A node key `loom distribution install` places outside the state
 root is still unmasked for host sessions. `loom vm up` installs a newly
 minted deployment with `listen_address = "127.0.0.1"`
 (`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
@@ -2516,6 +2688,17 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   are saved,
   including grants without a refresh token, while plan inference requires
   `resource.invoke` and `chatgpt.tokens.use.direct`.
+- `client/seat_usage` and `client/seat_usage_cli` are `loomd seat-usage`: seats
+  (`{"label","provider","token"}` per line) arrive on standard input only,
+  each token lives in an opaque closure so `string.inspect` cannot print it,
+  and refusals are closed reason codes carrying a line number and a valid
+  label, never line text. Each seat is asked one read-only usage endpoint (no
+  model request, so no `--probe`) through `codex/network.fetch_adopted` with
+  a per-request timeout, a 256 KiB body bound and `weft.limit` concurrency.
+  `seat_usage.to_pool_events` maps a reading onto `provider/pool` events and
+  nothing calls the pool from a request path. The module doc cites where each
+  endpoint and field was verified. `ffi_os.read_stdin_line` is the one shim:
+  no stdlib reads standard input.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -3888,7 +4071,10 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   three adders (`scratch`, `jobs`, `lsp_manager`) because `serve` splices
   each into its services tree at its established position; each holds only
   its child specification. `WorkspacePlane` is `run(ToolRun, Authority)` (the
-  workspace half of `wiring.run_tool`), `broker`, `census`, a lazy
+  workspace half of `wiring.run_tool`), `broker` (for the code that holds a
+  broker actor for its own reasons: aborts, code mode, language servers,
+  teardown), `clear_call: ClearCall` (how the owner's non-tool work clears one
+  call: imported hooks, the goal check, the Git observations), `census`, a lazy
   `prompt_facts` (the workspace's guidance files as text and the helper's
   health, so a pinned prompt pays for neither), `resolve_directory`
   (`directories.resolve_addition` against the workspace's filesystem),
@@ -5015,8 +5201,10 @@ question each, and one composition point in `serve`:
   the `Source` it was read from; `notes` reports unsupported kinds and
   no-moment events at load time rather than loading them silently.
 - `client/hookrunner` — one imported command hook as one jailed
-  process through `broker.clear_call`, the worktree observation's own
-  pattern: `sh -c` shell form or `args` exec form, the event JSON on stdin
+  process through `Context.clear_call`, a `clear_call.ClearCall` (the same
+  seam `worktree_diff.Wiring.clear_call` uses; `WorkspacePlane.clear_call` is
+  its source, and `client/clear_call` defines the type because `workspace_plane`
+  imports `worktree_diff`): `sh -c` shell form or `args` exec form, the event JSON on stdin
   closed after, the handler's `timeout` seconds as the wall limit and
   the budget deadline, a timed-out run reporting `WallCancelled` with no
   output for the caller to read a decision out of. `Outcome.capture`
@@ -5455,6 +5643,10 @@ these forks because they define the same modules.
   copied. A write refusal aborts assembly; host code never follows a planted
   tool-home symlink to publish this file. Imported operator hooks keep their
   original HOME and ordinary global Git configuration.
+- **Repository observations clear through `worktree_diff.Wiring.clear_call`,
+  not a broker.** `git_identity` and the diff, baseline and peer observation
+  start Git by calling it and use the returned `RunningCall`'s `stdin` and
+  `cancel`; `workspace_plane.worktree_wiring` takes the plane's `clear_call`.
 - **Jailed Git calls use the host-resolved binary, never the Xcode shim.**
   `serve` fills `worktree_diff.Wiring.git` once per assembly from
   `host_git.program`, and both `git_identity` and `worktree_diff` name it in
@@ -8953,7 +9145,11 @@ the protocol-change/078 addendum on moving a session have the protocol.
   (`workspace.attach` over the stopped file with `owner_services.declining`), send
   `Hands.apply_state` (a fenced `StateApply`) and close the scope, which writes the clean
   close the later steps read. A rerun uses the cell's state while the store still holds
-  it, and a cell for another operation is ignored. `Refused(stage, reason)` is what
+  it, and a cell for another operation is ignored. Every write of that cell also
+  writes `client/moved_calls` (`client/move/interrupted`): the `ReplayNever` calls the
+  stopped file holds effect-pending. They ran in the directory, so the receiver's
+  `workspace.recover_by_placement` answers them `OutcomeUnknown` without asking an
+  executor whose fence would say they did not run. `Refused(stage, reason)` is what
   resending cannot change and abandons the move; `Unfinished` stalls it. The source's
   row is never rewritten: `relocated` gives the later steps a copy of the registration
   with the executor and workspace of `orchestrators.CheckoutTarget`, so the manifest
@@ -8962,6 +9158,24 @@ the protocol-change/078 addendum on moving a session have the protocol.
   and `server.departure_for` judges the place, the listed executor and a primary
   checkout before it. Tests: `session_move_checkout_test` (the real host, plane and
   stores), `daemon_move_test`, `orchestrators_test`.
+- A move back is refused by the receiver, not built (protocol-change/107, the addendum
+  "a move back is refused, and an open scope for an unserved name is freed"). `session_importer.not_back_to_a_directory` runs after the sender is
+  known to be listed and before the copy is verified: a session whose custody here is
+  `Moved`, whose kept registration is local (`move_checkout.is_local`) and whose manifest
+  names an executor or a pool is `Refused(Malformed(..))` with the sentence that its
+  work is on the executor and that moving it back is not supported yet. The import keeps
+  a registration it already holds and replaces only the move row, so without the check
+  the session reopens in the old directory without the executor's commits. A variant of
+  `session_move.Refusal` would cross the node boundary, so none was added.
+- `remote/host.close_unserved` closes an attach's scope as retired when the build finds
+  the workspace unserved, for a created, reopened or rebound scope alike, provided
+  `holds_nothing`: a rebound scope with a tree record, or with results the attach
+  reported unacknowledged or lost, stays open, because it is a session's own and an
+  executor restarted with the workspace dropped must not close it. This is what frees the
+  open scope that a source dying in the attach leaves, since the retry is a rebound
+  attach. `workspace.refused_attempt` still closes only a scope its record shows it
+  opened, so after the host's close the corrected name is refused once for the bound
+  name (twice when it was corrected before the retry), and setting the name back records the close.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
   linked to the process that starts the daemon's services. `Control` carries the
   listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;
@@ -9401,7 +9615,8 @@ The box's deadline and retention (slice S4):
 - A delegate session that does not open in `delegate_host.open_budget_ms`, or
   goes back to saved while the host waits, answers
   `remote_spawn.NotYetOpen`, and `remote_spawner.answer` reads it as
-  `Unreachable`, so the laptop resends and the stub stays `Requested`. After a
+  `Unreachable` (`spawn_answer` as `peer_mail.NotOpen`, see below), so the
+  laptop resends and the stub stays `Requested`. After a
   box is killed, the dead writer's lease on the session file refuses every open
   until it expires (up to `lease_ttl_ms`, 60 s). A failed reopen can retain its
   slot as `Closing` while the original custody drains. Both a resolver already
@@ -9411,6 +9626,20 @@ The box's deadline and retention (slice S4):
   store failure, and a released parent still wins before either descriptor.
   The held-cleanup regressions in `delegate_host_test` cover both Closing entry
   paths, reuse of the durable pair, blocked cleanup and release priority.
+  A full pool (protocol-change/107, addendum of 2026-11-17): the spawn tool and
+  the drain ask for the same seeded child at once, and the port serves both, so
+  nothing on the box ends a child's row because its build failed for want of
+  room. A reservation the row names with no slot is built again in the
+  registry's turn by the next ask (`manager.unslotted`, through
+  `create_session` under the row's request key) unless its kept failure is not a
+  lack of room (`manager.no_room`, which `delegate_host.no_room` calls): then the
+  failed start is the answer and nothing is built. Every status an ask reads
+  is classified by `delegate_host.reading`, where only a start that failed for
+  another reason and `RecoveryBlocked` are final. On the laptop a spawn answered
+  `NotYetOpen` is `peer_mail.NotOpen` (`remote_spawner.spawn_answer`), and
+  `remote_drain.attempt_spawn` does not mark the orchestrator silent for it, so
+  the pass still sends the join that collects a finished child and frees its
+  executor scope. Model: `protocol/models/placement-claims/Admission.tla`.
   `remote_release_test` and the shipped remote subagents test cover the sender
   and the box restart.
 - Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`
@@ -10910,13 +11139,27 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
 `gateway_peer_door_test`. The model is `protocol/models/live-relay`.
 
 - **The vocabulary** is `client/remote_feed`, with no process in it, as
-  `remote_top` has none: the bodies of `108.attach.1`, `108.feed.1`, `108.send.1`
-  and `108.detach.1`, the answers, the bounds both ends hold and a total decoder
-  for each. `peer_codec.revisions` advertises the four and `peer_top.dispatch`
-  decodes a body with `remote_feed.decode_request` and calls
-  `TopHost.feeds`, a `remote_feed.Host` of four closures. `remote_top` gained
+  `remote_top` has none: the bodies of `108.attach.1`, `108.feed.1`, `108.send.1`,
+  `108.detach.1` and `108.worktree.1`, the answers, the bounds both ends hold and a
+  total decoder for each. `peer_codec.revisions` advertises the five and
+  `peer_top.dispatch` decodes a body with `remote_feed.decode_request` and calls
+  `TopHost.feeds`, a `remote_feed.Host` of five closures. `remote_top` gained
   `FeedEnded(lapsed | stopped | revoked)`, `CapReached(MaxFeeds, _)` and
   `NotOffered(OfferedPage, "live")`.
+- **The workspace observation** (`108.worktree.1`, the last addendum of
+  protocol-change/108) is a read-only request that touches no queue, cursor, piece
+  or lease. The box's feed carries `feed_host.Settings.observe`, built in
+  `top_host.started_feed` over the feed's own check and the session's own
+  `relayed_session.Endpoint.worktree` (`serve.observe_worktree`). `feed_host.observation`
+  hands the closure to the request task, which runs it
+  (`top_host.worktree_observation`: the check again, capped by
+  `ui_relay.may_read_workspace`, then `remote_feed.observed` for the bound).
+  The laptop's `top_relay.worktree` asks once, and `ui_socket.relayed_worktree_answer`
+  turns the answer into a `worktrees.Read` through `worktree_view.decode`; an
+  `Unsupported` box is `Withheld`, which the component never asks about again.
+  Tests: `remote_feed_test`, `peer_feed_test`, `feed_host_test`, `top_host_test`,
+  `worktree_page_test` and `relayed_changes_test` (a real repository through the
+  relay).
 - **The pure parts** are `remote/feed_queue` (the numbered queue: unacknowledged
   frames bounded at 512 and 1,048,576 bytes, a poll's `after` acknowledges, a
   bound passed lapses the whole feed and never one frame; the lease is not here,
@@ -10949,7 +11192,66 @@ nothing on its own. Tests: `remote_feed_test` (the codec), `feed_queue_test`,
   `admit_relayed` judges it. The queue's bound ends a feed and never drops a
   frame. A poll that supersedes a held poll releases it at once. A token is looked
   up only among the sender's spawner's feeds. The feed host blocks on a gateway
-  call, for at most the gateway's six seconds, and never on the laptop.
+  call, for at most the gateway's six seconds, and never on the laptop. The attach's
+  label names the session with `registration.name`, as the box's own page heads itself
+  (`top_host.heading_of`), and not with the first prompt a listing row shows, so the
+  relayed page's title reads as the box's page's does.
+
+## The live session feed, the laptop half (protocol-change/108, slice 3)
+
+The laptop's page for a session on another orchestrator is the session component
+with `daemon/ui_feed` as its transport. `ui_feed` plays the part `ui_relay` plays
+for a local session: it keeps one long poll open on the feed the socket attached,
+hands each frame to the component's inbox as `connection_event.Incoming`, sends the
+lane's frames to the box in pieces and ends with one of `web_view/ending`'s fixed
+reasons. Tests: `feed_cursor_test` and `feed_outbox_test` (fixed-seed `statem`
+properties, seeds 1084 to 1086), `ui_feed_test` (the process against a scripted box
+and a hostile one), `ui_feed_box_test` (the process against the box's real feed host
+and gateway in one VM, with a link a test cuts and restores) and `top_relay_test`.
+The model is `protocol/models/live-relay` (`UiFeed.p`, `Lane.p`), whose README lists
+the rules the code follows and the specs, mutants and probes that guard them.
+
+- **The pure parts** are `remote/feed_cursor` (the laptop's place in the feed: `after`
+  is the last frame handed on and moves one frame at a time; only the reply to the
+  poll in flight is read; a frame numbered `after` or less is dropped; a skipped
+  frame ends the feed; an answer that reports an ending hands on no frame; a poll
+  with no answer is asked again after 250 ms doubling to 2 s) and `remote/feed_outbox`
+  (the lane's frames queued and cut into pieces of at most `piece_bytes` ending on a
+  character boundary, one piece in flight, a piece with no answer sent again
+  unchanged; at most 32 frames and 25,165,824 bytes). Neither holds a process or reads
+  a clock.
+- **The process** is `daemon/ui_feed`, one `weft/state_machine` with a single phase.
+  Each poll and each piece is a weft run of its own that reports to a sink the
+  process selects, so an answer that arrives after its task is gone reaches a dead
+  process, and the mailbox holds the lane's messages and at most two replies. The
+  pauses are named timeouts. `top_relay` gained `attach`, `poll`, `send_piece` and
+  `detach`, and `peer_client.call_at` dispatches against the epoch the attach observed
+  with no discovery.
+- **The socket's choice** is `ui_socket.chosen`, made in `upgrade_home` before any
+  component starts, over the attach's outcome (`ui_choice_test` covers every arm): an
+  attach that succeeds starts the session component with `Standing.route = Relayed(page)`
+  and `ui_feed`; a box that cannot be reached, or asked for another try
+  (`remote_top.retryable`), starts the same component with a transport that answers
+  `PeerUnreachable`, which the browser retries; a box at its feed cap answers
+  `PeerCrowded`; a box without the revisions, with `page = "paged"`, or whose answer does
+  not read starts the 094 home page with a sentence that says why (`relayed.Fallback`).
+  No answer is cached. A relayed route holds a `root.PageOperator` permit. Its images are
+  served at the relayed document's `.../sessions/<id>/image/<ref>/<position>`
+  (`ui_http.RelayedImage`, with the reader kept per tab: `ui_sessions.register_images_for`), and its tool-result links are not drawn (`lane.Unlinked`).
+- **What the page shows** when the link drops: the component decides it, in the same
+  update that ends its lane (`component.lane_failure`), because it ignores a close that
+  arrives after. A lane that fails on a relayed route ends as `PeerUnreachable`, a waiting
+  page the browser reconnects, and on a local route as `ConnectionFailed`. `ui_feed` ends
+  with `ConnectionFailed` on a shut, which only picks the socket's retry close code. A box
+  that says the feed is gone ends it with the ending it gave, and a lapse is
+  `ConnectionFailed`, since the page redraws from a fresh attach. A box at its feed cap is
+  `PeerCrowded`, its own waiting words.
+- **Invariants.** The feed's token is a secret of the `ui_feed` process and is never
+  logged or drawn. A frame from the box is decoded by `remote_feed`'s total decoders,
+  bounded by the stable exchange's envelope, and reaches the page only as a frame a
+  local gateway would have written. The page draws no control for a command the box
+  refuses (`component.route`), and its Forget is offered only on grants the box's
+  spawner approved (`session_view/remembered.Spawner`).
 
 ## The relayed session page's daemon side (protocol-change/094, slice S2b)
 

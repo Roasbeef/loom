@@ -20,6 +20,7 @@ import client/remote_mail
 import client/remote_top
 import core/clock
 import core/ids
+import core/json
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -216,6 +217,7 @@ pub fn a_session_with_no_endpoint_answers_not_relayed_to_everything_test() {
   assert endpoint.send("id", "text") == Error(remote_top.NotRelayed)
   assert endpoint.history(0, 10) == Error(remote_top.NotRelayed)
   assert endpoint.stop() == Error(remote_top.NotRelayed)
+  assert endpoint.worktree() == Error("the session is not relayed")
 }
 
 pub fn an_endpoint_over_a_runtime_that_is_not_up_asks_to_try_again_test() {
@@ -226,11 +228,14 @@ pub fn an_endpoint_over_a_runtime_that_is_not_up_asks_to_try_again_test() {
       fn(_terms, _id, _decision, _seq, _decider) {
         Error(remote_top.NotRelayed)
       },
+      fn() { Ok(json.Object([])) },
     )
   let assert Error(remote_top.NotYetOpen(..)) = endpoint.overview(None)
   let assert Error(remote_top.NotYetOpen(..)) = endpoint.send("id", "text")
   let assert Error(remote_top.NotYetOpen(..)) = endpoint.history(0, 10)
 
-  // The two actions that belong to the hub are the closures it was given.
+  // The two actions that belong to the hub are the closures it was given, and
+  // so is the workspace observation, which needs no runtime.
   assert endpoint.stop() == Ok(Nil)
+  assert endpoint.worktree() == Ok(json.Object([]))
 }

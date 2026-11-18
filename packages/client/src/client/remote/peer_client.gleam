@@ -102,11 +102,45 @@ pub fn call(
 
   // The second exchange spends only the first call's remaining budget.
   use <- require_revision(features.revisions, revision)
-  let id = int.to_string(ffi_os.unique_positive_integer())
-  let operation =
-    peer_codec.operation_request(id, features.epoch, revision, body)
-  use <- require_size(operation)
   let left = within_ms - { clock.now() - started }
+  dispatch(at, features.epoch, revision, body, left)
+}
+
+/// Dispatches a revision against an epoch the caller already observed, with no
+/// discovery (protocol-change/108, "The fences"). It is for a caller that holds
+/// a feed: a long poll would otherwise pay a features exchange on every round
+/// trip. It shares `call`'s size check, deadline and failure meanings, and the
+/// receiver's own epoch and revision checks run unchanged, so a restarted box
+/// answers `Stale` before it reads the body and a box without the revision
+/// answers `Unsupported`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peer_client.call_at(address, "epoch-1", "108.feed.1", body, 7000)
+/// ```
+pub fn call_at(
+  at: Address(peer_service.Message),
+  epoch: String,
+  revision: String,
+  body: JsonValue,
+  within_ms: Int,
+) -> Result(Result(JsonValue, remote_top.Refusal), Failure) {
+  dispatch(at, epoch, revision, body, within_ms)
+}
+
+/// The dispatch half of a call: one operation exchange against `epoch`, within
+/// what is left of the caller's budget.
+fn dispatch(
+  at: Address(peer_service.Message),
+  epoch: String,
+  revision: String,
+  body: JsonValue,
+  left: Int,
+) -> Result(Result(JsonValue, remote_top.Refusal), Failure) {
+  let id = int.to_string(ffi_os.unique_positive_integer())
+  let operation = peer_codec.operation_request(id, epoch, revision, body)
+  use <- require_size(operation)
   use <- require_time(left)
   use answer <- result.try(
     exchange(at, operation, left)

@@ -24,6 +24,13 @@
 ////   deep. Deeper input — cheap to fabricate adversarially, one `[` per
 ////   level — is a corruption report, never a runaway recursion that
 ////   exhausts the parsing process's stack or heap.
+//// - `parse_bounded` also bounds how many values a document holds. Every
+////   object, array, string, number, boolean and null is one value; an
+////   object's keys are names, not values. The count is spent as each value
+////   begins, so a document past its bound is refused at the first value
+////   over it, before the rest of the tree is built. `count_values` counts a
+////   built value the same way, for a sender that checks its own document
+////   against the bound a receiver will apply.
 //// - Strings must be valid JSON: unescaped control characters are
 ////   rejected, `\uXXXX` escapes are decoded including surrogate pairs, and
 ////   lone surrogates are rejected.
@@ -33,6 +40,9 @@
 //// Main parsing and serialization operations:
 //// - `parse`: decodes JSON text into a typed `JsonValue`; `parse_string_body`
 ////   walks escaped strings, and `decode_string_run` validates ordinary runs.
+//// - `parse_bounded`: the same parse, refusing a document of more values than
+////   its bound; `parse_value` takes one value from the cursor's allowance.
+//// - `count_values`: the number of values a built document holds.
 //// - `to_string`: formats a `JsonValue` to compact JSON text
 //// - `canonical`: normalises a `JsonValue` with recursively sorted object keys
 
@@ -108,7 +118,93 @@ pub type JsonValue {
 ///
 pub fn parse(text: String) -> Result(JsonValue, CorruptionReport) {
   let bytes = <<text:utf8>>
-  let cursor = Cursor(rest: bytes, source: bytes, consumed: 0)
+
+  // Every value begins with a byte no other value holds, so a document holds
+  // at most as many values as it has bytes, and an allowance of one more than
+  // its size is never spent, even by an empty document, which is refused as
+  // having no value at all. The plain parse is the bounded one with a bound it
+  // cannot reach, and the two share every line of the walk.
+  parse_document(bytes, bit_array.byte_size(bytes) + 1)
+}
+
+/// Parses a single JSON document of at most `max_values` values, refusing any
+/// other exactly as `parse` does. Each object, array, string, number, boolean
+/// and null counts as one value, wherever it sits; an object's keys are names
+/// and do not count. So `[]` holds one value, `{"a": [1, true]}` holds four,
+/// and a bound below one refuses every document.
+///
+/// The count is enforced as the parse goes: a value is counted before any of
+/// it is read, and the first value past the bound is a `CorruptionReport` at
+/// its offset. A hostile document of many small values therefore costs the
+/// parser no more than `max_values` values of work and allocation before it
+/// is refused, never the whole tree it describes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert json.parse_bounded("[1, 2]", max_values: 3)
+///   == Ok(json.Array([json.Int(1), json.Int(2)]))
+/// ```
+///
+/// ```gleam
+/// let assert Error(_report) = json.parse_bounded("[1, 2]", max_values: 2)
+/// ```
+///
+pub fn parse_bounded(
+  text: String,
+  max_values max_values: Int,
+) -> Result(JsonValue, CorruptionReport) {
+  parse_document(<<text:utf8>>, max_values)
+}
+
+/// The number of values `value` holds, counted as `parse_bounded` counts
+/// them: one for itself and one for each value inside it, with object keys
+/// not counted. A document `count_values` answers `n` for is accepted by
+/// `parse_bounded` with a bound of `n` or more and refused below it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert json.count_values(json.Object([#("a", json.Array([json.Int(1)]))]))
+///   == 3
+/// ```
+///
+pub fn count_values(value: JsonValue) -> Int {
+  count_loop([value], 0)
+}
+
+/// Counts the values on a work list of pending values, in one loop.
+///
+/// The list holds the values not yet counted, so the walk needs no stack
+/// frame per level or per sibling on either target: a container is replaced
+/// on the list by its children. Each value is visited once.
+fn count_loop(pending: List(JsonValue), count: Int) -> Int {
+  case pending {
+    [] -> count
+    [Object(fields:), ..rest] ->
+      count_loop(
+        list.fold(fields, rest, fn(rest, field) { [field.1, ..rest] }),
+        count + 1,
+      )
+    [Array(items:), ..rest] ->
+      count_loop(
+        list.fold(items, rest, fn(rest, item) { [item, ..rest] }),
+        count + 1,
+      )
+    [String(..), ..rest]
+    | [Int(..), ..rest]
+    | [Float(..), ..rest]
+    | [Bool(..), ..rest]
+    | [Null, ..rest] -> count_loop(rest, count + 1)
+  }
+}
+
+/// Parses one whole document with an allowance of `values` values.
+fn parse_document(
+  bytes: BitArray,
+  values: Int,
+) -> Result(JsonValue, CorruptionReport) {
+  let cursor = Cursor(rest: bytes, source: bytes, consumed: 0, values:)
   use #(value, cursor) <- result.try(parse_value(skip_whitespace(cursor), 0))
   let cursor = skip_whitespace(cursor)
 
@@ -396,8 +492,13 @@ pub fn build_string_by_codepoint(text: String) -> StringTree {
 // document as a list of codepoint integers and rebuild every string one
 // codepoint at a time; on a 5 MB branch that was tens of millions of heap
 // words per projection and most of the server's per-step CPU (issue #359).
+//
+// `values` is how many more values the document may begin. It is a field of
+// the cursor because the cursor is the one thing every step of the walk
+// hands on, and so the count needs no second pass and no argument of its
+// own on every helper.
 type Cursor {
-  Cursor(rest: BitArray, source: BitArray, consumed: Int)
+  Cursor(rest: BitArray, source: BitArray, consumed: Int, values: Int)
 }
 
 /// Constructs a corruption report at the current cursor position.
@@ -410,13 +511,32 @@ fn fail(cursor: Cursor, expected: String) -> CorruptionReport {
   )
 }
 
-// The report keeps counting in codepoints, as it always has, and pays for
-// the count only when there is a report to write.
+// The report counts the offset in codepoints, and pays for the count only
+// when there is a report to write. The consumed prefix of a document that
+// came from a `String` is valid UTF-8, and every codepoint in valid UTF-8
+// has exactly one byte outside the continuation range `0x80..0xBF`, so the
+// codepoint count is the number of such bytes. The walk builds no list
+// and no string, and allocates nothing on the BEAM (on JavaScript each step
+// makes a short-lived view), which matters because a hostile peer controls how long the prefix is: a
+// list of the prefix's codepoints costs tens of bytes of heap per byte
+// consumed.
 fn codepoint_offset(cursor: Cursor) -> Int {
-  bit_array.slice(cursor.source, 0, cursor.consumed)
-  |> result.try(bit_array.to_string)
-  |> result.map(fn(prefix) { list.length(string.to_utf_codepoints(prefix)) })
-  |> result.unwrap(cursor.consumed)
+  case bit_array.slice(cursor.source, 0, cursor.consumed) {
+    Ok(prefix) -> count_codepoint_starts(prefix, 0)
+    Error(Nil) -> cursor.consumed
+  }
+}
+
+/// Counts the bytes of valid UTF-8 that begin a codepoint, which are the bytes
+/// outside the continuation range `0x80..0xBF`. The walk is tail recursive over
+/// a binary match context, so it allocates no list and no string.
+fn count_codepoint_starts(bytes: BitArray, count: Int) -> Int {
+  case bytes {
+    <<byte, rest:bits>> if byte >= 0x80 && byte <= 0xBF ->
+      count_codepoint_starts(rest, count)
+    <<_, rest:bits>> -> count_codepoint_starts(rest, count + 1)
+    _ -> count
+  }
 }
 
 /// Shows at most 24 codepoints of remaining input in a report.
@@ -475,6 +595,23 @@ fn skip_whitespace(cursor: Cursor) -> Cursor {
 /// `depth` counts the containers already entered; a new object or array is
 /// admitted only while `depth < max_depth`, which bounds the recursion.
 fn parse_value(
+  cursor: Cursor,
+  depth: Int,
+) -> Result(#(JsonValue, Cursor), CorruptionReport) {
+  // The value is counted before its first byte is read, so a value over the
+  // bound is refused before it, or anything after it, is built. The check is
+  // a plain branch rather than a `Result` step because it runs once per
+  // value of every document, and the step's wrapper and continuation would
+  // cost an allocation each time.
+  case cursor.values > 0 {
+    True -> parse_counted(Cursor(..cursor, values: cursor.values - 1), depth)
+    False -> Error(fail(cursor, "no more json values than the parse's bound"))
+  }
+}
+
+/// Parses the value at the cursor, whose place in the allowance is already
+/// taken.
+fn parse_counted(
   cursor: Cursor,
   depth: Int,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
@@ -567,9 +704,36 @@ fn check_unique_key(
   case dict.has_key(seen, name) {
     False -> Ok(Nil)
     True ->
-      Error(fail(cursor, "unique object keys (\"" <> name <> "\" repeats)"))
+      Error(fail(
+        cursor,
+        "unique object keys (\"" <> shown_key(name) <> "\" repeats)",
+      ))
   }
 }
+
+/// The key as a report shows it. A repeated key is the one place a report
+/// quotes document text of unbounded length, so it is clipped to a prefix of
+/// at most `shown_key_bytes` bytes, cut back to a codepoint boundary, and the
+/// report gives the key's size in bytes. The clip is by bytes because the
+/// other measures of a string's length walk all of it: counting graphemes of a
+/// key made of one letter and millions of combining accents costs seconds and
+/// hundreds of megabytes, and returns a length of one.
+fn shown_key(name: String) -> String {
+  let size = string.byte_size(name)
+
+  // A key within the clip is shown whole; a longer one is cut and sized.
+  case size > shown_key_bytes {
+    False -> name
+    True ->
+      valid_prefix(<<name:utf8>>, shown_key_bytes)
+      <> "… ("
+      <> int.to_string(size)
+      <> " bytes)"
+  }
+}
+
+/// How many bytes of a repeated key a refusal shows.
+const shown_key_bytes = 96
 
 /// Parses one key-value member pair of an object.
 fn parse_member(
@@ -731,6 +895,7 @@ fn string_cursor(origin: Cursor, rest: BitArray) -> Cursor {
     rest,
     origin.source,
     bit_array.byte_size(origin.source) - bit_array.byte_size(rest),
+    origin.values,
   )
 }
 
