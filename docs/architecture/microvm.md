@@ -25,7 +25,6 @@ flowchart TB
     subgraph Host["Host (macOS/HVF or Linux/KVM)"]
         direction TB
         orch["orchestrator loomd<br/>client/distribution"]
-        hepmd["host epmd<br/>127.0.0.1:4369"]
         vm["loom-vm run<br/>cmd/loom-vm/main.go"]
         prov["hosted.Provider<br/>gVisor stack, egress firewall"]
         runner["go-microvm-runner<br/>libkrun + libkrunfw"]
@@ -34,16 +33,14 @@ flowchart TB
     subgraph Guest["Guest (6.12.91-loom-landlock)"]
         direction TB
         init["loom-guest-init<br/>network, cgroup, setpriv"]
-        gexec["loom-guest-executor<br/>state mount, options, readiness"]
+        gexec["loom-guest-executor<br/>state mount, readiness"]
         loomd["executor loomd<br/>executor_plane"]
         jail["loom-exec<br/>bwrap, Landlock, seccomp"]
     end
 
     vm -- "Backend.Start" --> runner
-    vm -- "epmd.Register (ALIVE2)" --> hepmd
     vm -- "owns" --> prov
-    orch -- "PORT_PLEASE" --> hepmd
-    orch -- "TLS dist to 127.0.0.1:HOST" --> prov
+    orch -- "pinned TLS to 127.0.0.1:HOST" --> prov
     prov -- "virtio-net to 192.168.127.2:4370" --> loomd
     runner -- "boots" --> gexec
     gexec -- "exec as root" --> init
@@ -51,9 +48,9 @@ flowchart TB
     loomd -- "frames on stdio" --> jail
 ```
 
-The edge to read first is the orchestrator's: it resolves the executor through
-the host epmd and connects to a host loopback port, and the hosted provider in
-the `loom-vm` process carries that connection into the guest. Nothing else on
+The edge to read first is the orchestrator's: it connects to a host loopback
+port, and the hosted provider in the `loom-vm` process carries that connection
+into the guest. Nothing else on
 the host can reach the guest, and the guest reaches the host only through the
 same provider.
 
@@ -62,18 +59,17 @@ same provider.
 | `machine.Spec`, `machine.Backend`, `machine.Machine` (`packages/vmm/machine/machine.go`) | The description of one guest: root, size, init argv, staged files, egress allowlist, forwards. `Spec.Validate` refuses a bad spec before any image pull. | Any hypervisor code. The package compiles and tests on a host with no `/dev/kvm`. |
 | `libkrun.Backend` and its `guest` (`packages/vmm/machine/libkrun/libkrun.go`) | The go-microvm options for a spec, the `hosted.Provider` it creates for every guest, the data directory, and the decision whether `Stop` may delete the root. | The VMM process, which go-microvm's runner owns, and anything inside the guest. |
 | `ghproxy.Proxy` (`packages/vmm/ghproxy/proxy.go`) | The per-VM CA, the placeholder, the real GitHub token, CONNECT admission, and the Authorization rewrite for the injection hosts. | Where it is served (`Spec.HostServices` and the backend) and what the guest does with it (the staged files and `loom-guest-init`). |
-| `epmd.Registration` (`packages/vmm/epmd/epmd.go`) | One TCP connection to an epmd that holds one node name at one port. | The node it names. A registration says nothing about whether a listener is up behind the port. |
-| `cmd/loom-vm` | Flag parsing, the lifetime of one guest, the epmd registrations of `--publish`, and copying the console to standard output. | Placement. Nothing in the daemon calls `loom-vm` yet; the end-to-end test runs it as a process. |
+| `cmd/loom-vm` | Flag parsing, the lifetime of one guest, the `--forward` ports, and copying the console to standard output. | Placement. Nothing in the daemon calls `loom-vm` yet; the end-to-end test runs it as a process. |
 | `setup` (`packages/vmm/setup`) | The manifest under `$LOOM_VM_HOME`, the install of a release or a build tree into it, the unprivileged extraction of the guest image, and the doctor report. | Booting. Nothing in `setup` starts a guest; the manifest is read by whatever launches one. |
 | `go-microvm-runner` | The libkrun VMM, in its own session (`setsid`), and the guest's devices. | The network stack: with a hosted provider the runner only forwards Ethernet frames over a socket. |
 | `loom-guest-init` (`packages/vmm/guest/loom-guest-init`) | Guest networking, trusting the proxy CA and exporting its environment when staged, ownership of the `loom` user's directories, the delegated cgroup v2 subtree, and the privilege drop. | Which program runs. It runs its arguments. |
-| `loom-guest-executor` (`packages/vmm/guest/loom-guest-executor`) | The state root mount (the persistent state disk, or a tmpfs when no device is given), the distribution options file rendered in the guest, the daemon's process, and the readiness markers on the console. | The daemon's configuration and credentials, which the caller stages into the root before boot. |
+| `loom-guest-executor` (`packages/vmm/guest/loom-guest-executor`) | The state root mount (the persistent state disk, or a tmpfs when no device is given), the daemon's process, and the readiness markers on the console. | The daemon's configuration and credentials, which the caller stages into the root before boot. |
 | executor `loomd` (`packages/client/src/client/executor_plane.gleam`) | Sessions' scopes, the broker and helper pool, and the policy every jailed child gets, including the node credential mask. | The VM. It runs as on any host and does not know it is in a guest. |
 
 ## Startup
 
-A guest executor starts in two halves: `loom-vm` boots the VM and publishes
-the node, and the guest's scripts bring up the daemon. The two halves do not
+A guest executor starts in two halves: `loom-vm` boots the VM and forwards a
+host port, and the guest's scripts bring up the daemon. The two halves do not
 synchronise with each other; the caller waits for a console marker.
 
 ```mermaid
@@ -85,42 +81,39 @@ sequenceDiagram
     participant X as loom-guest-executor
     participant I as loom-guest-init
     participant D as executor loomd
-    participant E as host epmd
-    C->>V: run --root-dir --publish NAME:HOST:4370
+    C->>V: run --root-dir --forward HOST:4370
     V->>V: Spec.Validate, hosted.NewProvider
     V->>R: microvm.Run (stage files, spawn runner)
     R->>X: init.krun execs NODE_DIR phase (root)
-    V->>E: epmd.Register(NAME, HOST)
     X->>X: mount state disk on state, chown to loom
     X->>I: exec loom-guest-init ... --serve
     I->>I: static eth0, cgroup tree, setpriv to loom
-    I->>D: distribution options, then loomd --state-dir
-    D->>D: distribution.start, then executor host
-    D-->>X: daemon.executor_serving on stdout
-    X-->>C: LOOM-EXECUTOR-READY on the console
+    I->>D: loomd --state-dir
+    D->>D: executor host, then untrusted listener
+    D-->>X: daemon.executor_serving and daemon.untrusted_listener on stdout
+    X-->>C: LOOM-EXECUTOR-READY untrusted on the console
 ```
 
-The host epmd entry exists before the daemon does, so the caller must not dial
+The forwarded port exists before the daemon does, so the caller must not dial
 until it reads the marker. `loom-guest-executor` prints
-`LOOM-EXECUTOR-READY` only when both conditions hold: the node is listed by the
-guest's own epmd, and the daemon has logged `daemon.executor_serving`
-(`packages/client/src/client/daemon/main.gleam:944`). The node registers during
-configuration load, well before the executor host starts, so the registration
-alone is not readiness. On an Apple Silicon Mac the marker appears 1.5 to 1.8 s
-after `loom-vm` starts.
+`LOOM-EXECUTOR-READY untrusted` only when the daemon has logged both
+`daemon.executor_serving` (`packages/client/src/client/daemon/main.gleam:1334`)
+and `daemon.untrusted_listener`. The listener starts after the executor host,
+so its line is the later of the two. On an Apple Silicon Mac the marker appears
+1.5 to 1.8 s after `loom-vm` starts.
 
 The steps that need root run before the drop, in this order:
 
 1. **State root.** `loom-guest-executor` mounts the state device on
    `NODE_DIR/state` as ext4, formatting it on the first boot
-   (`packages/vmm/guest/loom-guest-executor:108`). `vm_spec.launch_arguments`
+   (`packages/vmm/guest/loom-guest-executor:101`). `vm_spec.launch_arguments`
    passes `--state-device /dev/vda`, the `state.img` that `loom vm up` keeps, so
    the state survives `down` and `up`. Only with no device does the script mount
-   a 512 MiB tmpfs (`:111`) that starts empty on every boot. The guest root is a
+   a 512 MiB tmpfs (`:104`) that starts empty on every boot. The guest root is a
    virtio-fs share, and the executor's SQLite ledger and code mode's AF_UNIX
    socket need a local filesystem.
 2. **Ownership.** It gives `NODE_DIR` and every `/srv/workspaces/*` to `loom`
-   (`packages/vmm/guest/loom-guest-executor:115`). Staged files arrive owned by
+   (`packages/vmm/guest/loom-guest-executor:108`). Staged files arrive owned by
    root, and the daemon's credential checks require a 0600 file it can read.
 3. **Network.** `loom-guest-init` sets `192.168.127.2/24` with a default route
    via `192.168.127.1` (`packages/vmm/guest/loom-guest-init:70`). go-microvm
@@ -132,65 +125,29 @@ The steps that need root run before the drop, in this order:
    which holds no process.
 5. **Drop.** `setpriv` runs the second phase as uid 10000
    (`packages/vmm/guest/loom-guest-init:191`).
-6. **Options.** The second phase renders the TLS options file with the guest's
-   own `loomd distribution options`
-   (`packages/vmm/guest/loom-guest-executor:49`). `distribution.start` compares
-   that file with what the configuration renders, paths included, so a file
-   rendered on the host would refuse the boot.
 
 ## The link: the orchestrator reaches the guest executor
 
-The orchestrator dials the executor by its unchanged node name,
-`<name>@127.0.0.1`, exactly as it dials an executor on the same host. The
-launcher makes that name resolve to a forwarded port, and every check of the
-distributed runtime runs unchanged. This is the link guests made by an older
-`loom vm up` use, and what `loom-vm run --publish` still provides. `loom vm up`
-now reaches every guest over a pinned TLS link that is not distribution, and
-refuses a guest made this way; see "The untrusted link" and "Guests made over
-distribution".
+The orchestrator dials a host loopback port that `loom-vm run --forward`
+holds, and the hosted provider carries the connection to the guest's
+`[executor_listener]`. The link is the pinned TLS link of "The untrusted link",
+not Erlang distribution: no epmd, no cookie and no node name are involved on
+either side. A guest made over distribution by an older `loom vm up` is refused
+by `up` and `ensure`; see "Guests made over distribution".
 
-```mermaid
-flowchart LR
-    dial["orchestrator dials<br/>name@127.0.0.1"]
-    lookup["host epmd<br/>PORT_PLEASE(name)"]
-    fwd["127.0.0.1:HOST<br/>hosted.Provider forward"]
-    guest["192.168.127.2:4370<br/>guest dist listener"]
-    tls["TLS verify/4<br/>pin + node-name SAN"]
-    hs["dist handshake<br/>exact name check"]
-    ok["connected:<br/>remote/workspace attach"]
-
-    dial --> lookup --> fwd --> guest --> tls --> hs --> ok
-    lookup -- "name not registered" --> down["nodedown,<br/>attach fails before send"]
-    fwd -- "guest not listening" --> reset["tcpproxy dial refused,<br/>connection closed"]
-    tls -- "pin or SAN mismatch" --> refused["TLS alert,<br/>no connection"]
-```
-
-The flowchart's point is that the VM adds only the middle two hops; the first
-and the last three are the ordinary distributed path.
-
-1. **Resolve.** The dial path asks the epmd at the name's host part
-   (`127.0.0.1`) for the name's port. `loom-vm run --publish` holds that entry:
-   `register` (`packages/vmm/cmd/loom-vm/main.go:280`) calls `epmd.Register`
-   (`packages/vmm/epmd/epmd.go:60`), which sends an ALIVE2 request with node
-   type 77 and protocol version 6 (`packages/vmm/epmd/epmd.go:35`). When no
-   epmd answers, `register` runs `epmd -daemon` and retries for 3 s. epmd keeps
-   the entry while the registering connection stays open, so the entry lives
-   exactly as long as `loom-vm`.
-2. **Forward.** `Spec.Forwards` becomes `microvm.WithPorts`
+1. **Forward.** `Spec.Forwards` becomes `microvm.WithPorts`
    (`packages/vmm/machine/libkrun/libkrun.go:284`). The hosted provider listens
    on host `127.0.0.1:HOST` only and opens a connection to the guest port,
    admitting it through the guest firewall's ingress rules.
-3. **Listen.** The guest daemon's listener binds every interface, because the
-   distribution FFI sets only the listen port range
-   (`packages/client/src/client_distribution_ffi.erl:386`). A listener bound to
+2. **Listen.** The guest daemon's `[executor_listener]` binds every interface
+   on guest port 4370 (`vm_spec.guest_port`,
+   `packages/client/src/client/vm_spec.gleam:103`). A listener bound to
    loopback would refuse the forward.
-4. **Verify.** The certificate pin, the node-name SAN and the distribution
-   handshake's exact-name check are the same code a host pair runs. The guest
-   node calls itself `<name>@127.0.0.1` as well, because the handshake refuses
-   a peer whose name differs from the atom dialled.
+3. **Verify.** The link checks the guest's certificate against the pin the
+   orchestrator holds, and the guest admits only the orchestrator's pin.
 
-The guest's own epmd is never reached from the host. The fixed guest listen
-port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:103`).
+If the guest is not listening, the provider's dial is refused and the
+connection closes; a pin mismatch ends in a TLS alert and no connection.
 
 ## Isolation around a tool call
 
@@ -208,7 +165,7 @@ flowchart TB
     out["tool result<br/>to orchestrator"]
 
     toolcall --> policy --> helper --> kernel --> out
-    policy -- "node key or cookie" --> masked["masked path,<br/>read fails"]
+    policy -- "node key" --> masked["masked path,<br/>read fails"]
     helper -- "layer missing" --> refuse["FullEnforcement refuses<br/>(stock kernel: no landlock)"]
     kernel -- "connect" --> net
     net -- "host loopback, unlisted name" --> nx["refused or NXDOMAIN"]
@@ -221,10 +178,11 @@ filesystem layout is not.
    workspace's read scope and adds the state-root, blob and evolution masks,
    and `workspace_policy.protecting_node_credentials`
    (`packages/client/src/client/executor_plane.gleam:606`). The node's TLS key
-   and cookie come from the executor's own `[distribution]` table, read by
-   `node_credentials` (`packages/client/src/client/executor_plane.gleam:323`).
+   comes from the executor's own `[executor_listener]` table, read by
+   `untrusted_config.secret_files` through `masked_files`
+   (`packages/client/src/client/executor_plane.gleam:322`).
    Under the default `host` read scope the jail sees the whole guest, `/srv`
-   included, so this mask is what keeps model code from printing either file.
+   included, so this mask is what keeps model code from printing the file.
    An absent path is skipped, as for every conditional mask
    (`packages/client/src/client/workspace_policy.gleam:1612`), because the jail
    refuses to mask a missing file.
@@ -422,10 +380,8 @@ stateDiagram-v2
     Validated --> [*]: Validate error<br/>(no root, bad target, bad host)
     Validated --> Booted: Backend.Start<br/>(provider, runner spawned)
     Validated --> [*]: Start error<br/>(provider stopped, owned data dir removed)
-    Booted --> Published: epmd.Register per --publish
-    Booted --> Stopping: Register error
-    Published --> Stopping: guest exits (Wait)<br/>or SIGTERM / timeout
-    Stopping --> Stopped: reg.Close, then guest.Stop
+    Booted --> Stopping: guest exits (Wait)<br/>or SIGTERM / timeout
+    Stopping --> Stopped: guest.Stop
     Stopped --> [*]
 ```
 
@@ -440,9 +396,8 @@ image cache and would delete the caller's directory
 30 s context, so a cancelled caller still releases the VMM.
 
 The launcher defers its teardown (`packages/vmm/cmd/loom-vm/main.go:220`), and
-deferred calls run in reverse order, so the epmd names are withdrawn before the
-guest stops and no
-name points at a dead port for longer than the stop takes. A cancellation from
+deferred calls run in reverse order, so the guest stops before the credential
+proxy comes down. A cancellation from
 SIGTERM is a clean exit; a timeout (default 10 minutes) exits 1.
 
 ## The guest image and firmware
@@ -505,8 +460,8 @@ guest the paths are these:
 | --- | --- | --- |
 | `/opt/loom` | the server release, bundled ERTS, `loom-exec` | image, read by everyone |
 | `/srv/loom-node/loom.toml` | the executor's configuration, with guest paths | staged per boot, readable by model code (no secrets) |
-| `/srv/loom-node/creds/key.pem`, `home/.erlang.cookie` | the node's TLS key and cookie | staged per boot, 0600 `loom`, masked from jails |
-| `/srv/loom-node/state` | the state disk (`state.img`, ext4): the state root, `dist.options`, `loomd.log`; a tmpfs only when no device is given | kept across `down` and `up`, replaced by `--fresh` |
+| `/srv/loom-node/creds/key.pem` | the node's TLS key | staged per boot, 0600 `loom`, masked from jails |
+| `/srv/loom-node/state` | the state disk (`state.img`, ext4): the state root and `loomd.log`; a tmpfs only when no device is given | kept across `down` and `up`, replaced by `--fresh` |
 | `/srv/workspaces/<name>` | the checkout the executor serves | staged per boot, owned by `loom` |
 | `/sys/fs/cgroup/loom/{init,work,exec}` | the delegated cgroup subtree | built by `loom-guest-init` each boot |
 
@@ -597,7 +552,7 @@ communicate only through files, sockets and signals.
 
 | Process or goroutine | Owns |
 | --- | --- |
-| `loom-vm run` main goroutine | the `Spec`, the epmd `Registration`s, the deferred teardown order |
+| `loom-vm run` main goroutine | the `Spec`, the deferred teardown order |
 | `loom-vm` follow goroutine and its `Wait` | copying `console.log` to standard output; polling the runner's pid every 100 ms |
 | `hosted.Provider` goroutines in `loom-vm` | the gVisor network stack, the egress firewall and DNS, the host loopback listeners of each forward |
 | `ghproxy` handler goroutines in `loom-vm` | one goroutine per CONNECT, which owns the hijacked guest connection and its upstream; `Proxy.Close` closes them all when the run ends |
@@ -613,10 +568,6 @@ Four rules follow from that table:
   with SIGKILL leaves the runner and its data directory behind (`loom-vm
   doctor` lists such runners and never kills them); SIGTERM or an interrupt
   runs the full teardown.
-- **A registration is a connection.** The epmd entry vanishes when
-  `loom-vm` exits for any reason, including a crash. It never outlives the
-  guest, but it can precede the daemon, which is why readiness is the console
-  marker.
 - **Readiness is read from the console, never from the port.** A forward
   accepts a connection on the host side even when nothing listens in the
   guest; the hosted provider then closes it.
@@ -688,8 +639,7 @@ guest `vm_spec.ensure_step` decides from observed facts, and each step prints
 one line on standard error saying which ran (`loom vm ensure: <guest>: ...`):
 
 1. The guest runs and its console holds `LOOM-EXECUTOR-READY`: print the line
-   and stop. The guest registers no node in the host's epmd, and the console is
-   the witness `await_ready` uses too; it is truncated at every launch, so a
+   and stop. The console is the witness `await_ready` uses too; it is truncated at every launch, so a
    ready line from an earlier boot does not count. The path reads the manifest, `loom.toml` and the daemon record,
    and writes, clones, stages and restarts nothing. It refuses a guest whose
    recorded root revision is not this build's (`loom update` happened), naming
@@ -1151,10 +1101,9 @@ loom --vm
   presents the guest's leaf) and no `[distribution]` table. The root holds the
   authority's certificate, the guest's leaf and its key, and no cookie and no
   ledger. The key is the only secret in the guest.
-- It boots with `loom-vm run --forward <host port>:4370` and no `--publish`, so
-  the host's epmd lists no node for the guest. The guest script reports ready
-  when the daemon has logged `daemon.executor_serving` and
-  `daemon.untrusted_listener`, instead of waiting on epmd.
+- It boots with `loom-vm run --forward <host port>:4370`. The guest script
+  reports ready when the daemon has logged `daemon.executor_serving` and
+  `daemon.untrusted_listener`.
 
 The credentials of a vm home and the user's `loom.toml` are shared by every
 guest, so one `up` at a time changes them: the work from minting the
@@ -1264,8 +1213,7 @@ there is no `--trusted` escape for remote evolution.
 first turn, the resume through an orchestrator that keeps running, the daily
 verbs, the upgrade in place, a killed launcher, a failing script and the
 removals. Its checks of what a guest holds: the guest root has no
-`.erlang.cookie` and its `loom.toml` no `[distribution]` table, the host's epmd
-lists no node for it, a jailed read of the executor's key returns nothing while
+`.erlang.cookie` and its `loom.toml` no `[distribution]` table, a jailed read of the executor's key returns nothing while
 the certificate beside it is readable, and `status` names the link. On a second
 guest a jailed call edits the guest's checkout, and the step then checks the
 stored baseline is a revision, the `worktree_diff` board lists the edited
@@ -1356,7 +1304,7 @@ installs from other registries allows their hosts, and a client that honours
 The root is a directory the guest's `loom` user can write into, so a jail
 escape during one boot can leave a link where a directory belongs. `up` runs
 with the guest stopped, so this is a stale link and not a race, but a write
-through it would put the executor's TLS key and cookie, or the script, in a host
+through it would put the executor's TLS key, or the script, in a host
 directory. `vm_cli.make_inside` creates each directory under the root one
 component at a time and checks after each that its canonical path is the
 canonical root plus the same suffix, refusing with one line that names the path
@@ -1555,7 +1503,7 @@ the host are not in it.
   placement of #1137, which does not exist. Another machine uses the guest by
   spawning on the orchestrator of this host.
 - There is no `loom vm shell`. A guest has no exec channel: its executor serves
-  the orchestrator over the distribution link and nothing else, so a command in
+  the orchestrator over the untrusted link and nothing else, so a command in
   the guest runs only through a session's tools.
 - macOS with Hypervisor.framework and Linux x86_64 with KVM have booted a
   guest. Linux arm64 has not, and the Linux x86_64 runs were rootless on one
@@ -1580,9 +1528,6 @@ the host are not in it.
 - The behaviour on the stock kernel is inferred: a turn does not complete,
   which matches the broker's `landlock` demand, but the exact refusal was not
   captured.
-- The host epmd entry assumes the node name's host part is `127.0.0.1`. A
-  guest executor reached from another machine would need a different
-  transport.
 - The automated test drives the credential proxy only with a made-up token.
   `daemon_shipped_microvm_test` boots a guest with `loom vm up --github env`
   and a fake `LOOM_VM_GITHUB_TOKEN`, and a jailed `bash` call shows the

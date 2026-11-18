@@ -43,9 +43,6 @@ registry client, gVisor's netstack) never enters the jail helper's module.
 - `machine/libkrun.Backend` — the go-microvm implementation. `Config` names
   the runner binary, the libkrun directory, and an optional `FirmwareDir`
   for a custom libkrunfw searched before the stock one.
-- `epmd.Register` — an ALIVE2 registration of a node name in an epmd, held
-  open as a `Registration` because epmd withdraws a name when the registering
-  connection closes.
 - `setup.Manifest` — the contract a launcher reads: `{"version": 1,
   "revision", "loom_vm", "runner", "lib_dir", "firmware_dir", "guest_root"}`,
   absolute paths, written to `$LOOM_VM_HOME/manifest.json` (default
@@ -72,9 +69,8 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   `doctor` and `run [flags] -- INIT ARGS`. Native paths come
   from `--runner`, `--lib-dir`, `--firmware-dir` or `LOOM_VM_RUNNER`,
   `LOOM_VM_LIB_DIR`, `LOOM_VM_FIRMWARE_DIR`. `run` takes `--file`,
-  `--allow`, `--forward HOST:GUEST` and `--publish NAME:HOST:GUEST`, which
-  forwards the port and registers NAME at HOST in the host's epmd (starting
-  one with `epmd -daemon` when none answers) for the guest's life. An
+  `--allow`, `--forward HOST:GUEST`, which forwards a host loopback port to a
+  guest port for the guest's life. An
   interrupt or SIGTERM stops the guest and exits 0; a timeout exits 1, and
   `--timeout 0` runs until stopped, as a standing guest does. A runner that
   exits before it creates the console file exits `run` 1 with `errNoConsole`
@@ -139,17 +135,14 @@ registry client, gVisor's netstack) never enters the jail helper's module.
 - `guest/loom-guest-executor NODE_DIR` — the guest side of an executor. As
   root it settles the loom user's ids, mounts the state disk or a tmpfs on
   `NODE_DIR/state` and gives `NODE_DIR` and
-  `/srv/workspaces/*` to loom; then, through `loom-guest-init`, it renders the
-  distribution options inside the guest, starts `loomd`, and prints
-  `LOOM-EXECUTOR-READY <name>` once the node is registered with the guest's
-  epmd and the daemon has logged `daemon.executor_serving` (or
-  `LOOM-EXECUTOR-FAILED` and the daemon log). When the staged `loom.toml` has an
-  `[executor_listener]` table (the untrusted link, `loom vm up --link
-  untrusted`), the daemon is no distribution peer: the script renders no
-  options file, needs no cookie (it chmods one only if present), and prints
-  `LOOM-EXECUTOR-READY untrusted` once the log holds both
-  `daemon.executor_serving` and `daemon.untrusted_listener`. The launcher is run
-  with `--forward` and not `--publish` for such a guest.
+  `/srv/workspaces/*` to loom; then, through `loom-guest-init`, it starts
+  `loomd` and prints `LOOM-EXECUTOR-READY untrusted` once the daemon's log
+  holds both `daemon.executor_serving` and `daemon.untrusted_listener` (or
+  `LOOM-EXECUTOR-FAILED` and the daemon log). Every guest is on the untrusted
+  link (protocol-change/109): the staged `loom.toml` has an
+  `[executor_listener]` table, the daemon is no distribution peer, and the
+  script renders no options file, stages no cookie and runs no epmd. The
+  launcher is run with `--forward`.
 
 ## Relationships
 
@@ -169,16 +162,13 @@ guest, then `vm down` and `vm up` again.
 
 ## Traffic
 
-An executor in a guest speaks Loom's ordinary TLS distribution. The
-orchestrator on the host resolves the executor's unchanged node name
-(`<name>@127.0.0.1`) through the host epmd entry `--publish` holds, connects
-to the forwarded host port, and the hosted stack carries the connection to
-the guest's `listen_port`; the pinned handshake, the certificate's node-name
-SAN and the distribution name check run as between two host nodes. The
-guest's own epmd is never reached from the host. The guest's console is a host file
-(`<data dir>/console.log`) the runner writes. The guest's network is a
-virtio-net device whose other end is go-microvm's hosted gVisor stack in the
-launcher process: guest 192.168.127.2/24, gateway and DNS 192.168.127.1. The
+An executor in a guest serves the untrusted executor link
+(protocol-change/109). The host's `loom vm` link dials a loopback port that
+`--forward` forwards, and the hosted stack carries the connection to the
+guest's listener; no epmd and no cookie are involved on either side. The
+guest's console is a host file (`<data dir>/console.log`) the runner writes.
+The guest's network is a virtio-net device whose other end is go-microvm's
+hosted gVisor stack in the launcher process: guest 192.168.127.2/24, gateway and DNS 192.168.127.1. The
 guest configures that statically; go-microvm v0.0.43 serves no DHCP lease.
 
 With `--github-token-from`, git, gh and curl in the guest send `CONNECT
@@ -265,10 +255,10 @@ credential.
   exact-revision, so setup refuses an image whose version label is not the tag
   and records the revision label in the manifest.
 - **The mask, not `/srv`, keeps an executor node's secrets.** The node's
-  key, cookie and configuration are staged under `/srv/loom-node`, which lies
+  key and configuration are staged under `/srv/loom-node`, which lies
   outside the jail's minimal base view; under the default host read scope the
   jail sees the whole guest, `/srv` included, and only the daemon's
-  `protecting_node_credentials` mask keeps the key and cookie from model code.
+  `protecting_node_credentials` mask keeps the key from model code.
   Do not stage another secret there expecting the location to protect it.
 - **A Linux share shows the host user's ids, and only root and that user can
   write it.** libkrun's virtio-fs passthrough has no ownership emulation

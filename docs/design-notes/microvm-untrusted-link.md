@@ -2,8 +2,9 @@
 
 **Status**: proposed 2026-11-13 and ruled by the owner the same day (section 10:
 questions 1, 2, 3 and 5 as recommended). Slices 1 to 4 are built, and so is the
-first part of slice 5, which deletes the distribution bring-up from `loom vm`
-(2026-11-18). The remaining part of slice 5 deletes the `rm` teardown of guests
+first two parts of slice 5, which delete the distribution bring-up from
+`loom vm` and then from the launcher and the guest script (2026-11-18). The
+remaining part of slice 5 deletes the `rm` teardown of guests
 an older loom made, once such guests cannot exist. The ruling is recorded in
 ADR-022's addendum of 2026-11-17, which supersedes the link of the first
 2026-11-01 addendum and the developer-path addendum's ruling that the local
@@ -282,7 +283,8 @@ the handshake.
 `--publish NAME:HOST:GUEST` (now `vm_spec.forward_arguments`, which has no publish form). The
 launcher already has the flag (`cmd/loom-vm/main.go:156` (`forward`)).
 
-The guest image's `loom-guest-executor` changes in about ten lines: it renders no
+The guest image's `loom-guest-executor` changed in about ten lines (slice 5
+later deleted its distribution branch altogether): it renders no
 distribution options file, it no longer `chmod`s a cookie (which, under
 `set -eu`, would fail when the file is absent), and it reports
 `LOOM-EXECUTOR-READY` when the log holds `daemon.untrusted_listener` and
@@ -481,7 +483,8 @@ port, about 400 lines with tests. `distribution_provision` and
 ## 7. What does not change
 
 - The launcher, `packages/vmm`, apart from `up` passing `--forward` instead of
-  `--publish`; both flags exist.
+  `--publish`. Both flags existed when this was written; slice 5 then deleted
+  `--publish` and its epmd registration.
 - The guest image, apart from `loom-guest-executor`'s readiness and cookie
   lines (Section 3).
 - The GitHub credential proxy and its placeholder.
@@ -543,7 +546,12 @@ Each slice ships alone and is listed in merge order.
    the `NeedsDaemon` ending (status 75, `daemon=required`) with the launcher's
    retry in `tui/vm_ensure`. `rm` still undoes an old guest completely, `down`
    still stops one, and `status`, `list`, `logs` and `sync` still read one.
-   **Second part, open:** the `rm` teardown, the daemon observation and stop
+   **Launcher and guest part, built (2026-11-18):** `loom-vm run` has no
+   `--publish`, `packages/vmm/epmd` is deleted, and `loom-guest-executor` has
+   one readiness rule, which prints `LOOM-EXECUTOR-READY untrusted` once the
+   log holds `daemon.executor_serving` and `daemon.untrusted_listener`; it
+   renders no options file and touches no cookie.
+   **Last part, open:** the `rm` teardown, the daemon observation and stop
    step (still used by the untrusted path when a running daemon cannot
    reload), `epmd_line` and the old-guest classifier, once old guests cannot
    exist. **Exit**: `make check` green.
