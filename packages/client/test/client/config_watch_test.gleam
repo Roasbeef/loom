@@ -8,8 +8,15 @@
 //// module's: a notice comes exactly when two reads in a row agree on a text that
 //// passes the check and differs from the text the session has, and never twice
 //// for one text.
+////
+//// Below the model, the cases of what counts as a text that differs
+//// (`session_view`): a file that gains, loses or changes an `[executors.NAME]`
+//// row does not, and a change to anything a session reads, including the key
+//// file an untrusted-link table names, does. Those run the production loader
+//// (`serve.check_config`) as the check.
 
 import client/config_watch
+import client/serve
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -288,4 +295,201 @@ fn kind(command: Command) -> String {
     Remove -> "remove"
     Oversize -> "oversize"
   }
+}
+
+// --- what a session reads ------------------------------------------------------
+
+// A catalogue a session opens on: two models, the roles, and a profile.
+const session_text =
+  "
+[models.base]
+dialect = \"anthropic\"
+api_key_env = \"WATCH_TEST_KEY\"
+model_id = \"base-model\"
+context_window = 1000
+max_output_tokens = 100
+[models.alt]
+dialect = \"openai\"
+api_key_env = \"WATCH_TEST_KEY\"
+model_id = \"alt-model\"
+context_window = 2000
+max_output_tokens = 200
+[roles]
+main = [\"base\"]
+advisor = [\"alt\"]
+"
+
+const pin = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+// The rows `loom vm up` writes for one guest, with the link's key at `key`.
+fn guest(name: String, key: String, certificate: String) -> String {
+  "
+[executor_link]
+ca = \"/vm/link/ca.pem\"
+certificate = \"" <> certificate <> "\"
+key = \"" <> key <> "\"
+[executors." <> name <> "]
+trust = \"untrusted\"
+address = \"127.0.0.1:7443\"
+pin = \"" <> pin <> "\"
+"
+}
+
+fn view(text: String) -> String {
+  config_watch.session_view(text)
+}
+
+pub fn a_row_for_an_executor_is_not_in_the_view_test() {
+  let with_row = session_text <> guest("vm", "/vm/link/key.pem", "/vm/c.pem")
+
+  // A second guest, a changed pin and a removed row all leave the same view as
+  // one guest, and the link's certificate is not read by a session either.
+  let second =
+    with_row
+    <> "[executors.other]\ntrust = \"untrusted\"\naddress = \"127.0.0.1:7444\"\npin = \""
+    <> pin
+    <> "\"\n"
+  let moved = session_text <> guest("vm", "/vm/link/key.pem", "/vm/other.pem")
+  assert view(second) == view(with_row)
+  assert view(moved) == view(with_row)
+  assert view(session_text <> "[distribution]\nnode = \"a@b\"\n")
+    == view(session_text)
+}
+
+pub fn the_key_a_link_table_names_is_in_the_view_test() {
+  let named = session_text <> guest("vm", "/vm/link/key.pem", "/vm/c.pem")
+
+  // A session jails with the key file masked, so a key named where none was, a
+  // different key, and a table that no longer names one are each a change.
+  assert view(named) != view(session_text)
+  assert view(named)
+    != view(session_text <> guest("vm", "/elsewhere/key.pem", "/vm/c.pem"))
+  let listened =
+    named
+    <> "[executor_listener]\nlisten = \"127.0.0.1:9000\"\nca = \"/l/ca\"\ncertificate = \"/l/c\"\nkey = \"/l/k\"\norchestrators = [\""
+    <> pin
+    <> "\"]\n"
+
+  // The listener's key path is carried in the view; a listener the reader
+  // refuses would carry none.
+  assert string.contains(view(listened), "\"/l/k\"")
+  assert view(listened) != view(named)
+}
+
+pub fn what_a_session_reads_is_in_the_view_test() {
+  let changed = string.replace(session_text, "[\"base\"]", "[\"alt\"]")
+  assert view(changed) != view(session_text)
+
+  // The same document written another way is not a change.
+  let reordered =
+    "# a comment\n[roles]\nadvisor = [\"alt\"]\nmain = [\"base\"]\n"
+    <> string.replace(
+      session_text,
+      "[roles]\nmain = [\"base\"]\nadvisor = [\"alt\"]\n",
+      "",
+    )
+  assert view(reordered) == view(session_text)
+}
+
+pub fn text_that_does_not_parse_is_its_own_view_test() {
+  assert view("not = [toml") == "not = [toml"
+}
+
+// A watcher over a real file, judged by the production loader.
+fn watched(
+  initial: String,
+) -> #(String, Subject(config_watch.Message), Subject(Nil)) {
+  let directory =
+    "build/config_watch_test/" <> int.to_string(int.random(1_000_000_000))
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the scratch directory is made"
+  let path = directory <> "/loom.toml"
+  let assert Ok(Nil) = simplifile.write(path, initial)
+    as "the session's file is written"
+  let assert Ok(baseline) = config_watch.fingerprint(path)
+    as "the baseline reads"
+  let notices = process.new_subject()
+  let assert Ok(started) =
+    config_watch.start_unticked(
+      config_watch.Source(path:, baseline: Some(baseline), check: fn(text) {
+        serve.check_config(path, text, None, None)
+      }),
+      fn() { process.send(notices, Nil) },
+      log.discard(),
+    )
+    as "the watcher starts"
+  #(path, started.data, notices)
+}
+
+// Two reads that agree are what settle a change, so a save is read twice.
+fn settle(watcher: Subject(config_watch.Message)) -> Nil {
+  config_watch.tick(watcher)
+  config_watch.tick(watcher)
+}
+
+fn save(path: String, text: String) -> Nil {
+  let assert Ok(Nil) = simplifile.write(path, text) as "a save lands"
+  Nil
+}
+
+pub fn a_guests_rows_do_not_reopen_a_session_test() {
+  let #(path, watcher, notices) = watched(session_text)
+
+  // The first guest names the link's key, which a session masks, so that one
+  // write is owed a reopen; the next guests, a changed pin and a removed row
+  // are not.
+  save(path, session_text <> guest("vm", "/vm/link/key.pem", "/vm/c.pem"))
+  settle(watcher)
+  assert drain(notices, 0) == 1
+
+  let second =
+    session_text
+    <> guest("vm", "/vm/link/key.pem", "/vm/c.pem")
+    <> "[executors.other]\ntrust = \"untrusted\"\naddress = \"127.0.0.1:7444\"\npin = \""
+    <> pin
+    <> "\"\n"
+  save(path, second)
+  settle(watcher)
+  save(path, session_text <> guest("other", "/vm/link/key.pem", "/vm/c.pem"))
+  settle(watcher)
+  assert drain(notices, 0) == 0
+
+  // A change to a table a session reads still reopens it exactly once.
+  save(
+    path,
+    string.replace(session_text, "[\"base\"]", "[\"alt\"]")
+      <> guest("other", "/vm/link/key.pem", "/vm/c.pem"),
+  )
+  settle(watcher)
+  assert drain(notices, 0) == 1
+  settle(watcher)
+  assert drain(notices, 0) == 0
+}
+
+pub fn a_row_that_the_loader_would_refuse_changes_nothing_a_session_reads_test() {
+  let #(path, watcher, notices) = watched(session_text)
+
+  // The loader refuses this row (an untrusted row needs an address), and the
+  // session it would reopen is not told: the view did not change, so the text
+  // is never judged.
+  save(path, session_text <> "[executors.bad]\ntrust = \"untrusted\"\n")
+  settle(watcher)
+  assert drain(notices, 0) == 0
+}
+
+pub fn a_fix_in_a_table_the_view_drops_is_judged_again_test() {
+  let #(path, watcher, notices) = watched(session_text)
+  let roles_changed = string.replace(session_text, "[\"base\"]", "[\"alt\"]")
+
+  // The owner edits the roles while a hand-written row the loader refuses sits
+  // in the file: the view changed, the check fails, and nothing is told.
+  save(path, roles_changed <> "[executors.bad]\ntrust = \"untrusted\"\n")
+  settle(watcher)
+  assert drain(notices, 0) == 0
+
+  // The fix removes only the row. The view is the one already refused, but the
+  // text is new, so it is checked again and the session is reopened.
+  save(path, roles_changed)
+  settle(watcher)
+  assert drain(notices, 0) == 1
 }

@@ -358,7 +358,8 @@ host-side peer is the launcher's stack with its egress allowlist. The uppercase
 names are enough: `env` accepts only `[A-Z_][A-Z0-9_]*`, git reads
 `/etc/gitconfig` regardless, and curl and Go read `HTTPS_PROXY`. `loom vm up`
 renders these lines into the guest's configuration when `--github` is `gh` or
-`env` (`vm_spec.guest_config`), and renders none for `--github off`.
+`env` (`vm_link.guest_config`, through `vm_spec.guest_config_with`), and
+renders none for `--github off`.
 
 **What is logged.** One line per CONNECT (host, decision and mode, bytes each
 way, duration) and one per injected request (host, method, path without its
@@ -701,11 +702,7 @@ one line on standard error saying which ran (`loom vm ensure: <guest>: ...`):
    process on its root would corrupt it.
 3. A manifest that must be refused (a development build with none, or from
    another revision) is refused as `up` always did, naming `make vmm-install-dev`.
-4. A guest that would join a ledger deployment with no daemon running stops
-   with status 75 and the last line `daemon=required`. Only a distribution
-   guest could join one, so no guest takes this step now; it goes with the
-   distribution path.
-5. Otherwise `up`'s own path (`vm_cli.bring_up`), fresh or resumed, for the
+4. Otherwise `up`'s own path (`vm_cli.bring_up`), fresh or resumed, for the
    derived name. It installs a missing manifest, or one built from another
    release, first, as `up` does, so setup is not a step of its own.
 
@@ -729,17 +726,16 @@ step 1. A guest written into a `--config` other than the default, whose daemon
 `ensure` cannot find, fails when a daemon is running after the row was
 written.
 
-**Two orderings.** The launcher runs `ensure` before it resolves the daemon,
+**The daemon.** The launcher runs `ensure` before it resolves the daemon,
 because `ensure` writes the guest's row and asks a daemon that already runs to
 read it, while a daemon the launcher's normal resolve starts afterwards reads
-the file at its start. `up` never starts a daemon. The launcher still handles
-step 4: on `daemon=required` it resolves the daemon the way a local launch does,
-which starts one when none runs, runs `ensure` once more, and fails with the
-second run's error if it still does not succeed. One retry, no loop.
-`tui/vm_ensure.ensure` takes the runner and the daemon start as arguments, so its
-tests script both orderings. A refusal reaches the interactive launch on the
-terminal, where `ensure`'s standard error goes, and the launcher adds no empty
-`loom:` line after it.
+the file at its start. `up` and `ensure` never start a daemon, and neither asks
+the launcher to: the status 75 and `daemon=required` ending that once did, for a
+guest joining a ledger deployment, was deleted with the distribution bring-up,
+and the launcher runs `ensure` once. `tui/vm_ensure.ensure` takes the runner as
+an argument, so its tests script the answers. A refusal reaches the interactive
+launch on the terminal, where `ensure`'s standard error goes, and the launcher
+adds no empty `loom:` line after it.
 
 `up` itself now runs `loom vm setup` for a manifest from another release too,
 not only for a missing one, because the refusal's remedy was always that command
@@ -755,11 +751,11 @@ Tests: `vm_one_flag_test` (names, the table of `ensure_step`, the github record)
 start out as a distribution guest, stopped or running, a daemon that is down,
 idle or busy, `loom update` and crashes, over the pure decisions: `ensure`
 serves exactly the live untrusted guests, refuses an old guest and changes
-nothing, boots only against a current manifest, never answers `NeedsDaemon`,
-leaves a running daemon holding the row of every guest it booted, never makes a
+nothing, boots only against a current manifest, leaves a running daemon
+holding the row of every guest it booted, never makes a
 distribution guest, and each guest records the last explicit `--github` since
 its last `--fresh`) and `vm_launch_test` in `tui` (the flag, the line parser,
-both orderings through a scripted runner). The model reads the process, not the
+one run of `ensure` through a scripted runner). The model reads the process, not the
 pid record, so it does not exercise a stale pid record, and its daemon always
 answers `executors.reload`.
 
@@ -912,14 +908,14 @@ run when the key is elsewhere; and it refuses a guest that minted a deployment
 others joined until they are removed. It deletes the guest's roots and state
 disk before the rest of its directory, so an interrupted `rm` leaves `deploy/`
 or the `link` record behind with nothing they classify, and the next command
-still reads the guest as an old one. This teardown, and the mint,
-join and staging code that `up` no longer reaches, are deleted from `loom vm`
-after one release.
+still reads the guest as an old one. The mint, join and staging code that `up`
+no longer reached was deleted on 2026-11-18; this teardown is deleted once an old
+guest can no longer exist.
 
 
 A second `up` with another `--workspace` while the guest is stopped adds that
 directory's copy to the root, and the guest's `loom.toml` registers every copy:
-`stage_node` writes one `[workspaces.<name>]` row for the current directory and
+`stage_linked_node` writes one `[workspaces.<name>]` row for the current directory and
 one for each workspace the host's `checkouts` record names whose copy is in the
 root (`registered_workspaces`). The names come from that record, which the host
 wrote, and never from a listing of the root, which the guest wrote. A guest from
@@ -1364,7 +1360,7 @@ through it would put the executor's TLS key and cookie, or the script, in a host
 directory. `vm_cli.make_inside` creates each directory under the root one
 component at a time and checks after each that its canonical path is the
 canonical root plus the same suffix, refusing with one line that names the path
-and `--fresh`. `stage_node` (`home`, `creds`, `state`), `stage_script`,
+and `--fresh`. `stage_linked_node` (`home`, `creds`, `state`), `stage_script`,
 `copy_workspace` and `own_repository`'s staging directory all go through it.
 `stageFile` in `libkrun.go` makes the same check on the resolved parent of each
 file `loom-vm` stages.

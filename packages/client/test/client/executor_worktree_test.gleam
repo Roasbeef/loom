@@ -76,12 +76,16 @@ fn plane(name: String) -> Plane {
 }
 
 fn serve(rig: Rig) -> Plane {
+  serve_limited(rig, exec_ledger.default_limits())
+}
+
+fn serve_limited(rig: Rig, limits: exec_ledger.Limits) -> Plane {
   let factory = executor_plane.factory(machine(rig), [rig.workspace], rig.trees)
   let assert Ok(started) =
     host.start(host.Config(
       name: process.new_name("executor_worktree_host"),
       ledger_path: rig.ledger_path,
-      limits: exec_ledger.default_limits(),
+      limits:,
       max_result_bytes: host.default_max_result_bytes,
       execution_result_bytes: host.default_execution_result_bytes,
       states: state_transfer.declining(),
@@ -308,11 +312,87 @@ pub fn a_failed_worktree_is_refused_with_gits_message_and_leaves_nothing_test() 
   assert string.contains(reason, "no-such-ref")
   assert !exists(tree_of(plane, 1))
 
-  // The scope stayed open, so a retry builds again and is refused the same way.
+  // The scope was closed with nothing to retire, so a retry reopens it at the
+  // next incarnation and is refused the same way.
+  let assert Error(protocol.WorktreeFailed(_)) =
+    surface.attach(config(plane, 1, 1))
+    |> result.map(fn(_attachment) { Nil })
+  assert scope_state(plane, 1)
+    == Some(#(1, exec_ledger.Closed(exec_ledger.AllRetired)))
+  stop(plane)
+}
+
+// An executor that holds one scope at most. A worktree that Git cannot make
+// leaves no plane and no tree, so the scope its attach created is closed in the
+// same step as the refusal. Left open it counted against the limit for good,
+// because the orchestrator ends a session that was refused as final and never
+// closes a scope it holds no plane for. The drive that found this ran eight
+// such executors with a limit of one, and the first failed spawn took one out
+// of the pool.
+pub fn a_failed_worktree_does_not_hold_the_executors_only_scope_test() {
+  let limits =
+    exec_ledger.Limits(
+      max_unclean_scopes: 1,
+      max_ledger_bytes: exec_ledger.default_max_ledger_bytes,
+    )
+  let plane =
+    serve_limited(worktree_rig.rig_at("only-scope", "no-such-ref"), limits)
   let assert Error(protocol.WorktreeFailed(_)) =
     surface.attach(config(plane, 1, 0))
     |> result.map(fn(_attachment) { Nil })
+  assert scope_state(plane, 1)
+    == Some(#(0, exec_ledger.Closed(exec_ledger.AllRetired)))
+
+  // Another session is refused for its own tree, not for want of room.
+  let assert Error(protocol.WorktreeFailed(_)) =
+    surface.attach(config(plane, 2, 0))
+    |> result.map(fn(_attachment) { Nil })
   stop(plane)
+}
+
+// A workspace root that is gone, deleted or unmounted, fails before any tree is
+// attempted, with nothing built. The scope that attach admitted is closed in the
+// same step as the refusal, for the same reason as above: the orchestrator never
+// closes a scope it holds no plane for, so an open one would hold the executor's
+// only slot until it restarted.
+pub fn a_missing_workspace_root_does_not_hold_the_executors_only_scope_test() {
+  let limits =
+    exec_ledger.Limits(
+      max_unclean_scopes: 1,
+      max_ledger_bytes: exec_ledger.default_max_ledger_bytes,
+    )
+  let rig = worktree_rig.rig("missing-root")
+  let plane = serve_limited(rig, limits)
+  let assert Ok(Nil) = simplifile.delete(rig.root)
+    as "the workspace root is removed after the executor started"
+  let assert Error(protocol.NoPlane(reason)) =
+    surface.attach(config(plane, 1, 0))
+    |> result.map(fn(_attachment) { Nil })
+  assert string.contains(reason, "is not a directory")
+  assert scope_state(plane, 1)
+    == Some(#(0, exec_ledger.Closed(exec_ledger.AllRetired)))
+
+  // Another session is refused for the same root, not for want of room.
+  let assert Error(protocol.NoPlane(again)) =
+    surface.attach(config(plane, 2, 0))
+    |> result.map(fn(_attachment) { Nil })
+  assert string.contains(again, "is not a directory")
+  stop(plane)
+}
+
+// The incarnation and state of the session's scope in the executor's ledger, read
+// through a second connection. `connect` recovers nothing, so the host's live
+// calls are not turned unknown by the read.
+fn scope_state(
+  plane: Plane,
+  n: Int,
+) -> option.Option(#(Int, exec_ledger.ScopeState)) {
+  let assert Ok(ledger) = exec_ledger.connect(plane.rig.ledger_path)
+    as "a second connection to the ledger opens for the test"
+  let found = exec_ledger.scope(ledger, session(n))
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
+  let assert Ok(found) = found as "the scope reads"
+  option.map(found, fn(scope) { #(scope.incarnation, scope.state) })
 }
 
 // --- the sandbox ----------------------------------------------------------------

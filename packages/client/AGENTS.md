@@ -296,10 +296,11 @@ read a guest (`status`, `list`, `rm`) ask `vm_link.made` through
 `vm_cli.recorded_kind` and `made_kind`, so an old guest is shown as
 `distribution` and removed with the distribution teardown; a directory with no
 record and no traces reads as untrusted, and `other_kinds` does not count it.
-The distribution half of `bring_up` (`deployment`, `enroll`, `stage`, `boot`,
-the mint, join and seal helpers, `vm_spec`'s deployment decisions) is still
-compiled behind `on_link` and is reached by no guest; it is deleted after one
-release.
+`bring_up` calls `bring_up_linked` directly. The distribution half it once had
+(`deployment`, `enroll`, `stage`, `boot`, the mint, join and seal helpers,
+`vm_spec`'s `deployment_plan`, join decisions and `with_loopback_listener`) was
+deleted on 2026-11-18; what remains of that path is the teardown `rm` runs for an
+old guest and the classifier that refuses one.
 
 `bring_up_linked` chooses the port without recording it, works out the merge (a
 refusal leaves no guest), records the kind and port, writes the file, then runs
@@ -405,10 +406,8 @@ workspace. `vm_cli.ensure` settles the link first (`ensure_facts` calls
 `link_of`, so a distribution guest is refused with status 1 even when it
 serves), then observes the guest's process (pid record plus birth marker), the
 console's ready line and the manifest, and `vm_spec.ensure_step` returns
-`AlreadyServing`, `NeedsDaemon`, `NeedsSetup`, `Boot` or `Refuse`: a serving
-guest answers first and nothing else is read or written; `NeedsDaemon` (status
-75 and the last stdout line `daemon=required`) was for a join of a ledger
-deployment and no guest asks for it now; a manifest from another release gets
+`AlreadyServing`, `Boot` or `Refuse`: a serving guest answers first and nothing
+else is read or written; a manifest from another release gets
 `loom vm setup` first (`vm_spec.manifest_action`, which `up` uses too);
 otherwise `vm_cli.bring_up`, the code `up` runs, boots it. The last stdout line
 is `executor=<guest> workspace=<registered name>` (`vm_spec.ensure_line`), and
@@ -447,7 +446,7 @@ Git release with upload-pack's lazy-fetch refusal, 2.45.1 or a backport
 (`vm_spec.check_git_version`) and runs it with
 `GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach
 upload-pack; `--to-guest` bundles `--branches`; `logs` caps its output at 4 MiB;
-and `stage_node` registers every workspace the `checkouts` record names.
+and `stage_linked_node` registers every workspace the `checkouts` record names.
 
 `--allow HOST` and `--provision SCRIPT` are decided in `vm_spec`: `valid_host`
 (the `machine.Spec` rule, refused in `parse`), `encode_allow`/`decode_allow` for
@@ -595,11 +594,8 @@ create the home's only logs `daemon.vm_home_unavailable`, because a daemon with
 a read-only `HOME` works today and `loom vm up` as the same user cannot make the
 directory appear later; `LOOM_VM_HOME` elsewhere is not covered; tests in
 `daemon_state_masks_test`). A node key `loom distribution install` places outside the state
-root is still unmasked for host sessions. `loom vm up` installs a newly
-minted deployment with `listen_address = "127.0.0.1"`
-(`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
-The line is not in the bundle, so a later `loom distribution install` into the
-same file needs `--force`, which drops it.
+root is still unmasked for host sessions. `loom vm up` no longer installs a
+`[distribution]` table, so it writes no loopback listener line.
 `daemon_shipped_microvm_test` proves the mask from
 inside a libkrun guest it boots with `loom vm up` (see "Standing microVM guest");
 it needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
@@ -9176,8 +9172,9 @@ the protocol-change/078 addendum on moving a session have the protocol.
   a registration it already holds and replaces only the move row, so without the check
   the session reopens in the old directory without the executor's commits. A variant of
   `session_move.Refusal` would cross the node boundary, so none was added.
-- `remote/host.close_unserved` closes an attach's scope as retired when the build finds
-  the workspace unserved, for a created, reopened or rebound scope alike, provided
+- `remote/host.close_unbuilt` closes an attach's scope as retired when the build finds
+  the workspace unserved, its root is not a directory, or the session's Git worktree
+  cannot be made, for a created, reopened or rebound scope alike, provided
   `holds_nothing`: a rebound scope with a tree record, or with results the attach
   reported unacknowledged or lost, stays open, because it is a session's own and an
   executor restarted with the workspace dropped must not close it. This is what frees the
@@ -9197,6 +9194,18 @@ the protocol-change/078 addendum on moving a session have the protocol.
   (`a_name_corrected_before_the_retry_needs_one_round_of_the_advice_test`).
   `workspace.mismatch_words` is shown for a scope that is open, closing, closed without
   proof or holding a tree, and says so.
+  A build that fails before any plane exists for want of a tree or a root is closed the
+  same way, because the orchestrator ends a session refused as final and never closes a
+  scope it holds no plane for: left open, the scope counted against
+  `LOOM_EXECUTOR_MAX_SCOPES` until the executor was restarted. `close_unbuilt` takes
+  three failures as "nothing built": an unserved workspace (`NoPlaneBuilt` with the
+  `protocol.unserved_workspace` prefix), a workspace root that is not a directory
+  (`host.RootNotDirectory`), and a worktree Git could not make (`host.WorktreeNotMade`).
+  A rebound scope closes only when no tree record exists, and a failed `git worktree add`
+  leaves one itself, so a rebound scope whose own attempt ran Git stays open. The source's
+  record stays `open` after such a refusal, so the retry meets `StaleIncarnation` and
+  learns the close as it does for the unserved name. A failed `owner_link.start` replies
+  `NoPlane` after the scope was admitted and never reaches `close_unbuilt`.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
   linked to the process that starts the daemon's services. `Control` carries the
   listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;
@@ -10977,6 +10986,18 @@ held-queue drain, by `desk.restart()` once `live` is empty, the profile switch's
 own path. A session with no file, or no daemon, runs no watcher. A reopen ends
 attachments (the terminal reattaches, a web page needs a reload) and the
 session's background jobs.
+
+The fingerprint is of `config_watch.session_view`, not of the bytes: the parsed
+document, keys ordered, without `[executors.*]`, `[distribution]`,
+`[executor_link]` and `[executor_listener]`, plus the key paths those last two
+name (`untrusted_config.secret_files`, the reader `serve.link_secrets` uses to
+mask them in the session's jail). A session open validates the daemon tables
+(`catalog.parse_with_document`, which `Source.check` also runs) and reads a value
+from none of them, so `loom vm up`, `rm` and `--vm` rewriting `[executors.NAME]`
+rows do not reopen open sessions; the first `[executor_link]` (a new key to mask)
+still does, once. Text that does not parse is its own view. Do not drop a table
+from `daemon_tables` without finding its session-open reader first: the key mask
+was the one read found in these.
 
 `serve.check_config(path, text, profile, model)` is `load_config`'s parse over a
 text, with no secret resolved: `load_config` is the read and `parse_config`, and
