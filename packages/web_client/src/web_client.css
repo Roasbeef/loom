@@ -2208,7 +2208,7 @@
   .lift-tag{position:absolute;top:0;right:0;font:500 10px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   .tl-row.needs-you > .tl-body{border-radius:6px;background:var(--color-pill-wait-bg);}
   .tl-row.needs-you > .lift-tag{color:var(--color-signal-text);}
-  .tl-row[data-loom-jumped] > .tl-body{border-radius:6px;background:color-mix(in srgb,var(--color-current) 22%,transparent);outline:1px solid color-mix(in srgb,var(--color-current) 60%,transparent);outline-offset:0;}
+  .tl-row[data-loom-jumped] > .tl-body{border-radius:6px;background:color-mix(in srgb,var(--color-current) 14%,transparent);outline:1px solid color-mix(in srgb,var(--color-current) 60%,transparent);outline-offset:0;}
 
   /* The phone's bar and sheet. Wide frames draw the rail in the panel and hide
      these; below 980px the panel is a row of cards, the rail is hidden, and the
