@@ -27,8 +27,7 @@
 ////
 //// `launch` → `ensure` → `answer` → `parse_line`
 ////
-//// 1. `launch` locates the server and wires `ensure` to the real runner and the
-////    real daemon resolution.
+//// 1. `launch` locates the server and wires `ensure` to the real runner.
 //// 2. `ensure` runs the command, asks `answer` what the output means, and
 ////    builds the options the session starts with.
 //// 3. `answer` is the pure reading of a status and its output, and

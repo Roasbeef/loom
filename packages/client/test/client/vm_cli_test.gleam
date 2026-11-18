@@ -295,19 +295,6 @@ fn bundles(
   #(orchestrator, executor)
 }
 
-pub fn each_node_trusts_the_other_and_the_orchestrator_names_the_row_test() {
-  let #(orchestrator, executor) = bundles("dev")
-  let assert [row] = orchestrator.executors
-  assert row.name == "dev"
-  assert row.node == "loom_vm_dev_exec@127.0.0.1"
-  assert orchestrator.cookie == executor.cookie
-  let assert distribution_bundle.StaticPeers([orchestrator_peer]) =
-    orchestrator.trust
-  assert orchestrator_peer.node == "loom_vm_dev_exec@127.0.0.1"
-  let assert distribution_bundle.StaticPeers([executor_peer]) = executor.trust
-  assert executor_peer.node == "loom_vm_dev_orch@127.0.0.1"
-}
-
 // The executor's configuration as an untrusted guest is staged with it: the
 // listener table, the workspace rows and the tools table.
 fn guest_config(
@@ -366,7 +353,6 @@ fn launch(firmware: option.Option(String)) -> vm_spec.Launch {
     state_disk: "/vm/dev/state.img",
     github: vm_spec.GitHubOff,
     allow: [],
-    reach: vm_spec.Publish,
   )
 }
 
@@ -382,7 +368,7 @@ pub fn the_launch_runs_the_guest_script_on_the_node_directory_test() {
     == "run --name dev --root-dir /vm/dev/root --runner /o/runner "
     <> "--lib-dir /o/lib --firmware-dir /o/firmware --cpus 2 --mem 3072 "
     <> "--timeout 0 --state-disk /vm/dev/state.img "
-    <> "--publish loom_vm_dev_exec:47011:4370 -- "
+    <> "--forward 47011:4370 -- "
     <> "/usr/local/sbin/loom-guest-executor /srv/loom-node "
     <> "--state-device /dev/vda"
 }

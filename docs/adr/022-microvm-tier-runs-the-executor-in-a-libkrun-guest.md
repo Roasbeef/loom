@@ -390,3 +390,15 @@ distribution is rebuilt rather than kept: its root and state disk go with `rm`,
 and only its commits survive, through `sync`. The libkrun VMM escape of the
 Consequences section is unchanged: a guest kernel exploit that escapes the VMM
 still lands in `loom-vm` as the developer.
+
+## Addendum, 2026-11-18: the distribution bring-up is deleted
+
+On 2026-11-17 the owner had the distribution bring-up of `loom vm` deleted
+without waiting for a release, because `vm_link.settle` answers no
+`Distribution` and so nothing reached it. `bring_up` calls `bring_up_linked`
+directly, and `ensure` no longer ends with status 75 and `daemon=required`.
+`rm`'s teardown of a guest made over distribution is kept, with `status`,
+`list`, `logs`, `down` and `sync` for such a guest, until a later change deletes
+it once no old guest can exist. Design note `microvm-untrusted-link.md`,
+section 8, slice 5, records the two parts. This supersedes nothing else in
+this ADR or its addenda.
