@@ -85,8 +85,8 @@ CREATE TABLE catalogue_session_attention(
 | `oldest_open_at` | Unix milliseconds: the smallest `created_at` over the open owner-routed asks and the open finds. `NULL` when there are none. It says nothing of approvals, because an escalation record carries no raise time (`runtime/escalation.gleam`, `Escalation`). |
 | `updated_at` | Unix milliseconds on the daemon's clock when the row was written. It is the time the summary was last made, not the age of any record. It is never read from monotonic time, which is negative on the BEAM. |
 
-The migration is `#(22, catalogue_attention_schema.schema)` in
-`catalogue.migrations`, from a new `packages/storage/sql/catalogue_attention.sql`
+The migration is `#(22, catalogue_session_attention_schema.schema)` in
+`catalogue.migrations`, from a new `packages/storage/sql/catalogue_session_attention.sql`
 and the named queries in `sql/catalogue.sql`, generated with `make gen-sql`, and
 `current_version` becomes 22 (`storage/catalogue.gleam`, `current_version` and
 `migrations`). `migrations_end_at_the_current_version_test` fails until both
@@ -129,7 +129,7 @@ closure that sends a fire-and-forget command to the registry, as
 command, `RecordAttention(session, summary)`, is handled in the registry's turn,
 which serializes it with every other catalogue change, and calls a new
 `catalogue.record_attention`, an upsert on `session_id`. The committer does not
-wait. A failed write is logged and is not reported to it: the record has
+wait. A failed write is dropped, because the registry has no logger, and is not reported to it: the record has
 committed, and the summary lags it (see "Consistency").
 
 The summary is written when the record commits, not only when it closes, so a

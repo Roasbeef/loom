@@ -55,7 +55,7 @@ exclusive names and then reads `workspace` as a registered name, not a path
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:96`). The web home is told only the names
-(`HomeAttachment`, `client/daemon/server.gleam:343`, whose `executors` field is
+(`HomeAttachment`, `client/daemon/server.gleam:349`, whose `executors` field is
 `List(String)`), draws them in a select, and asks the owner to type the workspace
 name (`CreatingRemote`, `web_view/home.gleam:1173`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot

@@ -3401,6 +3401,7 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   and retires the storage actor on success or failure. A store written while a distillation pipeline existed can hold
   distillate rows and `distill/*` cells; nothing reads them and nothing
   deletes them.
+- `client/attention.{Report, silent, reporter, settled, summary, summarize}` — the writer side of the catalogue summary (protocol-change/122). A `Report` is `fn(api.Runtime) -> Nil`, told after a record commits: `escalate.raise` after a claim that leaves a record pending (`Config.report`), the gateway after an operator approve or deny (`Options.attention_report`, `gateway.with_attention_report`), the gateway after `remote_decision.admit` and `admit_relayed` return, and `ask`/`notice` after an insertion (`Wiring.report`). `serve.Settings.attention_report`, set by `daemon/main`, sends the summary to the registry as `manager.record_attention`, a cast that calls `catalogue.record_attention`; `serve` also reports once after the runtime opens, which rewrites the row from the records. `attention.settled(report, runtime)` is the call the settle path of protocol-change/120 makes after an answer or a close. `server.home_attention` reads the rows for the sessions a credential holds as `web_view/saved_attention.Saved`.
 - `client/attention.{Wiring, seam, ask, notice, asks, finds}` — the host side
   of the `ask` and `notice` tools and of `attention.*` in code mode
   (protocol-change/119). It writes `core/attention` records as reserved
