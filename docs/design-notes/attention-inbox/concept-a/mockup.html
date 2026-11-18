@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loom Inbox — concept A</title>
+<style>
+:root{
+  --bg:#f6f5f2;--raised:#fff;--sunk:#efede8;--code:#f1efe9;--fg:#1d1c1a;--quiet:#6f6b63;--faint:#a29d92;
+  --divider:#e2dfd8;--current:#3b5bdb;--signal:#d9822b;--signal-text:#975a1e;--peer-text:#764ed1;
+  --danger:#d6336c;--danger-text:#c02d61;--on-danger:#fff;--added:#2f9e44;--added-text:#237833;
+  --added-bg:#d3efda;--removed-bg:#fce6ec;
+  --shadow-float:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.05);
+  --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#141517;--raised:#1b1c1f;--sunk:#111214;--code:#212226;--fg:#e8e6e1;--quiet:#9a978f;--faint:#66645e;
+  --divider:#2b2d31;--current:#7c96ff;--signal:#f0a24f;--signal-text:#f0a24f;--peer-text:#a78bfa;
+  --danger:#f06595;--danger-text:#f06595;--on-danger:#141517;--added:#51cf66;--added-text:#51cf66;
+  --added-bg:#1f4d2e;--removed-bg:#4a1a29;--shadow-float:0 1px 2px rgba(0,0,0,.4);}}
+:root[data-theme="dark"]{
+  --bg:#141517;--raised:#1b1c1f;--sunk:#111214;--code:#212226;--fg:#e8e6e1;--quiet:#9a978f;--faint:#66645e;
+  --divider:#2b2d31;--current:#7c96ff;--signal:#f0a24f;--signal-text:#f0a24f;--peer-text:#a78bfa;
+  --danger:#f06595;--danger-text:#f06595;--on-danger:#141517;--added:#51cf66;--added-text:#51cf66;
+  --added-bg:#1f4d2e;--removed-bg:#4a1a29;--shadow-float:0 1px 2px rgba(0,0,0,.4);}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--font-sans);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer}
+p{margin:0}
+.mono{font-family:var(--font-mono);font-size:12px}
+.q{color:var(--quiet)}
+:focus-visible{outline:2px solid var(--current);outline-offset:2px}
+
+/* shell */
+.top{height:44px;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--divider);background:var(--bg)}
+.brand{font-weight:600;letter-spacing:.2px}
+.crumb{color:var(--quiet)}
+.top .sp{flex:1}
+.top .away{color:var(--quiet);font-size:12.5px}
+.ghost{background:none;border:1px solid var(--divider);border-radius:6px;padding:3px 10px;font-size:12.5px;color:var(--quiet)}
+.app{display:grid;grid-template-columns:232px minmax(0,1fr);height:calc(100% - 44px)}
+.app.pane-open{grid-template-columns:232px minmax(0,1fr) 480px}
+.rail{background:var(--sunk);border-right:1px solid var(--divider);padding:14px 10px;overflow:auto}
+.rail a{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:13.5px}
+.rail a.on{background:var(--raised);border:1px solid var(--divider);padding:5px 9px}
+.rail a .n{color:var(--quiet);font-size:12px}
+.rail h6{margin:18px 10px 4px;font-size:11.5px;font-weight:500;color:var(--quiet);letter-spacing:.3px}
+.main{overflow:auto;padding:20px 32px 60px}
+.col{max-width:780px;margin:0 auto}
+
+/* header */
+h1{margin:0;font-size:24px;font-weight:600;letter-spacing:-.2px}
+h1 .amber{color:var(--signal-text)}
+.totals{margin-top:4px;color:var(--quiet)}
+.tabs{display:flex;gap:4px;margin:12px 0 2px;white-space:nowrap;border-bottom:1px solid var(--divider)}
+.tab{background:none;border:0;border-bottom:2px solid transparent;padding:6px 10px;color:var(--quiet);margin-bottom:-1px}
+.tab .n{font-size:12px;margin-left:4px}
+.tab[aria-selected=true]{color:var(--fg);border-bottom-color:var(--current)}
+
+/* sections */
+.sec{margin-top:16px}
+.sec-h{display:flex;align-items:baseline;gap:8px;margin:0 2px 8px}
+.sec-h h2{margin:0;font-size:13px;font-weight:600}
+.sec-h .n{color:var(--quiet);font-size:12.5px}
+.sec-h .sp{flex:1}
+.link{background:none;border:0;padding:0;color:var(--current);font-size:12.5px}
+.list{list-style:none;margin:0;padding:0;background:var(--raised);border:1px solid var(--divider);border-radius:10px;overflow:hidden}
+.sec.asks .list{border-color:color-mix(in srgb,var(--signal) 40%,var(--divider))}
+.row{display:grid;grid-template-columns:78px minmax(0,1fr) auto;gap:4px 14px;align-items:center;padding:10px 14px;border-top:1px solid var(--divider);cursor:default}
+.row{position:relative}
+.row:first-child{border-top:0}
+.phases .row[data-phase]::after{content:'phase ' attr(data-phase);position:absolute;left:14px;bottom:5px;font-size:10px;color:var(--faint);border:1px solid var(--divider);border-radius:6px;padding:0 5px;background:var(--bg)}
+.row:hover{background:color-mix(in srgb,var(--fg) 3%,transparent)}
+.row.sel{background:color-mix(in srgb,var(--signal) 8%,var(--raised))}
+.word{font-size:12px;color:var(--quiet);align-self:start;padding-top:2px}
+.word.need{color:var(--signal-text);font-weight:600}
+.word.bad{color:var(--danger-text);font-weight:600}
+.title{font-size:14px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.meta{font-size:12.5px;color:var(--quiet);margin-top:2px}
+.why{font-size:12.5px;color:var(--quiet);margin-top:2px}
+.meta b{font-weight:500;color:var(--fg)}
+.act{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.rec{font-size:11px;color:var(--quiet)}
+.btn{background:var(--raised);border:1px solid var(--divider);border-radius:6px;padding:5px 11px;font-size:13px;white-space:nowrap}
+.btn:hover{border-color:var(--quiet)}
+.btn.primary{border-color:color-mix(in srgb,var(--current) 60%,var(--divider));color:var(--current)}
+.btn.danger{border-color:color-mix(in srgb,var(--danger) 55%,var(--divider));color:var(--danger-text)}
+.btn.armed{background:var(--current);border-color:var(--current);color:#fff}
+.btn.danger.armed{background:var(--danger);border-color:var(--danger);color:var(--on-danger)}
+.btn:disabled{opacity:.55;cursor:wait}
+.sub{margin-left:78px}
+.row.nested{padding-left:30px;background:color-mix(in srgb,var(--fg) 2%,var(--raised))}
+.group-row .title{color:var(--fg)}
+
+/* batch panel */
+.batch{margin:0 0 8px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--current) 45%,var(--divider));border-radius:10px;background:color-mix(in srgb,var(--current) 6%,var(--raised))}
+.batch ol{margin:6px 0 10px;padding-left:18px}
+.batch li{margin:2px 0}
+
+/* status */
+.statusline{background:var(--raised);border:1px solid var(--divider);border-radius:10px;padding:12px 14px}
+.statusline p+p{margin-top:2px}
+.tree{display:none;margin-top:10px;border-top:1px solid var(--divider);padding-top:8px}
+.tree .t{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:3px 0;font-size:13px}
+.tree .t.l2{padding-left:20px}
+.tree .t .q{font-size:12.5px}
+.show-tree .tree{display:block}
+.closed{margin-top:26px;color:var(--quiet);font-size:13px}
+.closed summary{cursor:pointer}
+.closed ul{margin:8px 0 0;padding-left:18px}
+
+/* pane */
+.pane{display:none;border-left:1px solid var(--divider);background:var(--bg);overflow:auto}
+.pane-open .pane{display:block}
+.pane-in{padding:20px 24px 40px}
+.pane-bar{display:flex;gap:8px;align-items:center;margin-bottom:14px}
+.pane-bar .sp{flex:1}
+.pane h3{margin:2px 0 6px;font-size:17px;font-weight:600;line-height:1.35}
+.kv{display:grid;grid-template-columns:84px 1fr;gap:3px 12px;margin:12px 0;font-size:13px}
+.kv dt{color:var(--quiet)}.kv dd{margin:0}
+.opt{display:block;width:100%;text-align:left;margin:6px 0;padding:10px 12px;background:var(--raised);border:1px solid var(--divider);border-radius:8px}
+.opt .l{font-weight:500}.opt .d{display:block;color:var(--quiet);font-size:12.5px;margin-top:1px}
+.opt .tag{float:right;font-size:11.5px;color:var(--added-text)}
+.opt.armed{border-color:var(--current);background:color-mix(in srgb,var(--current) 10%,var(--raised))}
+.free{width:100%;margin-top:8px;padding:8px 10px;background:var(--raised);color:var(--fg);border:1px solid var(--divider);border-radius:8px;font:inherit}
+.sech{margin:20px 0 6px;font-size:12px;color:var(--quiet);font-weight:500;letter-spacing:.3px}
+.card{border:1px solid var(--divider);border-radius:10px;background:var(--raised);padding:12px 14px}
+.card.approve{border-color:color-mix(in srgb,var(--danger) 55%,var(--divider))}
+.code{background:var(--code);border-radius:6px;padding:8px 10px;font:12px/1.5 var(--font-mono);overflow-x:auto;white-space:pre-wrap;word-break:break-word}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.ctx{font-size:13px}
+.ctx p{margin:5px 0}
+.ctx .who{color:var(--quiet);font-size:12px}
+.ctx .peer{color:var(--peer-text)}
+.add{background:var(--added-bg);padding:0 4px;border-radius:3px}.rm{background:var(--removed-bg);padding:0 4px;border-radius:3px}
+.receipt{padding:16px 0}
+.receipt .ok{color:var(--added-text);font-weight:600}
+.pill{display:inline-block;font-size:11.5px;border-radius:6px;padding:0 7px;border:1px solid var(--divider);color:var(--quiet)}
+.pill.bad{color:var(--danger-text);border-color:color-mix(in srgb,var(--danger) 45%,var(--divider))}
+.pill.ok{color:var(--added-text)}
+[hidden]{display:none!important}
+.nav{display:none}
+
+/* phone */
+.phone body{font-size:15px}
+.phone .app,.phone .app.pane-open{grid-template-columns:1fr;height:calc(100% - 44px - 56px)}
+.phone .rail{display:none}
+.phone .main{padding:16px 16px 24px}
+.phone h1{font-size:22px}
+.phone .tabs{overflow-x:auto;margin-top:12px}
+.phone .row{grid-template-columns:1fr;gap:4px;padding:12px}
+.phone .word{padding:0}
+.phone .act{flex-direction:row;align-items:center;gap:10px;margin-top:6px}
+.phone .act .btn{padding:9px 14px}
+.phone .row.nested{padding-left:20px}
+.phone .top .away,.phone .top .crumb{display:none}
+.phone .pane{position:fixed;left:0;right:0;top:44px;bottom:56px;z-index:5}
+.phone .pane-in{padding:14px 16px 30px}
+.phone .nav{display:flex;position:fixed;left:0;right:0;bottom:0;height:56px;border-top:1px solid var(--divider);background:var(--sunk)}
+.phone .nav a{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:12px;color:var(--quiet);text-decoration:none}
+.phone .nav a.on{color:var(--fg)}
+.phone .nav a b{font-size:11px;font-weight:500}
+.phone .btn{min-height:40px}
+.phone .sec{margin-top:16px}
+.phone .sec-h{flex-wrap:wrap}.phone .sec-h .n{display:none}.phone .sec-h h2{white-space:nowrap}.phone .tab{padding:6px 8px}
+.phone .batch{padding:10px 12px}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="brand">Loom</span><span class="crumb">/ Inbox</span>
+  <span class="sp"></span>
+  <span class="away">away since 11:05 · now 14:20</span>
+  <button class="ghost" id="theme" type="button">Theme</button>
+  <span class="q" style="font-size:12.5px">you · owner</span>
+</header>
+
+<div class="app" id="app">
+  <nav class="rail" aria-label="Views">
+    <a href="#" class="on" id="nav-inbox">Inbox <span class="n" id="rail-count">8</span></a>
+    <a href="#">Sessions <span class="n">6</span></a>
+    <a href="#" id="nav-projects">Projects <span class="n">1</span></a>
+    <h6>WORKSPACES</h6>
+    <a href="#">loom <span class="n" id="ws-loom">7</span></a>
+    <a href="#">aegis <span class="n" id="ws-aegis">1</span></a>
+    <h6>PEOPLE ON YOUR SESSIONS</h6>
+    <a href="#" style="cursor:default"><span>Bob · operator</span><span class="n">1 session</span></a>
+  </nav>
+
+  <main class="main" id="main">
+   <div class="col">
+    <h1 id="headline"><span class="amber">4 need you</span></h1>
+    <p class="totals" id="totals">1 review · 1 PR with blockers · 2 finds · 2 working · 2 quiet</p>
+
+    <div class="tabs" role="tablist" id="tabs">
+      <button class="tab" role="tab" aria-selected="true" data-tab="all">All <span class="n" id="n-all">8</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="asks">Asks <span class="n" id="n-asks">4</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="reviews">Reviews <span class="n" id="n-reviews">2</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="finds">Finds <span class="n" id="n-finds">2</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="status">Status</button>
+    </div>
+
+    <section class="sec asks" data-sec="asks">
+      <div class="sec-h"><h2>Needs you</h2><span class="n">approvals first, then longest waiting</span><span class="sp"></span>
+        <button class="link" id="batch-open" type="button">Send the recommended answer to 2 questions…</button></div>
+      <div class="batch" id="batch" hidden>
+        <p><b>Send exactly these two answers.</b> Each is the agent’s recommendation, with what it does. Each goes to its own session as your message, held 8 s so you can undo.</p>
+        <ol>
+          <li><span class="mono">runner/pod-reach</span> — “Use the scratch tmpfs” <span class="q">· writes vanish with the pod</span></li>
+          <li><span class="mono">coord/web-inbox</span> — “Fold under open” <span class="q">· keeps context; closed rows stay one line</span></li>
+        </ol>
+        <div class="btns" style="margin-top:0"><button class="btn primary" id="batch-send" type="button" data-batch="runner,coord">Send both answers</button>
+        <button class="btn" id="batch-cancel" type="button">Cancel</button></div>
+        <p class="meta">Approvals are never in a batch. Only questions that carry a recommendation are.</p>
+      </div>
+      <ul class="list" id="asks-list">
+        <li class="row" data-id="approval" data-phase="0" data-kind="ask" tabindex="0">
+          <span class="word need">Approval</span>
+          <div><p class="title">Run <span class="mono">sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</span> with a write grant to <span class="mono">~/.loom</span></p>
+            <p class="meta"><span class="mono">storage/branch-index-repair</span> · loom · since 12:58 · <b>waiting 1h 22m</b> · Bob is on this session</p>
+            <p class="why">Also: <span class="mono">runner/pod-reach</span> messaged this session at 13:15 about the same grant.</p></div>
+          <div class="act"><button class="btn" type="button" data-open="approval">Review</button></div>
+        </li>
+        <li class="row" data-id="runner" data-phase="1" data-kind="ask" tabindex="0">
+          <span class="word need">Question</span>
+          <div><p class="title">The runner pod has no /tmp write. Use the scratch tmpfs, mount an emptyDir, or skip the cache?</p>
+            <p class="meta"><span class="mono">runner/pod-reach</span> · aegis · asked 11:20 · <b>waiting 3h 00m</b></p>
+            <p class="why">Scratch tmpfs: writes vanish with the pod; nothing to change in the manifest.</p></div>
+          <div class="act"><button class="btn primary arm" type="button" data-confirm="Send “scratch tmpfs”" data-complete="runner" data-ended="Answered “Use the scratch tmpfs” · delivered to runner/pod-reach · main, 14:21">Use scratch tmpfs</button><span class="rec">recommended</span></div>
+        </li>
+        <li class="row" data-id="coord" data-phase="1" data-kind="ask" tabindex="0">
+          <span class="word need">Question</span>
+          <div><p class="title">Should closed items fold under open ones, or move to a separate “Done” list?</p>
+            <p class="meta"><span class="mono">coord/web-inbox</span> · loom · asked 13:40 · <b>waiting 40m</b></p>
+            <p class="why">Fold under open: keeps context, as the Inbox plugin does; closed rows stay one line.</p></div>
+          <div class="act"><button class="btn primary arm" type="button" data-confirm="Send “fold under open”" data-complete="coord" data-ended="Answered “Fold under open” · delivered to coord/web-inbox · main, 14:21">Fold under open</button><span class="rec">recommended</span></div>
+        </li>
+        <li class="row" data-id="stuck" data-phase="1" data-kind="ask" tabindex="0">
+          <span class="word bad">Stopped</span>
+          <div><p class="title">sub:mockup-b stopped on a provider rate limit at 13:52 and has not retried.</p>
+            <p class="meta"><span class="mono">coord/web-inbox › sub:mockup-b</span> · loom · <b>stopped 28m</b></p></div>
+          <div class="act"><button class="btn primary" type="button" data-noundo="1" data-complete="stuck" data-ended="Retried by you · sub:mockup-b resumed 14:21">Retry</button></div>
+        </li>
+      </ul>
+    </section>
+
+    <section class="sec" data-sec="reviews">
+      <div class="sec-h"><h2>Ready to review</h2><span class="n">a session and a pull request</span></div>
+      <ul class="list" id="reviews-list">
+        <li class="row" data-id="review" data-phase="1" data-kind="review" tabindex="0">
+          <span class="word">Review</span>
+          <div><p class="title">fix/hashline-replay finished: +412 −88 across 7 files. The agent reports make check-core exit 0.</p>
+            <p class="meta"><span class="mono">fix/hashline-replay</span> · loom · finished 12:31 · 2 finds below</p></div>
+          <div class="act"><button class="btn" type="button" data-open="review">Open review</button></div>
+        </li>
+        <li class="row" data-id="pr" data-phase="3" data-kind="review" tabindex="0">
+          <span class="word">PR #1261</span>
+          <div><p class="title">1 failing check, <span class="mono">lint (R11)</span>, and 2 unresolved comments from Bob.</p>
+            <p class="meta"><span class="mono">wp-j/vetting-lint</span> · loom · the agent is working, 3m into a turn</p></div>
+          <div class="act"><button class="btn primary arm" type="button" data-confirm="Send to wp-j" data-complete="pr" data-ended="Asked wp-j/vetting-lint to fix the check and both comments · queued behind its turn, 14:21">Ask the agent to fix both</button></div>
+        </li>
+      </ul>
+    </section>
+
+    <section class="sec" data-sec="finds">
+      <div class="sec-h"><h2>Finds</h2><span class="n">noticed outside the task</span></div>
+      <ul class="list" id="finds-list">
+        <li class="row group-row" data-phase="1" id="finds-group" data-kind="group">
+          <span class="word">2 finds</span>
+          <div><p class="title">From <span class="mono">fix/hashline-replay</span>: one risk, one idea.</p>
+            <p class="meta">Risk: replay skips entries with an empty digest.</p></div>
+          <div class="act"><button class="btn" id="finds-toggle" type="button">Show</button></div>
+        </li>
+        <li class="row nested" data-id="risk" data-phase="1" data-kind="find" tabindex="0" hidden>
+          <span class="word need">Risk · medium</span>
+          <div><p class="title">hashline.replay silently skips entries whose digest is empty; a truncated store would replay short with no error.</p>
+            <p class="meta"><span class="mono">fix/hashline-replay</span> · noticed 12:19</p></div>
+          <div class="act"><button class="btn primary arm" type="button" data-confirm="Send to the agent" data-complete="risk" data-ended="Fix requested · delivered to fix/hashline-replay · main, 14:22 (session woken)">Fix it</button></div>
+        </li>
+        <li class="row nested" data-id="idea" data-phase="1" data-kind="find" tabindex="0" hidden>
+          <span class="word">Idea</span>
+          <div><p class="title">The replay loop could reuse machine/codec’s first-match walk and drop a closure per entry.</p>
+            <p class="meta"><span class="mono">fix/hashline-replay</span> · noticed 12:24</p></div>
+          <div class="act"><button class="btn" type="button" data-complete="idea" data-ended="Dismissed by you · reopen any time this session">Not now</button></div>
+        </li>
+      </ul>
+    </section>
+
+    <section class="sec" data-sec="status" id="status-sec">
+      <div class="sec-h"><h2>Status</h2><span class="n">nothing here needs you</span><span class="sp"></span><button class="link" id="tree-toggle" type="button">Show the coordinator’s delegates</button></div>
+      <div class="statusline">
+        <p><b>Working</b> · <span class="mono">sub:mockup-a</span> 14m in, editing inbox.gleam · <span class="mono">wp-j/vetting-lint</span> 3m in</p>
+        <p class="q"><b style="color:var(--fg);font-weight:500">Quiet</b> · <span class="mono">docs/threat-model</span> since yesterday · <span class="mono">sub:fact-sheet</span> settled 2h ago</p>
+        <div class="tree" id="tree">
+          <div class="t"><span><span class="mono">coord/web-inbox</span> · Ship the attention inbox</span><span class="q">build · 3 of 5 · 412k / 1.2M tokens</span></div>
+          <div class="t l2"><span class="mono">sub:fact-sheet</span><span class="q">settled 2h ago, result returned</span></div>
+          <div class="t l2"><span class="mono">sub:mockup-a</span><span class="q">working · 14m</span></div>
+          <div class="t l2"><span class="mono">sub:mockup-b</span><span style="color:var(--danger-text)">stopped · in Needs you</span></div>
+          <div class="t" style="margin-top:6px"><span class="mono">wp-j/vetting-lint</span><span class="q">working · 3m · PR #1261 in Reviews</span></div>
+          <div class="t"><span class="mono">docs/threat-model</span><span class="q">quiet · yesterday</span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="closed" style="margin-top:22px">Checked 14:20 · 6 sessions read, 0 saved sessions with open items. “Nothing needs you” is only said after every session, saved ones included, has been read.</p>
+    <details class="closed" id="closed" style="margin-top:10px"><summary>Closed today · <span id="closed-n">0</span></summary><ul id="closed-list"></ul></details>
+   </div>
+  </main>
+
+
+  <main class="main" id="main-projects" hidden>
+   <div class="col">
+    <h1><span style="color:var(--signal-text)">2 tickets need you</span></h1>
+    <p class="totals">Project <span class="mono">loom</span> · origin pinned to github.com · 1 working · 1 ended</p>
+    <div class="batch" style="margin-top:16px;background:var(--raised);border-color:var(--divider)">
+      <p><b>Post a request</b> <span class="q">to the router; it opens a ticket and a worker.</span></p>
+      <input class="free" type="text" style="margin:8px 0" placeholder="What should this project do next?" aria-label="Request">
+      <div class="btns" style="margin-top:0"><button class="btn primary" type="button">Post request</button><button class="btn" type="button">New project…</button></div>
+    </div>
+    <section class="sec"><div class="sec-h"><h2>Needs you</h2><span class="n">by stage: check, review</span></div>
+      <ul class="list" style="border-color:color-mix(in srgb,var(--signal) 40%,var(--divider))">
+        <li class="row" data-id="t14" data-phase="2" tabindex="0"><span class="word bad">Check failed</span>
+          <div><p class="title">T-14 “Add R11 tests to the lint”: the check could not run its toolchain.</p><p class="meta"><span class="mono">person/check</span> · cause <b>environment</b> · worker idle at the same commit · 41m</p></div>
+          <div class="act"><button class="btn primary" type="button" data-open="t14">Open ticket</button></div></li>
+        <li class="row" data-id="t12" data-phase="1" tabindex="0"><span class="word">Review</span>
+          <div><p class="title">T-12 “Rename the inbox module”: pull request open on <span class="mono">project/T-12</span>.</p><p class="meta"><span class="mono">person/review</span> · check passed · +88 −12 across 3 files · 2h 05m</p></div>
+          <div class="act"><button class="btn" type="button" data-open="t12">Open ticket</button></div></li>
+      </ul></section>
+    <section class="sec"><div class="sec-h"><h2>Working</h2><span class="n">nothing here needs you</span></div>
+      <div class="statusline"><p><span class="mono">T-15</span> “Docs for the attention feed” · worker on it, 22m in</p><p class="q"><b style="color:var(--fg);font-weight:500">Ended</b> · <span class="mono">T-11</span> merged yesterday</p></div></section>
+    <p class="closed" style="margin-top:18px">Tickets here are illustrative; the scenario has none. The stages are the ones project mode computes.</p>
+   </div>
+  </main>
+
+  <aside class="pane" id="pane" aria-label="Item">
+   <div class="pane-in">
+    <div class="pane-bar"><button class="ghost" id="pane-close" type="button">Close</button><span class="sp"></span><button class="ghost" id="pane-next" type="button">Next item ›</button></div>
+
+    <div id="receipt" class="receipt" hidden>
+      <p class="ok" id="receipt-text"></p>
+      <div class="btns"><button class="btn" id="undo" type="button">Undo (<span id="undo-s">8</span>s)</button><button class="btn" id="receipt-next" type="button">Next item ›</button></div>
+    </div>
+
+
+    <section class="detail" id="d-t14" hidden>
+      <p class="word bad">Check failed</p><h3>T-14 failed its check at 9c1e4b7, and the cause is the environment</h3>
+      <dl class="kv"><dt>Project</dt><dd><span class="mono">loom</span> · stage <span class="mono">person/check</span></dd><dt>Cause</dt><dd><span class="pill bad">environment</span> not the worker’s to mend, so the worker was not told</dd><dt>Worker</dt><dd>idle at this commit; the same commit is not checked again by itself</dd></dl>
+      <p class="sech">CHECK OUTPUT, LAST LINES</p>
+      <div class="code">$ bash -o pipefail -c 'make check-lint'
+gleam: command not found
+exit 127 · network off · the tree is the only writable root</div>
+      <div class="btns"><button class="btn primary" type="button">Recheck</button><button class="btn arm" type="button" data-confirm="Press again: retry the worker" data-complete="t14" data-ended="Worker asked to retry T-14, 14:22">Retry the worker</button><button class="btn arm danger" type="button" data-confirm="Press again to stop" data-complete="t14" data-ended="T-14 stopped by you, 14:22">Stop</button><button class="btn arm" type="button" data-confirm="Press again to publish past it" data-complete="t14" data-ended="T-14 published past a failed check by you, 14:22">Publish past it…</button></div>
+      <p class="q" style="font-size:12.5px;margin-top:8px">Recheck re-runs the same check on the same commit, so it takes one press. Stopping, retrying and publishing past a failed check each take two.</p>
+    </section>
+
+    <section class="detail" id="d-t12" hidden>
+      <p class="word">Review</p><h3>T-12 is ready: pull request open on project/T-12</h3>
+      <dl class="kv"><dt>Project</dt><dd><span class="mono">loom</span> · stage <span class="mono">person/review</span></dd><dt>Diff</dt><dd><span class="add">+88</span> <span class="rm">−12</span> across 3 files</dd><dt>Check</dt><dd><span class="pill ok">passed</span> recorded at the head</dd></dl>
+      <div class="btns"><button class="btn" type="button">Open the diff ›</button><button class="btn arm" type="button" data-confirm="Press again to publish" data-complete="t12" data-ended="T-12 published, 14:22">Publish</button><button class="btn arm" type="button" data-confirm="Press again to close" data-complete="t12" data-ended="T-12 closed by you, 14:22">Close</button></div>
+    </section>
+
+    <section class="detail" id="d-runner" hidden>
+      <p class="word need">Question</p><h3>The runner pod has no /tmp write. Use the scratch tmpfs, mount an emptyDir, or skip the cache?</h3>
+      <dl class="kv"><dt>From</dt><dd><span class="mono">runner/pod-reach</span> · main · aegis</dd><dt>Asked</dt><dd>11:20, idle since · 3h 00m</dd><dt>Reaches</dt><dd>Delivered to that session’s main as your message</dd></dl>
+      <button class="opt arm" type="button" data-confirm="Send “Use the scratch tmpfs”" data-complete="runner" data-ended="Answered “Use the scratch tmpfs” · delivered to runner/pod-reach · main, 14:21"><span class="tag">recommended</span><span class="l">Use the scratch tmpfs</span><span class="d">Writes land in the jail’s scratch mount and vanish with the pod.</span></button>
+      <button class="opt arm" type="button" data-confirm="Send “Mount an emptyDir”" data-complete="runner" data-ended="Answered “Mount an emptyDir” · delivered to runner/pod-reach · main, 14:21"><span class="l">Mount an emptyDir</span><span class="d">Survives container restarts; needs a manifest change.</span></button>
+      <button class="opt arm" type="button" data-confirm="Send “Skip the cache”" data-complete="runner" data-ended="Answered “Skip the cache” · delivered to runner/pod-reach · main, 14:21"><span class="l">Skip the cache</span><span class="d">Slower runs, nothing to configure.</span></button>
+      <input class="free" type="text" placeholder="Or write your own answer…" aria-label="Your own answer">
+      <div class="btns"><button class="btn" type="button">Explain more first</button></div>
+      <p class="sech">CONTEXT THE AGENT ATTACHED</p>
+      <div class="ctx card"><p>Building the pod spec for the cache layer. The container root is read-only, so <span class="mono">/tmp</span> writes fail with EROFS. The jail already mounts a scratch tmpfs at a path the runner can reach.</p></div>
+      <p class="sech">NEAREST TRANSCRIPT ROWS</p>
+      <div class="ctx card"><p class="who">11:18 · tool</p><p class="mono">write /tmp/cache/index: EROFS</p><p class="who">11:19 · assistant</p><p>That is the read-only root. Three ways around it; I would take the scratch mount.</p></div>
+      <div class="btns"><button class="btn" type="button">Read in the session ›</button></div>
+    </section>
+
+    <section class="detail" id="d-approval" hidden>
+      <p class="word need">Approval</p><h3>A code program wants to run sqlite3 with a write grant outside its workspace</h3>
+      <dl class="kv"><dt>From</dt><dd><span class="mono">storage/branch-index-repair</span> · main · loom</dd><dt>Waiting</dt><dd>since 12:58 · 1h 22m</dd><dt>Policy</dt><dd><span class="mono">workspace-write · network off</span></dd><dt>Others</dt><dd>Bob (operator) is on this session and has seen it. The first decision wins.</dd></dl>
+      <div class="card approve">
+        <p class="word bad" style="margin-bottom:6px">code_mode · proc.run</p>
+        <div class="code">sqlite3 ~/.loom/store.db 'PRAGMA integrity_check'</div>
+        <dl class="kv"><dt>Network</dt><dd>off</dd><dt>Wants</dt><dd>write to <span class="mono">~/.loom</span> — outside the workspace</dd><dt>Binds</dt><dd>this exact action text, the grant above and seq 3</dd></dl>
+        <p class="q" style="font-size:12.5px">This card is read from the stored request. Your decision echoes the action text shown, the wanted grant and seq 3; if any of them changes, the buttons go stale. No undo: a decision is not held.</p>
+        <div class="btns"><button class="btn danger arm decide" type="button" data-confirm="Press again to deny" data-noundo="1" data-complete="approval" data-ended="Denied by you · sent to storage/branch-index-repair, 14:22">Deny</button><button class="btn primary arm decide" type="button" data-confirm="Press again to approve once" data-noundo="1" data-complete="approval" data-ended="Approved once by you · sent to storage/branch-index-repair, 14:22">Approve once</button><button class="btn arm decide" type="button" data-confirm="Press again: for this session" data-noundo="1" data-complete="approval" data-ended="Approved for the session by you · 14:22">For this session</button></div>
+      </div>
+      <p class="sech">PEER MESSAGES RECEIVED WHILE THIS WAITED</p>
+      <div class="ctx card"><p class="who peer">13:15 · from <span class="mono">runner/pod-reach · main</span></p><p>“Does the integrity check need the write grant, or can it run read-only?”</p></div>
+      <div class="btns"><button class="btn" type="button">Read in the session ›</button></div>
+    </section>
+
+    <section class="detail" id="d-coord" hidden>
+      <p class="word need">Question</p><h3>Should closed items fold under open ones, or move to a separate “Done” list?</h3>
+      <dl class="kv"><dt>From</dt><dd><span class="mono">coord/web-inbox</span> · main · loom</dd><dt>Asked</dt><dd>13:40 · 40m</dd><dt>Goal</dt><dd>Ship the attention inbox · build · 3 of 5 milestones · 412k / 1.2M tokens</dd></dl>
+      <button class="opt arm" type="button" data-confirm="Send “Fold under open”" data-complete="coord" data-ended="Answered “Fold under open” · delivered to coord/web-inbox · main, 14:21"><span class="tag">recommended</span><span class="l">Fold under open</span><span class="d">Matches the Inbox plugin and keeps context.</span></button>
+      <button class="opt arm" type="button" data-confirm="Send “Separate Done list”" data-complete="coord" data-ended="Answered “Separate Done list” · delivered to coord/web-inbox · main, 14:21"><span class="l">Separate Done list</span></button>
+      <button class="opt arm" type="button" data-confirm="Send “Hide after 24h”" data-complete="coord" data-ended="Answered “Hide after 24h” · delivered to coord/web-inbox · main, 14:21"><span class="l">Hide after 24h</span></button>
+      <input class="free" type="text" placeholder="Or write your own answer…" aria-label="Your own answer">
+      <p class="sech">WHAT IS BLOCKED ON IT</p>
+      <div class="ctx card"><p><span class="mono">sub:mockup-a</span> is drawing closed rows now and will redraw once this is answered.</p></div>
+    </section>
+
+    <section class="detail" id="d-stuck" hidden>
+      <p class="word bad">Stopped</p><h3>sub:mockup-b stopped on a provider rate limit</h3>
+      <dl class="kv"><dt>From</dt><dd><span class="mono">coord/web-inbox › sub:mockup-b</span> · loom</dd><dt>Failed</dt><dd>13:52 · no retry scheduled</dd><dt>Error</dt><dd>provider rate limit, last turn failed</dd></dl>
+      <div class="btns"><button class="btn primary" type="button" data-noundo="1" data-complete="stuck" data-ended="Retried by you · sub:mockup-b resumed 14:21">Retry now</button><button class="btn" type="button">Leave it to the coordinator</button></div>
+      <p class="q" style="font-size:12.5px;margin-top:8px">Retry re-runs the turn you already authorised, so it takes one press.</p>
+    </section>
+
+    <section class="detail" id="d-review" hidden>
+      <p class="word">Review</p><h3>fix/hashline-replay is ready to review</h3>
+      <dl class="kv"><dt>From</dt><dd><span class="mono">fix/hashline-replay</span> · loom · finished 12:31</dd><dt>Diff</dt><dd><span class="add">+412</span> <span class="rm">−88</span> across 7 files, at commit <span class="mono">a41c9e2</span></dd><dt>Tests</dt><dd><span class="mono">make check-core</span> exit 0 <span class="q">(reported by the agent, not re-run)</span></dd></dl>
+      <p class="sech">THE AGENT’S SUMMARY</p>
+      <div class="ctx card"><p>Replay now walks entries in one pass and verifies each digest. Added three property tests for truncated and reordered stores. Two things I noticed are filed as finds.</p></div>
+      <p class="sech">SECTIONS TO READ</p>
+      <div class="ctx card"><p><span class="mono">core/hashline.gleam</span> <span class="q">+231 −61</span></p><p><span class="mono">core/hashline_replay_test.gleam</span> <span class="q">+140 −9</span></p><p class="q">and 5 more files</p></div>
+      <div class="btns"><button class="btn" type="button">Open the diff ›</button><button class="btn primary arm decide" type="button" data-confirm="Press again: looks good" data-complete="review" data-ended="Reviewed by you at a41c9e2 · nothing sent to the agent">Looks good</button><button class="btn" type="button">Send back…</button></div>
+      <p class="q" style="font-size:12.5px;margin-top:8px">“Looks good” binds to commit a41c9e2. It closes this item and sends the agent nothing.</p>
+    </section>
+
+    <section class="detail" id="d-pr" hidden>
+      <p class="word">PR #1261</p><h3>Two things block #1261</h3>
+      <dl class="kv"><dt>From</dt><dd><span class="mono">wp-j/vetting-lint</span> · loom · working, 3m into a turn</dd><dt>Check</dt><dd><span class="pill bad">failing</span> <span class="mono">lint (R11)</span></dd><dt>Review</dt><dd>2 unresolved comments from Bob</dd></dl>
+      <div class="ctx card"><p class="who">bob · vetting.gleam</p><p>This body runs past eight statements; R11 will trip again.</p><p class="who">bob · vetting.gleam</p><p>Name the case arms; the reader cannot tell what each is for.</p></div>
+      <div class="btns"><button class="btn primary arm" type="button" data-confirm="Press again to send" data-complete="pr" data-ended="Asked wp-j/vetting-lint to fix the check and both comments · queued behind its turn, 14:21">Ask the agent to fix both</button><button class="btn" type="button">Draft a reply to Bob…</button></div>
+      <p class="q" style="font-size:12.5px;margin-top:8px">The agent is mid-turn, so this waits behind it and the receipt will say so. These buttons vanish when GitHub no longer shows the problem.</p>
+    </section>
+
+    <section class="detail" id="d-risk" hidden>
+      <p class="word need">Risk · medium</p><h3>hashline.replay silently skips entries whose digest is empty</h3>
+      <p class="q">A truncated store would replay short with no error.</p>
+      <dl class="kv"><dt>From</dt><dd><span class="mono">fix/hashline-replay</span> · noticed 12:19</dd></dl>
+      <div class="btns"><button class="btn primary arm" type="button" data-confirm="Press again to send" data-complete="risk" data-ended="Fix requested · delivered to fix/hashline-replay · main, 14:22 (session woken)">Fix it</button><button class="btn" type="button" data-complete="risk" data-ended="Dismissed by you · reopen any time this session">Dismiss</button></div>
+      <p class="q" style="font-size:12.5px;margin-top:8px">The session has finished; “Fix it” wakes it with your message. That is why it takes two presses.</p>
+    </section>
+
+    <section class="detail" id="d-idea" hidden>
+      <p class="word">Idea</p><h3>Reuse machine/codec’s first-match walk in the replay loop</h3>
+      <p class="q">It would drop a closure per entry.</p>
+      <div class="btns"><button class="btn" type="button" data-complete="idea" data-ended="Dismissed by you · reopen any time this session">Not now</button></div>
+    </section>
+   </div>
+  </aside>
+</div>
+
+<nav class="nav" aria-label="Views"><a href="#" class="on">Inbox<b>8</b></a><a href="#">Sessions<b>6</b></a><a href="#">Projects<b>1</b></a></nav>
+
+<script>
+(function(){
+  var q=new URLSearchParams(location.search), root=document.documentElement;
+  var t=q.get('theme'); if(t==='dark'||t==='light'){root.setAttribute('data-theme',t);}
+  if(q.get('phases')){root.classList.add('phases');}
+  if(q.get('frame')==='phone'||window.innerWidth<700){root.classList.add('phone');}
+  function $(s,r){return (r||document).querySelector(s);} function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s));}
+  var app=$('#app'), current=null, lastEnded={}, undoTimer=null;
+  var order=['approval','runner','coord','stuck','review','pr','risk','idea'];
+  var closedIds=[];
+
+  $('#theme').onclick=function(){var d=root.getAttribute('data-theme');var dark=d?d==='dark':matchMedia('(prefers-color-scheme:dark)').matches;root.setAttribute('data-theme',dark?'light':'dark');};
+
+  function openRow(id){
+    $$('.row.sel').forEach(function(r){r.classList.remove('sel');});
+    var row=$('.row[data-id="'+id+'"]'); if(row){row.classList.add('sel');}
+    $$('.detail').forEach(function(d){d.hidden=true;}); $('#receipt').hidden=true;
+    var d=$('#d-'+id); if(!d){return;} d.hidden=false; current=id; app.classList.add('pane-open');
+    $('#pane').scrollTop=0;
+  }
+  function closePane(){app.classList.remove('pane-open');$$('.row.sel').forEach(function(r){r.classList.remove('sel');});current=null;}
+  function openIds(){return order.filter(function(i){var r=$('.row[data-id="'+i+'"]');return r&&!r.hidden&&closedIds.indexOf(i)<0||(r&&closedIds.indexOf(i)<0&&(i==='risk'||i==='idea'));});}
+  function next(){var ids=openIds(); if(!ids.length){closePane();return;} var i=ids.indexOf(current); openRow(ids[(i+1)%ids.length]===current&&ids.length>1?ids[(i+2)%ids.length]:ids[(i+1)%ids.length]);}
+
+  function recount(){
+    var asks=order.slice(0,4).filter(function(i){return closedIds.indexOf(i)<0;}).length;
+    var rev=['review','pr'].filter(function(i){return closedIds.indexOf(i)<0;}).length;
+    var fin=['risk','idea'].filter(function(i){return closedIds.indexOf(i)<0;}).length;
+    var all=asks+rev+fin;
+    $('#n-asks').textContent=asks;$('#n-reviews').textContent=rev;$('#n-finds').textContent=fin;$('#n-all').textContent=all;
+    $('#rail-count').textContent=all;$('.nav a b').textContent=all;
+    var h=$('#headline'); h.textContent=''; var s=document.createElement('span');
+    if(asks){s.className='amber';s.textContent=asks+' need you';}else{s.textContent='Nothing needs you';}
+    h.appendChild(s);
+    var parts=[]; if(rev){parts.push(closedIds.indexOf('review')<0?'1 review':'');if(closedIds.indexOf('pr')<0){parts.push('1 PR with blockers');}}
+    if(fin){parts.push(fin+(fin===1?' find':' finds'));} parts.push('2 working','2 quiet');
+    $('#totals').textContent=parts.filter(Boolean).join(' · ');
+    var loom=['approval','coord','stuck','review','pr','risk','idea'].filter(function(i){return closedIds.indexOf(i)<0;}).length;
+    $('#ws-loom').textContent=loom;$('#ws-aegis').textContent=closedIds.indexOf('runner')<0?1:0;
+    var ba=$('#batch-open'); var both=closedIds.indexOf('runner')<0&&closedIds.indexOf('coord')<0; ba.hidden=!both;
+    if(!both){$('#batch').hidden=true;}
+    $('#closed-n').textContent=closedIds.length;
+    $('[data-sec=asks]').hidden=!asks&&tab!=='all'?true:false;
+  }
+  var tab='all';
+  function complete(id,ended){
+    if(closedIds.indexOf(id)>=0){return;}
+    closedIds.push(id); var row=$('.row[data-id="'+id+'"]'); if(row){row.hidden=true;row.classList.remove('sel');}
+    var li=document.createElement('li'); li.setAttribute('data-for',id);
+    var nm=row?$('.mono',row):null; li.textContent=(nm?nm.textContent+' — ':'')+ended; $('#closed-list').appendChild(li);
+    lastEnded[id]=ended; recount();
+  }
+  function showReceipt(id,ended,noundo){
+    $$('.detail').forEach(function(d){d.hidden=true;});
+    $('#receipt-text').textContent='✓ '+ended; $('#receipt').hidden=false;
+    var s=8; $('#undo-s').textContent=s; $('#undo').hidden=!!noundo; clearInterval(undoTimer);
+    undoTimer=setInterval(function(){s--;$('#undo-s').textContent=s;if(s<=0){clearInterval(undoTimer);$('#undo').hidden=true;}},1000);
+    $('#undo').onclick=function(){clearInterval(undoTimer);undo(id);};
+  }
+  function undo(id){
+    closedIds=closedIds.filter(function(i){return i!==id;});
+    var row=$('.row[data-id="'+id+'"]'); if(row){row.hidden=false;}
+    var li=$('#closed-list [data-for="'+id+'"]'); if(li){li.remove();}
+    recount(); openRow(id);
+  }
+
+  var armTimers=new WeakMap(), originals=new WeakMap();
+  document.addEventListener('click',function(e){
+    var b=e.target.closest('button'); 
+    if(b&&b.classList.contains('arm')){ e.stopPropagation(); handleArm(b); return; }
+    if(b&&b.hasAttribute('data-complete')){ e.stopPropagation(); var id=b.getAttribute('data-complete'),end=b.getAttribute('data-ended'); complete(id,end); if(current===id){showReceipt(id,end,b.hasAttribute('data-noundo'));} return; }
+    if(b&&b.hasAttribute('data-open')){ e.stopPropagation(); openRow(b.getAttribute('data-open')); return; }
+    if(b){return;}
+    var row=e.target.closest('.row[data-id]'); if(row){openRow(row.getAttribute('data-id'));}
+  });
+  function disarmAll(except){$$('.arm.armed').forEach(function(x){if(x!==except){reset(x);}});}
+  function reset(x){x.classList.remove('armed');x.disabled=false; if(originals.has(x)){setLabel(x,originals.get(x));}}
+  function setLabel(x,txt){var l=x.querySelector('.l'); if(l){l.textContent=txt;}else{x.textContent=txt;}}
+  function getLabel(x){var l=x.querySelector('.l'); return l?l.textContent:x.textContent;}
+  function handleArm(b){
+    if(!b.classList.contains('armed')){
+      disarmAll(b); originals.set(b,getLabel(b)); b.classList.add('armed'); setLabel(b,b.getAttribute('data-confirm'));
+      if(b.classList.contains('decide')){b.disabled=true;setTimeout(function(){b.disabled=false;},600);}
+      clearTimeout(armTimers.get(b)); armTimers.set(b,setTimeout(function(){reset(b);},5000)); return;
+    }
+    clearTimeout(armTimers.get(b));
+    if(b.hasAttribute('data-batch')){
+      b.getAttribute('data-batch').split(',').forEach(function(i){complete(i,i==='runner'?'Answered “Use the scratch tmpfs” · delivered to runner/pod-reach · main, 14:21':'Answered “Fold under open” · delivered to coord/web-inbox · main, 14:21');});
+      $('#batch').hidden=true; reset(b); return;
+    }
+    var id=b.getAttribute('data-complete'),end=b.getAttribute('data-ended'); var inPane=!!b.closest('#pane');
+    reset(b); complete(id,end); if(inPane){showReceipt(id,end,b.hasAttribute('data-noundo'));}
+  }
+  $('#batch-send').onclick=function(e){e.stopPropagation();['runner','coord'].forEach(function(i){complete(i,i==='runner'?'Answered “Use the scratch tmpfs” · delivered to runner/pod-reach · main, 14:21':'Answered “Fold under open” · delivered to coord/web-inbox · main, 14:21');});$('#batch').hidden=true;};
+  $('#batch-open').onclick=function(){$('#batch').hidden=false;};
+  $('#batch-cancel').onclick=function(){$('#batch').hidden=true;};
+  $('#pane-close').onclick=closePane; $('#pane-next').onclick=next; $('#receipt-next').onclick=next;
+  $('#finds-toggle').onclick=function(){var show=$('#finds-toggle').textContent==='Show'; $$('.row.nested').forEach(function(r){var id=r.getAttribute('data-id'); r.hidden=!show||closedIds.indexOf(id)>=0;}); $('#finds-toggle').textContent=show?'Hide':'Show';};
+  $('#tree-toggle').onclick=function(){var s=$('#status-sec'); s.classList.toggle('show-tree'); $('#tree-toggle').textContent=s.classList.contains('show-tree')?'Hide the delegates':'Show the coordinator’s delegates';};
+  $$('.tab').forEach(function(x){x.onclick=function(){
+    tab=x.getAttribute('data-tab'); $$('.tab').forEach(function(y){y.setAttribute('aria-selected',y===x?'true':'false');});
+    $$('[data-sec]').forEach(function(s){s.hidden=!(tab==='all'||s.getAttribute('data-sec')===tab);});
+    var st=$('#status-sec'); if(tab==='status'){st.classList.add('show-tree');}else if(tab==='all'){st.classList.remove('show-tree');}
+    if(tab==='finds'){$('#finds-toggle').textContent==='Show'&&$('#finds-toggle').click();}
+  };});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){closePane();}});
+
+
+  function view(v){var pr=v==='projects';$('#main').hidden=pr;$('#main-projects').hidden=!pr;$('#nav-inbox').classList.toggle('on',!pr);$('#nav-projects').classList.toggle('on',pr);closePane();}
+  $('#nav-inbox').onclick=function(e){e.preventDefault();view('inbox');};
+  $('#nav-projects').onclick=function(e){e.preventDefault();view('projects');};
+  $$('.nav a').forEach(function(a,i){a.onclick=function(e){e.preventDefault();view(i===2?'projects':'inbox');};});
+  if(q.get('view')==='projects'){view('projects');}
+  var o=q.get('open'); if(o){ if(o==='risk'||o==='idea'){$('#finds-toggle').click();} openRow(o);}
+  if(q.get('tab')){var tb=$('.tab[data-tab="'+q.get('tab')+'"]'); if(tb){tb.click();}}
+})();
+</script>
+</body>
+</html>

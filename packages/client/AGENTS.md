@@ -9168,20 +9168,39 @@ the protocol-change/078 addendum on moving a session have the protocol.
   the session reopens in the old directory without the executor's commits. A variant of
   `session_move.Refusal` would cross the node boundary, so none was added.
 - `remote/host.close_unbuilt` closes an attach's scope as retired when the build finds
-  the workspace unserved or cannot make the session's Git worktree (`WorktreeNotMade`),
-  for a created, reopened or rebound scope alike, provided
+  the workspace unserved, its root is not a directory, or the session's Git worktree
+  cannot be made, for a created, reopened or rebound scope alike, provided
   `holds_nothing`: a rebound scope with a tree record, or with results the attach
   reported unacknowledged or lost, stays open, because it is a session's own and an
   executor restarted with the workspace dropped must not close it. This is what frees the
   open scope that a source dying in the attach leaves, since the retry is a rebound
   attach. `workspace.refused_attempt` still closes only a scope its record shows it
-  opened, so after the host's close the corrected name is refused once for the bound
-  name (twice when it was corrected before the retry), and setting the name back records the close.
-  A refused worktree is closed the same way, because the orchestrator ends a session
-  refused as final and never closes a scope it holds no plane for: left open, the scope
-  counted against `LOOM_EXECUTOR_MAX_SCOPES` until the executor was released by hand.
-  The retry of such a session attaches at the next incarnation, which the source's
-  record heals as it does for the unserved name.
+  opened, so after the host's close the source's record still shows an attach with no
+  close. The corrected name is attached at that incarnation and the executor answers that
+  the scope is there; `workspace.learn_unrecorded_close` asks how the close ended, the
+  executor refuses the question under the corrected name for the workspace the scope is
+  bound to, and the source then asks again under the workspace the refusal names, which
+  the executor answers with the stored outcome of the closed scope, and the attach
+  rebinds. A close is not a read, and the ask is safe because the incarnation never goes
+  down: a scope seen closed at `held` is open again only at `held + 1`, where the executor
+  refuses the ask as stale and the source records nothing. The corrected name lands in one
+  move with no operator step (`an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test`);
+  a name corrected while the scope is still open takes one round of the advice
+  (`a_name_corrected_before_the_retry_needs_one_round_of_the_advice_test`).
+  `workspace.mismatch_words` is shown for a scope that is open, closing, closed without
+  proof or holding a tree, and says so.
+  A build that fails before any plane exists for want of a tree or a root is closed the
+  same way, because the orchestrator ends a session refused as final and never closes a
+  scope it holds no plane for: left open, the scope counted against
+  `LOOM_EXECUTOR_MAX_SCOPES` until the executor was restarted. `close_unbuilt` takes
+  three failures as "nothing built": an unserved workspace (`NoPlaneBuilt` with the
+  `protocol.unserved_workspace` prefix), a workspace root that is not a directory
+  (`host.RootNotDirectory`), and a worktree Git could not make (`host.WorktreeNotMade`).
+  A rebound scope closes only when no tree record exists, and a failed `git worktree add`
+  leaves one itself, so a rebound scope whose own attempt ran Git stays open. The source's
+  record stays `open` after such a refusal, so the retry meets `StaleIncarnation` and
+  learns the close as it does for the unserved name. A failed `owner_link.start` replies
+  `NoPlane` after the scope was admitted and never reaches `close_unbuilt`.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
   linked to the process that starts the daemon's services. `Control` carries the
   listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;

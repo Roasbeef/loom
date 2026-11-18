@@ -4406,9 +4406,10 @@ fn diagnose_domain_start(
 /// that `start_class` returns enter the log.
 ///
 /// A start that failed because the executors have no room for the session is a
-/// state of the pool and not a fault: a spawn that waits for a slot is built
-/// again every second or two (`manager.no_room`), so each try is a warning. Any
-/// other failure stays an error, because nothing retries it.
+/// state of the pool and not a fault: a delegate spawn that waits for room has
+/// its reservation built again every second or two (`manager.unslotted` reads
+/// `manager.no_room`), so each try is a warning. Any other failure stays an
+/// error, because nothing retries it.
 ///
 /// ## Examples
 ///

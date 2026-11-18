@@ -300,6 +300,12 @@ pub type PlaneFailure {
   /// The workspace is in worktree mode and the session's worktree could not be
   /// made or reopened (`WorktreeFailed`, protocol-change/095).
   WorktreeNotMade(reason: String)
+
+  /// The workspace's root is not a directory on this executor, so nothing was
+  /// built, not even a tree. It is answered as `NoPlane` with the same reason,
+  /// so the wire is as it was, and the constructor lets the host tell it from
+  /// a failure that a later attach could adopt without matching on text.
+  RootNotDirectory(reason: String)
 }
 
 /// Builds the workspace plane for a scope that has none, or says why it cannot.
@@ -1440,8 +1446,9 @@ fn build_plane(
 }
 
 // The build landed. A plane whose children start becomes the scope's, and the
-// attach it was started for is answered; any other ending leaves the scope open
-// in the ledger and without a plane, so the next attach builds again.
+// attach it was started for is answered. A build that fails with nothing built
+// is closed by `close_unbuilt`; any other ending leaves the scope open in the
+// ledger and without a plane, so the next attach builds again.
 /// Plane built keeps this client operation’s decoding or state decision in one place.
 fn plane_built(
   state: State(census),
@@ -1521,12 +1528,13 @@ fn refusal_of_failure(failure: PlaneFailure) -> Refusal {
   case failure {
     NoPlaneBuilt(reason:) -> protocol.NoPlane(reason)
     WorktreeNotMade(reason:) -> protocol.WorktreeFailed(reason)
+    RootNotDirectory(reason:) -> protocol.NoPlane(reason)
   }
 }
 
 // A build that fails before any plane exists leaves the scope its attach
 // admitted open in the ledger, and an open scope counts against the executor's
-// `max_unclean_scopes`. Two failures end there with nothing built and nothing
+// `max_unclean_scopes`. Three failures end there with nothing built and nothing
 // that a later attach could adopt, so the host closes the scope as cleanly
 // retired in the same step that answers the refusal:
 //
@@ -1534,17 +1542,22 @@ fn refusal_of_failure(failure: PlaneFailure) -> Refusal {
 //   name in the ledger, and no plane is ever built for it. Left open, the scope
 //   would be bound to a name nobody serves, so the attach for the corrected
 //   workspace would meet it open.
-// - A worktree that Git could not make leaves no tree and no plane. The
+// - A workspace root that is not a directory (deleted or unmounted) fails before
+//   any tree is attempted, so nothing exists for a later attach to adopt.
+// - A worktree that Git could not make leaves no tree on disk, though its record
+//   remains: `Removed`, or `Creating` when the undo's own prune failed. The
 //   orchestrator ends a session that was refused as final and never closes a
 //   scope it holds no plane for, so nothing else would free the slot, and with a
 //   limit of one the executor would stay full until it restarted.
 //
-// A scope created or reopened by this attach is closed, and so is one it rebound
-// when `holds_nothing` finds no tree record and no result nobody has
-// acknowledged. A scope that holds either is a session's own, with a tree and
-// earlier calls, and an executor restarted with the workspace dropped from its
-// configuration must leave it as the operator finds it. Any other build failure
-// leaves the scope open for the next attach to build again, as before.
+// A scope created or reopened by this attach is closed. A scope it rebound is
+// closed only when `holds_nothing` finds no tree record and no result nobody has
+// acknowledged, and a failed `git worktree add` leaves a tree record itself, so
+// a rebound scope whose own attempt ran Git stays open. A scope that holds
+// either is a session's own, with a tree and earlier calls, and an executor
+// restarted with the workspace dropped from its configuration must leave it as
+// the operator finds it. Any other build failure leaves the scope open for the
+// next attach to build again, as before.
 /// Closes the scope an attach left when no plane could be built for it, as
 /// retired, when the scope holds no tree and no unacknowledged call.
 fn close_unbuilt(
@@ -1556,10 +1569,10 @@ fn close_unbuilt(
   unacked: protocol.Unacked,
   failure: PlaneFailure,
 ) -> Nil {
-  // Only these two failures are known to leave nothing a later attach could
-  // adopt. Any other failure is left for the next attach to build again.
+  // Only these failures are known to leave nothing a later attach could adopt.
+  // Any other failure is left for the next attach to build again.
   let nothing_built = case failure {
-    WorktreeNotMade(..) -> True
+    WorktreeNotMade(..) | RootNotDirectory(..) -> True
     NoPlaneBuilt(reason:) -> protocol.is_unserved_workspace(reason)
   }
 

@@ -59,10 +59,12 @@ CONSTANTS
     RebindOpen,          \* MUTANT: an attach also rebinds an open scope.
     OwnerDiesInAttach,   \* The source dies while the executor builds the plane of an attach for an unserved name.
     CloseReboundUnserved, \* An attach for an unserved name closes a rebound scope that has no tree record.
-    CloseFailedTree      \* An attach whose Git worktree cannot be made closes the scope it admitted.
+    CloseFailedTree,     \* An attach whose Git worktree cannot be made closes the scope it admitted.
+    LearnsUnderBound     \* The source learns an unrecorded close by asking under the workspace the executor names.
 
 VARIABLES
     cfgWs, bound, reb,   \* The configured workspace; the scope's workspace; an open scope was rebound.
+    srec,                \* The source's own record of the scope: "open" is an attach with no recorded close.
     par, cnt, nc,        \* The commit store: parent, content and the next id.
     head, wt, nw,        \* The laptop's HEAD, its working tree's content, the next edit.
     edits, opView,       \* Operator changes so far; what the operator last left.
@@ -80,7 +82,7 @@ VARIABLES
 L == <<par, cnt, nc, head, wt, nw, edits, opView>>
 X == <<srcStore, store, exBranch, applied, tok, tokAtt, net, answers, aliveX, lastLand>>
 H0 == <<att, stopWt, cell, reruns, lost>>
-H == <<H0, cfgWs, bound, reb>>
+H == <<H0, cfgWs, bound, reb, srec>>
 M == <<pc, mtip, mtipAtt, mreq, minc, mtok>>
 X1 == <<srcStore, store, exBranch, applied, tok, tokAtt, net, aliveX, lastLand>>
 M2 == <<mtip, mtipAtt, mreq, minc, mtok>>
@@ -114,6 +116,7 @@ TypeOK2 ==
                "asked", "applied", "rejected", "closed", "refused", "marked"}
     /\ cell.ph \in {"none", "taken", "done"}
     /\ exBranch \in -1..NC
+    /\ srec \in {"open", "closed"}
 
 Init2 ==
     /\ Init
@@ -128,7 +131,7 @@ Init2 ==
     /\ tok = 0 /\ tokAtt = 0 /\ net = {} /\ answers = {}
     /\ aliveX = TRUE /\ lastLand = [fenced |-> TRUE, own |-> TRUE]
     /\ reruns = 0 /\ lost = 0
-    /\ cfgWs \in InitWs /\ bound = "none" /\ reb = FALSE
+    /\ cfgWs \in InitWs /\ bound = "none" /\ reb = FALSE /\ srec = "closed"
     /\ pc = "idle" /\ mtip = -1 /\ mtipAtt = 0 /\ mreq = NoReq
     /\ minc = 0 /\ mtok = 0
 
@@ -193,7 +196,7 @@ Intend2 ==
     /\ Intend
     /\ att' = att + 1 /\ stopWt' = wt
     /\ UNCHANGED <<L, srcStore, store, exBranch, applied, tok, tokAtt, net,
-                   aliveX, lastLand, cell, reruns, lost, cfgWs, bound, reb, M,
+                   aliveX, lastLand, cell, reruns, lost, cfgWs, bound, reb, srec, M,
                    answers>>
 
 StopA2 ==
@@ -249,7 +252,7 @@ CkRecord ==
     /\ CkOn /\ pc = "captured"
     /\ cell' = [op |-> att, ph |-> "taken", tip |-> mtip]
     /\ pc' = "recorded"
-    /\ UNCHANGED <<vars, L, X, att, stopWt, reruns, lost, cfgWs, bound, reb, mtip,
+    /\ UNCHANGED <<vars, L, X, att, stopWt, reruns, lost, cfgWs, bound, reb, srec, mtip,
                    mtipAtt, mreq, minc, mtok>>
 
 (* The state is sent whole to the executor's store, `state_transfer.send`. *)
@@ -296,10 +299,41 @@ CkSend ==
 (*                                                                         *)
 (* RebindOpen is the mutant that lets an attach rebind an open scope too.  *)
 (***************************************************************************)
+(***************************************************************************)
+(* The source's own record of the scope (`scope.Scope`, in the session file). *)
+(* The model chose the incarnation of an attach from the executor's ledger,   *)
+(* as if the source always knew it. The source knows only its record: after   *)
+(* an attach that it never saw close, it attaches at the incarnation the      *)
+(* record names. A scope the host has since closed answers `StaleIncarnation`, *)
+(* and the source learns the close by asking the executor how that close      *)
+(* ended (`workspace.learn_unrecorded_close`). The executor judges that       *)
+(* question by workspace before it looks at the scope, so the question under  *)
+(* the corrected name is refused for the workspace the scope is bound to.     *)
+(* StaleOpen is that state. The rule `LearnsUnderBound` asks again under the  *)
+(* workspace the executor names, which it answers with the stored outcome.   *)
+(*                                                                         *)
+(* srec is "open" after CkAttachUnknownDies, which writes the record before   *)
+(* the attach, and stays "open" through the retry that frees the scope: that  *)
+(* retry is a rebound attach, and `close_if_opened` records a close only for  *)
+(* an attach that created or reopened the scope. A later attach that learns   *)
+(* the close, or that reopens the scope, makes it "closed". CkAttach sets    *)
+(* "closed" as a simplification: in the code `attach_to` writes an open      *)
+(* record before every attach, and `close_scope` records nothing on a        *)
+(* refusal or no answer, so a record can stay "open" after a landing. The    *)
+(* simplification has no effect on any result here. A crash inside a landing *)
+(* is MoveCheckoutMutantCrashInLanding.                                      *)
+(***************************************************************************)
+StaleOpen == srec = "open" /\ exec.holder = "none"
+
+\* The close is learned under the corrected name when the scope is bound to it,
+\* and under the bound name only with the rule.
+LearnOk == bound = cfgWs \/ LearnsUnderBound
+
 AttachAllowed ==
-    \/ bound \in {"none", cfgWs}
-    \/ RebindClosedUnused /\ exec.holder = "none" /\ exBranch = -1
-    \/ RebindOpen /\ exBranch = -1
+    /\ \/ bound \in {"none", cfgWs}
+       \/ RebindClosedUnused /\ exec.holder = "none" /\ exBranch = -1
+       \/ RebindOpen /\ exBranch = -1
+    /\ StaleOpen => LearnOk
 
 \* The attach changes the workspace of a scope that is open.
 Rebinds == exec.holder # "none" /\ bound \notin {"none", cfgWs}
@@ -316,6 +350,7 @@ CkAttach ==
     /\ exBranch' = IF exBranch = -1 /\ cfgWs = "good" THEN Base ELSE exBranch
     /\ bound' = cfgWs
     /\ reb' = (reb \/ Rebinds)
+    /\ srec' = "closed"
     /\ minc' = exec'.inc /\ mtok' = tok + 1
     /\ pc' = "attached"
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
@@ -347,6 +382,9 @@ CkAttachUnknown ==
     /\ tok' = tok + 1 /\ tokAtt' = att
     /\ bound' = "unknown"
     /\ reb' = (reb \/ Rebinds)
+    \* A scope this attach reopens is closed and recorded closed, after the close
+    \* is learned. A rebound one is closed by the host and the source cannot tell.
+    /\ srec' = IF exec.holder = "none" THEN "closed" ELSE srec
     /\ pc' = IF CloseFailedAttach \/ FreesRebound THEN "refused" ELSE "sent"
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
                    replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
@@ -369,6 +407,7 @@ CkAttachUnknownDies ==
     /\ tok' = tok + 1 /\ tokAtt' = att
     /\ bound' = "unknown"
     /\ reb' = (reb \/ Rebinds)
+    /\ srec' = "open"
     /\ MReset
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
                    replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
@@ -381,11 +420,23 @@ CkAttachUnknownDies ==
 (* record is written. The refusal is `WorktreeFailed`, which the mover takes  *)
 (* as passing and not final (`move_checkout.classified`): the step stalls and *)
 (* runs again. With CloseFailedTree the host closes the scope as retired in   *)
-(* the same step as the refusal, as it does for an unserved name, and a scope *)
-(* a rebound attach finds open is closed too when it holds no tree record     *)
+(* the same step as the refusal, as it does for an unserved name             *)
 (* (`close_unbuilt`). Without it the scope stays open, counted against the    *)
 (* executor's limit, and nothing closes it: the session that would is not the *)
 (* mover's, which holds no plane for the scope.                               *)
+(*                                                                         *)
+(* The source's record is "open" afterwards, because `attach_to` writes it    *)
+(* before the attach and `refused_attempt` records no close for               *)
+(* `WorktreeFailed`. The retry meets `StaleIncarnation` and learns the close *)
+(* (`StaleOpen`, `LearnOk`), so the model covers the heal.                   *)
+(*                                                                         *)
+(* The rebound disjunct of FreesBadTree is unreachable in every             *)
+(* configuration: with the rule on, the scope is closed at the first failure *)
+(* and no attach rebinds it, and with it off FreesBadTree is false. In the   *)
+(* code a rebound scope closes only when no tree record exists, and a failed *)
+(* `git worktree add` leaves one itself (`Creating`, then `Removed`), so a   *)
+(* rebound scope whose own attempt ran Git stays open. The disjunct is kept  *)
+(* to state the guard, not to be checked.                                    *)
 FreesBadTree == CloseFailedTree /\ exec.holder # "none" /\ exBranch = -1
 
 CkAttachBadTree ==
@@ -402,6 +453,7 @@ CkAttachBadTree ==
     /\ tok' = tok + 1 /\ tokAtt' = att
     /\ bound' = "badtree"
     /\ reb' = (reb \/ Rebinds)
+    /\ srec' = "open"
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
                    replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
                    exBranch, applied, net, answers, aliveX, lastLand, pc, mtip,
@@ -420,7 +472,7 @@ FixConfig ==
     \* an attach for the unserved name left open.
     /\ ~(CloseReboundUnserved /\ exec.holder # "none" /\ bound = "unknown")
     /\ MReset
-    /\ UNCHANGED <<vars, L, X1, H0, bound, reb>>
+    /\ UNCHANGED <<vars, L, X1, H0, bound, reb, srec>>
 
 (***************************************************************************)
 (* One StateApply, under the scope's incarnation and token. The request    *)
@@ -495,7 +547,7 @@ LoseAnswer ==
     /\ \E e \in answers :
           /\ answers' = answers \ {e}
           /\ lost' = lost + 1
-    /\ UNCHANGED <<vars, L, X1, att, stopWt, cell, reruns, cfgWs, bound, reb, M>>
+    /\ UNCHANGED <<vars, L, X1, att, stopWt, cell, reruns, cfgWs, bound, reb, srec, M>>
 
 (***************************************************************************)
 (* The mover takes the reply to its request: applied, refused by the       *)
@@ -539,7 +591,7 @@ CkMark ==
     /\ CkOn /\ pc = "closed"
     /\ cell' = [op |-> att, ph |-> "done", tip |-> mtip]
     /\ pc' = "marked"
-    /\ UNCHANGED <<vars, L, X, att, stopWt, reruns, lost, cfgWs, bound, reb, mtip,
+    /\ UNCHANGED <<vars, L, X, att, stopWt, reruns, lost, cfgWs, bound, reb, srec, mtip,
                    mtipAtt, mreq, minc, mtok>>
 
 (***************************************************************************)
@@ -562,7 +614,7 @@ CkRerun ==
     /\ reruns' = reruns + 1
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
                    replied, everMoved, crashes, L, X1, att, stopWt, cell, lost,
-                   cfgWs, bound, reb>>
+                   cfgWs, bound, reb, srec>>
 
 (***************************************************************************)
 (* Abandons. In the shipped code a local session's move is abandoned on a  *)
@@ -729,6 +781,15 @@ AbandonRestores ==
 (* close it, so an open one would count against the executor's limit for     *)
 (* good.                                                                      *)
 FailedBuildHoldsNoScope == bound = "badtree" => exec.holder # "A"
+
+(* After the retry that closes an unserved, empty scope, the next move with a *)
+(* served name is accepted with no further operator step: a closed scope    *)
+(* with no tree is not refused for the workspace it was bound to, whatever  *)
+(* the source's record says. It restates the third conjunct of            *)
+(* AbandonRestores for this trace, so that a violation names it.            *)
+ClosedEmptyScopeTakesTheNextName ==
+    (exec.holder = "none" /\ exBranch = -1 /\ cfgWs = "good" /\ bound # "none")
+        => AttachAllowed
 
 NoLeak ==
     /\ (a = "active" /\ mover = "idle" /\ att > 0) => exec.holder # "A"

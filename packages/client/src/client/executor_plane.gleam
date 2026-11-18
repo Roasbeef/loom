@@ -492,7 +492,7 @@ fn build(
   use root <- result.try(
     bootstrap.canonical_directory(workspace.root)
     |> result.map_error(fn(reason) {
-      host.NoPlaneBuilt(
+      host.RootNotDirectory(
         "the workspace `"
         <> workspace.name
         <> "` is not a directory on this executor: "

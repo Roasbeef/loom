@@ -350,15 +350,45 @@ pub fn a_failed_worktree_does_not_hold_the_executors_only_scope_test() {
   stop(plane)
 }
 
+// A workspace root that is gone, deleted or unmounted, fails before any tree is
+// attempted, with nothing built. The scope that attach admitted is closed in the
+// same step as the refusal, for the same reason as above: the orchestrator never
+// closes a scope it holds no plane for, so an open one would hold the executor's
+// only slot until it restarted.
+pub fn a_missing_workspace_root_does_not_hold_the_executors_only_scope_test() {
+  let limits =
+    exec_ledger.Limits(
+      max_unclean_scopes: 1,
+      max_ledger_bytes: exec_ledger.default_max_ledger_bytes,
+    )
+  let rig = worktree_rig.rig("missing-root")
+  let plane = serve_limited(rig, limits)
+  let assert Ok(Nil) = simplifile.delete(rig.root)
+    as "the workspace root is removed after the executor started"
+  let assert Error(protocol.NoPlane(reason)) =
+    surface.attach(config(plane, 1, 0))
+    |> result.map(fn(_attachment) { Nil })
+  assert string.contains(reason, "is not a directory")
+  assert scope_state(plane, 1)
+    == Some(#(0, exec_ledger.Closed(exec_ledger.AllRetired)))
+
+  // Another session is refused for the same root, not for want of room.
+  let assert Error(protocol.NoPlane(again)) =
+    surface.attach(config(plane, 2, 0))
+    |> result.map(fn(_attachment) { Nil })
+  assert string.contains(again, "is not a directory")
+  stop(plane)
+}
+
 // The incarnation and state of the session's scope in the executor's ledger, read
-// through a second connection. Nothing is admitted in these tests, so the
-// recovery that opening runs has no call to turn unknown.
+// through a second connection. `connect` recovers nothing, so the host's live
+// calls are not turned unknown by the read.
 fn scope_state(
   plane: Plane,
   n: Int,
 ) -> option.Option(#(Int, exec_ledger.ScopeState)) {
-  let assert Ok(ledger) = exec_ledger.open(plane.rig.ledger_path)
-    as "the ledger opens for the test"
+  let assert Ok(ledger) = exec_ledger.connect(plane.rig.ledger_path)
+    as "a second connection to the ledger opens for the test"
   let found = exec_ledger.scope(ledger, session(n))
   let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
   let assert Ok(found) = found as "the scope reads"
