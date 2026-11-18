@@ -7088,6 +7088,48 @@ pub fn a_pass_asks_a_silent_orchestrator_once_however_many_stubs_it_owes_test() 
   close(harness)
 }
 
+// The drive of 2026-11-16 (runs D3 and D6): on a full pool the box answers the
+// ninth spawn `NotYetOpen`, and a finished child holds its executor's scope until
+// a join collects it. While the parent waits in the spawn tool, the drain's join
+// is the only one, so it must still be sent in a pass whose spawn step heard
+// that answer. That answer is not silence (protocol-change/107, addendum of
+// 2026-11-17).
+pub fn a_spawn_answered_not_yet_open_leaves_the_pass_its_join_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], fn(config) {
+      agency.Config(..config, fan_out: 2)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_running) = harness.seam.spawn(caller, on_box("running"))
+
+  // The second child's spawn is left requested, as the ninth was.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(second_call(caller, 1), on_box("waiting"))
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let joins = fake_orchestrators.report(box).joins
+
+  // The box answers that spawn as a pool with no room does, and the pass still
+  // joins the running child on the same box.
+  let full =
+    remote_reach.Reach(
+      ..harness.config.remote,
+      spawn: fn(_name, _parent, _site, _depth, _tools, _request, _within_ms) {
+        Error(peer_mail.NotOpen)
+      },
+    )
+  assert remote_drain.pass(
+      fn() { Ok(harness.runtime) },
+      full,
+      harness.config.clock,
+      log.discard(),
+    )()
+    == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  assert fake_orchestrators.report(box).joins == joins + 1
+  close(harness)
+}
+
 pub fn a_child_that_finishes_unwaited_is_settled_by_a_pass_and_frees_its_slot_test() {
   let box = fake_orchestrators.start("box", fake_orchestrators.Up)
   let #(harness, _queued) =

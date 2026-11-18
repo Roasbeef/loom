@@ -26,6 +26,7 @@ import storage/access
 import storage/catalogue
 import storage/domain
 import storage/sql
+import support/cell
 import support/internal/ffi_memory
 import support/remote_stubs
 import tools/agent
@@ -2765,6 +2766,55 @@ pub fn a_delegate_session_is_opened_again_after_the_registry_restarts_test() {
   assert found == session_id
   assert catalogue.delegates_held(store, "laptop") == Ok(1)
   stop(restarted)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A pair's reservation whose first build failed holds no slot. The next message
+// for the pair builds the same reservation again under its request key, rather
+// than being refused as never created, so a pool that was full for a moment is
+// not a final refusal and the child keeps one session (protocol-change/107,
+// addendum of 2026-11-17).
+pub fn a_reserved_delegate_session_is_built_again_by_the_next_message_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let builds = cell.new(0)
+  let registry =
+    start(store, 2, fn(record, _) {
+      cell.update(builds, fn(count) { count + 1 })
+
+      // The first build finds every executor full; the second finds room.
+      case cell.get(builds) {
+        1 ->
+          Error(
+            "no executor accepted the session: e1: the executor already holds 1 scopes that are not cleanly closed",
+          )
+        _ -> Ok(record.id)
+      }
+    })
+  let request = delegate_request("laptop", 948, 2)
+  let assert Ok(manager.Delegated(session_id:, ..)) =
+    manager.delegate_session(registry, request)
+    as "the first message reserves the session and builds it"
+  let failed =
+    poll.until(within: 2000, every: 1, attempt: fn() {
+      case manager.get(registry, session_id) {
+        Ok(manager.View(status: manager.FailedStart(..), ..)) -> poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(string.inspect(error))
+      }
+    })
+  assert failed == poll.Answered(Nil)
+
+  // The next message builds the same reservation, which now opens.
+  let assert Ok(manager.Delegated(
+    session_id: again,
+    status: manager.Opening(operation),
+  )) = manager.delegate_session(registry, request)
+    as "the next message builds the reservation again"
+  assert again == session_id
+  await_status(registry, session_id, manager.Resident(operation))
+  assert cell.get(builds) == 2
+  assert catalogue.delegates_held(store, "laptop") == Ok(1)
+  stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
 
