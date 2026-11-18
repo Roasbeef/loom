@@ -231,8 +231,8 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   standing `loom-vm run` processes outside the daemon; no daemon-owned guest
   and no pool driver was chosen. `ensure` refuses a guest an older loom made
   over distribution, naming `loom vm sync`, `loom vm rm --yes` and `loom vm
-  up`; the launcher's `daemon=required` retry (`tui/vm_ensure`) is kept but no
-  guest asks for it, since none joins a deployment. Not done: the web
+  up`; the launcher's `daemon=required` retry (`tui/vm_ensure`) was deleted on
+  2026-11-18, since no guest joins a deployment. Not done: the web
   new-session form; stopping idle guests; reattaching a session after a guest
   restart (`remote/reattach-after-executor-restart`). Progress is live on the
   interactive launch (standard error to `/dev/tty` through `/bin/sh`) and shown

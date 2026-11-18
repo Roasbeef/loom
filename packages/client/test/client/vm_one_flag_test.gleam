@@ -334,9 +334,7 @@ pub fn guest_names_never_collide_with_the_authority_directory_test() {
   )
 }
 
-// --- a first guest in a home that has a cookie ---------------------------------
-
-// --- whether the daemon has read the deployment ----------------------------------
+// --- a guest in another configuration -----------------------------------------
 
 pub fn another_configuration_is_named_in_its_refusal_test() {
   let reason = vm_spec.other_config_refusal("/c/loom.toml")

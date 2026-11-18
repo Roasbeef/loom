@@ -653,23 +653,14 @@ pub fn the_staged_files_hold_one_key_and_no_cookie_test() {
 }
 
 pub fn an_untrusted_launch_forwards_the_port_and_registers_no_node_test() {
-  let launch = launch(vm_spec.Forward)
-  let arguments = vm_spec.launch_arguments(launch)
+  let arguments = vm_spec.launch_arguments(launch())
 
   assert list.contains(arguments, "--forward")
   assert list.contains(arguments, "47011:4370")
   assert !list.contains(arguments, "--publish")
 }
 
-pub fn a_distribution_launch_still_publishes_the_node_test() {
-  let arguments = vm_spec.launch_arguments(launch(vm_spec.Publish))
-
-  assert list.contains(arguments, "--publish")
-  assert list.contains(arguments, "loom_vm_dev_exec:47011:4370")
-  assert !list.contains(arguments, "--forward")
-}
-
-fn launch(reach: vm_spec.Reach) -> vm_spec.Launch {
+fn launch() -> vm_spec.Launch {
   vm_spec.Launch(
     manifest: vm_spec.Manifest(
       revision: "abc1234",
@@ -687,7 +678,6 @@ fn launch(reach: vm_spec.Reach) -> vm_spec.Launch {
     state_disk: "/vm/dev/state.img",
     github: vm_spec.GitHubOff,
     allow: [],
-    reach:,
   )
 }
 

@@ -408,7 +408,6 @@ type Instance {
   Instance(
     directory: String,
     deploy: String,
-    orchestrator_credentials: String,
     root: String,
     state_disk: String,
     pid_file: String,
@@ -448,7 +447,6 @@ fn instance(vm_home: String, name: String) -> Instance {
   Instance(
     directory:,
     deploy: directory <> "/deploy",
-    orchestrator_credentials: directory <> "/orch",
     root: directory <> "/root",
     state_disk: directory <> "/state.img",
     pid_file: directory <> "/loom-vm.pid",
@@ -1489,7 +1487,7 @@ fn config_file(config: String, default: String) -> ConfigFile {
 // --- the untrusted link ------------------------------------------------------
 
 // What `bring_up_linked` takes from `bring_up`: the checks `bring_up` made and
-// the plans it computed, which a guest of either link shares.
+// the plans it computed.
 type LinkedUp {
   LinkedUp(
     manifest: Manifest,
@@ -1504,11 +1502,11 @@ type LinkedUp {
   )
 }
 
-/// The link `up` and `ensure` give the guest, which is the untrusted one, or
-/// the refusal for a guest made over distribution (`vm_link.settle`). It reads
-/// only the host's records beside the guest, so a refusal comes before
-/// anything is written, booted or sent.
-fn link_of(guest: Instance, name: String) -> Result(vm_spec.LinkKind, String) {
+/// Settles the guest's link, which can only be the untrusted one: `Ok` for a
+/// guest `up` and `ensure` may go on with, or the refusal for a guest made over
+/// distribution (`vm_link.settle`). It reads only the host's records beside the
+/// guest, so a refusal comes before anything is written, booted or sent.
+fn link_of(guest: Instance, name: String) -> Result(Nil, String) {
   use record <- result.try(read_record(guest.kind_file))
   let traces = traces_of(guest)
 
@@ -1519,6 +1517,7 @@ fn link_of(guest: Instance, name: String) -> Result(vm_spec.LinkKind, String) {
     |> result.map_error(fn(reason) { guest.kind_file <> ": " <> reason }),
   )
   vm_link.settle(name, guest.directory, record, traces)
+  |> result.replace(Nil)
 }
 
 /// What a first `up` left in the guest's directory before it recorded a link:
@@ -1597,8 +1596,8 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
   )
   let port = port_number(chosen)
 
-  // The root, the allowlist, the copy and the boot are the distribution
-  // guest's, with the node written differently and the port forwarded.
+  // The root, the allowlist, the copy and the boot are shared steps; the node
+  // is written with its listener and key, and the port is forwarded.
   use Nil <- result.try(stage_with(
     manifest,
     guest,
@@ -1610,16 +1609,7 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
     step,
   ))
   use Nil <- result.try(
-    launch_guest(
-      manifest,
-      guest,
-      names,
-      options,
-      github,
-      plan,
-      port,
-      vm_spec.Forward,
-    )
+    launch_guest(manifest, guest, names, options, github, plan, port)
     |> result.map_error(fn(reason) {
       reason
       <> "\nIf another program holds port "
@@ -2002,11 +1992,10 @@ fn link_lines(
 
 // --- the guest root ----------------------------------------------------------
 
-/// Everything `stage` does, with the writing of the executor's node left to
-/// `write_node`, which is given the workspaces the configuration registers. A
-/// distribution guest writes its bundle, cookie and ledger; an untrusted one
-/// writes its listener and a key, and neither differs in how the root, the
-/// allowlist, the script or the workspace copy are made.
+/// Stages the guest's root: the clone, the allowlist, the provisioning script
+/// and the workspace copy, with the writing of the executor's node left to
+/// `write_node`, which is given the workspaces the configuration registers. The
+/// untrusted link's node is its listener, its certificates and its key.
 fn stage_with(
   manifest: Manifest,
   guest: Instance,
@@ -2939,8 +2928,7 @@ fn scrub_config(path: String) -> Result(Nil, String) {
 // --- booting -----------------------------------------------------------------
 
 /// Starts `loom-vm run` with the guest's port forwarded from the host's
-/// `port` and waits until the console says its executor serves. `reach` says
-/// whether the executor's node is also registered in the host's epmd.
+/// `port` and waits until the console says its executor serves.
 fn launch_guest(
   manifest: Manifest,
   guest: Instance,
@@ -2949,7 +2937,6 @@ fn launch_guest(
   github: vm_spec.GitHubAccess,
   plan: vm_spec.ProvisionPlan,
   port: Int,
-  reach: vm_spec.Reach,
 ) -> Result(Nil, String) {
   let launch =
     Launch(
@@ -2962,7 +2949,6 @@ fn launch_guest(
       state_disk: guest.state_disk,
       github:,
       allow: options.allow,
-      reach:,
     )
 
   // The log is appended to, and the console of an earlier run says READY.

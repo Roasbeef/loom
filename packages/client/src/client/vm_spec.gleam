@@ -2333,7 +2333,7 @@ pub type Launch {
     root: String,
     memory_mib: Int,
     cpus: Int,
-    /// The host loopback port forwarded to the guest's distribution port.
+    /// The host loopback port forwarded to the guest's listener.
     host_port: Int,
     /// The raw image `loom-vm` attaches as the guest's state device.
     state_disk: String,
@@ -2342,20 +2342,7 @@ pub type Launch {
     /// The hosts the guest may reach besides GitHub's. They are allowed and
     /// never injection hosts: nothing here reaches `--inject-host`.
     allow: List(String),
-    /// How the forwarded port is announced.
-    reach: Reach,
   )
-}
-
-/// How `loom-vm run` makes the guest's port reachable from the host.
-pub type Reach {
-  /// `--publish`: forward the port and register the executor's node name in
-  /// the host's epmd, which a distribution peer is found by.
-  Publish
-
-  /// `--forward`: forward the port and register nothing, so the host's epmd
-  /// lists no node for the guest. The untrusted link dials the port directly.
-  Forward
 }
 
 /// The `loom-vm` arguments that boot the guest and run its executor.
@@ -2368,7 +2355,7 @@ pub type Reach {
 /// ## Examples
 ///
 /// ```gleam
-/// assert list.contains(vm_spec.launch_arguments(launch), "--publish")
+/// assert list.contains(vm_spec.launch_arguments(launch), "--forward")
 /// ```
 pub fn launch_arguments(launch: Launch) -> List(String) {
   // The stock libkrunfw needs no flag; a custom one, such as the Landlock
@@ -2412,27 +2399,20 @@ pub fn launch_arguments(launch: Launch) -> List(String) {
       "--state-disk",
       launch.state_disk,
     ],
-    reach_arguments(launch),
+    forward_arguments(launch),
     github,
     list.flat_map(launch.allow, fn(host) { ["--allow", host] }),
     ["--", guest_entry, node_dir, "--state-device", state_device],
   ])
 }
 
-/// The flag that forwards the guest's port: `--publish` also registers the
-/// executor's node in the host's epmd, and `--forward` does not.
-fn reach_arguments(launch: Launch) -> List(String) {
+/// The flag that forwards the host's loopback port to the guest's listener. It
+/// registers no node with the host's epmd: the untrusted link dials the port
+/// directly.
+fn forward_arguments(launch: Launch) -> List(String) {
   let host = int.to_string(launch.host_port)
   let guest = int.to_string(guest_port)
-
-  // Only a distribution peer is found through epmd.
-  case launch.reach {
-    Publish -> [
-      "--publish",
-      launch.names.executor_short <> ":" <> host <> ":" <> guest,
-    ]
-    Forward -> ["--forward", host <> ":" <> guest]
-  }
+  ["--forward", host <> ":" <> guest]
 }
 
 /// `--allow` for each GitHub host.
@@ -3033,28 +3013,28 @@ fn plural(count: Int) -> String {
 
 // --- ensure: one guest per workspace, made ready --------------------------------
 
-/// What the host says about a guest's process and its executor node.
+/// What the host says about a guest's process and its executor's console.
 pub type GuestState {
   /// No process the pid record names is there.
   GuestStopped
 
-  /// The process is there, but its node is not in the host's epmd yet, so the
-  /// guest is booting or its executor failed.
+  /// The process is there, but its console does not yet say the executor
+  /// serves, so the guest is booting or its executor failed.
   GuestStarting(pid: Int)
 
-  /// The process is there and its node is in epmd: the executor serves.
+  /// The process is there and its console says the executor serves.
   GuestServing(pid: Int)
 }
 
-/// Whether the host epmd lists the guest's executor node.
+/// Whether the guest's console holds the line that says its executor serves.
 pub type Registration {
   Registered
   Unregistered
 }
 
 /// The guest's state from the pid record's process, when it is still there,
-/// and the epmd listing. A node listed with no process is a stranded runner,
-/// which `up` refuses on its own account, so it reads as stopped here.
+/// and the console. A ready line with no process is a stale console, so it reads
+/// as stopped here.
 ///
 /// ## Examples
 ///
