@@ -1104,7 +1104,12 @@ never replaces a pane or a composer the person is using. Only clicks change it:
 "New session", the list link, a composer control, and the "Inbox" control, which
 is drawn whenever the inbox has a thread and the centre is elsewhere. An inbox
 whose threads all go away says "Nothing waits on you right now" and offers "New
-session"; it does not switch by itself. The thread shown by default stays shown.
+session"; it does not switch by itself. The sentence is never drawn beside an
+attention row. A saved session whose catalogue summary holds a pending approval
+or an open ask is a row under "Needs you", and one with open finds a row under
+"Finds", so every count the headline takes from the catalogue is a row the person
+can act on; the row names the session, words its counts and the oldest open age,
+and its one action is `Opening`. The thread shown by default stays shown.
 An observer's page lands on the same inbox read-only. Pressing a
 thread is `InboxOpened`; "Open session" and "Decide on the session's page" send
 `Opening`, the message a list row sends, and every handler is a click beneath

@@ -204,6 +204,7 @@ fn nothing_waits(offer: Offer(message)) -> Element(message) {
     None -> 0
   }
 
+  // Any thread, grouped or attention, means something waits, so no sentence.
   case rows > 0 || !list.all(offer.groups, fn(entry) { entry.1 == [] }) {
     True -> element.none()
     False ->

@@ -156,6 +156,7 @@ pub fn saved_row(
   now: Int,
   open: fn(String) -> message,
 ) -> Element(message) {
+  // Each row draws one count: what waits on the owner, or the open finds.
   let words = case side {
     SavedNeeding -> attention_rule.needing_words(thread.saved)
     SavedFinding -> attention_rule.finding_words(thread.saved)

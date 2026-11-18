@@ -292,6 +292,7 @@ pub fn needing_words(saved: Saved) -> String {
       counted(saved.open_asks, "ask", "asks"),
     ])
 
+  // A summary with no approval and no ask has nothing to say.
   case parts {
     [] -> ""
     [_, ..] -> string.join(parts, ", ") <> " pending"

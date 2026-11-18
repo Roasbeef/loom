@@ -200,6 +200,8 @@ pub fn answered(
 ) -> Dict(String, Seen) {
   let before = verdict_of(seen, session)
 
+  // Only a read that answered replaces the verdict. A refusal for the allowance
+  // and a failure change what is pending and leave the verdict alone.
   case read {
     Ok(review) ->
       dict.insert(
