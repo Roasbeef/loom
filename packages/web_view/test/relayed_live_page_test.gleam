@@ -13,14 +13,18 @@ import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
+import lane_fixture
 import lustre/element
 import page_fixture
 import session_view/connection_event
+import session_view/operator
 import session_view/remembered
 import web_view/component
+import web_view/ending
 import web_view/invites
 import web_view/operator_page
 import web_view/remembered as holding
+import web_view/view/ended
 
 const page = "page-1"
 
@@ -159,7 +163,7 @@ fn drawn(model) -> String {
 pub fn a_relayed_page_draws_none_of_the_controls_the_box_refuses_test() {
   let html = drawn(opened())
   assert !string.contains(html, "Compact now")
-  assert !string.contains(html, "aria-label=\"Evolution\"")
+  assert !string.contains(html, "evolution-read")
   assert !string.contains(html, "Set goal")
 }
 
@@ -268,4 +272,95 @@ pub fn a_relayed_page_says_invitations_are_made_on_its_orchestrator_test() {
   )
   assert !string.contains(html, "opened from a bookmark")
   assert !string.contains(html, "Run loom ui")
+}
+
+// A relayed page that reconnects while its orchestrator is still down holds no
+// cut. The empty lane, the empty Changes pane and a zero cost would say the
+// session has nothing in it, so the page says its content is not available
+// until the orchestrator answers, under the same waiting notice.
+pub fn a_relayed_page_that_opens_while_the_box_is_down_says_so_test() {
+  let model =
+    page_fixture.run(component.new(relayed_start()), operator_page.update, [
+      operator_page.Observed(
+        component.Refused(ending.reason(ending.PeerUnreachable)),
+      ),
+    ])
+  assert component.content_unavailable(model)
+
+  let html = drawn(model)
+  assert string.contains(html, ended.content_unavailable_words)
+  assert string.contains(html, "This page will reconnect.")
+  assert string.contains(html, "disconnected")
+  assert !string.contains(html, "Beginning of this conversation.")
+  assert !string.contains(html, "No edits yet")
+  assert !string.contains(html, "est $0.00")
+}
+
+// A page whose lane was open and held the session's rows, after the lane's
+// socket closed under it the way a dropped link closes it.
+fn dropped() {
+  page_fixture.run(
+    component.apply(opened(), [lane_fixture.conversation(1, 3)]),
+    operator_page.update,
+    [
+      operator_page.Observed(
+        component.Arrived([
+          connection_event.Closed(ending.reason(ending.ConnectionFailed)),
+        ]),
+      ),
+    ],
+  )
+}
+
+// A page that drew the session before its link dropped keeps every row, which
+// is the last content it had, and says it is disconnected.
+pub fn a_relayed_page_keeps_its_content_when_its_link_drops_test() {
+  let model = dropped()
+  assert !component.content_unavailable(model)
+
+  let html = drawn(model)
+  assert string.contains(html, "question 1")
+  assert string.contains(html, "disconnected")
+  assert !string.contains(html, ended.content_unavailable_words)
+}
+
+// Input that cannot reach the box is refused with the draft kept, not accepted
+// into a lane that is gone.
+pub fn a_relayed_page_whose_link_dropped_refuses_input_test() {
+  let #(model, _effects) =
+    component.submit(dropped(), "hello", operator.Prompt, [])
+  let assert component.Said(words) = component.notice(model)
+  assert string.contains(words, "no conversation is attached")
+}
+
+// The words are for a wait only: a page whose session stopped has a final
+// ending, and a local page's session is never one this daemon cannot reach.
+pub fn only_a_wait_for_a_relayed_page_is_content_unavailable_test() {
+  let stopped =
+    page_fixture.run(component.new(relayed_start()), operator_page.update, [
+      operator_page.Observed(
+        component.Refused(ending.reason(ending.SessionStopped)),
+      ),
+    ])
+  assert !component.content_unavailable(stopped)
+
+  let local =
+    page_fixture.run(component.new(page_fixture.start()), operator_page.update, [
+      operator_page.Observed(
+        component.Refused(ending.reason(ending.PeerUnreachable)),
+      ),
+    ])
+  assert !component.content_unavailable(local)
+}
+
+// The box refuses the evolution read to a page on another machine, so the pane
+// says where the board is and draws no button to read it.
+pub fn a_relayed_evolution_tab_says_it_is_on_the_orchestrators_page_test() {
+  let html = drawn(opened())
+  assert string.contains(
+    html,
+    "This session runs on box, so its evolution is shown on its own page there.",
+  )
+  assert string.contains(html, "pane-evolution")
+  assert !string.contains(html, "Read again")
 }

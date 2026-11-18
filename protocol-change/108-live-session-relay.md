@@ -1120,3 +1120,64 @@ again only after a newer tool result. `worktree_page_test` drives a box that ans
 fenced call, which the page reads as `Unreadable` until the feed itself ends and the
 page reattaches. The edits board on a relayed page is still drawn when the box
 withholds, which is the same sentence-free tab a page with no capability draws.
+
+## Addendum: a dropped link keeps the page's content (2026-11-17)
+
+A live drive of exit criterion 4 of #1137 (a dropped link shows a waiting state, not a
+false failure) found that the waiting state was drawn over an empty session. When the
+box stopped, the relayed page's pill and banner were right, but the title became the
+bare session id, the cost read `est $0.00`, the transcript said "Beginning of this
+conversation." and the Changes tab said "No edits yet." Nothing on the wire changes
+here. The cause was the order in which the socket ended.
+
+**Cause.** The component keeps its last cut when its lane ends (`Status.Ended`), but
+`ui_socket` then closed the WebSocket with the retry code, and the browser's reconnect
+starts a fresh component. A fresh component draws what a model that was never filled
+holds, and when the box is still down its attach fails, so the page waited over an
+empty model. The close itself is also an abnormal exit of the socket process, because
+mist sends the retry code only from `stop_abnormal`, and the supervisor logged each one
+at error level. The browser retried about 1.5 times a second, so a 35 s outage wrote 52
+crash reports.
+
+**What changed.**
+
+- An ending that may clear by itself (`ending.close` is `Retry`) no longer closes the
+  socket. The socket stays open, so the page keeps the cut it drew under the waiting
+  notice, and `client/daemon/ui_wait` asks the orchestrator whether it answers, at once
+  and then after 1 s, doubling to 8 s. The question is `top_relay.placements`, a read
+  that makes nothing on the box. Any answer, including a refusal, counts as reachable.
+  The socket closes with the retry code once, when the box answers, and the browser's
+  reconnect then attaches. The wait is bounded by a UI session's eight hours. An
+  outage costs one abnormal socket exit and no longer one per attempt. Removing that
+  last one needs mist to close with 4000 and exit normally, which is a change to the
+  fork and is not made here.
+- A relayed page that holds no cut and has ended for a wait (`component.content_unavailable`)
+  draws "The content of this session is not available until the orchestrator that runs
+  it answers." in place of the lane, and its first pane says the same in place of the
+  five panes, and its cost is blank. This is the page the browser meets when it opens
+  or reconnects while the box is down, so an empty session is never drawn for a session
+  that has content. Input stays refused, because the page's lane is not attached
+  (`outbound.mutation_refusal`).
+- A relayed page's Evolution tab, which the box refuses to a page on another machine,
+  says "This session runs on <box>, so its evolution is shown on its own page there."
+  and draws no button, where it drew an empty pane.
+
+**Standing and pacing.** Each ask first checks the page's own standing (`ui_wait.checked`,
+which wraps `still_open`), so a UI session that ended or a credential that was revoked
+while the box was down closes the socket at the next ask and the reconnect meets the
+upgrade check. A page whose attach was refused as a wait (`Waiting`, `Crowded`) pauses
+`first_pause_ms` before its first ask, so a box that answers placements but refuses the
+attach cannot make the socket close and reopen faster than that pause. Any error from the
+standing check ends the hold, a transient registry timeout included, with the ending the check
+names (`PageEnded` or `AccessRevoked`, both final), which is the fail-closed direction and
+matches the live feed. A held page asks
+the box for nothing else: the workspace read is skipped once the status is `Ended`.
+
+**What stays open.** A local page that reconnects into a Retry-class refusal (`NotOpen`,
+`DaemonNotReady`, `ConnectionFailed`) still draws an empty session and exits abnormally per
+attempt; this addendum covers relayed pages only. A page whose socket the browser closed while the box was down
+(a tab put to sleep, a laptop suspended) still reconnects into a fresh component, which
+draws the unavailable notice until the box answers. Showing the evolution board on a
+relayed page needs a new revision of the exchange, an `evolution` read carried as
+`108.worktree.1` carries the workspace, with its own authority rule on the box, and is
+not built.

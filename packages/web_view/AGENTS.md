@@ -44,6 +44,12 @@ page keys and nonces, and the relay into the session's gateway.
   `Session` and the ID's first eight characters) with the whole ID in a
   `title`, and the workspace's last segment with the whole path in a
   `title`.
+- `component.content_unavailable(model)` (protocol-change/108, the addendum on a dropped
+  link): a `Relayed` page that holds no cut and has ended for a wait (`ending.close` is
+  `Retry`). Its lane, its panes and its cost are not drawn from the empty model; the
+  lane and the first pane say `ended.content_unavailable_words` and the cost is blank.
+  A page that drew a cut keeps it when its lane ends. A relayed page's Evolution pane is
+  `view/evolution.elsewhere(machine)`, since the box refuses that read to another machine.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
   `now()`, `sessions(deliver)`, which starts the sidebar's read of the
