@@ -1,6 +1,7 @@
 //// The glance loop: one state machine per session that keeps a short title
-//// and a one-line "now" summary for every running sub-agent, written where
-//// a connected terminal already looks.
+//// and a one-line "now" summary for every running sub-agent, and for `main`
+//// when a cheap model is routed, written where a connected terminal already
+//// looks.
 ////
 //// # Why a harness loop
 ////
@@ -26,10 +27,13 @@
 //// the strand driver's process. This machine resolves the operation's
 //// strand from `op.meta` and ignores the `advisor` strand, which the
 //// terminal describes from data it already has. The primary `main` strand
-//// is watched: the terminal still draws it from its own data and skips its
-//// glance, but the web view's attention inbox needs a line of what a
-//// working session is doing now, and `sessions.activity`'s `last_message`
-//// is only the last finished turn (`protocol-change/121`).
+//// is watched only on a `Cheap` route, where the catalogue routes
+//// `summarize` or `subagent`: the terminal still draws `main` from its own
+//// data and skips its glance, but the web view's attention inbox needs a
+//// line of what a working session is doing now, and `sessions.activity`'s
+//// `last_message` is only the last finished turn (`protocol-change/121`).
+//// With only `main` routed, a glance of `main` would be a request to the
+//// main model for every working turn, so `main` is not watched.
 ////
 //// # When it asks
 ////
@@ -159,6 +163,9 @@ pub type Wiring {
     summarizer: Summarizer,
     /// The time source for `glance.at` and the pacing arithmetic.
     clock: Clock,
+    /// Whether a cheap model is routed, which decides whether `main` is
+    /// watched. `route(gateway)` in production.
+    route: Route,
     /// The pacing knobs, `glancepace.default_pace` in production.
     pace: glancepace.Pace,
     /// Where failures are reported.
@@ -167,6 +174,20 @@ pub type Wiring {
     /// casts to.
     name: address.Address(Message),
   )
+}
+
+/// Which model the summarizer's requests reach, as far as `main` is
+/// concerned. Watching `main` costs one paced request per working turn, so
+/// it is done only when the operator has routed a cheap model for it.
+pub type Route {
+  /// The catalogue routes `summarize` or `subagent`: a glance request goes to
+  /// that model, never to the main one.
+  Cheap
+
+  /// Only `main` is routed, so a glance of `main` would be a request to the
+  /// main model for every working turn. Sub-agents are still summarized,
+  /// as before.
+  MainOnly
 }
 
 /// How a request's task ended when it returned rather than failed.
@@ -260,6 +281,26 @@ pub fn target(
   |> result.replace_error(
     "the catalogue routes no summarize, subagent or main model",
   )
+}
+
+/// The route `target` resolves to: `Cheap` when the catalogue routes
+/// `summarize` or `subagent`, else `MainOnly`. It follows `target`'s own
+/// fallback order, so the two cannot disagree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // glance.route(gateway) == glance.MainOnly
+/// ```
+pub fn route(gateway: provider_gateway.Gateway) -> Route {
+  case
+    list.any([model.Summarize, model.Subagent], fn(role) {
+      result.is_ok(provider_gateway.resolve(gateway, role))
+    })
+  {
+    True -> Cheap
+    False -> MainOnly
+  }
 }
 
 /// The production summarizer over `target`, capped at
@@ -414,7 +455,7 @@ fn stepped(
   case notes.strand_of(data.wiring.session, operation) {
     Error(Nil) -> sm.keep(data)
     Ok(strand) ->
-      case is_watched(strand) {
+      case is_watched(strand, data.wiring.route) {
         False -> sm.keep(data)
         True ->
           plan(
@@ -430,18 +471,24 @@ fn stepped(
 }
 
 /// Whether the loop summarizes `strand`. Every strand but the advisor,
-/// which the terminal describes from data it already holds. The primary is
-/// included so the attention inbox can show current work for `main`.
+/// which the terminal describes from data it already holds. `main` is
+/// included only on a `Cheap` route, so the attention inbox can show its
+/// current work without a request to the main model.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert glance.is_watched("sub:main/audit-1a2b")
-/// assert glance.is_watched("main")
-/// assert !glance.is_watched("advisor")
+/// assert glance.is_watched("sub:main/audit-1a2b", glance.MainOnly)
+/// assert glance.is_watched("main", glance.Cheap)
+/// assert !glance.is_watched("main", glance.MainOnly)
+/// assert !glance.is_watched("advisor", glance.Cheap)
 /// ```
-pub fn is_watched(strand: String) -> Bool {
-  strand != advisor.strand
+pub fn is_watched(strand: String, route: Route) -> Bool {
+  case strand == advisor.primary, route {
+    True, Cheap -> True
+    True, MainOnly -> False
+    False, Cheap | False, MainOnly -> strand != advisor.strand
+  }
 }
 
 /// Every event ends here: the pure plan, its launches, then exactly one

@@ -183,3 +183,27 @@ pub fn main_leads_the_glances_and_the_bound_drops_a_sub_agent_test() {
     ]
   api.abort(runtime)
 }
+
+// A glance for `main` is shown only while its operation is main's current
+// one, as any other strand's is, so one left over from a finished turn is
+// dropped rather than reported as present work.
+pub fn a_stale_glance_for_main_is_dropped_test() {
+  let runtime = gateway_test.parked_reserved_fixture(session_id(506)).runtime
+  let assert Ok(_operation) = api.prompt(runtime, [user("refactor")])
+    as "the main prompt is accepted"
+  let stale = glance.Glance("op-gone", "Old", "Finished", 9, 0)
+  let assert Ok(Nil) =
+    api.put_reserved_fact(runtime, glance.key("main"), glance.encode(stale))
+    as "the stale glance is written"
+  let assert poll.Answered(row) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      let row = overview(runtime)
+      case field(row, "state") {
+        json.String("working") -> poll.Done(row)
+        _ -> poll.Retry
+      }
+    })
+    as "the open operation is observed"
+  assert field(row, "glances") == json.Array([])
+  api.abort(runtime)
+}

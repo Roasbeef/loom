@@ -1,7 +1,8 @@
 # protocol-change/121: a glance for `main`
 
-**Status**: ACCEPTED 2026-11-18. The owner accepted autonomous protocol
-changes for the attention inbox build on 2026-11-17. Not built.
+**Status**: ACCEPTED 2026-11-18, amended the same day with the route rule
+below. The owner accepted autonomous protocol changes for the attention inbox
+build on 2026-11-17.
 **Affects**: the glance writer, which also writes a glance for `main`; the
 ordering of the glances in a `sessions.activity` row; and two terminal
 readers, which must ignore the glance of `main`. No wire frame, command,
@@ -10,9 +11,8 @@ event, stored-cell shape or `loom.toml` key changes.
 (`docs/design-notes/attention-inbox/README.md`, section 4, "Phase 1": "the
 harness also starts writing a glance for `main`").
 **Builds on**: `core/glance` (the cell shape and its key) and
-`client/glance` (the writer). **Implemented**: not yet. Expected:
-`client/glance`, `client/peer_mail`, `tui/session_selector`,
-`session_view/agent_roster`.
+`client/glance` (the writer). **Implemented**: `client/glance`,
+`client/peer_mail`, `tui/session_selector`, `session_view/agent_roster`.
 
 ## Problem
 
@@ -56,8 +56,21 @@ sessions that are not.
 
 ### The writer
 
-The glance writer MUST also write a glance for `main`. `is_watched` returns
-false for the advisor only. Everything else about the writer is unchanged: the
+The glance writer MUST also write a glance for `main`, but only when the
+glance target resolves to a `summarize` or `subagent` route, and never when
+`glance.target` falls back to the `main` role. The loop knows the route
+(`glance.route`, a two-variant `Route`, `Cheap` or `MainOnly`, carried in
+`Wiring`), and `is_watched(strand, route)` returns false for the advisor and,
+on a `MainOnly` route, for `main`. Sub-agents are watched on either route.
+
+The reason is cost and fixtures. With `summarize` unrouted, which is the
+default (`docs/configuration.md`), a glance of `main` would be a paced request
+to the main model for every working turn, a spend the owner did not ask for.
+Main-only scripted fixtures would also receive a request they did not script.
+The glance of `main` is therefore a request to a model the operator routed for
+that purpose, and a session without one behaves as it did before.
+
+Everything else about the writer is unchanged: the
 cell is `client/glance/main` (`core/glance.gleam`), written with
 `api.put_reserved_fact` (`client/glance.gleam`, `write`), clipped to the
 cell's bounds, and describes one operation, so it is shown only while that
@@ -97,7 +110,9 @@ same field every glance line carries. The row's shape is unchanged.
 
 ## What it costs
 
-- One more `summarize`-role request per paced refresh, for `main`. The pacing
+- One more request per paced refresh, for `main`, to the `summarize` role or,
+  when that is unrouted, the `subagent` model; never to the main model, since
+  `main` is not watched on a `MainOnly` route. The pacing
   applies to `main` as to any strand: a refresh at most every 20 seconds, at
   most three requests at once across the session, a strand asked only when a
   step has committed since its last request, failures backing off to five
@@ -117,16 +132,21 @@ same field every glance line carries. The row's shape is unchanged.
 
 ## Verification
 
-- `client/test/client/glance_test`: `is_watched("main")` is true and
-  `is_watched("advisor")` is false; the existing assertion that `main` is not
-  watched is replaced. A step committed on `main` writes `client/glance/main`
-  and a step on the advisor writes nothing.
+- `client/test/client/glance_test`: `is_watched` is true for `main` on a
+  `Cheap` route and false on `MainOnly`, true for sub-agents on both, false for
+  the advisor on both; `glance.route` is `Cheap` when `summarize` or `subagent`
+  is routed and `MainOnly` when only `main` is. On a cheap route a step on
+  `main` writes `client/glance/main` and the sub-agent's request still names
+  its own task and asks for a title; on a `MainOnly` route a step on `main`
+  asks nothing and writes nothing.
 - `client/test/client/peer_mail_overview_test`: with a current glance on
   `main` and four on sub-agents, the row holds four glances and the first is
-  `main`'s; with a row sized past `overview_row_bytes`, `main`'s glance is the
-  last one that remains; a glance for `main` whose operation is no longer
-  current is dropped as any other is.
-- `tui/test/session_selector_test`: a row whose glances include `main`'s draws
-  the other glances and not `main`'s.
-- `session_view/test/agent_roster_test` and `tui/test/agent_strip_test`: with a
-  glance cell for `main` in the capture, the `main` row's line is unchanged.
+  `main`'s; a glance for `main` whose operation is no longer current is
+  dropped as any other is. That `main`'s glance is the last shed from an
+  oversized row follows from its being first and `fit_overview` shedding from
+  the end; no row of four bounded glances reaches `overview_row_bytes`, so
+  the shedding itself is not exercised.
+- `tui/test/session_picker_layout_test`: a row whose glances include `main`'s
+  draws the other glances and not `main`'s.
+- `tui/test/agent_strip_test`: with a glance cell for `main` in the capture,
+  the roster holds no glance for it and the `main` row's line is unchanged.

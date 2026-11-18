@@ -7172,6 +7172,7 @@ fn glance_wiring(
         runtime: fn() { agency.borrow_runtime(agency_config) },
         summarizer:,
         clock:,
+        route: glance.route(settings.gateway),
         pace: glancepace.default_pace,
         logger:,
         name:,

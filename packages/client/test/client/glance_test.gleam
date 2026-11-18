@@ -46,13 +46,26 @@ const sub = "sub:main/audit-1a2b"
 
 // --- the pure edges ----------------------------------------------------------
 
-// The terminal covers the primary and the advisor itself; every other
-// strand is summarized.
-pub fn the_primary_is_watched_and_the_advisor_is_not_test() {
-  assert glance.is_watched(sub)
-  assert glance.is_watched("review")
-  assert glance.is_watched("main")
-  assert !glance.is_watched("advisor")
+// The terminal covers the advisor itself, so it is never summarized. The
+// primary is summarized only when a cheap model is routed, so that no glance
+// of `main` is a request to the main model. Sub-agents are summarized on
+// either route.
+pub fn the_primary_is_watched_only_on_a_cheap_route_test() {
+  assert glance.is_watched(sub, glance.Cheap)
+  assert glance.is_watched(sub, glance.MainOnly)
+  assert glance.is_watched("review", glance.MainOnly)
+  assert glance.is_watched("main", glance.Cheap)
+  assert !glance.is_watched("main", glance.MainOnly)
+  assert !glance.is_watched("advisor", glance.Cheap)
+  assert !glance.is_watched("advisor", glance.MainOnly)
+}
+
+// The route follows the catalogue: a routed `summarize` or `subagent` role
+// is cheap, and only `main` is not.
+pub fn the_route_is_cheap_unless_only_main_is_routed_test() {
+  assert glance.route(routing([model.Main, model.Summarize])) == glance.Cheap
+  assert glance.route(routing([model.Main, model.Subagent])) == glance.Cheap
+  assert glance.route(routing([model.Main])) == glance.MainOnly
 }
 
 // The figure a glance carries is the context the newest row measured, and
@@ -122,11 +135,11 @@ pub fn the_summarizer_falls_back_to_the_routed_roles_test() {
 // --- the loop ------------------------------------------------------------------
 
 // The first step of a sub-agent's operation produces a glance for it, and
-// so does a step on the primary: the attention inbox needs a line of what
-// `main` is doing now (`protocol-change/121`). Each cell names its own
-// strand's operation, and a sub-agent's request is about the sub-agent's
-// own task.
-pub fn a_sub_agent_step_and_a_main_step_both_write_glances_test() {
+// on a cheap route so does a step on the primary: the attention inbox needs
+// a line of what `main` is doing now (`protocol-change/121`). Each cell
+// names its own strand's operation, and a sub-agent's request is about the
+// sub-agent's own task.
+pub fn a_sub_agent_step_and_a_main_step_both_write_glances_on_a_cheap_route_test() {
   let assert Ok(rig) = a_rig(glancepace.default_pace, fixed_clock())
     as "the glance rig must open"
   let hooked = glance.hooks(hooks.build(hooks.new()), rig.name)
@@ -151,6 +164,44 @@ pub fn a_sub_agent_step_and_a_main_step_both_write_glances_test() {
     })
     as "the primary's glance must be written"
   assert main_cell.operation == ids.op_id_to_string(rig.primary)
+
+  // Both strands were asked, and one request is about the sub-agent's own
+  // task and asks for a title.
+  let asked = requests(rig)
+  assert list.length(asked) == 2
+  assert list.any(asked, fn(request) {
+    string.contains(request, "Audit the channel funding flow")
+    && string.contains(request, "TITLE:")
+  })
+  stop(rig)
+}
+
+// With only `main` routed, a glance of `main` would be a request to the main
+// model for every working turn, so the primary's step books nothing while the
+// sub-agent is summarized as before. The primary's step is cast first from
+// this same process, so by the time the sub-agent's cell exists the machine
+// has already handled, and skipped, the primary's.
+pub fn a_main_step_asks_nothing_when_only_main_is_routed_test() {
+  let assert Ok(rig) =
+    a_rig_with_summarizer(
+      glance.MainOnly,
+      glancepace.default_pace,
+      fixed_clock(),
+      scripted,
+    )
+    as "the glance rig must open"
+  let hooked = glance.hooks(hooks.build(hooks.new()), rig.name)
+
+  hooked.usage(rig.primary, a_row(False))
+  hooked.usage(rig.child, a_row(False))
+
+  let assert Ok(written) = await_glance(rig, fn(_cell) { True })
+    as "the sub-agent's glance must be written"
+  assert written.operation == ids.op_id_to_string(rig.child)
+  assert glance_of(rig, "main") == Error(Nil)
+  let assert [request] = requests(rig) as "only the sub-agent was asked"
+  assert string.contains(request, "Audit the channel funding flow")
+  assert string.contains(request, "TITLE:")
   stop(rig)
 }
 
@@ -191,12 +242,17 @@ pub fn a_failed_glance_retains_one_request_row_without_a_fact_test() {
   let first = message.Usage(..final, input: 17, total_tokens: 17)
   let report = accounting.from_usage(first) |> accounting.append(final)
   let assert Ok(rig) =
-    a_rig_with_summarizer(glancepace.default_pace, fixed_clock(), fn(asked) {
-      auxiliary.Summarizer(ask: fn(request) {
-        process.send(asked, request)
-        Error(auxiliary.Failure("failed", report))
-      })
-    })
+    a_rig_with_summarizer(
+      glance.Cheap,
+      glancepace.default_pace,
+      fixed_clock(),
+      fn(asked) {
+        auxiliary.Summarizer(ask: fn(request) {
+          process.send(asked, request)
+          Error(auxiliary.Failure("failed", report))
+        })
+      },
+    )
     as "The glance rig must boot."
   let hooked = glance.hooks(hooks.build(hooks.new()), rig.name)
   hooked.usage(rig.child, a_row(False))
@@ -234,10 +290,11 @@ fn a_rig(
   pace: glancepace.Pace,
   loop_clock: clock.Clock,
 ) -> Result(Rig, String) {
-  a_rig_with_summarizer(pace, loop_clock, scripted)
+  a_rig_with_summarizer(glance.Cheap, pace, loop_clock, scripted)
 }
 
 fn a_rig_with_summarizer(
+  route: glance.Route,
   pace: glancepace.Pace,
   loop_clock: clock.Clock,
   summarize: fn(Subject(String)) -> auxiliary.Summarizer,
@@ -285,6 +342,7 @@ fn a_rig_with_summarizer(
       runtime: fn() { Ok(runtime) },
       summarizer: summarize(asked),
       clock: loop_clock,
+      route:,
       pace:,
       logger: log.discard(),
       name:,

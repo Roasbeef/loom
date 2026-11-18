@@ -3426,9 +3426,11 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   summarizer, hooks, context_of, is_watched, start, supervised}` — the
   glance loop, one **`weft/state_machine`** per session that writes a
   `core/glance` cell under `client/glance/{strand}` for every running
-  strand but `advisor`; `main` is included so the web view's attention
-  inbox can show current work (`protocol-change/121`), and the terminal
-  skips it. `hooks(built, name)` wraps the `usage`
+  strand but `advisor`; `main` is included only on a `Cheap` route
+  (`glance.route`: `summarize` or `subagent` routed, never `main` alone,
+  carried in `Wiring.route`; `is_watched(strand, route)`), so the web
+  view's attention inbox can show current work without a request to the
+  main model (`protocol-change/121`), and the terminal skips it. `hooks(built, name)` wraps the `usage`
   slot with a cast of `Stepped(operation, context)` and captures only the
   name and the inner slot, because the hooks are copied into every strand
   driver. The machine resolves the strand through `notes.strand_of`, asks

@@ -1682,7 +1682,8 @@ fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
 
 // Each field is clipped, but JSON escaping can still grow a clipped string
 // several times over, so the encoded row is measured. An oversized row sheds
-// its oldest glance first, then the final message. What remains is counts,
+// glances from the end of the list, so `main`'s, which leads it, is the last
+// to go, and then the final message. What remains is counts,
 // fixed names, and a model clipped to 64 bytes, which fits even escaped.
 /// Trims overview text to fit its declared output bound.
 fn fit_overview(
