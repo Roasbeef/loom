@@ -2247,8 +2247,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         }
       }
 
+    // The pane's own read of the tree is a fresh scan of it, so a successful one
+    // also settles the session's classification: a tree the owner made clean
+    // leaves "To review" once opened. A failed read says nothing of the tree
+    // and leaves the classification as it was.
     ReviewRead(session:, read:) -> #(
-      Model(..model, review: review_pane.loaded(model.review, session, read)),
+      Model(
+        ..model,
+        review: review_pane.loaded(model.review, session, read),
+        reviews: case read, model.review.session, model.review.read_for {
+          Ok(_), Some(open), Some(message) if open == session ->
+            review_scan_rule.answered(model.reviews, session, message, read)
+          Ok(_), _, _ | Error(_), _, _ -> model.reviews
+        },
+      ),
       effect.none(),
     )
 

@@ -367,6 +367,25 @@ fn index_of(html: String, needle: String) -> Int {
   }
 }
 
+// The open pane's own read is a fresh scan: a tree the owner made clean leaves
+// "To review", and a read that failed leaves the classification alone.
+pub fn the_open_panes_read_settles_the_classification_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  assert string.contains(
+    drawn(model),
+    "To review<span class=\"inbox-count\">1</span>",
+  )
+
+  let failed = run(model, home.ReviewRead("A", Error("boom")))
+  assert string.contains(
+    drawn(failed),
+    "To review<span class=\"inbox-count\">1</span>",
+  )
+
+  let cleaned = run(model, home.ReviewRead("A", Ok(clean())))
+  assert !string.contains(drawn(cleaned), "To review<span")
+}
+
 // A finished session whose tree changed is "To review", and a clean one waits.
 pub fn a_changed_idle_session_is_under_to_review_test() {
   let html = drawn(settled_owner(process.new_subject(), home.Succeeded("ok")))
