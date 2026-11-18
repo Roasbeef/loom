@@ -11227,3 +11227,34 @@ pub fn only_an_owners_operating_page_is_handed_the_orchestrators_test() {
     )
     == None
 }
+
+// A review read judges the page's standing before the door is asked: an ended
+// page and an observer's ceiling never reach it, and the door's refusal reaches
+// the page as the door's fixed words (protocol-change/123).
+pub fn a_review_is_read_only_for_a_page_that_may_operate_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let review = fn(session) {
+      process.send(asked, session)
+      Error(attention_door.Refusal("forbidden", "an observer cannot read it"))
+    }
+
+    // An ended page and an observer's ceiling never reach the door.
+    assert ui_socket.review_for(standing, fn() { Error(Nil) }, review, "S1")
+      == Error("This page may not read a worktree.")
+    assert ui_socket.review_for(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        review,
+        "S1",
+      )
+      == Error("This page may not read a worktree.")
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // An operating page asks the door, and the door's words are the answer.
+    assert ui_socket.review_for(standing, page_open, review, "S1")
+      == Error("an observer cannot read it")
+    assert process.receive(asked, 0) == Ok("S1")
+  })
+}

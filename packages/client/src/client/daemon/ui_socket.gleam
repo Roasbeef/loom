@@ -276,6 +276,7 @@ import web_view/projects as page_projects
 import web_view/relayed
 import web_view/remembered
 import web_view/renames
+import web_view/review_feed
 import web_view/sessions
 import web_view/signins
 import web_view/thread_send
@@ -997,6 +998,11 @@ pub fn upgrade_home(
             approvals_for(attachment.attention_reach, session)
           })
         },
+        review: Some(fn(session, deliver) {
+          read_task(deliver, fn() {
+            review_for(standing, open, attachment.review, session)
+          })
+        }),
         act: None,
       ),
       home.Act(
@@ -2318,13 +2324,61 @@ pub fn home_attention_capability(
   reads: home.Attention,
   act: home.Act,
 ) -> home.Attention {
-  home.Attention(..reads, act: case principal.kind, ceiling {
-    access.OwnerPrincipal, access.Operator -> Some(act)
-    access.OwnerPrincipal, access.Observer
-    | access.MemberPrincipal, access.Operator
-    | access.MemberPrincipal, access.Observer
-    -> None
+  home.Attention(
+    ..reads,
+    review: case ceiling {
+      access.Operator -> reads.review
+      access.Observer -> None
+    },
+    act: case principal.kind, ceiling {
+      access.OwnerPrincipal, access.Operator -> Some(act)
+      access.OwnerPrincipal, access.Observer
+      | access.MemberPrincipal, access.Operator
+      | access.MemberPrincipal, access.Observer
+      -> None
+    },
+  )
+}
+
+/// One session's worktree as a review, for a home page whose ceiling is an
+/// operator's (protocol-change/123): the page is still open, its ceiling is not
+/// an observer's, and the credential still authenticates as the principal the
+/// page was admitted for. Those three are the standing check the owner's acts
+/// make, without the owner-only step, since a member holding the session as an
+/// Operator may read its tree. The door then reads the credential's authority
+/// over the session from the registry and refuses an observer. A refusal is the
+/// door's fixed words, and a page that failed the standing check learns only
+/// that it may not read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.review_for(standing, open, review, "0198...")
+/// ```
+@internal
+pub fn review_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  review: fn(String) -> Result(review_feed.Review, attention_door.Refusal),
+  session: String,
+) -> Result(review_feed.Review, String) {
+  let standing_words = "This page may not read a worktree."
+
+  use _ <- result.try(open() |> result.replace_error(standing_words))
+  use _ <- result.try(
+    operating_ceiling(standing.ceiling)
+    |> result.replace_error(standing_words),
+  )
+  use principal <- result.try(
+    manager.authenticate(standing.registry, standing.digest)
+    |> result.replace_error(standing_words),
+  )
+  use _ <- result.try(case principal.id == standing.principal {
+    True -> Ok(Nil)
+    False -> Error(standing_words)
   })
+
+  review(session) |> result.map_error(fn(refusal) { refusal.words })
 }
 
 /// Sends one message from a home page to a named strand of a session its

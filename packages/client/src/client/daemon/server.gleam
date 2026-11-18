@@ -130,8 +130,8 @@ import web_view/image
 import web_view/machines
 import web_view/page
 import web_view/placements
-import web_view/saved_attention
 import web_view/review_feed
+import web_view/saved_attention
 import web_view/sessions as listed_sessions
 import web_view/tool_result
 import weft
@@ -392,6 +392,13 @@ pub type HomeAttachment(instance) {
     /// credential and the resident's peer endpoint. The door reads authority from
     /// the registry at each act and never from the page.
     attention_reach: attention_door.Reach(instance),
+    /// One session's worktree as a review, as the page's credential may read it
+    /// (`home_review`, protocol-change/123). It blocks for up to
+    /// `review_door.deadline_ms` and spends the credential's workspace-read
+    /// allowance, so a page runs it in a task of its own
+    /// (`ui_socket.review_for`) and only for a page whose ceiling is not an
+    /// observer's.
+    review: fn(String) -> Result(review_feed.Review, attention_door.Refusal),
     /// The daemon's own sessions directory, which deleting a session removes
     /// the database family from (`manager.delete_session`). It is the daemon's
     /// value and never a page's, and only the owner's fresh home may reach it
@@ -933,6 +940,12 @@ fn home_upgrade(
               config,
               state.registry,
               grant.credential,
+            ),
+            review: home_review(
+              config,
+              state.registry,
+              grant.credential,
+              control_reserve(config, grant.credential),
             ),
             sessions_directory: state.sessions_directory,
             state_root: state.state_root,

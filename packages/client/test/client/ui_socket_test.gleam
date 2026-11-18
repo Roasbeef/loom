@@ -1298,6 +1298,7 @@ pub fn only_an_owners_operating_home_may_act_on_attention_test() {
       saved: fn(_, _) { Nil },
       record: fn(_, _, _) { Nil },
       approvals: fn(_, _) { Nil },
+      review: None,
       act: None,
     )
   let act =
@@ -2239,4 +2240,78 @@ pub fn only_an_owners_socket_admits_a_click_in_the_projects_section_test() {
   assert !ui_socket.home_owner_accepts(click_on(home.projects_path))
   assert !ui_socket.home_owner_accepts(click_on(home.projects_path <> "0\t1"))
   assert ui_socket.home_accepts(click_on(home.table_path <> "\t0"))
+}
+
+// The review read is an operating page's, owner's or member's, and an
+// observer's ceiling is handed none: the daemon refuses an observer the tree's
+// bytes, so the page never asks (protocol-change/051, the addendum "the review
+// pane"). The acts that follow a review stay the owner's alone.
+pub fn only_an_operating_page_is_handed_the_review_read_test() {
+  let reads =
+    home.Attention(
+      feed: fn(_, _) { Nil },
+      saved: fn(_, _) { Nil },
+      record: fn(_, _, _) { Nil },
+      approvals: fn(_, _) { Nil },
+      review: Some(fn(_, _) { Nil }),
+      act: None,
+    )
+  let act =
+    home.Act(
+      answer: fn(_, _, _, _, _) { Nil },
+      close: fn(_, _, _, _, _) { Nil },
+      strand: fn(_, _, _, _, _) { Nil },
+    )
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+
+  let assert Some(_) =
+    ui_socket.home_attention_capability(owner, access.Operator, reads, act).review
+  let assert Some(_) =
+    ui_socket.home_attention_capability(member, access.Operator, reads, act).review
+  assert ui_socket.home_attention_capability(owner, access.Observer, reads, act).review
+    == None
+  assert ui_socket.home_attention_capability(
+      member,
+      access.Observer,
+      reads,
+      act,
+    ).review
+    == None
+
+  // A member at the Operator ceiling reads and may not act.
+  assert ui_socket.home_attention_capability(
+      member,
+      access.Operator,
+      reads,
+      act,
+    ).act
+    == None
+}
+
+// The review pane adds a click for the verdict, Send and Clear, and a submit
+// for each file's comment and each find's form, all beneath the table's region:
+// a browsing home (a member's, an observer's) admits the clicks and refuses the
+// submits, a submitting home admits both, and neither is admitted outside the
+// region (protocol-change/051, the addendum "the review pane").
+pub fn the_review_forms_need_no_new_admission_test() {
+  let comment_form = home.table_path <> "\t1\t0\t2\t0\t4\t0\t1\t0\t0\t2"
+  let find_form = home.table_path <> "\t1\t0\t2\t0\t4\t0\t1\t0\t0\t1\t0"
+  let verdict = home.table_path <> "\t1\t0\t2\t0\t4\t0\t1\t0\t0\t0\t1"
+  let send = home.table_path <> "\t1\t0\t2\t0\t4\t0\t1\t0\t0\t3\t2\t0"
+
+  list.each([comment_form, find_form], fn(form) {
+    assert !ui_socket.home_accepts(submit_on(form))
+    assert ui_socket.home_owner_accepts(submit_on(form))
+  })
+  list.each([verdict, send], fn(path) {
+    assert ui_socket.home_accepts(click_on(path))
+    assert ui_socket.home_owner_accepts(click_on(path))
+  })
+
+  // A submit is admitted nowhere outside the table's region.
+  list.each([home.sidebar_path <> "\t1\t0\t2", "0\t0\t1"], fn(path) {
+    assert !ui_socket.home_accepts(submit_on(path))
+    assert !ui_socket.home_owner_accepts(submit_on(path))
+  })
 }
