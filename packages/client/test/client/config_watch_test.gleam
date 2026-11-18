@@ -364,11 +364,16 @@ pub fn the_key_a_link_table_names_is_in_the_view_test() {
   assert view(named) != view(session_text)
   assert view(named)
     != view(session_text <> guest("vm", "/elsewhere/key.pem", "/vm/c.pem"))
-  assert view(
-      named
-      <> "[executor_listener]\nlisten = \"127.0.0.1:9000\"\nca = \"/l/ca\"\ncertificate = \"/l/c\"\nkey = \"/l/k\"\norchestrators = []\n",
-    )
-    != view(named)
+  let listened =
+    named
+    <> "[executor_listener]\nlisten = \"127.0.0.1:9000\"\nca = \"/l/ca\"\ncertificate = \"/l/c\"\nkey = \"/l/k\"\norchestrators = [\""
+    <> pin
+    <> "\"]\n"
+
+  // The listener's key path is carried in the view; a listener the reader
+  // refuses would carry none.
+  assert string.contains(view(listened), "\"/l/k\"")
+  assert view(listened) != view(named)
 }
 
 pub fn what_a_session_reads_is_in_the_view_test() {
@@ -470,4 +475,21 @@ pub fn a_row_that_the_loader_would_refuse_changes_nothing_a_session_reads_test()
   save(path, session_text <> "[executors.bad]\ntrust = \"untrusted\"\n")
   settle(watcher)
   assert drain(notices, 0) == 0
+}
+
+pub fn a_fix_in_a_table_the_view_drops_is_judged_again_test() {
+  let #(path, watcher, notices) = watched(session_text)
+  let roles_changed = string.replace(session_text, "[\"base\"]", "[\"alt\"]")
+
+  // The owner edits the roles while a hand-written row the loader refuses sits
+  // in the file: the view changed, the check fails, and nothing is told.
+  save(path, roles_changed <> "[executors.bad]\ntrust = \"untrusted\"\n")
+  settle(watcher)
+  assert drain(notices, 0) == 0
+
+  // The fix removes only the row. The view is the one already refused, but the
+  // text is new, so it is checked again and the session is reopened.
+  save(path, roles_changed)
+  settle(watcher)
+  assert drain(notices, 0) == 1
 }
