@@ -77,6 +77,13 @@ import gleam/string_tree
 import tom
 import tools/blob
 
+/// The most JSON values a hook settings file may hold. A settings file is read
+/// from the executor's disk on the untrusted link (`client/hookserve`), so its
+/// size is bounded only by a frame, and a document of one-byte values would
+/// build millions of terms. A real hook file holds a few hundred values; this
+/// is the wire's frame bound, which no honest file approaches.
+pub const max_json_values = 1_048_576
+
 // --- the model --------------------------------------------------------------
 
 /// One imported hook event, named exactly as the pinned contract names
@@ -555,7 +562,7 @@ pub type Config {
 /// ```
 pub fn parse_claude(text: String, source: Source) -> Result(Config, String) {
   use value <- result.try(
-    json.parse(text)
+    json.parse_bounded(text, max_values: max_json_values)
     |> result.map_error(describe_json_error),
   )
   hooks_object(value, source)
@@ -581,7 +588,7 @@ pub fn parse_claude_settings(
   source: Source,
 ) -> Result(Config, String) {
   use value <- result.try(
-    json.parse(text)
+    json.parse_bounded(text, max_values: max_json_values)
     |> result.map_error(describe_json_error),
   )
   use fields <- result.try(object_fields(value, "the settings file"))
