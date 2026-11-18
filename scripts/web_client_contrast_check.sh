@@ -96,15 +96,15 @@ extra_pairs="added-text:added-bg danger-text:removed-bg fg:added-bg fg:removed-b
 # drawn in, as `mark:text`, tinted at `avatar_tint` percent over a surface.
 # The percentage is the stylesheet's `.avatar` rule's, which `check` holds
 # the stylesheet to. It is 8 and not the 14 the critique drew: at 14 the
-# light theme's strand text tokens, which clear 4.5 on the page by a hair,
+# first palette's light strand text tokens, which cleared 4.5 by a hair,
 # fell to 4.2 on their own disc. The hue-less `fg-quiet` is left out: a
 # card's hue comes from its position and is never `hue-none`.
 avatar_hues="current:current advisor:advisor-text strand-2:strand-2-text strand-3:strand-3-text strand-4:strand-4-text strand-5:strand-5-text strand-6:strand-6-text"
-avatar_tint=8
-# The card is drawn on `bg-raised` and a strand's own view on the panel, `bg`.
 # The 8 is the stylesheet's figure, and this check blends what the stylesheet
 # draws. The OKLCH palette leaves the letters more margin than an 8% tint can
 # take, so the self-test plants a letter at the floor before a dark mark.
+avatar_tint=8
+# The card is drawn on `bg-raised` and a strand's own view on the panel, `bg`.
 avatar_surfaces="bg bg-raised"
 
 # The mark tokens a `color:` may not read.
