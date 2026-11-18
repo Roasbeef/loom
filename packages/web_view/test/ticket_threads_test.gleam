@@ -672,6 +672,8 @@ fn with_summary(
       saved: fn(_, deliver) { summary(deliver) },
       record: fn(_, _, deliver) { deliver(Error("none")) },
       approvals: fn(_, deliver) { deliver(Error("none")) },
+      review: None,
+      review_pause_ms: 0,
       act: None,
     )),
   )
