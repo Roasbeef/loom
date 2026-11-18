@@ -75,13 +75,18 @@ pub const registry_hosts = [
   "rubygems.org",
 ]
 
-/// The tools a worker may name, as the prefixes it is refused. The peer tools
-/// and the `agent_*` tools are the worker's door onto other sessions, and a
-/// worker talks to its project through its report alone.
+/// The tools a worker may name, as the prefixes and names it is refused. The
+/// peer tools and the `agent_*` tools are the worker's door onto other
+/// sessions, and a worker talks to its project through its report alone. For
+/// the same reason it is refused `ask`, which would put a second question to
+/// the owner beside the ticket's own (protocol-change/119); it keeps `notice`.
 pub type ToolCeiling {
   ToolCeiling(
     /// A tool whose name begins with any of these is above the ceiling.
     refused_prefixes: List(String),
+    /// A tool with exactly one of these names is above the ceiling. A prefix
+    /// would also refuse every tool an extension names after it.
+    refused_names: List(String),
   )
 }
 
@@ -107,8 +112,11 @@ pub type Jail {
 ///
 /// ```gleam
 /// assert !project_jail.allows(project_jail.worker_tools, "agent_send")
+/// assert !project_jail.allows(project_jail.worker_tools, "ask")
+/// assert project_jail.allows(project_jail.worker_tools, "notice")
 /// ```
-pub const worker_tools = ToolCeiling(refused_prefixes: ["agent_", "peer_"])
+pub const worker_tools =
+  ToolCeiling(refused_prefixes: ["agent_", "peer_"], refused_names: ["ask"])
 
 /// Derives a worker's jail from its policy and the owner's session policy.
 ///
@@ -191,6 +199,7 @@ pub fn escalations(
 /// ```
 pub fn allows(ceiling: ToolCeiling, name: String) -> Bool {
   !list.any(ceiling.refused_prefixes, string.starts_with(name, _))
+  && !list.contains(ceiling.refused_names, name)
 }
 
 /// The network lattice as a number, larger reaching further.

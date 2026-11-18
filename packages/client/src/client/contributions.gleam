@@ -87,6 +87,7 @@ import gleam/result
 import gleam/string
 import lsp/query
 import tools/agent.{type Agency}
+import tools/attention
 import tools/bash
 import tools/codemode as codemode_tool
 import tools/context as context_tool
@@ -507,6 +508,23 @@ pub fn owner_tools(
 ///
 pub fn proposal_tools(seam: propose.Proposals) -> List(Tool) {
   [propose.tool(seam)]
+}
+
+/// The attention tools, `ask` then `notice`, which record into the session's
+/// own store and so belong to every session's strands (protocol-change/119).
+/// Like the proposal tool they are a contribution of their own, registered
+/// after `propose`, so the order of every other tool is unchanged. A project
+/// router never meets them because its registry is replaced, and a project
+/// worker is refused `ask` by `project_jail.worker_tools`, keeping `notice`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // contributions.attention_tools(attention.seam(wiring))
+/// ```
+///
+pub fn attention_tools(seam: attention.Attention) -> List(Tool) {
+  attention.tools(seam)
 }
 
 /// Interleaves the workspace's tools with the owner's in the one order the

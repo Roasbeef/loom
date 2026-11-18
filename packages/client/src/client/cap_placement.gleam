@@ -5,7 +5,7 @@
 //// checkout (`fs.*`, `proc.run`, `kv.*`, `job.*`, `lsp.*`, search) and can
 //// only be answered beside it. A few touch state the session's owner holds:
 //// the Agency behind `strand.*`, the blackboard behind `notes.*`, the
-//// scheduling door, the MCP clients, the peer mailbox, the background
+//// attention records behind `attention.*`, the scheduling door, the MCP clients, the peer mailbox, the background
 //// execution service and the durable cells an extension remembers into.
 //// A workspace on another node routes the second group back to the owner
 //// (`OwnerServices.capability`) and answers the first itself.
@@ -39,6 +39,7 @@ import client/host_seam
 import client/peers
 import client/workflows
 import codemode/artifact
+import codemode/attention
 import codemode/evolution
 import codemode/lsp as codemode_lsp
 import codemode/notes
@@ -91,6 +92,7 @@ pub fn owner_caps() -> List(String) {
   list.flatten([
     orchestration_caps,
     notes.serviced_caps,
+    attention.serviced_caps,
     evolution.serviced_caps,
     peers.serviced_caps,
     schedule_caps,
