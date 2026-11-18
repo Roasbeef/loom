@@ -2382,6 +2382,19 @@ pub fn the_nonce_is_kept_per_page_and_the_bundle_assigns_the_location_test() {
   assert string.contains(bundle, "history.back()")
 }
 
+// The shell's fallback paragraph is removed once the component has mounted, so
+// text extraction never reads a false disconnect from a connected page, and it
+// stays when the component never mounts.
+pub fn the_page_script_removes_the_fallback_once_the_component_mounts_test() {
+  fixture(fn(_ready, port, _credential) {
+    let script = get(port, "/ui/assets/web_view_page.js", [host(port)])
+    assert script.status == 200
+    assert string.contains(script.body, "\"lustre:mount\"")
+    assert string.contains(script.body, "querySelector(\"loom-waiting\")")
+    assert string.contains(script.body, "waiting.remove()")
+  })
+}
+
 // The page's bundles are served at fixed, unversioned URLs, so a browser that
 // kept one across a daemon rebuild would run the old client against the new
 // daemon. Every asset is `no-store`, which a browser never reuses, and this
