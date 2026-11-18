@@ -9139,7 +9139,10 @@ the protocol-change/078 addendum on moving a session have the protocol.
   the scope is there; `workspace.learn_unrecorded_close` asks how the close ended, the
   executor refuses the question under the corrected name for the workspace the scope is
   bound to, and the source then asks again under the workspace the refusal names, which
-  reads a closed scope and lets the attach rebind it. The corrected name lands in one
+  the executor answers with the stored outcome of the closed scope, and the attach
+  rebinds. A close is not a read, and the ask is safe because the incarnation never goes
+  down: a scope seen closed at `held` is open again only at `held + 1`, where the executor
+  refuses the ask as stale and the source records nothing. The corrected name lands in one
   move with no operator step (`an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test`);
   a name corrected while the scope is still open takes one round of the advice
   (`a_name_corrected_before_the_retry_needs_one_round_of_the_advice_test`).

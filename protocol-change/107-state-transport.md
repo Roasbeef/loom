@@ -1810,8 +1810,11 @@ source always knew it, so a stale record could not arise in it.
   again under the workspace the refusal names (`workspace.learn_unrecorded_close`). The attach that led
   to the question was told that the scope is at the incarnation it named, and for a workspace the scope is
   not bound to the executor says that only of a scope that is closed cleanly and holds no tree
-  (`workspace_for_attach` refuses every other state for its workspace first), so the second question is a
-  read of a closed scope and its answer is the stored outcome. The source records that close and attaches
+  (`workspace_for_attach` refuses every other state for its workspace first), so the second question is
+  answered with the stored outcome. A close is not a read, since `host.close_scope` calls `begin_close`,
+  which would close an open scope. It is safe because the incarnation never goes down: a scope seen closed
+  at the incarnation can be open again only at the next one, where the executor refuses the question as a
+  stale incarnation and the source records nothing. The source records that close and attaches
   again, and the executor rebinds the scope to the corrected name. A second refusal ends the move with the
   refusal text, as before. The executor is not changed and no message is added.
 - *The result.* The move with the corrected name is accepted after the retry that freed the scope, with
@@ -1861,3 +1864,7 @@ moves that are in flight or stalled, and an aborted move is neither, so it is no
 
 **Still open.** Nothing in this addendum was run over a real distribution link. The re-drive of the
 sequence on a real executor is the drive's `dfault2.sh` with the corrected name and no second round.
+`session_mover.asked_to_close` asks about an unrecorded close only under the registration's workspace,
+so a `WorkspaceMismatch` there abandons the move without a second ask under the bound name. It is
+reachable only after a crash in the landing followed by a rename of the workspace before the resume,
+and it is left for a follow-up.
