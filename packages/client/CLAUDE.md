@@ -8134,12 +8134,21 @@ each own one step:
   `--static`, and takes `--drop-authority`, `--passphrase-file` and `--home`
   (below); the tui carries a byte-identical copy of the usage text, which
   `scripts/cli_help_test.sh` compares.
-- `daemon/executor_cli` is `loomd executor release SESSION [--state-dir PATH]`
+- `daemon/executor_cli` is `loomd executor release SESSION [--processes-gone]
+  [--state-dir PATH]`
   (`loom executor release` forwards to it from the launcher, with the help text
   duplicated in `tui` and compared by `scripts/cli_help_test.sh`). It takes the
   state directory's endpoint reservation through `daemon.claim_endpoint`, which
-  refuses while a live daemon holds it, then opens `<state-dir>/exec-ledger.db`
-  and calls `exec_ledger.release`. It never creates the state directory. The
+  refuses while a live daemon holds it, with or without the flag, then opens
+  `<state-dir>/exec-ledger.db` and calls `exec_ledger.release`, or
+  `exec_ledger.release_processes_gone` under `--processes-gone`, which also takes
+  an `open` scope on the operator's word that the executor is stopped and the
+  owner no longer runs. Both end the scope `Closed(AllRetired)`, so the owner's
+  next attach is answered `StaleIncarnation` at its own incarnation and heals
+  through `workspace.learn_unrecorded_close`. The output names a worktree record
+  the release kept. `workspace.close_scope` logs a close that got no answer or
+  was refused as `workspace.close_lost` (warning), because a close lost at
+  shutdown otherwise leaves no trace. It never creates the state directory. The
   orchestrator's side of the same exit is `scope.attach_at`: a close with unknown
   cleanup attaches at the next incarnation, which the executor refuses until the
   release and reopens after it.

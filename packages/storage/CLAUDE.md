@@ -985,7 +985,9 @@ independent test oracle, including Unicode rejection and length boundaries.
   the only opener among daemons. `open` itself takes no lock; the executor daemon
   holds the state directory's endpoint reservation for its VM's life, and
   `loomd executor release`, the only other opener, takes the same reservation
-  first and refuses to run beside a daemon. A call still `admitted` at close is
+  first and refuses to run beside a daemon. `release_processes_gone` is `release`
+  that also takes an `Open` scope, for the operator's `--processes-gone`; the
+  `scope_release` row's `was` is then `open`. A call still `admitted` at close is
   the actor's to settle (`finish` or `mark_unknown`); `finish_close` does not
   look for it.
 - **Scope rules.** A session has one scope (`attach` refuses a second

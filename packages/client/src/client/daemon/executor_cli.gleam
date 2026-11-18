@@ -34,6 +34,23 @@
 //// command refuses an `open` scope, whose session may be running, and a scope
 //// that is already cleanly closed, and it says which.
 ////
+//// ## An open scope with no owner
+////
+//// An open scope can outlive its session. A child that runs in its parent's own
+//// session on the orchestrator leaves that session open until its idle close, so
+//// the orchestrator's shutdown sends the executor the close. When the executor
+//// is stopping too, the close goes unanswered, nothing records it, and after the
+//// restart no code closes the scope. It holds an unclean slot, and the plain
+//// release refuses it. `--processes-gone` is the operator saying that the
+//// executor is stopped (the command already refuses to run otherwise) and that
+//// the orchestrator which owned the session no longer runs it. The command then
+//// closes the scope with the outcome every operator release uses,
+//// `AllRetired`. The owner's next attach, at the incarnation it holds, is
+//// answered `StaleIncarnation`, which makes the owner ask how that close ended
+//// and reopen at the next one, so no owner-side change is needed. The flag is
+//// not a way to release a scope while its owner runs: the owner would find its
+//// plane gone, and children it started on the executor would still run.
+////
 //// ## Settling the worktrees
 ////
 //// Deleting a session on the orchestrator never reaches the executor, so a
@@ -64,7 +81,8 @@ import telemetry/log
 
 /// Complete help for the executor operator command.
 pub const usage =
-  "usage: loom executor release SESSION [--state-dir PATH]   (also: loomd executor release)
+  "usage: loom executor release SESSION [--processes-gone] [--state-dir PATH]
+       (also: loomd executor release)
        loom executor release --worktrees --config PATH [--state-dir PATH]
                              [--helper PATH] [--force-session SESSION]...
 
@@ -84,8 +102,17 @@ SESSION is the orchestrator's session id, as the refused open names it.
 exec-ledger.db lives.
 
 Check that nothing from the session still runs on this machine first. The
-command refuses a scope that is open, and a scope that is already closed
-cleanly.
+command refuses a scope that is open unless --processes-gone is given, and a
+scope that is already closed cleanly.
+
+--processes-gone releases a scope that is still open. It is the operator saying
+two things: the executor is stopped, and the orchestrator that owned the session
+no longer runs it, so no process of the session remains on this machine. Use it
+for a scope left open after the orchestrator and the executor stopped together.
+Do not use it while the session is live. The session's next open reopens the
+scope at the next incarnation, as for any other release. A scope that holds a
+worktree keeps its record and the tree stays on disk; the command names it, and
+--worktrees below removes it.
 
 While it runs it holds the state directory's daemon reservation, and it leaves
 that record behind when it exits. A daemon started during the release is
@@ -292,11 +319,12 @@ fn sweep_report(swept: List(worktrees.Swept), ledger_path: String) -> String {
 
 /// Releases a session scope in the execution ledger.
 fn release(session: String, flags: List(String)) -> Result(String, String) {
+  use asked <- result.try(release_flags(flags, Asked(None, Unclaimed)))
+
   // Parse daemon config from flags.
-  use config <- result.try(case flags {
-    [] -> daemon.parse([])
-    ["--state-dir", directory] -> daemon.parse(["--state-dir", directory])
-    _ -> Error(usage)
+  use config <- result.try(case asked.state_dir {
+    None -> daemon.parse([])
+    Some(directory) -> daemon.parse(["--state-dir", directory])
   })
 
   let ledger_path = config.state_root <> "/exec-ledger.db"
@@ -327,11 +355,59 @@ fn release(session: String, flags: List(String)) -> Result(String, String) {
       ledger_path <> " did not open: " <> string.inspect(error)
     }),
   )
+  let now = ffi_os.system_time_ms()
   let released =
-    exec_ledger.release(ledger, session, ffi_os.system_time_ms())
+    released_under(asked.claim, ledger, session, now)
     |> result.map_error(fn(error) { refusal(session, error) })
+
+  // The tree record is read before the ledger closes, and only to tell the
+  // operator what the release left. A release that succeeded is not undone
+  // because that read failed, so the note is simply omitted then.
+  let tree = case exec_ledger.tree(ledger, session) {
+    Ok(found) -> found
+    Error(_) -> None
+  }
+
   let _closed = exec_ledger.close(ledger)
-  result.map(released, fn(done) { described(session, ledger_path, done) })
+  result.map(released, fn(done) { described(session, ledger_path, done, tree) })
+}
+
+// What the release form of the command was asked.
+type Asked {
+  Asked(state_dir: Option(String), claim: Claim)
+}
+
+// What the operator asserts about the scope. `ProcessesGone` is the claim that
+// lets an open scope be released, so it is a type of its own and not a flag.
+type Claim {
+  Unclaimed
+  ProcessesGone
+}
+
+/// Releases the scope under the rule the operator's claim allows.
+fn released_under(
+  claim: Claim,
+  ledger: exec_ledger.Ledger,
+  session: String,
+  now: Int,
+) -> Result(exec_ledger.Released, exec_ledger.Error) {
+  // Without the claim the ledger refuses an open scope.
+  case claim {
+    Unclaimed -> exec_ledger.release(ledger, session, now)
+    ProcessesGone -> exec_ledger.release_processes_gone(ledger, session, now)
+  }
+}
+
+/// Parses flags for the scope release command.
+fn release_flags(flags: List(String), asked: Asked) -> Result(Asked, String) {
+  case flags {
+    [] -> Ok(asked)
+    ["--state-dir", directory, ..rest] ->
+      release_flags(rest, Asked(..asked, state_dir: Some(directory)))
+    ["--processes-gone", ..rest] ->
+      release_flags(rest, Asked(..asked, claim: ProcessesGone))
+    [_other, ..] -> Error(usage)
+  }
 }
 
 /// Formats refusal message for ledger release error.
@@ -344,7 +420,12 @@ fn refusal(session: String, error: exec_ledger.Error) -> String {
       "the scope of session "
       <> session
       <> " is open, so the session may be running; stop the session and let it"
-      <> " close, then release the scope if the open is then refused"
+      <> " close, then release the scope if the open is then refused. If the"
+      <> " executor is stopped and the orchestrator that owned the session no"
+      <> " longer runs it, nothing of the session is left to protect, and"
+      <> " `loom executor release "
+      <> session
+      <> " --processes-gone` releases the open scope"
     exec_ledger.NotReleasable(state: _) ->
       "the scope of session "
       <> session
@@ -360,6 +441,7 @@ fn described(
   session: String,
   ledger_path: String,
   released: exec_ledger.Released,
+  tree: Option(exec_ledger.Tree),
 ) -> String {
   // Format previous state description string.
   let was = case released.was {
@@ -368,7 +450,9 @@ fn described(
       "closed with "
       <> int.to_string(count)
       <> " children it could not prove gone"
-    exec_ledger.Closed(exec_ledger.AllRetired) | exec_ledger.Open -> "closed"
+    exec_ledger.Open ->
+      "open, released on your word that its processes are gone"
+    exec_ledger.Closed(exec_ledger.AllRetired) -> "closed"
   }
 
   "released the scope of session "
@@ -385,4 +469,35 @@ fn described(
   <> ". Recorded in "
   <> ledger_path
   <> "."
+  <> tree_note(session, tree)
+}
+
+// What the release left of the session's worktree. A scope's close and a
+// release both keep the tree record, because a tree outlives the scope, so the
+// operator is told where it is and which form of this command removes it.
+/// Names a worktree the release left, or says nothing when there is none.
+fn tree_note(session: String, tree: Option(exec_ledger.Tree)) -> String {
+  case tree {
+    // The sweep settles only `Present` and `Kept` rows, so those are the trees
+    // the operator can be told it removes.
+    Some(held)
+      if held.state == exec_ledger.Present || held.state == exec_ledger.Kept
+    ->
+      " The session's worktree "
+      <> held.path
+      <> " (branch "
+      <> held.branch
+      <> ") and its record are kept. `loom executor release --worktrees --config"
+      <> " PATH` removes a tree with no changes, and adds `--force-session "
+      <> session
+      <> "` for one that has them."
+
+    // A `Creating` or `Removing` row is what an interrupted attempt left, and
+    // `--worktrees` does not settle it.
+    Some(held) if held.state != exec_ledger.Removed ->
+      " A worktree record is left from an interrupted attempt ("
+      <> held.path
+      <> "); `--worktrees` does not settle it."
+    Some(_) | None -> ""
+  }
 }

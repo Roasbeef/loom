@@ -7,6 +7,7 @@
 //// and that one open attaches once.
 
 import broker/broker
+import client/daemon/executor_cli
 import client/evolution/record
 import client/executors
 import client/extension/hooks as extension_hooks
@@ -32,6 +33,7 @@ import gleam/string
 import machine/operation
 import runtime/effects
 import session/session
+import simplifile
 import storage/exec_ledger
 import storage/storage
 import support/remote_fixtures as fixtures
@@ -39,6 +41,7 @@ import support/remote_orchestrator as rig
 import telemetry/field
 import telemetry/level
 import telemetry/log
+import telemetry/record as telemetry_record
 
 fn store() -> session.Session {
   let assert Ok(opened) = session.open_memory(clock.fixed(at: 1000))
@@ -248,6 +251,106 @@ pub fn a_scope_an_executor_restart_left_unproven_reopens_after_a_release_test() 
   assert scope.read(opened)
     == Ok(Some(scope.Scope(2, None, Some(rig.executor_name))))
   rig.stop(third)
+}
+
+pub fn an_open_scope_its_owner_never_closed_is_released_and_reopened_by_the_owner_test() {
+  // The orchestrator and the executor stop together. The orchestrator's close
+  // never reaches the executor, so the ledger holds the scope open at
+  // incarnation 1 and the orchestrator's record says the same, with no close.
+  // An operator who knows the executor is stopped and the orchestrator is gone
+  // releases the open scope. The owner's next open attaches at incarnation 1,
+  // is told the scope is closed there, learns how that close ended from the
+  // executor, and reopens at incarnation 2.
+  let directory = fixtures.scratch("orphaned-open")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(directory, 0o700)
+    as "the state directory is made private"
+  let path = directory <> "/exec-ledger.db"
+  let name = rig.host_name()
+  let probe = fixtures.probe(fixtures.Open)
+  let factory = fn() {
+    rig.factory(probe, rig.census(rig.standard_tools()), protocol.AllRetired)
+  }
+  let first = rig.start_named(path, factory(), name)
+  let opened = store()
+  let hands = attached(first, opened)
+  assert hands.incarnation == 1
+  rig.stop(first)
+  process.sleep(100)
+
+  // Without the operator's word the open scope is refused.
+  let assert Error(refused) =
+    executor_cli.run(["release", "registered-session", "--state-dir", directory])
+  assert string.contains(refused, "--processes-gone")
+
+  let assert Ok(told) =
+    executor_cli.run([
+      "release",
+      "registered-session",
+      "--processes-gone",
+      "--state-dir",
+      directory,
+    ])
+  assert string.contains(told, "reopens it at incarnation 2")
+  let second = rig.start_named(path, factory(), name)
+  assert scope.read(opened)
+    == Ok(Some(scope.Scope(1, None, Some(rig.executor_name))))
+
+  let reopened = attached(second, opened)
+
+  assert reopened.incarnation == 2
+  assert scope.read(opened)
+    == Ok(Some(scope.Scope(2, None, Some(rig.executor_name))))
+  rig.stop(second)
+}
+
+pub fn a_close_that_gets_no_answer_is_logged_with_what_names_the_scope_test() {
+  // The executor stops before the orchestrator's close reaches it, as in a
+  // shutdown of both. The close records nothing, so the log is the only trace
+  // that the scope may still be open on the executor.
+  let probe = fixtures.probe(fixtures.Open)
+  let executor = standard(probe, protocol.AllRetired)
+  let records = process.new_subject()
+  let logger = log.new(sink: log.to_subject(records), threshold: level.Debug)
+  let assert Ok(hands) =
+    workspace.attach(
+      workspace.Registered(
+        ..rig.registered(executor, store(), clock.fixed(at: 1000)),
+        logger:,
+      ),
+    )
+    as "the attach succeeds"
+  rig.stop(executor)
+  process.sleep(100)
+
+  hands.plane.close()
+
+  let assert Ok(lost) = receive_event(records, "workspace.close_lost")
+  assert lost.level == level.Warning
+  assert list.contains(
+    lost.fields,
+    field.ident(key: "session", value: "registered-session"),
+  )
+  assert list.contains(
+    lost.fields,
+    field.text(key: "executor", value: rig.executor_name),
+  )
+  assert list.contains(lost.fields, field.count(key: "incarnation", value: 1))
+  assert list.contains(
+    lost.fields,
+    field.text(key: "reason", value: "the executor did not answer the close"),
+  )
+}
+
+// The first record with this event name, skipping the others a session logs.
+fn receive_event(
+  records: process.Subject(telemetry_record.Record),
+  event: String,
+) -> Result(telemetry_record.Record, Nil) {
+  case process.receive(records, 1000) {
+    Ok(found) if found.event == event -> Ok(found)
+    Ok(_other) -> receive_event(records, event)
+    Error(Nil) -> Error(Nil)
+  }
 }
 
 pub fn a_close_the_record_never_saw_is_learned_from_the_executor_test() {

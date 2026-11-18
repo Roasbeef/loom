@@ -5,8 +5,10 @@
 -- and this table is the record that they did.
 --
 -- One row per release, in the order they happened. `was` is the state the scope
--- had before: `closing`, or `unknown:<count>` for the cleanup that could not be
--- proven. `released_at_ms` is the executor's wall clock in Unix milliseconds.
+-- had before: `closing`, `unknown:<count>` for the cleanup that could not be
+-- proven, or `open` for an open scope the operator released with
+-- `--processes-gone`. `released_at_ms` is the executor's wall clock in Unix
+-- milliseconds.
 CREATE TABLE scope_release(
   id INTEGER PRIMARY KEY,
   session TEXT NOT NULL,

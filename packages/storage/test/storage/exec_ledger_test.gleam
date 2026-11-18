@@ -1844,6 +1844,50 @@ pub fn a_scope_that_is_not_stuck_is_not_released_test() {
   assert exec_ledger.releases(ledger, "s") == Ok([])
 }
 
+pub fn an_open_scope_is_released_on_the_operators_word_and_its_owner_reopens_test() {
+  let ledger = open_at(path("release-open"))
+  let one_slot = Limits(..limits(), max_unclean_scopes: 1)
+  let assert Ok(_) =
+    exec_ledger.attach(ledger, "s", "/work", 0, token(1), one_slot)
+
+  // The open scope holds the only slot, and the plain release refuses it.
+  assert exec_ledger.attach(ledger, "other", "/work", 0, token(2), one_slot)
+    == Error(exec_ledger.CapacityExhausted(1))
+  assert exec_ledger.release(ledger, "s", 6000)
+    == Error(exec_ledger.NotReleasable(Open))
+
+  assert exec_ledger.release_processes_gone(ledger, "s", 6000)
+    == Ok(exec_ledger.Released(workspace: "/work", incarnation: 0, was: Open))
+  assert exec_ledger.releases(ledger, "s")
+    == Ok([
+      exec_ledger.Release(
+        workspace: "/work",
+        incarnation: 0,
+        was: Open,
+        released_at_ms: 6000,
+      ),
+    ])
+
+  // The slot is free for another session.
+  assert exec_ledger.attach(ledger, "other", "/work", 0, token(3), one_slot)
+    == Ok(exec_ledger.Attached(how: Created, terminal: [], unknown: []))
+
+  // The owner attaches at the incarnation it holds and is told the scope is at
+  // that incarnation and closed, which is what makes it learn the close. Its
+  // attach one higher then reopens the scope.
+  assert exec_ledger.attach(ledger, "s", "/work", 0, token(4), limits())
+    == Error(exec_ledger.StaleIncarnation(0))
+  assert exec_ledger.attach(ledger, "s", "/work", 1, token(4), limits())
+    == Ok(exec_ledger.Attached(how: Reopened, terminal: [], unknown: []))
+
+  // A cleanly closed scope still has nothing to release.
+  assert exec_ledger.begin_close(ledger, "s", "/work", 1) == Ok(Nil)
+  assert exec_ledger.finish_close(ledger, "s", "/work", 1, AllRetired)
+    == Ok(Nil)
+  assert exec_ledger.release_processes_gone(ledger, "s", 6001)
+    == Error(exec_ledger.NotReleasable(Closed(AllRetired)))
+}
+
 pub fn a_release_is_one_transaction_test() {
   let file = path("release-atomic")
   let ledger = open_at(file)

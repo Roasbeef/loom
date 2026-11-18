@@ -115,6 +115,126 @@ pub fn an_open_scope_is_refused_and_nothing_changes_test() {
   assert string.contains(reason, "is open")
   assert scope_state(directory) == exec_ledger.Open
   assert releases(directory) == []
+
+  // The refusal names the flag and says when it is safe to use.
+  assert string.contains(reason, "--processes-gone")
+  assert string.contains(reason, "the executor is stopped")
+  assert string.contains(reason, "no longer runs it")
+}
+
+pub fn an_open_scope_is_released_when_the_operator_says_its_processes_are_gone_test() {
+  let directory = state_with("open-gone", exec_ledger.Open)
+
+  let assert Ok(told) =
+    executor_cli.run([
+      "release",
+      session,
+      "--processes-gone",
+      "--state-dir",
+      directory,
+    ])
+
+  assert string.contains(told, "it was open")
+  assert string.contains(told, "at incarnation 1")
+  assert string.contains(told, "reopens it at incarnation 2")
+  assert !string.contains(told, "branch loom/")
+  assert scope_state(directory) == exec_ledger.Closed(exec_ledger.AllRetired)
+  let assert [recorded] = releases(directory)
+  assert recorded.incarnation == 1
+  assert recorded.was == exec_ledger.Open
+}
+
+pub fn the_flag_may_follow_the_state_directory_and_also_releases_a_stuck_scope_test() {
+  let directory = state_with("closing-gone", exec_ledger.Closing)
+
+  let assert Ok(told) =
+    executor_cli.run([
+      "release",
+      session,
+      "--state-dir",
+      directory,
+      "--processes-gone",
+    ])
+
+  assert string.contains(told, "it was closing")
+  assert scope_state(directory) == exec_ledger.Closed(exec_ledger.AllRetired)
+}
+
+pub fn a_released_open_scope_frees_the_only_slot_of_an_executor_at_its_limit_test() {
+  let directory = state_with("open-slot", exec_ledger.Open)
+
+  // The open scope holds the executor's only slot, so another session is
+  // refused. The refusal leaves no row behind.
+  assert attach_other(directory) == Error(exec_ledger.CapacityExhausted(1))
+
+  let assert Ok(_) =
+    executor_cli.run([
+      "release",
+      session,
+      "--processes-gone",
+      "--state-dir",
+      directory,
+    ])
+
+  assert attach_other(directory)
+    == Ok(
+      exec_ledger.Attached(how: exec_ledger.Created, terminal: [], unknown: []),
+    )
+}
+
+// A second session attaches to the ledger of an executor that admits one scope
+// that is not cleanly closed.
+fn attach_other(
+  directory: String,
+) -> Result(exec_ledger.Attached, exec_ledger.Error) {
+  let assert Ok(ledger) = exec_ledger.open(directory <> "/exec-ledger.db")
+    as "the ledger reopens"
+  let one_slot =
+    exec_ledger.Limits(..exec_ledger.default_limits(), max_unclean_scopes: 1)
+  let attached =
+    exec_ledger.attach(
+      ledger,
+      "another-session",
+      "/work",
+      1,
+      bit_array.from_string("other-token"),
+      one_slot,
+    )
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
+  attached
+}
+
+pub fn a_released_scope_that_holds_a_tree_says_the_tree_stays_test() {
+  let directory = state_with("open-tree", exec_ledger.Open)
+  let assert Ok(ledger) = exec_ledger.open(directory <> "/exec-ledger.db")
+    as "the ledger reopens"
+  let assert Ok(Nil) =
+    exec_ledger.record_tree(
+      ledger,
+      exec_ledger.Tree(
+        session:,
+        workspace: "/work",
+        path: directory <> "/worktrees/repo/" <> session,
+        branch: "loom/" <> session,
+        state: exec_ledger.Present,
+      ),
+    )
+    as "the tree record is written"
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
+
+  let assert Ok(told) =
+    executor_cli.run([
+      "release",
+      session,
+      "--processes-gone",
+      "--state-dir",
+      directory,
+    ])
+
+  assert string.contains(told, directory <> "/worktrees/repo/" <> session)
+  assert string.contains(told, "branch loom/" <> session)
+  assert string.contains(told, "release --worktrees --config PATH")
+  assert string.contains(told, "--force-session " <> session)
 }
 
 pub fn a_cleanly_closed_scope_is_refused_test() {
@@ -169,6 +289,87 @@ pub fn a_running_executor_daemon_stops_the_command_before_the_ledger_opens_test(
   assert releases(directory) == []
 }
 
+pub fn an_interrupted_tree_record_is_not_promised_to_a_sweep_test() {
+  let directory = state_with("open-creating", exec_ledger.Open)
+  let assert Ok(ledger) = exec_ledger.open(directory <> "/exec-ledger.db")
+    as "the ledger reopens"
+  let assert Ok(Nil) =
+    exec_ledger.record_tree(
+      ledger,
+      exec_ledger.Tree(
+        session:,
+        workspace: "/work",
+        path: directory <> "/worktrees/repo/" <> session,
+        branch: "loom/" <> session,
+        state: exec_ledger.Creating,
+      ),
+    )
+    as "the tree record is written"
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
+
+  let assert Ok(told) =
+    executor_cli.run([
+      "release",
+      session,
+      "--processes-gone",
+      "--state-dir",
+      directory,
+    ])
+
+  assert string.contains(told, "left from an interrupted attempt")
+  assert !string.contains(told, "--force-session")
+}
+
+pub fn a_running_executor_daemon_stops_the_flagged_command_too_test() {
+  let directory = state_with("running-gone", exec_ledger.Open)
+  let assert Ok(paths) = endpoint.paths(directory)
+  let assert Ok(daemon) = endpoint.observe(bootstrap.current_process_id())
+    as "this VM is observable"
+  let assert Ok(Nil) =
+    endpoint.write(
+      paths,
+      endpoint.Ready(
+        fence: daemon,
+        host: "127.0.0.1",
+        port: 7000,
+        epoch: "epoch",
+        identity: None,
+      ),
+    )
+    as "the ready record is written"
+
+  let assert Error(reason) =
+    executor_cli.run([
+      "release",
+      session,
+      "--processes-gone",
+      "--state-dir",
+      directory,
+    ])
+
+  assert string.contains(reason, "may be running")
+  assert string.contains(reason, "stop the daemon first")
+  assert scope_state(directory) == exec_ledger.Open
+  assert releases(directory) == []
+}
+
+pub fn a_cleanly_closed_scope_is_refused_with_the_flag_too_test() {
+  let directory =
+    state_with("clean-gone", exec_ledger.Closed(exec_ledger.AllRetired))
+
+  let assert Error(reason) =
+    executor_cli.run([
+      "release",
+      session,
+      "--processes-gone",
+      "--state-dir",
+      directory,
+    ])
+
+  assert string.contains(reason, "nothing to release")
+  assert releases(directory) == []
+}
+
 pub fn a_state_directory_with_no_ledger_is_refused_and_not_created_test() {
   let missing =
     "build/executor-cli-missing-"
@@ -189,6 +390,9 @@ pub fn the_command_without_a_session_or_with_unknown_words_prints_usage_test() {
     == Error(executor_cli.usage)
   assert executor_cli.run(["release", session, "--wipe"])
     == Error(executor_cli.usage)
+  assert executor_cli.run(["release", session, "--processes-gone", "--wipe"])
+    == Error(executor_cli.usage)
+  assert string.contains(executor_cli.usage, "--processes-gone")
   assert executor_cli.run(["reset", session]) == Error(executor_cli.usage)
   assert string.contains(executor_cli.usage, "loom executor release SESSION")
 }
