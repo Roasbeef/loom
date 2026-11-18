@@ -2996,7 +2996,8 @@ pub fn a_homes_attention_read_is_the_held_summaries_test() {
 
       // The owner holds every session: the one with a row answers, the one
       // never read and the unknown identity leave no entry.
-      let read = server.home_saved_attention(ready.registry, digest_of(credential))
+      let read =
+        server.home_saved_attention(ready.registry, digest_of(credential))
       assert read(asked) == expected
 
       // A member is answered for what it holds and nothing else.
@@ -3008,9 +3009,14 @@ pub fn a_homes_attention_read_is_the_held_summaries_test() {
       // A member holding nothing gets what an unknown identity gets, and so
       // does a credential the catalogue does not know.
       let bystander =
-        server.home_saved_attention(ready.registry, digest_of("bystander-token"))
+        server.home_saved_attention(
+          ready.registry,
+          digest_of("bystander-token"),
+        )
       assert bystander(asked) == []
-      assert server.home_saved_attention(ready.registry, digest_of("nobody"))(asked)
+      assert server.home_saved_attention(ready.registry, digest_of("nobody"))(
+          asked,
+        )
         == []
     },
   )

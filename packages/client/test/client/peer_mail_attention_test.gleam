@@ -671,3 +671,50 @@ pub fn a_session_full_of_open_finds_still_reports_a_row_that_fits_test() {
   assert list.length(items(row, "finds")) < 128
   let assert Ok(Nil) = api.close(runtime)
 }
+
+// --- settling reports to the catalogue ---------------------------------------
+
+/// An endpoint command that closes a find, with the revision the find was read
+/// at, and the report it is handled under.
+fn settle(
+  runtime: api.Runtime,
+  report: attention.Report,
+  id: String,
+  revision: Int,
+) -> Result(JsonValue, String) {
+  peer_mail.handle_reporting(
+    runtime,
+    clock.fixed(at: now + 5),
+    peer_mail.no_defaults,
+    report,
+    peer_mail.AttentionSettle(
+      id,
+      revision,
+      attention.Closing(records.Dismissed, "operator-1"),
+    ),
+  )
+}
+
+pub fn a_close_reports_once_and_a_refused_close_reports_nothing_test() {
+  let runtime = open()
+  let assert Ok(ask) =
+    attention.notice(
+      wiring(runtime, now),
+      caller("main"),
+      notice_request("No backoff.", None, None),
+    )
+  let assert Ok(attention.StoredFind(revision:, ..)) =
+    attention.read(runtime, ask)
+  let seen = process.new_subject()
+  let report = fn(_runtime) { process.send(seen, Nil) }
+
+  // A stale revision is refused and the catalogue is not told.
+  assert settle(runtime, report, ask, revision + 7) == Error("conflict")
+  assert process.receive(seen, 0) == Error(Nil)
+
+  // The commit reports exactly once.
+  let assert Ok(_) = settle(runtime, report, ask, revision)
+  assert process.receive(seen, 0) == Ok(Nil)
+  assert process.receive(seen, 0) == Error(Nil)
+  let assert Ok(Nil) = api.close(runtime)
+}

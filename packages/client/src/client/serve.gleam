@@ -4112,6 +4112,10 @@ fn assemble_in(
   let gate_address = address.new_address(namespace)
   let gate = workspace_gate.at(gate_address)
   let resolved_limits = agency_limits.resolve(settings.agency_limits)
+
+  // The report is made before the Agency so that a peer command which settles
+  // a record can call it, as the attention tools do.
+  let attention_report = attention_reporter(settings, clock, logger)
   let agency_config =
     agency.Config(
       ..agency_base,
@@ -4129,6 +4133,7 @@ fn assemble_in(
         settings.peer_defaults,
         peer_mail.no_defaults,
       ),
+      attention_report: attention_report,
       outbox_queued: fn() { peer_outbox_drain.poke(outbox_drain_name) },
       remote: option.lazy_unwrap(settings.remote_reach, fn() {
         remote_reach.none(settings.session_id)
@@ -4176,7 +4181,6 @@ fn assemble_in(
   // holder, as the schedule plane does, because the tools are built before
   // `api.open` returns it. Its clock is the session's own, in Unix
   // milliseconds, since a record's `created_at` is read by people.
-  let attention_report = attention_reporter(settings, clock, logger)
   let attention_seam =
     attention.seam(attention.Wiring(
       runtime: agency.runtime_supplier(agency_config),

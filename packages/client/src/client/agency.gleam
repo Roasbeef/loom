@@ -311,6 +311,7 @@
 //// rather than claimed shut.
 
 import broker/internal/call
+import client/attention
 import client/child_usage
 import client/delegate_outbox
 import client/internal/session_owner
@@ -440,6 +441,11 @@ pub type Config {
     /// (protocol-change/077). `peer_mail.no_defaults` links nothing
     /// implicitly, which is every embedded host.
     peer_defaults: peer_mail.Defaults,
+    /// Called with the session's runtime after a peer command settles an ask
+    /// or closes a find, so the catalogue's open counts drop with the record
+    /// (protocol-change/122). An embedded host with no catalogue passes
+    /// `attention.silent()`.
+    attention_report: attention.Report,
     /// Called once after a peer message is recorded as still undelivered
     /// (`peer_outbox.Unanswered` or `peer_outbox.NotOpen`), so the outbox
     /// drainer arms its retry timer. The Agency does not own the drainer and
@@ -549,6 +555,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     subagent_model: fn() { Error(Nil) },
     models: [],
     peer_defaults: peer_mail.no_defaults,
+    attention_report: attention.silent(),
     outbox_queued: fn() { Nil },
     remote: remote_reach.none(""),
     seeding: unseeded(),
@@ -691,10 +698,11 @@ pub fn start(
       }
       PeerRequest(command:, reply:) -> {
         let answer =
-          peer_mail.handle_with(
+          peer_mail.handle_reporting(
             state,
             config.clock,
             config.peer_defaults,
+            config.attention_report,
             command,
           )
 

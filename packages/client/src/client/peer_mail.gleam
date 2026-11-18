@@ -502,6 +502,26 @@ pub fn handle_with(
   defaults: Defaults,
   command: Command,
 ) -> Result(JsonValue, String) {
+  handle_reporting(runtime, clock, defaults, attention.silent(), command)
+}
+
+/// Executes one endpoint command as `handle_with` does, and calls `report`
+/// after an `AttentionSettle` commits, so the catalogue's open ask and find
+/// counts drop with the record (protocol-change/122). A refused settle
+/// reports nothing, because nothing changed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peer_mail.handle_reporting(runtime, clock, defaults, report, command)
+/// ```
+pub fn handle_reporting(
+  runtime: api.Runtime,
+  clock: clock.Clock,
+  defaults: Defaults,
+  report: attention.Report,
+  command: Command,
+) -> Result(JsonValue, String) {
   // The incoming peer message determines its state transition and reply.
   case command {
     History(strand, before, limit) ->
@@ -642,8 +662,16 @@ pub fn handle_with(
     Overview -> overview(runtime)
     AttentionFeed -> attention_feed.feed(runtime)
     AttentionRead(id) -> attention_read(runtime, id)
-    AttentionSettle(id, revision, settlement) ->
-      attention_settle(runtime, clock, id, revision, settlement)
+    AttentionSettle(id, revision, settlement) -> {
+      let answer = attention_settle(runtime, clock, id, revision, settlement)
+
+      // The report follows the commit and only a commit.
+      case answer {
+        Ok(_) -> attention.settled(report, runtime)
+        Error(_) -> Nil
+      }
+      answer
+    }
     OutboxClaim(source, strand, session, target, id, body) -> {
       let #(now, _) = clock.read(clock)
       peer_outbox_store.claim(
