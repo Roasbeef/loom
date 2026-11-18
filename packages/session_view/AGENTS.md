@@ -57,8 +57,22 @@ loop over a drain's updates, one update per call (question 11 of the note).
 The web view has no such loop of its own, since `step.update` is that loop
 for a host with no surfaces.
 
+`attention` is the pure classifier behind live mode's rail: it reads a lane's
+pieces and the register's reviews and lifts what needs the owner.
+
 ## Key Types
 
+- `attention.lift(pieces, approvals)`, `pinned(lifted)`, `insights(lifted)`,
+  `Lifted(key, kind, hold, head)`, `Kind` (`ApprovalPending(tool)`,
+  `FailedStep`, `FailedTurn`, `SubagentResult(child)`,
+  `PeerMessage(session, strand)`) and `Hold` (`PinnedUntilAnswered`,
+  `FoldsOnceOpened`): the live rail's classifier, pure over `turns.Piece` and
+  `approval.Review`. Pending approvals are pinned, keyed `approval:<id>`, in
+  the order raised; every other row folds once opened and comes newest first,
+  keyed by its piece (a failed step by `<work key>#<item index>`). A head is
+  one line of at most 120 graphemes, untrusted text for a text node; a peer
+  message's head never claims relevance or that it is unanswered. Stuck
+  strands and asks join the pinned group in phase 1.
 - `strand_card.status_line(line)`, `status_title(line)`, `glyph(status)`,
   `model_name(model)`, `task_words(title)` (a task, or nothing for the
   roster's placeholders and the advisor's feed prompt; a brief is cut to its
