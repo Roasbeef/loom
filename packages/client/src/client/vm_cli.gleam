@@ -24,8 +24,7 @@
 ////   none (`installed_manifest`), finds the workspace, mints the link's
 ////   credentials and writes the guest's row (`enroll_linked`), stages the
 ////   guest root (`stage_with`) and boots it (`launch_guest`), all through
-////   `bring_up_linked`. The distribution path (`deployment`, `enroll`, `stage`,
-////   `boot`) is reached by no guest now and is deleted after one release.
+////   `bring_up_linked`.
 //// - `ensure` makes the guest of one workspace ready for `loom --vm`: it names
 ////   the guest after the workspace (`vm_spec.guest_name_for`), reads the
 ////   facts (`ensure_facts`), lets `vm_spec.ensure_step` decide, and boots
@@ -97,20 +96,16 @@
 //// still there. A pid file left by a machine that rebooted therefore names no
 //// process, and a recycled pid is never signalled.
 
-import broker/token
 import client/authority_home
 import client/authority_key
 import client/daemon/admin
 import client/daemon/ledger_cli
-import client/distribution
 import client/distribution_bundle.{type Bundle}
-import client/distribution_install.{Options}
-import client/distribution_provision.{RefuseExisting, ReplaceExisting}
+import client/distribution_install
+import client/distribution_provision
 import client/install
 import client/internal/ffi_os
-import client/ledger_operator
 import client/membership_ledger
-import client/membership_provision
 import client/vm_link
 import client/vm_link_pki
 import client/vm_spec.{
@@ -120,7 +115,6 @@ import client/vm_spec.{
 }
 import core/json as core_json
 import filepath
-import gleam/bit_array
 import gleam/bool
 import gleam/int
 import gleam/io
@@ -128,7 +122,6 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import gleam/time/timestamp
 import host/access
 import host/bootstrap
 import host/build_identity
@@ -284,21 +277,12 @@ Example:
 /// ```
 pub fn main(arguments: List(String)) -> Nil {
   // A refusal goes to standard error with the exit status every `loomd`
-  // command uses, so a script can tell a refused `up` from a started one. The
-  // one other ending is `ensure` finding only a daemon missing: its reason is
-  // on standard error, and standard output holds the line a launcher matches.
-  // Only a guest joining a ledger deployment took that ending, and none does
-  // now that every guest is on the untrusted link, so nothing reaches it.
+  // command uses, so a script can tell a refused `up` from a started one.
   case finish(arguments) {
     Printed(text) -> io.println(text)
     Failed(reason) -> {
       io.println_error("loomd: " <> reason)
       ffi_os.halt(1)
-    }
-    NeedsLaunchedDaemon(reason) -> {
-      io.println_error("loomd: " <> reason)
-      io.println(vm_spec.daemon_required_line)
-      ffi_os.halt(vm_spec.daemon_required_status)
     }
   }
 }
@@ -310,10 +294,6 @@ type Finish {
 
   // It refused or failed, for this reason, with status 1.
   Failed(String)
-
-  // `ensure` stopped before writing anything because only a running daemon is
-  // missing; the status is `vm_spec.daemon_required_status`.
-  NeedsLaunchedDaemon(String)
 }
 
 /// Runs one command and returns what it prints. A refused command has started
@@ -327,7 +307,7 @@ type Finish {
 pub fn run(arguments: List(String)) -> Result(String, String) {
   case finish(arguments) {
     Printed(text) -> Ok(text)
-    Failed(reason) | NeedsLaunchedDaemon(reason) -> Error(reason)
+    Failed(reason) -> Error(reason)
   }
 }
 
@@ -400,8 +380,7 @@ fn dispatch(command: Command) -> Finish {
     Ensure(options) ->
       case ensure(options) {
         Ok(line) -> Printed(line)
-        Error(Refused(reason)) -> Failed(reason)
-        Error(DaemonRequired(reason)) -> NeedsLaunchedDaemon(reason)
+        Error(reason) -> Failed(reason)
       }
     Setup(source) -> ended(setup(source))
     Up(options) -> ended(up(options))
@@ -734,20 +713,14 @@ fn use_decision(
 // What a finished `up` knows: the options it settled, the workspace copy, the
 // host port and how the daemon learns of the guest.
 type Upped {
-  Upped(
-    options: UpOptions,
-    workspace: Workspace,
-    port: Int,
-    enrolled: Enrolled,
-    link: vm_spec.LinkKind,
-  )
+  Upped(options: UpOptions, workspace: Workspace, port: Int, enrolled: Enrolled)
 }
 
 /// Boots one guest and tells the user how to use it and what to do about the
 /// daemon.
 fn up(options: UpOptions) -> Result(String, String) {
   use upped <- result.try(bring_up(options))
-  Ok(report(upped, restart_of(upped)))
+  Ok(linked_report(upped, restart_of(upped)))
 }
 
 /// Provisions, enrolls, stages and boots one guest. `ensure` calls this too, so
@@ -759,7 +732,7 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   // The link is settled first, from the host's records alone, so a guest made
   // over distribution is refused before a manifest is installed, a file is
   // written or a daemon is asked anything.
-  use kind <- result.try(link_of(guest, options.name))
+  use _ <- result.try(link_of(guest, options.name))
   use manifest <- result.try(installed_manifest(vm_home))
   use Nil <- result.try(vm_spec.check_revision(
     manifest,
@@ -786,56 +759,20 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   use github <- result.try(github_access(guest, options))
   let options = UpOptions(..options, allow:)
 
-  // A guest on the untrusted link has no deployment to settle, and shares only
-  // the checks above and the root, state and boot steps below. `settle` never
-  // answers `Distribution`, so the distribution half below is reached by no
-  // guest; it is deleted with the rest of that path after one release.
-  use <- on_link(kind, fn() {
-    bring_up_linked(LinkedUp(
-      manifest:,
-      vm_home:,
-      guest:,
-      names:,
-      workspace:,
-      options:,
-      github:,
-      plan:,
-      step:,
-    ))
-  })
-
-  // The deployment and the enrollment come before the guest root, so a
-  // loom.toml that holds another deployment is refused before a root of
-  // several hundred megabytes is cloned.
-  use #(config, file) <- result.try(config_of(options))
-  use deployed <- result.try(deployment(vm_home, guest, names, config, file))
-  use enrolled <- result.try(enroll(deployed, config, file))
-  use Nil <- result.try(stage(
-    manifest,
-    guest,
-    executor_of(deployed),
-    installed_ledger(config),
-    workspace,
-    options,
-    github,
-    plan,
-    step,
+  bring_up_linked(LinkedUp(
+    manifest:,
+    vm_home:,
+    guest:,
+    names:,
+    workspace:,
+    options:,
+    github:,
+    plan:,
+    step:,
   ))
-  use port <- result.try(boot(manifest, guest, names, options, github, plan))
-  Ok(Upped(options:, workspace:, port:, enrolled:, link: vm_spec.Distribution))
 }
 
 // --- ensure ------------------------------------------------------------------
-
-// How `ensure` failed: a refusal, or the one case a launcher can repair.
-type EnsureFailure {
-  // The command cannot make the guest ready, for the reason given.
-  Refused(String)
-
-  // Only a running daemon is missing, which `up` never starts and a launcher
-  // does. Nothing was written.
-  DaemonRequired(String)
-}
 
 /// Makes the guest that serves one workspace ready and answers the line that
 /// names it: `executor=<guest> workspace=<registered name>`.
@@ -846,13 +783,11 @@ type EnsureFailure {
 /// line on standard error saying which ran, so a developer can see whether a
 /// call was the fast path, a setup, or a boot. The boot is `bring_up`, the code
 /// `up` runs, so a guest `ensure` starts is one `up` could have started.
-fn ensure(options: UpOptions) -> Result(String, EnsureFailure) {
-  use vm_home <- result.try(vm_home() |> result.map_error(Refused))
-  use workspace <- result.try(
-    workspace_of(options) |> result.map_error(Refused),
-  )
+fn ensure(options: UpOptions) -> Result(String, String) {
+  use vm_home <- result.try(vm_home())
+  use workspace <- result.try(workspace_of(options))
   let name = vm_spec.guest_name_for(workspace.path)
-  use Nil <- result.try(vm_spec.valid_name(name) |> result.map_error(Refused))
+  use Nil <- result.try(vm_spec.valid_name(name))
   let options = UpOptions(..options, name:, workspace: Some(workspace.path))
   let line = vm_spec.ensure_line(name, workspace.name)
   use facts <- result.try(ensure_facts(vm_home, options))
@@ -875,22 +810,15 @@ fn decided(
   options: UpOptions,
   name: String,
   line: String,
-) -> Result(String, EnsureFailure) {
+) -> Result(String, String) {
   use facts <- result.try(ensure_facts(vm_home, options))
 
   // `ensure_step` is the whole decision; each arm only carries it out and
   // says which step ran.
   case vm_spec.ensure_step(facts) {
     vm_spec.AlreadyServing -> serving(vm_home, options, name, line)
-    vm_spec.NeedsDaemon ->
-      Error(DaemonRequired(
-        "the guest "
-        <> name
-        <> " would join the ledger deployment of your configuration, which "
-        <> "needs its daemon running; `ensure` starts none",
-      ))
     vm_spec.Boot -> boot_ensured(options, name, line)
-    vm_spec.Refuse(reason) -> Error(Refused(reason))
+    vm_spec.Refuse(reason) -> Error(reason)
   }
 }
 
@@ -901,11 +829,9 @@ fn serving(
   options: UpOptions,
   name: String,
   line: String,
-) -> Result(String, EnsureFailure) {
+) -> Result(String, String) {
   let guest = instance(vm_home, name)
-  use recorded <- result.try(
-    recorded_root_revision(guest) |> result.map_error(Refused),
-  )
+  use recorded <- result.try(recorded_root_revision(guest))
 
   // A manifest that cannot be read leaves the `dev` exception unknown, and the
   // comparison then stands on the record and the build alone.
@@ -914,15 +840,12 @@ fn serving(
     Ok(None) | Error(_) -> None
   }
 
-  use Nil <- result.try(
-    vm_spec.serving_release_refusal(
-      name,
-      recorded,
-      build_identity.current().commit,
-      manifest,
-    )
-    |> result.map_error(Refused),
-  )
+  use Nil <- result.try(vm_spec.serving_release_refusal(
+    name,
+    recorded,
+    build_identity.current().commit,
+    manifest,
+  ))
 
   // The fast path writes nothing, so a flag that would change the guest cannot
   // take effect, and saying so is better than ignoring it silently.
@@ -950,12 +873,12 @@ fn serving(
 fn exclusive(
   vm_home: String,
   name: String,
-  work: fn() -> Result(String, EnsureFailure),
-) -> Result(String, EnsureFailure) {
+  work: fn() -> Result(String, String),
+) -> Result(String, String) {
   use Nil <- result.try(
     simplifile.create_directory_all(vm_home)
     |> result.map_error(fn(error) {
-      Refused(vm_home <> " is unwritable: " <> simplifile.describe_error(error))
+      vm_home <> " is unwritable: " <> simplifile.describe_error(error)
     }),
   )
   let path = vm_home <> "/" <> name <> ".lock"
@@ -966,10 +889,7 @@ fn exclusive(
 }
 
 /// Takes the lock at `path`, waiting while another call holds it.
-fn acquire(
-  path: String,
-  name: String,
-) -> Result(bootstrap.LaunchLock, EnsureFailure) {
+fn acquire(path: String, name: String) -> Result(bootstrap.LaunchLock, String) {
   // The first try is made before saying anything, so an uncontended call is
   // silent.
   case bootstrap.try_launch_lock(path) {
@@ -978,13 +898,13 @@ fn acquire(
       progress(name, "another loom is starting this guest; waiting for it")
       wait_for(path)
     }
-    Error(reason) -> Error(Refused(path <> ": " <> reason))
+    Error(reason) -> Error(path <> ": " <> reason)
   }
 }
 
 /// Polls for the lock at `path` until the holder lets go or the longest boot
 /// has passed.
-fn wait_for(path: String) -> Result(bootstrap.LaunchLock, EnsureFailure) {
+fn wait_for(path: String) -> Result(bootstrap.LaunchLock, String) {
   let waited =
     poll.until(within: vm_spec.provision_budget_ms, every: 250, attempt: fn() {
       case bootstrap.try_launch_lock(path) {
@@ -997,62 +917,52 @@ fn wait_for(path: String) -> Result(bootstrap.LaunchLock, EnsureFailure) {
   // The wait ends with the lock, a reason, or the end of the budget.
   case waited {
     poll.Answered(lock) -> Ok(lock)
-    poll.Failed(reason) -> Error(Refused(path <> ": " <> reason))
+    poll.Failed(reason) -> Error(path <> ": " <> reason)
     poll.Expired ->
-      Error(Refused(
-        "another loom still holds " <> path <> " after the boot budget",
-      ))
+      Error("another loom still holds " <> path <> " after the boot budget")
   }
 }
 
 /// Boots the guest through `up`'s own path, then refuses when the user's daemon
-/// has not read the deployment the guest needs. The guest stays up in that
-/// case, so the next `ensure` after the restart is the fast path.
+/// has not read the guest's row and cannot be asked to reload. The guest stays
+/// up in that case, so the next `ensure` after the restart is the fast path.
 fn boot_ensured(
   options: UpOptions,
   name: String,
   line: String,
-) -> Result(String, EnsureFailure) {
+) -> Result(String, String) {
   progress(name, "booting the guest")
-  use upped <- result.try(bring_up(options) |> result.map_error(Refused))
+  use upped <- result.try(bring_up(options))
   progress(name, "the guest serves port " <> int.to_string(upped.port))
-  use Nil <- result.try(restart_check(upped) |> result.map_error(Refused))
+  use Nil <- result.try(restart_check(upped))
   Ok(line)
 }
 
-/// Whether the user's daemon must restart to read the deployment, answered as
+/// Whether the user's daemon must be restarted to reach the guest, answered as
 /// the refusal that says so, or Ok when it need not.
 ///
-/// A deployment this call installed can have been missed by a running daemon.
-/// So can one an earlier call installed whose boot then failed, which is why a
-/// resumed guest asks the daemon whether it runs with distribution at all. A
-/// guest that joined a ledger is derived by the daemon and needs nothing. A
-/// configuration other than the default belongs to a daemon `ensure` cannot
-/// ask, so a daemon that runs after the install is told to restart.
+/// In the default configuration the daemon is asked which executors it holds,
+/// and one that does not hold the guest has not read its row, whether this call
+/// wrote the row or an earlier call did and then failed to boot. Such a daemon
+/// is asked to reload (protocol-change/116), and the refusal that says to
+/// restart it is given only when it cannot reload: it predates the command,
+/// refused it, or could not bring the guest's link up. A configuration other
+/// than the default belongs to a daemon that cannot be asked, so a daemon that
+/// runs after this call wrote the row there is told to restart.
 fn restart_check(upped: Upped) -> Result(Nil, String) {
-  // An untrusted guest needs the daemon to hold its row and nothing of
-  // distribution, so it is asked another question.
-  case upped.link {
-    vm_spec.Distribution -> distribution_restart_check(upped.enrolled)
-    vm_spec.Untrusted -> untrusted_restart_check(upped)
-  }
-}
-
-/// `restart_check` for a guest on the untrusted link. In the default
-/// configuration the daemon is asked which executors it holds, and one that
-/// does not hold the guest has not read its row, whether this call wrote the
-/// row or an earlier call did and then failed to boot. Such a daemon is asked
-/// to reload (protocol-change/116), and the refusal that says to restart it
-/// is given only when it cannot reload: it predates the command, refused it, or
-/// could not bring the guest's link up. A configuration other than the default
-/// belongs to a daemon that cannot be asked, as for any guest.
-fn untrusted_restart_check(upped: Upped) -> Result(Nil, String) {
   let enrolled = upped.enrolled
 
-  // The distribution check's other-configuration arms say nothing of
-  // distribution, so they serve here too.
+  // Only the default file's daemon can be found, asked and reloaded.
   case enrolled.file {
-    OtherConfigFile -> distribution_restart_check(enrolled)
+    OtherConfigFile ->
+      case enrolled.row {
+        Resumed -> Ok(Nil)
+        Written ->
+          case running_fence() {
+            Some(_) -> Error(vm_spec.other_config_refusal(enrolled.config))
+            None -> Ok(Nil)
+          }
+      }
     DefaultConfigFile ->
       case untrusted_need(upped) {
         vm_link.MustReload -> reload_or_refuse(upped.options.name)
@@ -1082,10 +992,10 @@ fn reload_or_refuse(name: String) -> Result(Nil, String) {
 /// the daemon says it holds. A row this call wrote is unread whatever the
 /// daemon holds, but whether a daemon runs at all is still observed.
 fn untrusted_need(upped: Upped) -> vm_link.DaemonNeed {
-  // A row this call wrote or derived is changed; a resumed one is standing.
+  // A row this call wrote is changed; a resumed one is standing.
   let rows = case upped.enrolled.row {
     Resumed -> vm_link.RowStanding
-    Written | Derived -> vm_link.RowChanged
+    Written -> vm_link.RowChanged
   }
 
   vm_link.daemon_need(rows, daemon_saw(), upped.options.name)
@@ -1095,8 +1005,8 @@ fn untrusted_need(upped: Upped) -> vm_link.DaemonNeed {
 /// its executor rows when its deployment read lists them, and an unanswered
 /// question otherwise.
 fn daemon_saw() -> vm_link.DaemonSaw {
-  // The same observation `daemon_lacks_distribution` makes, read for the
-  // executors instead.
+  // A record with no live process is no daemon; a live one is asked what it
+  // holds.
   case running_fence() {
     None -> vm_link.SawNoDaemon
     Some(_) ->
@@ -1111,65 +1021,30 @@ fn daemon_saw() -> vm_link.DaemonSaw {
   }
 }
 
-/// The restart check of a distribution guest, which asks whether the daemon
-/// runs with distribution at all.
-fn distribution_restart_check(enrolled: Enrolled) -> Result(Nil, String) {
-  case enrolled.row, enrolled.file {
-    Derived, _ -> Ok(Nil)
-    Resumed, OtherConfigFile -> Ok(Nil)
-    Resumed, DefaultConfigFile ->
-      case daemon_lacks_distribution() {
-        True -> vm_spec.restart_refusal(daemon_outcome())
-        False -> Ok(Nil)
-      }
-    Written, DefaultConfigFile -> vm_spec.restart_refusal(daemon_outcome())
-    Written, OtherConfigFile ->
-      case running_fence() {
-        Some(_) -> Error(vm_spec.other_config_refusal(enrolled.config))
-        None -> Ok(Nil)
-      }
-  }
-}
-
-/// Whether the running default daemon says it has no distribution, which means
-/// it has not read a `[distribution]` table. No daemon, or one that does not
-/// answer, is not claimed to lack it.
-fn daemon_lacks_distribution() -> Bool {
-  case running_fence() {
-    None -> False
-    Some(_) ->
-      case ask_daemon("deployment.status") {
-        Ok(body) -> vm_spec.lacks_distribution(body)
-        Error(_) -> False
-      }
-  }
-}
-
 /// One progress line on standard error, named for the guest and prefixed so a
 /// reader can tell `ensure` from the steps it runs.
 fn progress(name: String, text: String) -> Nil {
   io.println_error("loom vm ensure: " <> name <> ": " <> text <> ".")
 }
 
-/// Observes what `ensure_step` decides on. The guest's process and epmd
-/// registration come first and are all the fast path needs, but the manifest
-/// and the daemon are read too: they are small reads, and reading them here
-/// keeps the decision a function of facts and not of order.
+/// Observes what `ensure_step` decides on. The guest's process and its console
+/// come first and are all the fast path needs, but the manifest is read too: it
+/// is a small read, and reading it here keeps the decision a function of facts
+/// and not of order.
 fn ensure_facts(
   vm_home: String,
   options: UpOptions,
-) -> Result(vm_spec.EnsureFacts, EnsureFailure) {
+) -> Result(vm_spec.EnsureFacts, String) {
   let name = options.name
-  let names = vm_spec.names(name)
   let guest = instance(vm_home, name)
-  use state <- result.try(process_state(guest) |> result.map_error(Refused))
+  use state <- result.try(process_state(guest))
 
   // A guest made over distribution is refused here, before `ensure_step`, so
   // even one that serves is not handed to `loom --vm`.
-  use kind <- result.try(link_of(guest, name) |> result.map_error(Refused))
+  use _ <- result.try(link_of(guest, name))
 
   // The record's process is read through its birth marker, so a stale record
-  // is no process, and the node's epmd registration is read beside it.
+  // is no process, and the console's ready line is read beside it.
   let pid = case state {
     Alive(record) -> Some(record.pid)
     NotRunning -> None
@@ -1177,69 +1052,18 @@ fn ensure_facts(
 
   Ok(vm_spec.EnsureFacts(
     name:,
-    state: vm_spec.guest_state(pid, registration_for(guest, names, kind)),
+    state: vm_spec.guest_state(pid, registration_of(guest)),
     manifest: manifest_decision(vm_home),
-    enrolment: enrolment_for(kind, guest, names, options),
-    daemon: daemon_fact(),
   ))
 }
 
-/// Whether the guest's executor serves, by the evidence its link leaves: the
-/// host's epmd for a distribution guest, and the console's ready line for an
-/// untrusted one, which registers no node.
-fn registration_for(
-  guest: Instance,
-  names: vm_spec.Names,
-  kind: vm_spec.LinkKind,
-) -> vm_spec.Registration {
-  case kind {
-    vm_spec.Distribution -> registration_of(names, guest)
-    vm_spec.Untrusted ->
-      case console_ready(guest) {
-        True -> vm_spec.Registered
-        False -> vm_spec.Unregistered
-      }
-  }
-}
-
-/// Whether bringing the guest up would need the daemon. An untrusted guest
-/// joins no deployment, so it never does.
-fn enrolment_for(
-  kind: vm_spec.LinkKind,
-  guest: Instance,
-  names: vm_spec.Names,
-  options: UpOptions,
-) -> vm_spec.EnrolmentNeed {
-  case kind {
-    vm_spec.Distribution -> enrolment_need(guest, names, options)
-    vm_spec.Untrusted -> vm_spec.NeedsNoDaemon
-  }
-}
-
-/// Whether the guest's executor serves: the host epmd lists its node and its
-/// console says the executor is ready. `loom-vm` registers the node right after
-/// it starts the guest, long before the executor serves (a provisioning script
-/// can take half an hour), so the listing alone would call a booting guest
-/// serving. The console is the witness `await_ready` uses, and it is truncated
-/// at every launch. An epmd that cannot be run lists nothing, which reads as
-/// not registered: a guest that cannot be confirmed is not claimed to serve.
-fn registration_of(
-  names: vm_spec.Names,
-  guest: Instance,
-) -> vm_spec.Registration {
-  let listing = tool("epmd", ["-names"], within: quick_ms)
-
-  // Only a listing that names the node counts, and then only a ready console.
-  case listing {
-    Ok(listing) ->
-      case
-        vm_spec.registered_port(listing, names.executor_short),
-        console_ready(guest)
-      {
-        Some(_), True -> vm_spec.Registered
-        _, _ -> vm_spec.Unregistered
-      }
-    Error(_) -> vm_spec.Unregistered
+/// Whether the guest's executor serves, by the console's ready line, which is
+/// truncated at every launch. The untrusted link registers no node with the
+/// host's epmd, so the console is the only witness.
+fn registration_of(guest: Instance) -> vm_spec.Registration {
+  case console_ready(guest) {
+    True -> vm_spec.Registered
+    False -> vm_spec.Unregistered
   }
 }
 
@@ -1249,55 +1073,6 @@ fn console_ready(guest: Instance) -> Bool {
     result.unwrap(simplifile.read(guest.log), ""),
     vm_spec.ready_marker,
   )
-}
-
-/// Whether the daemon of the default state directory runs.
-fn daemon_fact() -> vm_spec.DaemonFact {
-  // The same observation `join` makes before it enrols a guest.
-  case running_fence() {
-    Some(_) -> vm_spec.DaemonRunning
-    None -> vm_spec.DaemonStopped
-  }
-}
-
-/// Whether bringing this guest up would join an existing ledger deployment.
-/// That is the case for a guest with no executor bundle, in the default
-/// configuration, when it holds a ledger deployment: `join` needs the daemon.
-/// A configuration that cannot be read counts as no join, because `up` reports
-/// its own reason for it.
-fn enrolment_need(
-  guest: Instance,
-  names: vm_spec.Names,
-  options: UpOptions,
-) -> vm_spec.EnrolmentNeed {
-  let bundled = bootstrap.path_exists(bundle_file(guest, names.name))
-
-  // A guest with bundles resumes, and a guest without them joins only a ledger
-  // deployment in the default file, whose daemon `up` can find.
-  case bundled, holds_ledger_deployment(options) {
-    False, True -> vm_spec.JoinsLedger
-    _, _ -> vm_spec.NeedsNoDaemon
-  }
-}
-
-/// Whether the default configuration holds a ledger deployment. Any other file,
-/// a file that is absent and one that cannot be read or parsed say no: `up`
-/// reports its own reason for the last.
-fn holds_ledger_deployment(options: UpOptions) -> Bool {
-  let state = {
-    use #(config, file) <- result.try(config_of(options))
-    let text = result.unwrap(simplifile.read(config), "")
-    use state <- result.map(
-      vm_spec.deployment_state(text) |> result.replace_error("not parsed"),
-    )
-    #(file, state)
-  }
-
-  // Only the default file is the daemon's, so only it can need the daemon.
-  case state {
-    Ok(#(DefaultConfigFile, vm_spec.LedgerDeployment(..))) -> True
-    _ -> False
-  }
 }
 
 // --- the allowlist and the provisioning script --------------------------------
@@ -1538,267 +1313,6 @@ fn refuse_running(guest: Instance, name: String) -> Result(Nil, String) {
 
 // --- the deployment ----------------------------------------------------------
 
-/// How `deployment` came by a guest's bundles.
-type Deployed {
-  /// A deployment this `up` minted, with the orchestrator's bundle to install.
-  Minted(orchestrator: Bundle, executor: Bundle)
-
-  /// The bundles an earlier `up` wrote, read again. Reading them again is what
-  /// keeps the orchestrator's installed pins matching the executor's
-  /// certificate. A guest that joined its daemon's deployment has no
-  /// orchestrator bundle, because the daemon is already a member.
-  Reused(orchestrator: option.Option(Bundle), executor: Bundle)
-}
-
-/// The executor bundle of any of the three.
-fn executor_of(deployed: Deployed) -> Bundle {
-  case deployed {
-    Minted(executor:, ..) | Reused(executor:, ..) -> executor
-  }
-}
-
-/// The bundles of a guest: read from `deploy/` when an earlier `up` made them,
-/// and otherwise decided by which deployment `config` already belongs to
-/// (`vm_spec.deployment_state`), before anything is minted or written, so a
-/// refused `up` leaves nothing behind. A configuration with no deployment gets
-/// one minted for it; one with a ledger deployment gets the guest enrolled in
-/// it (`join`); a static one is refused, since no key remains to enrol with.
-fn deployment(
-  vm_home: String,
-  guest: Instance,
-  names: vm_spec.Names,
-  config: String,
-  file: ConfigFile,
-) -> Result(Deployed, String) {
-  let orchestrator_file = bundle_file(guest, names.orchestrator)
-  let executor_file = bundle_file(guest, names.name)
-
-  // A directory with an orchestrator bundle alone was interrupted, and one
-  // bundle alone pins nothing, so only a complete pair is reused. An executor
-  // bundle alone with a ledger in it is a guest that joined.
-  case
-    bootstrap.path_exists(orchestrator_file),
-    bootstrap.path_exists(executor_file)
-  {
-    True, True -> {
-      use orchestrator <- result.try(read_bundle(
-        orchestrator_file,
-        names.orchestrator_node,
-      ))
-      use executor <- result.try(read_bundle(executor_file, names.executor_node))
-      Ok(Reused(Some(orchestrator), executor))
-    }
-    False, True -> {
-      use executor <- result.try(read_bundle(executor_file, names.executor_node))
-
-      // A static executor bundle without its orchestrator is a leftover.
-      case executor.trust {
-        distribution_bundle.SignedLedger(_) -> {
-          use Nil <- result.try(refuse_revoked(config, executor))
-          Ok(Reused(None, executor))
-        }
-        distribution_bundle.StaticPeers(_) ->
-          begin(vm_home, guest, names, config, file)
-      }
-    }
-    _, _ -> begin(vm_home, guest, names, config, file)
-  }
-}
-
-/// Refuses to resume a joined guest that the daemon's installed ledger records
-/// as revoked, or does not hold at all (`vm_spec.resume_refusal`): it would
-/// boot and serve nothing. A configuration with no readable ledger, or one that
-/// does not replay against the guest's certificate authority, says nothing and
-/// the resume goes on.
-fn refuse_revoked(config: String, executor: Bundle) -> Result(Nil, String) {
-  // With no installed ledger there is nothing to read the standing from.
-  let standing = case installed_ledger(config) {
-    Some(text) -> vm_spec.standing(executor.ca, text, executor.name)
-    None -> Error(Nil)
-  }
-
-  vm_spec.resume_refusal(executor.name, config, standing)
-}
-
-/// Decides, for a guest with no bundles, between minting, joining and refusing.
-fn begin(
-  vm_home: String,
-  guest: Instance,
-  names: vm_spec.Names,
-  config: String,
-  file: ConfigFile,
-) -> Result(Deployed, String) {
-  // A configuration that does not exist yet holds no deployment.
-  use text <- result.try(case simplifile.read(config) {
-    Ok(text) -> Ok(text)
-    Error(simplifile.Enoent) -> Ok("")
-    Error(error) ->
-      Error(config <> " is unreadable: " <> simplifile.describe_error(error))
-  })
-
-  use state <- result.try(
-    vm_spec.deployment_state(text)
-    |> result.map_error(fn(reason) { config <> ": " <> reason }),
-  )
-
-  // The state of the file is the decision: no deployment to belong to, a
-  // ledger to be enrolled in, or peers that nothing can be added to.
-  case state {
-    vm_spec.NoDeployment -> {
-      // The cookie conflict is decided before anything is written: a minted
-      // cookie never equals a file that exists, and the install refuses to
-      // replace it, which would leave bundles and a sealed key behind.
-      use home <- result.try(home())
-      use Nil <- result.try(vm_spec.mint_check(
-        cookie_file(home),
-        home <> "/.erlang.cookie",
-      ))
-      provision(vm_home, guest, names)
-      |> result.map(fn(pair) { Minted(pair.0, pair.1) })
-    }
-    vm_spec.LedgerDeployment(ledger:) ->
-      join(vm_home, guest, names, Joining(config:, file:, text:, ledger:))
-    vm_spec.StaticDeployment ->
-      Error(
-        config
-        <> " holds a static deployment ([[distribution.peers]]), which kept no "
-        <> "authority key, so no guest can be added to it. Re-provision it in "
-        <> "ledger mode, or `loom vm rm` the guest that minted it and run "
-        <> "`loom vm up` again.",
-      )
-  }
-}
-
-/// Whether the home already has the cookie every Erlang node of the user reads.
-fn cookie_file(home: String) -> vm_spec.HomeCookie {
-  case bootstrap.path_exists(home <> "/.erlang.cookie") {
-    True -> vm_spec.HomeCookieThere
-    False -> vm_spec.NoHomeCookie
-  }
-}
-
-// The configuration a guest joins, as `begin` read it.
-type Joining {
-  Joining(config: String, file: ConfigFile, text: String, ledger: String)
-}
-
-/// Enrols the guest in the ledger deployment the configuration names, through
-/// the daemon that runs it, and answers the executor bundle that results. The
-/// authority key must be on this machine and the daemon must be running:
-/// `up` starts no daemon, and a node adopts ledger entries only from a
-/// signature and a chain (protocol-change/086), so there is no other way in.
-/// The configuration, the cookie and the daemon are not touched. The entry
-/// reaches the daemon over `ledger.append` and the daemon derives the
-/// `[executors.<name>]` row from the ledger without a restart.
-fn join(
-  vm_home: String,
-  guest: Instance,
-  names: vm_spec.Names,
-  joining: Joining,
-) -> Result(Deployed, String) {
-  // The default file is the one whose daemon `up` can find.
-  use Nil <- result.try(case joining.file {
-    DefaultConfigFile -> Ok(Nil)
-    OtherConfigFile ->
-      Error(
-        joining.config
-        <> " holds a ledger deployment, and only the daemon of the default "
-        <> "configuration can be reached to enrol a guest in it. Run "
-        <> "`loom vm up` without --config.",
-      )
-  })
-
-  use daemon <- result.try(
-    distribution.parse(joining.text)
-    |> result.map_error(fn(reason) { joining.config <> ": " <> reason })
-    |> result.try(fn(found) {
-      option.to_result(found, joining.config <> " has no [distribution] table")
-    }),
-  )
-  let files = distribution.credential_files(daemon)
-  use ca <- result.try(read_text(files.ca))
-  use ledger_text <- result.try(read_text(joining.ledger))
-  use membership <- result.try(
-    vm_spec.orchestrator_membership(
-      ca,
-      ledger_text,
-      distribution.local_node(daemon),
-    )
-    |> result.map_error(fn(reason) { joining.config <> ": " <> reason }),
-  )
-  let request = vm_spec.guest_enrollment(names, membership.member)
-  use Nil <- result.try(ledger_operator.check_enrollment(request))
-
-  // The key first: its absence is permanent on this machine, and a daemon
-  // that is down is not.
-  use kept <- result.try(
-    sealed_authority(vm_home, membership.deployment, Some(joining.ledger))
-    |> result.map_error(fn(_) {
-      key_elsewhere(guest, names, membership, request)
-    }),
-  )
-
-  // A node adopts ledger entries only from a signature and a chain, so the
-  // running daemon is the way in; `up` never starts one.
-  use Nil <- result.try(case running_fence() {
-    Some(_) -> Ok(Nil)
-    None ->
-      Error(
-        "the daemon of "
-        <> joining.config
-        <> " is not running, and the guest is enrolled through it. Start it "
-        <> "with `loom deployment status` (any `loom` command starts it), "
-        <> "then run `loom vm up` again. `up` never starts a daemon.",
-      )
-  })
-
-  use authority <- result.try(
-    ledger_cli.unlock_at(kept.0, kept.1)
-    |> result.map_error(fn(reason) {
-      reason <> ". " <> key_elsewhere(guest, names, membership, request)
-    }),
-  )
-
-  // Only a guest directory this call made is removed when the enrolment
-  // fails, so a refusal leaves nothing behind.
-  let existed = is_plain_directory(guest.directory)
-  let path = bundle_file(guest, names.name)
-  use Nil <- result.try(bootstrap.ensure_private_directory(guest.directory))
-  let signed =
-    ledger_cli.enroll_member(
-      authority,
-      request,
-      admin.ThisHost(""),
-      ledger_cli.socket_connect(),
-      path,
-    )
-
-  // A failure before anything was signed leaves nothing, and the directory is
-  // removed only when this call made it. Once the entry is signed the bundle
-  // holds the only copy of the node's key, so it stays whatever the daemon
-  // did, as `loom distribution enroll` leaves it.
-  case signed, existed {
-    Ok(signed), _ -> {
-      // A daemon that did not take the entry fails the join, and the bundle
-      // stays: it holds the only copy of the node's key.
-      use Nil <- result.try(vm_spec.undelivered_refusal(
-        ledger_cli.delivered(signed),
-        path,
-        names.name,
-      ))
-
-      read_bundle(path, names.executor_node)
-      |> result.map(fn(executor) { Reused(None, executor) })
-    }
-    Error(reason), True -> Error(reason)
-    Error(reason), False ->
-      case remove_tree_if_present(guest.directory) {
-        Ok(Nil) -> Error(reason)
-        Error(more) -> Error(reason <> "; " <> more)
-      }
-  }
-}
-
 /// Where the sealed key of a deployment is on this machine and the passphrase
 /// file to open it with, when there is one. The key `up` sealed for a
 /// deployment it minted has its passphrase beside it. A key the operator kept
@@ -1875,37 +1389,6 @@ fn hinted_key(
   }
 }
 
-/// The refusal for a deployment whose key is not on this machine: the
-/// deployment, and the command for the operator who holds the key.
-fn key_elsewhere(
-  guest: Instance,
-  names: vm_spec.Names,
-  membership: vm_spec.Membership,
-  request: ledger_operator.Enrollment,
-) -> String {
-  "the authority key of deployment "
-  <> membership.deployment
-  <> " cannot be opened on this machine, so `loom vm up` cannot enrol "
-  <> names.name
-  <> " in it. The operator who holds the key runs:\n  loom distribution "
-  <> "enroll "
-  <> names.name
-  <> " --role executor --node "
-  <> request.node
-  <> " --host 127.0.0.1 --port "
-  <> int.to_string(vm_spec.guest_port)
-  <> " --links "
-  <> membership.member
-  <> " --out DIR\nand the bundle DIR/"
-  <> names.name
-  <> distribution_provision.bundle_extension
-  <> " is copied to "
-  <> guest.deploy
-  <> "/, after which `loom vm up --name "
-  <> names.name
-  <> "` resumes the guest from it."
-}
-
 /// Reads a file of the daemon's credentials, naming it when it cannot be read.
 fn read_text(path: String) -> Result(String, String) {
   simplifile.read(path)
@@ -1948,132 +1431,6 @@ fn read_bundle(path: String, node: String) -> Result(Bundle, String) {
   }
 }
 
-/// Mints the authority, the certificates, the cookie and a signed membership
-/// ledger in this process (protocol-change/086), seals the authority key under
-/// the vm home, and writes the bundles into `deploy/`. The ledger mode is what
-/// lets a later node be enrolled without minting the deployment again. The
-/// guest's executor bundle holds its own node key and the deployment's cookie,
-/// and never the authority's key, which `provision_ledger` hands back
-/// separately and which only `seal_authority` writes.
-fn provision(
-  vm_home: String,
-  guest: Instance,
-  names: vm_spec.Names,
-) -> Result(#(Bundle, Bundle), String) {
-  use plan <- result.try(vm_spec.deployment_plan(
-    names,
-    guest.orchestrator_credentials,
-  ))
-  use made <- result.try(distribution_provision.provision_ledger(
-    plan,
-    timestamp.system_time(),
-  ))
-  let authority =
-    vm_spec.authority_directory(vm_home, made.authority.deployment)
-
-  // The key is sealed before any bundle is written: bundles whose ledger can
-  // never be extended are worse than a sealed key with no bundles. A failure
-  // after that takes the directory with it, since its id exists nowhere else.
-  use Nil <- result.try(
-    seal_authority(authority, made)
-    |> or_unseal(authority),
-  )
-  use bundles <- result.try(
-    write_bundles(guest, made.deployment, names)
-    |> or_unseal(authority),
-  )
-  Ok(bundles)
-}
-
-/// Seals the authority key of a ledger deployment under a passphrase `up`
-/// generates, and keeps the certificate, the operator's copy of the ledger and
-/// the cookie beside it, as `loom distribution provision` does. The passphrase
-/// is 32 bytes from the production entropy source, written to a file of its own
-/// (mode 0600, created atomically) in the same directory, because a standing
-/// guest has no terminal to ask on and the later `enroll` and `revoke` of the
-/// join read it with `--passphrase-file`. The directory is under the vm home,
-/// which the daemon's jails mask (`workspace_policy`), and never under a guest
-/// root.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // vm_cli.seal_authority("/h/vm/authority/3f9c", made)
-/// ```
-@internal
-pub fn seal_authority(
-  directory: String,
-  made: distribution_provision.Provisioned,
-) -> Result(Nil, String) {
-  let text = bit_array.base64_url_encode(token.production_entropy()(32), False)
-  use passphrase <- result.try(
-    authority_key.passphrase(text)
-    |> result.map_error(authority_key.describe),
-  )
-  use Nil <- result.try(bootstrap.ensure_private_directory(directory))
-  use Nil <- result.try(write_private(
-    directory <> "/" <> vm_spec.passphrase_file,
-    text <> "\n",
-  ))
-  let authority = made.authority
-  authority_key.keep(
-    directory,
-    authority_key.Kept(
-      deployment: authority.deployment,
-      key: authority.key,
-      certificate: authority.certificate,
-      ledger: made.ledger,
-      cookie: authority.cookie,
-    ),
-    passphrase,
-  )
-  |> result.replace(Nil)
-  |> result.map_error(authority_key.describe)
-}
-
-/// Passes a success through, and removes the authority directory a failed
-/// provisioning created so that no sealed key outlives the bundles it was for.
-fn or_unseal(
-  outcome: Result(a, String),
-  authority: String,
-) -> Result(a, String) {
-  case outcome {
-    Ok(_) -> outcome
-    Error(reason) ->
-      case remove_tree_if_present(authority) {
-        Ok(Nil) -> Error(reason)
-        Error(more) -> Error(reason <> "; " <> more)
-      }
-  }
-}
-
-/// Writes the bundles and the public ledger into `deploy/` and returns the
-/// orchestrator's and the executor's.
-fn write_bundles(
-  guest: Instance,
-  minted: distribution_provision.Deployment,
-  names: vm_spec.Names,
-) -> Result(#(Bundle, Bundle), String) {
-  use Nil <- result.try(bootstrap.ensure_private_directory(guest.directory))
-  use _written <- result.try(distribution_provision.write(
-    minted,
-    guest.deploy,
-    ReplaceExisting,
-  ))
-  use orchestrator <- result.try(bundle_named(minted, names.orchestrator))
-  use executor <- result.try(bundle_named(minted, names.name))
-  Ok(#(orchestrator, executor))
-}
-
-/// The bundle a provisioned deployment holds for a plan node.
-fn bundle_named(
-  minted: distribution_provision.Deployment,
-  name: String,
-) -> Result(Bundle, String) {
-  list.find(minted.bundles, fn(bundle) { bundle.name == name })
-  |> result.map_error(fn(_) { "provisioning made no bundle for " <> name })
-}
-
 // --- enrolling the orchestrator ----------------------------------------------
 
 // What `up` did to the user's configuration, and so what the report says.
@@ -2081,29 +1438,23 @@ type Enrolled {
   Enrolled(config: String, file: ConfigFile, row: Row)
 }
 
-// Whether the guest's `[executors.<name>]` row is in the file or derived.
+// Whether `up` wrote the guest's `[executors.<name>]` row or found it there.
 type Row {
-  // The orchestrator's bundle wrote it in this `up`, and a daemon reads it at
-  // start.
+  // This `up` wrote it, and a daemon reads it at start or when asked to
+  // reload.
   Written
 
   // A resume: an earlier `up` wrote it and this one found it still in the
   // file, so this `up` changed nothing the daemon reads. A daemon that started
-  // since has read it. `up` and `ensure` ask such a daemon to restart only
-  // when it says it runs without the table.
+  // since has read it. `up` and `ensure` ask such a daemon to reload only when
+  // it does not hold the guest.
   Resumed
-
-  // The ledger gives the daemon the row when the guest is a member, and the
-  // file was not touched.
-  Derived
 }
 
-// Whose configuration holds the guest's deployment. Only the daemon of the
-// default state directory can be found and stopped, and it reads only the
+// Whose configuration holds the guest's row. Only the daemon of the default
+// state directory can be found, asked and stopped, and it reads only the
 // default file, so a `--config` run must never reach it: a private file, as a
-// test uses, would otherwise shut down the developer's own idle daemon. A
-// resumed guest counts as well: a first `up` that installed the deployment and
-// then failed to boot leaves a daemon that never read it.
+// test uses, would otherwise shut down the developer's own idle daemon.
 type ConfigFile {
   // The exact default file, which the default daemon reads.
   DefaultConfigFile
@@ -2126,150 +1477,12 @@ fn config_of(options: UpOptions) -> Result(#(String, ConfigFile), String) {
   Ok(#(config, config_file(config, default)))
 }
 
-/// Installs a newly minted orchestrator bundle into the user's `loom.toml` the
-/// way `loom distribution install` does, and refuses what it would replace.
-/// A guest that joined, or resumes from a bundle with no orchestrator, changes
-/// nothing: the ledger is what gives the daemon its row.
-fn enroll(
-  deployed: Deployed,
-  config: String,
-  file: ConfigFile,
-) -> Result(Enrolled, String) {
-  use home <- result.try(home())
-
-  // A resumed guest's deployment is already installed. Installing it again
-  // compares the whole [distribution] table, so a key the user added since,
-  // such as `listen_address`, would refuse the resume; the executor row is
-  // what has to still be there.
-  case deployed {
-    Reused(orchestrator: Some(orchestrator), ..) ->
-      kept_enrolment(orchestrator, config, home, file)
-    Minted(orchestrator:, ..) -> install(orchestrator, config, home, file)
-    Reused(orchestrator: None, ..) -> Ok(Enrolled(config:, file:, row: Derived))
-  }
-}
-
-/// What a guest with orchestrator bundles owes the configuration. When the
-/// file holds a deployment, an earlier `up` installed it and only the row is
-/// checked. When it holds none, an earlier `up` minted the bundles and its
-/// install was refused, so they are installed now (`vm_spec.kept_step`).
-fn kept_enrolment(
-  orchestrator: Bundle,
-  config: String,
-  home: String,
-  file: ConfigFile,
-) -> Result(Enrolled, String) {
-  // A configuration that does not exist yet holds no deployment.
-  let text = result.unwrap(simplifile.read(config), "")
-
-  // The install is `RefuseExisting`, so a table or cookie that conflicts is
-  // refused here exactly as it was the first time.
-  case vm_spec.kept_step(vm_spec.deployment_state(text)) {
-    vm_spec.InstallKept -> install(orchestrator, config, home, file)
-    vm_spec.CheckKeptRow -> still_enrolled(orchestrator, config, file)
-  }
-}
-
 /// Which file `config` is, for deciding whose daemon `up` may touch.
 fn config_file(config: String, default: String) -> ConfigFile {
   // Only the exact default file belongs to the daemon `up` can find.
   case config == default {
     True -> DefaultConfigFile
     False -> OtherConfigFile
-  }
-}
-
-/// Checks that a resumed guest's executor row is still in `config`.
-fn still_enrolled(
-  orchestrator: Bundle,
-  config: String,
-  file: ConfigFile,
-) -> Result(Enrolled, String) {
-  let row = "[executors." <> orchestrator_executor(orchestrator) <> "]"
-  use text <- result.try(
-    simplifile.read(config)
-    |> result.map_error(fn(error) {
-      config <> " is unreadable: " <> simplifile.describe_error(error)
-    }),
-  )
-
-  // A resumed guest's deployment was installed by the `up` that minted it;
-  // only the row it needs is checked, and a missing one is the operator's to
-  // restore, since reinstalling would be refused as an existing deployment.
-  case string.contains(text, row) {
-    True -> Ok(Enrolled(config:, file:, row: Resumed))
-    False ->
-      Error(
-        config
-        <> " no longer has "
-        <> row
-        <> ". The guest's deployment is still installed there, so add the row "
-        <> "back:\n\n"
-        <> enrolled_row(orchestrator),
-      )
-  }
-}
-
-/// Installs a newly minted orchestrator bundle into `config`, then binds the
-/// daemon's distribution listener to loopback (protocol-change/106): the
-/// orchestrator of a standing guest is never dialled, since the guest's
-/// executor only accepts connections.
-fn install(
-  orchestrator: Bundle,
-  config: String,
-  home: String,
-  file: ConfigFile,
-) -> Result(Enrolled, String) {
-  use _installed <- result.try(
-    distribution_install.install(
-      distribution_bundle.encode(orchestrator),
-      Options(home:, config:, overwrite: RefuseExisting),
-    )
-    |> result.map_error(fn(reason) {
-      vm_spec.without_force_hint(reason)
-      <> "\n`loom vm up` never replaces a [distribution] table, an "
-      <> "[executors."
-      <> orchestrator_executor(orchestrator)
-      <> "] table or a cookie that differs from the deployment's. If a guest "
-      <> "made the conflicting one, `loom vm rm --name NAME` removes it. "
-      <> "Otherwise remove the table from "
-      <> config
-      <> " or give `--config` another file. The cookie, "
-      <> home
-      <> "/.erlang.cookie, is read by every Erlang node of yours: move it "
-      <> "aside only if none relies on it."
-    }),
-  )
-  use text <- result.try(
-    simplifile.read(config)
-    |> result.map_error(fn(error) {
-      config <> " is unreadable: " <> simplifile.describe_error(error)
-    }),
-  )
-  use Nil <- result.try(write_private(
-    config,
-    vm_spec.with_loopback_listener(text),
-  ))
-  Ok(Enrolled(config:, file:, row: Written))
-}
-
-/// The `[executors.<name>]` table the orchestrator's bundle installed, as
-/// text to add back.
-fn enrolled_row(orchestrator: Bundle) -> String {
-  // A bundle with no row names nothing to restore; the refusal then shows
-  // the shape with placeholders.
-  case orchestrator.executors {
-    [row, ..] ->
-      "[executors." <> row.name <> "]\nnode = \"" <> row.node <> "\"\n"
-    [] -> "[executors.NAME]\nnode = \"NODE\"\n"
-  }
-}
-
-/// The executor row the orchestrator's bundle names, for the refusal's words.
-fn orchestrator_executor(orchestrator: Bundle) -> String {
-  case orchestrator.executors {
-    [row, ..] -> row.name
-    [] -> "NAME"
   }
 }
 
@@ -2354,19 +1567,6 @@ fn read_record(path: String) -> Result(option.Option(String), String) {
   }
 }
 
-/// Runs the untrusted guest's `up`, or the distribution guest's, which is the
-/// rest of `bring_up`.
-fn on_link(
-  kind: vm_spec.LinkKind,
-  untrusted: fn() -> Result(Upped, String),
-  distribution: fn() -> Result(Upped, String),
-) -> Result(Upped, String) {
-  case kind {
-    vm_spec.Untrusted -> untrusted()
-    vm_spec.Distribution -> distribution()
-  }
-}
-
 /// `up` for a guest reached over the untrusted link: it mints the link's
 /// credentials, settles the guest's port, enrols the guest in the host's
 /// `loom.toml`, stages a root with a listener and no cookie, and boots it with
@@ -2429,7 +1629,7 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
       <> " so the next `loom vm up` reserves another."
     }),
   )
-  Ok(Upped(options:, workspace:, port:, enrolled:, link: vm_spec.Untrusted))
+  Ok(Upped(options:, workspace:, port:, enrolled:))
 }
 
 /// The part of `up` for an untrusted guest that touches what other guests
@@ -2489,7 +1689,7 @@ fn with_link_lock(
         "loom vm: another loom is changing the link credentials or loom.toml; "
         <> "waiting for it.",
       )
-      wait_for(path) |> result.map_error(fn(failure) { ensure_reason(failure) })
+      wait_for(path)
     }
     Error(reason) -> Error(path <> ": " <> reason)
   })
@@ -2497,13 +1697,6 @@ fn with_link_lock(
   let outcome = work()
   bootstrap.release_launch_lock(lock)
   outcome
-}
-
-/// The words of an `ensure` failure, for a caller that reports a plain string.
-fn ensure_reason(failure: EnsureFailure) -> String {
-  case failure {
-    Refused(reason) | DaemonRequired(reason) -> reason
-  }
 }
 
 /// Records that the guest is reached over the untrusted link.
@@ -2684,7 +1877,7 @@ fn stage_linked_node(
 /// handled as before, and a daemon that is not running reads the row at its
 /// start.
 fn linked_report(upped: Upped, restart: Restart) -> String {
-  let Upped(options:, workspace:, port:, enrolled:, ..) = upped
+  let Upped(options:, workspace:, port:, enrolled:) = upped
   let name = options.name
   string.join(
     list.flatten([
@@ -2710,7 +1903,7 @@ fn linked_report(upped: Upped, restart: Restart) -> String {
 /// The line that says what `up` did to the user's configuration.
 fn linked_line(name: String, enrolled: Enrolled) -> String {
   case enrolled.row {
-    Written | Derived ->
+    Written ->
       "Wrote [executor_link] and [executors."
       <> name
       <> "] in "
@@ -2730,11 +1923,10 @@ fn linked_line(name: String, enrolled: Enrolled) -> String {
 fn linked_daemon_lines(name: String, restart: Restart) -> List(String) {
   case restart {
     NoRestart -> []
-    Daemon(outcome, _) -> vm_link.daemon_lines(name, outcome)
     Reloaded(lines:, stopped: None) -> spaced(lines)
     Reloaded(lines:, stopped: Some(outcome)) ->
       list.append(spaced(lines), vm_link.daemon_lines(name, outcome))
-    OtherDaemon(_) -> [
+    OtherDaemon -> [
       "A daemon already running with that file must restart to reach the guest.",
       "",
     ]
@@ -2750,21 +1942,20 @@ fn spaced(lines: List(String)) -> List(String) {
   }
 }
 
-/// What `up` does about the user's daemon after a guest: for an untrusted
-/// guest, ask a running daemon that has not read the row to reload, and only
-/// when it cannot do that, what a newly installed deployment asks, which is the
-/// one decision to stop an idle daemon and leave a busy one running.
+/// What `up` does about the user's daemon after a guest: ask a running daemon
+/// that has not read the row to reload, and only when it cannot do that, make
+/// the one decision to stop an idle daemon and leave a busy one running.
 fn restart_of(upped: Upped) -> Restart {
-  // The default daemon is asked about an untrusted guest's row; a
-  // configuration other than the default has a daemon `up` cannot ask.
-  case upped.link, upped.enrolled.file, upped.enrolled.row {
-    vm_spec.Untrusted, DefaultConfigFile, _ ->
+  // The default daemon is asked about the guest's row; a configuration other
+  // than the default has a daemon `up` cannot ask.
+  case upped.enrolled.file, upped.enrolled.row {
+    DefaultConfigFile, _ ->
       case untrusted_need(upped) {
         vm_link.MustReload -> reloaded(upped.options.name)
         vm_link.NeedsNothing -> NoRestart
       }
-    vm_spec.Untrusted, OtherConfigFile, Resumed -> NoRestart
-    _, _, _ -> restart_after(upped.enrolled)
+    OtherConfigFile, Resumed -> NoRestart
+    OtherConfigFile, Written -> OtherDaemon
   }
 }
 
@@ -2778,19 +1969,6 @@ fn reloaded(name: String) -> Restart {
   case report.old_path {
     vm_link.OldPathSkipped -> Reloaded(report.lines, None)
     vm_link.OldPathRuns -> Reloaded(report.lines, Some(daemon_outcome()))
-  }
-}
-
-/// The report for a distribution guest is `report`'s own; an untrusted guest's
-/// is `linked_report`.
-fn on_untrusted_report(
-  upped: Upped,
-  restart: Restart,
-  distribution: fn() -> String,
-) -> String {
-  case upped.link {
-    vm_spec.Untrusted -> linked_report(upped, restart)
-    vm_spec.Distribution -> distribution()
   }
 }
 
@@ -2823,40 +2001,6 @@ fn link_lines(
 }
 
 // --- the guest root ----------------------------------------------------------
-
-/// Gives the guest its own root, its executor node and its copy of the
-/// workspace.
-fn stage(
-  manifest: Manifest,
-  guest: Instance,
-  executor: Bundle,
-  installed: option.Option(String),
-  workspace: Workspace,
-  options: UpOptions,
-  github: vm_spec.GitHubAccess,
-  plan: vm_spec.ProvisionPlan,
-  step: vm_spec.RootStep,
-) -> Result(Nil, String) {
-  stage_with(
-    manifest,
-    guest,
-    fn(registered) {
-      stage_node(
-        guest.root,
-        executor,
-        installed,
-        registered,
-        github,
-        options.allow,
-      )
-    },
-    workspace,
-    options,
-    github,
-    plan,
-    step,
-  )
-}
 
 /// Everything `stage` does, with the writing of the executor's node left to
 /// `write_node`, which is given the workspaces the configuration registers. A
@@ -3477,78 +2621,6 @@ fn remove_root(guest: Instance) -> Result(Nil, String) {
   }
 }
 
-/// Everything the executor needs is copied into the root, never shared
-/// (ADR-022 D1): its configuration, its credentials and its cookie. Under the
-/// default read scope the jail sees the whole guest, so what keeps the key and
-/// the cookie from model code is the executor's own credential mask, not these
-/// paths. The guest's init gives the directory to the `loom` user.
-fn stage_node(
-  root: String,
-  executor: Bundle,
-  installed: option.Option(String),
-  workspaces: List(String),
-  github: vm_spec.GitHubAccess,
-  allow: List(String),
-) -> Result(Nil, String) {
-  let node = root <> vm_spec.node_dir
-  use Nil <- result.try(
-    list.try_each(["/home", "/creds", "/state"], fn(directory) {
-      make_inside(root, vm_spec.node_dir <> directory)
-    }),
-  )
-  use Nil <- result.try(write_private(node <> "/creds/ca.pem", executor.ca))
-  use Nil <- result.try(write_private(
-    node <> "/creds/cert.pem",
-    executor.certificate,
-  ))
-  use Nil <- result.try(write_private(node <> "/creds/key.pem", executor.key))
-  use Nil <- result.try(write_private(
-    node <> "/home/.erlang.cookie",
-    executor.cookie,
-  ))
-  use Nil <- result.try(stage_ledger(root, executor, installed))
-  write_private(
-    node <> "/loom.toml",
-    vm_spec.guest_config(executor, workspaces, github, allow),
-  )
-}
-
-/// Puts the membership ledger beside the executor's credentials, where the
-/// `ledger` key of its configuration names it
-/// (`distribution_bundle.ledger_path`). A static bundle has none. The lines are
-/// the daemon's installed ledger when `vm_spec.ledger_to_stage` accepts it, and
-/// the bundle's otherwise: a bundle's ledger is as of the enrolment, and a
-/// certificate renewed since would make its pin table refuse the handshake on a
-/// new root. The file is written only when the root has none: the executor
-/// appends the entries it syncs to it, and writing over a later `up` would roll
-/// the ledger back. A new root has no file, so `--fresh` and an upgrade stage
-/// one.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // vm_cli.stage_ledger("/vm/dev/root", executor_bundle, None)
-/// ```
-@internal
-pub fn stage_ledger(
-  root: String,
-  executor: Bundle,
-  installed: option.Option(String),
-) -> Result(Nil, String) {
-  let path = root <> distribution_bundle.ledger_path(vm_spec.guest_files())
-
-  // Only a ledger bundle has lines to stage.
-  case vm_spec.ledger_to_stage(executor, installed) {
-    [] -> Ok(Nil)
-    lines ->
-      // A link counts as present: the file is only ever read in the guest.
-      case simplifile.link_info(path) {
-        Ok(_) -> Ok(Nil)
-        Error(_) -> write_private(path, membership_provision.file_text(lines))
-      }
-  }
-}
-
 /// Creates the directory `below` under the guest root, one component at a time,
 /// and checks after each that it is where the root keeps it: its canonical path
 /// must be the canonical root plus the same suffix. The root is a directory the
@@ -3746,7 +2818,7 @@ fn own_repository(
     Standalone -> Ok(Nil)
     Linked -> {
       // The staging directory is inside the node directory, which the guest
-      // owns, so it is checked here as well as by `stage_node`.
+      // owns, so it is checked here as well as by `stage_linked_node`.
       use Nil <- result.try(make_inside(root, vm_spec.node_dir))
       let staging = root <> vm_spec.node_dir <> "/git-staging"
       let made = standalone_repository(workspace.path, copy, staging)
@@ -3865,29 +2937,6 @@ fn scrub_config(path: String) -> Result(Nil, String) {
 }
 
 // --- booting -----------------------------------------------------------------
-
-/// Boots the guest and answers the host port its executor is forwarded to.
-fn boot(
-  manifest: Manifest,
-  guest: Instance,
-  names: vm_spec.Names,
-  options: UpOptions,
-  github: vm_spec.GitHubAccess,
-  plan: vm_spec.ProvisionPlan,
-) -> Result(Int, String) {
-  use port <- result.try(bootstrap.reserve_loopback_port())
-  use Nil <- result.try(launch_guest(
-    manifest,
-    guest,
-    names,
-    options,
-    github,
-    plan,
-    port,
-    vm_spec.Publish,
-  ))
-  Ok(port)
-}
 
 /// Starts `loom-vm run` with the guest's port forwarded from the host's
 /// `port` and waits until the console says its executor serves. `reach` says
@@ -4076,131 +3125,26 @@ fn stop_after_failure(
 
 // What `up` leaves the user's daemon needing, after doing what it can about it.
 type Restart {
-  // The daemon derives the guest from a ledger it already holds.
+  // Nothing: the row was already there, or no daemon runs to need it.
   NoRestart
 
   // The guest is in a configuration other than the default, whose daemon `up`
-  // cannot find. The table says whether this `up` wrote anything that daemon
-  // has yet to read.
-  OtherDaemon(vm_spec.Table)
+  // cannot find, and this `up` wrote the row that daemon has yet to read.
+  OtherDaemon
 
-  // What `up` did about the default daemon, and whether this `up` wrote the
-  // change that daemon reads only at its start. After an install the daemon
-  // read its configuration before the guest existed; after a resume it has
-  // nothing new to read.
-  Daemon(vm_spec.DaemonOutcome, vm_spec.Table)
-
-  // A running daemon was asked to reload an untrusted guest's row: the lines
-  // that say what it changed, and what `up` then did about a daemon that could
-  // not reload, which is `None` when the reload left it holding the row.
+  // A running daemon was asked to reload the guest's row: the lines that say
+  // what it changed, and what `up` then did about a daemon that could not
+  // reload, which is `None` when the reload left it holding the row.
   Reloaded(lines: List(String), stopped: option.Option(vm_spec.DaemonOutcome))
-}
-
-/// Does what `up` does about the daemon, which can stop an idle one, and
-/// answers the outcome. It runs after the guest booted, since a failed `up`
-/// must not have stopped a daemon.
-fn restart_after(enrolled: Enrolled) -> Restart {
-  // A derived row asks nothing of any daemon. A written or resumed row asks
-  // the daemon that reads its file, and only the default file's daemon can be
-  // found and acted on.
-  case enrolled.row, enrolled.file {
-    Derived, _ -> NoRestart
-    Written, OtherConfigFile -> OtherDaemon(vm_spec.Installed)
-    Resumed, OtherConfigFile -> OtherDaemon(vm_spec.AlreadyThere)
-    Written, DefaultConfigFile -> Daemon(daemon_outcome(), vm_spec.Installed)
-    Resumed, DefaultConfigFile -> {
-      // The daemon is asked before anything is done about it. One that never
-      // read the table an earlier `up` installed must still restart, and a
-      // daemon this `up` stopped could no longer say.
-      let table = case daemon_lacks_distribution() {
-        True -> vm_spec.Installed
-        False -> vm_spec.AlreadyThere
-      }
-
-      Daemon(daemon_outcome(), table)
-    }
-  }
-}
-
-/// What `up` tells the user: how to use the guest, and what to do about the
-/// daemon.
-fn report(upped: Upped, restart: Restart) -> String {
-  use <- on_untrusted_report(upped, restart)
-  let Upped(options:, workspace:, port:, enrolled:, ..) = upped
-  let names = vm_spec.names(options.name)
-  string.join(
-    list.flatten([
-      [
-        "The guest "
-          <> options.name
-          <> " serves "
-          <> names.executor_node
-          <> " on host port "
-          <> int.to_string(port)
-          <> ".",
-        enrolled_line(options, enrolled),
-        "",
-        "Use it with:",
-        "  loom --executor "
-          <> options.name
-          <> " --workspace "
-          <> workspace.name,
-        "",
-      ],
-      daemon_lines(restart),
-      ["Stop it with: loom vm down --name " <> options.name],
-    ]),
-    "\n",
-  )
-}
-
-/// The line that says how the daemon comes to know the guest.
-fn enrolled_line(options: UpOptions, enrolled: Enrolled) -> String {
-  case enrolled.row {
-    Written | Resumed ->
-      "Enrolled it as [executors."
-      <> options.name
-      <> "] in "
-      <> enrolled.config
-      <> "."
-    Derived ->
-      "It is a member of the ledger deployment "
-      <> enrolled.config
-      <> " belongs to, so the daemon derives [executors."
-      <> options.name
-      <> "] from the ledger, with no change to the file and no restart."
-  }
-}
-
-/// The lines about daemons, after doing what this `up` calls for.
-fn daemon_lines(restart: Restart) -> List(String) {
-  // Only the default daemon is ever observed or stopped.
-  case restart {
-    NoRestart -> []
-    Daemon(outcome, table) -> vm_spec.daemon_note(outcome, table)
-
-    // Only an untrusted guest is reloaded, and its report is `linked_report`.
-    Reloaded(lines:, ..) -> spaced(lines)
-    OtherDaemon(vm_spec.Installed) -> [
-      "A daemon already running with that file must restart to use the guest.",
-      "",
-    ]
-    OtherDaemon(vm_spec.AlreadyThere) -> [
-      "This `up` resumed the guest and installed nothing, so a daemon already "
-        <> "running with that file needs no restart on its account.",
-      "",
-    ]
-  }
 }
 
 /// What `up` does about the user's daemon.
 ///
-/// A running daemon read its configuration before the `[distribution]` table
-/// existed, so only a restart reaches the guest. A daemon that holds no session
-/// is stopped here, and the next `loom` command starts it again with the table
-/// in effect: the `loom` client renders the TLS options file whenever it starts
-/// a daemon whose configuration has `[distribution]` (protocol-change/106). A
-/// daemon that holds any session is never stopped; the note names the command.
+/// A running daemon that could not reload its configuration read it before the
+/// guest's row existed, so only a restart reaches the guest. A daemon that holds
+/// no session is stopped here, and the next `loom` command starts it again with
+/// the row in effect. A daemon that holds any session is never stopped; the note
+/// names the command.
 fn daemon_outcome() -> vm_spec.DaemonOutcome {
   // No daemon needs no action. A running one is decided on what it said about
   // its sessions, in `vm_spec.daemon_step`, which is the only place that

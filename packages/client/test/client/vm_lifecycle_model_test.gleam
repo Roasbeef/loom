@@ -26,8 +26,6 @@
 ////   is refused, never booted a second time and never called serving.
 //// - `stale-boot`: a guest boots only against a manifest that matches the
 ////   running build once `bring_up`'s own setup has run.
-//// - `daemon-first`: `NeedsDaemon` is never answered, because only a guest
-////   joining a ledger deployment needed a daemon, and no guest joins one now.
 //// - `refused`: a release build refuses only a guest that is booting.
 //// - `restart`: after a boot `ensure` or `up` ran, a running daemon holds the
 ////   guest's row, whether the boot wrote it or an earlier failed boot did. The
@@ -257,13 +255,6 @@ fn facts_of(world: World, index: Int) -> vm_spec.EnsureFacts {
     name: name_of(index),
     state: vm_spec.guest_state(pid, registration),
     manifest: Ok(manifest_decision(world)),
-    // An untrusted guest joins no deployment, so `vm_cli.enrolment_for`
-    // answers this for every guest that reaches `ensure_step`.
-    enrolment: vm_spec.NeedsNoDaemon,
-    daemon: case world.daemon {
-      WorldDown -> vm_spec.DaemonStopped
-      WorldUp(..) -> vm_spec.DaemonRunning
-    },
   )
 }
 
@@ -549,14 +540,6 @@ fn ensure_on_the_link(
     True, vm_spec.Refuse(reason), _ -> Error(violation("refused", reason))
     True, _, Booting ->
       Error(violation("starting", "a booting guest was not refused"))
-    True, vm_spec.NeedsDaemon, _ ->
-      Error(violation(
-        "daemon-first",
-        "NeedsDaemon for "
-          <> name_of(index)
-          <> " with "
-          <> describe_world(world),
-      ))
     True, vm_spec.Boot, _ -> boot(world, index, given, vm_spec.Resume, outcome)
   }
 }
