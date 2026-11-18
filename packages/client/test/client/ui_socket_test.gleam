@@ -1187,6 +1187,57 @@ pub fn only_an_owners_operating_home_may_create_test() {
   assert ui_socket.home_create_capability(member, access.Observer, ask) == None
 }
 
+// Only the owner's operating home is handed the capability to send a message to
+// a session from the inbox (protocol-change/118), built as the creation
+// capability is: a member's home at either ceiling and the owner's at the
+// observer's draw no message field.
+pub fn only_an_owners_operating_home_is_handed_the_thread_send_capability_test() {
+  let ask = fn(_session, _text, _delivery, _deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_thread_send_capability(owner, access.Operator, ask)
+  assert ui_socket.home_thread_send_capability(owner, access.Observer, ask)
+    == None
+  assert ui_socket.home_thread_send_capability(member, access.Operator, ask)
+    == None
+  assert ui_socket.home_thread_send_capability(member, access.Observer, ask)
+    == None
+}
+
+// The inbox's message form and its "Inbox" control are admitted by the rules
+// that already exist (protocol-change/118, "no admission rule changes"). The
+// form submits beneath the table's region, so a browsing home's socket refuses
+// the submit and a submitting (owner's operating) home's accepts it; the
+// control is a click beneath the same region, which every home's socket admits.
+// Neither is admitted outside the region.
+pub fn the_inbox_message_form_needs_no_new_admission_test() {
+  let form = home.table_path <> "\t1\t0\t2\t0\t3\t0"
+  let control = home.table_path <> "\t1\t0\t1"
+
+  // A browsing home (a member's, or one whose capability is withheld) refuses
+  // the submit, and accepts the click.
+  assert !ui_socket.home_accepts(submit_on(form))
+  assert ui_socket.home_accepts(click_on(control))
+
+  // A submitting home accepts both.
+  assert ui_socket.home_owner_accepts(submit_on(form))
+  assert ui_socket.home_owner_accepts(click_on(control))
+
+  // Neither reaches outside the table's region, whichever rights the home has.
+  list.each(
+    [
+      home.table_path,
+      home.sidebar_path <> "\t1\t0\t2",
+      "0\t0\t1",
+    ],
+    fn(path) {
+      assert !ui_socket.home_accepts(submit_on(path))
+      assert !ui_socket.home_owner_accepts(submit_on(path))
+    },
+  )
+}
+
 // Only the owner's operating home is handed the recent-folders capability.
 pub fn only_an_owners_operating_home_is_handed_the_folders_capability_test() {
   let folders = home.Folders(recent: fn(_) { Nil }, forget: fn(_, _) { Nil })

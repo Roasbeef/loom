@@ -233,12 +233,14 @@ type Landing {
 /// below it the form when that workspace's is open. Its state is in the key, so a
 /// group changes when its form opens, closes or starts waiting. `folders` is the
 /// section after the lists for folders that hold no session (`view/folders`); its
-/// list and the page's last note are part of the key.
+/// list and the page's last note are part of the key. `inbox` is the message the
+/// "Inbox" control beside the heading sends, on a page whose inbox is what it
+/// would land on, and nothing on a page that has none to return to.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, folders.Hidden, elsewhere.Hidden, None, None)
+/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, folders.Hidden, elsewhere.Hidden, None, None, None)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -253,6 +255,7 @@ pub fn view(
   elsewhere: Elsewhere(message),
   opening: Option(String),
   note: Option(Note),
+  inbox: Option(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
@@ -268,10 +271,11 @@ pub fn view(
     element.ref(elsewhere_view.keyed(elsewhere)),
     element.ref(opening),
     element.ref(note),
+    element.ref(inbox),
   ])
   let landing = landing(groups, note)
   html.section([attribute.class("home-sessions")], [
-    html.h2([attribute.class("home-heading")], [html.text("Sessions")]),
+    heading_row(inbox),
     case landing {
       Some(Under(notice:)) -> notice.line(notice)
       Some(InRow(..)) | Some(InHeading(..)) | Some(InFolders(..)) | None ->
@@ -311,6 +315,31 @@ pub fn view(
       ],
     )
   ])
+}
+
+/// The page's heading, with the way back to the inbox beside it when the page
+/// has an inbox to return to. The row replaces the heading, so no row below it
+/// moves.
+fn heading_row(inbox: Option(message)) -> Element(message) {
+  let heading =
+    html.h2([attribute.class("home-heading")], [html.text("Sessions")])
+
+  // This branch resolves inbox before the operation continues.
+  case inbox {
+    None -> heading
+    Some(back) ->
+      html.div([attribute.class("home-headrow")], [
+        heading,
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("home-new home-inbox"),
+            event.on_click(back),
+          ],
+          [html.text("‹ Inbox")],
+        ),
+      ])
+  }
 }
 
 /// The sentence that says why a bookmark's home has no Admin, Stop, Archive or

@@ -27,6 +27,17 @@
 //// "Decide on the session's page" send the same message a list row's press
 //// sends (`Offer.open`), so there is one way to open a session from Home.
 ////
+//// A thread ends in a message field when the page holds the capability to send
+//// (`Offer.field`, protocol-change/118). The field is one box and the buttons
+//// the thread's kind offers (`thread_send.choices`): Send for an idle session,
+//// Queue and Steer for a working one, and Queue alone, with the words "held
+//// behind the approval", for one that waits on an approval. Each button is a
+//// submit button that names its delivery, so the one pressed travels with the
+//// form, as the operator page's composer does. The handler carries the
+//// session's identity, drawn into it, and the browser supplies the draft and
+//// the delivery and nothing else. Under the field the outbox says in fixed
+//// words what was sent and to whom.
+////
 //// The classes are complete literals, so Tailwind finds them.
 ////
 //// ## Flow
@@ -39,7 +50,10 @@
 //// 3. `row` draws one row, a button that selects its session.
 //// 4. `reading` draws the selected thread: its eyebrow, the approval notice or
 ////    the failure line, the last message, the glances and the open button.
+//// 5. `message_field` draws the thread's form and its outbox, and `submission`
+////    reads the form's fields back into a draft and a delivery.
 
+import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -47,9 +61,13 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
+import session_view/operator.{type Delivery}
+import web_view/composer
 import web_view/inbox_rule.{type Group, type Kind, type Thread}
 import web_view/sessions.{type Glance}
+import web_view/thread_send.{type Outbox}
 import web_view/view/heading
 
 /// The thread the reading pane shows, and how it came to.
@@ -83,6 +101,25 @@ pub type Offer(message) {
     open: fn(String) -> message,
     /// What "All sessions" sends: show the page's full list.
     all_sessions: message,
+    /// The message field of each thread, or nothing on a page that holds no
+    /// capability to send: a member's home and an observer's draw no field.
+    field: Option(Field(message)),
+  )
+}
+
+/// What a thread's message field draws from, and the message its form sends.
+pub type Field(message) {
+  Field(
+    /// What the outbox says: nothing sent, a send out, or the daemon's answer.
+    outbox: Outbox,
+    /// How many messages have been delivered, which keys the box: a delivered
+    /// message leaves an empty box, and a refused or unanswered one stays as
+    /// the person typed it.
+    delivered: Int,
+    /// What a submit sends, given the session whose thread the form belongs to,
+    /// the draft and the delivery. The session is drawn into the handler, so
+    /// the browser never names it.
+    submit: fn(String, String, Delivery) -> message,
   )
 }
 
@@ -225,8 +262,155 @@ fn reading(
       said(thread),
       strands(thread.report.glances),
       open_button("Open session ›", thread.id, offer),
+      message_field(thread, kind, offer),
     ],
   )
+}
+
+/// The thread's message field and its outbox, or nothing when the page holds no
+/// capability to send. The box is keyed by the thread and by how many messages
+/// have been delivered, so a delivered message leaves an empty box, and moving
+/// to another thread shows that thread's own empty one.
+fn message_field(
+  thread: Thread,
+  kind: Kind,
+  offer: Offer(message),
+) -> Element(message) {
+  case offer.field {
+    None -> element.none()
+    Some(field) ->
+      keyed.div([attribute.class("inbox-send")], [
+        #(
+          "send-" <> thread.id <> "-" <> int.to_string(field.delivered),
+          html.div([], [
+            message_form(thread, kind, field),
+            html.p([attribute.class("inbox-outbox"), attribute.role("status")], [
+              html.text(thread_send.words(field.outbox, thread.id, thread.name)),
+            ]),
+          ]),
+        ),
+      ])
+  }
+}
+
+/// The form: one box, the buttons the kind offers and the note that says what
+/// a message waits behind. The buttons are disabled while a send is out, so a
+/// second press sends nothing.
+fn message_form(
+  thread: Thread,
+  kind: Kind,
+  field: Field(message),
+) -> Element(message) {
+  // A send that is out, for any thread, disables every button: there is one
+  // outbox, and a second press would be refused by the page anyway.
+  let out = case field.outbox {
+    thread_send.Sending(_) -> True
+    thread_send.Unsent | thread_send.Settled(_, _) -> False
+  }
+
+  html.form(
+    [
+      attribute.class("place-composer inbox-form"),
+      event.on("submit", submitted(thread.id, field.submit))
+        |> event.prevent_default,
+    ],
+    [
+      html.textarea(
+        [
+          attribute.name("draft"),
+          attribute.class("composer-name"),
+          attribute.aria_label("Message to " <> thread.name),
+          attribute.placeholder("Message this session"),
+          attribute.attribute("rows", "3"),
+          attribute.attribute("maxlength", int.to_string(composer.prompt_limit)),
+        ],
+        "",
+      ),
+      html.div([attribute.class("cbar")], [
+        case thread_send.hold_note(kind) {
+          Some(note) ->
+            html.span([attribute.class("inbox-hold")], [html.text(note)])
+          None -> element.none()
+        },
+        ..list.map(thread_send.choices(kind), send_button(_, out))
+      ]),
+    ],
+  )
+}
+
+/// One button of the form: a submit button that names its delivery.
+fn send_button(choice: thread_send.Choice, out: Bool) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("submit"),
+      attribute.name("delivery"),
+      attribute.value(case thread_send.delivery(choice) {
+        operator.Prompt -> "prompt"
+        operator.Steer -> "steer"
+      }),
+      attribute.class("place-send"),
+      attribute.disabled(out),
+    ],
+    [html.text(thread_send.label(choice))],
+  )
+}
+
+/// The form's submit as the message that carries its draft and delivery. A
+/// field the form does not have, a repeated one or an unknown delivery refuses
+/// the event, so a forged submit cannot send what no button offers.
+fn submitted(
+  session: String,
+  submit: fn(String, String, Delivery) -> message,
+) -> decode.Decoder(message) {
+  use fields <- decode.subfield(
+    ["detail", "formData"],
+    decode.list(form_field()),
+  )
+
+  // Decode the form's fields into a draft and a delivery, or refuse.
+  case submission(fields) {
+    Ok(#(draft, delivery)) -> decode.success(submit(session, draft, delivery))
+    Error(Nil) ->
+      decode.failure(submit(session, "", operator.Prompt), "inbox message form")
+  }
+}
+
+/// The draft and the delivery a submitted form's fields stand for, or a refusal.
+///
+/// The form has two fields and no others: exactly one `draft`, and at most one
+/// `delivery`, which is `prompt` or `steer`. A form submitted by Enter in the
+/// box names no delivery, and is a prompt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert inbox.submission([#("draft", "hi"), #("delivery", "steer")])
+///   == Ok(#("hi", operator.Steer))
+/// ```
+pub fn submission(
+  fields: List(#(String, String)),
+) -> Result(#(String, Delivery), Nil) {
+  let drafts = list.filter(fields, fn(field) { field.0 == "draft" })
+  let deliveries = list.filter(fields, fn(field) { field.0 == "delivery" })
+  let others =
+    list.filter(fields, fn(field) {
+      field.0 != "draft" && field.0 != "delivery"
+    })
+
+  // The form's own shape and no other.
+  case drafts, deliveries, others {
+    [#(_, text)], [], [] -> Ok(#(text, operator.Prompt))
+    [#(_, text)], [#(_, "prompt")], [] -> Ok(#(text, operator.Prompt))
+    [#(_, text)], [#(_, "steer")], [] -> Ok(#(text, operator.Steer))
+    _, _, _ -> Error(Nil)
+  }
+}
+
+/// One field of a submitted form: its name and its value.
+fn form_field() -> decode.Decoder(#(String, String)) {
+  use name <- decode.field(0, decode.string)
+  use value <- decode.field(1, decode.string)
+  decode.success(#(name, value))
 }
 
 /// The eyebrow: the kind's word, the session's name and, when the row has one,

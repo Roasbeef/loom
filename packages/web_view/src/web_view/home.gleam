@@ -291,6 +291,7 @@ import lustre/element/html
 import lustre/event
 import lustre/server_component
 import session_view/move_candidates
+import session_view/operator
 import session_view/project_board as board
 import web_view/actions
 import web_view/composer
@@ -311,6 +312,7 @@ import web_view/sessions.{
   type Activity, type Entry, type Group, Live, NeedsYou, Working,
 }
 import web_view/signins.{type Signin}
+import web_view/thread_send
 import web_view/view/archiving
 import web_view/view/create.{type Create}
 import web_view/view/elsewhere as elsewhere_view
@@ -553,6 +555,21 @@ pub type Start {
     /// unless the page is the owner's operating home that a `loom ui` exchange
     /// opened, and the daemon checks that again when it runs.
     manage: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
+    /// Asks the daemon to send a message to the named session on its main
+    /// strand, as a prompt or a steer, for the owner's operating home
+    /// (protocol-change/118): the daemon checks that the page is open and was
+    /// minted to operate, that its credential still authenticates as the
+    /// daemon's owner, that the principal holds the session and that it is
+    /// running, and then sends as the message is sent from the session's own
+    /// page. It must return at once, as `resume` must: the answer goes to the
+    /// function it is given, from the daemon's own task, as `ThreadAnswered`'s
+    /// message. It is `None` unless the page's principal is the daemon's owner on
+    /// a page minted to operate, and then the inbox draws no message field and
+    /// ignores the messages. The daemon checks that again when it runs.
+    thread_send: Option(
+      fn(String, String, operator.Delivery, fn(thread_send.Answer) -> Nil) ->
+        Nil,
+    ),
     /// Starts the read of the principal's sign-ins, with the page's own
     /// credential, which the registry authenticates again, and returns at
     /// once; the daemon's task delivers the listing, dispatched as
@@ -818,6 +835,14 @@ pub opaque type Model {
     /// "New session", the list link or a composer control is a choice that the
     /// inbox never overrides afterwards.
     centre_choice: CentreChoice,
+    /// What the inbox's outbox says: nothing sent, a message out to a session,
+    /// or the daemon's answer to the last one (`thread_send.Outbox`). There is
+    /// one outbox, so a second message waits for the first's answer.
+    outbox: thread_send.Outbox,
+    /// How many messages the daemon has delivered, which keys each thread's
+    /// message box: a delivered message leaves an empty box, and a refused one
+    /// leaves the draft as the person typed it.
+    delivered: Int,
     /// The time the last list was read, in Unix milliseconds, which the rows'
     /// ages are counted from.
     now: Int,
@@ -1007,6 +1032,21 @@ pub type Msg {
   /// the catalogue's, fixed when the tree was drawn, and the page honours it
   /// only for a session its last read still reports (`inbox_rule.selection`).
   InboxOpened(session: String)
+
+  /// The person pressed a button on an inbox thread's message field: send the
+  /// draft to the session as `delivery`. The session is the thread the form was
+  /// drawn for, fixed when the tree was drawn, and the page honours it only for
+  /// a running session its last read reports; the daemon decides whether the
+  /// principal holds it.
+  ThreadSubmitted(session: String, text: String, delivery: operator.Delivery)
+
+  /// The daemon answered a send. It is the effect's own message, dispatched
+  /// from the daemon's task.
+  ThreadAnswered(session: String, answer: thread_send.Answer)
+
+  /// The person pressed "Inbox" on the composer or the list: show the centre the
+  /// page lands on, which is the inbox while something waits or runs.
+  ShowingInbox
 
   /// A running session's row was pressed: ask the daemon for a ticket to open
   /// it. The identity is the catalogue's, fixed when the tree was drawn, and
@@ -1406,6 +1446,8 @@ pub fn new(start: Start) -> Model {
     reports: dict.new(),
     inbox_selected: None,
     centre_choice: Landed,
+    outbox: thread_send.Unsent,
+    delivered: 0,
     now: 0,
     status: Connecting,
     timer: None,
@@ -1685,6 +1727,53 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, inbox_selected: Some(session)),
       effect.none(),
     )
+
+    // A send asks the daemon in a task of its own. A draft with nothing in it
+    // or over the bound, a session the page's last read does not report, a page
+    // that is not connected and a send already out ask nothing. Past that the
+    // daemon is the authority: it checks the page and the session again.
+    ThreadSubmitted(session:, text:, delivery:) ->
+      case model.start.thread_send, model.status, model.outbox {
+        Some(send), Connected, thread_send.Unsent
+        | Some(send), Connected, thread_send.Settled(_, _)
+        ->
+          case
+            thread_send.sendable(text),
+            dict.has_key(model.reports, session)
+          {
+            True, True -> #(
+              Model(..model, outbox: thread_send.Sending(session)),
+              {
+                use dispatch <- effect.from
+                send(session, text, delivery, fn(answer) {
+                  dispatch(ThreadAnswered(session, answer))
+                })
+              },
+            )
+            True, False | False, _ -> #(model, effect.none())
+          }
+        Some(_), Connected, thread_send.Sending(_)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    // The daemon's word on a send. A delivered message leaves an empty box, and
+    // a refusal keeps the draft and says why in fixed words.
+    ThreadAnswered(session:, answer:) -> #(
+      Model(
+        ..model,
+        outbox: thread_send.Settled(session, answer),
+        delivered: case answer {
+          thread_send.Delivered(_) -> model.delivered + 1
+          thread_send.Refused(_) -> model.delivered
+        },
+      ),
+      effect.none(),
+    )
+
+    ShowingInbox -> #(Model(..model, centre_choice: Landed), effect.none())
 
     ShowingList -> #(
       Model(..model, pane: SessionList, centre_choice: Chose),
@@ -4188,22 +4277,54 @@ fn inbox_page(model: Model) -> Element(Msg) {
   let groups = inbox_rule.grouped(threads)
   let chosen = inbox_rule.selection(groups, model.inbox_selected)
 
-  inbox_view.view(inbox_view.Offer(
-    headline: inbox_rule.headline(
-      list.map(threads, fn(thread) { thread.report }),
-      running_sessions(model),
+  inbox_view.view(
+    inbox_view.Offer(
+      headline: inbox_rule.headline(
+        list.map(threads, fn(thread) { thread.report }),
+        running_sessions(model),
+      ),
+      groups:,
+      selected: case chosen {
+        Some(id) if model.inbox_selected == chosen ->
+          Some(inbox_view.Pressed(id))
+        Some(id) -> Some(inbox_view.Default(id))
+        None -> None
+      },
+      opening: model.opening,
+      pick: InboxOpened,
+      open: Opening,
+      all_sessions: ShowingList,
+      field: case model.start.thread_send {
+        Some(_) ->
+          Some(inbox_view.Field(
+            outbox: model.outbox,
+            delivered: model.delivered,
+            submit: ThreadSubmitted,
+          ))
+        None -> None
+      },
     ),
-    groups:,
-    selected: case chosen {
-      Some(id) if model.inbox_selected == chosen -> Some(inbox_view.Pressed(id))
-      Some(id) -> Some(inbox_view.Default(id))
-      None -> None
-    },
-    opening: model.opening,
-    pick: InboxOpened,
-    open: Opening,
-    all_sessions: ShowingList,
-  ))
+  )
+}
+
+/// The message the "Inbox" control sends, on a centre the person chose while the
+/// page would land on the inbox, and nothing otherwise. A page that lands on the
+/// composer (every session is quiet, or none runs) has no inbox to return to, so
+/// it draws no control; and a page already showing the inbox needs none.
+fn inbox_return(model: Model) -> Option(Msg) {
+  case model.pane, model.centre_choice {
+    NewSession, Chose | SessionList, Chose ->
+      case
+        inbox_rule.landing(
+          list.map(inbox_threads(model), fn(thread) { thread.report }),
+        )
+      {
+        inbox_rule.Inbox -> Some(ShowingInbox)
+        inbox_rule.Form -> None
+      }
+    NewSession, Landed | SessionList, Landed | Ticketed(_), _ | Relayed(_), _ ->
+      None
+  }
 }
 
 /// How many running sessions the page lists, which the inbox's headline counts
@@ -4241,6 +4362,7 @@ fn centre_pane(model: Model) -> Element(Msg) {
         elsewhere_offer(model),
         model.opening,
         model.note,
+        inbox_return(model),
       )
   }
 }
@@ -4289,6 +4411,7 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       open: Opening,
       depart: Composed(composer.OpenedUnsent),
       listing: ShowingList,
+      inbox: inbox_return(model),
     ),
   )
 }

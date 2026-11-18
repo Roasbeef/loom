@@ -279,7 +279,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7546`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7734`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1101,6 +1101,21 @@ thread is `InboxOpened`; "Open session" and "Decide on the session's page" send
 `Opening`, the message a list row sends, and every handler is a click beneath
 `home.table_path`, which `ui_socket.home_accepts` already admits, so the inbox
 adds no admission rule and no frame.
+
+Each thread of the owner's operating home ends in a message field
+(protocol-change/118): one box and the buttons the session's state offers (Send
+for idle or failed, Queue and Steer for working, Queue alone, "held behind the
+approval", for a pending approval). The press is a submit beneath
+`home.table_path`, which `home_owner_accepts` admits for the owner's home and
+`home_accepts` does not, so a member's home and an observer's draw no field and
+the socket would drop the event. The daemon re-derives the page's standing and
+the 16,384-byte bound at the press, resolves the session as the page's principal,
+and sends a `Prompt` or a `Steer` on strand `main` as a message typed on the
+session's own page. The outbox says "Not sent", "Sending…", "Delivered to
+(session) · admitted" or "· queued", or one of four fixed refusals; none
+carries text from the session or the gateway. Once the person has chosen the
+list or the composer, an "Inbox" control returns to the landing centre while the
+landing rule still says inbox.
 
 ### Navigation: home to session and back
 

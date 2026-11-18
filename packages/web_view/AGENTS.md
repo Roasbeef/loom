@@ -232,7 +232,26 @@ page keys and nonces, and the relay into the session's gateway.
   landing is `Inbox`. `InboxOpened(id)` selects a thread (`Model.inbox_selected`,
   an id the reports no longer hold falls back to the first thread). A pending
   approval is named and sent to the session's page, never drawn; "Open session"
-  sends `Opening`, so the inbox adds no admission. The centre's first child is an empty node, so
+  sends `Opening`, so the inbox adds no admission. **Messaging a thread**
+  (protocol-change/118): `Start.thread_send` is `Some` only for the owner's
+  operating home (`ui_socket.home_thread_send_capability`); with it each thread
+  ends in a form (`view/inbox` `Field`) of one `draft` box and submit buttons
+  named `delivery` (`prompt` or `steer`), whose handler carries the thread's
+  session so the browser names neither. `web_view/thread_send` (pure) holds the
+  vocabulary: `choices(kind)` (Send for idle or failed, Queue and Steer for
+  working, Queue alone with "held behind the approval" for an approval),
+  `delivery`, `sendable` (non-blank and at most `composer.prompt_limit` bytes),
+  the `Answer` (`Delivered(Admitted | Queued)` or `Refused(NotHeld | NotResident
+  | NotAccepted(reason) | QueueFull)`) and the `Outbox` words, which never carry
+  the reason. `ThreadSubmitted` is honoured for a connected page with the
+  capability, a sendable draft, a session the last read reports and no send out;
+  `ThreadAnswered` settles the outbox, and a delivered answer bumps
+  `Model.delivered`, which keys the box so it is drawn empty. The form submits
+  beneath `table_path`, which `home_owner_accepts` already admits for
+  `Submitting`, so no admission is added. `ShowingInbox` sets `centre_choice`
+  back to `Landed`; `inbox_return` offers it ("‹ Inbox" in `home_table`,
+  "Back to the inbox" in the composer) only on a chosen list or composer while
+  `inbox_rule.landing` is `Inbox`. The centre's first child is an empty node, so
   the table keeps its path; what the page says about a press is a `Note`
   (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
   its workspace's heading when the row is gone, or under `Sessions`, and it

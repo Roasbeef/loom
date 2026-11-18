@@ -169,6 +169,7 @@ fn owner(orchestrating: option.Option(home.Orchestrators)) -> home.Start {
     activity: fn(_, deliver) { deliver([]) },
     rename: None,
     manage: None,
+    thread_send: None,
     create: Some(fn(_, _, _, _, _, _, _) { Nil }),
     folders: None,
     elsewhere: None,

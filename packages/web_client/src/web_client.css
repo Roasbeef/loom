@@ -646,6 +646,18 @@
   button.inbox-open{align-self:flex-start;margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}
   button.inbox-open:hover:not(:disabled){background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   button.inbox-open:disabled{opacity:.5;cursor:default;}
+  /* The thread's message field and its outbox. The form is the composer's own
+     card; its buttons sit together at the right, the note on what a message
+     waits behind at the left, and the outbox reads under it as quiet text. */
+  .inbox-send{margin-top:2px;}
+  form.inbox-form{margin:0;}
+  .inbox-form .cbar{justify-content:flex-end;flex-wrap:wrap;}
+  .inbox-form .place-send{margin:0;}
+  .inbox-hold{margin-right:auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .inbox-outbox{margin:6px 2px 0 2px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  /* The heading row that carries the way back to the inbox. */
+  .home-headrow{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 12px 0;}
+  .home-headrow .home-heading{margin:0;}
   /* On a narrow screen the list is the page, and the reading pane appears only
      under a thread the person pressed, so the page never opens on a pane that
      sits between the list and its rows. */

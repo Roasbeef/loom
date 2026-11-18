@@ -97,6 +97,7 @@ fn home_start(manage: Option(Ask)) -> home.Start {
     activity: fn(_, _) { Nil },
     rename: None,
     manage:,
+    thread_send: None,
     create: None,
     folders: None,
     elsewhere: None,
