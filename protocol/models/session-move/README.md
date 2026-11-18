@@ -370,6 +370,7 @@ The mover's `pc` takes the values `idle`, `start`, `captured`, `recorded`,
 | `CkAttach` | The source attaches a scope for the landing. An open scope accepts a rebind at its own incarnation; a closed one reopens at the next. The first attach branches the executor's tree from the workspace's base, and a reopen recreates the tree from `loom/<session>`. |
 | `CkAttachUnknown`, `FixConfig` | An attach that names a workspace the executor does not serve: the ledger binds the scope to the name and the plane cannot be built, so the attach fails. With `CloseFailedAttach` the host closes a scope that the attach created or reopened, in the same turn, and the move is refused. With `CloseReboundUnserved` it closes a scope that was open too, when the scope holds no tree record; a scope with a tree is a session's own and is left open. The operator corrects the configuration and restarts the daemon (the mover's memory is lost; no crash is spent), once the move has settled or is stalled at the attach and not while a landing is under way. |
 | `CkAttachUnknownDies` | The same attach, when the source dies while the executor handles it and the build fails at the owner link (`OwnerDiesInAttach`): the ledger holds an open scope bound to the name and no plane, and the mover's memory is lost. The retry is `CkAttachUnknown` and frees the scope when `CloseReboundUnserved` holds. With the rule on, `FixConfig` waits for the scope to be freed, so the model assumes the name is corrected after the retry. |
+| `CkAttachBadTree` | An attach for a workspace the executor serves in `worktree` mode, when Git cannot make the session's tree (`InitWs` value `badtree`): the ledger admits the scope, the build fails with `WorktreeFailed`, and no tree record is written. The mover takes the refusal as passing and stalls. With `CloseFailedTree` the host closes the scope in the same step as the refusal (a rebound one too, when it holds no tree record), so the source's attach leaves no open scope and `FixConfig`, standing for the operator repairing the workspace, lets the checkout land. `FailedBuildHoldsNoScope` is the property. |
 | `AbandonMismatch` | An attach that the ledger refuses for its workspace, which only an open scope or one with a tree does under the ruled rules, is a final refusal (`MismatchRefused`) and the move is abandoned. |
 | `CkAsk`, `CkResend` | One `StateApply` under the scope's incarnation and token, put in the network; the same request again when no reply came. |
 | `ExApply`, `ExRefuse`, `LoseAnswer` | The executor takes a request. It judges the fence first, then `holds_tip`, and moves the branch with `checkout -B` only when the rule says the tree does not hold the tip. Or it refuses the apply for good. A reply is lost. |
@@ -460,6 +461,7 @@ mutants by the name `MoveCheckoutMutant*.cfg`, and runs every further clean
 configuration named `MoveCheckoutAlso*.cfg`, which must pass as well.
 `MoveCheckout.cfg` has a correct workspace and edits the directory;
 `MoveCheckoutAlsoWorkspaces.cfg` starts with a wrong workspace and does not.
+`MoveCheckoutAlsoBadTree.cfg` starts with a workspace whose worktree cannot be made.
 
 ### Results
 
@@ -469,6 +471,7 @@ On TLC 2.19:
 |---|---|---|---|---|
 | `MoveCheckout.cfg` | no error, `CheckoutSettles` holds | 953,905 | 342,799 | 51 |
 | `MoveCheckoutAlsoWorkspaces.cfg` | no error, `CheckoutSettles` holds | 7,512 | 3,477 | 42 |
+| `MoveCheckoutAlsoBadTree.cfg` | no error, `CheckoutSettles` holds | 7,528 | 3,329 | 44 |
 | `MoveCheckoutMutantHoldsTipAncestry.cfg` | `CheckoutIsWhatWasStopped` violated | 266,516 | 117,996 | 29 |
 | `MoveCheckoutMutantHoldsTipAhead.cfg` | `CheckoutIsWhatWasStopped` violated | 12,527 | 5,884 | 15 |
 | `MoveCheckoutMutantCellAnyOp.cfg` | `AbandonRestores` violated | 1,023 | 492 | 8 |
@@ -480,6 +483,7 @@ On TLC 2.19:
 | `MoveCheckoutMutantRebindOpen.cfg` | `OpenScopeKeepsWorkspace` violated | 1,414 | 575 | 11 |
 | `MoveCheckoutMutantCrashInLanding.cfg` | `NoLeak` violated | 2,291 | 955 | 13 |
 | `MoveCheckoutMutantOpenScopeUnserved.cfg` | `NoLeak` violated | 251 | 159 | 11 |
+| `MoveCheckoutMutantOpenScopeBadTree.cfg` | `FailedBuildHoldsNoScope` violated | 48 | 35 | 7 |
 
 A deeper run, outside the gate and before the workspace binding was added to
 the model, with `MaxCrashes = 2`, `MaxInc = 9`, `MaxTok = 9` and
@@ -515,6 +519,7 @@ scope's; and the cell naming a finished attempt. Dropping weak fairness of
 | The same, with a name the executor does not serve | the same three, `InitWs = {unknown}` | The attach binds the scope and fails, and the corrected attach is refused. The move never settles, so `CheckoutSettles` breaks (exit 13). |
 | An attach also rebinds an open scope | `RebindOpen = TRUE`, `CloseFailedAttach = FALSE`, `InitWs = {unknown}` | The scope a failed attach left open is rebound to the corrected workspace, so an open scope changes workspace. `OpenScopeKeepsWorkspace` breaks. |
 | A source that dies in the attach for an unserved name leaves an open scope, and the retry does not free it | `OwnerDiesInAttach = TRUE`, `CloseReboundUnserved = FALSE`, `InitWs = {unknown}` | The host before this rule. The retry is a rebound attach and the open scope stays; the corrected name is refused for it and the move is abandoned with the scope open. `NoLeak` breaks. |
+| A worktree that Git cannot make leaves its scope open | `CloseFailedTree = FALSE`, `InitWs = {badtree}` | The host before this rule. The attach admits a scope, the build fails and the scope stays open with no plane. `FailedBuildHoldsNoScope` breaks. |
 | What the ruled rules leave | the ruled rules, `InitWs = {shared}`, `MaxCrashes = 1` | Not a rule turned off. The source dies in the landing after the attach and before it closes the scope, the operator corrects the name, and the move is refused for the open scope's workspace and abandoned with the scope still open. `NoLeak` breaks. `MoveCheckoutAlsoWorkspaces.cfg` has `MaxCrashes = 0` for this reason and violates `NoLeak` with 1. |
 | The operator corrects the name before the dead source's retry | the ruled rules, `InitWs = {unknown}`, `OwnerDiesInAttach = TRUE` | Not a rule turned off, and not run: the `FixConfig` guard is keyed on `CloseReboundUnserved`, so the model assumes the name is corrected only after the scope is freed. The code takes the other order. The attach under the new name is `WorkspaceMismatch`, the move is abandoned and the scope stays open (`an_attach_refused_for_the_scopes_workspace_abandons_the_move_test` pins `Open`), and the refusal's advice is then followed twice. |
 
@@ -645,6 +650,16 @@ The fix is three rules, each a constant of the model, in `distributed/move-check
   earlier calls, and is left open, as it was before. Without the host's close the
   scope would be recorded as an unproven close, which the next attach is refused
   for.
+- `CloseFailedTree`: a `WorktreeFailed` attach leaves a scope that the ledger admitted
+  and no plane or tree was built for. The host closes it as retired in the same step
+  as the refusal (`close_unbuilt` in `client/remote/host.gleam`, which is
+  `close_unserved` extended to this failure), under the same guard: a rebound scope
+  with a tree record or an unacknowledged result is left open. The orchestrator ends a
+  session that was refused as final and never closes a scope it holds no plane for, so
+  without the rule the scope counted against `max_unclean_scopes` for good. A drive of
+  issue #1137 with eight executors at a limit of one took one executor out of the pool
+  for each failed spawn. `MoveCheckoutAlsoBadTree.cfg` runs the rule and
+  `MoveCheckoutMutantOpenScopeBadTree.cfg` runs without it.
 - `MismatchRefused`: `workspace.attach_classified` answers a typed failure. A
   scope bound to another workspace and a name the executor does not serve are final,
   so the move is abandoned with the reason. The connection, the fence and a plane
@@ -672,9 +687,11 @@ open, because the host closes that scope. What it leaves is a record without the
 close, and the move would stall; the ledger's refusal of the close question for the
 workspace now ends it.
 
-**Still open.** A `WorktreeFailed` attach and a `NoPlane` for a root that is not a
-directory leave an open scope, as before, and a failed `git worktree add` leaves a
-`Removed` tree row that keeps the scope from being rebound. A move that meets either
+**Still open.** A `NoPlane` for a root that is not a directory leaves an open scope, as
+before. (A `WorktreeFailed` attach no longer does: see `CloseFailedTree`. The `Removed`
+tree row that a failed `git worktree add` leaves keeps a scope from being rebound to
+another workspace, but the attach after a repair names the same workspace and reopens the
+closed scope at the next incarnation.) A move that meets either
 is refused or stalled with the executor's words, and the operator releases or fixes
 the executor.
 
@@ -697,7 +714,7 @@ session that has a tree or unacknowledged results. A live `shared` session whose
 were all acknowledged holds nothing by this rule, so its scope is closed by the retry and
 reopened by its next attach. The model has a tree record (`exBranch`) and no
 unacknowledged results, so the second condition is checked by the code tests only. The
-`exBranch = -1` conjunct of `FreesRebound` (`MoveCheckout.tla:333`) is implied by
+`exBranch = -1` conjunct of `FreesRebound` (`MoveCheckout.tla:334`) is implied by
 `bound = "unknown"` under the ruled rules, so "a scope with a tree is left open" is pinned
 only by the Gleam test and not by the model. `OwnerDiesInAttach` is the fault,
 `MoveCheckoutAlsoWorkspaces.cfg` runs it with the rule and passes, and
