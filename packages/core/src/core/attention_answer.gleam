@@ -90,8 +90,8 @@ pub fn check(
 ) -> Result(List(#(String, Value)), Rejection) {
   use fields <- result.try(object_of(wire, "answer"))
   use Nil <- result.try(only_fields(fields, ["answers", "other"]))
-  use answers <- result.try(member(fields, "answers", required: True))
-  use others <- result.try(member(fields, "other", required: False))
+  use answers <- result.try(required_member(fields, "answers"))
+  use others <- result.try(optional_member(fields, "other"))
   use Nil <- result.try(exactly(answers, ask.questions))
   use values <- result.try(
     list.try_map(ask.questions, fn(question) {
@@ -170,17 +170,26 @@ fn only_fields(
   }
 }
 
-/// One member that must be an object. An absent member is the empty object when
-/// it is not `required`.
-fn member(
+/// A member that must be present and must be an object.
+fn required_member(
   fields: List(#(String, JsonValue)),
   key: String,
-  required required: Bool,
 ) -> Result(List(#(String, JsonValue)), Rejection) {
-  case list.key_find(fields, key), required {
-    Ok(value), _ -> object_of(value, key)
-    Error(Nil), True -> Error(Rejection(key, "missing"))
-    Error(Nil), False -> Ok([])
+  case list.key_find(fields, key) {
+    Ok(value) -> object_of(value, key)
+    Error(Nil) -> Error(Rejection(key, "missing"))
+  }
+}
+
+/// A member that may be absent, which is the empty object, and must be an
+/// object when it is present.
+fn optional_member(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(List(#(String, JsonValue)), Rejection) {
+  case list.key_find(fields, key) {
+    Ok(value) -> object_of(value, key)
+    Error(Nil) -> Ok([])
   }
 }
 
@@ -259,13 +268,26 @@ fn other_text(
   others: List(#(String, JsonValue)),
 ) -> Result(String, Rejection) {
   case list.key_find(others, key) {
-    Ok(json.String(text)) ->
+    Ok(json.String(text)) -> {
+      use text <- result.try(without_nul(key, text))
+
+      // Some text, and no more than the bound.
       case string.trim(text) != "", string.byte_size(text) <= max_other_bytes {
         True, True -> Ok(text)
         False, _ -> Error(Rejection(key, "Other needs some text"))
         True, False -> Error(Rejection(key, "Other text is too long"))
       }
+    }
     Ok(_) | Error(Nil) -> Error(Rejection(key, "Other needs some text"))
+  }
+}
+
+/// The text, or the refusal that it holds a NUL. Every free text the person
+/// types, an Other and a `fill` alike, passes this.
+fn without_nul(key: String, text: String) -> Result(String, Rejection) {
+  case string.contains(text, "\u{0000}") {
+    True -> Error(Rejection(key, "text holds a NUL"))
+    False -> Ok(text)
   }
 }
 
@@ -368,10 +390,7 @@ fn fill_text(
     when: string.trim(text) == "",
     return: Error(Rejection(key, "needs some text")),
   )
-  use <- bool.guard(
-    when: string.contains(text, "\u{0000}"),
-    return: Error(Rejection(key, "text holds a NUL")),
-  )
+  use text <- result.try(without_nul(key, text))
   use <- bool.guard(
     when: string.byte_size(text) > limit,
     return: Error(Rejection(key, "text is too long")),

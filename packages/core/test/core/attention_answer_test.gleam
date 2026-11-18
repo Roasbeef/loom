@@ -131,6 +131,7 @@ pub fn other_needs_text_within_its_bound_test() {
   let answers = list.key_set(good(), "q2", json.Null)
   refused_at("q2", wire(answers, []))
   refused_at("q2", wire(answers, [#("q2", json.String("   "))]))
+  refused_at("q2", wire(answers, [#("q2", json.String("a\u{0000}b"))]))
   refused_at(
     "q2",
     wire(answers, [#("q2", json.String(string.repeat("x", 1001)))]),
