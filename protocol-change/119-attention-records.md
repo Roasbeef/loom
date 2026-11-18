@@ -143,14 +143,16 @@ or when 32 asks are open in the session (see "The records"). It returns
 
 `replay` is `Never`: a replay would record the ask twice.
 `execution_mode` is `Exclusive` (`tools/tool.gleam`, `ExecutionMode`, whose
-`Exclusive` variant "must run alone"). Exclusivity is also what lets the call
-end the run, as the next paragraph requires.
+`Exclusive` variant "must run alone"). Exclusivity keeps the scheduler from
+starting another call beside this one (`runtime/strand_runtime`,
+`tool_may_start`).
 
 The tool returns `ToolOutcome.terminate: TerminateRun` on success
 (`tools/tool.gleam`, `Terminate`), so the run reaches a terminal state once
 the batch settles. The planner ends a run only if every call in the batch
-terminates (`tools/tool.gleam`, `TerminateRun`), and `Exclusive` guarantees the
-batch holds this call alone. A refused call returns `ContinueRun`, so the model
+terminates (`tools/tool.gleam`, `TerminateRun`). `Exclusive` constrains
+scheduling and does not guarantee the batch holds this call alone, so a mixed
+batch can continue; the reply therefore also says "End your turn now". A refused call returns `ContinueRun`, so the model
 can correct its arguments. The same shape exists for the project judge's tools
 (`client/project_judge_session.gleam`, `ending`). `project_report` is not an
 example: its worker ends its own turn after `recorded.`, and nothing in the
@@ -449,4 +451,12 @@ what the code does.
 - **The `owner` routing.** A strand cannot be named `owner`: a spawned strand's
   name begins with `sub:` and the primary is `main`, so the stored routing
   string is unambiguous.
+- **Name collisions.** The built-in `ask` and `notice` collide with an
+  installed extension tool of the same name, which `contributions.registry`
+  refuses at boot until the operator deactivates one of the two.
+- **Review hardening.** An ask's retry bound is 16, since the guard is
+  session-wide and notices are `Concurrent`; a `multiple` needs `max >= 1`; a
+  find's `path` is trimmed before it is checked and is at most 512 bytes; an
+  ask `to` the asking strand itself is refused, since the answer could never
+  reach a run that has ended its turn waiting.
 
