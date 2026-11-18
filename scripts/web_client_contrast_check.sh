@@ -523,23 +523,43 @@ self_test() {
 		return 1
 	fi
 
-	# A text token whose light value is the design's mark value.
-	sed 's/--color-signal-text: oklch(0.510 0.115 58);/--color-signal-text: oklch(0.645 0.145 64);/' \
-		"$default_css" >"$tmp/light-mark-as-text.css"
+	# Each plant names the token it changes and never the value it replaces, so
+	# a re-cut palette cannot turn a plant into a copy of the stylesheet that
+	# passes. `plant <where> <token> <value>` rewrites one token's value in the
+	# dark `@theme` (`dark`), in both light palettes (`light`) or in the forced
+	# light palette alone (`forced`), and never touches the `:host` rule's
+	# `inherit` lines. A plant that matched nothing would leave the copy equal
+	# to the stylesheet, so it fails the self-test there and then.
+	plant() {
+		local where=$1 token=$2 value=$3 src=$4 dst=$5
+		awk -v where="$where" -v token="$token" -v value="$value" '
+			$0 ~ "^[ \t]*--color-" token ": " && $0 !~ /inherit;/ {
+				n++
+				if ((where == "dark" && n == 1) || (where == "light" && n >= 2) || (where == "forced" && n == 3)) {
+					sub(/: [^;]*;/, ": " value ";")
+				}
+			}
+			{ print }
+		' "$src" >"$dst"
+		if cmp -s "$src" "$dst"; then
+			echo "web_client_contrast_check: self-test: planting $token in $where changed nothing" >&2
+			return 1
+		fi
+	}
+
+	# A text token whose light value is a mark's, too light for words.
+	plant light signal-text 'oklch(0.700 0.140 64)' "$default_css" "$tmp/light-mark-as-text.css" || return 1
 
 	# A dark text token below the ratio.
-	awk '/--color-fg-quiet: oklch\(0.785 0.010 262\);/ { sub(/oklch\(0.785 0.010 262\)/, "#3a3a3a") } { print }' \
-		"$default_css" >"$tmp/dark-quiet.css"
+	plant dark fg-quiet '#3a3a3a' "$default_css" "$tmp/dark-quiet.css" || return 1
 
 	# A mark token dark enough that its tint drags the avatar's letter under the
 	# ratio on the disc, while the letter's own token still passes alone. The
 	# palette's letters clear the ratio by more than an 8% tint can take, so
 	# the letter is planted near the floor first: `avatar-floor` holds that
 	# letter alone and must pass, and `pale-avatar` adds the black mark.
-	sed 's/--color-strand-5-text: oklch(0.505 0.160 340);/--color-strand-5-text: #a73e97;/' \
-		"$default_css" >"$tmp/avatar-floor.css"
-	sed 's/--color-strand-5: oklch(0.580 0.170 340);/--color-strand-5: #000000;/' \
-		"$tmp/avatar-floor.css" >"$tmp/pale-avatar.css"
+	plant light strand-5-text '#a73e97' "$default_css" "$tmp/avatar-floor.css" || return 1
+	plant light strand-5 '#000000' "$tmp/avatar-floor.css" "$tmp/pale-avatar.css" || return 1
 
 	# The avatar's tint drifting from the percentage this check blends.
 	sed 's/var(--hue) 8%,transparent/var(--hue) 14%,transparent/' \
@@ -554,43 +574,36 @@ self_test() {
 	{ cat "$default_css"; printf '.x{color:var(--color-fg-faint);}\n'; } >"$tmp/faint.css"
 
 	# The forced-light palette drifting from the media query's, in one token.
-	awk '/--color-bg: oklch\(0.975 0.004 85\);/ { n++; if (n == 2) sub(/0.975 0.004 85/, "0.976 0.004 85") } { print }' \
-		"$default_css" >"$tmp/light-drift.css"
+	plant forced bg 'oklch(0.990 0.003 266)' "$default_css" "$tmp/light-drift.css" || return 1
 
 	# A token with no inherit line in the :host rule.
 	grep -v -- '--color-peer: inherit;' "$default_css" >"$tmp/no-inherit.css"
 
 	# A token in the media query's light palette and not in the forced one.
-	awk '/--color-code: oklch\(0.952 0.006 85\);/ { n++; if (n == 2) next } { print }' \
+	awk '$0 ~ /^[ \t]*--color-code: / && $0 !~ /inherit;/ { n++; if (n == 3) next } { print }' \
 		"$default_css" >"$tmp/light-lacks.css"
 
 	# A mark the rules read, gone from every palette.
 	grep -v -- '--color-peer: oklch' "$default_css" >"$tmp/mark-gone.css"
 
 	# A mark in a notation the gate does not read (a percent lightness).
-	sed 's/--color-peer: oklch(0.660 0.170 315);/--color-peer: oklch(99% 0.01 315);/' \
-		"$default_css" >"$tmp/mark-notation.css"
+	plant light peer 'oklch(99% 0.01 315)' "$default_css" "$tmp/mark-notation.css" || return 1
 
 	# Rule 6: a dark token outside sRGB.
-	sed 's/--color-strand-3: oklch(0.820 0.140 118);/--color-strand-3: oklch(0.820 0.400 118);/' \
-		"$default_css" >"$tmp/gamut.css"
+	plant dark strand-3 'oklch(0.820 0.400 118)' "$default_css" "$tmp/gamut.css" || return 1
 
 	# Rule 7: dark quiet text that clears WCAG's 4.5:1 and not APCA's Lc 60,
-	# the old palette's own failure.
-	sed 's/--color-fg-quiet: oklch(0.785 0.010 262);/--color-fg-quiet: oklch(0.700 0.010 262);/' \
-		"$default_css" >"$tmp/apca.css"
+	# the A2 palette's own failure.
+	plant dark fg-quiet 'oklch(0.700 0.010 266)' "$default_css" "$tmp/apca.css" || return 1
 
 	# Rule 8: a sunk surface one perceptual step from the page.
-	sed 's/--color-bg-sunk: oklch(0.172 0.006 262);/--color-bg-sunk: oklch(0.195 0.006 262);/' \
-		"$default_css" >"$tmp/flat.css"
+	plant dark bg-sunk 'oklch(0.180 0.011 266)' "$default_css" "$tmp/flat.css" || return 1
 
 	# Rule 9: a peer mark in the current strand's hue and lightness.
-	sed 's/--color-peer: oklch(0.640 0.180 305);/--color-peer: oklch(0.780 0.110 270);/' \
-		"$default_css" >"$tmp/cvd.css"
+	plant dark peer 'oklch(0.780 0.110 270)' "$default_css" "$tmp/cvd.css" || return 1
 
 	# Rule 10: a light attention mark too pale to see on white.
-	awk '/--color-signal: oklch\(0.645 0.145 64\);/ { sub(/0.645 0.145 64/, "0.860 0.090 80") } { print }' \
-		"$default_css" >"$tmp/pale-mark.css"
+	plant light signal 'oklch(0.860 0.090 80)' "$default_css" "$tmp/pale-mark.css" || return 1
 
 	local name
 	for name in light-mark-as-text dark-quiet pale-avatar avatar-drift missing raw-mark raw-hue faint \
