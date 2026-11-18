@@ -62,6 +62,20 @@ pub fn content_unavailable() -> Element(message) {
   ])
 }
 
+/// The same sentence for the panel's first pane, without the status role, so a
+/// screen reader announces it once. The page draws both copies.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ended.content_unavailable_note()
+/// ```
+pub fn content_unavailable_note() -> Element(message) {
+  html.p([attribute.class("lane-boundary")], [
+    html.text(content_unavailable_words),
+  ])
+}
+
 /// The notice for a home page that has ended, in the home's words, which name
 /// no session (protocol-change/065). It is `view`'s notice and its classes.
 ///

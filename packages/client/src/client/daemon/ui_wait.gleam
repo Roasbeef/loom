@@ -33,15 +33,16 @@
 ////
 //// ## Flow
 ////
-//// `start` → `start_with` → `attempt` → `reach_of`
+//// `start` → `checked` → `attempt` → `reach_of`
 ////
-//// 1. `start` waits with the production timing.
-//// 2. `start_with` runs the polling loop in a weft run and reports the end of
+//// 1. `start` runs the polling loop in a weft run and reports the end of
 ////    the wait once.
+//// 2. `checked` puts the page's own standing before the question.
 //// 3. `attempt` turns one answer of the question into the loop's step, and
 ////    `reach_of` words a relay call's result as that answer.
 
 import client/remote/top_relay
+import gleam/erlang/process
 import weft
 import weft/poll
 
@@ -74,8 +75,8 @@ pub type Reach {
 /// How a wait paces itself and how long it lasts.
 pub type Timing {
   Timing(
-    /// The pause before the second ask. The first ask is made at once, since a
-    /// feed that lapsed on a box that is up needs no waiting.
+    /// The pause after the first ask, doubling from here. `Lead` says whether
+    /// the first ask waits this long too.
     first_pause_ms: Int,
     /// The longest pause the doubling reaches.
     longest_pause_ms: Int,
@@ -95,35 +96,63 @@ pub fn production() -> Timing {
   Timing(first_pause_ms:, longest_pause_ms:, max_wait_ms:)
 }
 
-/// Waits for the orchestrator with the production timing: asks `awaiting` at
-/// once and then at doubling pauses, and calls `done` once when it answers or
-/// the wait is over. `done` is called from the run, so it must only hand the
-/// news to the socket's mailbox.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // ui_wait.start(fn() { ui_wait.Answering }, fn() { process.send(signals, Stop(Retry)) })
-/// ```
-pub fn start(awaiting: fn() -> Reach, done: fn() -> Nil) -> Nil {
-  start_with(production(), awaiting, done)
+/// When the first ask is made.
+pub type Lead {
+  /// At once. A feed that lapsed on a box that is up needs no waiting.
+  AskAtOnce
+
+  /// After `first_pause_ms`. A page whose attach was refused as a wait (the box
+  /// is starting, or holds all the feeds it allows) would meet the same refusal
+  /// at once, so an immediate answer would close and reopen the socket at the
+  /// old cadence.
+  PauseFirst
 }
 
-/// `start` with the timing a test shortens.
+/// The standing check, then the question. A page whose own session ended or
+/// whose access was revoked while it waited has no reason to keep its socket,
+/// so `open` failing counts as an answer: the socket closes and the browser's
+/// reconnect meets the upgrade check. `probe` is asked only while the page is
+/// still open.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_wait.start_with(Timing(10, 40, 1000), fn() { ui_wait.Silent }, notify)
+/// assert ui_wait.checked(fn() { Error("revoked") }, fn() { ui_wait.Silent })
+///   == ui_wait.Answering
 /// ```
-pub fn start_with(
+pub fn checked(open: fn() -> Result(Nil, e), probe: fn() -> Reach) -> Reach {
+  case open() {
+    Error(_) -> Answering
+    Ok(Nil) -> probe()
+  }
+}
+
+/// Waits for the orchestrator: asks `awaiting` as `lead` says and then at
+/// doubling pauses, and calls `done` once when it answers or the wait is over.
+/// `done` is called from the run, so it must only hand the news to the
+/// socket's mailbox. A test passes a short `timing`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_wait.start(ui_wait.production(), ui_wait.AskAtOnce, awaiting, notify)
+/// ```
+pub fn start(
   timing: Timing,
+  lead: Lead,
   awaiting: fn() -> Reach,
   done: fn() -> Nil,
 ) -> Nil {
   let _ =
     weft.new([
       fn() {
+        // A page refused as a wait pauses before the first ask, and any other
+        // page asks at once.
+        case lead {
+          AskAtOnce -> Nil
+          PauseFirst -> process.sleep(timing.first_pause_ms)
+        }
+
         let _ =
           poll.until_on(
             clock: poll.monotonic(),

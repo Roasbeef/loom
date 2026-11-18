@@ -172,7 +172,10 @@
 ////    dials anything. The page's rows and tabs are clicks beneath
 ////    `admin.body_path`, so `admin_accepts` already admits them.
 //// 4. Afterwards the handler forwards browser frames, writes the component's
-////    frames to the browser, and on the relay's `Ended` schedules `Stop`.
+////    frames to the browser, and on the relay's `Ended` schedules `Stop`. A
+////    relayed page's retry ending goes through `report_ending` instead: the
+////    socket stays open and `Held` starts the wait, which sends `Stop` once
+////    the box answers or the page's own standing ends.
 //// 5. `closing` turns an ending's close code into mist's clean stop (1000) or
 ////    its abnormal one (4000, which the client runtime retries).
 ////
@@ -180,10 +183,10 @@
 ////
 //// <!-- transitions: ui_socket.Phase -->
 ////
-//// | state | Admit | browser text | component frame | Ended | Stop | binary, closed, shutdown |
-//// | --- | --- | --- | --- | --- | --- | --- |
-//// | `Pending` | `Serving` once the permit transfers and the component starts; otherwise `closing` with a retry close | socket stops | socket stops | socket stops | socket stops | socket stops |
-//// | `Serving` | socket stops | forwarded to the component, filtered by role; stays `Serving` | written to the browser, stays `Serving`; socket stops if the write fails | stays `Serving`; schedules `Stop` after the grace period | `closing`: clean stop or retry close | socket stops |
+//// | state | Admit | browser text | component frame | Ended | Held | Stop | binary, closed, shutdown |
+//// | --- | --- | --- | --- | --- | --- | --- | --- |
+//// | `Pending` | `Serving` once the permit transfers and the component starts; otherwise `closing` with a retry close | socket stops | socket stops | socket stops | socket stops | socket stops | socket stops |
+//// | `Serving` | socket stops | forwarded to the component, filtered by role; stays `Serving` | written to the browser, stays `Serving`; socket stops if the write fails | stays `Serving`; schedules `Stop` after the grace period | stays `Serving`; starts `ui_wait`, which sends `Stop` with a retry close once | `closing`: clean stop or retry close | socket stops |
 ////
 //// Leaving `Serving` for any reason runs the component's shutdown from
 //// `on_close`.
@@ -323,7 +326,7 @@ type Signal {
   // so the page keeps what it drew under the waiting notice, and `awaiting`
   // asks the orchestrator whether it answers. The socket closes with a retry,
   // once, when it does (`ui_wait`).
-  Held(awaiting: fn() -> ui_wait.Reach)
+  Held(lead: ui_wait.Lead, awaiting: fn() -> ui_wait.Reach)
 }
 
 // A serving page is the two things the socket does with its component:
@@ -717,7 +720,9 @@ pub fn upgrade(
 /// in its first handler turn, which differs: it takes the permit's custody and
 /// starts the component the page calls for. Everything after that is the same
 /// for both: the browser's frames go to the component's `forward`, the
-/// component's frames go to the browser, and an ending closes the socket.
+/// component's frames go to the browser, and an ending closes the socket, or,
+/// for a relayed page's retry ending, holds it open until the box answers
+/// (`report_ending`).
 /// The HTTP process waits on `settled` for the custody transfer to have been
 /// attempted, so its release of the permit cannot overtake the transfer.
 fn websocket(
@@ -755,7 +760,7 @@ fn websocket(
           | Pending(..), mist.Custom(Client(_))
           | Pending(..), mist.Custom(Ended(_))
           | Pending(..), mist.Custom(Stop(_))
-          | Pending(..), mist.Custom(Held(_))
+          | Pending(..), mist.Custom(Held(..))
           -> mist.stop()
 
           // The browser's client runtime speaks Lustre's protocol. What the
@@ -795,8 +800,8 @@ fn websocket(
           // box that stays down costs no socket exit and no crash report per
           // attempt. A second `Held` cannot arrive, because the feed reports
           // its end once.
-          Serving(signals:, ..) as serving, mist.Custom(Held(awaiting)) -> {
-            ui_wait.start(awaiting, fn() {
+          Serving(signals:, ..) as serving, mist.Custom(Held(lead, awaiting)) -> {
+            ui_wait.start(ui_wait.production(), lead, awaiting, fn() {
               process.send(signals, Stop(ending.Retry))
             })
             mist.continue(serving)
@@ -1433,14 +1438,29 @@ fn admit_live(
   // The question a held page asks of its orchestrator: its placements, a read
   // that makes nothing on the box.
   let orchestrator = target.orchestrator
+
+  // The page's own standing comes first (`ui_wait.checked`), so a page whose
+  // session ended or whose access was revoked while it waited closes at the
+  // next ask and meets the upgrade check.
   let awaiting = fn() {
-    ui_wait.reach_of(top_relay.placements(relay, orchestrator))
+    ui_wait.checked(still_open, fn() {
+      ui_wait.reach_of(top_relay.placements(relay, orchestrator))
+    })
   }
+
+  // An attach that was refused as a wait would be refused again at once, so
+  // such a page pauses before its first ask. A page that had a feed asks at
+  // once, since a lapsed feed on a box that is up clears on the next attach.
+  let lead = case reach {
+    Attached(..) -> ui_wait.AskAtOnce
+    Waiting | Crowded -> ui_wait.PauseFirst
+  }
+
   let transport =
     component.Transport(
       connect: fn(inbox, opened) {
         connect_feed(relay, target, reach, still_open, inbox, opened, fn(why) {
-          report_ending(signals, why, awaiting)
+          report_ending(signals, why, lead, awaiting)
         })
       },
       transmit: ui_feed.transmit,
@@ -1504,18 +1524,19 @@ fn admit_live(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.report_ending(signals, ending.PeerUnreachable, awaiting)
+/// // ui_socket.report_ending(signals, ending.PeerUnreachable, lead, awaiting)
 /// ```
 fn report_ending(
   signals: process.Subject(Signal),
   why: ending.Ending,
+  lead: ui_wait.Lead,
   awaiting: fn() -> ui_wait.Reach,
 ) -> Nil {
   // A retry ending holds the page open and waits for the box, and a final
   // ending closes the socket once the component has drawn it.
   case ending.close(why) {
     ending.Retry -> {
-      let _ = process.send_after(signals, ended_grace_ms, Held(awaiting))
+      let _ = process.send_after(signals, ended_grace_ms, Held(lead, awaiting))
       Nil
     }
     ending.Final -> process.send(signals, Ended(why))

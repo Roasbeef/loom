@@ -296,39 +296,39 @@ pub fn a_relayed_page_that_opens_while_the_box_is_down_says_so_test() {
   assert !string.contains(html, "est $0.00")
 }
 
-// A page that drew the session before its link dropped keeps every row, which
-// is the last content it had, and shows the same waiting notice over it.
-pub fn a_relayed_page_keeps_its_content_when_its_link_drops_test() {
-  let model =
-    component.new(relayed_start())
-    |> component.apply([lane_fixture.conversation(1, 3)])
-  let model =
-    page_fixture.run(model, operator_page.update, [
+// A page whose lane was open and held the session's rows, after the lane's
+// socket closed under it the way a dropped link closes it.
+fn dropped() {
+  page_fixture.run(
+    component.apply(opened(), [lane_fixture.conversation(1, 3)]),
+    operator_page.update,
+    [
       operator_page.Observed(
-        component.Refused(ending.reason(ending.PeerUnreachable)),
+        component.Arrived([
+          connection_event.Closed(ending.reason(ending.ConnectionFailed)),
+        ]),
       ),
-    ])
+    ],
+  )
+}
+
+// A page that drew the session before its link dropped keeps every row, which
+// is the last content it had, and says it is disconnected.
+pub fn a_relayed_page_keeps_its_content_when_its_link_drops_test() {
+  let model = dropped()
   assert !component.content_unavailable(model)
 
   let html = drawn(model)
   assert string.contains(html, "question 1")
-  assert string.contains(html, "This page will reconnect.")
+  assert string.contains(html, "disconnected")
   assert !string.contains(html, ended.content_unavailable_words)
 }
 
 // Input that cannot reach the box is refused with the draft kept, not accepted
 // into a lane that is gone.
 pub fn a_relayed_page_whose_link_dropped_refuses_input_test() {
-  let model =
-    component.new(relayed_start())
-    |> component.apply([lane_fixture.conversation(1, 3)])
-  let model =
-    page_fixture.run(model, operator_page.update, [
-      operator_page.Observed(
-        component.Refused(ending.reason(ending.PeerUnreachable)),
-      ),
-    ])
-  let #(model, _effects) = component.submit(model, "hello", operator.Prompt, [])
+  let #(model, _effects) =
+    component.submit(dropped(), "hello", operator.Prompt, [])
   let assert component.Said(words) = component.notice(model)
   assert string.contains(words, "draft retained")
 }

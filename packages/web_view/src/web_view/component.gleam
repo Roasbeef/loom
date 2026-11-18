@@ -2193,9 +2193,16 @@ fn observed(
   // learn it again.
   let final = view.worktree == worktrees.Withheld
 
+  // A page whose connection ended asks nothing: the ask would fail, and the
+  // failure would replace the board the page kept with "could not be read".
+  let gone = case view.status {
+    Ended(_) -> True
+    Connecting | Connected -> False
+  }
+
   // Check whether to initiate a new worktree observation request.
   case view.transport.worktree, free, view.worktree_seen {
-    Some(ask), True, seen if seen != view.latest_result && !final -> #(
+    Some(ask), True, seen if seen != view.latest_result && !final && !gone -> #(
       Model(
         ..model,
         view: View(
@@ -8297,7 +8304,7 @@ pub fn panel(
   use <- bool.lazy_guard(content_unavailable(model), fn() {
     panel.view(
       0,
-      ended.content_unavailable(),
+      ended.content_unavailable_note(),
       None,
       element.none(),
       element.none(),

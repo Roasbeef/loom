@@ -37,7 +37,9 @@ fn short() -> ui_wait.Timing {
 pub fn a_silent_box_never_closes_the_socket_and_an_answer_closes_it_once_test() {
   let asked = process.new_subject()
   let done = process.new_subject()
-  ui_wait.start_with(short(), asking(asked), fn() { process.send(done, Nil) })
+  ui_wait.start(short(), ui_wait.AskAtOnce, asking(asked), fn() {
+    process.send(done, Nil)
+  })
 
   // Three asks are answered with silence. Each is a barrier: the ask is made
   // before the test sees it, so a close that had been sent would be in `done`.
@@ -64,14 +66,11 @@ pub fn a_silent_box_never_closes_the_socket_and_an_answer_closes_it_once_test() 
 // wait runs out and the socket closes, so the reconnect meets the page's real
 // standing.
 pub fn a_wait_that_runs_out_closes_the_socket_once_test() {
-  let asked = process.new_subject()
   let done = process.new_subject()
-  ui_wait.start_with(
+  ui_wait.start(
     ui_wait.Timing(first_pause_ms: 2, longest_pause_ms: 4, max_wait_ms: 40),
-    fn() {
-      process.send(asked, process.new_subject())
-      ui_wait.Silent
-    },
+    ui_wait.AskAtOnce,
+    fn() { ui_wait.Silent },
     fn() { process.send(done, Nil) },
   )
 
@@ -91,4 +90,52 @@ pub fn only_a_call_that_did_not_reach_the_box_is_silence_test() {
       Error(top_relay.Refused(remote_top.NotYetOpen(reason: "opening"))),
     )
     == ui_wait.Answering
+}
+
+// A page whose own standing ended while it waited closes at the next ask
+// without the box answering: the probe is never made.
+pub fn a_revoked_page_closes_without_asking_the_box_test() {
+  let asked = process.new_subject()
+  let done = process.new_subject()
+  let awaiting = fn() {
+    ui_wait.checked(fn() { Error("revoked") }, fn() {
+      process.send(asked, process.new_subject())
+      ui_wait.Silent
+    })
+  }
+  ui_wait.start(short(), ui_wait.AskAtOnce, awaiting, fn() {
+    process.send(done, Nil)
+  })
+
+  let assert Ok(Nil) = process.receive(done, patience_ms) as "the close"
+  assert process.receive(asked, 0) == Error(Nil)
+
+  // A page that is still open asks the box.
+  assert ui_wait.checked(fn() { Ok(Nil) }, fn() { ui_wait.Silent })
+    == ui_wait.Silent
+}
+
+// A page whose attach was refused as a wait pauses before its first ask, so the
+// close and reopen cannot repeat faster than the pause.
+pub fn a_page_refused_as_a_wait_pauses_before_it_asks_test() {
+  let asked = process.new_subject()
+  let done = process.new_subject()
+  ui_wait.start(
+    ui_wait.Timing(
+      first_pause_ms: 150,
+      longest_pause_ms: 150,
+      max_wait_ms: 30_000,
+    ),
+    ui_wait.PauseFirst,
+    fn() {
+      process.send(asked, process.new_subject())
+      ui_wait.Answering
+    },
+    fn() { process.send(done, Nil) },
+  )
+
+  // Nothing has been asked for most of the pause, then the ask and the close.
+  assert process.receive(asked, 50) == Error(Nil)
+  let assert Ok(_) = process.receive(asked, patience_ms) as "the ask"
+  let assert Ok(Nil) = process.receive(done, patience_ms) as "the close"
 }

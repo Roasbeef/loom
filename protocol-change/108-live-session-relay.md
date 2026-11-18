@@ -1162,7 +1162,17 @@ crash reports.
   says "This session runs on <box>, so its evolution is shown on its own page there."
   and draws no button, where it drew an empty pane.
 
-**What stays open.** A page whose socket the browser closed while the box was down
+**Standing and pacing.** Each ask first checks the page's own standing (`ui_wait.checked`,
+which wraps `still_open`), so a UI session that ended or a credential that was revoked
+while the box was down closes the socket at the next ask and the reconnect meets the
+upgrade check. A page whose attach was refused as a wait (`Waiting`, `Crowded`) pauses
+`first_pause_ms` before its first ask, so a box that answers placements but refuses the
+attach cannot make the socket close and reopen faster than that pause. A held page asks
+the box for nothing else: the workspace read is skipped once the status is `Ended`.
+
+**What stays open.** A local page that reconnects into a Retry-class refusal (`NotOpen`,
+`DaemonNotReady`, `ConnectionFailed`) still draws an empty session and exits abnormally per
+attempt; this addendum covers relayed pages only. A page whose socket the browser closed while the box was down
 (a tab put to sleep, a laptop suspended) still reconnects into a fresh component, which
 draws the unavailable notice until the box answers. Showing the evolution board on a
 relayed page needs a new revision of the exchange, an `evolution` read carried as
