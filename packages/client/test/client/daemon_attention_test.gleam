@@ -505,6 +505,47 @@ pub fn members_act_by_their_role_and_bystanders_see_nothing_test() {
     assert code(close(by_socket, 3, rig, revision, "filed", epoch))
       == json.String("not_found")
     let _ = ffi_ws.tcp_close(by_socket)
+
+    // The door answers by the same authority: an observer is forbidden and a
+    // bystander is told no such session, and nothing is sent for either.
+    let seen = process.new_subject()
+    let send = recording_send(seen, thread_send.Delivered(thread_send.Admitted))
+    let current = open_revision(rig, rig.ask)
+    assert attention_door.answer(
+        rig.reach(digest_of(observer)),
+        send,
+        rig.session,
+        rig.ask,
+        current,
+        good_answer(),
+      )
+      == Error(
+        Declined(Refusal("forbidden", "an observer cannot change a record")),
+      )
+    assert attention_door.answer(
+        rig.reach(digest_of(bystander)),
+        send,
+        rig.session,
+        rig.ask,
+        current,
+        good_answer(),
+      )
+      == Error(Declined(Refusal("not_found", "no such session")))
+    assert process.receive(seen, 0) == Error(Nil)
+
+    // An Operator member answers, and the record names it as the answerer.
+    let assert Ok(attention_door.Answered(delivery: thread_send.Admitted, ..)) =
+      attention_door.answer(
+        rig.reach(digest_of(operator)),
+        send,
+        rig.session,
+        rig.ask,
+        current,
+        good_answer(),
+      )
+      as "an Operator member may answer"
+    let assert Ok(#(strand, _text)) = process.receive(seen, 0)
+    assert strand == "sub:main/audit"
     assert catalogue.close(store) == Ok(Nil)
   })
 }

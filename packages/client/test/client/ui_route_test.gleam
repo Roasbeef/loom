@@ -14,6 +14,7 @@
 
 import broker/token
 import client/daemon/admin as access_admin
+import client/daemon/attention_door
 import client/daemon/domain as domain_service
 import client/daemon/limits
 import client/daemon/manager
@@ -5392,6 +5393,58 @@ pub fn a_send_is_asked_only_for_an_owners_operating_page_test() {
         session_operator.Prompt,
       )
       == refused
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// `answer_ask_for` judges the page's standing before the door is asked, as
+// `thread_send_for` does: an ended page and an observer's ceiling are each
+// declined as `forbidden`, and the send, which would deliver the prompt, is
+// never called (protocol-change/120).
+pub fn an_answer_is_asked_only_for_an_owners_operating_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let send = fn(session, strand, text, delivery) {
+      process.send(asked, #(session, strand, text, delivery))
+      thread_send.Delivered(thread_send.Admitted)
+    }
+    let reach =
+      attention_door.Reach(
+        registry: ready.registry,
+        digest: standing.digest,
+        endpoint: fn(_) { None },
+      )
+    let declined =
+      Error(
+        attention_door.Declined(attention_door.Refusal(
+          "forbidden",
+          "this page cannot answer",
+        )),
+      )
+
+    assert ui_socket.answer_ask_for(
+        standing,
+        fn() { Error(Nil) },
+        reach,
+        send,
+        "S1",
+        "ask-0123456789",
+        1,
+        json.Object([]),
+      )
+      == declined
+    assert ui_socket.answer_ask_for(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        reach,
+        send,
+        "S1",
+        "ask-0123456789",
+        1,
+        json.Object([]),
+      )
+      == declined
     assert process.receive(asked, 0) == Error(Nil)
   })
 }
