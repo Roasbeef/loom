@@ -1622,6 +1622,41 @@ pub fn issue_login_writes_one_browser_row_that_authenticates_as_a_browser_test()
   assert catalogue.close(store) == Ok(Nil)
 }
 
+// A device link redeemed after its parent login was revoked writes no child
+// login, and one under a parent that is still active is written as before.
+pub fn issue_login_refuses_a_revoked_issuing_login_test() {
+  let #(file, store, _owner, alice) =
+    login_fixture("issue-login-revoked-parent")
+  let parent = string.repeat("1", 16)
+  assert access.issue_login(store, alice.id, browser("1"), 100, 5000, None)
+    == Ok(Nil)
+  assert access.issue_login(
+      store,
+      alice.id,
+      browser("2"),
+      100,
+      5000,
+      Some(parent),
+    )
+    == Ok(Nil)
+
+  let assert Ok(_) = access.revoke_login(store, alice.id, parent)
+    as "the parent login is revoked"
+  assert access.issue_login(
+      store,
+      alice.id,
+      browser("3"),
+      100,
+      5000,
+      Some(parent),
+    )
+    == Error(catalogue.Invalid("the issuing login is revoked"))
+
+  // The refused child wrote nothing: the bearer, the parent and the one child.
+  assert credential_rows(file, alice.id) == ["active", "revoked", "active"]
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 pub fn signins_list_the_principals_own_active_unexpired_logins_in_order_test() {
   let #(_file, store, owner, alice) = login_fixture("signins")
   let parent = string.repeat("1", 16)
