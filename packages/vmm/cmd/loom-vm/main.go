@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -34,7 +33,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/roasbeef/loom/vmm/epmd"
 	"github.com/roasbeef/loom/vmm/machine"
 	"github.com/roasbeef/loom/vmm/machine/libkrun"
 )
@@ -143,7 +141,6 @@ func run(args []string) error {
 		allow   listFlag
 		files   listFlag
 		fwds    listFlag
-		pubs    listFlag
 		timeout time.Duration
 	)
 	fs.StringVar(&spec.Name, "name", "loom-vm", "guest name")
@@ -154,8 +151,6 @@ func run(args []string) error {
 	fs.Var(&allow, "allow", "allowlisted egress host (repeatable)")
 	fs.Var(&files, "file", "SRC:DST[:MODE] copied into the guest (repeatable)")
 	fs.Var(&fwds, "forward", "HOST:GUEST port forwarded from host loopback (repeatable)")
-	fs.Var(&pubs, "publish", "NAME:HOST:GUEST forward GUEST to HOST and register NAME "+
-		"at HOST in the host's epmd (repeatable)")
 	fs.DurationVar(&timeout, "timeout", 10*time.Minute,
 		"stop the guest after this long (0 runs until stopped)")
 	stateDisk := fs.String("state-disk", "", "raw image attached as /dev/vda, "+
@@ -187,16 +182,6 @@ func run(args []string) error {
 			return err
 		}
 		spec.Forwards = append(spec.Forwards, parsed)
-	}
-
-	var published []publication
-	for _, p := range pubs {
-		parsed, err := parsePublish(p)
-		if err != nil {
-			return err
-		}
-		published = append(published, parsed)
-		spec.Forwards = append(spec.Forwards, parsed.forward)
 	}
 
 	if *stateDisk != "" {
@@ -234,17 +219,6 @@ func run(args []string) error {
 	}
 	defer m.Stop(context.Background())
 
-	// The names go into the host's epmd only once the forwards exist, and
-	// the deferred closes withdraw them before Stop runs, so no name ever
-	// points at a port with nothing behind it for longer than a boot.
-	for _, p := range published {
-		reg, err := register(p)
-		if err != nil {
-			return err
-		}
-		defer reg.Close()
-	}
-
 	// An interrupt or SIGTERM is how a caller asks for the guest to stop, so
 	// the cancellation it causes is a clean end of the run, not a failure.
 	// A timeout is still reported.
@@ -254,55 +228,6 @@ func run(args []string) error {
 	}
 
 	return err
-}
-
-// publication is one --publish flag: a node name and the forward it is
-// registered at.
-type publication struct {
-	name    string
-	forward machine.Forward
-}
-
-// parsePublish reads a NAME:HOST:GUEST flag. NAME is the node's short name,
-// the part before "@".
-func parsePublish(v string) (publication, error) {
-	name, ports, ok := strings.Cut(v, ":")
-	if !ok || name == "" {
-		return publication{}, fmt.Errorf("--publish %q: want NAME:HOST:GUEST", v)
-	}
-
-	fwd, err := parseForward(ports)
-	if err != nil {
-		return publication{}, fmt.Errorf("--publish %q: %w", v, err)
-	}
-
-	return publication{name: name, forward: fwd}, nil
-}
-
-// register holds p's name in the host's epmd. When no epmd answers it starts
-// one, as `erl -name` would, and retries for up to three seconds: in a fixture
-// the executor's guest boots before any host node has started epmd.
-func register(p publication) (*epmd.Registration, error) {
-	reg, err := epmd.Register(epmd.DefaultAddress, p.name, p.forward.Host)
-	if err == nil {
-		return reg, nil
-	}
-
-	if out, serr := exec.Command("epmd", "-daemon").CombinedOutput(); serr != nil {
-		return nil, fmt.Errorf("%w; starting epmd: %v: %s", err, serr, out)
-	}
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-
-		reg, err = epmd.Register(epmd.DefaultAddress, p.name, p.forward.Host)
-		if err == nil {
-			return reg, nil
-		}
-	}
-
-	return nil, err
 }
 
 // parseFile reads a SRC:DST[:MODE] flag. MODE is octal and defaults to
