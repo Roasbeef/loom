@@ -4976,3 +4976,85 @@ text-only drawing, finds pinned and loose, staging, one Send with its receipt, a
 refused close, an oversized review, the read-only page and the observer.
 `review_stage_rule_test`, `review_pin_rule_test` and `review_pane_test` pin the
 rules. A real drive in a browser has not been run.
+
+## Addendum: project tickets on Home (2026-11-18)
+
+Phase 2 of the attention inbox draws a project ticket that waits on a person as
+a thread under "Needs you"
+(`docs/design-notes/attention-inbox/README.md`, phase 2 and ruling 6). The rows
+follow the attention rows. A press opens a pane with the ticket's stage, title,
+age, mandate, question and pull request. The pane has no check output and no
+Recheck, because the owner rules on question 6 later: a `person/check` stage is
+drawn as its raw word, and its controls are whatever the daemon lists.
+
+### What the page may do
+
+Every handler is beneath `home.table_path`, so the socket's admission set is
+unchanged and no frame, path constant or rule is added.
+
+| Control | Event | Admitted for |
+|---|---|---|
+| A ticket's row | click | every home |
+| Close, Retry, Stop, "Confirm: ...", Keep | click | every home, acted on only where the capability is |
+| The answer form, "Send answer" | submit | the owner's operating home |
+
+A click is admitted everywhere because the page ignores it unless it holds
+`Start.projects`, which only the daemon's owner on a page minted to operate is
+handed (`ui_socket.home_projects_capability`). A page without it draws no ticket
+row, and a member's home or an observer's never reads a board. A page that holds
+the capability at an Observer ceiling, as a test may build one, draws the thread
+and its question and no control.
+
+Controls are drawn only for actions the daemon lists for the ticket
+(`project_board.offers`), never from the stage. Each press derives the page's
+authority again: the page is connected, holds the capability at the Operator
+ceiling, and the control is still among those listed for the ticket as it now
+stands. The daemon checks the owner a third time (`answer_for`, `close_for`,
+`stop_ticket_for`, `retry_ticket_for`), so a page that fails the check writes
+nothing to a project's ledger and is told `forbidden`.
+
+Stop and Close cannot be undone, so each asks once: the first press only draws
+the question and a button that names the act, and "Keep" takes it back. Retry
+and Answer are sent at once.
+
+### What the page draws and what it does not
+
+- Every word a ticket carries (title, stage word, question, options, pull
+  request, failure) is a text node. No attribute, class or key carries it.
+  Handlers carry the ticket's address and the question's sequence number, which
+  the server drew and the browser never names. The answer form is keyed by
+  project, ticket and question number, so text typed for one question cannot be
+  submitted for another.
+- Publish draws no control. The board carries no reason for a publish that is
+  listed and not allowed, so there is nothing true to show beside a disabled
+  button.
+- The board carries no branch and no diff stat, so the pane draws neither.
+- A refusal shows in the board's words (`answer_refusal_words`,
+  `close_refusal_words`) or, for Stop and Retry, in a sentence made from the
+  daemon's code.
+
+### What was considered
+
+- **Adding check output and Recheck.** Ruled out until the owner settles
+  question 6.
+- **A new daemon command.** None. `project_host.stop_ticket` and `retry` already
+  exist for the control commands. The in-process feed (`ui_projects.Feed`) gains
+  `stop` and `retry` with the same codes the commands answer, which is an
+  in-process addition and changes no wire shape, so there is no
+  `protocol-change/124`.
+
+### Cost
+
+Two functions on `ui_projects.Feed` and `home.Projects`, one pure rule
+(`web_view/ticket_rule`) and one view module (`web_view/view/ticket_thread`). No
+new route, frame or admitted path.
+
+### Verification
+
+`client/test/client/ui_socket_test.gleam` pins
+`a_ticket_thread_needs_no_new_admission_test`. `client/test/client/ui_route_test.gleam`
+pins `a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test`, and
+`project_board_wire_test.gleam` the feed's codes. `web_view/test/ticket_threads_test.gleam`
+drives the page: controls match the listed actions, an answer sends, a refusal
+shows, Stop and Close confirm, and an observer has no controls. A real drive in
+a browser has not been run.

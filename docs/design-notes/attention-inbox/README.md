@@ -267,6 +267,12 @@ Recheck, Stop, Retry and Close, with Publish drawn disabled with the daemon's
 reason. `person/check` arrives by whichever route the owner picks for
 question 6, which is due before this phase starts.
 
+*As built (2026-11-18):* the thread shows the stage word (raw for `person/check`),
+the question and the PR, with Answer, Close, Retry and Stop drawn only for the
+actions the daemon lists. There is no check output and no Recheck, pending
+question 6. The board carries no branch or diff stat, so neither is drawn, and
+it carries no reason for a listed Publish, so no Publish is drawn.
+
 **Phase 3: the project view.** Creating a project and posting a request, the
 coordinator's context card, and the meta layer's decisions as threads per
 #1168.
