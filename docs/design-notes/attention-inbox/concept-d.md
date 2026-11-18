@@ -236,7 +236,7 @@ dock card. The project mode section says how tickets themselves draw.
 | Approval, another session: row and count | §1.5 `approvals` | EXISTS as a count; content needs a per-record read |
 | Queue ranking by wait | none | **NEW**: `waiting_since` on the activity row and a raised time on the escalation record |
 | Ask | §3 | **substrate** (records) |
-| Idle session's last message in *Ready to look at* | §1.5 `last_message` | EXISTS on the wire, dropped at `client/daemon/server.gleam:6533`; shown as a quiet excerpt, never as "asking" |
+| Idle session's last message in *Ready to look at* | §1.5 `last_message` | EXISTS on the wire; the home page receives it as `Report.last_message` (`client/daemon/server.gleam:6560`); shown as a quiet excerpt, never as "asking" |
 | Stopped session | §1.5 `Failed` | EXISTS |
 | Stopped delegate | §2.2, §2.9 | **substrate** (classifier with per-strand status); main-only today |
 | Review | §2.11, §1.5 | **substrate** (classifier: run ended, diff non-empty, nothing pending); *reviewed* is a close mark |
