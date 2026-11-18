@@ -1283,7 +1283,10 @@ pub type Msg(socket) {
   /// The transport opened.
   Opened(socket: socket)
 
-  /// The transport refused to open.
+  /// The transport refused to open, or, for a relayed page held through an
+  /// outage, found that the page's own standing ended afterwards. The status
+  /// becomes that ending whatever it was, which is how a held page that has
+  /// already drawn a waiting notice learns that it is over.
   Refused(reason: String)
 
   /// The selector over the transport's two subjects was handed to the runtime,
