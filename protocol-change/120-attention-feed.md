@@ -566,3 +566,34 @@ Each item is a test over the real function and the real store.
 
 None are open. The owner accepted autonomous protocol changes for this build on
 2026-11-17.
+
+## As built
+
+Phase 1b follows the decision above, with these differences, each forced by what
+the code does.
+
+- **`attention.answer` is not a control command.** Delivering the answer needs the
+  session's gateway, which `server.Config` does not hold (the home page reaches it
+  through `ui_socket`'s `gateway_of`). The answer is `ui_socket.answer_ask_for`,
+  over `daemon/attention_door.answer`, for the home page; `sessions.attention`,
+  `attention.read` and `attention.close_find` are control commands as specified.
+  A control-socket answer needs a gateway accessor added to `server.Config` and is
+  left to the slice that draws the answer.
+- **The reserved strand names are restated in `client/attention_feed`.**
+  `client/advisor` reaches `peer_mail` through `remote_child`, and `peer_mail`
+  calls the feed, so importing `advisor.primary` and `advisor.strand` would be a
+  cycle. A test pins the two spellings to the advisor's.
+- **The prompt bound is restated in `core/attention_answer`.** `core` may not
+  depend on `web_view/composer`; the value is 16,384 in both.
+- **A `fill` of the `path` format is held to 1,000 bytes**, the general `fill`
+  bound, not the 1,024 the format's own sentence names. The stricter of the two
+  governs, since both are checks on one value.
+- **The answerer and closer are recorded as the principal's identifier**, which is
+  stable, not its display name, which can change.
+- **`send_message` and `message_to` keep their signatures.** The strand-taking
+  functions are `send_to_strand` and `message_to_strand`, and the old names send
+  to `main`, so the first-message path and every existing caller are unchanged.
+- **The Agency answers `AttentionRead` with the stored record**, and the daemon
+  builds the `attention.read` reply from the decoded record, so there is one codec
+  and the page-facing shape is made where the caller's authority is known.
+

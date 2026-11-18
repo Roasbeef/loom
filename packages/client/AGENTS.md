@@ -7250,6 +7250,30 @@ each request, `peer_links_capability` hands the capability to an `Owning` page
 alone, and `owner_accepts` alone admits events beneath `component.peers_path`.
 `server.Attachment.peers` is the daemon's `peers.Directory`.
 
+Attention feed (protocol-change/120). `client/attention_feed` builds one session's
+`sessions.attention` row from one listing each of the ask and find prefixes, the
+strand-state register and the last-result register, so a row costs a fixed number
+of store calls: counts and short items for open owner-routed asks, open finds and
+stuck strands (a non-main, non-advisor strand with no current operation whose last
+result is a failed run), shed to 2,300 bytes in the order finds, stuck, asks,
+oldest first, never reducing a count. `peer_mail.AttentionFeed`, `AttentionRead`
+and `AttentionSettle` are the Agency commands; `AttentionRead` answers the stored
+record with its revision (the cell's seq) and `AttentionSettle` rewrites an open
+record under that revision through `client/attention.settle`, which also removes
+the records `core/attention.retired` names. `server.resident_rows` is the fan-out
+`sessions.activity` and `sessions.attention` share. `daemon/attention_door` is the
+walk of `attention.read`, `attention.close_find` and the home's answer: authority
+from the registry (`forbidden` for an observer, `not_found` for a non-holder),
+residency (`not_resident`), the record, state, revision, then for an answer
+`core/attention_answer.check`, one `Prompt` to the asking strand through the
+injected send, and only then the settle, so a refused delivery leaves the ask open.
+`attention.answer` has no control command because the control socket holds no
+gateway; `ui_socket.answer_ask_for` and `close_find_for` are the home's acts, and
+`server.home_attention` and `HomeAttachment.attention` are the home's typed feed
+(`web_view/attention_feed`). `ui_socket.send_to_strand` and `message_to_strand`
+take a strand; `send_message` and `message_to` stay the main-strand defaults, and
+the gateway's `unknown_strand` is `thread_send.UnknownStrand`.
+
 Epoch-checked `sessions.activity` (`protocol.SessionActivity`)
 takes 1 to 24 distinct canonical ids and reports what each resident is doing.
 The owner is answered for any id; a member only for ids its credential holds a

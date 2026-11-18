@@ -86,7 +86,7 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:341`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:3112`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:3133`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:3627`)). The
@@ -309,7 +309,7 @@ anyone who sees the cookie knows it, and the row's digest is the digest of
 it. The first edition of this note said a login presented as a bearer is
 refused because the daemon would hash the whole token; that was true and
 beside the point, because the daemon hashes any presented string
-(`credential` (`client/daemon/server.gleam:1122`)), and `Authorization:
+(`credential` (`client/daemon/server.gleam:1143`)), and `Authorization:
 Bearer <id>` would have hashed to the row and authenticated as the
 principal with no ceiling, no expiry, no key and no nonce: for the owner's
 login, owner authority on the control socket. The review of 2026-10-04
