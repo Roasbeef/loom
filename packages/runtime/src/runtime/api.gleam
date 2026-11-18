@@ -2853,12 +2853,27 @@ pub const remote_escalation_fact_prefix = "remote-escalation/"
 /// would drop a message the model was told was queued.
 pub const remote_send_fact_prefix = "remote-send/"
 
+/// The reserved prefix an ask's record lives under, `attention/ask/<id>`
+/// (protocol-change/119).
+///
+/// Reserved because a model that could write one would forge a question a
+/// person is about to answer, or rewrite an answer the transcript already
+/// holds, and one that could remove a record would drop a question the model
+/// was told was recorded.
+pub const attention_ask_fact_prefix = "attention/ask/"
+
+/// The reserved prefix a find's record lives under, `attention/find/<id>`
+/// (protocol-change/119). Reserved for the reason `attention_ask_fact_prefix`
+/// is: a find is shown to a person as the harness's record of what the agent
+/// reported, not as text the agent can edit afterwards.
+pub const attention_find_fact_prefix = "attention/find/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The eighteen corners, and what each would let a forged write do:
+/// The twenty corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -2891,9 +2906,11 @@ pub const remote_send_fact_prefix = "remote-send/"
 /// to, or remove the stub of a live remote child from the fan-out count;
 /// `remote-mail/` — mark mail from a remote child as delivered when it never
 /// reached the parent, or erase the receipt that stops a resend steering the
-/// parent twice; and `remote-send/` — send text to a remote child under the
+/// parent twice; `remote-send/` — send text to a remote child under the
 /// parent's name without a tool call, or drop a send the model was told was
-/// queued.
+/// queued; and `attention/ask/` and `attention/find/` — forge a question or an
+/// answer a person is about to act on, or a finding shown as the harness's own
+/// record.
 ///
 /// ## Examples
 ///
@@ -2925,6 +2942,8 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, remote_mail_fact_prefix)
   || string.starts_with(key, remote_escalation_fact_prefix)
   || string.starts_with(key, remote_send_fact_prefix)
+  || string.starts_with(key, attention_ask_fact_prefix)
+  || string.starts_with(key, attention_find_fact_prefix)
   || string.starts_with(key, "evolution/")
 }
 
