@@ -37,9 +37,12 @@
 ////    would admit, through the same decision.
 //// 5. `overview` summarizes the whole session for the owner's picker.
 
+import client/attention
+import client/attention_feed
 import client/internal/message_inspection
 import client/internal/peer_outbox_store
 import client/peer_outbox
+import core/attention as records
 import core/clock
 import core/entry
 import core/glance
@@ -224,6 +227,21 @@ pub type Command {
   /// (`protocol-change/050`). It reads and never writes, and its answer is
   /// bounded to `overview_row_bytes` whatever the session holds.
   Overview
+
+  /// Lists what the session needs from a person: its open owner-routed asks,
+  /// its open finds and its stuck strands, bounded to
+  /// `attention_feed.row_bytes` (`protocol-change/120`). It reads and never
+  /// writes.
+  AttentionFeed
+
+  /// Reads one ask or find with the revision of its cell, in the stored
+  /// shape (`protocol-change/120`). It reads and never writes.
+  AttentionRead(id: String)
+
+  /// Settles an open record as answered or closed, expecting its cell to be at
+  /// `revision` (`protocol-change/120`). The daemon has already decided who may
+  /// do it and, for an answer, delivered the prompt.
+  AttentionSettle(id: String, revision: Int, settlement: attention.Settlement)
 
   /// Records an outgoing message in the sender's outbox before its first
   /// delivery attempt (`client/peer_outbox`). The answer says whether the
@@ -622,6 +640,10 @@ pub fn handle_with(
     Roster(source_session, source_strand) ->
       roster(runtime, defaults, source_session, source_strand)
     Overview -> overview(runtime)
+    AttentionFeed -> attention_feed.feed(runtime)
+    AttentionRead(id) -> attention_read(runtime, id)
+    AttentionSettle(id, revision, settlement) ->
+      attention_settle(runtime, clock, id, revision, settlement)
     OutboxClaim(source, strand, session, target, id, body) -> {
       let #(now, _) = clock.read(clock)
       peer_outbox_store.claim(
@@ -1450,6 +1472,50 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
     #("model", model),
   ]
   Ok(fit_overview(base, final_message(runtime, last), glances))
+}
+
+/// One record in the stored shape beside its revision. A record that is not
+/// there is `not_found`, the word the daemon turns into its refusal.
+fn attention_read(
+  runtime: api.Runtime,
+  id: String,
+) -> Result(JsonValue, String) {
+  case attention.read(runtime, id) {
+    Ok(attention.StoredAsk(ask:, revision:)) ->
+      Ok(stored_record(records.encode_ask(ask), revision))
+    Ok(attention.StoredFind(find:, revision:)) ->
+      Ok(stored_record(records.encode_find(find), revision))
+    Error(attention.NoSuchRecord) -> Error("not_found")
+    Error(attention.Unreadable(reason:)) -> Error(reason)
+  }
+}
+
+/// The reply of `AttentionRead`: the revision and the record as it is stored.
+fn stored_record(record: JsonValue, revision: Int) -> JsonValue {
+  json.Object([
+    #("revision", json.Int(revision)),
+    #("record", record),
+  ])
+}
+
+/// Settles a record and answers its new revision. The refusals are the words
+/// `not_found`, `conflict` and `bad_request`, which the daemon maps onto its
+/// own codes; anything else is the store's own reason.
+fn attention_settle(
+  runtime: api.Runtime,
+  time: clock.Clock,
+  id: String,
+  revision: Int,
+  settlement: attention.Settlement,
+) -> Result(JsonValue, String) {
+  case attention.settle(runtime, time, id, revision, settlement) {
+    Ok(settled) -> Ok(json.Object([#("revision", json.Int(settled))]))
+    Error(attention.Missing) -> Error("not_found")
+    Error(attention.Moved) | Error(attention.AlreadySettled) ->
+      Error("conflict")
+    Error(attention.WrongKind) -> Error("bad_request")
+    Error(attention.Failed(reason:)) -> Error(reason)
+  }
 }
 
 /// What a session is doing, as its overview words it and as a spawner's

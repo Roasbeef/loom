@@ -27,6 +27,7 @@ import client/peer_mail
 import core/agency_limits.{
   type AgencyLimits, AgencyLimits, BoundedDepth, UnlimitedDepth,
 }
+import core/attention
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -268,6 +269,33 @@ pub type Command {
     /// the order the reply keeps.
     sessions: List(String),
     /// Current daemon epoch, checked before any session is resolved.
+    epoch: String,
+  )
+
+  /// Asks the named resident sessions what they need from a person: their open
+  /// owner-routed asks, open finds and stuck strands (`protocol-change/120`).
+  /// The owner is answered for every identity and a member for the identities
+  /// it holds; saved sessions are never opened.
+  SessionAttention(
+    /// Between one and `activity_limit` distinct canonical identities, in the
+    /// order the reply keeps.
+    sessions: List(String),
+    /// Current daemon epoch, checked before any session is resolved.
+    epoch: String,
+  )
+
+  /// Reads one ask or find in full with its revision (`protocol-change/120`).
+  /// The owner, or a member that holds the session at any role.
+  ReadAttention(session: String, id: String, epoch: String)
+
+  /// Closes an open find as dismissed, fixed or filed, expecting the record to
+  /// be at `revision` (`protocol-change/120`). The owner, or a member that holds
+  /// the session as an Operator.
+  CloseFind(
+    session: String,
+    find: String,
+    revision: Int,
+    outcome: attention.Closure,
     epoch: String,
   )
 
@@ -795,6 +823,25 @@ fn decode_fields(
       use sessions <- result.try(activity_sessions(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       SessionActivity(sessions, epoch)
+    }
+    "sessions.attention" -> {
+      use sessions <- result.try(activity_sessions(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SessionAttention(sessions, epoch)
+    }
+    "attention.read" -> {
+      use session <- result.try(attention_session(fields))
+      use id <- result.try(text_field(fields, "id", 64))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      ReadAttention(session, id, epoch)
+    }
+    "attention.close_find" -> {
+      use session <- result.try(attention_session(fields))
+      use find <- result.try(text_field(fields, "find", 64))
+      use revision <- result.try(attention_revision(fields))
+      use outcome <- result.try(closure_field(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      CloseFind(session, find, revision, outcome, epoch)
     }
     "sessions.archived" -> {
       use after <- result.try(cursor(fields))
@@ -1587,6 +1634,37 @@ fn activity_sessions(
   case list.length(list.unique(sessions)) == list.length(sessions) {
     True -> Ok(sessions)
     False -> Error("sessions repeats an identity")
+  }
+}
+
+/// The canonical session identity an attention command names, under `session`.
+fn attention_session(
+  fields: List(#(String, JsonValue)),
+) -> Result(String, String) {
+  use text <- result.try(text_field(fields, "session", 64))
+  canonical_id(text)
+}
+
+/// The revision an attention command echoes: the sequence number the caller
+/// read the record at, a nonnegative integer.
+fn attention_revision(
+  fields: List(#(String, JsonValue)),
+) -> Result(Int, String) {
+  case list.key_find(fields, "revision") {
+    Ok(json.Int(revision)) if revision >= 0 -> Ok(revision)
+    Ok(_) | Error(Nil) -> Error("expected a nonnegative revision")
+  }
+}
+
+/// How a person settled a find: `dismissed`, `fixed` or `filed`.
+fn closure_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(attention.Closure, String) {
+  case list.key_find(fields, "outcome") {
+    Ok(json.String("dismissed")) -> Ok(attention.Dismissed)
+    Ok(json.String("fixed")) -> Ok(attention.Fixed)
+    Ok(json.String("filed")) -> Ok(attention.Filed)
+    Ok(_) | Error(Nil) -> Error("outcome is dismissed, fixed or filed")
   }
 }
 

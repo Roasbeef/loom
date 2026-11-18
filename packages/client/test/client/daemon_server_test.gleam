@@ -1555,6 +1555,9 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.Links(_)
           | peer_mail.Grants(_)
           | peer_mail.Overview
+          | peer_mail.AttentionFeed
+          | peer_mail.AttentionRead(..)
+          | peer_mail.AttentionSettle(..)
           | peer_mail.Inbox(..)
           | peer_mail.InboxGet(..)
           | peer_mail.History(..)
@@ -2993,21 +2996,21 @@ pub fn a_homes_attention_read_is_the_held_summaries_test() {
 
       // The owner holds every session: the one with a row answers, the one
       // never read and the unknown identity leave no entry.
-      let read = server.home_attention(ready.registry, digest_of(credential))
+      let read = server.home_saved_attention(ready.registry, digest_of(credential))
       assert read(asked) == expected
 
       // A member is answered for what it holds and nothing else.
       let held_read =
-        server.home_attention(ready.registry, digest_of("holder-token"))
+        server.home_saved_attention(ready.registry, digest_of("holder-token"))
       assert held_read(asked) == expected
       assert held_read([unread_id]) == []
 
       // A member holding nothing gets what an unknown identity gets, and so
       // does a credential the catalogue does not know.
       let bystander =
-        server.home_attention(ready.registry, digest_of("bystander-token"))
+        server.home_saved_attention(ready.registry, digest_of("bystander-token"))
       assert bystander(asked) == []
-      assert server.home_attention(ready.registry, digest_of("nobody"))(asked)
+      assert server.home_saved_attention(ready.registry, digest_of("nobody"))(asked)
         == []
     },
   )

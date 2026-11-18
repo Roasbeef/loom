@@ -3,7 +3,7 @@
 ////
 //// ## Flow
 ////
-//// `seam` → `ask` or `notice` → `try_insert`
+//// `seam` → `ask` or `notice` → `try_insert`, and `read` → `settle`
 ////
 //// 1. `seam` closes over a `Wiring` and answers the tools' `Attention` seam.
 //// 2. `ask` and `notice` build the record's header from the caller's own
@@ -13,6 +13,8 @@
 ////    open bound, and commits the new record, the guard's replacement and the
 ////    removal of any retired settled record in one transaction.
 //// 4. A lost race re-reads and decides again, a bounded number of times.
+//// 5. `read` answers a record and its revision, and `settle` rewrites it as
+////    answered or closed under that revision.
 ////
 //// ## Why the guard cell
 ////
@@ -31,13 +33,20 @@
 //// between the store and the caller. The guard's suffix is not an id, so no
 //// scan counts it.
 ////
+//// ## Reading and settling (protocol-change/120)
+////
+//// `read` answers one record with its revision, the sequence number of its
+//// cell. `settle` rewrites an open record as answered or closed, expecting the
+//// cell to be at the revision the caller read, so a person's answer to a
+//// record that has since changed is refused rather than written over it. Both
+//// reads and the one write are made in the session's own serialized actor.
+////
 //// ## Pruning
 ////
 //// Settled records are retired by `core/attention.retired` in the commit that
-//// settles them. Nothing settles a record yet, because answering and closing
-//// are the feed's (protocol-change/120), so `insert` also prunes with the scan
+//// settles them, as `settle` does, and `try_insert` also prunes with the scan
 //// it already holds. That keeps the prefix bounded however a settled record
-//// came to exist, and it is a no-op for every session today.
+//// came to exist.
 ////
 //// ## The catalogue summary
 ////
@@ -268,14 +277,7 @@ pub fn ask(
     runtime,
     wiring.entropy,
     now,
-    Lane(
-      prefix: attention.ask_prefix,
-      limit: attention.max_open_asks,
-      records: "asks",
-      mint: attention.mint_ask_id,
-      key: attention.ask_key,
-      standing: ask_standing,
-    ),
+    ask_lane,
     fn(id) {
       attention.Ask(
         header: header(id, now, routing, caller, parents),
@@ -309,14 +311,7 @@ pub fn notice(
     runtime,
     wiring.entropy,
     now,
-    Lane(
-      prefix: attention.find_prefix,
-      limit: attention.max_open_finds,
-      records: "finds",
-      mint: attention.mint_find_id,
-      key: attention.find_key,
-      standing: find_standing,
-    ),
+    find_lane,
     fn(id) {
       attention.Find(
         header: header(id, now, attention.ToOwner, caller, parents),
@@ -373,6 +368,218 @@ pub fn finds(runtime: api.Runtime) -> Result(List(attention.Find), String) {
   list.filter_map(cells, fn(cell) {
     attention.decode_find(cell.1) |> result.replace_error(Nil)
   })
+}
+
+// --- reading and settling --------------------------------------------------
+
+/// One stored record and its revision.
+pub type Stored {
+  /// An ask, at the sequence number of its cell.
+  StoredAsk(ask: attention.Ask, revision: Int)
+
+  /// A find, at the sequence number of its cell.
+  StoredFind(find: attention.Find, revision: Int)
+}
+
+/// Why a record could not be read.
+pub type ReadFault {
+  /// The id has no record's shape, no cell holds it, or the cell does not
+  /// decode. A record a prune removed is the same, so a reader cannot tell the
+  /// three apart, and none of them is worth telling apart.
+  NoSuchRecord
+
+  /// The store could not be read, and why.
+  Unreadable(reason: String)
+}
+
+/// What settles a record: an answer, or a closure.
+pub type Settlement {
+  /// An ask is answered. The answer carries who gave it.
+  Answering(answer: attention.Answer)
+
+  /// A find is closed by `by`.
+  Closing(closure: attention.Closure, by: String)
+}
+
+/// Why a record was not settled.
+pub type SettleFault {
+  /// There is no such record, as for `ReadFault`.
+  Missing
+
+  /// The record is not at the revision the caller read: another write, or
+  /// another settlement, got there first.
+  Moved
+
+  /// The settlement is of the other kind of record: an answer to a find, or a
+  /// closure of an ask.
+  WrongKind
+
+  /// The record is already settled. A settled record is not settled again.
+  AlreadySettled
+
+  /// The store could not be used, and why.
+  Failed(reason: String)
+}
+
+/// Reads one record and its revision, by id. The id's shape picks the prefix,
+/// so a wire value cannot address any other cell.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.read(runtime, "ask-3f9c01a2b4")
+/// ```
+pub fn read(runtime: api.Runtime, id: String) -> Result(Stored, ReadFault) {
+  use cell <- result.try(
+    case attention.is_ask_id(id), attention.is_find_id(id) {
+      True, _ -> cell_of(runtime, attention.ask_key(id))
+      False, True -> cell_of(runtime, attention.find_key(id))
+      False, False -> Error(NoSuchRecord)
+    },
+  )
+  case attention.is_ask_id(id) {
+    True ->
+      attention.decode_ask(cell.value)
+      |> result.replace_error(NoSuchRecord)
+      |> result.map(StoredAsk(_, cell.seq))
+    False ->
+      attention.decode_find(cell.value)
+      |> result.replace_error(NoSuchRecord)
+      |> result.map(StoredFind(_, cell.seq))
+  }
+}
+
+/// Settles an open record under the revision the caller read, and answers the
+/// record's new revision.
+///
+/// The write is the record's replacement guarded by `revision`, together with
+/// the removal of the settled records `core/attention.retired` names, in one
+/// commit. A settlement that loses to another write is `Moved`, and nothing is
+/// written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.settle(runtime, clock, "ask-3f9c01a2b4", 41, attention.Answering(answer))
+/// ```
+pub fn settle(
+  runtime: api.Runtime,
+  time: Clock,
+  id: String,
+  revision: Int,
+  settlement: Settlement,
+) -> Result(Int, SettleFault) {
+  use stored <- result.try(
+    read(runtime, id)
+    |> result.map_error(fn(fault) {
+      case fault {
+        NoSuchRecord -> Missing
+        Unreadable(reason:) -> Failed(reason)
+      }
+    }),
+  )
+  use <- bool.guard(when: revision_of(stored) != revision, return: Error(Moved))
+  let #(now, _clock) = clock.read(time)
+  use #(lane, encoded) <- result.try(settled_form(stored, settlement, now))
+  use cells <- result.try(
+    read_prefix(runtime, lane.prefix) |> result.map_error(Failed),
+  )
+  let key = lane.key(id)
+  let standings =
+    standings_of(cells, lane)
+    |> list.map(fn(entry) {
+      case entry.0 == key {
+        True -> #(entry.0, SettledAt(at: now))
+        False -> entry
+      }
+    })
+  let retired =
+    retiring(runtime, standings, now)
+    |> list.filter(fn(edit) { edit_key(edit) != key })
+  let edits = [
+    api.ReservedFactSet(api.ReservedFactChange(
+      key:,
+      value: encoded,
+      expected: Some(revision),
+    )),
+    ..retired
+  ]
+  case api.edit_reserved_facts(runtime, edits) {
+    Ok(Nil) ->
+      case read(runtime, id) {
+        Ok(after) -> Ok(revision_of(after))
+        Error(_) -> Error(Failed("the settled record could not be read back"))
+      }
+    Error(api.RaceLost) -> Error(Moved)
+    Error(error) ->
+      Error(Failed(
+        "the session store could not be used: " <> string.inspect(error),
+      ))
+  }
+}
+
+/// The revision a stored record was read at.
+pub fn revision_of(stored: Stored) -> Int {
+  case stored {
+    StoredAsk(revision:, ..) | StoredFind(revision:, ..) -> revision
+  }
+}
+
+/// The cell under `key`, or the fault for its absence or an unreadable store.
+fn cell_of(
+  runtime: api.Runtime,
+  key: String,
+) -> Result(api.FactCell, ReadFault) {
+  case api.fact_cell(runtime, key) {
+    Ok(Some(cell)) -> Ok(cell)
+    Ok(None) -> Error(NoSuchRecord)
+    Error(error) -> Error(Unreadable(string.inspect(error)))
+  }
+}
+
+/// The record rewritten as settled, with the lane it lives in, or the reason it
+/// cannot be: already settled, or settled by the other kind of settlement.
+fn settled_form(
+  stored: Stored,
+  settlement: Settlement,
+  now: Int,
+) -> Result(#(Lane, JsonValue), SettleFault) {
+  case stored, settlement {
+    StoredAsk(ask: attention.Ask(state: attention.AskOpen, ..) as ask, ..),
+      Answering(answer:)
+    ->
+      Ok(#(
+        ask_lane,
+        attention.encode_ask(
+          attention.Ask(..ask, state: attention.Answered(at: now, answer:)),
+        ),
+      ))
+    StoredFind(find: attention.Find(state: attention.FindOpen, ..) as find, ..),
+      Closing(closure:, by:)
+    ->
+      Ok(#(
+        find_lane,
+        attention.encode_find(
+          attention.Find(
+            ..find,
+            state: attention.Closed(at: now, closure:, by:),
+          ),
+        ),
+      ))
+    StoredAsk(ask: attention.Ask(state: attention.Answered(..), ..), ..), _
+    | StoredFind(find: attention.Find(state: attention.Closed(..), ..), ..), _
+    -> Error(AlreadySettled)
+    StoredAsk(..), Closing(..) | StoredFind(..), Answering(..) ->
+      Error(WrongKind)
+  }
+}
+
+/// The key a reserved-fact edit names.
+fn edit_key(edit: api.ReservedFactEdit) -> String {
+  case edit {
+    api.ReservedFactSet(change:) -> change.key
+    api.ReservedFactRemove(key:, ..) -> key
+  }
 }
 
 // --- the header ------------------------------------------------------------
@@ -470,6 +677,28 @@ type Lane {
     standing: fn(JsonValue) -> Result(Standing, Nil),
   )
 }
+
+/// The ask records' lane.
+const ask_lane =
+  Lane(
+    prefix: attention.ask_prefix,
+    limit: attention.max_open_asks,
+    records: "asks",
+    mint: attention.mint_ask_id,
+    key: attention.ask_key,
+    standing: ask_standing,
+  )
+
+/// The find records' lane.
+const find_lane =
+  Lane(
+    prefix: attention.find_prefix,
+    limit: attention.max_open_finds,
+    records: "finds",
+    mint: attention.mint_find_id,
+    key: attention.find_key,
+    standing: find_standing,
+  )
 
 /// Records one record of a lane, refusing at the open bound.
 ///

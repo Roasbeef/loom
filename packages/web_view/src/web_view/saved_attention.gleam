@@ -5,7 +5,7 @@
 //// resident sessions, and after a daemon restart every session is saved. The
 //// catalogue therefore keeps one summary row for each session, written when an
 //// approval, ask or find changes, and the daemon hands the rows for a listing's
-//// sessions to the page beside its activity read (`server.home_attention`).
+//// sessions to the page beside its activity read (`server.home_saved_attention`).
 ////
 //// A row is a cache of the session's own records, never the truth, so a page
 //// that draws it must say it came from the catalogue. A session with no row is

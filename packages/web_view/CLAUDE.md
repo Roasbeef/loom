@@ -22,7 +22,7 @@ page keys and nonces, and the relay into the session's gateway.
 
 ## Key Types
 
-`web_view/saved_attention.{Saved, from_row}` is one saved session's attention summary row as the catalogue keeps it (protocol-change/122), built by `server.home_attention` and refusing negative figures. The page does not draw it yet.
+`web_view/saved_attention.{Saved, from_row}` is one saved session's attention summary row as the catalogue keeps it (protocol-change/122), built by `server.home_saved_attention` and refusing negative figures. The page does not draw it yet.
 
 - `component.Start(socket)`: what the daemon supplies when it starts a
   component: the session ID, the catalogue's `Label(name, workspace)` for
