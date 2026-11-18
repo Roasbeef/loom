@@ -365,8 +365,8 @@ pub fn each_state_offers_its_own_buttons_test() {
   assert !string.contains(working, ">Send</button>")
 }
 
-// A button names its delivery, and the box is labelled for its session, as a
-// text node of the page's own words.
+// A button names its delivery, and the box carries a fixed label, so no session
+// text reaches an attribute.
 pub fn the_buttons_name_their_delivery_test() {
   let model = opened(sending(process.new_subject(), reports()))
   let working = drawn(run(model, home.InboxOpened("C")))
@@ -374,7 +374,7 @@ pub fn the_buttons_name_their_delivery_test() {
   assert string.contains(working, "name=\"delivery\"")
   assert string.contains(working, "value=\"prompt\"")
   assert string.contains(working, "value=\"steer\"")
-  assert string.contains(working, "aria-label=\"Message to docs sweep\"")
+  assert string.contains(working, "aria-label=\"Message this session\"")
   assert string.contains(working, "name=\"draft\"")
 }
 
@@ -629,4 +629,62 @@ pub fn the_return_control_is_a_click_beneath_the_table_test() {
     string.ends_with(key, "\nclick") || string.ends_with(key, "\nsubmit")
   })
   assert string.contains(drawn(listed), "home-inbox")
+}
+
+// --- a refresh does not move what the person is using -----------------------
+
+// The first read decides where the page lands. A page that landed on the
+// composer, because nothing waited, keeps it when a later read finds something
+// that does: replacing the composer would lose what the person was typing. The
+// "Inbox" control is offered instead.
+pub fn a_later_read_does_not_replace_the_composer_test() {
+  let quiet = [#("A", Report(sessions.Idle, None, []))]
+  let model =
+    opened(
+      home.Start(
+        ..start(home.OperatorCeiling, quiet),
+        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+      ),
+    )
+  assert !string.contains(drawn(model), "<h1>Inbox</h1>")
+  assert !string.contains(drawn(model), "Back to the inbox")
+
+  let later = run(model, home.Observed(reports()))
+  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
+  assert string.contains(drawn(later), "Back to the inbox")
+
+  let back = run(later, home.ShowingInbox)
+  assert string.contains(drawn(back), "<h1>Inbox</h1>")
+}
+
+// The thread shown by default stays shown when a later read ranks another
+// thread first, so the pane does not change under the person's reading or
+// typing.
+pub fn the_default_thread_is_sticky_test() {
+  let only_working = [
+    #("C", Report(sessions.Working, None, [Glance("s2", "", "reading")])),
+  ]
+  let model = opened(start(home.OperatorCeiling, only_working))
+  assert string.contains(drawn(model), "Update · docs sweep · /src/loom</p>")
+
+  // An approval now outranks it, and the pane still shows the working thread.
+  let later = run(model, home.Observed(reports()))
+  assert string.contains(drawn(later), "Needs you<span")
+  assert string.contains(drawn(later), "Update · docs sweep · /src/loom</p>")
+  assert !string.contains(
+    drawn(later),
+    "Approval · vetting lint · /src/loom</p>",
+  )
+}
+
+// A thread the pane shows that one read leaves out, while its session is still
+// in the list, keeps its last report: one slow session is not a gone one.
+pub fn a_slow_session_keeps_its_last_report_test() {
+  let model = opened(start(home.OperatorCeiling, reports()))
+  let pressed = run(model, home.InboxOpened("C"))
+  let without_c = list.filter(reports(), fn(row) { row.0 != "C" })
+  let later = run(pressed, home.Observed(without_c))
+
+  assert string.contains(drawn(later), "Update · docs sweep · /src/loom</p>")
+  assert string.contains(drawn(later), "reading the spec")
 }

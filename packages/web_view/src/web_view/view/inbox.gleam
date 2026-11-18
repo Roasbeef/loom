@@ -319,7 +319,7 @@ fn message_form(
         [
           attribute.name("draft"),
           attribute.class("composer-name"),
-          attribute.aria_label("Message to " <> thread.name),
+          attribute.aria_label("Message this session"),
           attribute.placeholder("Message this session"),
           attribute.attribute("rows", "3"),
           attribute.attribute("maxlength", int.to_string(composer.prompt_limit)),

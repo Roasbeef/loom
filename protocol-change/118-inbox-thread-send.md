@@ -23,7 +23,7 @@ The inbox's reading pane ends each thread with a message field addressed to
 that thread's session (README section 2.2). The owner types a message, picks
 a delivery, and presses Send. Today the Home page can send to a session in
 exactly one case: the first message of a session it has just created
-(`first_message_for` (`client/daemon/ui_socket.gleam:7931`)). It cannot send
+(`first_message_for` (`client/daemon/ui_socket.gleam:7941`)). It cannot send
 to a session that already exists. To message one, the owner must open that
 session's page and use its composer.
 
@@ -64,13 +64,13 @@ the inbox does not own.
 
 The Home page gets a thread-send capability only when the page's principal
 is the daemon's owner and the page's ceiling is Operator. It is built like
-`home_create_capability` (`client/daemon/ui_socket.gleam:1870`), which
+`home_create_capability` (`client/daemon/ui_socket.gleam:1873`), which
 returns `Some` for exactly that pair and `None` for a member at either
 ceiling and for the owner at the Observer ceiling.
 
 The capability MUST be re-derived when the submit is processed, with the
 same checks `authorized_owner` makes for creating a session
-(`client/daemon/ui_socket.gleam:4093`): the page is open, the ceiling is an
+(`client/daemon/ui_socket.gleam:4115`): the page is open, the ceiling is an
 operator's, and the page's credential still authenticates as the owner. A
 page whose standing has changed since it was minted therefore sends nothing.
 
@@ -129,7 +129,7 @@ page.
 No new frame is added to the client protocol. The home's socket handles the
 submit and, as the page's principal, runs the path the home composer's first
 message uses. `message_to` resolves the session and `send_message`
-(`client/daemon/ui_socket.gleam:8069`) sends the text. The steps are:
+(`client/daemon/ui_socket.gleam:8082`) sends the text. The steps are:
 
 1. Resolve the principal and its authority on the session with
    `manager.session_authority` (`client/daemon/manager.gleam:1970`). A
@@ -159,7 +159,8 @@ field, `thread_send`, as it receives `create` and the other owner-only
 requests. The request runs in a task, so the page's runtime never waits for the
 gateway. The task bounds the send with a 20-second deadline inside its own run
 and delivers an answer whether the send finished or not, so the page's
-"Sending…" is always settled; a send that misses the deadline is `NotAccepted`.
+"Sending…" is always settled; a send that misses the deadline is `Unanswered`, which says the message
+may have arrived.
 
 ### Bounds
 
@@ -180,8 +181,9 @@ long brief belongs on the session's own page.
 The result of a send is drawn in the outbox as fixed words. The words do not
 include text from the session, from the gateway or from an error value. The
 daemon answers with a closed type: `Delivered(Admitted | Queued)` or a refusal
-`NotHeld`, `NotResident`, `NotAccepted(reason)` or `QueueFull`. The reason in
-`NotAccepted` is kept for the daemon's log and is never drawn.
+`NotHeld`, `NotResident`, `NotAccepted(reason)`, `QueueFull` or `Unanswered`.
+The reason in `NotAccepted` is written to the daemon's log (as the first
+message's refusals are) and is never drawn.
 
 | Answer | Words |
 |---|---|
@@ -191,8 +193,9 @@ daemon answers with a closed type: `Delivered(Admitted | Queued)` or a refusal
 | `Delivered(Queued)` | Delivered to (session) · queued |
 | `NotHeld`: the principal does not hold the session, or the capability fails at the press | Not sent: this home no longer holds that session |
 | `NotResident`: the session is saved, or not running | Not sent: the session is not running |
-| `NotAccepted(reason)`: the gateway refused the message, or did not answer | Not sent: the session refused it |
+| `NotAccepted(reason)`: the gateway refused the message | Not sent: the session refused it |
 | `QueueFull`: the queue bound was reached | Not sent: its queue is full |
+| `Unanswered`: no answer before the 20-second deadline; the gateway may have taken the message | No answer in time; it may have arrived — check the session before sending again |
 
 After `Delivered` the message field clears. After a refusal it keeps the draft.
 
@@ -246,7 +249,7 @@ the same ability.
   principal holds.
 - One submit handler beneath `home.table_path`. The home socket already
   admits a submit there for `Submitting` (`home_owner_accepts`
-  (`client/daemon/ui_socket.gleam:2193`)), so no admission rule changes.
+  (`client/daemon/ui_socket.gleam:2215`)), so no admission rule changes.
 - `first_prompt` answered a refusal with one string ("the session did not
   accept the message"). The outbox words above need the refusals told apart,
   so `send_message` returns the closed `web_view/thread_send.Answer` in place

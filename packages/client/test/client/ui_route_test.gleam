@@ -5372,6 +5372,18 @@ pub fn a_send_is_asked_only_for_an_owners_operating_page_test() {
         session_operator.Prompt,
       )
       == refused
+
+    // A revoked credential authenticates as nobody.
+    revoke(ready.state_root, credential)
+    assert ui_socket.thread_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
     assert process.receive(asked, 0) == Error(Nil)
   })
 }
@@ -5398,11 +5410,7 @@ pub fn a_send_that_outlasts_its_deadline_is_answered_test() {
     fn(answer) { process.send(answers, answer) },
   )
   assert process.receive(answers, 5000)
-    == Ok(
-      thread_send.Refused(thread_send.NotAccepted(
-        "the session did not answer in time",
-      )),
-    )
+    == Ok(thread_send.Refused(thread_send.Unanswered))
 }
 
 // The steps of `create_for` against the real registry, one at a time, with a

@@ -227,10 +227,16 @@ page keys and nonces, and the relay into the session's gateway.
   (`Inbox` when any session needs the owner, failed, works or is idle with a last
   message; else `Form`). `view/inbox` draws the grouped list and a reading pane
   inside the centre's body (so at `table_path`); `home.centre_body` shows it when
-  `landed_inbox` holds: pane `NewSession` or `SessionList`, `centre_choice` still
+  `landed_inbox` holds: pane `NewSession` or `SessionList`, `centre_choice` is
   `Landed` (`ShowingNew`, `ShowingList` and `Composed` set `Chose`), and the
-  landing is `Inbox`. `InboxOpened(id)` selects a thread (`Model.inbox_selected`,
-  an id the reports no longer hold falls back to the first thread). A pending
+  landing is `Inbox`. The first `Observed` alone decides it (`Awaiting` becomes
+  `Landed` or `Chose`), so a later read never replaces a composer being typed in;
+  `inbox_return` offers "Inbox" instead. `Model.selected` is a `Selection`
+  (`Unchosen | Defaulted(id) | Pressed(id)`): the default is fixed at the first
+  read with a thread and does not move, and the shown thread keeps its previous
+  report when one read omits it while its session is still listed (`observed`).
+  `InboxOpened(id)` presses a thread (an id the reports no longer hold falls back
+  to the first thread). A pending
   approval is named and sent to the session's page, never drawn; "Open session"
   sends `Opening`, so the inbox adds no admission. **Messaging a thread**
   (protocol-change/118): `Start.thread_send` is `Some` only for the owner's

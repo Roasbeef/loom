@@ -279,7 +279,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7734`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7755`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1095,8 +1095,10 @@ control, is drawn on Home.
 
 The landing yields to the person: `Model.centre_choice` becomes `Chose` on
 "New session", the list link or any composer control, and the inbox never
-overrides it again. When nothing waits or runs the page lands on the composer
-as before, and an observer's page lands on the same inbox read-only. Pressing a
+overrides it again. The first activity read alone decides the landing; a page
+that landed on the composer keeps it when a later read finds something waiting
+(it offers an "Inbox" control), and the thread shown by default stays shown. When
+nothing waits or runs the page lands on the composer as before, and an observer's page lands on the same inbox read-only. Pressing a
 thread is `InboxOpened`; "Open session" and "Decide on the session's page" send
 `Opening`, the message a list row sends, and every handler is a click beneath
 `home.table_path`, which `ui_socket.home_accepts` already admits, so the inbox

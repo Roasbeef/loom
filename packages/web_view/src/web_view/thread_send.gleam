@@ -59,6 +59,10 @@ pub type Refusal {
 
   /// The strand's input queue is at its bound (protocol-change/022).
   QueueFull
+
+  /// The send did not answer before its deadline. Unlike the others it says
+  /// nothing about whether the gateway took the message: it may have arrived.
+  Unanswered
 }
 
 /// What the daemon answers to one send.
@@ -218,5 +222,7 @@ pub fn answer_words(answer: Answer, name: String) -> String {
     Refused(NotResident) -> "Not sent: the session is not running"
     Refused(NotAccepted(_)) -> "Not sent: the session refused it"
     Refused(QueueFull) -> "Not sent: its queue is full"
+    Refused(Unanswered) ->
+      "No answer in time; it may have arrived — check the session before sending again"
   }
 }

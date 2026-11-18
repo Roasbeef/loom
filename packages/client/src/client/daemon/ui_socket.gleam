@@ -1448,7 +1448,10 @@ fn admit_live(
       sessions: fn(deliver) {
         listed_task(role, fn() { listed(registry, credential) }, deliver)
       },
-      activity: session_activity_for(role, states_only(attachment.activity)),
+      activity: session_activity_for(
+        role,
+        server.states_of(attachment.activity),
+      ),
       open: fn(session) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, session) })
       },
@@ -1921,7 +1924,7 @@ pub fn home_thread_send_capability(
 ) -> Option(
   fn(String, String, operator.Delivery, fn(thread_send.Answer) -> Nil) -> Nil,
 ) {
-  // This branch resolves principal kind ceiling before the operation continues.
+  // Only the owner at the operator's ceiling may send, as for a creation.
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(ask)
     access.OwnerPrincipal, access.Observer
@@ -2011,8 +2014,30 @@ pub fn thread_send_task(
   thread_send_within(
     fn() { thread_send_for(standing, open, send, session, text, delivery) },
     thread_send_ms,
-    deliver,
+    fn(answer) {
+      log_not_accepted(session, answer)
+      deliver(answer)
+    },
   )
+}
+
+/// Writes the reason of a refusal the page will not be shown to the daemon's
+/// log, as `first_message_sent` does for a first message that did not arrive.
+/// The page is told fixed words only.
+fn log_not_accepted(session: String, answer: thread_send.Answer) -> Nil {
+  case answer {
+    thread_send.Refused(thread_send.NotAccepted(reason:)) ->
+      log.warn(
+        log.erlang(threshold: level.Info),
+        "daemon.thread_send_not_accepted",
+        [field.ident("session", session), field.text("reason", reason)],
+      )
+    thread_send.Delivered(_)
+    | thread_send.Refused(thread_send.NotHeld)
+    | thread_send.Refused(thread_send.NotResident)
+    | thread_send.Refused(thread_send.QueueFull)
+    | thread_send.Refused(thread_send.Unanswered) -> Nil
+  }
 }
 
 /// `thread_send_task` with the deadline as an argument and the send as a thunk,
@@ -2037,15 +2062,11 @@ pub fn thread_send_within(
           |> weft.deadline(within)
           |> weft.start
 
-        // This branch resolves outcomes before the operation continues.
+        // A deadline kills the send, so the answer is delivered either way:
+        // an unanswered send says so, because the gateway may have taken it.
         case outcomes {
           [weft.Completed(value: answer, ..)] -> deliver(answer)
-          _ ->
-            deliver(
-              thread_send.Refused(thread_send.NotAccepted(
-                "the session did not answer in time",
-              )),
-            )
+          _ -> deliver(thread_send.Refused(thread_send.Unanswered))
         }
 
         Ok(Nil)
@@ -7870,18 +7891,6 @@ fn read_task_for(read) {
   fn(deliver) { read_task(deliver, read) }
 }
 
-/// A session page's sidebar draws one state for each session and nothing a
-/// session said, so a page that is handed the home's reports (a live page the
-/// home opened) keeps only their activity before the page can see them.
-fn states_only(
-  reports: fn(List(String)) -> List(#(String, sessions.Report)),
-) -> fn(List(String)) -> List(#(String, sessions.Activity)) {
-  fn(ids) {
-    reports(ids)
-    |> list.map(fn(pair) { #(pair.0, { pair.1 }.activity) })
-  }
-}
-
 fn session_activity_for(role, activity) {
   fn(ids, deliver) { activity_for(role, activity, ids, deliver) }
 }
@@ -7945,6 +7954,8 @@ fn first_message_for(
       thread_send.Refused(thread_send.NotAccepted(reason:)) -> Error(reason)
       thread_send.Refused(thread_send.QueueFull) ->
         Error("the session's queue is full")
+      thread_send.Refused(thread_send.Unanswered) ->
+        Error("the session did not answer in time")
     }
   }
 }
@@ -7989,7 +8000,7 @@ pub fn message_to(
         |> result.replace_error(thread_send.NotResident),
       )
 
-      // This branch resolves view status before the operation continues.
+      // Only a resident incarnation has a gateway to send to.
       use incarnation <- result.try(case view.status {
         manager.Resident(incarnation) -> Ok(incarnation)
         manager.Reserved
@@ -8036,7 +8047,8 @@ pub fn message_to(
       )
     }
 
-    // This branch resolves sent before the operation continues.
+    // A refusal while resolving the session is an answer like any other, so
+    // the caller never has to tell a failed lookup from a failed send.
     case sent {
       Ok(answer) -> answer
       Error(refusal) -> thread_send.Refused(refusal)
@@ -8085,7 +8097,8 @@ pub fn send_message(
       process.self(),
     )
 
-  // This branch resolves attached before the operation continues.
+  // A gateway that would not attach the page has refused it and nothing was
+  // sent; only an attached page goes on to subscribe and send.
   case attached {
     Error(reason) -> thread_send.Refused(thread_send.NotAccepted(reason))
     Ok(connection) -> {
@@ -8112,7 +8125,7 @@ pub fn send_message(
       }
       gateway.connection_detach(connection)
 
-      // This branch resolves reply before the operation continues.
+      // The detach above is made before the reply is read, so no path leaks it.
       case reply {
         Ok(frame) -> answer_of(frame)
         Error(reason) -> thread_send.Refused(thread_send.NotAccepted(reason))

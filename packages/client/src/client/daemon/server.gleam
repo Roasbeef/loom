@@ -6502,8 +6502,23 @@ pub fn session_activity(
   registry: manager.Manager(instance),
   digest: access.Digest,
 ) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
-  let reports = home_activity(config, registry, digest)
+  states_of(home_activity(config, registry, digest))
+}
 
+/// Narrows a read of reports to a read of states: the one place a page that
+/// must not see what a session said is handed only what it may draw. A page
+/// that is given the home's reports (a live page the home opened) passes them
+/// through here, as `session_activity` does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.states_of(reports)(["0198..."])
+/// ```
+@internal
+pub fn states_of(
+  reports: fn(List(String)) -> List(#(String, listed_sessions.Report)),
+) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
   fn(ids) {
     reports(ids)
     |> list.map(fn(pair) { #(pair.0, { pair.1 }.activity) })

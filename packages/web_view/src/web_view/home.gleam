@@ -825,15 +825,18 @@ pub opaque type Model {
     /// derived from, kept whole for the inbox. It is replaced whole with
     /// `activity`, and everything in it that a session wrote is untrusted text.
     reports: Dict(String, sessions.Report),
-    /// The session whose thread the inbox's reading pane shows, as the person
-    /// last pressed it, or nothing before a press. The inbox shows the first
-    /// thread of the first group meanwhile, and a choice that left the list
-    /// falls back to it (`inbox_rule.selection`).
-    inbox_selected: Option(String),
-    /// Whether the person has chosen a centre. The page lands on the inbox when
-    /// something waits or runs and the person has not chosen, and a press of
-    /// "New session", the list link or a composer control is a choice that the
-    /// inbox never overrides afterwards.
+    /// The session whose thread the inbox's reading pane shows, and how it came
+    /// to. The default is fixed when the first read that has a thread settles
+    /// (`settled_selection`), so a later read never moves the pane under the
+    /// person's reading or typing. A choice that left the list falls back to the
+    /// first thread (`inbox_rule.selection`).
+    selected: Selection,
+    /// Whether the person has chosen a centre. The first read decides what the
+    /// page lands on: the inbox when something waits or runs, and the composer
+    /// otherwise, and the landing is not changed by a later read, because
+    /// replacing a composer the person is typing in would lose the text. A press
+    /// of "New session", the list link or a composer control is a choice that
+    /// the inbox never overrides.
     centre_choice: CentreChoice,
     /// What the inbox's outbox says: nothing sent, a message out to a session,
     /// or the daemon's answer to the last one (`thread_send.Outbox`). There is
@@ -970,11 +973,30 @@ pub type OpenTicket {
 /// (`inbox_rule.landing`); once the person presses "New session", the link to
 /// the list, or a control of the composer, the page shows what they chose.
 pub type CentreChoice {
-  /// The page shows what it landed on.
+  /// No read of the sessions' activity has answered yet, so there is nothing to
+  /// land on and the page shows the composer or the list.
+  Awaiting
+
+  /// The first read found something waiting or running, and the page shows what
+  /// it landed on: the inbox.
   Landed
 
   /// The person chose the composer or the list.
   Chose
+}
+
+/// The thread the inbox's reading pane shows and how it came to be shown.
+pub type Selection {
+  /// No thread has been shown yet.
+  Unchosen
+
+  /// The page showed the first thread of the first group, and keeps it until
+  /// the person presses another or the session leaves the list. On a narrow
+  /// screen the pane stays hidden for it.
+  Defaulted(session: String)
+
+  /// The person pressed its row.
+  Pressed(session: String)
 }
 
 /// Which centre the home shows. The composer is where a session is started and
@@ -1444,8 +1466,8 @@ pub fn new(start: Start) -> Model {
     groups: [],
     activity: dict.new(),
     reports: dict.new(),
-    inbox_selected: None,
-    centre_choice: Landed,
+    selected: Unchosen,
+    centre_choice: Awaiting,
     outbox: thread_send.Unsent,
     delivered: 0,
     now: 0,
@@ -1587,16 +1609,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Observed(rows:) ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> #(
-          Model(
-            ..model,
-            activity: dict.from_list(
-              list.map(rows, fn(row) { #(row.0, { row.1 }.activity) }),
-            ),
-            reports: dict.from_list(rows),
-          ),
-          effect.none(),
-        )
+        Connecting | Connected -> #(observed(model, rows), effect.none())
       }
 
     // The sidebar's own presses. The pills change what the sidebar lists and ask
@@ -1724,7 +1737,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Founded(orchestrator:, founding:) -> founded(model, orchestrator, founding)
 
     InboxOpened(session:) -> #(
-      Model(..model, inbox_selected: Some(session)),
+      Model(..model, selected: Pressed(session)),
       effect.none(),
     )
 
@@ -4251,20 +4264,114 @@ fn inbox_threads(model: Model) -> List(inbox_rule.Thread) {
   })
 }
 
+/// What the page's reports say it would land on: the inbox when something waits
+/// or runs, and the composer otherwise (`inbox_rule.landing`).
+fn would_land(model: Model) -> inbox_rule.Landing {
+  inbox_rule.landing(
+    list.map(inbox_threads(model), fn(thread) { thread.report }),
+  )
+}
+
+/// Applies the daemon's answer to the activity read. It replaces the reports
+/// whole, with two exceptions that keep what the person is looking at in place:
+/// the thread the pane shows keeps its previous report when one read leaves it
+/// out and the session is still listed, since a slow session is not a gone one;
+/// and the first answer decides the landing (`first_landing`) and fixes the
+/// default thread (`settled_selection`).
+fn observed(model: Model, rows: List(#(String, sessions.Report))) -> Model {
+  let fresh = dict.from_list(rows)
+
+  // Only the selected thread is kept across a read that omits it, so a
+  // session that really left is not held in the page's memory.
+  let kept = case selected_session(model.selected) {
+    Some(id) ->
+      case dict.has_key(fresh, id), dict.get(model.reports, id) {
+        False, Ok(previous) ->
+          case still_running(model, id) {
+            True -> dict.insert(fresh, id, previous)
+            False -> fresh
+          }
+        True, _ | False, Error(Nil) -> fresh
+      }
+    None -> fresh
+  }
+
+  let read =
+    Model(
+      ..model,
+      activity: dict.map_values(kept, fn(_, report) { report.activity }),
+      reports: kept,
+    )
+
+  Model(
+    ..read,
+    selected: settled_selection(read),
+    centre_choice: first_landing(read),
+  )
+}
+
+/// Whether the page's own list still shows `id` as a running session.
+fn still_running(model: Model, id: String) -> Bool {
+  list.any(listing.entries(model.groups), fn(entry) {
+    entry.id == id && entry.residency == Live
+  })
+}
+
+/// The first answer decides where the page lands, and no later one changes it:
+/// the inbox when something waits or runs, and otherwise the composer or the
+/// list as a choice, with the "Inbox" control for when something does.
+fn first_landing(model: Model) -> CentreChoice {
+  case model.centre_choice {
+    Awaiting ->
+      case would_land(model) {
+        inbox_rule.Inbox -> Landed
+        inbox_rule.Form -> Chose
+      }
+    Landed -> Landed
+    Chose -> Chose
+  }
+}
+
+/// The session a selection names, if it names one.
+fn selected_session(selection: Selection) -> Option(String) {
+  case selection {
+    Unchosen -> None
+    Defaulted(session:) | Pressed(session:) -> Some(session)
+  }
+}
+
+/// The selection after a read: a pressed or defaulted thread that is still
+/// listed stands, and anything else becomes the first thread as a default, or
+/// nothing when there is none. A default is therefore fixed at the first read
+/// that has a thread, and a thread that later outranks it does not move it.
+fn settled_selection(model: Model) -> Selection {
+  let groups = inbox_rule.grouped(inbox_threads(model))
+  let chosen = inbox_rule.selection(groups, selected_session(model.selected))
+
+  // A press that still stands stays a press; any other thread shown is a
+  // default, so the narrow screen can keep its pane hidden.
+  case chosen, model.selected {
+    Some(id), Pressed(held) if held == id -> Pressed(id)
+    Some(id), _ -> Defaulted(id)
+    None, _ -> Unchosen
+  }
+}
+
 /// Whether the centre is the inbox: the pane is the composer's or the list's,
-/// the person has chosen neither, and something waits or runs
-/// (`inbox_rule.landing`). A ticket's page and a relayed session are the
-/// centre's whole subject, and a person's own choice of the composer or the list
-/// is never overridden.
+/// the first read landed on the inbox and the person has chosen neither. A
+/// ticket's page and a relayed session are the centre's whole subject, and a
+/// person's own choice of the composer or the list is never overridden.
 fn landed_inbox(model: Model) -> Bool {
   case model.pane, model.centre_choice {
     NewSession, Landed | SessionList, Landed ->
-      inbox_rule.landing(
-        list.map(inbox_threads(model), fn(thread) { thread.report }),
-      )
-      == inbox_rule.Inbox
-    Ticketed(_), _ | Relayed(_), _ | NewSession, Chose | SessionList, Chose ->
-      False
+      would_land(model) == inbox_rule.Inbox
+    Ticketed(_), _
+    | Relayed(_), _
+    | NewSession, Awaiting
+    | SessionList, Awaiting
+    | NewSession, Chose
+    | SessionList, Chose
+    -> False
   }
 }
 
@@ -4275,7 +4382,7 @@ fn landed_inbox(model: Model) -> Bool {
 fn inbox_page(model: Model) -> Element(Msg) {
   let threads = inbox_threads(model)
   let groups = inbox_rule.grouped(threads)
-  let chosen = inbox_rule.selection(groups, model.inbox_selected)
+  let chosen = inbox_rule.selection(groups, selected_session(model.selected))
 
   inbox_view.view(
     inbox_view.Offer(
@@ -4285,8 +4392,7 @@ fn inbox_page(model: Model) -> Element(Msg) {
       ),
       groups:,
       selected: case chosen {
-        Some(id) if model.inbox_selected == chosen ->
-          Some(inbox_view.Pressed(id))
+        Some(id) if model.selected == Pressed(id) -> Some(inbox_view.Pressed(id))
         Some(id) -> Some(inbox_view.Default(id))
         None -> None
       },
@@ -4314,16 +4420,17 @@ fn inbox_page(model: Model) -> Element(Msg) {
 fn inbox_return(model: Model) -> Option(Msg) {
   case model.pane, model.centre_choice {
     NewSession, Chose | SessionList, Chose ->
-      case
-        inbox_rule.landing(
-          list.map(inbox_threads(model), fn(thread) { thread.report }),
-        )
-      {
+      case would_land(model) {
         inbox_rule.Inbox -> Some(ShowingInbox)
         inbox_rule.Form -> None
       }
-    NewSession, Landed | SessionList, Landed | Ticketed(_), _ | Relayed(_), _ ->
-      None
+    NewSession, Awaiting
+    | SessionList, Awaiting
+    | NewSession, Landed
+    | SessionList, Landed
+    | Ticketed(_), _
+    | Relayed(_), _
+    -> None
   }
 }
 

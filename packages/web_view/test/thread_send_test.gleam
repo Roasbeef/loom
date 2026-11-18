@@ -14,7 +14,7 @@ import session_view/operator
 import web_view/inbox_rule
 import web_view/thread_send.{
   Admitted, Delivered, NotAccepted, NotHeld, NotResident, QueueFull, Queued,
-  Refused,
+  Refused, Unanswered,
 }
 
 const seed = 20_261_118
@@ -103,6 +103,13 @@ pub fn the_outbox_has_fixed_words_for_each_state_test() {
       "web ui",
     )
     == "Not sent: its queue is full"
+
+  assert thread_send.words(
+      thread_send.Settled("A", Refused(Unanswered)),
+      "A",
+      "web ui",
+    )
+    == "No answer in time; it may have arrived — check the session before sending again"
 
   // An outbox about another session says nothing of this one.
   assert thread_send.words(thread_send.Sending("B"), "A", "web ui")
