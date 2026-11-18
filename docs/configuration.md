@@ -70,7 +70,12 @@ rows through `executors.reload`, or when it starts). `[executor_link]` and
 `[executor_listener]` count only by the private key file each names, which a
 session masks in its jail, so the first guest `loom vm up` adds, or a table that
 names another key, reopens a session once, and a further guest, a moved
-certificate or a new listen address does not. The reopen closes the session's
+certificate or a new listen address does not. A session placed on an executor
+keeps what it took from that executor's row when it opened: `trust`,
+`attach_within_s`, and the declared platform, enforcement and toolchains. An
+`executors.reload` that changes those reaches sessions opened after it, not
+sessions already open. The rows `loom vm` writes change only `trust`, `address`
+and `pin`, so they do not change what a placed session holds. The reopen closes the session's
 attachments (the terminal reattaches, a web page needs a reload) and ends its
 background jobs. An agent can suggest an edit with `propose` and `target:
 "config"`; the owner approves it in the proposals review, and the approval
