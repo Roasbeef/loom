@@ -285,7 +285,8 @@ pub type AdminAttachment(instance) {
     /// product and tags every session with as the machine that runs its agent.
     machine: String,
     /// Asks the named sessions what they are doing, as the home's does
-    /// (`HomeAttachment.activity`), for the admin sidebar's dots.
+    /// (`HomeAttachment.activity`, narrowed by `session_activity`), for the admin
+    /// sidebar's dots.
     activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
     /// The daemon's own state directory, which an isolated session's fresh
     /// stores are minted under (`manager.isolate`). It is the daemon's value and
@@ -360,10 +361,11 @@ pub type HomeAttachment(instance) {
     /// Asks the named sessions what they are doing: the `sessions.activity`
     /// read (protocol-change/050) the control socket serves the owner, made on
     /// a page for the sessions its credential holds, and reduced to one
-    /// state for each session that answered (`home_activity`). It blocks for up to the read's own
+    /// report for each session that answered (`home_activity`): its activity,
+    /// its last finished message and its strands' glances. It blocks for up to the read's own
     /// deadline, so the page never calls it from its runtime
     /// (`ui_socket.activity_task`).
-    activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
+    activity: fn(List(String)) -> List(#(String, listed_sessions.Report)),
     /// The daemon's own sessions directory, which deleting a session removes
     /// the database family from (`manager.delete_session`). It is the daemon's
     /// value and never a page's, and only the owner's fresh home may reach it
@@ -1031,7 +1033,7 @@ fn admin_upgrade(
             permit:,
             registry: state.registry,
             machine: page_machine(config.deployment),
-            activity: home_activity(config, state.registry, grant.credential),
+            activity: session_activity(config, state.registry, grant.credential),
             state_root: state.state_root,
             login:,
             deployment: fn(node) { admin_deployment(config, node) },
@@ -2505,7 +2507,7 @@ fn resident_upgrade(
                 state_root: state.state_root,
                 sessions_directory: state.sessions_directory,
                 registration:,
-                activity: home_activity(config, state.registry, digest),
+                activity: session_activity(config, state.registry, digest),
                 peers: peer_directory(config, state.registry),
                 models: fn() {
                   profiles.model_keys(config.domain_configuration)
@@ -6458,7 +6460,7 @@ fn activity(
   })
 }
 
-/// The activity read a home page is handed: `activity_states` over the
+/// The activity read a home page is handed: `activity_reports` over the
 /// sessions the page's credential holds. Membership is derived here, in the
 /// registry, at the moment of each read, from the credential's digest and never
 /// from the page's list, so a revoked credential or a removed membership reads
@@ -6474,12 +6476,37 @@ pub fn home_activity(
   config: Config(instance),
   registry: manager.Manager(instance),
   digest: access.Digest,
-) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
+) -> fn(List(String)) -> List(#(String, listed_sessions.Report)) {
   // The control command refuses a list past `activity_limit`; this read has no
   // request to refuse, so it keeps the first ones and the bound holds here too.
   fn(ids) {
     let asked = list.take(ids, protocol.activity_limit)
-    activity_states(config, registry, held(registry, digest, asked))
+    activity_reports(config, registry, held(registry, digest, asked))
+  }
+}
+
+/// The activity read the session page's sidebar and the admin page's dots are
+/// handed: `home_activity` reduced to the one state word each draws. Only the
+/// home page learns a session's last message and glances, so the narrowing
+/// happens here, at the daemon, and neither of the other two pages can draw
+/// what it was never given.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.session_activity(config, registry, digest)(["0198..."])
+/// ```
+@internal
+pub fn session_activity(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
+  let reports = home_activity(config, registry, digest)
+
+  fn(ids) {
+    reports(ids)
+    |> list.map(fn(pair) { #(pair.0, { pair.1 }.activity) })
   }
 }
 
@@ -6498,14 +6525,16 @@ fn held(
   })
 }
 
-/// What the named sessions are doing, for a home page's list: the same read
-/// the control command `sessions.activity` makes (`activity`, with its
-/// deadline and its bound on a row), reduced to the one state word the page
-/// draws for each session that answered. A session that was not running, did
-/// not answer in time, or answered with a state the page does not know has no
-/// entry. Only the state leaves the daemon here: the row's last message, model
-/// and glances, which the control command hands the owner, are dropped, so the
-/// page learns no more about a session than whether it works.
+/// What the named sessions are doing, for the session page's sidebar and the
+/// admin page's dots: the same read the control command `sessions.activity`
+/// makes (`activity`, with its deadline and its bound on a row), reduced to the
+/// one state word those pages draw for each session that answered. A session
+/// that was not running, did not answer in time, or answered with a state the
+/// page does not know has no entry. Only the state leaves the daemon here: the
+/// row's last message, model and glances are dropped, so the session page
+/// learns no more about another session than whether it works. The home page
+/// is the exception: it gets the message and the glances, through
+/// `activity_reports`.
 ///
 /// The caller names sessions from the page's own authorized list, at most 24
 /// of them, and runs this off the page's runtime. It blocks for up to the
@@ -6524,6 +6553,89 @@ pub fn activity_states(
 ) -> List(#(String, listed_sessions.Activity)) {
   activity(config, registry, sessions)
   |> list.filter_map(state_of)
+}
+
+/// What the named sessions are doing and last said, for the home page's inbox:
+/// the same read as `activity_states`, with the same deadline, bound and
+/// omissions, but each answer keeps the row's `last_message` and `glances`
+/// beside the state, as a `listed_sessions.Report`. The home page is the one
+/// page that draws them, and only as text nodes, because they are model text.
+///
+/// A row decodes totally. A missing or non-string `last_message` is no message,
+/// and a glance that is not an object of three strings is dropped alone, so a
+/// malformed field never costs a session its state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.activity_reports(config, registry, ["0198..."])
+/// ```
+@internal
+pub fn activity_reports(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  sessions: List(String),
+) -> List(#(String, listed_sessions.Report)) {
+  activity(config, registry, sessions)
+  |> list.filter_map(report_of)
+}
+
+/// The session and the report a reply row names, when it names a state the
+/// page knows. A `last_message` that is missing or is not a string is no
+/// message, and a glance that is not an object of three strings is dropped
+/// alone, so a malformed field never costs the row its state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [])))
+/// ```
+@internal
+pub fn report_of(
+  row: JsonValue,
+) -> Result(#(String, listed_sessions.Report), Nil) {
+  use #(id, doing) <- result.try(state_of(row))
+
+  case row {
+    json.Object(fields) -> {
+      let last_message = case list.key_find(fields, "last_message") {
+        Ok(json.String(text)) -> Some(text)
+        Ok(_) | Error(Nil) -> None
+      }
+
+      let glances = case list.key_find(fields, "glances") {
+        Ok(json.Array(items)) -> list.filter_map(items, glance_of)
+        Ok(_) | Error(Nil) -> []
+      }
+
+      Ok(#(id, listed_sessions.Report(doing, last_message, glances)))
+    }
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Nil)
+  }
+}
+
+/// One glance of a row, or nothing for a value that is not an object with a
+/// string strand, title and summary.
+fn glance_of(item: JsonValue) -> Result(listed_sessions.Glance, Nil) {
+  case item {
+    json.Object(fields) -> {
+      use strand <- result.try(text_field(fields, "strand"))
+      use title <- result.try(text_field(fields, "title"))
+      use summary <- result.map(text_field(fields, "summary"))
+      listed_sessions.Glance(strand:, title:, summary:)
+    }
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Nil)
+  }
 }
 
 /// The session and the state a reply row names, when it names a state the page

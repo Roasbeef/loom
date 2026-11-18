@@ -297,6 +297,7 @@ import web_view/composer
 import web_view/creations.{type Sharing}
 import web_view/elsewhere
 import web_view/ending.{type Ending}
+import web_view/inbox_rule
 import web_view/listing
 import web_view/names
 import web_view/orchestrators
@@ -318,6 +319,7 @@ import web_view/view/folders as folders_view
 import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
+import web_view/view/inbox as inbox_view
 import web_view/view/new_session
 import web_view/view/notice
 import web_view/view/projects as projects_view
@@ -448,7 +450,8 @@ pub type Start {
     /// function it is given, from that task, as `Observed`'s message. A session
     /// the daemon could not ask, or that was slow to answer, is left out of the
     /// answer, and its row says nothing about what it is doing.
-    activity: fn(List(String), fn(List(#(String, Activity))) -> Nil) -> Nil,
+    activity: fn(List(String), fn(List(#(String, sessions.Report))) -> Nil) ->
+      Nil,
     /// Asks the daemon to create a session in a place (a workspace the page
     /// drew, or a folder the owner typed, protocol-change/074) with the typed
     /// name and sharing, and mint a ticket for its page
@@ -800,6 +803,21 @@ pub opaque type Model {
     /// An answer replaces it whole, so a session that stopped running leaves it
     /// at the next one.
     activity: Dict(String, Activity),
+    /// What the daemon last said each running session is doing, last said and
+    /// reports about its strands, by identity: the same answer `activity` is
+    /// derived from, kept whole for the inbox. It is replaced whole with
+    /// `activity`, and everything in it that a session wrote is untrusted text.
+    reports: Dict(String, sessions.Report),
+    /// The session whose thread the inbox's reading pane shows, as the person
+    /// last pressed it, or nothing before a press. The inbox shows the first
+    /// thread of the first group meanwhile, and a choice that left the list
+    /// falls back to it (`inbox_rule.selection`).
+    inbox_selected: Option(String),
+    /// Whether the person has chosen a centre. The page lands on the inbox when
+    /// something waits or runs and the person has not chosen, and a press of
+    /// "New session", the list link or a composer control is a choice that the
+    /// inbox never overrides afterwards.
+    centre_choice: CentreChoice,
     /// The time the last list was read, in Unix milliseconds, which the rows'
     /// ages are counted from.
     now: Int,
@@ -922,6 +940,18 @@ pub type OpenTicket {
   )
 }
 
+/// Whether the person has chosen the centre the page shows. A page that has
+/// not lands on the inbox whenever something waits or runs
+/// (`inbox_rule.landing`); once the person presses "New session", the link to
+/// the list, or a control of the composer, the page shows what they chose.
+pub type CentreChoice {
+  /// The page shows what it landed on.
+  Landed
+
+  /// The person chose the composer or the list.
+  Chose
+}
+
 /// Which centre the home shows. The composer is where a session is started and
 /// is the owner's default; the list is the page that held every control before
 /// the sidebar took over listing, and stays reachable for the controls that have
@@ -971,7 +1001,12 @@ pub type Msg {
   /// The daemon's answer to the activity read a list started: one state for
   /// each session it could ask. It is the effect's own message, dispatched from
   /// the daemon's task, and no handler carries it.
-  Observed(rows: List(#(String, Activity)))
+  Observed(rows: List(#(String, sessions.Report)))
+
+  /// A thread in the inbox was pressed: show its reading pane. The identity is
+  /// the catalogue's, fixed when the tree was drawn, and the page honours it
+  /// only for a session its last read still reports (`inbox_rule.selection`).
+  InboxOpened(session: String)
 
   /// A running session's row was pressed: ask the daemon for a ticket to open
   /// it. The identity is the catalogue's, fixed when the tree was drawn, and
@@ -1368,6 +1403,9 @@ pub fn new(start: Start) -> Model {
     start:,
     groups: [],
     activity: dict.new(),
+    reports: dict.new(),
+    inbox_selected: None,
+    centre_choice: Landed,
     now: 0,
     status: Connecting,
     timer: None,
@@ -1508,7 +1546,13 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.status {
         Ended(_) -> #(model, effect.none())
         Connecting | Connected -> #(
-          Model(..model, activity: dict.from_list(rows)),
+          Model(
+            ..model,
+            activity: dict.from_list(
+              list.map(rows, fn(row) { #(row.0, { row.1 }.activity) }),
+            ),
+            reports: dict.from_list(rows),
+          ),
           effect.none(),
         )
       }
@@ -1637,18 +1681,27 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // words saying so. A refusal puts the form back.
     Founded(orchestrator:, founding:) -> founded(model, orchestrator, founding)
 
-    ShowingList -> #(Model(..model, pane: SessionList), effect.none())
+    InboxOpened(session:) -> #(
+      Model(..model, inbox_selected: Some(session)),
+      effect.none(),
+    )
+
+    ShowingList -> #(
+      Model(..model, pane: SessionList, centre_choice: Chose),
+      effect.none(),
+    )
 
     ShowingNew ->
       case model.start.create {
         Some(_) -> #(
-          Model(..model, pane: NewSession, note: None),
+          Model(..model, pane: NewSession, note: None, centre_choice: Chose),
           effect.none(),
         )
         None -> #(model, effect.none())
       }
 
-    Composed(message:) -> composing(model, message)
+    Composed(message:) ->
+      composing(Model(..model, centre_choice: Chose), message)
 
     // A press asks the daemon in the component's own process. An ended page
     // asks nothing: its principal's access is gone, and the daemon would
@@ -3898,11 +3951,12 @@ pub fn view(model: Model) -> Element(Msg) {
   shell.view(
     shell.Home,
     home_bar.with(
-      title: case model.pane {
-        NewSession -> "New session"
-        SessionList -> "Sessions"
-        Ticketed(_) -> "Ticket"
-        Relayed(_) -> "Session"
+      title: case model.pane, landed_inbox(model) {
+        NewSession, True | SessionList, True -> "Inbox"
+        NewSession, False -> "New session"
+        SessionList, False -> "Sessions"
+        Ticketed(_), _ -> "Ticket"
+        Relayed(_), _ -> "Session"
       },
       who: home_bar.account(
         model.name,
@@ -4077,6 +4131,98 @@ fn worker_press(model: Model, session: String) -> Option(Msg) {
 /// is the new session's, and the list otherwise. Both sit at `table_path`, so the
 /// admission is the same for both and no path moves.
 fn centre_body(model: Model) -> Element(Msg) {
+  case landed_inbox(model) {
+    True -> inbox_page(model)
+    False -> centre_pane(model)
+  }
+}
+
+/// The running sessions the page lists that the daemon's last activity read
+/// answered for, as the inbox's threads. A report for a session the page's own
+/// list does not hold is not drawn: the list is what the daemon authorized, and
+/// a saved session has no report to read.
+fn inbox_threads(model: Model) -> List(inbox_rule.Thread) {
+  list.filter_map(listing.entries(model.groups), fn(entry) {
+    case entry.residency {
+      Live ->
+        dict.get(model.reports, entry.id)
+        |> result.map(fn(report) {
+          inbox_rule.Thread(
+            id: entry.id,
+            name: sessions.label(entry),
+            workspace: entry.workspace,
+            report:,
+          )
+        })
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> Error(Nil)
+    }
+  })
+}
+
+/// Whether the centre is the inbox: the pane is the composer's or the list's,
+/// the person has chosen neither, and something waits or runs
+/// (`inbox_rule.landing`). A ticket's page and a relayed session are the
+/// centre's whole subject, and a person's own choice of the composer or the list
+/// is never overridden.
+fn landed_inbox(model: Model) -> Bool {
+  case model.pane, model.centre_choice {
+    NewSession, Landed | SessionList, Landed ->
+      inbox_rule.landing(
+        list.map(inbox_threads(model), fn(thread) { thread.report }),
+      )
+      == inbox_rule.Inbox
+    Ticketed(_), _ | Relayed(_), _ | NewSession, Chose | SessionList, Chose ->
+      False
+  }
+}
+
+/// The inbox, drawn from the page's reports. Its buttons send messages the home
+/// already has: a thread's press shows it (`InboxOpened`), and the open buttons
+/// send what a list row's press sends (`Opening`), so there is one way to open a
+/// session from here and the socket admits no new event.
+fn inbox_page(model: Model) -> Element(Msg) {
+  let threads = inbox_threads(model)
+  let groups = inbox_rule.grouped(threads)
+  let chosen = inbox_rule.selection(groups, model.inbox_selected)
+
+  inbox_view.view(inbox_view.Offer(
+    headline: inbox_rule.headline(
+      list.map(threads, fn(thread) { thread.report }),
+      running_sessions(model),
+    ),
+    groups:,
+    selected: case chosen {
+      Some(id) if model.inbox_selected == chosen -> Some(inbox_view.Pressed(id))
+      Some(id) -> Some(inbox_view.Default(id))
+      None -> None
+    },
+    opening: model.opening,
+    pick: InboxOpened,
+    open: Opening,
+    all_sessions: ShowingList,
+  ))
+}
+
+/// How many running sessions the page lists, which the inbox's headline counts
+/// its answers against.
+fn running_sessions(model: Model) -> Int {
+  list.count(listing.entries(model.groups), fn(entry) {
+    case entry.residency {
+      Live -> True
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> False
+    }
+  })
+}
+
+/// The centre's body when the inbox is not it: the composer, a ticket's page,
+/// a relayed session or the list.
+fn centre_pane(model: Model) -> Element(Msg) {
   case model.pane, model.start.create {
     NewSession, Some(_) -> new_session.view(new_pane(model))
     Ticketed(open), _ -> ticket_page(model, open)

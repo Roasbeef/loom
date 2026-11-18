@@ -1423,7 +1423,7 @@ fn admit_live(
       sessions: fn(deliver) {
         listed_task(role, fn() { listed(registry, credential) }, deliver)
       },
-      activity: session_activity_for(role, attachment.activity),
+      activity: session_activity_for(role, states_only(attachment.activity)),
       open: fn(session) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, session) })
       },
@@ -4393,7 +4393,8 @@ pub fn forget_for(
 /// once, so the page's runtime never waits for the sessions to answer;
 /// `deliver` is called, from that run, with what `ask` returned.
 ///
-/// `ask` is the daemon's `sessions.activity` read (`server.activity_states`),
+/// `ask` is the daemon's `sessions.activity` read (`server.home_activity`, whose
+/// answers are reports, or `server.session_activity`, whose are states),
 /// which asks every named session concurrently under one deadline of its own
 /// and leaves out any that did not answer, so the run ends within that
 /// deadline. The run is linked to the calling process, which is the page's
@@ -4409,9 +4410,9 @@ pub fn forget_for(
 /// ```
 @internal
 pub fn activity_task(
-  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ask: fn(List(String)) -> List(#(String, answer)),
   ids: List(String),
-  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+  deliver: fn(List(#(String, answer))) -> Nil,
 ) -> Nil {
   read_task(deliver, fn() { ask(ids) })
 }
@@ -7683,6 +7684,18 @@ fn home_activity(activity) {
 
 fn read_task_for(read) {
   fn(deliver) { read_task(deliver, read) }
+}
+
+// A session page's sidebar draws one state for each session and nothing a
+// session said, so a page that is handed the home's reports (a live page the
+// home opened) keeps only their activity before the page can see them.
+fn states_only(
+  reports: fn(List(String)) -> List(#(String, sessions.Report)),
+) -> fn(List(String)) -> List(#(String, sessions.Activity)) {
+  fn(ids) {
+    reports(ids)
+    |> list.map(fn(pair) { #(pair.0, { pair.1 }.activity) })
+  }
 }
 
 fn session_activity_for(role, activity) {

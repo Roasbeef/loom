@@ -617,6 +617,39 @@
   main.centre > .home-sessions{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   .home-heading{margin:0 0 12px 0;font:600 15px/1.4 var(--font-sans);}
   .home-empty{margin:0;color:var(--color-fg-quiet);}
+  /* The home's attention inbox (view/inbox): a grouped thread list beside a
+     reading pane. No edge bars and no shadows; a thread is marked by a tinted
+     background and a hairline border, and a kind's colour is on its words only. */
+  main.centre > .home-sessions.inbox{max-width:1080px;}
+  .inbox-headline{margin:-6px 0 14px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
+  .inbox-body{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:20px;align-items:start;margin-bottom:16px;}
+  .inbox-list{display:flex;flex-direction:column;gap:16px;min-width:0;}
+  .inbox-group-head{display:flex;align-items:baseline;gap:8px;margin:0 0 6px 0;color:var(--color-fg-quiet);font:600 12px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.04em;}
+  .inbox-count{font-weight:400;font-variant-numeric:tabular-nums;}
+  .inbox-threads{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none;}
+  button.inbox-thread{display:flex;flex-direction:column;gap:2px;width:100%;box-sizing:border-box;min-height:44px;margin:0;padding:8px 10px;border:1px solid transparent;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
+  button.inbox-thread:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  button.inbox-thread:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  button.inbox-thread.inbox-selected{border-color:var(--color-divider);background:var(--color-bg-raised);}
+  .inbox-eyebrow{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .inbox-approval .inbox-eyebrow{color:var(--color-signal-text);}
+  .inbox-failed .inbox-eyebrow{color:var(--color-danger-text);}
+  .inbox-update .inbox-eyebrow{color:var(--color-current);}
+  .inbox-head{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .inbox-quiet{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .inbox-reading{display:flex;flex-direction:column;gap:14px;min-width:0;padding:14px 16px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  .inbox-label{margin:0 0 4px 0;color:var(--color-fg-quiet);font:600 12px/1.4 var(--font-sans);}
+  .inbox-message{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;}
+  .inbox-glances{margin:0;padding:0 0 0 18px;}
+  .inbox-standing{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--color-signal) 35%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-signal) 7%,transparent);}
+  .inbox-standing > p{margin:0;}
+  button.inbox-open{align-self:flex-start;margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}
+  button.inbox-open:hover:not(:disabled){background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  button.inbox-open:disabled{opacity:.5;cursor:default;}
+  /* On a narrow screen the list is the page, and the reading pane appears only
+     under a thread the person pressed, so the page never opens on a pane that
+     sits between the list and its rows. */
+  @media (max-width:768px){.inbox-body{grid-template-columns:minmax(0,1fr);}.inbox-reading.inbox-reading-default{display:none;}button.inbox-thread,button.inbox-open{min-height:44px;}}
   .home-withheld{margin:16px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   /* One list for each workspace: a heading with the shortened path and the
      count as the sidebar's eyebrow has them, and a hairline-ruled row for each
