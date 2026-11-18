@@ -58,6 +58,7 @@
   --color-danger: oklch(0.650 0.190 8);
   --color-danger-text: oklch(0.800 0.115 10);
   --color-on-danger: oklch(0.172 0.006 262);
+  --color-on-signal: oklch(0.172 0.006 262);
   --color-added: oklch(0.890 0.180 148);
   --color-added-text: oklch(0.850 0.170 148);
   --color-added-bg: oklch(0.330 0.060 150);
@@ -127,6 +128,7 @@
     --color-danger: oklch(0.570 0.195 356);
     --color-danger-text: oklch(0.510 0.185 358);
     --color-on-danger: oklch(1.000 0.000 85);
+    --color-on-signal: oklch(0.215 0.006 85);
     --color-added: oklch(0.470 0.130 142);
     --color-added-text: oklch(0.470 0.120 142);
     --color-added-bg: oklch(0.945 0.055 150);
@@ -164,6 +166,7 @@
   --color-danger: oklch(0.570 0.195 356);
   --color-danger-text: oklch(0.510 0.185 358);
   --color-on-danger: oklch(1.000 0.000 85);
+  --color-on-signal: oklch(0.215 0.006 85);
   --color-added: oklch(0.470 0.130 142);
   --color-added-text: oklch(0.470 0.120 142);
   --color-added-bg: oklch(0.945 0.055 150);
@@ -200,6 +203,7 @@
   --color-danger: inherit;
   --color-danger-text: inherit;
   --color-on-danger: inherit;
+  --color-on-signal: inherit;
   --color-added: inherit;
   --color-added-text: inherit;
   --color-added-bg: inherit;
@@ -1492,7 +1496,7 @@
   .proposal-settled{margin:4px 0 0 0;}
   .proposals-notice{margin:0 0 8px 0;color:var(--color-danger-text);}
   button.proposal-approve,button.proposal-reject{font-size:12px;}
-  .tab-badge.tab-badge-proposals{background:var(--color-signal);color:var(--color-on-danger);}
+  .tab-badge.tab-badge-proposals{background:var(--color-signal);color:var(--color-on-signal);}
   /* The strand panel's Evolution tab (web_view/view/evolution,
      protocol-change/099), the panel's seventh child. Each candidate is a tinted
      box with a hairline border, and the question a change asks replaces the
@@ -1998,7 +2002,7 @@
      for the window where the sidebar is a drawer. <loom-shell> carries it as
      `waiting`, a number the component counted, capped at ten. */
   .toggle-sidebar{position:relative;}
-  :host([waiting]) .toggle-sidebar::after{content:"";position:absolute;top:5px;right:3px;box-sizing:border-box;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--color-signal);color:var(--color-on-danger);font:700 10.5px/16px var(--font-sans);text-align:center;}
+  :host([waiting]) .toggle-sidebar::after{content:"";position:absolute;top:5px;right:3px;box-sizing:border-box;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--color-signal);color:var(--color-on-signal);font:700 10.5px/16px var(--font-sans);text-align:center;}
   :host([waiting="1"]) .toggle-sidebar::after{content:"1";}
   :host([waiting="2"]) .toggle-sidebar::after{content:"2";}
   :host([waiting="3"]) .toggle-sidebar::after{content:"3";}

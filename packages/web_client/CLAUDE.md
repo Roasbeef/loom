@@ -686,8 +686,9 @@ sends the server nothing.
   `bg-sunk`, `bg-user`, `code`, and the diff backgrounds for `added-text` and
   `danger-text`) in either theme, or if a rule sets `color:` from a mark
   token, `--hue` or `fg-faint`. It has its own self-test. `on-danger` (the
-  tab badge's text) is held against `danger`, and `bg` against `fg` for the
-  filled primary buttons. The tokens are written as `oklch(L C H)` (hex is
+  tab badge's text) is held against `danger`, `on-signal` (the text of a
+  badge drawn in the attention amber) against `signal`, and `bg` against `fg`
+  for the filled primary buttons. The tokens are written as `oklch(L C H)` (hex is
   still read), and the same script holds the palette's design. It checks five
   things: every value is inside sRGB; text has an APCA lightness contrast of
   Lc 60, and `fg` Lc 90; the surfaces step in OKLCH lightness; the four
