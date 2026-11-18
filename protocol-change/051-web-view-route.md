@@ -4866,3 +4866,108 @@ sockets admit the submit, the observer's refuses it and everything beneath the
 rail except the insight's press, and the capability is withheld from an observer.
 `client/test/client/ui_route_test.gleam` pins that a rail answer needs an open page
 and the door's authority. A real drive in a browser has not been run.
+
+## Addendum: the review pane (2026-11-18)
+
+Phase 1 of the attention inbox draws a finished session's work for review
+(`docs/design-notes/attention-inbox/README.md`, section 2.1 and ruling 4;
+[123](123-review-hunks.md)). A finished session is an idle session with a last
+message and a worktree that holds changes. Home lists it under "To review", and
+a press on its row opens a review pane in the reading pane.
+
+### What the page reads
+
+The page reads each candidate's worktree through `server.home_review`, one
+session at a time, once for each last message the session has said
+(`web_view/review_scan_rule`). A read is about twenty-six jailed Git calls and
+the daemon allows a credential two in four seconds, so the page never reads more
+than one at once, keeps a verdict for each session and not the review, and
+retries a failure at most three times for the same message. The open thread's
+review is read once more when it opens, and the record of each find the pane
+shows is read for its revision (`attention.read`, as an ask's is).
+
+The read is handed to a page whose ceiling is an operator's, owner's or member's,
+and to no page whose ceiling is an observer's (`ui_socket.home_attention_capability`).
+An observer's home has no "To review" group and no pane: it shows the session in
+"Waiting" with its last message. `ui_socket.review_for` checks the page's standing
+at each read, that the page is open, the ceiling is not an observer's and the
+credential still authenticates as the principal the page was admitted for. The
+door then reads the credential's authority over the session from the registry and
+refuses an observer, as [123](123-review-hunks.md) says.
+
+### What the page may do
+
+All of it is an event beneath `home.table_path`, so the socket's admission set is
+the one the attention threads already have, and no frame, path constant or rule
+is added.
+
+| Control | Event | Admitted for |
+|---|---|---|
+| A thread's row | click | every home |
+| A verdict, Send, Clear | click | every home, acted on only where `Attention.act` is |
+| A file's comment, a find's form | submit | the owner's operating home |
+
+A member at the Operator ceiling reads the review and may act on none of it,
+because `act` is the owner's alone, the rule for every other act on Home.
+
+One Send applies the staged find closes at the revisions the page read, one at a
+time, through the same `close` the find thread uses, and then delivers one prompt
+to the session's main strand through the same `strand` a retry uses. The prompt is
+composed first and refused, with its byte count, when it is past the composer's
+16,384 bytes, so an oversized review has no side effect. A close the daemon
+refuses stops the Send and no prompt is delivered, since the prompt would say the
+find was closed. A close that was applied is not applied twice by a later Send. A
+prompt the gateway refuses leaves everything staged. The receipt is the daemon's
+fixed words for each close and the gateway's answer to the prompt, delivered as
+admitted, queued, or refused.
+
+### What the page draws and what it does not
+
+- Every word of a review is a text node: paths, hunk headers, lines, find text,
+  and the agent's last message under a label that says it is untrusted. No
+  attribute, class, label, placeholder or key carries any of it. A form's controls
+  are named by fixed words (`comment`, `note`, `closure`), a form is keyed by the
+  session, the open count and its position, and the handlers close over the path
+  and the find's identifier on the server.
+- A form's submit is read back strictly: a comment form is exactly one `comment`
+  field, a find form exactly a `note` and a `closure` that is `fixed`, `filed` or
+  `dismissed`. A comment on a path the review does not hold is refused and not
+  kept.
+- Truncation is shown plainly: how many files are not shown, how many hunks and
+  lines a file or hunk left out, how many lines were shortened, and that the
+  counts are lower bounds when anything was cut. The pane also says that
+  committed work is not shown, which is the largest gap in
+  [123](123-review-hunks.md).
+- Nothing reaches the agent before Send.
+
+### What was considered
+
+- **Reading every idle session's worktree on every refresh.** That spends the
+  allowance twenty-fold and starves the Changes tab. The scan reads one session
+  once for each message.
+- **Opening files through a round trip.** Each file is a `<details>` the browser
+  opens, since the hunks are already in the review, so no click path exists for
+  it.
+- **Delivering the prompt after a refused close.** The prompt names the closes, so
+  after a refusal it would be wrong.
+
+### Cost
+
+One capability on `home.Attention`, one field on the home attachment, three pure
+rule modules, a pure pane state and a view module. No new route, frame or admitted
+path.
+
+### Verification
+
+`client/test/client/ui_socket_test.gleam` pins
+`only_an_operating_page_is_handed_the_review_read_test` (an operator's page,
+owner's or member's, has the read, an observer's has none, and a member has no act)
+and `the_review_forms_need_no_new_admission_test` (a browsing home refuses the
+submits and admits the clicks, a submitting home admits both, and nothing outside
+the table is admitted). `client/test/client/ui_route_test.gleam` pins
+`a_review_is_read_only_for_a_page_that_may_operate_test`.
+`web_view/test/review_threads_test.gleam` drives the page: the group, the cuts,
+text-only drawing, finds pinned and loose, staging, one Send with its receipt, a
+refused close, an oversized review, the read-only page and the observer.
+`review_stage_rule_test`, `review_pin_rule_test` and `review_pane_test` pin the
+rules. A real drive in a browser has not been run.
