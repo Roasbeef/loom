@@ -682,9 +682,66 @@ pub fn a_saved_summary_is_a_thread_the_headline_counts_test() {
   assert string.contains(html, "1 approval, 1 ask pending")
   assert string.contains(html, "2 finds open")
   assert string.contains(html, "oldest open 5 min ago")
-  assert string.contains(html, "Open the session&#39;s page ›")
+  assert string.contains(html, "Resume and open ›")
   assert !string.contains(html, "Saved · all clear")
   assert !string.contains(html, "Nothing waits on you")
+}
+
+fn saved_summary() -> saved_attention.Saved {
+  saved_attention.Saved(
+    session_id: "D",
+    pending_approvals: 1,
+    open_asks: 0,
+    open_finds: 0,
+    oldest_open_at: None,
+    updated_at: 9,
+  )
+}
+
+// A saved session is not running, so the row's one action resumes it, as the
+// sessions table does: the page's open would be refused for it. The press is
+// shown as out, a refusal is a line on the row, and an observer has no button.
+pub fn a_saved_row_resumes_and_says_what_happened_test() {
+  let resumed = process.new_subject()
+  let operator =
+    home.Start(
+      ..start([entry("D", "hex", sessions.Saved)], [], [saved_summary()], None),
+      resume: fn(session, _deliver) { process.send(resumed, session) },
+    )
+  let model = opened(operator)
+  assert string.contains(drawn(model), "Resume and open ›")
+  assert !string.contains(drawn(model), "Open the session&#39;s page")
+
+  // The press goes to the daemon's resume and shows as out.
+  let pressed = run(model, home.Resuming("D"))
+  assert process.receive(resumed, 0) == Ok("D")
+  assert string.contains(drawn(pressed), "Resuming…")
+  assert !string.contains(drawn(pressed), "Resume and open ›")
+
+  // A refusal is drawn on the row in the inbox, and the button is back.
+  let refused =
+    run(pressed, home.Linked(sessions.Declined(sessions.NotRunning)))
+  assert string.contains(
+    drawn(refused),
+    "That session is not running. Resume it from a terminal",
+  )
+  assert string.contains(drawn(refused), "Resume and open ›")
+
+  // An observer may not resume, so its row draws no button.
+  let observer =
+    opened(
+      home.Start(
+        ..start(
+          [entry("D", "hex", sessions.Saved)],
+          [],
+          [saved_summary()],
+          None,
+        ),
+        ceiling: home.ObserverCeiling,
+      ),
+    )
+  assert string.contains(drawn(observer), "1 approval pending")
+  assert !string.contains(drawn(observer), "Resume and open")
 }
 
 // Every handler an item thread registers is a click or a submit beneath the

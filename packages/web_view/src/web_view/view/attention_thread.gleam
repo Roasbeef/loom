@@ -137,24 +137,41 @@ pub type SavedSide {
   SavedFinding
 }
 
+/// What a saved row offers and shows beyond its counts.
+pub type SavedOffer(message) {
+  SavedOffer(
+    /// What the button sends, given the session: a resume. Nothing on a page
+    /// that may not operate, whose rows draw no button.
+    resume: Option(fn(String) -> message),
+    /// The session whose resume is out, if one is: its row says so and its
+    /// button waits.
+    resuming: Option(String),
+    /// The line the daemon's refusal of the last resume left on the row it was
+    /// about, given the row's session, and nothing for any other.
+    said: fn(String) -> Option(Element(message)),
+  )
+}
+
 /// A saved session's row: its name and what the catalogue's summary says is
 /// open, the age of the oldest open record when the summary has one, and the one
-/// action it has, which opens the session's page. The summary is a cache, so
-/// the row says it is the catalogue's and not a live read. The name is the
-/// catalogue's text and is drawn as a text node, and the button sends the
-/// page's open message, which carries the session in the handler and never in
-/// an attribute.
+/// action it has. The session is not running, so the page's open would be
+/// refused; the button asks the daemon to resume it, as the sessions table does,
+/// and the page follows the ticket the answer carries. A page that may not
+/// operate draws no button. A refused resume is a line on the row, since the
+/// table's note is not on screen here. The name is the catalogue's text and is
+/// drawn as a text node, and the button's handler carries the session, never an
+/// attribute.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // attention_thread.saved_row(thread, SavedNeeding, now, Opening)
+/// // attention_thread.saved_row(thread, SavedNeeding, now, offer)
 /// ```
 pub fn saved_row(
   thread: attention_rule.SavedThread,
   side: SavedSide,
   now: Int,
-  open: fn(String) -> message,
+  offer: SavedOffer(message),
 ) -> Element(message) {
   // Each row draws one count: what waits on the owner, or the open finds.
   let words = case side {
@@ -172,14 +189,29 @@ pub fn saved_row(
         Some(age) -> html.span([attribute.class("inbox-age")], [html.text(age)])
         None -> element.none()
       },
-      html.button(
-        [
-          attribute.type_("button"),
-          attribute.class("inbox-open"),
-          event.on_click(open(thread.session)),
-        ],
-        [html.text("Open the session's page ›")],
-      ),
+      // An observer's page has nothing to press, and a press out waits.
+      case offer.resume {
+        Some(press) -> {
+          let pending = offer.resuming == Some(thread.session)
+
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("inbox-open"),
+              attribute.disabled(pending),
+              event.on_click(press(thread.session)),
+            ],
+            [
+              html.text(case pending {
+                True -> "Resuming…"
+                False -> "Resume and open ›"
+              }),
+            ],
+          )
+        }
+        None -> element.none()
+      },
+      option.unwrap(offer.said(thread.session), element.none()),
     ]),
   ])
 }

@@ -5862,6 +5862,21 @@ fn standings(model: Model) -> List(attention_rule.Standing) {
   })
 }
 
+/// The line a refused resume leaves on the saved row it was about, and nothing
+/// for any other row. The table draws the same note beside its own row, which
+/// is not on screen in the inbox.
+fn saved_refusal(model: Model, session: String) -> Option(Element(Msg)) {
+  case model.note {
+    Some(home_table.Note(
+      place: home_table.Session(id:, ..),
+      notice: notice.Refused(words:),
+    ))
+      if id == session
+    -> Some(notice.line(notice.Refused(words)))
+    Some(_) | None -> None
+  }
+}
+
 /// The saved sessions the catalogue has a summary for, as the rows the inbox
 /// draws for them, in the order the list shows the sessions.
 fn saved_threads(model: Model) -> List(attention_rule.SavedThread) {
@@ -5900,8 +5915,17 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
       // A saved session's summary is counted in the headline, so each one that
       // holds something open is a row the person can act on, after the live ones.
       let saved = saved_threads(model)
+      let offer =
+        attention_thread.SavedOffer(
+          resume: case model.start.ceiling {
+            OperatorCeiling -> Some(Resuming)
+            ObserverCeiling -> None
+          },
+          resuming: model.resuming,
+          said: fn(session) { saved_refusal(model, session) },
+        )
       let saved_row = fn(side) {
-        fn(thread) { attention_thread.saved_row(thread, side, now, Opening) }
+        fn(thread) { attention_thread.saved_row(thread, side, now, offer) }
       }
 
       Some(
