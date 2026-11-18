@@ -4404,7 +4404,19 @@ fn diagnose_domain_start(
 /// failed instances alive for diagnostics. The caller receives the same error;
 /// only fixed labels, a validated session identity and the path-free detail
 /// that `start_class` returns enter the log.
-fn diagnose_start(
+///
+/// A start that failed because the executors have no room for the session is a
+/// state of the pool and not a fault: a spawn that waits for a slot is built
+/// again every second or two (`manager.no_room`), so each try is a warning. Any
+/// other failure stays an error, because nothing retries it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.diagnose_start(Error(reason), logger, identity, main.RuntimeAssembly)
+/// ```
+@internal
+pub fn diagnose_start(
   outcome: Result(value, String),
   logger: Logger,
   identity: ids.SessionId,
@@ -4413,7 +4425,11 @@ fn diagnose_start(
   outcome
   |> result.map_error(fn(reason) {
     let #(stage_name, class, detail) = start_class(stage, reason)
-    log.error(
+    let write = case manager.no_room(reason) {
+      True -> log.warn
+      False -> log.error
+    }
+    write(
       logger,
       "daemon.session_start_failed",
       list.append(
