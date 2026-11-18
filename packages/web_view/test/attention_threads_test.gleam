@@ -700,3 +700,150 @@ pub fn an_approval_thread_lists_its_evidence_and_still_only_points_away_test() {
   assert !string.contains(html, "Allow")
   assert !string.contains(html, "Deny")
 }
+
+// A strand's name is text a session chose. It is drawn in the eyebrow as text
+// and appears in no attribute: not the note field's placeholder, not a class or
+// a key.
+pub fn a_hostile_strand_name_is_in_no_attribute_test() {
+  let hostile = "sub:HOSTILE\"><b>x"
+  let rows = [
+    #(
+      "A",
+      Row(
+        waiting_since: Some(7_100_000),
+        asks: Section(count: 1, items: [
+          Ask(
+            id: ask_id,
+            strand: hostile,
+            created_at: 7_100_000,
+            head: "Which?",
+            questions: 1,
+          ),
+        ]),
+        finds: Section(count: 0, items: []),
+        stuck: Section(count: 1, items: [
+          Stuck(strand: hostile, failed_at: Some(6_800_000)),
+        ]),
+      ),
+    ),
+  ]
+  let asked = process.new_subject()
+  let base =
+    start(
+      listing(),
+      reports(),
+      [],
+      Some(acting(
+        asked,
+        home.Succeeded("Answered."),
+        thread_send.Delivered(thread_send.Admitted),
+      )),
+    )
+  let model =
+    opened(
+      home.Start(
+        ..base,
+        attention: Some(
+          home.Attention(
+            feed: fn(_, deliver) { deliver(rows) },
+            saved: fn(_, deliver) { deliver([]) },
+            record: fn(_session, id, deliver) { deliver(read_of(id)) },
+            approvals: fn(_session, deliver) { deliver(Ok(evidence())) },
+            act: case base.attention {
+              Some(reads) -> reads.act
+              None -> None
+            },
+          ),
+        ),
+      ),
+    )
+
+  list.each(
+    [
+      attention_rule.Key(attention_rule.StuckSort, "A", hostile),
+      attention_rule.Key(attention_rule.AskSort, "A", ask_id),
+    ],
+    fn(key) {
+      let html = drawn(run(model, home.ItemPicked(key)))
+      assert string.contains(html, "Message this strand")
+      assert occurrences(html, "HOSTILE") > 0
+      assert inside_tags(html, "HOSTILE") == 0
+    },
+  )
+}
+
+// How many times a marker appears inside a tag, that is, in an attribute.
+fn inside_tags(html: String, marker: String) -> Int {
+  let parts = string.split(html, marker)
+  let before = list.take(parts, list.length(parts) - 1)
+
+  list.count(before, fn(part) {
+    case list.last(string.split(part, ">")) {
+      Ok(tail) -> string.contains(tail, "<")
+      Error(Nil) -> False
+    }
+  })
+}
+
+fn occurrences(html: String, marker: String) -> Int {
+  list.length(string.split(html, marker)) - 1
+}
+
+// A note that fails after its answer settled stays staged, and stays in view
+// when the answered ask has left the list, so it can be sent again.
+pub fn a_note_that_failed_after_a_settled_answer_stays_in_view_test() {
+  let asked = process.new_subject()
+  let model =
+    opened(start(
+      listing(),
+      reports(),
+      [],
+      Some(acting(
+        asked,
+        home.Succeeded("Answered."),
+        thread_send.Refused(thread_send.UnknownStrand),
+      )),
+    ))
+  let sent =
+    model
+    |> run(home.ItemPicked(ask_key()))
+    |> run(home.ItemStaged([#("q1", "1"), #("q2", "0")]))
+    |> run(home.ItemNoted("Mind the lockfile."))
+    |> run(home.ItemSent)
+
+  // The ask has been answered and the next read no longer holds it.
+  let html = drawn(run(sent, home.FeedRead([])))
+  assert string.contains(html, "Message: Mind the lockfile.")
+  assert string.contains(html, "Not sent: that strand no longer exists")
+  assert string.contains(html, ">Send<")
+}
+
+// A composer shown because nothing ran is the person's after the first summary:
+// a summary that counts nothing makes it theirs, and a later one that counts
+// something does not cover it.
+pub fn the_first_summary_decides_an_unprompted_composer_test() {
+  let none_waiting =
+    saved_attention.Saved(
+      session_id: "D",
+      pending_approvals: 0,
+      open_asks: 0,
+      open_finds: 0,
+      oldest_open_at: None,
+      updated_at: 9,
+    )
+  let model =
+    opened(start(
+      [entry("D", "hex release", sessions.Saved)],
+      [],
+      [none_waiting],
+      None,
+    ))
+  assert !string.contains(drawn(model), "<h1>Inbox</h1>")
+
+  let later =
+    saved_attention.Saved(..none_waiting, pending_approvals: 1, open_asks: 1)
+  assert !string.contains(
+    drawn(run(model, home.SavedRead([later]))),
+    "<h1>Inbox</h1>",
+  )
+}

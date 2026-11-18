@@ -661,8 +661,6 @@ pub type Label {
   )
 }
 
-/// The host's transport and clock.
-///
 /// What a session's own page reads of the attention feed, and, for an operator's
 /// page alone, how it answers an ask (protocol-change/120, the addendum "the
 /// live rail"). Every function returns at once and answers from the daemon's own
@@ -716,6 +714,8 @@ pub type Watch {
   )
 }
 
+/// The host's transport and clock.
+///
 /// Every function runs in the component's own process, which owns the
 /// subjects `connect` is handed, so a reply is always read by the process
 /// that created the subject it arrives on.
@@ -7579,7 +7579,13 @@ fn rail_heard(
       let held = list.map(row.asks.items, fn(ask) { ask.id })
       let kept =
         dict.filter(watching.records, fn(id, _) { list.contains(held, id) })
-      let missing = list.filter(held, fn(id) { !dict.has_key(kept, id) })
+
+      // Only a page that may answer draws an ask's form, so only it reads the
+      // asks in full.
+      let missing = case reads.answer {
+        Some(_) -> list.filter(held, fn(id) { !dict.has_key(kept, id) })
+        None -> []
+      }
 
       #(
         Model(
@@ -7660,6 +7666,7 @@ fn rail_filled(
   case dict.get(watching.records, id) {
     Ok(item_pane.AskRecord(ask: full, ..)) ->
       attention_thread.answer_form(
+        id,
         full,
         option.from_result(dict.get(watching.problems, id)),
         case watching.sending == Some(id) {
@@ -7755,7 +7762,7 @@ fn rail_answer_done(
     True -> {
       // A word is said whatever it is; only a settled ask asks for a fresh read.
       let #(words, asked) = case outcome {
-        AnswerSent(words:) -> #(words, None)
+        AnswerSent(words:) -> #(words, Some(model.view.transport.now()))
         AnswerFailed(words:) -> #(words, watching.asked_at)
       }
 
@@ -7768,7 +7775,8 @@ fn rail_answer_done(
           ),
         )
 
-      // A settled ask is read again now by forgetting when the last read was.
+      // A settled ask is read again now, and that read is the tick's for this
+      // interval, so an answer costs one read.
       case outcome, model.view.transport.attention {
         AnswerSent(..), Some(reads) -> #(model, rail_asking(reads))
         AnswerSent(..), None | AnswerFailed(..), _ -> #(model, effect.none())
@@ -7777,25 +7785,29 @@ fn rail_answer_done(
   }
 }
 
-/// Whether a Lustre event path is the submit of an ask's form on the live rail.
-/// The ask is a pinned row, so its item sits in the "Needs you" group, which is
-/// the groups' first child, under the list that is that group's second child.
-/// The item holds the row's button and then the form, so a submit is at
-/// `rail_path`, then `1\t0\t1`, then the item's position, then `1`. Nothing
-/// else in the rail submits. An observer's socket admits no submit at all, so
-/// this shape is what an operator's page may send beneath the rail, and
-/// `lifted_test` fails if the view moves the form, so the predicate and the
-/// view cannot drift apart.
+/// Whether a Lustre event path is the submit of an ask's form in the live rail
+/// (not the phone's sheet, whose form is elsewhere in the tree). The ask is a
+/// pinned row, so its item sits in the "Needs you" group, which is the groups'
+/// first child, under the list that is that group's second child. The item
+/// holds the row's button and then a keyed `div` that holds the form, so a
+/// submit is at `rail_path`, then `1\t0\t1`, then the item's position, then
+/// `1`, then the ask's identifier, which is the form's key.
+///
+/// No socket consults this predicate. An operator's or an owner's socket admits
+/// a submit at any path, and an observer's admits none, so it changes no
+/// admission. It is a test helper: `rail_threads_test` fails if the view moves
+/// the form, and `ui_socket_test` pins what each socket does at this path.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert component.rail_submit("0\t3\t0\t4\t1\t0\t1\t2\t1")
-/// assert !component.rail_submit("0\t3\t0\t4\t1\t1\t1\t2\t1")
+/// assert component.rail_submit("0\t3\t0\t4\t1\t0\t1\t2\t1\task-0123456789")
+/// assert !component.rail_submit("0\t3\t0\t4\t1\t1\t1\t2\t1\task-0123456789")
 /// ```
 pub fn rail_submit(path: String) -> Bool {
   case string.split(path, "\t") {
-    ["0", "3", "0", "4", "1", "0", "1", position, "1"] -> is_counter(position)
+    ["0", "3", "0", "4", "1", "0", "1", position, "1", key] ->
+      is_counter(position) && string.starts_with(key, "ask-")
     _ -> False
   }
 }

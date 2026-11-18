@@ -1362,7 +1362,7 @@ pub fn the_attention_forms_need_no_new_admission_test() {
 // click it always admitted, and the capability to answer is handed to an
 // observer's page never.
 pub fn only_an_operators_rail_answers_an_ask_test() {
-  let form = component.rail_path <> "\t1\t0\t1\t0\t1"
+  let form = component.rail_path <> "\t1\t0\t1\t0\t1\task-0123456789"
   let press = component.rail_path <> "\t1\t1\t1\t0\t0"
 
   // The path is the one the predicate names, and a click's path is not it.

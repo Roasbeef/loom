@@ -222,8 +222,6 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
     None -> []
   }
 
-  // The attention rows sit in "Needs you", which is drawn when only they fill
-  // it, and the finds follow the groups under a heading of their own.
   let has_needs_group =
     list.any(offer.groups, fn(entry) { entry.0 == inbox_rule.NeedsYou })
 

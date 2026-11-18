@@ -73,9 +73,6 @@ pub type Evidence {
 
 /// What the page has of a session's approval evidence.
 pub type Seen {
-  /// A read is out and nothing has come back.
-  Reading
-
   /// The daemon answered with this evidence.
   Seen(evidence: Evidence)
 

@@ -2021,9 +2021,19 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           #(
             Model(
               ..read,
-              centre_choice: case read.centre_choice, would_land(read) {
-                Awaiting, inbox_rule.Inbox -> Decided(InboxCentre)
-                Awaiting, inbox_rule.Form | Decided(_), _ -> read.centre_choice
+              centre_choice: case
+                read.centre_choice,
+                would_land(read),
+                summary_decides(read)
+              {
+                Awaiting, inbox_rule.Inbox, _ -> Decided(InboxCentre)
+
+                // The first summary decides for a list with nothing running:
+                // the inbox when something waits, and otherwise the composer,
+                // so a later read cannot cover what the person types in it.
+                Awaiting, inbox_rule.Form, True -> Decided(FormCentre)
+                Awaiting, inbox_rule.Form, False | Decided(_), _, _ ->
+                  read.centre_choice
               },
             ),
             effect.none(),
@@ -2031,8 +2041,9 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         }
       }
 
-    // The evidence replaces what the page held for that session. A read for a
-    // session the list no longer holds is dropped with the rest of its state.
+    // The evidence replaces what the page held for that session. It is kept
+    // for each session whose thread was shown, so it is bounded by the sessions
+    // the page has viewed.
     ApprovalsRead(session:, read:) ->
       case model.status {
         Ended(_) -> #(model, effect.none())
@@ -4813,12 +4824,16 @@ fn summary_due(model: Model) -> Bool {
   }
 }
 
+/// Whether the next summary is the answer that decides the centre: nothing
+/// runs, so no activity read will come, and a summary is due.
+fn summary_decides(model: Model) -> Bool {
+  running_sessions(model) == 0 && summary_due(model)
+}
+
 /// Whether the inbox has anything to show: a thread drawn from a report, or an
 /// ask, stuck strand or find from the feed or the catalogue.
 fn inbox_has_content(model: Model) -> Bool {
-  let tally = attention_rule.tally(standings(model))
-
-  drawn_threads(model) != [] || tally.needing + tally.finds > 0
+  drawn_threads(model) != [] || something_waits(model)
 }
 
 /// What the page's reports say it would land on: the inbox when something waits
@@ -4955,6 +4970,13 @@ fn landed_inbox(model: Model) -> Bool {
   }
 }
 
+/// Whether the feed or the catalogue says something waits, an approval, an ask,
+/// a stuck strand or a find. A session that runs does not count by running.
+fn something_waits(model: Model) -> Bool {
+  let tally = attention_rule.tally(standings(model))
+  tally.needing + tally.finds > 0
+}
+
 /// The running session whose thread the pane shows when its activity says an
 /// approval is pending, which is the one session whose evidence the page reads.
 fn approval_session(model: Model) -> Option(String) {
@@ -4972,11 +4994,10 @@ fn approval_session(model: Model) -> Option(String) {
   }
 }
 
-// Starts the read of the shown session's pending approvals and returns at
-// once; the answer arrives later as `ApprovalsRead`. A page that reads no
-// feed, one that has not connected or has ended, and a thread with no approval
-// ask nothing.
-/// Triggers the read of the shown thread's approval evidence.
+/// Starts the read of the shown session's pending approvals and returns at
+/// once; the answer arrives later as `ApprovalsRead`. A page that reads no
+/// feed, one that has not connected or has ended, and a thread with no approval
+/// ask nothing.
 fn approving(model: Model) -> Effect(Msg) {
   // A page that reads the feed and shows an approval's thread asks for its
   // evidence once it has connected.
@@ -5101,13 +5122,12 @@ fn noting(
   })
 }
 
-// Starts the attention reads for the sessions the page lists and returns at
-// once: the feed rows of the running ones, in the order the page draws them and
-// no more than `activity_limit`, and the catalogue's summaries of the saved
-// ones. Each answer arrives later as `FeedRead` or `SavedRead`, dispatched
-// from the daemon's task. A page without the capability, and one that has not
-// connected or has ended, asks nothing.
-/// Triggers the feed and summary reads for the sessions the page lists.
+/// Starts the attention reads for the sessions the page lists and returns at
+/// once: the feed rows of the running ones, in the order the page draws them and
+/// no more than `activity_limit`, and the catalogue's summaries of the saved
+/// ones. Each answer arrives later as `FeedRead` or `SavedRead`, dispatched
+/// from the daemon's task. A page without the capability, and one that has not
+/// connected or has ended, asks nothing.
 fn attending(model: Model) -> Effect(Msg) {
   // A page that cannot read, one that has not connected and one that ended ask nothing.
   case model.start.attention, model.status {

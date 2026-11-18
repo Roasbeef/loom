@@ -15,6 +15,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
+import lustre/vdom/vnode
 import page_fixture
 import web_view/attention_feed.{Ask, Find, Row, Section, Stuck}
 import web_view/component
@@ -280,12 +281,15 @@ pub fn the_rails_submit_is_at_its_exact_path_test() {
   assert list.length(submits) == 1
   let assert [path] = submits
   assert component.rail_submit(string.drop_end(path, 7))
+  assert string.ends_with(string.drop_end(path, 7), "\t" <> ask_id)
 
   // Nothing else beneath the rail submits, and the click's shape is not one.
-  assert !component.rail_submit("0\t3\t0\t4\t1\t1\t1\t0\t1")
-  assert !component.rail_submit("0\t3\t0\t4\t1\t0\t1\tx\t1")
-  assert !component.rail_submit("0\t3\t0\t4\t1\t0\t1\t0\t0")
-  assert !component.rail_submit("0\t3\t0\t5\t1\t0\t1\t0\t1")
+  assert !component.rail_submit("0\t3\t0\t4\t1\t1\t1\t0\t1\t" <> ask_id)
+  assert !component.rail_submit("0\t3\t0\t4\t1\t0\t1\tx\t1\t" <> ask_id)
+  assert !component.rail_submit("0\t3\t0\t4\t1\t0\t1\t0\t0\t" <> ask_id)
+  assert !component.rail_submit("0\t3\t0\t5\t1\t0\t1\t0\t1\t" <> ask_id)
+  assert !component.rail_submit("0\t3\t0\t4\t1\t0\t1\t0\t1\tnot-an-ask")
+  assert !component.rail_submit("0\t3\t0\t4\t1\t0\t1\t0\t1")
 }
 
 // The phone's sheet carries the same ask.
@@ -302,5 +306,64 @@ fn index_of(html: String, needle: String) -> Int {
   case string.split_once(html, needle) {
     Ok(#(before, _)) -> string.length(before)
     Error(Nil) -> -1
+  }
+}
+
+fn second_row() -> attention_feed.Row {
+  let first = row()
+  Row(
+    ..first,
+    asks: Section(count: 2, items: [
+      Ask(
+        id: "ask-2222222222",
+        strand: "main",
+        created_at: 20,
+        head: "Second?",
+        questions: 1,
+      ),
+      ..first.asks.items
+    ]),
+  )
+}
+
+// Radios carry no `checked` in the tree, so a form that stayed in place when
+// the ask above it left would keep that ask's picks for the one that moved up.
+// Each ask's form is keyed by the ask, so the survivor keeps its own form and
+// the one that left takes its key with it.
+pub fn a_form_is_keyed_by_its_ask_and_a_survivor_keeps_its_own_test() {
+  let sent = process.new_subject()
+  let model = opened(start(sent, True))
+  let both = second(model, component.RailRead(Ok(second_row())))
+  let keys_both = keys(operator_page.view(both))
+  assert list.contains(keys_both, ask_id)
+  assert list.contains(keys_both, "ask-2222222222")
+
+  // The first ask is answered and leaves; the second moves up and keeps its key.
+  let only_second =
+    Row(
+      ..second_row(),
+      asks: Section(count: 1, items: [
+        Ask(
+          id: "ask-2222222222",
+          strand: "main",
+          created_at: 20,
+          head: "Second?",
+          questions: 1,
+        ),
+      ]),
+    )
+  let after = second(both, component.RailRead(Ok(only_second)))
+  let keys_after = keys(operator_page.view(after))
+  assert list.contains(keys_after, "ask-2222222222")
+  assert !list.contains(keys_after, ask_id)
+}
+
+fn keys(node: vnode.Element(message)) -> List(String) {
+  case node {
+    vnode.Element(key:, children:, ..) | vnode.Fragment(key:, children:, ..) ->
+      list.append([key], list.flat_map(children, keys))
+    vnode.Map(child:, ..) -> keys(child)
+    vnode.Memo(view:, ..) -> keys(view())
+    vnode.Text(..) | vnode.UnsafeInnerHtml(..) -> []
   }
 }

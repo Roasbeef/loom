@@ -40,6 +40,7 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import web_view/answer_rule
 import web_view/approval_evidence.{type Seen}
@@ -138,11 +139,18 @@ pub fn row(
 /// ```
 pub fn pane(offer: Offer(message)) -> Element(message) {
   case offer.item {
-    // A settled record leaves the list at the next read, and the daemon's word
-    // on what happened stays here so the owner is told, not left with a blank.
+    // A settled record leaves the list at the next read. What was staged stays
+    // in view with its outbox, so a note that failed after the answer settled
+    // can be sent again, and otherwise the daemon's word stays so the owner is
+    // told and not left with a blank.
     None ->
-      case offer.state.progress {
-        item_pane.Settled(words:) ->
+      case offer.state.progress, item_pane.has_staged(offer.state) {
+        _, True ->
+          html.section(
+            [attribute.class("inbox-reading inbox-reading-pressed")],
+            [outbox(offer)],
+          )
+        item_pane.Settled(words:), False ->
           html.section(
             [attribute.class("inbox-reading inbox-reading-pressed")],
             [
@@ -152,7 +160,7 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
               ),
             ],
           )
-        item_pane.Resting | item_pane.Sending -> element.none()
+        item_pane.Resting, False | item_pane.Sending, False -> element.none()
       }
     Some(item) ->
       html.section([attribute.class("inbox-reading inbox-reading-pressed")], [
@@ -162,7 +170,7 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
           None -> element.none()
         },
         body(item, offer),
-        message_field(item, offer),
+        message_field(offer),
         outbox(offer),
         html.button(
           [
@@ -247,7 +255,13 @@ fn ask_form(ask: attention.Ask, offer: Offer(message)) -> Element(message) {
         ]),
       ])
     Some(acting) ->
-      answer_form(ask, offer.state.problem, "Stage the answer", acting.stage)
+      answer_form(
+        "ask-form-" <> int.to_string(offer.presses),
+        ask,
+        offer.state.problem,
+        "Stage the answer",
+        acting.stage,
+      )
   }
 }
 
@@ -258,32 +272,45 @@ fn ask_form(ask: attention.Ask, offer: Offer(message)) -> Element(message) {
 /// same rule (`web_view/answer_rule`). The form is the caller's to place only
 /// for a page that may answer.
 ///
+/// The form is keyed by `key`, which names the ask it was drawn for. Radios and
+/// checkboxes carry no `checked` in the tree, so a form that outlived its ask
+/// would keep the picks of the ask that left, and the next ask that took its
+/// place would be answered with them. A new key makes the browser build a new
+/// form.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // attention_thread.answer_form(ask, None, "Send the answer", Submitted)
+/// // attention_thread.answer_form("ask-1", ask, None, "Send the answer", Submitted)
 /// ```
 pub fn answer_form(
+  key: String,
   ask: attention.Ask,
   refused: Option(answer_rule.Problem),
   label: String,
   submit: fn(List(#(String, String))) -> message,
 ) -> Element(message) {
-  html.form(
-    [
-      attribute.class("inbox-questions"),
-      event.on("submit", fields_of(submit)) |> event.prevent_default,
-    ],
-    list.flatten([
-      list.map(ask.questions, question),
-      [
-        problem(refused),
-        html.button([attribute.type_("submit"), attribute.class("place-send")], [
-          html.text(label),
+  keyed.div([], [
+    #(
+      key,
+      html.form(
+        [
+          attribute.class("inbox-questions"),
+          event.on("submit", fields_of(submit)) |> event.prevent_default,
+        ],
+        list.flatten([
+          list.map(ask.questions, question),
+          [
+            problem(refused),
+            html.button(
+              [attribute.type_("submit"), attribute.class("place-send")],
+              [html.text(label)],
+            ),
+          ],
         ]),
-      ],
-    ]),
-  )
+      ),
+    ),
+  ])
 }
 
 /// One question with its component, chosen by the question's kind.
@@ -529,7 +556,7 @@ fn stuck_body(offer: Offer(message)) -> Element(message) {
 
 /// The note field: one box that stages a message for the thread's strand. A
 /// page that may not act has none.
-fn message_field(item: Item, offer: Offer(message)) -> Element(message) {
+fn message_field(offer: Offer(message)) -> Element(message) {
   case offer.acting {
     None -> element.none()
     Some(acting) ->
@@ -544,12 +571,9 @@ fn message_field(item: Item, offer: Offer(message)) -> Element(message) {
               attribute.name("draft"),
               attribute.class("composer-name"),
               attribute.aria_label("Message this strand"),
-              attribute.placeholder(case item {
-                attention_rule.StuckItem(stuck:, ..) ->
-                  "Message " <> stuck.strand
-                attention_rule.AskItem(ask:, ..) -> "Message " <> ask.strand
-                attention_rule.FindItem(find:, ..) -> "Message " <> find.strand
-              }),
+              // The strand is in the eyebrow as text, and no attribute carries
+              // a name a session chose.
+              attribute.placeholder("Message this strand"),
               attribute.attribute("rows", "3"),
             ],
             "",
@@ -691,14 +715,10 @@ fn form_field() -> decode.Decoder(#(String, String)) {
 /// ## Examples
 ///
 /// ```gleam
-/// // attention_thread.evidence(approval_evidence.Reading)
+/// // attention_thread.evidence(approval_evidence.Unseen("not answered"))
 /// ```
 pub fn evidence(seen: Seen) -> Element(message) {
   case seen {
-    approval_evidence.Reading ->
-      html.p([attribute.class("inbox-hold")], [
-        html.text("Reading what it asks for…"),
-      ])
     approval_evidence.Unseen(words:) ->
       html.p([attribute.class("inbox-hold")], [html.text(words)])
     approval_evidence.Seen(evidence: read) ->
