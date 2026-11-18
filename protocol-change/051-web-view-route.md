@@ -4497,12 +4497,12 @@ control is always available.
 ### The click paths
 
 Selecting a thread is a click beneath `home.table_path`. `home_accepts`
-(`client/daemon/ui_socket.gleam:2165`) admits a click there for every home
-through `home_row_path` (`client/daemon/ui_socket.gleam:2290`), whether the
+(`client/daemon/ui_socket.gleam:2187`) admits a click there for every home
+through `home_row_path` (`client/daemon/ui_socket.gleam:2312`), whether the
 home is an owner's, a member's or an observer's.
 
 The message field's submit is beneath `home.table_path`. `home_owner_accepts`
-(`client/daemon/ui_socket.gleam:2193`) admits a submit there for the owner's
+(`client/daemon/ui_socket.gleam:2215`) admits a submit there for the owner's
 operating home (`Submitting`). The socket of any other home does not admit
 it: a member's home and an observer-ceiling home use `home_accepts`, which
 admits a submit only beneath `home.signins_path`.
@@ -4554,7 +4554,7 @@ the message and says nothing about its intent.
   out of it without being opened.
 - **A new top-level region outside the table.** That needs a new path
   constant and a new rule in `home_event`
-  (`client/daemon/ui_socket.gleam:2232`). A region beneath
+  (`client/daemon/ui_socket.gleam:2254`). A region beneath
   `home.table_path` needs neither.
 
 ### Cost

@@ -324,7 +324,7 @@ fn heading_row(inbox: Option(message)) -> Element(message) {
   let heading =
     html.h2([attribute.class("home-heading")], [html.text("Sessions")])
 
-  // This branch resolves inbox before the operation continues.
+  // The control exists only on a page that has an inbox to return to.
   case inbox {
     None -> heading
     Some(back) ->

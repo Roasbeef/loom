@@ -331,7 +331,7 @@ pub fn view(pane: Pane(message)) -> Element(message) {
 /// The link back to the inbox, drawn after the link to the full list when the
 /// page has an inbox to return to, and nothing otherwise.
 fn inbox_link(inbox: Option(message)) -> List(Element(message)) {
-  // This branch resolves inbox before the operation continues.
+  // The control exists only on a page that has an inbox to return to.
   case inbox {
     None -> []
     Some(back) -> [
