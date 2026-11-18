@@ -3318,7 +3318,7 @@ fn alive(record: PidRecord) -> Bool {
 }
 
 /// Asks the recorded process to stop, which `loom-vm` answers by stopping the
-/// guest and releasing its epmd registration. The birth marker was checked by
+/// guest. The birth marker was checked by
 /// the caller a moment ago; it is checked again here because a wait may have
 /// passed in between.
 fn terminate(record: PidRecord) -> Result(Nil, String) {
@@ -3335,8 +3335,7 @@ fn terminate(record: PidRecord) -> Result(Nil, String) {
 // --- down --------------------------------------------------------------------
 
 // How long `down` waits for `loom-vm` to exit, which it does only after the
-// virtual machine monitor, the network stack and the epmd registration are
-// released.
+// virtual machine monitor and the network stack are released.
 const stop_within_ms = 60_000
 
 /// Stops the guest called `name`, if it is running.

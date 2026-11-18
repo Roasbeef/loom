@@ -99,8 +99,7 @@ pub const default_name = "vm"
 /// The manifest format this build reads.
 pub const manifest_version = 1
 
-/// The executor's distribution port inside the guest, which the plan fixes and
-/// `--publish` forwards.
+/// The guest's listener port, which the plan fixes and `--forward` forwards.
 pub const guest_port = 4370
 
 /// Where the executor node's directory sits inside the guest.
@@ -2030,8 +2029,8 @@ pub type Names {
     orchestrator: String,
     /// The orchestrator's Erlang node name.
     orchestrator_node: String,
-    /// The executor's node name's part before the `@`, which `--publish`
-    /// registers in the host epmd.
+    /// The executor's node name's part before the `@`. It is read only for a
+    /// retired guest's `status`.
     executor_short: String,
     /// The executor's Erlang node name.
     executor_node: String,
