@@ -298,13 +298,15 @@ The change touches these places, each of which must agree.
 | `client/codemode.gleam` | The door is installed per seam where the notes door is. |
 | `tools/prelude.gleam` | Regenerated with `make gen-prelude`. `make prelude-check` fails until it is. |
 
-An `ask` from a program also ends the program's turn. The capability returns
-the id, and the program's result states that the turn ends when the program
-returns. The `code_mode` tool returns `ContinueRun` on every outcome today
-(`tools/codemode.gleam`, `bounded`), so this requires a change to it: when an
-`attention.ask` in the execution succeeded, the enclosing call's outcome MUST
-carry `TerminateRun`. The planner sees the `code_mode` call, not the program's
-inner calls. A `notice` from a program never ends anything.
+An `ask` from a program does not end the turn. The capability records the
+ask and returns its id to the program, and the `code_mode` call's outcome stays
+`ContinueRun`, as it is for every outcome today (`tools/codemode.gleam`,
+`bounded`). Making `code_mode` end the run when one inner call asked was
+considered and rejected: it would change the termination of every program for
+one capability, and a program may record an ask and still have work to finish
+in the same execution. The capability's description says that the model ends
+its turn after the program returns, so the strand is then idle with an open
+ask, as it is after the tool. A `notice` from a program never ends anything.
 
 ### Who gets the tools
 
@@ -390,8 +392,9 @@ either.
   `Some("ask")` and `required_tool("attention.notice")` is `Some("notice")`, and
   a strand without the tool is refused the capability. `client/test/client/cap_placement_test`:
   both capabilities are owner caps.
-- `client/test/client/owner_codemode_test`: a program's `attention.ask` returns
-  the id and ends the program's turn, and a `notice` does not.
+- `client/test/client/owner_codemode_test`: a program's `attention.ask` records
+  the ask and returns its id, the `code_mode` outcome stays `ContinueRun`, and a
+  `notice` records a find the same way.
 - `make prelude-check`: the prelude digest matches and `cap/attention` is on a
   seam allowlist.
 - `prompt/test/prompt/default_test`: the conduct section carries the sentence,
