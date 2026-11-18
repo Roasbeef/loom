@@ -568,20 +568,45 @@ error, so the link closes the connection as it does for an oversized frame; the
 untrusted wire version stays 5, because this refuses input and adds no frame.
 The first value past the bound is refused as it is reached, so a payload of 24
 MiB of one-byte values is refused after about 1,048,576 values of work, not
-24 million. Measured on the development Mac under OTP 29, decoding a payload of
-exactly the bound's values takes about 0.16 s for an array of nils (1 MiB),
-about 0.23 s for an array of `uint16` integers (3 MiB), and about 1.1 s for a
-map of 524,287 four-byte string keys with nil values (3.5 MiB), the most
-expensive shape found because each key is also entered in the duplicate-key
-index; refusing a payload one past the bound costs about 0.11 s, and refusing
-24 MiB of nils about 0.12 s. Each runs in the link's process. The sender side
-is not extended: `encode_fitting` still counts JSON values only, so an honest
-executor whose capability result holds more than the bound's msgpack values
-would close the connection; no such result exists today, since tool output
-crosses as strings and `bin`. `core/json.parse_number` also refuses a run of
-more than `json.max_number_digits` (4,096) digits, which the value bound did
-not limit because a number is one value. `decode_lsp_server` parses a JSON text
-carried in a string with `gleam_json` and is not bounded by either change.
+24 million.
+
+A map key may not be an array or a map under `decode_bounded`. The
+duplicate-key index hashes a key whole, so a key that is itself a container is
+hashed again at every enclosing level, and a payload of about 20,000 values,
+250 maps each the key of the next around a large `bin`, took about 7.4 s. Every
+map the wire carries is keyed by text, so the bounded decode refuses a
+container key at its tag, in under a millisecond; `msgpack.decode` still
+accepts one for trusted callers.
+
+The sender checks what it is about to send. Jailed code chooses a capability
+call's arguments, and the executor, not the orchestrator, sends them (the
+orchestrator sends `cap_ok` results). `encode_fitting` therefore judges a
+`CapabilityCall` callback's arguments with `msgpack.check_bounded`, the same
+count and key rule as the decoder applied to the built value, and
+`untrusted_gateway.sent_callback` fails a call that does not pass locally
+instead of closing the link. Results are not checked: none comes near the
+bound, since tool output crosses as strings and `bin`.
+
+Measured on the development Mac under OTP 29, with the key rule in place,
+decoding a payload of exactly the bound's values takes about 0.17 s for an
+array of nils (1 MiB), about 0.23 s for an array of `uint16` integers (3 MiB),
+about 0.23 s for 250 nested arrays around 1,048,276 integers, and 1.3 to 1.7 s
+across three runs for a map of 524,287 four-byte string keys with nil values
+(3.5 MiB). That map is the worst case within the bounds now, because each key
+is entered in the duplicate-key index; 250 levels of string-keyed maps around a
+20 MB `bin` take 0.07 s, since only the keys are hashed. Refusing a payload one
+past the bound costs about 0.11 s, and refusing 24 MiB of nils about 0.12 s.
+Each runs in the link's process.
+
+`core/json.parse_number` also refuses a run of more than
+`json.max_number_digits` (4,096) digits, which the value bound did not limit
+because a number is one value. The two JSON texts carried in strings,
+`decode_lsp_server` and `decode_state`, were parsed by `gleam_json` with
+neither bound; each is now read once with `json.parse_bounded` under
+`max_frame_values` first, which also applies the digit cap. A hook settings
+file crosses as bytes and is parsed by `client/hookcompat`; its two JSON entry
+points now use `json.parse_bounded` under `hookcompat.max_json_values`. The
+TOML shape of a hook file is parsed by `tom` and is not bounded by either.
 
 ## What it costs
 

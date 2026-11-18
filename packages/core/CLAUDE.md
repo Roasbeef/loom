@@ -170,7 +170,11 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   past the bound is a `CorruptionReport`. `msgpack.decode` is the same walk
   with an allowance of the payload's byte size plus one. A caller reading
   msgpack from an untrusted sender uses `decode_bounded` (the untrusted wire's
-  `max_msgpack_values`, protocol-change/117).
+  `max_msgpack_values`, protocol-change/117). It also refuses a map key that is
+  an array or a map, because the duplicate-key index hashes a key whole and
+  nested container keys cost far more than their value count; `decode` still
+  accepts them. `msgpack.check_bounded` applies the same count and key rule to
+  a built value, so a sender checks what it is about to send.
 - **Duplicate keys are corruption, in both codecs.** Decoders disagree on
   first- versus last-occurrence precedence, so a document or frame
   carrying duplicates has no single meaning; rejecting is the only rule
