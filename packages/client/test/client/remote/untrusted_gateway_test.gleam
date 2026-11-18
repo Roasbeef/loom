@@ -48,6 +48,7 @@ import core/clock
 import core/ids.{type Seq}
 import core/json
 import core/message
+import core/msgpack
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -580,12 +581,19 @@ fn start_putting(
   items: Int,
   results: Subject(Result(Seq, owner_services.FactFault)),
 ) -> #(Programs, Stream) {
+  start_plane(
+    label,
+    putting(results, json.Array(list.repeat(json.Int(0), items))),
+  )
+}
+
+/// Attaches a gateway over `factory`'s plane and sends the one call it runs.
+fn start_plane(
+  label: String,
+  factory: host.PlaneFactory(RemoteCensus),
+) -> #(Programs, Stream) {
   let pair = rig.pair(label)
-  let executor =
-    remote_orchestrator.start(putting(
-      results,
-      json.Array(list.repeat(json.Int(0), items)),
-    ))
+  let executor = remote_orchestrator.start(factory)
   let assert Ok(gateway) =
     untrusted_gateway.start(untrusted_gateway.Config(
       address: "127.0.0.1",
@@ -660,6 +668,84 @@ pub fn a_callback_at_the_value_bound_is_sent_test() {
   let assert Ok(untrusted_wire.FactPutCall(key: "job/wide", ..)) =
     untrusted_codec.decode_callback(body)
     as "it is the fact put"
+  assert process.receive(results, 100) == Error(Nil)
+  stop_programs(rig)
+}
+
+/// A plane whose every call makes one capability call with `args` through its
+/// owner, as a program in the jail can, and reports whether it was answered.
+fn calling(
+  results: Subject(Bool),
+  args: msgpack.MsgPackValue,
+) -> host.PlaneFactory(RemoteCensus) {
+  fn(spec: host.AttachSpec) {
+    let owner = spec.owner
+    Ok(host.Plane(
+      run: fn(run, _authority) {
+        let call =
+          owner_services.OwnerCapCall(..fixtures.capability_call(), args:)
+        process.send(results, result.is_ok(owner.capability(call)))
+        fixtures.expected_outcome(run)
+      },
+      census: remote_orchestrator.census(remote_orchestrator.standard_tools()),
+      children: fn(builder) { builder },
+      close: fn(retire_children) {
+        let _retired = retire_children()
+        protocol.AllRetired
+      },
+      execute: fn(_start) { json.Null },
+      abort_step: fn(_op, _step) { Nil },
+      evolution: None,
+      state: None,
+    ))
+  }
+}
+
+// The arguments of a capability call are chosen by the program in the jail. A
+// call whose msgpack arguments are past the value bound would be refused by
+// closing the connection, so it is failed here instead: its asker hears a
+// failure, nothing is sent, and the connection answers the call in flight.
+pub fn capability_arguments_past_the_value_bound_fail_locally_test() {
+  let results = process.new_subject()
+  let wide =
+    msgpack.ArrayValue(list.repeat(
+      msgpack.NilValue,
+      untrusted_wire.max_msgpack_values,
+    ))
+  let #(rig, stream) = start_plane("args-over", calling(results, wide))
+
+  assert process.receive(results, 20_000) == Ok(False)
+  let assert Ok(untrusted_codec.ResponseEnvelope(id: 2, ..)) = rig.next(stream)
+    as "no callback was sent, and the call is answered on the same connection"
+  assert !rig.closed(stream, 300)
+  stop_programs(rig)
+}
+
+// A map keyed by a map is refused by the receiver, so it fails the same way.
+pub fn capability_arguments_with_a_container_key_fail_locally_test() {
+  let results = process.new_subject()
+  let keyed = msgpack.MapValue([#(msgpack.MapValue([]), msgpack.NilValue)])
+  let #(rig, stream) = start_plane("args-key", calling(results, keyed))
+
+  assert process.receive(results, 20_000) == Ok(False)
+  let assert Ok(untrusted_codec.ResponseEnvelope(id: 2, ..)) = rig.next(stream)
+    as "no callback was sent, and the call is answered on the same connection"
+  assert !rig.closed(stream, 300)
+  stop_programs(rig)
+}
+
+// Arguments at the bound are sent.
+pub fn capability_arguments_at_the_value_bound_are_sent_test() {
+  let results = process.new_subject()
+  let at_bound =
+    msgpack.ArrayValue(list.repeat(
+      msgpack.NilValue,
+      untrusted_wire.max_msgpack_values - 1,
+    ))
+  let #(rig, stream) = start_plane("args-at", calling(results, at_bound))
+
+  let assert Ok(untrusted_codec.CallbackEnvelope(..)) = rig.next(stream)
+    as "the callback is sent"
   assert process.receive(results, 100) == Error(Nil)
   stop_programs(rig)
 }

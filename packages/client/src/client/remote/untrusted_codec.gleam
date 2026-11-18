@@ -308,7 +308,35 @@ pub fn encode_fitting(frame: untrusted_wire.Frame) -> Result(BitArray, Unfit) {
           <> int.to_string(untrusted_wire.max_frame_values)
           <> " one frame may",
       ))
-    False, False -> Ok(bytes)
+    False, False ->
+      case args_reason(frame) {
+        Some(reason) -> Error(Unfit(bytes:, reason:))
+        None -> Ok(bytes)
+      }
+  }
+}
+
+/// Why a capability call's arguments would be refused by the receiver's
+/// msgpack bound, or `None` for a frame that carries none. The base64 string
+/// holding the arguments is one JSON value, so neither frame bound sees it,
+/// and the program in the jail chooses the arguments. Only the frame that
+/// carries them is judged: a response goes the other way and holds what the
+/// orchestrator's own capabilities returned.
+fn args_reason(frame: untrusted_wire.Frame) -> Option(String) {
+  case frame {
+    untrusted_wire.Callback(callback: untrusted_wire.CapabilityCall(call:), ..) ->
+      case msgpack.check_bounded(call.args, untrusted_wire.max_msgpack_values) {
+        Ok(Nil) -> None
+        Error(why) ->
+          Some(
+            "the capability arguments hold "
+            <> why
+            <> " (the bound is "
+            <> int.to_string(untrusted_wire.max_msgpack_values)
+            <> " values)",
+          )
+      }
+    _ -> None
   }
 }
 
@@ -1822,6 +1850,7 @@ fn decode_lsp_server(
   value: JsonValue,
 ) -> Result(profile.LspServer, CorruptionReport) {
   use text <- result.try(string_of(value, "lsp_server"))
+  use text <- result.try(bounded_json_text(text, "lsp_server"))
   gleam_json.parse(text, profile.server_decoder())
   |> result.map_error(fn(_not_a_profile) {
     corrupt("lsp_server", "a language server profile", "text that is not one")
@@ -2308,6 +2337,7 @@ fn decode_state(
   value: JsonValue,
 ) -> Result(state_object.State, CorruptionReport) {
   use text <- result.try(string_of(value, "state"))
+  use text <- result.try(bounded_json_text(text, "state"))
   state_object.decode(text)
   |> result.map_error(fn(reason) {
     corrupt("state", "a repository state object", reason)
@@ -4573,6 +4603,31 @@ fn encode_msgpack(value: msgpack.MsgPackValue) -> JsonValue {
   case msgpack.encode(value) {
     Ok(bytes) -> encode_bytes(bytes)
     Error(_unencodable) -> json.Null
+  }
+}
+
+/// Checks that a string holding JSON is a document of at most
+/// `untrusted_wire.max_frame_values` values, and returns it for the parser
+/// that reads it.
+///
+/// A string is one value of the frame that carries it, and `gleam_json` bounds
+/// neither a document's values nor the digits of a number. `core/json` does
+/// both, so the text is read once under that bound before the other parser
+/// sees it; text that is over the bound, or is not JSON, is refused here.
+fn bounded_json_text(
+  text: String,
+  on: String,
+) -> Result(String, CorruptionReport) {
+  case json.parse_bounded(text, max_values: untrusted_wire.max_frame_values) {
+    Ok(_document) -> Ok(text)
+    Error(_refused) ->
+      Error(corrupt(
+        on,
+        "JSON of at most "
+          <> int.to_string(untrusted_wire.max_frame_values)
+          <> " values",
+        "text that is not",
+      ))
   }
 }
 
