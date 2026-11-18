@@ -26,10 +26,15 @@
 
    The values are written in OKLCH (lightness, chroma, hue), because the
    palette is built from lightness targets and that space keeps lightness
-   perceptual. Each theme has one neutral hue for its surfaces and its text:
-   262 in the dark theme and a faint warm 85 in the light one. The surfaces
-   step by a fixed lightness (sunk, page, raised, code), so a card reads as
-   raised without a shadow. Text clears both WCAG's ratio and APCA's
+   perceptual. Both themes share one cool neutral hue, 266, carried at a
+   chroma high enough to read as a tint (about 0.011 on the dark surfaces),
+   so the page is a blue-graphite rather than a flat grey. The accent and
+   the owner's own messages sit on an indigo, 274: `current` for the focused
+   strand, and `bg-user`, a surface tinted toward it, so a reader finds their
+   own turns at a glance. The surfaces step by a fixed lightness (sunk, page,
+   raised, code), so a card reads as raised without a shadow. The dark page
+   sits at a lightness of 0.17, low enough that the raised steps show. Text
+   clears both WCAG's ratio and APCA's
    lightness contrast, which tracks how dark themes are read. The status
    marks are spaced in lightness as well as hue, so added and removed, the
    current strand and a peer, and the attention colour against both stay
@@ -39,40 +44,40 @@
    `make lint` when a value breaks it. */
 @theme {
   --color-*: initial;
-  --color-bg: oklch(0.205 0.006 262);
-  --color-bg-raised: oklch(0.238 0.007 262);
-  --color-bg-sunk: oklch(0.172 0.006 262);
-  --color-bg-user: oklch(0.238 0.007 262);
-  --color-code: oklch(0.270 0.008 262);
-  --color-fg: oklch(0.950 0.004 262);
-  --color-fg-quiet: oklch(0.785 0.010 262);
-  --color-fg-faint: oklch(0.560 0.010 262);
-  --color-divider: oklch(0.305 0.008 262);
-  --color-current: oklch(0.790 0.105 258);
-  --color-signal: oklch(0.760 0.150 68);
-  --color-signal-text: oklch(0.800 0.140 70);
-  --color-advisor: oklch(0.760 0.150 68);
-  --color-advisor-text: oklch(0.800 0.140 70);
-  --color-peer: oklch(0.640 0.180 305);
-  --color-peer-text: oklch(0.800 0.110 305);
-  --color-danger: oklch(0.650 0.190 8);
-  --color-danger-text: oklch(0.800 0.115 10);
-  --color-on-danger: oklch(0.172 0.006 262);
-  --color-on-signal: oklch(0.172 0.006 262);
-  --color-added: oklch(0.890 0.180 148);
-  --color-added-text: oklch(0.850 0.170 148);
-  --color-added-bg: oklch(0.330 0.060 150);
-  --color-removed-bg: oklch(0.285 0.065 5);
-  --color-strand-2: oklch(0.810 0.120 190);
-  --color-strand-2-text: oklch(0.810 0.120 190);
-  --color-strand-3: oklch(0.820 0.140 118);
-  --color-strand-3-text: oklch(0.820 0.140 118);
-  --color-strand-4: oklch(0.800 0.110 232);
-  --color-strand-4-text: oklch(0.800 0.110 232);
-  --color-strand-5: oklch(0.800 0.125 340);
-  --color-strand-5-text: oklch(0.800 0.125 340);
-  --color-strand-6: oklch(0.790 0.120 42);
-  --color-strand-6-text: oklch(0.790 0.120 42);
+  --color-bg: oklch(0.170 0.011 266);
+  --color-bg-raised: oklch(0.212 0.013 266);
+  --color-bg-sunk: oklch(0.138 0.010 266);
+  --color-bg-user: oklch(0.232 0.032 274);
+  --color-code: oklch(0.246 0.013 266);
+  --color-fg: oklch(0.955 0.005 266);
+  --color-fg-quiet: oklch(0.780 0.016 266);
+  --color-fg-faint: oklch(0.545 0.016 266);
+  --color-divider: oklch(0.292 0.014 266);
+  --color-current: oklch(0.785 0.105 274);
+  --color-signal: oklch(0.770 0.160 70);
+  --color-signal-text: oklch(0.810 0.145 72);
+  --color-advisor: oklch(0.770 0.160 70);
+  --color-advisor-text: oklch(0.810 0.145 72);
+  --color-peer: oklch(0.620 0.200 318);
+  --color-peer-text: oklch(0.800 0.125 318);
+  --color-danger: oklch(0.660 0.205 14);
+  --color-danger-text: oklch(0.800 0.115 14);
+  --color-on-danger: oklch(0.138 0.010 266);
+  --color-on-signal: oklch(0.138 0.010 266);
+  --color-added: oklch(0.890 0.190 152);
+  --color-added-text: oklch(0.840 0.170 152);
+  --color-added-bg: oklch(0.325 0.070 156);
+  --color-removed-bg: oklch(0.268 0.080 14);
+  --color-strand-2: oklch(0.810 0.130 190);
+  --color-strand-2-text: oklch(0.810 0.130 190);
+  --color-strand-3: oklch(0.830 0.150 120);
+  --color-strand-3-text: oklch(0.830 0.150 120);
+  --color-strand-4: oklch(0.790 0.120 236);
+  --color-strand-4-text: oklch(0.790 0.120 236);
+  --color-strand-5: oklch(0.790 0.140 345);
+  --color-strand-5-text: oklch(0.790 0.140 345);
+  --color-strand-6: oklch(0.790 0.125 45);
+  --color-strand-6-text: oklch(0.790 0.125 45);
   --color-pill-ok-bg: color-mix(in srgb, var(--color-added) 12%, transparent);
   --color-pill-wait-bg: color-mix(in srgb, var(--color-signal) 14%, transparent);
   --color-pill-bad-bg: color-mix(in srgb, var(--color-danger) 12%, transparent);
@@ -82,7 +87,7 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
-/* The light tokens, a warm paper, and how a theme reaches every part of the
+/* The light tokens, a cool near-white, and how a theme reaches every part of the
    page (docs/design-notes/web-design.md, sections 5 and 6.5).
 
    The page follows `prefers-color-scheme` until the reader presses the
@@ -109,78 +114,78 @@
    after the light media query as a light value. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --color-bg: oklch(0.975 0.004 85);
-    --color-bg-raised: oklch(1.000 0.000 85);
-    --color-bg-sunk: oklch(0.952 0.006 85);
-    --color-bg-user: oklch(1.000 0.000 85);
-    --color-code: oklch(0.952 0.006 85);
-    --color-fg: oklch(0.215 0.006 85);
-    --color-fg-quiet: oklch(0.500 0.012 85);
-    --color-fg-faint: oklch(0.700 0.014 85);
-    --color-divider: oklch(0.905 0.008 85);
-    --color-current: oklch(0.500 0.190 262);
-    --color-signal: oklch(0.645 0.145 64);
-    --color-signal-text: oklch(0.510 0.115 58);
-    --color-advisor: oklch(0.645 0.145 64);
-    --color-advisor-text: oklch(0.510 0.115 58);
-    --color-peer: oklch(0.660 0.170 315);
-    --color-peer-text: oklch(0.500 0.200 312);
-    --color-danger: oklch(0.570 0.195 356);
-    --color-danger-text: oklch(0.510 0.185 358);
-    --color-on-danger: oklch(1.000 0.000 85);
-    --color-on-signal: oklch(0.215 0.006 85);
-    --color-added: oklch(0.470 0.130 142);
-    --color-added-text: oklch(0.470 0.120 142);
-    --color-added-bg: oklch(0.945 0.055 150);
-    --color-removed-bg: oklch(0.905 0.040 6);
+    --color-bg: oklch(0.978 0.003 266);
+    --color-bg-raised: oklch(1.000 0.000 0);
+    --color-bg-sunk: oklch(0.957 0.005 266);
+    --color-bg-user: oklch(0.955 0.020 274);
+    --color-code: oklch(0.957 0.005 266);
+    --color-fg: oklch(0.205 0.014 266);
+    --color-fg-quiet: oklch(0.490 0.018 266);
+    --color-fg-faint: oklch(0.700 0.016 266);
+    --color-divider: oklch(0.910 0.007 266);
+    --color-current: oklch(0.500 0.215 274);
+    --color-signal: oklch(0.660 0.145 64);
+    --color-signal-text: oklch(0.510 0.120 58);
+    --color-advisor: oklch(0.660 0.145 64);
+    --color-advisor-text: oklch(0.510 0.120 58);
+    --color-peer: oklch(0.670 0.190 318);
+    --color-peer-text: oklch(0.500 0.210 318);
+    --color-danger: oklch(0.585 0.205 4);
+    --color-danger-text: oklch(0.510 0.190 6);
+    --color-on-danger: oklch(1.000 0.000 0);
+    --color-on-signal: oklch(0.205 0.014 266);
+    --color-added: oklch(0.425 0.115 150);
+    --color-added-text: oklch(0.470 0.125 150);
+    --color-added-bg: oklch(0.952 0.060 152);
+    --color-removed-bg: oklch(0.910 0.045 14);
     --color-strand-2: oklch(0.600 0.100 190);
     --color-strand-2-text: oklch(0.500 0.085 190);
-    --color-strand-3: oklch(0.600 0.110 120);
-    --color-strand-3-text: oklch(0.495 0.095 120);
-    --color-strand-4: oklch(0.600 0.120 235);
-    --color-strand-4-text: oklch(0.505 0.105 235);
-    --color-strand-5: oklch(0.580 0.170 340);
-    --color-strand-5-text: oklch(0.505 0.160 340);
-    --color-strand-6: oklch(0.600 0.150 40);
-    --color-strand-6-text: oklch(0.505 0.140 40);
+    --color-strand-3: oklch(0.600 0.120 122);
+    --color-strand-3-text: oklch(0.495 0.100 122);
+    --color-strand-4: oklch(0.600 0.130 238);
+    --color-strand-4-text: oklch(0.505 0.110 238);
+    --color-strand-5: oklch(0.580 0.180 345);
+    --color-strand-5-text: oklch(0.505 0.165 345);
+    --color-strand-6: oklch(0.600 0.155 42);
+    --color-strand-6-text: oklch(0.505 0.145 42);
     --shadow-float: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
   }
 }
 :root[data-theme="light"] {
-  --color-bg: oklch(0.975 0.004 85);
-  --color-bg-raised: oklch(1.000 0.000 85);
-  --color-bg-sunk: oklch(0.952 0.006 85);
-  --color-bg-user: oklch(1.000 0.000 85);
-  --color-code: oklch(0.952 0.006 85);
-  --color-fg: oklch(0.215 0.006 85);
-  --color-fg-quiet: oklch(0.500 0.012 85);
-  --color-fg-faint: oklch(0.700 0.014 85);
-  --color-divider: oklch(0.905 0.008 85);
-  --color-current: oklch(0.500 0.190 262);
-  --color-signal: oklch(0.645 0.145 64);
-  --color-signal-text: oklch(0.510 0.115 58);
-  --color-advisor: oklch(0.645 0.145 64);
-  --color-advisor-text: oklch(0.510 0.115 58);
-  --color-peer: oklch(0.660 0.170 315);
-  --color-peer-text: oklch(0.500 0.200 312);
-  --color-danger: oklch(0.570 0.195 356);
-  --color-danger-text: oklch(0.510 0.185 358);
-  --color-on-danger: oklch(1.000 0.000 85);
-  --color-on-signal: oklch(0.215 0.006 85);
-  --color-added: oklch(0.470 0.130 142);
-  --color-added-text: oklch(0.470 0.120 142);
-  --color-added-bg: oklch(0.945 0.055 150);
-  --color-removed-bg: oklch(0.905 0.040 6);
+  --color-bg: oklch(0.978 0.003 266);
+  --color-bg-raised: oklch(1.000 0.000 0);
+  --color-bg-sunk: oklch(0.957 0.005 266);
+  --color-bg-user: oklch(0.955 0.020 274);
+  --color-code: oklch(0.957 0.005 266);
+  --color-fg: oklch(0.205 0.014 266);
+  --color-fg-quiet: oklch(0.490 0.018 266);
+  --color-fg-faint: oklch(0.700 0.016 266);
+  --color-divider: oklch(0.910 0.007 266);
+  --color-current: oklch(0.500 0.215 274);
+  --color-signal: oklch(0.660 0.145 64);
+  --color-signal-text: oklch(0.510 0.120 58);
+  --color-advisor: oklch(0.660 0.145 64);
+  --color-advisor-text: oklch(0.510 0.120 58);
+  --color-peer: oklch(0.670 0.190 318);
+  --color-peer-text: oklch(0.500 0.210 318);
+  --color-danger: oklch(0.585 0.205 4);
+  --color-danger-text: oklch(0.510 0.190 6);
+  --color-on-danger: oklch(1.000 0.000 0);
+  --color-on-signal: oklch(0.205 0.014 266);
+  --color-added: oklch(0.425 0.115 150);
+  --color-added-text: oklch(0.470 0.125 150);
+  --color-added-bg: oklch(0.952 0.060 152);
+  --color-removed-bg: oklch(0.910 0.045 14);
   --color-strand-2: oklch(0.600 0.100 190);
   --color-strand-2-text: oklch(0.500 0.085 190);
-  --color-strand-3: oklch(0.600 0.110 120);
-  --color-strand-3-text: oklch(0.495 0.095 120);
-  --color-strand-4: oklch(0.600 0.120 235);
-  --color-strand-4-text: oklch(0.505 0.105 235);
-  --color-strand-5: oklch(0.580 0.170 340);
-  --color-strand-5-text: oklch(0.505 0.160 340);
-  --color-strand-6: oklch(0.600 0.150 40);
-  --color-strand-6-text: oklch(0.505 0.140 40);
+  --color-strand-3: oklch(0.600 0.120 122);
+  --color-strand-3-text: oklch(0.495 0.100 122);
+  --color-strand-4: oklch(0.600 0.130 238);
+  --color-strand-4-text: oklch(0.505 0.110 238);
+  --color-strand-5: oklch(0.580 0.180 345);
+  --color-strand-5-text: oklch(0.505 0.165 345);
+  --color-strand-6: oklch(0.600 0.155 42);
+  --color-strand-6-text: oklch(0.505 0.145 42);
   --shadow-float: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
 }
 :host {
