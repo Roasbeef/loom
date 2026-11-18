@@ -4497,12 +4497,12 @@ control is always available.
 ### The click paths
 
 Selecting a thread is a click beneath `home.table_path`. `home_accepts`
-(`client/daemon/ui_socket.gleam:1986`) admits a click there for every home
-through `home_row_path` (`client/daemon/ui_socket.gleam:2111`), whether the
+(`client/daemon/ui_socket.gleam:2165`) admits a click there for every home
+through `home_row_path` (`client/daemon/ui_socket.gleam:2290`), whether the
 home is an owner's, a member's or an observer's.
 
 The message field's submit is beneath `home.table_path`. `home_owner_accepts`
-(`client/daemon/ui_socket.gleam:2014`) admits a submit there for the owner's
+(`client/daemon/ui_socket.gleam:2193`) admits a submit there for the owner's
 operating home (`Submitting`). The socket of any other home does not admit
 it: a member's home and an observer-ceiling home use `home_accepts`, which
 admits a submit only beneath `home.signins_path`.
@@ -4515,11 +4515,19 @@ dropped, as is a batch that contains one.
 
 For each running session the page shows what the daemon's `sessions.activity`
 read (protocol-change/050) returns: the session's last finished turn and the
-glances of its strands. The daemon reduced that row to one state word before
-(`home_activity` (`client/daemon/server.gleam:6473`)). It now passes the row
-on, within the bounds the read already has: 2,000 ms for the slowest
-resident (`activity_deadline_ms`) and 2,400 bytes for a row
-(`activity_row_bytes`) (`client/daemon/server.gleam:6398` and `:6402`).
+glances of its strands. The daemon reduced that row to one state word before.
+Now the home's read hands the page one `sessions.Report` for each session that
+answered: the state, the `last_message` and the `glances`
+(`activity_reports` and `report_of` in `client/daemon/server.gleam`, reached
+through `home_activity`). The row's other fields (the model, the working
+strands, the approval count beyond telling a failed run from an approval) still
+do not leave the daemon, and the session page's sidebar and the admin page's
+dots still receive the state word alone (`activity_states`). The read stays
+within the bounds it already has: 2,000 ms for the slowest resident
+(`activity_deadline_ms`) and 2,400 bytes for a row (`activity_row_bytes`).
+A `last_message` that is not a string is no message, and a glance that is not
+an object of three strings is dropped alone, so a malformed field never costs a
+session its state.
 
 The text in the row was produced by a session. It is untrusted. The page
 draws it as text nodes only, as the rest of this document requires. The page
@@ -4546,7 +4554,7 @@ the message and says nothing about its intent.
   out of it without being opened.
 - **A new top-level region outside the table.** That needs a new path
   constant and a new rule in `home_event`
-  (`client/daemon/ui_socket.gleam:2053`). A region beneath
+  (`client/daemon/ui_socket.gleam:2232`). A region beneath
   `home.table_path` needs neither.
 
 ### Cost
@@ -4570,8 +4578,18 @@ new admitted path. The thread-send capability is costed in
   capability's `Some` and `None` cases, which the thread-send capability
   repeats.
 - `every_home_socket_admits_a_submit_beneath_the_account_panel_test`
-  (`:1607`) pins that the only submit a non-owner home admits is beneath
+  (`:1658`) pins that the only submit a non-owner home admits is beneath
   `home.signins_path`.
 
-The inbox's own view tests are added with the inbox. A real drive of the
-inbox in a browser has not been run.
+The message field adds two more (protocol-change/118):
+
+- `only_an_owners_operating_home_is_handed_the_thread_send_capability_test`
+  (`:1194`) pins the capability's `Some` for the owner at the Operator ceiling
+  and `None` for the rest.
+- `the_inbox_message_form_needs_no_new_admission_test` (`:1214`) pins that a
+  browsing home refuses a submit beneath `home.table_path`, that a submitting
+  home accepts it, that the "Inbox" control is a click every home admits, and
+  that neither is admitted outside the table.
+
+The inbox's own view tests are in `web_view/test/inbox_view_test.gleam`. A real
+drive of the inbox in a browser has not been run.

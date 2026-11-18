@@ -1,7 +1,9 @@
 # protocol-change/118: sending to a session from the inbox on Home
 
 **Status**: ACCEPTED 2026-11-18. The owner accepted autonomous protocol
-changes for the attention inbox build on 2026-11-17. Not built.
+changes for the attention inbox build on 2026-11-17. Built in the second slice
+of phase 0 (the 16,384-byte limit and the typed refusals below are what was
+built).
 **Affects**: the web view's home page. One new capability on the owner's
 home, one generalised function in `client/daemon/ui_socket.gleam`, and one
 submit handler beneath `home.table_path`. The client control protocol, the
@@ -21,7 +23,7 @@ The inbox's reading pane ends each thread with a message field addressed to
 that thread's session (README section 2.2). The owner types a message, picks
 a delivery, and presses Send. Today the Home page can send to a session in
 exactly one case: the first message of a session it has just created
-(`first_message_for` (`client/daemon/ui_socket.gleam:7737`)). It cannot send
+(`first_message_for` (`client/daemon/ui_socket.gleam:7931`)). It cannot send
 to a session that already exists. To message one, the owner must open that
 session's page and use its composer.
 
@@ -62,13 +64,13 @@ the inbox does not own.
 
 The Home page gets a thread-send capability only when the page's principal
 is the daemon's owner and the page's ceiling is Operator. It is built like
-`home_create_capability` (`client/daemon/ui_socket.gleam:1845`), which
+`home_create_capability` (`client/daemon/ui_socket.gleam:1870`), which
 returns `Some` for exactly that pair and `None` for a member at either
 ceiling and for the owner at the Observer ceiling.
 
 The capability MUST be re-derived when the submit is processed, with the
 same checks `authorized_owner` makes for creating a session
-(`client/daemon/ui_socket.gleam:3910`): the page is open, the ceiling is an
+(`client/daemon/ui_socket.gleam:4093`): the page is open, the ceiling is an
 operator's, and the page's credential still authenticates as the owner. A
 page whose standing has changed since it was minted therefore sends nothing.
 
@@ -107,12 +109,27 @@ The gateway bounds both queues: four normal inputs and four steers for each
 strand ([022](022-human-input-priority.md)). A send over the bound is
 refused by the gateway.
 
+### Which buttons a thread offers
+
+The buttons depend on the state the session's report gives the inbox:
+
+| State | Buttons |
+|---|---|
+| idle, failed, or nothing said | Send (a `Prompt`) |
+| working | Queue (a `Prompt`, held after the turn) and Steer (a `Steer`) |
+| an approval is pending | Queue alone, with the words "held behind the approval" |
+
+The page names the button it expects and does not enforce it: the gateway
+decides from the strand's state whether a prompt starts a turn or waits. Every
+message is the owner's own prompt, attributed as one typed on the session's
+page.
+
 ### How it is sent
 
 No new frame is added to the client protocol. The home's socket handles the
 submit and, as the page's principal, runs the path the home composer's first
-message uses. `first_message_for` resolves the session and `first_prompt`
-(`client/daemon/ui_socket.gleam:7817`) sends the text. The steps are:
+message uses. `message_to` resolves the session and `send_message`
+(`client/daemon/ui_socket.gleam:8069`) sends the text. The steps are:
 
 1. Resolve the principal and its authority on the session with
    `manager.session_authority` (`client/daemon/manager.gleam:1970`). A
@@ -123,43 +140,61 @@ message uses. `first_message_for` resolves the session and `first_prompt`
    (`ui_relay.capped`), and the binding's door is `PageDoor`, as for every
    page.
 4. Subscribe, then send `Prompt` or `Steer` on strand `main`.
-5. Report success only when the gateway answers `admitted` or `queued`.
+5. Report success only when the gateway answers `admitted` or `queued`. A
+   `conflict` carrying the gateway's queue-full words is `QueueFull`, and any
+   other refusal, or a reply that did not come, is `NotAccepted`.
 6. Detach.
 
-`first_prompt` currently sends `Prompt` only. It is generalised to take the
-delivery, and `first_message_for` is generalised from "the first message of a
-new session" to "a message to a session the principal holds". The home
-composer keeps calling it with `Prompt`. The text is a JSON string inside the
-frame, so it cannot name another command.
+`first_prompt` sent `Prompt` only. It is generalised to `send_message`, which
+takes the delivery, and the resolution in `first_message_for` becomes
+`message_to`: from "the first message of a new session" to "a message to a
+session the principal holds". The home composer keeps its first message
+working through the same function, with `Prompt` (`first_message_for` is now a
+thin wrapper that turns the typed answer into the `Result` the creation
+expects). The text is a JSON string inside the frame, so it cannot name another
+command.
 
 The home component receives the generalised function through a `Start`
-field, as it receives `create` and the other owner-only requests. The
-request runs in a task, so the page's runtime never waits for the gateway.
+field, `thread_send`, as it receives `create` and the other owner-only
+requests. The request runs in a task, so the page's runtime never waits for the
+gateway. The task bounds the send with a 20-second deadline inside its own run
+and delivers an answer whether the send finished or not, so the page's
+"Sending…" is always settled; a send that misses the deadline is `NotAccepted`.
 
 ### Bounds
 
 The message is text only. The Home page MUST refuse text that is empty after
-trimming, and text longer than `component.prompt_limit`
-(`web_view/component.gleam:506`, 262,144 bytes), which is the limit the
-operator page's composer applies to its draft.
+trimming, and text longer than `composer.prompt_limit`
+(`web_view/composer.gleam:68`, 16,384 bytes), the limit the home composer
+already applies to its first message. The daemon checks both again at the press
+and answers `NotAccepted` for a message that fails either.
 
-The home composer's first message is limited to 16,384 bytes
-(`web_view/composer.gleam:68`). That limit exists so that a person is not
-shown a long first message refused after a session is created. It does not
-apply here, because no session is created by a thread send.
+An inbox message is a short note to a session that is already working, and
+Home already accepts 16,384 bytes in its composer, so the same bound serves
+both and no second number exists. The operator page's composer draft limit
+(`component.prompt_limit`, 262,144 bytes) is larger and is not used here; a
+long brief belongs on the session's own page.
 
 ### What the page shows
 
 The result of a send is drawn in the outbox as fixed words. The words do not
-include text from the session, from the gateway or from an error value.
+include text from the session, from the gateway or from an error value. The
+daemon answers with a closed type: `Delivered(Admitted | Queued)` or a refusal
+`NotHeld`, `NotResident`, `NotAccepted(reason)` or `QueueFull`. The reason in
+`NotAccepted` is kept for the daemon's log and is never drawn.
 
-| Result | Words |
+| Answer | Words |
 |---|---|
-| gateway answered `admitted` or `queued` | Delivered |
-| gateway refused the message | Not admitted |
-| the queue bound was reached | Queue full |
-| the session is saved, or not running | Session not resident |
-| the principal does not hold the session, or the capability fails at the press | No authority |
+| before any send | Not sent |
+| the task is running | Sending… |
+| `Delivered(Admitted)` | Delivered to (session) · admitted |
+| `Delivered(Queued)` | Delivered to (session) · queued |
+| `NotHeld`: the principal does not hold the session, or the capability fails at the press | Not sent: this home no longer holds that session |
+| `NotResident`: the session is saved, or not running | Not sent: the session is not running |
+| `NotAccepted(reason)`: the gateway refused the message, or did not answer | Not sent: the session refused it |
+| `QueueFull`: the queue bound was reached | Not sent: its queue is full |
+
+After `Delivered` the message field clears. After a refusal it keeps the draft.
 
 "Delivered" means only that the gateway admitted or queued the message. It
 does not mean that the session read it, or that a turn ran.
@@ -206,16 +241,18 @@ the same ability.
 ## What it costs
 
 - One capability, built like `home_create_capability`, and its test.
-- One generalised function: `first_prompt` takes a delivery, and
-  `first_message_for` serves any session the principal holds.
+- One generalised function: `send_message` (was `first_prompt`) takes a
+  delivery, and `message_to` (was `first_message_for`) serves any session the
+  principal holds.
 - One submit handler beneath `home.table_path`. The home socket already
   admits a submit there for `Submitting` (`home_owner_accepts`
-  (`client/daemon/ui_socket.gleam:2014`)), so no admission rule changes.
-- `first_prompt` answers a refusal with one string today
-  ("the session did not accept the message"). The outbox words above need
-  the refusals told apart, so the generalised function returns a closed
-  type of reasons (not admitted, queue full, not resident, no authority)
-  in place of that string.
+  (`client/daemon/ui_socket.gleam:2193`)), so no admission rule changes.
+- `first_prompt` answered a refusal with one string ("the session did not
+  accept the message"). The outbox words above need the refusals told apart,
+  so `send_message` returns the closed `web_view/thread_send.Answer` in place
+  of that string. The gateway's queue-full refusal is a `conflict` whose words
+  are now a public constant (`gateway.queue_full_message`), so the daemon tells
+  it from the other conflicts a prompt can meet without a copy of the sentence.
 
 ## Slices
 
