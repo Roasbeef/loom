@@ -3,10 +3,12 @@
 //// item costs only itself.
 
 import core/attention
+import core/attention_answer
 import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{None, Some}
 import web_view/attention_feed.{Ask, Find, Row, Section, Stuck}
+import web_view/composer
 
 fn section(count: Int, items: List(JsonValue)) -> JsonValue {
   json.Object([#("count", json.Int(count)), #("items", json.Array(items))])
@@ -162,4 +164,11 @@ pub fn a_line_without_a_path_is_dropped_test() {
   let assert [find] = decoded.finds.items
   assert find.path == None
   assert find.line == None
+}
+
+// The daemon checks an answer's whole prompt against the bound the home
+// composer already enforces. `core` may not import the composer, so the number
+// is stated in both places and this pins them together.
+pub fn the_answer_prompt_bound_is_the_composers_test() {
+  assert attention_answer.max_prompt_bytes == composer.prompt_limit
 }
