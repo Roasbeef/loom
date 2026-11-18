@@ -2321,9 +2321,19 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         None -> #(model, effect.none())
       }
 
+    // A delivery empties the staging, and the browser keeps what was typed in
+    // a form it still has, so the open count rises with it: the forms are
+    // keyed by that count, and a form with a new key is a form with no text.
     ReviewPrompted(answer:) -> {
       let next =
-        Model(..model, review: review_pane.prompted(model.review, answer))
+        Model(
+          ..model,
+          review: review_pane.prompted(model.review, answer),
+          review_presses: case answer {
+            thread_send.Delivered(_) -> model.review_presses + 1
+            thread_send.Refused(_) -> model.review_presses
+          },
+        )
       #(next, attending(next))
     }
 

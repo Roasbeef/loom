@@ -590,6 +590,35 @@ fn review_stage_verdict() -> review_stage_rule.Verdict {
   review_stage_rule.RequestChanges
 }
 
+// The count a comment box's key carries, from a drawn page.
+fn comment_key_count(html: String) -> String {
+  let assert Ok(#(_, after)) = string.split_once(html, "key=\"review-A-")
+    as "the page draws a comment box"
+  let assert Ok(#(count, _)) = string.split_once(after, "-comment-0\"")
+    as "the key names the comment box"
+  count
+}
+
+// A delivered Send empties the staging, and the comment boxes must drop what
+// was typed: their keys carry the open count, which a delivery raises, so the
+// browser builds new boxes. A refused Send keeps the staging and the keys.
+pub fn a_delivered_send_rekeys_the_forms_so_typed_text_goes_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  let staged =
+    run(model, home.ReviewCommented("src/retry.gleam", "Cap the wait."))
+  let before = comment_key_count(drawn(staged))
+
+  let delivered = run(staged, home.ReviewSent)
+  assert comment_key_count(drawn(delivered)) != before
+
+  let refused =
+    run(
+      staged,
+      home.ReviewPrompted(thread_send.Refused(thread_send.NotResident)),
+    )
+  assert comment_key_count(drawn(refused)) == before
+}
+
 // A page that is staged says what opening another review discards, with the
 // session's name as text.
 pub fn the_outbox_says_what_opening_another_thread_discards_test() {
