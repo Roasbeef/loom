@@ -94,6 +94,7 @@ fn wiring(runtime: api.Runtime, at: Int) -> attention.Wiring {
     runtime: fn() { Ok(runtime) },
     clock: clock.fixed(at:),
     entropy: ffi_os.unique_positive_integer,
+    report: attention.silent(),
   )
 }
 
