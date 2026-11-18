@@ -267,6 +267,7 @@ fn other_text(
   key: String,
   others: List(#(String, JsonValue)),
 ) -> Result(String, Rejection) {
+  // The text must be present, free of NUL and within bounds.
   case list.key_find(others, key) {
     Ok(json.String(text)) -> {
       use text <- result.try(without_nul(key, text))

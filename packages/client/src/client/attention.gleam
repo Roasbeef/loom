@@ -488,6 +488,8 @@ pub fn settle(
   // The write is the one guarded replacement, so a lost race writes nothing.
   let change =
     api.ReservedFactChange(key:, value: encoded, expected: Some(revision))
+
+  // A won write reads back its new revision; a lost one is `Moved`.
   case api.edit_reserved_facts(runtime, [api.ReservedFactSet(change)]) {
     Ok(Nil) ->
       case read(runtime, id) {
