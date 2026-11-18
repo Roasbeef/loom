@@ -465,6 +465,7 @@ pub fn done_words(control: Control) -> String {
 /// ```
 pub fn refusal_words(control: Control, code: String) -> String {
   case control, code {
+    Answer(_), "unanswered" | Close, "unanswered" -> unanswered_words
     Answer(_), _ -> board.answer_refusal_words(code)
     Close, _ -> board.close_refusal_words(code)
     Retry, "not_found" | Stop, "not_found" -> "That ticket no longer exists."

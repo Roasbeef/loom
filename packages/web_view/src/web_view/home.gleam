@@ -4753,7 +4753,6 @@ fn ticket_acted(
       let settle = fn(outcome) {
         dispatch(TicketActSettled(key, control, outcome))
       }
-      let acted = settle
 
       // Each act goes through its own capability, and each answer is read into
       // the rule's one outcome.
@@ -4772,8 +4771,8 @@ fn ticket_acted(
               feed.NotClosed(code:) -> feed.Declined(code)
             })
           })
-        ticket_rule.Retry -> retry(key.project, key.ticket, acted)
-        ticket_rule.Stop -> stop(key.project, key.ticket, acted)
+        ticket_rule.Retry -> retry(key.project, key.ticket, settle)
+        ticket_rule.Stop -> stop(key.project, key.ticket, settle)
       }
     })
     None -> #(model, effect.none())

@@ -218,3 +218,42 @@ pub fn a_thread_is_stale_when_the_board_moved_past_its_read_test() {
     held,
   )
 }
+
+// A confirmation for an act the ticket no longer offers is dropped by a read,
+// and one it still offers is kept.
+pub fn a_read_drops_a_confirmation_the_list_no_longer_holds_test() {
+  let opened =
+    ticket_rule.Opened(..ticket_rule.open(key()), confirm: Asked(Stop))
+  let offered = ticket("t-a", board.PersonAnswer, [board.CanStop])
+  let withdrawn = ticket("t-a", board.PersonAnswer, [board.CanClose])
+  let read = fn(held) {
+    board.Detail(
+      project: "p1",
+      revision: 4,
+      ticket: held,
+      assignments: [],
+      inputs: [],
+    )
+  }
+
+  let kept = ticket_rule.heard(opened, read(offered))
+  assert ticket_rule.reconciled(kept, Operating).confirm == Asked(Stop)
+
+  let dropped = ticket_rule.heard(opened, read(withdrawn))
+  assert ticket_rule.reconciled(dropped, Operating).confirm == Unasked
+
+  // A page that may not operate keeps no confirmation either.
+  assert ticket_rule.reconciled(kept, Watching).confirm == Unasked
+}
+
+// Silence from the project is worded as "read again", for every act, and is
+// never the words of a refusal.
+pub fn an_unanswered_act_says_to_read_again_test() {
+  let words = ticket_rule.unanswered_words
+
+  assert ticket_rule.refusal_words(Stop, "unanswered") == words
+  assert ticket_rule.refusal_words(Retry, "unanswered") == words
+  assert ticket_rule.refusal_words(Close, "unanswered") == words
+  assert ticket_rule.refusal_words(Answer(7), "unanswered") == words
+  assert string.contains(words, "Reread the ticket")
+}
