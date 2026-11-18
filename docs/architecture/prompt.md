@@ -542,7 +542,7 @@ behind the pack and its stability contract is Part B of
 
 ## Semantic capability guidance
 
-The shipped `loom-default-17` pack prefers `cap/lsp` in code mode when that
+The shipped `loom-default-18` pack prefers `cap/lsp` in code mode when that
 module is offered, and `cap/lsp_sql` for joins, counts and filters over explicit
 observations when its separate module is offered. It names `cap://lsp` and
 `cap://lsp_sql` as the API reads to perform before writing unfamiliar calls.
@@ -573,7 +573,7 @@ retain their original text; fresh sessions receive the current version.
 
 ## Diagram guidance
 
-`loom-default-17` adds one paragraph to `conduct`: draw a flow, call sequence
+`loom-default-17` added one paragraph to `conduct`: draw a flow, call sequence
 or dependency set as a small `mermaid` fence, a flowchart or sequence diagram
 of about a dozen nodes without subgraphs or styling. That is the subset both
 clients draw. The web view renders it in an isolated frame
@@ -581,6 +581,16 @@ clients draw. The web view renders it in an isolated frame
 outside the subset falls back to the source, so the hint only shapes what the
 model reaches for. It sits in `conduct` because it is about how an answer is
 written, not about any tool.
+
+## Asking with options
+
+`loom-default-18` adds one sentence to the `conduct` paragraph that already
+says to ask one specific question: when a decision belongs to the owner, ask
+with `ask` and give options rather than asking in prose (protocol-change/119).
+The project router and worker packs are derived from the default and remove
+the sentence, because a router holds no `ask` and a worker is refused it
+(`client/project_jail`, `worker_tools`); a worker puts its question in
+`project_report`. Running sessions keep the prompt they pinned.
 
 ## Batching read-only queries
 

@@ -10,6 +10,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import prompt/default
 import prompt/pack
 import storage/catalogue
 import tom
@@ -67,6 +68,18 @@ pub fn the_packs_decode_without_problems_test() {
 // its change uncommitted and the check ran against the base commit.
 pub fn the_worker_is_told_to_commit_before_it_reports_test() {
   assert string.contains(project_packs.worker(), "Commit your finished work")
+}
+
+// The default's conduct sends an owner's decision through `ask`. A router holds
+// three tools and no `ask`, and a worker is refused it, so neither pack tells
+// its session to use one; the sentence stays in the default.
+pub fn neither_project_pack_tells_its_session_to_use_ask_test() {
+  assert string.contains(default.source, "ask with `ask`")
+  assert !string.contains(project_packs.router(), "ask with `ask`")
+  assert !string.contains(project_packs.worker(), "ask with `ask`")
+  assert string.contains(project_packs.worker(), "ask one specific question")
+  assert string.contains(project_packs.router(), "loom-router-18")
+  assert string.contains(project_packs.worker(), "loom-worker-18")
 }
 
 // A worker keeps `notice` and is refused `ask`, named exactly so an extension
