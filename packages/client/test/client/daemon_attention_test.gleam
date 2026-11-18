@@ -697,7 +697,7 @@ pub fn a_delivered_prompt_that_lost_the_settle_write_says_so_test() {
   })
 }
 
-pub fn settling_prunes_the_records_the_rule_retires_test() {
+pub fn settling_writes_one_cell_and_the_next_insertion_prunes_test() {
   with_rig(fn(_registry, _port, _credential, _epoch, rig, _principal) {
     // A record settled long ago is retired by the commit that settles another.
     let old =
@@ -733,7 +733,21 @@ pub fn settling_prunes_the_records_the_rule_retires_test() {
         open_revision(rig, rig.ask),
         good_answer(),
       )
+
+    // Settling writes the one cell: the old settled record is still there.
     let assert Ok(asks) = attention.asks(rig.runtime)
-    assert list.map(asks, fn(ask) { ask.header.id }) == [rig.ask]
+    assert list.contains(
+      list.map(asks, fn(ask) { ask.header.id }),
+      old.header.id,
+    )
+
+    // The next insertion already holds the scan and retires it.
+    let assert Ok(fresh) =
+      attention.ask(wiring(rig.runtime), caller("main"), ask_request(None))
+    let assert Ok(asks) = attention.asks(rig.runtime)
+    let ids = list.map(asks, fn(ask) { ask.header.id })
+    assert !list.contains(ids, old.header.id)
+    assert list.contains(ids, fresh)
+    assert list.contains(ids, rig.ask)
   })
 }

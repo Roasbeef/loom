@@ -43,10 +43,10 @@
 ////
 //// ## Pruning
 ////
-//// Settled records are retired by `core/attention.retired` in the commit that
-//// settles them, as `settle` does, and `try_insert` also prunes with the scan
-//// it already holds. That keeps the prefix bounded however a settled record
-//// came to exist.
+//// Settled records are retired by `core/attention.retired` in the commit of the
+//// next insertion, which already holds the scan, so `settle` writes only the one
+//// cell it settles. That keeps the prefix bounded however a settled record came
+//// to exist, and keeps `Moved` meaning exactly that the cell moved.
 ////
 //// ## The catalogue summary
 ////
@@ -455,10 +455,10 @@ pub fn read(runtime: api.Runtime, id: String) -> Result(Stored, ReadFault) {
 /// Settles an open record under the revision the caller read, and answers the
 /// record's new revision.
 ///
-/// The write is the record's replacement guarded by `revision`, together with
-/// the removal of the settled records `core/attention.retired` names, in one
-/// commit. A settlement that loses to another write is `Moved`, and nothing is
-/// written.
+/// The write is the record's replacement alone, guarded by `revision`, so
+/// `Moved` means exactly that this cell moved since it was read. Settled records
+/// are pruned by the next insertion (`try_insert`), which already holds the scan,
+/// so a settlement writes one cell.
 ///
 /// ## Examples
 ///
@@ -483,19 +483,12 @@ pub fn settle(
   )
   use <- bool.guard(when: revision_of(stored) != revision, return: Error(Moved))
   let #(now, _clock) = clock.read(time)
-  use #(lane, encoded) <- result.try(settled_form(stored, settlement, now))
-  use edits <- result.try(settling_edits(
-    runtime,
-    lane,
-    id,
-    revision,
-    encoded,
-    now,
-  ))
+  use #(key, encoded) <- result.try(settled_form(stored, settlement, now))
 
-  // The write is the replacement and the retirements together, so a lost race
-  // writes nothing.
-  case api.edit_reserved_facts(runtime, edits) {
+  // The write is the one guarded replacement, so a lost race writes nothing.
+  let change =
+    api.ReservedFactChange(key:, value: encoded, expected: Some(revision))
+  case api.edit_reserved_facts(runtime, [api.ReservedFactSet(change)]) {
     Ok(Nil) ->
       case read(runtime, id) {
         Ok(after) -> Ok(revision_of(after))
@@ -507,43 +500,6 @@ pub fn settle(
         "the session store could not be used: " <> string.inspect(error),
       ))
   }
-}
-
-/// The edits that settle a record: its replacement, guarded by the revision the
-/// caller read, and the removal of the settled records that
-/// `core/attention.retired` names once this one counts as settled. The record
-/// itself is never among the removals.
-fn settling_edits(
-  runtime: api.Runtime,
-  lane: Lane,
-  id: String,
-  revision: Int,
-  encoded: JsonValue,
-  now: Int,
-) -> Result(List(api.ReservedFactEdit), SettleFault) {
-  use cells <- result.map(
-    read_prefix(runtime, lane.prefix) |> result.map_error(Failed),
-  )
-  let key = lane.key(id)
-  let standings =
-    standings_of(cells, lane)
-    |> list.map(fn(entry) {
-      case entry.0 == key {
-        True -> #(entry.0, SettledAt(at: now))
-        False -> entry
-      }
-    })
-  let retired =
-    retiring(runtime, standings, now)
-    |> list.filter(fn(edit) { edit_key(edit) != key })
-  [
-    api.ReservedFactSet(api.ReservedFactChange(
-      key:,
-      value: encoded,
-      expected: Some(revision),
-    )),
-    ..retired
-  ]
 }
 
 /// The revision a stored record was read at.
@@ -565,19 +521,19 @@ fn cell_of(
   }
 }
 
-/// The record rewritten as settled, with the lane it lives in, or the reason it
+/// The record rewritten as settled, with the key of its cell, or the reason it
 /// cannot be: already settled, or settled by the other kind of settlement.
 fn settled_form(
   stored: Stored,
   settlement: Settlement,
   now: Int,
-) -> Result(#(Lane, JsonValue), SettleFault) {
+) -> Result(#(String, JsonValue), SettleFault) {
   case stored, settlement {
     StoredAsk(ask: attention.Ask(state: attention.AskOpen, ..) as ask, ..),
       Answering(answer:)
     ->
       Ok(#(
-        ask_lane,
+        attention.ask_key(ask.header.id),
         attention.encode_ask(
           attention.Ask(..ask, state: attention.Answered(at: now, answer:)),
         ),
@@ -586,7 +542,7 @@ fn settled_form(
       Closing(closure:, by:)
     ->
       Ok(#(
-        find_lane,
+        attention.find_key(find.header.id),
         attention.encode_find(
           attention.Find(
             ..find,
@@ -599,14 +555,6 @@ fn settled_form(
     -> Error(AlreadySettled)
     StoredAsk(..), Closing(..) | StoredFind(..), Answering(..) ->
       Error(WrongKind)
-  }
-}
-
-/// The key a reserved-fact edit names.
-fn edit_key(edit: api.ReservedFactEdit) -> String {
-  case edit {
-    api.ReservedFactSet(change:) -> change.key
-    api.ReservedFactRemove(key:, ..) -> key
   }
 }
 

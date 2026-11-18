@@ -31,6 +31,12 @@
 //// is still listed and a second answer is accepted, the later one standing. The
 //// prompt in the strand's transcript is the authoritative copy.
 ////
+//// One case goes the other way. A delivery the gateway answers `queued` is
+//// settled as answered, but a queued prompt is the hub's in-memory custody, and
+//// a drain or a later refusal can drop it while the record says answered. It is
+//// rare, since an ask ends its run and a prompt is queued only behind a run that
+//// continues, as a code-mode ask's does. No mechanism covers it.
+////
 //// ## What this module does not decide
 ////
 //// It does not open a session, does not deliver anything itself (the caller

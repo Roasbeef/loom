@@ -7259,8 +7259,8 @@ result is a failed run), shed to 2,300 bytes in the order finds, stuck, asks,
 oldest first, never reducing a count. `peer_mail.AttentionFeed`, `AttentionRead`
 and `AttentionSettle` are the Agency commands; `AttentionRead` answers the stored
 record with its revision (the cell's seq) and `AttentionSettle` rewrites an open
-record under that revision through `client/attention.settle`, which also removes
-the records `core/attention.retired` names. `server.resident_rows` is the fan-out
+record under that revision through `client/attention.settle`, which writes that
+one cell only; `try_insert` retires settled records. `server.resident_rows` is the fan-out
 `sessions.activity` and `sessions.attention` share. `daemon/attention_door` is the
 walk of `attention.read`, `attention.close_find` and the home's answer: authority
 from the registry (`forbidden` for an observer, `not_found` for a non-holder),

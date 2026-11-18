@@ -308,9 +308,10 @@ The daemon performs these steps in order, and stops at the first refusal.
    Any refusal leaves the ask `open`.
 7. Settle. The record is rewritten as `answered` with the answer, the answerer
    and `settled_at`, by `AttentionSettle`, guarded by the revision (the write
-   expects the cell's sequence number to be unchanged). The settling commit also
-   removes the settled records that `core/attention.retired` names, as the
-   insertion in `client/attention.gleam` does.
+   expects the cell's sequence number to be unchanged). The settling commit
+   writes that one cell and nothing else, so a lost race means exactly that this
+   cell moved. Settled records are retired by the next insertion
+   (`client/attention.gleam`, `try_insert`), which already holds the scan.
 
 The reply is `{"ask":"<id>","delivery":"admitted"|"queued","revision":<new>}`.
 
@@ -384,7 +385,7 @@ The steps are those of `attention.answer` without validation or delivery:
 authority and residency, read, state (a find that is already `closed` is
 `conflict`), revision (`conflict` when stale), then `AttentionSettle`, which
 writes the closure with the closer and `settled_at` guarded by the revision and
-removes retired records as above. The reply is `{"find":"<id>","revision":<new>}`.
+writes one cell, as an answer does. The reply is `{"find":"<id>","revision":<new>}`.
 
 "Ask the agent to fix it" is not a command. The page composes a thread-send
 prompt whose text quotes the find's identifier, shows it to the person, and
@@ -495,7 +496,14 @@ its finds; a member holding it as an observer reads only; a member sees the
 feed rows of the sessions it holds and nothing else.
 
 **Residual risk.** An answer is an at-least-once prompt, and an ambiguous
-delivery can leave an answered ask `open` until read again. A compromised owner
+delivery can leave an answered ask `open` until read again. The reverse also
+exists: a delivery the gateway answers `queued` is settled as `answered`, but a
+queued prompt is the hub's in-memory custody (`hold_prompt`), and a drain
+(`drain_held_queues`) or a later refusal can drop it while the record says
+answered. It is rare, since an ask ends its run and a prompt is queued only
+behind a run that continues, as a code-mode ask's does, and only a drain before
+that run ends loses it. No mechanism is built for it; a second prompt from the
+strand's page is the remedy. A compromised owner
 page can prompt every strand of every resident session the owner holds. The
 gateway's bounds of four prompts and four steers for each strand limit how much
 a page can queue ([022](022-human-input-priority.md)).
@@ -549,7 +557,8 @@ Each item is a test over the real function and the real store.
   text for each kind round trips through `core/attention`'s decoder and carries
   the fenced object; the prompt is attributed to the caller's principal; an ask
   of a sub-agent is delivered to its strand; an ask routed to a strand is
-  `bad_request`; settlement removes retired records.
+  `bad_request`; settling writes one cell and the next insertion retires old
+  settled records.
 - `attention.close_find`: the three outcomes, a closed find is `conflict`, the
   closure records the closer, nothing is sent to a strand.
 - `client/test/client/ui_socket_test`: thread send to a named strand; an unknown
@@ -593,6 +602,9 @@ the code does.
 - **`send_message` and `message_to` keep their signatures.** The strand-taking
   functions are `send_to_strand` and `message_to_strand`, and the old names send
   to `main`, so the first-message path and every existing caller are unchanged.
+- **Settling writes one cell.** The settle commit does not retire settled
+  records; the next insertion does, with the scan it already holds. That keeps
+  `Moved` meaning exactly that the cell moved.
 - **The Agency answers `AttentionRead` with the stored record**, and the daemon
   builds the `attention.read` reply from the decoded record, so there is one codec
   and the page-facing shape is made where the caller's authority is known.
