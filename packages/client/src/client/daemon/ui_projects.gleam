@@ -171,6 +171,11 @@ fn acted(
     Ok(handle) ->
       case act(handle, ticket, "owner") {
         Ok(Nil) -> projects.Acted
+
+        // Silence is not a refusal: the queued act may still commit, so the
+        // page is told to read again and not that the act was refused.
+        Error(reason) if reason == project_host.not_answering ->
+          projects.Declined("unanswered")
         Error(_) -> projects.Declined("bad_request")
       }
   }
