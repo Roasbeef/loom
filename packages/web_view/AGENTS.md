@@ -218,7 +218,21 @@ page keys and nonces, and the relay into the session's gateway.
   table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
   component's process) for a ticket, and `Linked(answer)` becomes the `to`
   attribute of the centre's last child, a hidden `<loom-switch>`, or a refusal
-  `home_table.Note` beside the row. The centre's first child is an empty node, so
+  `home_table.Note` beside the row. **The attention inbox** (phase 0): the home's
+  `Start.activity` hands over `sessions.Report`s (`activity`, `last_message`,
+  `glances`; all model text, drawn as text nodes only) and `Model` keeps them in
+  `reports` beside the narrow `activity` dict the sidebar and `listing` read.
+  `inbox_rule` (pure, no Lustre) decides `Group` (`NeedsYou | Waiting | Updates |
+  Quiet`), `Kind`, `head`, `headline`, the ordering by name and `landing`
+  (`Inbox` when any session needs the owner, failed, works or is idle with a last
+  message; else `Form`). `view/inbox` draws the grouped list and a reading pane
+  inside the centre's body (so at `table_path`); `home.centre_body` shows it when
+  `landed_inbox` holds: pane `NewSession` or `SessionList`, `centre_choice` still
+  `Landed` (`ShowingNew`, `ShowingList` and `Composed` set `Chose`), and the
+  landing is `Inbox`. `InboxOpened(id)` selects a thread (`Model.inbox_selected`,
+  an id the reports no longer hold falls back to the first thread). A pending
+  approval is named and sent to the session's page, never drawn; "Open session"
+  sends `Opening`, so the inbox adds no admission. The centre's first child is an empty node, so
   the table keeps its path; what the page says about a press is a `Note`
   (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
   its workspace's heading when the row is gone, or under `Sessions`, and it
