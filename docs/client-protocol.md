@@ -1080,7 +1080,7 @@ it (section 3.27).
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `attention.read`,
+`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `attention.read`, `approval.read`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
 `control_use` (`client/daemon/server.gleam:3102-1130`).
 
@@ -2108,7 +2108,19 @@ revision. The owner and an Operator member may close; an observer is `forbidden`
 A find that is already closed, or whose revision is not the one given, is
 `conflict`. Nothing is sent to any strand.
 
-All three are reads or settle one record, and the two reads remain available
+`approval.read` takes `session` and answers `{"approvals": {"count", "items"}}`:
+the session's pending approvals as evidence, at most four items, oldest id first,
+with `count` the number pending. Each item is `id`, `revision` (the sequence
+number of the record's cell), `tool`, `preview` (a bounded rendering of the
+call's arguments, or `null`), `source` (`policy` or `execution`), `reason` (the
+denial's, at most 300 bytes), `wanted` (at most six `{kind, detail}` grants, the
+detail at most 160 bytes) and `asked`. The record carries no raise time, so an
+item has no time and no age is worded for it. The owner and a member at any role
+read; `not_found` is a session the credential does not hold and `not_resident` a
+session that is not running. It never decides, claims or consumes an approval,
+which is decided on the session's own page.
+
+All four are reads or settle one record, and the three reads remain available
 during a drain.
 
 ## 4. The session endpoint

@@ -609,3 +609,72 @@ the code does.
   builds the `attention.read` reply from the decoded record, so there is one codec
   and the page-facing shape is made where the caller's authority is known.
 
+
+## Addendum: approval evidence (2026-11-18)
+
+### The problem
+
+The inbox's approval thread named an approval and sent the owner to the
+session's page, because nothing could say what the approval was. The design
+asks the thread to list the tool, the action, what held it and what it wants, so
+that the owner decides with evidence once they arrive. "Approvals in the feed"
+stays rejected above: a feed row carries identities and heads and no approval,
+and no deciding control is ever drawn on Home. What is missing is a read of the
+escalation record itself.
+
+### What was considered
+
+- **Extending `attention.read` to take an approval id.** The page would still
+  need the ids, which only a listing gives, and `attention.read` answers one
+  record in the shape of an ask or a find. Two shapes under one command, and a
+  listing it cannot be, make it the larger change.
+- **Putting the evidence in the feed row.** Rejected for the reason above, and
+  because a row's bound (2,300 bytes, 24 to a frame) leaves no room for a
+  preview.
+- **Dating the approval from its scope's operation.** Rejected above, and still.
+
+### The decision
+
+A fifth control command, `approval.read`, with the epoch rule of the other
+three, and the in-process route the page uses (`attention_door.read_approvals`
+over the new `peer_mail.ApprovalRead`, answered in the session's own Agency
+actor by `client/approval_evidence`). It lists the session's pending escalation
+records, each with the revision of its cell, so a person reads the same thing
+the card will ask about. It reads only: it claims, consumes and decides nothing.
+
+An item is `id`, `revision`, `tool`, `preview`, `source`, `reason`, `wanted` and
+`asked`. The record has no raise time (`runtime/escalation.Escalation` holds
+`asked`, a count, and no clock reading), so an item has none and no page words
+an age for an approval. Adding a raised time to the record is a separate change.
+
+### The bounds
+
+At most four items, in id order, with `count` for the rest. A tool is cut to 64
+bytes, a preview to 400, a reason to 300, a wanted grant's detail to 160, and at
+most six grants are listed. Every cut is on a grapheme boundary. A record whose
+cell cannot be read again, because it was decided between the listing and the
+read, is left out of the items and counted. The reply is far under the frame.
+
+### The threat model
+
+Authority is read from the registry at the call (`attention_door.held`), as for
+`attention.read`: the owner and a member at any role read, a session the
+credential does not hold is `not_found`, and a bystander learns nothing. An
+observer reading is the point and not a leak: the card on the session's page
+already shows the same words to an observer. The preview and the reason carry
+the model's own arguments and a policy's words, so a page draws them as text
+nodes only, under a label that says they are untrusted. The reply names no
+control, so the page draws none: the thread's one action stays "Decide on the
+session's page", and the dock's rules in protocol-change/051 (Deny first, a
+600 ms arming delay, no autofocus) are unchanged. The new command is in the
+drain's read set and in no write set.
+
+### Verification
+
+`client/test/client/peer_mail_attention_test.gleam` pins the listing, the four
+item bound with the full count, the preview's cut and the absence of a time.
+`client/test/client/daemon_attention_test.gleam` pins the door's authority (an
+observer reads, a bystander is `not_found`) and the control command's epoch and
+reply. `web_view/test/approval_evidence_test.gleam` pins the decoder, and
+`web_view/test/attention_threads_test.gleam` pins the thread: the evidence as
+escaped text, no time, no deciding word, and the one link to the session's page.

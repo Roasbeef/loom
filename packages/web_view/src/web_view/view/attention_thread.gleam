@@ -36,11 +36,13 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_view/answer_rule
+import web_view/approval_evidence.{type Seen}
 import web_view/attention_feed
 import web_view/attention_rule.{type Item, type Key}
 import web_view/item_pane.{type State}
@@ -660,4 +662,134 @@ fn form_field() -> decode.Decoder(#(String, String)) {
   use name <- decode.field(0, decode.string)
   use value <- decode.field(1, decode.string)
   decode.success(#(name, value))
+}
+
+/// A session's approval evidence: the tool, the call's action, what held it and
+/// what it wants. It decides nothing and carries no handler. Every word of it
+/// is a text node, since the preview is the call's own arguments and the reason
+/// and details come from a policy a model's call tripped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_thread.evidence(approval_evidence.Reading)
+/// ```
+pub fn evidence(seen: Seen) -> Element(message) {
+  case seen {
+    approval_evidence.Reading ->
+      html.p([attribute.class("inbox-hold")], [
+        html.text("Reading what it asks for…"),
+      ])
+    approval_evidence.Unseen(words:) ->
+      html.p([attribute.class("inbox-hold")], [html.text(words)])
+    approval_evidence.Seen(evidence: read) ->
+      html.section(
+        [attribute.class("inbox-section inbox-evidence")],
+        list.flatten([
+          [
+            html.h4([attribute.class("inbox-label")], [
+              html.text("What it asks for, untrusted text"),
+            ]),
+          ],
+          list.map(read.items, approval_item),
+          [more_pending(read)],
+          [
+            html.p([attribute.class("inbox-hold")], [
+              html.text(
+                "The record carries no time, so no age is shown. It is decided on the session's page.",
+              ),
+            ]),
+          ],
+        ]),
+      )
+  }
+}
+
+/// One pending approval's lines.
+fn approval_item(item: approval_evidence.Item) -> Element(message) {
+  html.dl(
+    [attribute.class("inbox-evidence-item")],
+    list.flatten([
+      [
+        html.dt([], [html.text("Tool")]),
+        html.dd([], [
+          html.text(case item.tool {
+            "" -> "not recorded"
+            tool -> tool
+          }),
+        ]),
+      ],
+      case item.preview {
+        Some(preview) -> [
+          html.dt([], [html.text("Action")]),
+          html.dd([attribute.class("inbox-message")], [html.text(preview)]),
+        ]
+        None -> []
+      },
+      case item.reason {
+        "" -> []
+        reason -> [
+          html.dt([], [html.text("Held by")]),
+          html.dd([], [html.text(held_by(item.source) <> ": " <> reason)]),
+        ]
+      },
+      wanted_lines(item.wanted),
+    ]),
+  )
+}
+
+/// The words for what held a call.
+fn held_by(source: String) -> String {
+  case source {
+    "policy" -> "policy"
+    "execution" -> "execution"
+    _ -> "the harness"
+  }
+}
+
+/// The grants a call wants: the network first, under its own label, then every
+/// other grant.
+fn wanted_lines(
+  wanted: List(approval_evidence.Wanted),
+) -> List(Element(message)) {
+  let #(networks, others) =
+    list.partition(wanted, fn(grant) { grant.kind == "network" })
+
+  list.flatten([
+    case networks {
+      [] -> []
+      [_, ..] -> [
+        html.dt([], [html.text("Network")]),
+        html.dd([], [
+          html.text(string.join(
+            list.map(networks, fn(grant) { grant.detail }),
+            ", ",
+          )),
+        ]),
+      ]
+    },
+    case others {
+      [] -> []
+      [_, ..] -> [
+        html.dt([], [html.text("Wants")]),
+        html.dd(
+          [],
+          list.map(others, fn(grant) {
+            html.div([], [html.text(grant.kind <> " " <> grant.detail)])
+          }),
+        ),
+      ]
+    },
+  ])
+}
+
+/// A line for the pending approvals the reply did not carry.
+fn more_pending(read: approval_evidence.Evidence) -> Element(message) {
+  case read.count - list.length(read.items) {
+    left if left > 0 ->
+      html.p([attribute.class("inbox-hold")], [
+        html.text(int.to_string(left) <> " more pending, decided on the page."),
+      ])
+    _ -> element.none()
+  }
 }

@@ -129,6 +129,9 @@ pub type Threads(message) {
     /// The pane of the open item thread, which replaces the session's reading
     /// pane while one is open.
     pane: Option(Element(message)),
+    /// The evidence of a session's pending approval, by session, drawn in that
+    /// session's thread above the one control that leads to its page.
+    evidence: List(#(String, Element(message))),
   )
 }
 
@@ -556,6 +559,7 @@ fn standing(
     inbox_rule.ApprovalPending ->
       html.div([attribute.class("inbox-standing")], [
         html.p([], [html.text("An approval is pending.")]),
+        evidence_of(thread.id, offer),
         open_button("Decide on the session's page ›", thread.id, offer),
       ])
     inbox_rule.Failed ->
@@ -563,6 +567,19 @@ fn standing(
         html.text("Its last run failed, and nothing is running."),
       ])
     inbox_rule.Idle | inbox_rule.Working | inbox_rule.Settled -> element.none()
+  }
+}
+
+/// The evidence the page read for this session's approval, or nothing when it
+/// has read none (a page that reads no feed).
+fn evidence_of(session: String, offer: Offer(message)) -> Element(message) {
+  case offer.attention {
+    Some(threads) ->
+      case list.key_find(threads.evidence, session) {
+        Ok(drawn) -> drawn
+        Error(Nil) -> element.none()
+      }
+    None -> element.none()
   }
 }
 

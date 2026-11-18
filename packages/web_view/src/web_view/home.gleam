@@ -297,6 +297,7 @@ import session_view/operator
 import session_view/project_board as board
 import web_view/actions
 import web_view/answer_rule
+import web_view/approval_evidence
 import web_view/attention_feed
 import web_view/attention_rule
 import web_view/composer
@@ -800,6 +801,12 @@ pub type Attention {
     /// daemon's fixed words.
     record: fn(String, String, fn(Result(item_pane.Record, String)) -> Nil) ->
       Nil,
+    /// Starts the read of a running session's pending approvals as evidence, and
+    /// returns at once. The answer is the daemon's reading, or its fixed words
+    /// for why there is none, and arrives as `ApprovalsRead`. It reads and
+    /// never decides.
+    approvals: fn(String, fn(Result(approval_evidence.Evidence, String)) -> Nil) ->
+      Nil,
     /// How the page acts, or nothing for a page that may not: only the daemon's
     /// owner on a page minted to operate is handed it, and the daemon decides
     /// again each time one of its functions runs.
@@ -933,6 +940,9 @@ pub opaque type Model {
     feed: Dict(String, attention_feed.Row),
     /// The catalogue's summary rows of the saved sessions, by identity.
     saved: Dict(String, Saved),
+    /// The approval evidence read for the sessions whose thread was shown, by
+    /// session, replaced by each read.
+    evidence: Dict(String, approval_evidence.Seen),
     /// The open item thread and what is staged in it.
     item: item_pane.State,
     /// How many item threads have been opened, which keys their forms so each
@@ -1172,6 +1182,12 @@ pub type Msg {
 
   /// The catalogue's summary rows the daemon read for the saved sessions.
   SavedRead(rows: List(Saved))
+
+  /// The daemon's answer to the read of a session's approval evidence.
+  ApprovalsRead(
+    session: String,
+    read: Result(approval_evidence.Evidence, String),
+  )
 
   /// An item's row was pressed: open its thread. The key is drawn into the
   /// handler by the server, and the page honours it only for an item its last
@@ -1617,6 +1633,7 @@ pub fn new(start: Start) -> Model {
     delivered: 0,
     feed: dict.new(),
     saved: dict.new(),
+    evidence: dict.new(),
     item: item_pane.closed(),
     item_presses: 0,
     now: 0,
@@ -1730,7 +1747,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case serial == model.reads {
         True -> {
           let model = answered(model, listing)
-          #(model, effect.batch([observing(model), attending(model)]))
+          #(
+            model,
+            effect.batch([observing(model), attending(model), approving(model)]),
+          )
         }
         False -> #(model, effect.none())
       }
@@ -1754,6 +1774,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             effect.batch([
               observing(model),
               attending(model),
+              approving(model),
               following(model, listing),
             ]),
           )
@@ -1765,7 +1786,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Observed(rows:) ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> #(observed(model, rows), effect.none())
+        Connecting | Connected -> {
+          let next = observed(model, rows)
+          #(next, approving(next))
+        }
       }
 
     // The sidebar's own presses. The pills change what the sidebar lists and ask
@@ -1892,15 +1916,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // words saying so. A refusal puts the form back.
     Founded(orchestrator:, founding:) -> founded(model, orchestrator, founding)
 
-    InboxOpened(session:) -> #(
-      Model(
-        ..model,
-        selected: Pressed(session),
-        presses: model.presses + 1,
-        item: item_pane.closed(),
-      ),
-      effect.none(),
-    )
+    InboxOpened(session:) -> {
+      let next =
+        Model(
+          ..model,
+          selected: Pressed(session),
+          presses: model.presses + 1,
+          item: item_pane.closed(),
+        )
+      #(next, approving(next))
+    }
 
     // A send asks the daemon in a task of its own. A draft with nothing in it
     // or over the bound, a session the inbox does not draw, a page
@@ -2004,6 +2029,23 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             effect.none(),
           )
         }
+      }
+
+    // The evidence replaces what the page held for that session. A read for a
+    // session the list no longer holds is dropped with the rest of its state.
+    ApprovalsRead(session:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(
+            ..model,
+            evidence: dict.insert(model.evidence, session, case read {
+              Ok(evidence) -> approval_evidence.Seen(evidence)
+              Error(words) -> approval_evidence.Unseen(words)
+            }),
+          ),
+          effect.none(),
+        )
       }
 
     // An item's press opens its thread, for an item the last read still holds.
@@ -4913,6 +4955,44 @@ fn landed_inbox(model: Model) -> Bool {
   }
 }
 
+/// The running session whose thread the pane shows when its activity says an
+/// approval is pending, which is the one session whose evidence the page reads.
+fn approval_session(model: Model) -> Option(String) {
+  let groups = inbox_rule.grouped(drawn_threads(model))
+  let shown = inbox_rule.selection(groups, selected_session(model.selected))
+
+  // Only a thread whose activity word is an approval has evidence to read.
+  case shown {
+    Some(id) ->
+      case dict.get(model.reports, id) {
+        Ok(sessions.Report(activity: NeedsYou, ..)) -> Some(id)
+        Ok(_) | Error(Nil) -> None
+      }
+    None -> None
+  }
+}
+
+// Starts the read of the shown session's pending approvals and returns at
+// once; the answer arrives later as `ApprovalsRead`. A page that reads no
+// feed, one that has not connected or has ended, and a thread with no approval
+// ask nothing.
+/// Triggers the read of the shown thread's approval evidence.
+fn approving(model: Model) -> Effect(Msg) {
+  case model.start.attention, model.status, approval_session(model) {
+    Some(reads), Connected, Some(session) -> {
+      use dispatch <- effect.from
+      reads.approvals(session, fn(read) {
+        dispatch(ApprovalsRead(session, read))
+      })
+    }
+    Some(_), Connected, None
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> effect.none()
+  }
+}
+
 /// The words a Retry sends the stuck strand. They are the page's own, fixed.
 const retry_words = "The last run of this strand failed. Please retry it."
 
@@ -5113,6 +5193,9 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
         inbox_view.Threads(
           needs: list.map(attention_rule.needs_you(items), row),
           finds: list.map(attention_rule.finds(items), row),
+          evidence: list.map(dict.to_list(model.evidence), fn(entry) {
+            #(entry.0, attention_thread.evidence(entry.1))
+          }),
           pane: case model.item.key {
             None -> None
             Some(key) ->
