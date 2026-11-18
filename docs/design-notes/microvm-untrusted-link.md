@@ -298,7 +298,7 @@ release that changes `up`.
 
 The daemon reads `[executors.*]` and `[executor_link]` once at start and never
 rereads them (`client/daemon/main.gleam:278` (`untrusted`)); links start only
-there (`client/daemon/main.gleam:4857` (`start_untrusted`)). No daemon-wide
+there (`client/daemon/main.gleam:4877` (`start_untrusted`)). No daemon-wide
 configuration reload exists: `limits` validates its keys again on a catalogue
 reload and never rebinds (`client/daemon/limits.gleam:138` (`listen_address`)),
 and `gateway`'s reload is a session's model catalogue. What does exist is the

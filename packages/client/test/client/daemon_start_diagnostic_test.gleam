@@ -379,3 +379,44 @@ pub fn daemon_start_diagnostic_bounds_the_executor_reason_test() {
   assert logged
     == field.text("reason", glance.clip(string.repeat("x", 4000), 512))
 }
+
+// A spawn that waits for a slot on a full pool is built again every second or
+// two, so a lack of room is a state of the pool that each try reports at warning
+// level. A start that fails for another reason is not retried and stays an
+// error. The two records otherwise carry the same event, so a reader tells them
+// apart by level alone.
+pub fn a_start_that_found_no_room_is_a_warning_and_other_failures_stay_errors_test() {
+  let events = process.new_subject()
+  let logger = log.new(sink: log.to_subject(events), threshold: level.Warning)
+  let #(identity, _next) = ids.mint_session(ids.generator(clock.fixed(1000), 7))
+  let no_room =
+    "executor_unavailable: no executor accepted the session: e1: the executor"
+    <> " already holds 1 scopes that are not cleanly closed"
+  let refused =
+    "executor_unavailable: the executor could not make this session's Git"
+    <> " worktree: git worktree add exited 128"
+
+  assert main.diagnose_start(
+      Error(no_room),
+      logger,
+      identity,
+      main.RuntimeAssembly,
+    )
+    == Error(no_room)
+  let assert Ok(waiting) = process.receive(events, 1000)
+    as "a start refused for room is logged"
+  assert waiting.level == level.Warning
+  assert waiting.event == "daemon.session_start_failed"
+
+  assert main.diagnose_start(
+      Error(refused),
+      logger,
+      identity,
+      main.RuntimeAssembly,
+    )
+    == Error(refused)
+  let assert Ok(failed) = process.receive(events, 1000)
+    as "a start refused for another reason is logged"
+  assert failed.level == level.Error
+  assert failed.event == "daemon.session_start_failed"
+}

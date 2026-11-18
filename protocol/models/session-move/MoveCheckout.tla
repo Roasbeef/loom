@@ -59,6 +59,7 @@ CONSTANTS
     RebindOpen,          \* MUTANT: an attach also rebinds an open scope.
     OwnerDiesInAttach,   \* The source dies while the executor builds the plane of an attach for an unserved name.
     CloseReboundUnserved, \* An attach for an unserved name closes a rebound scope that has no tree record.
+    CloseFailedTree,     \* An attach whose Git worktree cannot be made closes the scope it admitted.
     LearnsUnderBound     \* The source learns an unrecorded close by asking under the workspace the executor names.
 
 VARIABLES
@@ -339,7 +340,7 @@ Rebinds == exec.holder # "none" /\ bound \notin {"none", cfgWs}
 
 CkAttach ==
     /\ CkOn /\ pc = "sent" /\ aliveX /\ tok < MaxTok
-    /\ cfgWs # "unknown"
+    /\ cfgWs \notin {"unknown", "badtree"}
     /\ AttachAllowed
     /\ \/ /\ exec.holder # "none"
           /\ exec' = [exec EXCEPT !.holder = "A"]
@@ -411,6 +412,52 @@ CkAttachUnknownDies ==
     /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
                    replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
                    exBranch, applied, net, aliveX, lastLand>>
+
+(* The attach for a workspace the executor serves, in `worktree` mode, when   *)
+(* Git cannot make the session's tree: the repository is gone, or the base    *)
+(* ref does not exist ("badtree"). The ledger admits the scope before the     *)
+(* plane is built, so the scope is open when the build fails, and no tree is *)
+(* made on disk. The refusal is `WorktreeFailed`, which the mover takes       *)
+(* as passing and not final (`move_checkout.classified`): the step stalls and *)
+(* runs again. With CloseFailedTree the host closes the scope as retired in   *)
+(* the same step as the refusal, as it does for an unserved name             *)
+(* (`close_unbuilt`). Without it the scope stays open, counted against the    *)
+(* executor's limit, and nothing closes it: the session that would is not the *)
+(* mover's, which holds no plane for the scope.                               *)
+(*                                                                         *)
+(* The source's record is "open" afterwards, because `attach_to` writes it    *)
+(* before the attach and `refused_attempt` records no close for               *)
+(* `WorktreeFailed`. The retry meets `StaleIncarnation` and learns the close *)
+(* (`StaleOpen`, `LearnOk`), so the model covers the heal.                   *)
+(*                                                                         *)
+(* The rebound disjunct of FreesBadTree is unreachable in every             *)
+(* configuration: with the rule on, the scope is closed at the first failure *)
+(* and no attach rebinds it, and with it off FreesBadTree is false. In the   *)
+(* code a rebound scope closes only when no tree record exists, and a failed *)
+(* `git worktree add` leaves one itself (`Creating`, then `Removed`), so a   *)
+(* rebound scope whose own attempt ran Git stays open. The disjunct is kept  *)
+(* to state the guard, not to be checked.                                    *)
+FreesBadTree == CloseFailedTree /\ exec.holder # "none" /\ exBranch = -1
+
+CkAttachBadTree ==
+    /\ CkOn /\ pc = "sent" /\ aliveX /\ tok < MaxTok
+    /\ cfgWs = "badtree"
+    \* A repeat changes nothing the mover holds, unless it frees the scope.
+    /\ bound # "badtree" \/ FreesBadTree
+    /\ AttachAllowed
+    /\ \/ /\ exec.holder # "none"
+          /\ exec' = [exec EXCEPT !.holder = IF FreesBadTree THEN "none" ELSE "A"]
+       \/ /\ exec.holder = "none" /\ exec.inc < MaxInc
+          /\ exec' = [inc |-> exec.inc + 1,
+                      holder |-> IF CloseFailedTree THEN "none" ELSE "A"]
+    /\ tok' = tok + 1 /\ tokAtt' = att
+    /\ bound' = "badtree"
+    /\ reb' = (reb \/ Rebinds)
+    /\ srec' = "open"
+    /\ UNCHANGED <<a, b, copy, mover, servingA, servingB, aliveA, aliveB,
+                   replied, everMoved, crashes, L, H0, cfgWs, srcStore, store,
+                   exBranch, applied, net, answers, aliveX, lastLand, pc, mtip,
+                   mtipAtt, mreq, minc, mtok>>
 
 (* The operator corrects the configuration and restarts the daemon: the    *)
 (* mover's memory is lost and the file is read again at the next run.      *)
@@ -665,6 +712,7 @@ Next2 ==
     \/ Retire2 \/ AbortEarly2 \/ RefuseActivate2 \/ AttachB2 \/ OpenB2
     \/ CrashA2 \/ CrashB2 \/ Restart2 \/ CrashX \/ RestartX
     \/ CkRead \/ CkCapture \/ CkRecord \/ CkSend \/ CkAttach \/ CkAttachUnknown \/ CkAttachUnknownDies
+    \/ CkAttachBadTree
     \/ FixConfig \/ CkAsk
     \/ CkResend \/ ExApply \/ ExRefuse \/ LoseAnswer \/ CkReceive \/ CkClose
     \/ CkMark \/ CkRerun
@@ -684,6 +732,7 @@ Spec2 ==
     /\ WF_allv(RestartX)
     /\ WF_allv(CkRead) /\ WF_allv(CkCapture) /\ WF_allv(CkRecord)
     /\ WF_allv(CkSend) /\ WF_allv(CkAttach) /\ WF_allv(CkAttachUnknown)
+    /\ WF_allv(CkAttachBadTree)
     /\ WF_allv(CkAsk)
     /\ WF_allv(CkResend) /\ WF_allv(ExApply) /\ WF_allv(CkReceive)
     /\ WF_allv(CkClose) /\ WF_allv(CkMark)
@@ -726,6 +775,12 @@ AbandonRestores ==
     \* A corrected configuration is not blocked by a scope that a failed
     \* attempt left bound to the workspace it named.
     /\ cfgWs = "good" => (AttachAllowed \/ exec.holder # "none")
+
+(* A scope whose build failed for want of a tree is not left open by the    *)
+(* source's attach: it has no plane and no tree on disk, and no session will  *)
+(* close it, so an open one would count against the executor's limit for     *)
+(* good.                                                                      *)
+FailedBuildHoldsNoScope == bound = "badtree" => exec.holder # "A"
 
 (* After the retry that closes an unserved, empty scope, the next move with a *)
 (* served name is accepted with no further operator step: a closed scope    *)
