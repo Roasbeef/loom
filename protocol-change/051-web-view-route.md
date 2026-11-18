@@ -4762,3 +4762,92 @@ submits and admits the clicks, and nothing outside the table is admitted).
 `client/test/client/ui_route_test.gleam` pins the strand send's standing check
 and the door's words. `web_view/test/attention_threads_test.gleam` drives the
 page, observer included. A real drive in a browser has not been run.
+
+## Addendum: the live rail, answered (2026-11-18)
+
+The first addendum on the live rail left an approval, a failure, a result and a
+peer message in "Lifted from this session". This one puts the session's own open
+records there and lets an operator's page answer an ask in the rail
+(`docs/design-notes/attention-inbox/README.md`, section 2.3;
+[120](120-attention-feed.md)).
+
+### What the rail lifts
+
+A session page reads its own feed row (`sessions.attention` for one session,
+through `Attachment.attention`) when it opens and every `rail_refresh_ms`
+(5,000 ms of the transport's clock) after, and again at once after an answer. Its
+open asks and stuck strands pin under "Needs you" after any pending approval,
+until the next read no longer holds them. Its open finds join "Insights" and fold
+once opened, as every insight does (`RailOpened`). A row's head is session text
+and is a text node. A stuck strand and an ask name no row of the lane, so their
+press jumps nowhere. The approval's entry still only points at the dock ("Decide
+in the dock ↓"), and an observer's still says that the operator decides.
+
+The phone's sheet draws the same rows and the same forms from the same inputs.
+Its bar counts them.
+
+### The one new path: the ask's form
+
+An ask's row holds its button and then, on a page that may answer, a form with
+the inbox's components (`view/attention_thread.answer_form`). The form's submit
+is the one new event, at exactly the path `component.rail_submit` names:
+`rail_path`, then `1\t0\t1` (the "Needs you" group's list), then the item's
+position, then `1` (the item's form, after its button). Nothing else beneath the
+rail submits. The page's own word on the last answer is the rail section's last
+child, after the groups, so no path the socket admits at the rail moves.
+
+| Socket | The submit at that path |
+|---|---|
+| An operator's page, a member's or the owner's | admitted, as every submit beneath no owner control is |
+| An observer's page | refused, as every submit is: `observer_accepts` admits only clicks |
+
+The observer's page is handed no answer capability, so it draws the rows and no
+form, and a frame that names the path finds no handler. An operator's socket
+admitted submits at any path before this change, so the predicate changes no
+operator admission. It names the shape so that a test fails if the view moves the
+form, as `rail_click` does for the press, and so that the observer's refusal is
+pinned at the one path where a form is drawn.
+
+### What the page does with a submit
+
+`RailAnswered` names the ask the form was drawn for, an identifier the server
+drew into the handler. The page honours it only for an ask it has read in full
+(`attention.read`, through `attention_door.read_stored`), checks the fields with
+`web_view/answer_rule`, which asks the daemon's own `core/attention_answer.check`,
+and sends the answer at the revision it read. A refusal of the rule is worded
+beside the ask in fixed words. The send is `attention_door.answer`: the door reads
+the caller's authority from the registry at that moment, so only the owner and an
+Operator member are answered, refuses a revision that moved, delivers one prompt
+to the asking strand over the page's own gateway attachment (a binding of its own
+carrying the page's ceiling), and then settles the record. The daemon's word, in
+the door's fixed words, is said in the rail, and a settled ask is read again at
+once so it leaves.
+
+### What was considered
+
+- **Staging into an outbox on the session page.** The inbox stages because it
+  gathers several threads' answers and notes into one Send. The session page has
+  one session and its own composer, so one submit checks and sends.
+- **Drawing the form only in the rail and not the sheet.** The phone has no rail,
+  and the owner on a phone is the person most likely to be away from the desk, so
+  the sheet carries the form too.
+- **Narrowing operator admission to the exact path.** That changes admission for
+  every other submit of an operator's page, which is not this work's to decide.
+
+### Cost
+
+One capability on the component's transport, one state value in the page's view,
+four messages, one exact predicate, and a feed read and a reach on the session
+attachment. No new route or frame.
+
+### Verification
+
+`web_view/test/rail_threads_test.gleam` drives the page: the pinning and the
+folding, the form's controls and escaped text, the send at the revision, the
+refusal beside the ask, the observer's page with no form and a submit ignored, the
+form's exact path, and the phone's sheet. `client/test/client/ui_socket_test.gleam`
+pins `only_an_operators_rail_answers_an_ask_test`: the operator's and the owner's
+sockets admit the submit, the observer's refuses it and everything beneath the
+rail except the insight's press, and the capability is withheld from an observer.
+`client/test/client/ui_route_test.gleam` pins that a rail answer needs an open page
+and the door's authority. A real drive in a browser has not been run.
