@@ -11,10 +11,12 @@
 # (protocol-change/083), and MoveCheckout.tla, the checkout step of a move of
 # a session that works in a directory (protocol-change/107, slice 4c).
 # protocol/models/placement-claims has Claims.tla, the placement claims of a
-# pool. For each, TLC must pass the clean configuration (Move.cfg,
-# KhepriMove.cfg, MoveCheckout.cfg, Claims.cfg) and must report a violation
-# of the property each mutant configuration (Mutant*.cfg, KhepriMutant*.cfg,
-# MoveCheckoutMutant*.cfg, ClaimsMutant*.cfg) names on its
+# pool, and Admission.tla, the admission of a seeded child on a full pool.
+# For each, TLC must pass the clean configuration (Move.cfg,
+# KhepriMove.cfg, MoveCheckout.cfg, Claims.cfg, Admission.cfg) and must report
+# a violation of the property each mutant configuration (Mutant*.cfg,
+# KhepriMutant*.cfg, MoveCheckoutMutant*.cfg, ClaimsMutant*.cfg,
+# AdmissionMutant*.cfg) names on its
 # `\* expect-violation:` line: an invariant, which TLC names when it fails
 # (exit 12), or the one temporal property the configuration lists, which
 # TLC reports as a temporal violation (exit 13). A mutation that no longer
@@ -136,10 +138,10 @@ check_tla() {
 	# Each entry is a directory under protocol/models and the specifications
 	# in it. A specification's mutant configurations are named for it:
 	# Mutant*.cfg for Move, which came first, KhepriMutant*.cfg for
-	# KhepriMove, MoveCheckoutMutant*.cfg for MoveCheckout and
-	# ClaimsMutant*.cfg for Claims.
+	# KhepriMove, MoveCheckoutMutant*.cfg for MoveCheckout,
+	# ClaimsMutant*.cfg for Claims and AdmissionMutant*.cfg for Admission.
 	local entry dir spec prefix
-	for entry in "session-move:Move KhepriMove MoveCheckout" "placement-claims:Claims"; do
+	for entry in "session-move:Move KhepriMove MoveCheckout" "placement-claims:Claims Admission"; do
 		dir="${entry%%:*}"
 		tla="$root/protocol/models/$dir"
 		echo "==> $dir (TLA+)"

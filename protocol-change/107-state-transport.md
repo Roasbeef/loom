@@ -1781,10 +1781,118 @@ is keyed on `CloseReboundUnserved` and so assumes the name is corrected after th
 was run over a real distribution link. The two live reproductions are the drive's `dfault2.sh` and
 `back.sh`, which were not re-run against these commits.
 
+## Addendum: admission on a full pool, written down and checked (2026-11-17)
+
+A second drive of the pool-full case on e128668ee (six runs, `LOOM_EXECUTOR_MAX_SCOPES=1`,
+nine children) still refused the ninth spawn as final once, with "its store failed: the session
+is not registered" (run D5), logged a `store_failure` refusal of the ninth spawn in three runs
+that ended with a handle (D1, D2, D4), and in two runs answered "did not answer in time" with
+the ninth child placed late or not at all (D3, D6). The ruling of the addendum "a pool that
+stays full is asked again after the failed start drains (2026-11-14)" fixed one ordering and
+exposed its neighbours. This addendum replaces that ruling with a table
+and three rules, checked by a model. What crosses the node boundary is unchanged.
+
+- *Two asks for one child.* The spawn tool asks with a doubling pause for 30 seconds
+  (`agency.ask_until_answered`), the session's drain asks every requested stub at every pass
+  (`remote_drain.spawn_pass`), and the orchestrator port serves each `Spawn` in a process of its
+  own. So two asks for the same child are in flight on the box at once, by design, and the box
+  must answer each correctly whatever the other does.
+- *What went wrong on the box.* An ask that saw its child's build fail for no room ended the
+  child's row by name, deleting the registration (`child_resolver` after a no-room poll, and
+  `reserved_refusal` after a no-room `NotInitialized`). The other ask was still polling that
+  session, and its next read found the registration gone: `Catalogue(Missing)`, which
+  `resident` answered `StoreFailure("the session is not registered")`, final to the sender.
+  When the tool heard it, the model was told the spawn was refused (D5). When the drain heard
+  it, the stub was recorded `Refused` and the tool's later handle was recorded over it (D1, D2,
+  D4). The same end by name could also end a later reservation of the same child made by a
+  third ask, and a refusal could come from between `reserved_refusal`'s two reads.
+- *What went wrong on the laptop.* A finished seeded child holds its executor scope until a join
+  collects it, and while the parent waits in the spawn tool the only joiner is the drain. The
+  drain heard `NotYetOpen` as silence (`remote_spawner.answer` makes it `Unreachable`),
+  marked the box silent, and skipped its join for the rest of the pass, every pass. So room
+  could not free while the ninth stub was requested. In D1, D2 and D4 the false refusal took the
+  stub out of `Requested`, the drain's join resumed, and the tool's ask then placed the child:
+  those runs succeeded because of the box's defect. In D3 and D6 nothing freed room until the
+  parent's own wait, after the tool's window; in D6 the drain then placed the ninth child after
+  the parent's turn had ended.
+
+The admission table, for one child id. *ask* is a spawn ask's registry turn, *poll* one read of
+an admitted ask's session (`delegate_host.resident`). Every build failure here is for want of
+room unless the row says otherwise.
+
+| Row and session | ask | poll |
+|---|---|---|
+| no row | reserve and build; poll | (none) |
+| building | admit; poll | wait |
+| failed slot draining (`Stopping`) | `NotYetOpen`, row kept | `NotYetOpen`, row kept |
+| reserved, no slot, no-room failure kept | build the same reservation again; poll | `NotYetOpen`, row kept |
+| reserved, no slot, other failure kept | no build; the failed start is the answer, which its poll reads as final | final `StoreFailure` naming it; `spawn_seed.landed` ends the session |
+| reserved, no slot, no failure kept | build again; poll | `NotYetOpen`, row kept |
+| running | handle (the call site is adopted) | handle |
+| releasing | final `ParentRunEnded` | `NotYetOpen` |
+| registration gone under a live poll | (a new ask finds no row) | final `StoreFailure`; reached only after a final refusal or a release |
+
+Before this addendum the three "reserved, no slot" rows ended the row (no room) or were final
+(no failure kept), and "registration gone" was reached from the no-room rows.
+
+- *Rule 1.* Nothing ends a child's row because its build failed for want of room. A reservation
+  that the row names and that holds no slot is built again by the next ask, in the registry's
+  turn, through the creation path under the row's own request key (`manager.unslotted`, which
+  calls `create_session`; `clear_kept_failure` clears the old reason). A reservation whose kept
+  failure is not a lack of room is not built again: the build would fail the same way and clear
+  the reason, so an ask whose poll read only the slot draining would never be told it.
+  `unslotted` reads the kept failure in the same registry turn and answers the failed start,
+  which the poll reads as final; `manager.no_room` is the one test of which failures pass, and
+  `delegate_host.no_room` is it. A child whose build fails for such a reason has at most two
+  builds, one for each asker: the tool's ask after the drain heard the refusal and ended the
+  row finds no row and makes one, and no registration is built twice. The child keeps one
+  registration while it waits. Its row counts against the spawner's `max_sessions` while it
+  waits, as any pending child does, and it has three exits: the child is placed, a deleted
+  parent's release ends it, or the hourly retention sweep deletes it once its `last_contact_ms`
+  is older than the spawner's `retain_ms`.
+- *Rule 2.* Every status an ask reads is classified by one total function,
+  `delegate_host.reading`. A reservation, a no-room failure, a saved session and a draining
+  slot ask the sender to come again; only a start that failed for another reason and
+  `RecoveryBlocked` are final.
+- *Rule 3.* On the sender, a spawn answered `NotYetOpen` is `peer_mail.NotOpen`
+  (`remote_spawner.spawn_answer`), which every asker already retries as it does silence, and
+  `remote_drain.attempt_spawn` does not mark the orchestrator silent for it, so the pass still
+  sends its join.
+- *What is not changed.* The spawn tool's 30 second window and its "did not answer in time" text
+  are designed: a run whose children all outlast the window still returns that text, and the
+  drain places the child afterwards. A child placed after the window is not reported to the
+  model, which is told to read `agent_roster`. The two late joins of D6 that answered "still
+  working" used a handle assembled by hand whose operation was the child's session id, not its
+  run's operation, so they name no run; they are not evidence of a lost answer.
+- *A known limit, not modelled.* The model's drain reads the stub and asks in one step; the
+  code's drain reads the stubs once per pass. For a child whose build fails for a final reason,
+  the tool can hear the refusal first (the row deleted, the stub `Refused`), and a drain ask
+  already sent on the older reading of the stubs then arrives, finds no row, makes a new
+  registration and builds it once. If that ask's poll reads the slot draining it answers
+  `NotYetOpen`, and the drain never asks a `Refused` stub again, so that reservation's row stays,
+  holding no slot and no executor scope, until the parent's release or the hourly retention
+  sweep ends it. Those two exits bound it.
+- *Model.* `protocol/models/placement-claims/Admission.tla`, run by `make model-check`. With the
+  rules off (`AdmissionMutantToday.cfg`) TLC finds the D5 sequence in six states; with them on
+  (`Admission.cfg`) no violation of its properties (no final refusal from no room, the child
+  placed once a finished child is joined, one registration per child). `AdmissionAlsoBroken.cfg`
+  has every build fail for a final reason: the stub learns the refusal, nothing is left for the
+  child once the tool has heard it, and at most two builds start. Each rule has a mutant that
+  fails on the property it names, `AdmissionMutantRebuildsFinal.cfg` among them for the rule
+  that a final failure is not built again. The model's README has the table of mutants.
+- *Tests.* `delegate_host_test`: `two_asks_polling_one_failed_start_are_both_asked_to_come_again_test`
+  reproduces D5's text before the change, `a_start_with_no_room_leaves_the_row_for_the_next_ask_test`,
+  `a_full_pool_reservation_is_built_again_by_the_next_ask_test` (the test of the addendum
+  "a pool that stays full is asked again after the failed start drains", rewritten for rule 1), `a_final_start_failure_is_answered_by_the_next_ask_without_a_build_test`
+  and `every_status_an_ask_reads_has_one_answer_test`;
+  `daemon_manager_test`: `a_reserved_delegate_session_is_built_again_by_the_next_message_test`;
+  `agency_test`: `a_spawn_answered_not_yet_open_leaves_the_pass_its_join_test`; and
+  `daemon_spawn_host_test` asserts the `NotOpen` mapping.
+
 ## Addendum: the source learns the close of a scope the host freed, and a refused move says what stayed (2026-11-17)
 
-The live re-drive of `back.sh` and `dfault2.sh` on the commit that merged the addendum above (the move back
-is refused, and an open scope for an unserved name is freed) found that the freeing rule did not finish
+The live re-drive of `back.sh` and `dfault2.sh` on the commit that merged the addendum "a move back is refused,
+and an open scope for an unserved name is freed" found that the freeing rule did not finish
 the job, and this addendum records the cause and the ruling. Nothing above is edited. No wire constructor
 is added and the version stays at 6.
 
@@ -1802,7 +1910,7 @@ ended. The executor judges a close by workspace before it looks at the scope (`e
 `same_workspace`), so the question under the corrected name was refused as `WorkspaceMismatch`, and the
 source turned that into the refusal text. Naming the bound workspace made the question match, the source
 learned the close, and the next attempt reopened the scope at incarnation 2, which is the sequence of the
-drive. The tests of the previous addendum stopped before the corrected move or pinned the refusal as a
+drive. The tests of that addendum stopped before the corrected move or pinned the refusal as a
 ruling, and the checkout model chose every attach's incarnation from the executor's ledger, as if the
 source always knew it, so a stale record could not arise in it.
 
@@ -1818,7 +1926,7 @@ source always knew it, so a stale record could not arise in it.
   again, and the executor rebinds the scope to the corrected name. A second refusal ends the move with the
   refusal text, as before. The executor is not changed and no message is added.
 - *The result.* The move with the corrected name is accepted after the retry that freed the scope, with
-  no operator step. The earlier addendum says the corrected name "is refused with that text once" and
+  no operator step. That addendum says the corrected name "is refused with that text once" and
   that setting the name back "learns the close"; both are replaced by this rule. A name corrected while the
   scope is still open is refused with a true text, and naming the bound workspace is one round: that
   attach is a rebound attach, the host closes the empty scope, and the corrected name then lands. The
@@ -1854,7 +1962,7 @@ moves that are in flight or stalled, and an aborted move is neither, so it is no
 - *The text.* The refusal now ends with "Nothing moved: the session stays where it was", and for a session
   on an executor adds that its commits are on the branch `loom/<session>` in that executor's repository.
   For a session in a pool that has not attached it says only that nothing moved, because no branch exists.
-  The prefix "the request is malformed" is unchanged, for the reason in the addendum above.
+  The prefix "the request is malformed" is unchanged, for the reason in that addendum.
 - *The command.* `loom sessions move` prints, after the operation, that it does not wait for the move,
   that `loom sessions list --all` shows where the session is, and that a refusal is in the daemon log as
   `daemon.move_aborted`.

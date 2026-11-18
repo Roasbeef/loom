@@ -1,10 +1,12 @@
 # Reaching microVM guests over the untrusted link
 
-**Status**: proposal, 2026-11-13. It needs the owner's ruling, because it
-supersedes the link that ADR-022's first 2026-11-01 addendum settled (the
-orchestrator dials the guest executor over TLS Erlang distribution) and the
-owner's 2026-11-01 ruling in the developer-path addendum that the local daemon
-becomes a loopback-bound distribution member. Nothing here is built.
+**Status**: proposed 2026-11-13 and ruled by the owner the same day (section 10:
+questions 1, 2, 3 and 5 as recommended). Slices 1 to 4 are built; the ruling is
+recorded in ADR-022's addendum of 2026-11-17, which supersedes the link of the
+first 2026-11-01 addendum and the developer-path addendum's ruling that the
+local daemon becomes a loopback-bound distribution member. Slice 5 is next. The
+sections below are the proposal as written; `docs/architecture/microvm.md`
+describes what was built.
 **Builds on**: ADR-022 and its addenda, protocol-change/106 (the loopback
 listener), 109 (untrusted executors), 110 (placed blobs and large outcomes),
 111 (the host code-mode seam).
@@ -47,7 +49,7 @@ loopback port reserved once and recorded beside the guest).
 |---|---|---|
 | Host daemon (`loomd`) | developer | provider keys, every session store, the hook trust record, approvals, clearance; its `[distribution]` key and the home's `.erlang.cookie`; in a minted guest's deployment, the orchestrator bundle under `<vm home>/<name>/orch/` |
 | `loom-vm` launcher | developer | the libkrun VMM, the hosted network stack and its egress policy, the GitHub credential proxy with the developer's token in memory, the host loopback forward and the guest's epmd registration (`--publish`) |
-| Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`client/vm_cli.gleam:2830` (`stage_node`)); the ledger file in ledger mode; the workspace copies; the state disk |
+| Guest `loomd` | `loom` in the guest | the executor's TLS key and certificate, the CA certificate and the cookie, staged at `/srv/loom-node/creds/{cert,key}.pem` and `/srv/loom-node/home/.erlang.cookie` (`client/vm_cli.gleam:2844` (`stage_node`)); the ledger file in ledger mode; the workspace copies; the state disk |
 | Jailed tool process | `loom`, under `loom-exec` | the workspace copy, the network the policy allows (with GitHub access, the proxy's placeholder token); the node key and cookie are masked by `node_credentials` (`client/executor_plane.gleam:323`) |
 
 ### What each party holds under the proposal
@@ -254,7 +256,7 @@ What the daemon needs, read from the code:
 ### The guest side
 
 `vm_spec.guest_config` stops calling `distribution_bundle.config_tables`
-(`client/vm_spec.gleam:2498` (`guest_config`)) and writes instead:
+(`client/vm_spec.gleam:2544` (`guest_config`)) and writes instead:
 
 ```toml
 [executor_listener]
@@ -274,7 +276,7 @@ reaches it; a guest process that connects without the orchestrator's key fails
 the handshake.
 
 `vm_spec.launch_arguments` passes `--forward <recorded port>:4370` in place of
-`--publish NAME:HOST:GUEST` (`client/vm_spec.gleam:2611` (`--publish`)). The
+`--publish NAME:HOST:GUEST` (`client/vm_spec.gleam:2657` (`--publish`)). The
 launcher already has the flag (`cmd/loom-vm/main.go:156` (`forward`)).
 
 The guest image's `loom-guest-executor` changes in about ten lines: it renders no
@@ -321,7 +323,7 @@ the next `reload`.
 `up` and `ensure` write the file first, then send `reload` if a daemon is
 running. When none is, the next `loom` starts one that reads the file. Either
 way no daemon is stopped, which removes `vm_spec.daemon_step` and the stop
-step (`client/vm_spec.gleam:3201` (`daemon_step`)).
+step (`client/vm_spec.gleam:3247` (`daemon_step`)).
 
 A new control command is a change to the client control protocol, so this
 needs **protocol-change/116**.
@@ -329,7 +331,7 @@ needs **protocol-change/116**.
 ### (b) A stable address
 
 The row names `host:port`, and `boot` reserves a fresh loopback port on every
-boot today (`client/vm_cli.gleam:2554` (`reserve_loopback_port`)), which epmd
+boot today (`client/vm_cli.gleam:2564` (`reserve_loopback_port`)), which epmd
 made harmless.
 
 | Option | Daemon restart | Port taken while the guest is down | Cost |
@@ -458,8 +460,8 @@ Deleted once the migration is complete:
 
 | Module | What goes | Lines, roughly |
 |---|---|---|
-| `client/vm_cli.gleam` | `deployment`, `begin`, `join`, `sealed_authority`, the ledger helpers, `provision`, `seal_authority`, `write_bundles`, `config_of`'s deployment half, `enroll`, `install`, from `deployment` (`client/vm_cli.gleam:824`) to about line 1520; `stage_ledger`; the daemon observation and stop step (`stop_daemon` and its neighbours, about lines 2615 to 2790); `epmd_line`; the revoke and cookie half of `rm` | 1,250 |
-| `client/vm_spec.gleam` | `deployment_plan`, `DeploymentState` and the join decisions (`client/vm_spec.gleam:2118` (`DeploymentState`) to about line 2036); `with_loopback_listener`; `daemon_step` and its types; `registered_port`; `read_enrolment`, the cookie state and `plan_teardown` (`client/vm_spec.gleam:4423` (`plan_teardown`)) | 800 |
+| `client/vm_cli.gleam` | `deployment`, `begin`, `join`, `sealed_authority`, the ledger helpers, `provision`, `seal_authority`, `write_bundles`, `config_of`'s deployment half, `enroll`, `install`, from `deployment` (`client/vm_cli.gleam:809`) to about line 1520; `stage_ledger`; the daemon observation and stop step (`stop_daemon` and its neighbours, about lines 2615 to 2790); `epmd_line`; the revoke and cookie half of `rm` | 1,250 |
+| `client/vm_spec.gleam` | `deployment_plan`, `DeploymentState` and the join decisions (`client/vm_spec.gleam:2132` (`DeploymentState`) to about line 2036); `with_loopback_listener`; `daemon_step` and its types; `registered_port`; `read_enrolment`, the cookie state and `plan_teardown` (`client/vm_spec.gleam:4491` (`plan_teardown`)) | 800 |
 | `test/client/vm_cli_test.gleam` | about 35 of its 155 tests: node names, epmd, loopback listener, deployment state, enrolment, ledger staging, authority sealing, revoke, cookie and teardown | 600 |
 | `test/client/daemon_shipped_microvm_test.gleam` | the ledger and authority assertions, the idle-daemon stop step, the second-guest refusal | 250 |
 
@@ -518,7 +520,11 @@ Each slice ships alone and is listed in merge order.
    `microvm.md` and the client package docs are rewritten. **Exit**:
    `daemon_shipped_microvm_test` runs only the untrusted path, including the
    daily verbs, and `make doc-check` passes. Needs the **ADR-022 addendum**
-   below.
+   below. Built: `vm_link.settle` takes no flag and refuses a distribution
+   guest by its `link` record or its `deploy/` bundles; `--link untrusted` is
+   a no-op for one release and `--link distribution` is refused; the live
+   test's steps run on guests made with no flag, with a migration step over
+   fabricated traces; the addendum is in ADR-022, dated 2026-11-17.
 5. **Delete the distribution path from `loom vm`.** Section 6's deletions,
    after one release. **Exit**: `make check` green, about 2,000 product lines
    and 850 test lines removed.
