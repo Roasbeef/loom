@@ -78,6 +78,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
+import session_view/attention
 import session_view/composer
 import session_view/decisions
 import session_view/markdown
@@ -93,6 +94,7 @@ import web_view/tool_result
 import web_view/view/diff
 import web_view/view/expansion
 import web_view/view/fold_row
+import web_view/view/lifted
 import web_view/view/live
 import web_view/view/program_card as program_view
 import web_view/view/strip
@@ -260,6 +262,10 @@ pub type Marks {
     /// The page's number for that strand, assigned in the order the page first
     /// showed strands and never reused, so two strands never share one.
     key: Int,
+    /// The rows the live rail lifted, by the key each is drawn under
+    /// (`row_attribute`), with whether the row needs the owner. A row here
+    /// carries a small "lifted" tag, and one that needs the owner is tinted.
+    lifted: Dict(String, attention.Hold),
   )
 }
 
@@ -272,7 +278,13 @@ pub type Marks {
 /// // lane.view(pieces, [], lane.Beginning, load, lane.NoReplies, lane.no_marks())
 /// ```
 pub fn no_marks() -> Marks {
-  Marks(active: "main", hue: turns.Primary, positions: dict.new(), key: 1)
+  Marks(
+    active: "main",
+    hue: turns.Primary,
+    positions: dict.new(),
+    key: 1,
+    lifted: dict.new(),
+  )
 }
 
 /// Whether the lane offers a reply to a peer's message, and what pressing it
@@ -479,7 +491,7 @@ fn timeline(
       turns.Commentary(..) -> Error(Nil)
       _ ->
         Ok(#(
-          piece_key(piece),
+          lifted.piece_key(piece),
           timeline_row(
             piece,
             draw,
@@ -645,24 +657,6 @@ fn boundary_content(top: Top, load: message) -> Element(message) {
   }
 }
 
-/// Piece key helper.
-fn piece_key(piece: turns.Piece) -> String {
-  case piece {
-    turns.Plain(block:, ..)
-    | turns.Prompt(block:, ..)
-    | turns.Commentary(block:, ..) -> block.key
-    turns.Work(key:, ..)
-    | turns.Spawned(key:, ..)
-    | turns.Returned(key:, ..)
-    | turns.Nudged(key:, ..)
-    | turns.Peer(key:, ..)
-    | turns.Sibling(key:, ..)
-    | turns.Trigger(key:, ..)
-    | turns.Missed(key:, ..)
-    | turns.Decided(key:, ..) -> key
-  }
-}
-
 /// One row of the timeline: the dot in the hue of the strand the piece belongs
 /// to, and the piece. The dot is drawn for every piece so the line reads as one,
 /// and is a control only where the piece belongs to another strand the page
@@ -678,16 +672,58 @@ fn timeline_row(
   newest: String,
 ) -> Element(message) {
   let #(hue, target) = belongs_to(piece, marks)
-  html.div([attribute.class("tl-row"), strip.hue_class(hue)], [
-    html.span(
-      [attribute.class("dot"), attribute.aria_hidden(True), ..marker(target)],
-      [],
-    ),
-    html.div([attribute.class("tl-body")], [
-      piece_element(piece, draw, replies, marks, folds, session, links, newest),
+  let key = lifted.piece_key(piece)
+
+  // The row is named for the rail's jump by its engine key, and tagged when
+  // the rail lifted it. The tag is the row's third child, after the body the
+  // admitted message paths run through, so no path moves with it.
+  let mark = dict.get(marks.lifted, key)
+
+  html.div(
+    list.flatten([
+      [
+        attribute.class("tl-row"),
+        strip.hue_class(hue),
+        attribute.attribute(row_attribute, key),
+      ],
+      case mark {
+        Ok(attention.PinnedUntilAnswered) -> [
+          attribute.class("lifted-row"),
+          attribute.class("needs-you"),
+        ]
+        Ok(attention.FoldsOnceOpened) -> [attribute.class("lifted-row")]
+        Error(Nil) -> []
+      },
     ]),
-  ])
+    [
+      html.span(
+        [attribute.class("dot"), attribute.aria_hidden(True), ..marker(target)],
+        [],
+      ),
+      html.div([attribute.class("tl-body")], [
+        piece_element(
+          piece,
+          draw,
+          replies,
+          marks,
+          folds,
+          session,
+          links,
+          newest,
+        ),
+      ]),
+      case mark {
+        Ok(_) -> html.span([attribute.class("lift-tag")], [html.text("lifted")])
+        Error(Nil) -> element.none()
+      },
+    ],
+  )
 }
+
+/// The attribute a timeline row carries its engine key in, which the live
+/// rail's jump finds the row by (`web_client/jump_rule`). The value is the
+/// piece's key, a daemon identity, and never session text.
+pub const row_attribute = "data-loom-row"
 
 /// The hue a piece's dot is drawn in and the card it focuses, if any. A piece
 /// of the strand on screen is that strand's; a spawn and a result are the

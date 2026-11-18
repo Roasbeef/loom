@@ -87,6 +87,7 @@ import web_view/view/controls
 import web_view/view/ended
 import web_view/view/evolution as evolution_view
 import web_view/view/lane
+import web_view/view/lifted as lifted_view
 import web_view/view/memory as memory_view
 import web_view/view/peer_links as peer_links_view
 import web_view/view/proposals as proposals_view
@@ -473,6 +474,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       // centre's last child, so no admitted path moves with it.
       component.switch(model),
       switch.switcher(),
+
+      // The phone's sheet comes last so no admitted path moves; the
+      // stylesheet orders it above the dock.
+      component.sheet(model, lifted_view.InDock),
     ],
     component.panel(
       model,
@@ -562,6 +567,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         component.Relayed(..) ->
           evolution_view.elsewhere(component.session_machine(model))
       },
+      lifted_view.InDock,
     ),
     component.needing(model),
     component.proposals_pending(model),

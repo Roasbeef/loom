@@ -502,7 +502,8 @@ pub fn session_markup_arrives_only_as_text_test() {
   let notes_refreshes =
     list.length(string.split(observer, "class=\"notes-refresh\"")) - 1
   assert notes_refreshes == 1
-  assert buttons == 9
+  let lifts = list.length(string.split(observer, "class=\"lift-press\"")) - 1
+  assert buttons - lifts == 9
   assert list.length(string.split(observer, "class=\"chip-hit\"")) == 5
   assert list.length(string.split(observer, "class=\"tag\"")) == 4
   assert !string.contains(observer, "<form")

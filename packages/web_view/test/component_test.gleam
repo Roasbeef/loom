@@ -246,7 +246,8 @@ pub fn an_observer_page_has_no_action_card_test() {
   let refreshes = list.length(string.split(html, "class=\"notes-refresh\"")) - 1
   assert chips == 1
   assert refreshes == 1
-  assert buttons == chips + refreshes
+  let lifts = list.length(string.split(html, "class=\"lift-press\"")) - 1
+  assert buttons == chips + refreshes + lifts
   assert string.contains(html, "class=\"notes-search\"")
   assert string.contains(
     html,

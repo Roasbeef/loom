@@ -160,6 +160,7 @@ import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
+import session_view/attention
 import session_view/block_summary
 import session_view/btw
 import session_view/cache_miss
@@ -236,6 +237,7 @@ import web_view/view/evolution as evolution_view
 import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
+import web_view/view/lifted as lifted_view
 import web_view/view/live
 import web_view/view/notes as notes_panel
 import web_view/view/nudges
@@ -424,6 +426,18 @@ pub const proposals_path = "0\t3\t2\t7"
 /// way. An observer's page draws `element.none()` here and its socket admits
 /// no event beneath it. `evolution_page_test` fails if the view moves the pane.
 pub const evolution_path = "0\t3\t6"
+
+/// The Lustre event path of the live rail, "Lifted from this session": the
+/// Strands pane's fifth and last child, after the title, the strip, the strand
+/// detail and the advisor's commentary (`view/panel`), so that placing it
+/// there moved no path the socket admits. Every handler beneath it is one
+/// insight's press, which asks the page to draw that insight folded from now on
+/// (`RailOpened`). It reads nothing and sends no command, so an observer's
+/// socket admits a `click` at any path beneath it and nowhere else new
+/// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the
+/// addendum on the live rail). The jump to a transcript row is the browser's
+/// and fires no event. `lifted_test` fails if the view moves the rail.
+pub const rail_path = "0\t3\t0\t4"
 
 /// How soon after the present the page wakes for an evolution read or poll
 /// that the lane could not send yet, in milliseconds of the transport's clock.
@@ -1067,6 +1081,12 @@ type View(socket) {
     /// reads the whole text from the entry its block holds. A strand the
     /// reader leaves forgets them.
     said: List(String),
+    /// The keys of the rail's insights the reader has opened, the most
+    /// recently opened first and at most `open_insights`. An insight is drawn
+    /// whole until its key is here and folded to one line after, for the life
+    /// of the page. The keys are `attention.Lifted.key` values, which are
+    /// daemon identities; nothing is stored in the browser.
+    opened: List(String),
     /// The `paging` of each strand the reader left, keyed by strand name,
     /// for the life of the page. `focus` parks the departing strand's here
     /// and restores the arriving strand's, so a strand whose older rows the
@@ -1342,6 +1362,14 @@ pub type Msg(socket) {
   /// messages).
   MessageToggled(key: String)
 
+  /// An insight on the live rail was pressed: draw it folded from now on. The
+  /// insight is named by the key the view drew into the handler, never by
+  /// anything the browser sent, and a key that names no insight the rail holds
+  /// changes nothing. It changes only what this page draws and sends no
+  /// command, so an observer's page may carry it (protocol-change/051, the
+  /// addendum on the live rail). The jump to the row is the browser's alone.
+  RailOpened(key: String)
+
   /// A chip of the agent strip was pressed: show this strand and address it.
   /// The strand is the name the strip was drawn with, never text the browser
   /// sent, because a handler's message is fixed when the tree is drawn and
@@ -1488,6 +1516,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       notes: notes.new(),
       folds: [],
       said: [],
+      opened: [],
       parked_paging: dict.new(),
       strand_keys: dict.from_list([#(shared.active_strand, 1)]),
       earlier: Reached,
@@ -1797,6 +1826,8 @@ pub fn update(
     FoldToggled(fold:) -> folded_at(model, fold, at)
 
     MessageToggled(key:) -> #(messaged(model, key), effect.none())
+
+    RailOpened(key:) -> #(rail_opened(model, key), effect.none())
 
     FocusRequested(strand:) -> focus_at(model, strand, at) |> peers_due(at)
 
@@ -7245,6 +7276,97 @@ pub fn expanded(model: Model(socket)) -> List(String) {
   model.view.said
 }
 
+/// How many opened insights the page remembers. Each is a key the page drew,
+/// and the oldest-opened is forgotten first, which draws it whole again.
+pub const open_insights = 64
+
+/// The rows the live rail lifts from the page: the pending approvals first,
+/// then the lane's failures, results and peer messages newest first
+/// (`session_view/attention`). It reads the pieces the lane draws, so the rail
+/// and the transcript never disagree about what is on the page, and it holds
+/// nothing of its own but the opened set.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.lifted(component.new(transport)) == []
+/// ```
+pub fn lifted(model: Model(socket)) -> List(attention.Lifted) {
+  attention.lift(pieces(model), model.shared.approvals)
+}
+
+/// The lifted rows with the place each press goes, for the rail and the sheet.
+/// `open` is the rail's handler for an unopened insight, or `None` for the
+/// sheet, whose rows send nothing.
+fn lifted_rail(
+  model: Model(socket),
+  dock: lifted_view.Dock,
+  open: option.Option(fn(String) -> message),
+) -> lifted_view.Rail(message) {
+  lifted_view.Rail(
+    items: lifted_view.items(pieces(model), lifted(model), dock),
+    opened: model.view.opened,
+    strand: model.shared.active_strand,
+    dock:,
+    open:,
+  )
+}
+
+/// The live rail for the Strands pane: the rows `lifted` found, grouped as
+/// "Needs you" and "Insights", or nothing when there are none. An unopened
+/// insight's press is `RailOpened` wrapped by `observed`; the jump to its row
+/// is the browser's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.rail(model, lifted_view.InDock, fn(msg) { msg })
+/// ```
+pub fn rail(
+  model: Model(socket),
+  dock: lifted_view.Dock,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  lifted_view.view(lifted_rail(
+    model,
+    dock,
+    Some(fn(key) { observed(RailOpened(key)) }),
+  ))
+}
+
+/// The phone's bar and sheet for the same rows, drawn last in the centre
+/// column and ordered above the dock by the stylesheet, so no path the socket
+/// admits moves. Its rows are not handlers: a press only jumps, in the browser.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.sheet(model, lifted_view.InDock)
+/// ```
+pub fn sheet(model: Model(socket), dock: lifted_view.Dock) -> Element(message) {
+  lifted_view.sheet(lifted_rail(model, dock, None))
+}
+
+/// Remembers that an insight was opened. A key that names no insight the rail
+/// holds, a key already opened, and a press on a page that is not following a
+/// session change nothing, as with a fold.
+fn rail_opened(model: Model(socket), key: String) -> Model(socket) {
+  let known =
+    lifted(model)
+    |> attention.insights
+    |> list.any(fn(row) { row.key == key })
+
+  // Only a followed session, a current insight and a first press change the
+  // set; the other combinations leave the page as it was.
+  case model.view.status, known, list.contains(model.view.opened, key) {
+    Connected, True, False -> {
+      let opened = list.take([key, ..model.view.opened], open_insights)
+      Model(..model, view: View(..model.view, opened:))
+    }
+    Connected, _, _ | Connecting, _, _ | Ended(_), _, _ -> model
+  }
+}
+
 /// Whether a Lustre event path is the button after a shortened message. The
 /// lane's rows are keyed, so a path names the lane's list (the second child of
 /// `<loom-follow>`, which is the lane's second child of the centre column), the
@@ -8203,6 +8325,10 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         Some(_) -> switch(model)
         None -> element.none()
       },
+
+      // The phone's sheet is the centre's last child, so no admitted path
+      // moves with it; the stylesheet orders it above the bar.
+      sheet(model, lifted_view.NoDock),
     ],
     panel(
       model,
@@ -8217,6 +8343,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       element.none(),
       element.none(),
       element.none(),
+      lifted_view.NoDock,
     ),
     needing(model),
     proposals_pending(model),
@@ -8282,12 +8409,14 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// owner's review of proposed standing rules (`view/proposals`), likewise, and
 /// `memory` the owner's read-only overview of the daemon's memory
 /// (`view/memory`), likewise, and `evolution` the operator's governed-evolution
-/// tab (`view/evolution`), likewise.
+/// tab (`view/evolution`), likewise. `dock` says whether the page has a dock
+/// where an approval is decided, which the live rail's approval rows point at
+/// (`view/lifted`).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none())
+/// // component.panel(model, FocusRequested, observed, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), lifted_view.InDock)
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -8302,6 +8431,7 @@ pub fn panel(
   proposals: Element(message),
   memory: Element(message),
   evolution: Element(message),
+  dock: lifted_view.Dock,
 ) -> Element(message) {
   // A page that never held the session's content has none of it to list, and
   // a pane that said "No edits yet" would be a statement about a session it
@@ -8311,6 +8441,7 @@ pub fn panel(
       0,
       ended.content_unavailable_note(),
       None,
+      element.none(),
       element.none(),
       element.none(),
       element.none(),
@@ -8358,6 +8489,7 @@ pub fn panel(
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),
     commentary.view(advisor_commentary(model)),
+    rail(model, dock, observed),
     notes_panel.view(
       model.view.notes,
       strand(model),
@@ -8433,7 +8565,25 @@ pub fn marks(model: Model(socket)) -> lane.Marks {
     positions: strip.positions(model.view.strip),
     key: dict.get(model.view.strand_keys, model.shared.active_strand)
       |> result.unwrap(0),
+    lifted: lifted_rows(model),
   )
+}
+
+/// The rows of the lane the rail lifted, by the key the lane draws each under.
+/// A row that needs the owner wins over an insight in the same row, and an
+/// approval names no lane row, since it lives in the dock.
+fn lifted_rows(model: Model(socket)) -> Dict(String, attention.Hold) {
+  lifted_view.items(pieces(model), lifted(model), lifted_view.InDock)
+  |> list.fold(dict.new(), fn(rows, item) {
+    // A pinned mark is kept; any other mark is written or replaced.
+    case item.target, dict.get(rows, item.target) {
+      "", _ -> rows
+      target, _ if target == lifted_view.dock_target -> rows
+      _, Ok(attention.PinnedUntilAnswered) -> rows
+      target, Ok(attention.FoldsOnceOpened) | target, Error(Nil) ->
+        dict.insert(rows, target, item.lifted.hold)
+    }
+  })
 }
 
 /// How many strands are waiting on a decision, the number on the Strands tab's

@@ -1900,6 +1900,31 @@ checks focus and stale handlers, and pins the actual Lustre handler table and
 numeric row paths. It also covers partial boards, raw text, literal excerpts,
 search, refresh selection and markup-looking content.
 
+## The live rail (protocol-change/051, the addendum on the live rail)
+
+`view/lifted` draws "Lifted from this session": `component.lifted(model)` is
+`attention.lift(pieces(model), shared.approvals)`, and `lifted.items` pairs each
+row with the place its press goes (an approval is `dock`, a step inside a fold
+is its turn's key, anything else its own key). The rail is the Strands pane's
+fifth and last child (`component.rail_path`, `0\t3\t0\t4`; `view/panel` takes
+it after `commentary`), ordered first on screen by the stylesheet, so no
+admitted path moved. Two groups, "Needs you" (`PinnedUntilAnswered`) and
+"Insights"; an empty group or rail draws `element.none()`.
+
+A pinned row carries no handler and no deciding control: it says "Decide in the
+dock ↓" (`InDock`, the operator page) or "The operator decides" (`NoDock`, the
+observer page, which also draws no jump). An insight is drawn open until
+`RailOpened(key)` (an observer may send it: one more admitted click path,
+`ui_socket.observer_accepts`), then folded; `View.opened` holds the keys, newest
+first, at most `component.open_insights`, and `rail_opened` accepts only a key
+naming a current insight. Every button carries `data-loom-jump`; the lane draws
+each row with `data-loom-row` (`lane.row_attribute`, the piece key), a "lifted"
+tag from `Marks.lifted`, and the `needs-you` tint only for a pinned row (none
+exists in the lane until phase 1b adds asks). `component.sheet` is the phone's
+`<details>` bar and sheet, appended as the centre's last child and ordered above
+the dock by CSS; its rows are not handlers. `lifted_test` pins all of this with
+seed 20261118. The jump itself is `web_client/follow`'s.
+
 ## Evolution tab (protocol-change/099)
 
 The Evolution pane is the strand panel's seventh child (`component.evolution_path`,

@@ -1877,7 +1877,9 @@ pub fn without_strand(
 
 /// The handler keys of a page, as `page_events_ffi` lists them (a path, a
 /// newline and the event's name), without the clicks of settled turns'
-/// dividers, which are the lane's and not what a test of another region counts.
+/// dividers, which are the lane's, and without the clicks of the live rail's
+/// insights, which are `lifted_test`'s: neither is what a test of another
+/// region counts.
 ///
 /// ## Examples
 ///
@@ -1887,7 +1889,9 @@ pub fn without_strand(
 pub fn beyond_dividers(keys: List(String)) -> List(String) {
   list.filter(keys, fn(key) {
     case string.split_once(key, "\n") {
-      Ok(#(path, _)) -> !component.fold_click(path)
+      Ok(#(path, _)) ->
+        !component.fold_click(path)
+        && !string.starts_with(path, component.rail_path <> "\t")
       Error(Nil) -> True
     }
   })
