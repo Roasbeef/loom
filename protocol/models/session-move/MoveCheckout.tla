@@ -416,8 +416,8 @@ CkAttachUnknownDies ==
 (* The attach for a workspace the executor serves, in `worktree` mode, when   *)
 (* Git cannot make the session's tree: the repository is gone, or the base    *)
 (* ref does not exist ("badtree"). The ledger admits the scope before the     *)
-(* plane is built, so the scope is open when the build fails, and no tree     *)
-(* record is written. The refusal is `WorktreeFailed`, which the mover takes  *)
+(* plane is built, so the scope is open when the build fails, and no tree is *)
+(* made on disk. The refusal is `WorktreeFailed`, which the mover takes       *)
 (* as passing and not final (`move_checkout.classified`): the step stalls and *)
 (* runs again. With CloseFailedTree the host closes the scope as retired in   *)
 (* the same step as the refusal, as it does for an unserved name             *)
@@ -777,7 +777,7 @@ AbandonRestores ==
     /\ cfgWs = "good" => (AttachAllowed \/ exec.holder # "none")
 
 (* A scope whose build failed for want of a tree is not left open by the    *)
-(* source's attach: it has no plane and no tree record, and no session will  *)
+(* source's attach: it has no plane and no tree on disk, and no session will  *)
 (* close it, so an open one would count against the executor's limit for     *)
 (* good.                                                                      *)
 FailedBuildHoldsNoScope == bound = "badtree" => exec.holder # "A"
