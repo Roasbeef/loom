@@ -81,6 +81,9 @@ pub type Offer(message) {
   Offer(
     /// The open review's state.
     state: State,
+    /// The session's display name, which the owner wrote. It is drawn as a text
+    /// node in the line that says what opening another thread discards.
+    name: String,
     /// The session's open finds, as the attention feed read them.
     finds: List(attention_feed.Find),
     /// How many reviews have been opened, which keys the forms so each open
@@ -570,7 +573,17 @@ fn outbox(offer: Offer(message)) -> Element(message) {
                 "Nothing is staged. Nothing is sent until you press Send.",
               ),
             ])
-          True -> html.ul([], staged_lines(state))
+          True ->
+            html.div([], [
+              html.ul([], staged_lines(state)),
+              html.p([attribute.class("inbox-hold")], [
+                html.text(
+                  "Staged items for "
+                  <> offer.name
+                  <> " are discarded if you open another thread.",
+                ),
+              ]),
+            ])
         },
         case state.problem {
           Some(words) ->

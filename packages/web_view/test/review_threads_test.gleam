@@ -20,6 +20,7 @@ import web_view/attention_feed.{Find, Row, Section}
 import web_view/home
 import web_view/item_pane
 import web_view/review_feed
+import web_view/review_scan_rule as scan
 import web_view/review_stage_rule
 import web_view/sessions.{type Entry, Entry, Live, Report}
 import web_view/signins
@@ -201,17 +202,26 @@ fn start(
   ),
   act: Option(home.Act),
 ) -> home.Start {
+  start_for([entry("A", "web ui"), entry("B", "lint")], reports(), review, act)
+}
+
+fn start_for(
+  listed: List(Entry),
+  answered: List(#(String, sessions.Report)),
+  review: Option(
+    fn(String, fn(Result(review_feed.Review, String)) -> Nil) -> Nil,
+  ),
+  act: Option(home.Act),
+) -> home.Start {
   home.Start(
     name: "Alice",
     ceiling: home.OperatorCeiling,
     refresh_ms: 5,
-    sessions: fn(deliver) {
-      deliver(home.Listed([entry("A", "web ui"), entry("B", "lint")]))
-    },
+    sessions: fn(deliver) { deliver(home.Listed(listed)) },
     open: fn(_) { sessions.Declined(sessions.NotHeld) },
     resume: fn(_, _) { Nil },
     now: fn() { now },
-    activity: fn(_, deliver) { deliver(reports()) },
+    activity: fn(_, deliver) { deliver(answered) },
     rename: None,
     manage: None,
     thread_send: None,
@@ -573,4 +583,173 @@ pub fn the_find_form_reads_back_only_its_own_fields_test() {
 
 fn review_stage_verdict() -> review_stage_rule.Verdict {
   review_stage_rule.RequestChanges
+}
+
+// A page that is staged says what opening another thread discards, with the
+// session's name as text.
+pub fn the_outbox_says_what_opening_another_thread_discards_test() {
+  let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
+  assert !string.contains(drawn(model), "are discarded if you open")
+
+  let staged = run(model, home.ReviewVerdictChosen(review_stage_verdict()))
+  assert string.contains(
+    drawn(staged),
+    "Staged items for web ui are discarded if you open another thread.",
+  )
+}
+
+// The receipt of a delivered Send stays when the session moves on to working,
+// and goes only when the person opens another thread.
+pub fn the_receipt_outlives_the_session_going_back_to_work_test() {
+  let acted = process.new_subject()
+  let model = settled_owner(acted, home.Succeeded("Closed as fixed."))
+  let sent =
+    model
+    |> run(home.ReviewVerdictChosen(review_stage_verdict()))
+    |> run(home.ReviewSent)
+  assert string.contains(drawn(sent), "Delivered to the session · queued")
+
+  // A later activity read finds the session working on the prompt.
+  let later =
+    run(
+      sent,
+      home.Observed([
+        #("A", Report(sessions.Working, Some("Looking at it."), [])),
+        #("B", Report(sessions.Idle, Some("Nothing changed."), [])),
+      ]),
+    )
+  let html = drawn(later)
+  assert !string.contains(html, "To review<span")
+  assert string.contains(html, "Changes to review")
+  assert string.contains(html, "Delivered to the session · queued")
+}
+
+// No attribute value, anywhere on the page, holds a path, a line of the diff,
+// the agent's words, a find's text or anything the owner typed.
+pub fn no_attribute_value_holds_session_text_test() {
+  let model =
+    settled_owner(process.new_subject(), home.Succeeded("ok"))
+    |> run(home.ReviewCommented("src/retry.gleam", "Cap the wait."))
+    |> run(home.ReviewFindStaged(find_id, attention.Fixed, "Thanks."))
+    |> run(home.ReviewVerdictChosen(review_stage_verdict()))
+  let values = attribute_values(drawn(model))
+
+  assert list.length(values) > 10
+
+  // The offending values, if any, are the failure.
+  let offenders =
+    list.filter(values, fn(value) {
+      list.any(
+        [
+          "src/retry", "src/&quot;", "script", "retry", "backoff", "Backoff",
+          "Cap the wait", "Thanks", "loop(", "Done", "Loose in", "Names no",
+        ],
+        string.contains(value, _),
+      )
+    })
+  assert offenders == []
+}
+
+fn attribute_values(html: String) -> List(String) {
+  case string.split(html, "=\"") {
+    [] -> []
+    [_, ..rest] ->
+      list.filter_map(rest, fn(piece) {
+        case string.split_once(piece, "\"") {
+          Ok(#(value, _)) -> Ok(value)
+          Error(Nil) -> Error(Nil)
+        }
+      })
+  }
+}
+
+pub type Gate {
+  Take(reply: Subject(Grant))
+  Refill
+  Count(reply: Subject(Int))
+}
+
+pub type Grant {
+  Granted
+  Denied
+}
+
+// A stand-in for the daemon's allowance: two reads, then refusals until it is
+// refilled, counting every ask.
+fn gate() -> Subject(Gate) {
+  let parent = process.new_subject()
+  let _ =
+    process.spawn(fn() {
+      let inbox = process.new_subject()
+      process.send(parent, inbox)
+      gate_loop(inbox, 2, 0)
+    })
+  let assert Ok(inbox) = process.receive(parent, 1000)
+  inbox
+}
+
+fn gate_loop(inbox: Subject(Gate), left: Int, asked: Int) -> Nil {
+  case process.receive_forever(inbox) {
+    Take(reply:) ->
+      case left {
+        0 -> {
+          process.send(reply, Denied)
+          gate_loop(inbox, 0, asked + 1)
+        }
+        _ -> {
+          process.send(reply, Granted)
+          gate_loop(inbox, left - 1, asked + 1)
+        }
+      }
+    Refill -> gate_loop(inbox, 2, asked)
+    Count(reply:) -> {
+      process.send(reply, asked)
+      gate_loop(inbox, left, asked)
+    }
+  }
+}
+
+fn five() -> List(#(String, sessions.Report)) {
+  list.map(["S1", "S2", "S3", "S4", "S5"], fn(id) {
+    #(id, Report(sessions.Idle, Some("Done " <> id), []))
+  })
+}
+
+// The daemon refuses the third read in four seconds. A refusal does not start
+// the next read, does not count as one of a session's three tries, and the
+// reads that follow the allowance's refill reach every session.
+pub fn a_refusing_reader_still_reaches_every_session_test() {
+  let allowance = gate()
+  let reader = fn(_session, deliver) {
+    case process.call(allowance, 1000, Take) {
+      Granted -> deliver(Ok(review()))
+      Denied -> deliver(Error(scan.busy_words))
+    }
+  }
+  let listed =
+    list.map(["S1", "S2", "S3", "S4", "S5"], fn(id) { entry(id, "n" <> id) })
+  let model = opened(start_for(listed, five(), Some(reader), None))
+
+  // The first session was read, and then the open thread's own read took the
+  // second grant and kept the scan from starting beside it.
+  assert process.call(allowance, 1000, Count) == 2
+  assert string.contains(
+    drawn(model),
+    "To review<span class=\"inbox-count\">1</span>",
+  )
+
+  // Each later read of the page's activity finds the allowance refilled.
+  let rounds =
+    list.fold([1, 2, 3, 4], model, fn(held, _) {
+      process.send(allowance, Refill)
+      run(held, home.Observed(five()))
+    })
+  assert string.contains(
+    drawn(rounds),
+    "To review<span class=\"inbox-count\">5</span>",
+  )
+
+  // Four scans and one open read, and the one refusal that stopped a run, and
+  // no other ask: a refusal never starts the next read.
+  assert process.call(allowance, 1000, Count) == 7
 }

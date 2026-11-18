@@ -53,6 +53,7 @@ import gleam/result
 import session_view/worktree_view
 import storage/access
 import web_view/review_feed
+import web_view/review_scan_rule
 import weft
 
 /// How long the read waits for the observation before it gives up: the
@@ -94,10 +95,7 @@ pub fn read(
   use observe <- result.try(resident(reach, session))
   use Nil <- result.try(
     reach.reserve()
-    |> result.replace_error(Refusal(
-      "unavailable",
-      "too many workspace reads; try again shortly",
-    )),
+    |> result.replace_error(Refusal("unavailable", review_scan_rule.busy_words)),
   )
   use board <- result.map(observed(observe))
   review_feed.of_board(board)

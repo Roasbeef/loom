@@ -2133,14 +2133,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
-    // A scan's answer is kept as what it found and the review is dropped. The
-    // next due session is read, and the open thread is checked against the new
-    // groups.
+    // A scan's answer is kept as what it found and the review is dropped. A
+    // read that found something starts the next due session at once. A refusal
+    // does not: the daemon allows two reads in four seconds, so the reads that
+    // follow a refusal would be refused too, and the next list or activity read
+    // starts them again once the allowance has refilled.
     ReviewScanned(session:, message:, read:) ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected ->
-          reviewing(
+        Connecting | Connected -> {
+          let next =
             Model(
               ..model,
               reviews: review_scan_rule.answered(
@@ -2149,8 +2151,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 message,
                 read,
               ),
-            ),
-          )
+            )
+
+          case read {
+            Ok(_) -> reviewing(next)
+            Error(_) -> {
+              let #(opened, open, _) = opening_review(next)
+              #(opened, open)
+            }
+          }
+        }
       }
 
     ReviewRead(session:, read:) -> #(
@@ -5553,7 +5563,7 @@ fn scanning(model: Model) -> #(Model, Effect(Msg)) {
 /// review" and the review held is not for it, or is for an older message, and
 /// starts the reads: the worktree and the record of each of its finds. A Send
 /// that is out keeps its review, and a thread already open is not read again.
-fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
+fn opening_review(model: Model) -> #(Model, Effect(Msg), OpenRead) {
   let shown =
     inbox_rule.selection(model_groups(model), selected_session(model.selected))
 
@@ -5567,7 +5577,11 @@ fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
     None -> None
   }
 
-  // A Send that is out keeps its review where it is.
+  // A Send that is out keeps its review where it is, and so does the receipt of
+  // one that settled, until the person opens another thread. Both are
+  // `ReviewClosed` and `ReviewPrompted`'s only way to find the session: they
+  // carry none, and the Sending guard is what makes them safe, since a close or
+  // a prompt that answers while no Send is out changes nothing.
   let sending = case model.review.progress {
     review_pane.Sending(..) -> True
     review_pane.Resting | review_pane.Settled(_) -> False
@@ -5577,7 +5591,7 @@ fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
   case review_reader(model), model.start.attention, shown, message, sending {
     Some(read), Some(reads), Some(id), Some(said), False ->
       case list.contains(reviewing_ids(model), id) {
-        False -> #(model, effect.none())
+        False -> #(model, effect.none(), NoFreshRead)
         True -> {
           let fresh =
             model.review.session != Some(id)
@@ -5614,18 +5628,40 @@ fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
                 })
               })
             ]),
+            case fresh {
+              True -> FreshRead
+              False -> NoFreshRead
+            },
           )
         }
       }
-    _, _, _, _, _ -> #(model, effect.none())
+    _, _, _, _, _ -> #(model, effect.none(), NoFreshRead)
   }
 }
 
-/// A scan and then an opening, for a model whose reads or selection changed.
+/// Whether `opening_review` started the read of the open thread's worktree.
+type OpenRead {
+  /// It did, so the daemon's allowance is spent on it and a scan waits.
+  FreshRead
+
+  /// It did not.
+  NoFreshRead
+}
+
+/// An opening and then a scan, for a model whose reads or selection changed. The
+/// opening goes first, and a fresh read of the open thread keeps the scan from
+/// starting beside it: the two would draw on the same allowance, and the one
+/// that lost would be the thread the person is looking at.
 fn reviewing(model: Model) -> #(Model, Effect(Msg)) {
-  let #(scanned, scan) = scanning(model)
-  let #(opened, open) = opening_review(scanned)
-  #(opened, effect.batch([scan, open]))
+  let #(opened, open, read) = opening_review(model)
+
+  case read {
+    FreshRead -> #(opened, open)
+    NoFreshRead -> {
+      let #(scanned, scan) = scanning(opened)
+      #(scanned, effect.batch([open, scan]))
+    }
+  }
 }
 
 /// The identifiers of a session's open finds, as the feed last read them.
@@ -5677,13 +5713,23 @@ fn review_asking(
   }
 }
 
+/// Whether the open review is still drawn: its session is To review, or a Send
+/// is out or has settled for it. A session that moves on to working after its
+/// prompt is delivered keeps its receipt until the person opens another thread.
+fn review_listed(model: Model, session: String) -> Bool {
+  case model.review.progress {
+    review_pane.Sending(..) | review_pane.Settled(_) -> True
+    review_pane.Resting -> list.contains(reviewing_ids(model), session)
+  }
+}
+
 /// The open review's pane, for the session whose thread is "To review" and
 /// open, on a page that may read a worktree. A page that may act is handed the
 /// controls; one that may only read draws the files and the finds alone.
 fn review_offer(model: Model) -> Option(inbox_view.Reviewed(Msg)) {
   case review_reader(model), model.review.session {
     Some(_), Some(session) ->
-      case list.contains(reviewing_ids(model), session) {
+      case review_listed(model, session) {
         False -> None
         True ->
           Some(inbox_view.Reviewed(
@@ -5691,6 +5737,14 @@ fn review_offer(model: Model) -> Option(inbox_view.Reviewed(Msg)) {
             pane: review_view.pane(
               review_view.Offer(
                 state: model.review,
+                name: case
+                  list.find(inbox_threads(model), fn(thread) {
+                    thread.id == session
+                  })
+                {
+                  Ok(thread) -> thread.name
+                  Error(Nil) -> "this session"
+                },
                 finds: case dict.get(model.feed, session) {
                   Ok(row) -> row.finds.items
                   Error(Nil) -> []

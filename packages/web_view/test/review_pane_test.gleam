@@ -257,3 +257,18 @@ fn bytes_of(state: pane.State) -> Int {
     review_outbox_rule.compose(pane.files(state), state.staging)
   bytes
 }
+
+// A read the daemon refused for the credential's allowance says nothing about
+// the session: it is as if it were unread, and it is never counted as a try.
+pub fn a_refusal_for_the_allowance_is_not_a_try_test() {
+  let busy = Error(scan.busy_words)
+  let seen =
+    scan.answered(scan.started(dict.new(), "a", "m", 5), "a", "m", busy)
+  assert dict.size(seen) == 0
+  assert scan.due([#("a", "m")], seen, 6) == Some(#("a", "m"))
+
+  // A refusal after real failures leaves those failures counted.
+  let failed = scan.answered(dict.new(), "a", "m", Error("no"))
+  let again = scan.answered(failed, "a", "m", busy)
+  assert dict.size(again) == 0
+}

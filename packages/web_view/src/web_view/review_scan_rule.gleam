@@ -48,6 +48,12 @@ pub const stale_ms = 30_000
 /// How many times one message's read is tried when it keeps failing.
 pub const max_attempts = 3
 
+/// The words the daemon refuses a read with when the credential has spent its
+/// allowance of workspace reads (`client/daemon/review_door`). A read refused
+/// for that reason says nothing about the session, so the scan does not count
+/// it as an attempt.
+pub const busy_words = "too many workspace reads; try again shortly"
+
 /// Whether a worktree holds anything to review.
 pub type Changes {
   /// The review holds files, or says that it left some out.
@@ -147,7 +153,8 @@ pub fn started(
 }
 
 /// Records what a read of `session` for `message` found. A read that failed
-/// counts as one more attempt for that message.
+/// counts as one more attempt for that message, unless the daemon refused it for
+/// the credential's allowance, which leaves the session as if it were unread.
 ///
 /// ## Examples
 ///
@@ -155,6 +162,19 @@ pub fn started(
 /// assert dict.size(review_scan_rule.answered(dict.new(), "a", "done", Error("no"))) == 1
 /// ```
 pub fn answered(
+  seen: Dict(String, Seen),
+  session: String,
+  message: String,
+  read: Result(Review, String),
+) -> Dict(String, Seen) {
+  case read {
+    Error(words) if words == busy_words -> dict.delete(seen, session)
+    Ok(_) | Error(_) -> answered_for(seen, session, message, read)
+  }
+}
+
+/// What a read that was not refused for the allowance found.
+fn answered_for(
   seen: Dict(String, Seen),
   session: String,
   message: String,
