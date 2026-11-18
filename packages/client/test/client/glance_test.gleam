@@ -180,7 +180,8 @@ pub fn a_sub_agent_step_and_a_main_step_both_write_glances_on_a_cheap_route_test
 // model for every working turn, so the primary's step books nothing while the
 // sub-agent is summarized as before. The primary's step is cast first from
 // this same process, so by the time the sub-agent's cell exists the machine
-// has already handled, and skipped, the primary's.
+// has handled the primary's. This holds the loop's behaviour on one schedule;
+// the rule itself is pinned deterministically by the `is_watched` test.
 pub fn a_main_step_asks_nothing_when_only_main_is_routed_test() {
   let assert Ok(rig) =
     a_rig_with_summarizer(

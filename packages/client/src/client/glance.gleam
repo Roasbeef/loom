@@ -180,8 +180,9 @@ pub type Wiring {
 /// concerned. Watching `main` costs one paced request per working turn, so
 /// it is done only when the operator has routed a cheap model for it.
 pub type Route {
-  /// The catalogue routes `summarize` or `subagent`: a glance request goes to
-  /// that model, never to the main one.
+  /// The catalogue routes `summarize` or `subagent`: a glance request goes
+  /// through that role, never through the main role. The role may name the
+  /// same model as `main`; the route is the operator's choice of cost.
   Cheap
 
   /// Only `main` is routed, so a glance of `main` would be a request to the
