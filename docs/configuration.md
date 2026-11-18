@@ -1309,7 +1309,7 @@ that are not cleanly closed.
 `loom executor release --worktrees` is the other form of the command, for the Git
 worktrees of a [worktree workspace](#worktree-workspaces); it is described there.
 
-`loom executor release SESSION [--state-dir PATH]` is the operator's override. It
+`loom executor release SESSION [--processes-gone] [--state-dir PATH]` is the operator's override. It
 is also `loomd executor release`. Run it on the executor, with the executor daemon
 stopped: it opens the daemon's ledger at `<state-dir>/exec-ledger.db` (the state
 directory defaults to `~/.loom`), and it refuses to start while a daemon holds that
@@ -1320,6 +1320,18 @@ running, and a scope that is already closed cleanly. `SESSION` is the orchestrat
 session id that the refused open names. The session's next open reopens the scope.
 Check first that nothing from the session still runs on the machine, because the
 command trusts you on that point and nothing else does.
+
+A scope can also stay open after its session is gone. The orchestrator's close
+at shutdown reaches an executor that is stopping too and goes unanswered, and
+nothing closes the scope afterwards. `--processes-gone` lets the command release
+an open scope. It says that the executor is stopped (the command refuses to run
+otherwise) and that the orchestrator which owned the session no longer runs it, so
+no process of the session remains on the machine. The scope is closed as having
+every child retired, as for any release, and the record keeps `open` as the state
+it was in. A session that still exists reopens at the next incarnation on its next
+open. Do not use the flag for a session that is running. A scope that holds a
+worktree keeps its record and its tree; the command prints the path, and
+`--worktrees` removes the tree.
 
 The command holds the state directory's daemon reservation while it runs and leaves
 that record behind when it exits. A daemon started during the release is refused

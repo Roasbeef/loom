@@ -2029,6 +2029,31 @@ scope that is open is refused by the command, because its session may be running
 close the session first. See "Releasing an executor's stuck scope" in
 [configuration](configuration.md).
 
+**An executor reports a scope open for a session that no longer exists, and
+holds a slot at its limit** (**Pending**). A child agent that runs in its
+parent's own session on the orchestrator keeps that session open until its idle
+close (`idle_close_s`) or the parent's deletion. If the orchestrator and the
+executor stop together, the orchestrator's close at shutdown can go unanswered,
+nothing records it, and after the restart nothing closes the scope. The plain
+release refuses an open scope. When the executor daemon is stopped and the
+orchestrator that owned the session no longer runs it, so no process of the
+session remains, release it on your word:
+
+```sh
+loom executor release SESSION --processes-gone --state-dir ~/.loom
+```
+
+The command still refuses to run while the executor daemon is up, and it closes
+the scope as retired, as any release does. If the session still exists on a
+running orchestrator, its next open reopens the scope at the next incarnation.
+Do not use the flag while the session is live: the executor would lose the scope
+under a session that is using it, and children the session started would keep
+running. A scope that holds a worktree keeps its record, and the tree stays on
+disk. The command prints the path, and `loom executor release --worktrees`
+removes it. The orchestrator's log has a `workspace.close_lost` warning naming
+the session, the executor and the incarnation for each close that went
+unanswered.
+
 A worktree workspace leaves one more thing behind. Deleting a session on the
 orchestrator never reaches the executor, so the session's tree stays in
 `<state dir>/worktrees/<workspace>/<session id>`. With the daemon stopped,

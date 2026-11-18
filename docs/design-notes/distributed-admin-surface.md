@@ -204,7 +204,7 @@ orchestrator, an executor and a directory member at once.
   configured `[[distribution.peers]]`.
 - **Executor facts:** `protocol.version`, the scope counts by state (`ScopeState`,
   `storage/exec_ledger.gleam:211`), the limit on scopes that are not cleanly
-  closed (`Limits`, `storage/exec_ledger.gleam:215`), the scopes that block a
+  closed (`Limits`, `storage/exec_ledger.gleam:225`), the scopes that block a
   reopen (`closing`, or closed with unknown cleanup) with their session ids, bytes
   held against the ledger budget, the count of unacknowledged results, the platform
   label, the enforcement and toolchains from the most recent attach census
@@ -442,7 +442,7 @@ For each item in the owner's list: what exists, where it lives, and the proposal
 |---|---|---|
 | Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:616`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
 | Executor census (platform, enforcement, toolchains) | Returned at attach and kept in the live plane | Executor facts, from the last attach; absent before the first |
-| Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:577`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
+| Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:588`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
 | Helper pool | `pool_census` per plane, no node total | Deferred (section 10) |
 | Ledger bytes, unacknowledged results | Ledger only | Executor facts, as numbers |
 | Scopes that block a reopen | Ledger only; the operator learns of one from a refused open | Executor facts: session ids and state, with the `loom executor release` line in the page |

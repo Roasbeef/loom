@@ -883,7 +883,7 @@ holds that call pending, that is, the operation's state is gone or its batch no
 longer lists the call as planned or running. A lost `Ack` is therefore found
 again on the next pass, and no row leaks.
 
-`exec_ledger.ack` (`storage/exec_ledger.gleam:857`) deletes a `terminal` or
+`exec_ledger.ack` (`storage/exec_ledger.gleam:868`) deletes a `terminal` or
 `unknown` row, releases its bytes, and writes a tombstone in `call_ack`. A key
 with a tombstone is never admitted again in that incarnation. The tombstone
 closes a race the P model found. When a runtime restarts inside one open, the
@@ -1006,8 +1006,10 @@ outcome without asking the plane again. That is how an orchestrator whose reply
 was lost, or a mover resuming after a restart, learns the cleanup finished: the
 scope row is the evidence, not the host's memory. On the orchestrator,
 `plane.close` records whatever the executor reports. An unanswered close records
-nothing and still lets the session's custody finish, because the scope is then
-still open on the executor and the next open rebinds it.
+nothing, logs a `workspace.close_lost` warning with the session, the executor,
+the incarnation and the reason, and still lets the session's custody finish,
+because the scope is then still open on the executor and the next open rebinds
+it. If no next open comes, the scope stays open: see the operator's release.
 
 ### The operator's release
 
@@ -1018,7 +1020,18 @@ It takes the state directory's endpoint reservation first, which a live daemon
 holds, so it cannot open the ledger beside one. It moves a `closing` scope, or a
 `closed` one with unknown cleanup, to `closed, all_retired`, and writes a
 `scope_release` row with the former state and the time in the same transaction.
-It refuses an `open` scope and a clean one. Because the orchestrator attaches at
+It refuses an `open` scope and a clean one, unless the operator passes
+`--processes-gone`, which also takes an `open` scope and records `open` as the
+state it was in (`exec_ledger.release_processes_gone`). The flag is for a scope
+whose owner stopped together with the executor: the orchestrator's shutdown close
+went unanswered, `plane.close` recorded nothing, and no later code closes the
+scope. The operator asserts that the executor is stopped, which the command's
+reservation already enforces, and that the orchestrator no longer runs the
+session. The outcome is the same `closed, all_retired`. The owner's next attach
+at the incarnation it holds is answered `StaleIncarnation`, which makes it ask
+how that close ended (`learn_unrecorded_close`) and reopen at the next one. A
+session's tree record and its worktree are not touched, and the command names
+them. Because the orchestrator attaches at
 the next incarnation after any close, the same attach that the executor refused
 as `UncleanClose` before the release reopens the scope after it.
 

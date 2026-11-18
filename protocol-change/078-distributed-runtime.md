@@ -1734,3 +1734,35 @@ checked through dispatch, permitting compatible revisions across builds without
 sending new constructors to the legacy actor. The same-build rule above remains
 for unmigrated legacy operations. A port's death still cannot identify its build
 or establish whether a prior request acted.
+
+
+## Addendum: releasing an open scope whose owner is gone (2026-11-18)
+
+The release above refuses an `open` scope, because its session may be running.
+A scope can stay open after its session is gone. A child agent that runs in its
+parent's own session on the orchestrator leaves that session open until its idle
+close, so the orchestrator's shutdown sends the executor the close. When the
+executor is stopping at the same time the close goes unanswered, `plane.close`
+records nothing, and after the restart no code closes the scope. It holds one of
+the executor's slots, and the operator had no way to free it short of deleting
+the ledger.
+
+`loomd executor release SESSION --processes-gone` also takes an `open` scope. The
+flag is the operator's statement that the executor is stopped, which the command
+already enforces through the endpoint reservation, and that the orchestrator that
+owned the session no longer runs it. The scope ends `closed` with `all_retired`,
+the same outcome every operator release uses, and the `scope_release` row's `was`
+column holds `open`, which the earlier schema comment did not list. No schema
+change is needed. The owner's next attach, made at the incarnation it holds, is
+answered `StaleIncarnation` at that incarnation, which is the answer that sends
+it to learn how the close ended and reopen at the next incarnation, so the
+orchestrator needs no change. A scope's tree record and its worktree are not
+touched, and the command's output names them and the form of the command that
+removes the tree. Without the flag an open scope is refused as before, and the
+refusal names the flag and says when it is safe.
+
+The orchestrator now logs a `workspace.close_lost` warning, with the session, the
+executor, the incarnation and the reason, when a close it asks for is refused or
+unanswered. Control flow is unchanged. Cleaning up the scope of a session that
+retention deletes, or that the restart sweep removes, is not part of this
+addendum.

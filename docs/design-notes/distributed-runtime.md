@@ -479,7 +479,7 @@ reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
 file `fs_read` returns (`client/remote/host.gleam:365`). The daemon passes it as
 `max_result_bytes` (`client/daemon/main.gleam:1318`) and the host hands it to
 `exec_ledger.admit` (`client/remote/host.gleam:1741`). The ledger's byte budget
-is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:559`), and
+is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:570`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
 `terminal` rows plus the new reservation would pass it
 (`storage/exec_ledger.gleam:978`). The refusal is `BudgetExhausted`, and its

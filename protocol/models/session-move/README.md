@@ -666,8 +666,10 @@ it closes the scope, and the operator then corrects the name, the scope is open 
 bound to the old name. The move is refused for that workspace, which the refusal
 names, and abandoned with the scope still open (`NoLeak`;
 `MoveCheckoutMutantCrashInLanding.cfg`). `loomd executor release` refuses an open
-scope (`exec_ledger.release`, `NotReleasable`), and no code is added for that. The
-recovery that works is in the refusal: set `checkout_workspace` back to the name the
+scope (`exec_ledger.release`, `NotReleasable`) unless the operator passes
+`--processes-gone`, which says the executor is stopped and the source no longer
+runs, and no model rule is added for that. The recovery that needs no operator on
+the executor is in the refusal: set `checkout_workspace` back to the name the
 scope is bound to, move again so that the move ends and closes the scope cleanly, then
 correct the name and move.
 
