@@ -2,6 +2,7 @@
 //// `[project]` table.
 
 import client/catalog
+import client/project_jail
 import client/project_packs
 import client/project_settings
 import client/project_standing
@@ -66,6 +67,16 @@ pub fn the_packs_decode_without_problems_test() {
 // its change uncommitted and the check ran against the base commit.
 pub fn the_worker_is_told_to_commit_before_it_reports_test() {
   assert string.contains(project_packs.worker(), "Commit your finished work")
+}
+
+// A worker keeps `notice` and is refused `ask`, named exactly so an extension
+// tool that merely begins with the word is not refused with it.
+pub fn a_worker_is_refused_ask_and_keeps_notice_test() {
+  assert project_standing.worker_excludes("ask")
+  assert !project_standing.worker_excludes("notice")
+  assert !project_standing.worker_excludes("asking_extension")
+  assert !project_jail.allows(project_jail.worker_tools, "ask")
+  assert project_jail.allows(project_jail.worker_tools, "notice")
 }
 
 pub fn the_project_table_defaults_and_refuses_unknown_keys_test() {

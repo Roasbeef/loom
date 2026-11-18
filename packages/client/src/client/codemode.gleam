@@ -256,6 +256,7 @@ import client/owner_services
 import client/scheduleseam
 import client/scratch
 import codemode/artifact
+import codemode/attention as codemode_attention
 import codemode/build
 import codemode/codemode as pipeline
 import codemode/compile
@@ -289,6 +290,7 @@ import lsp/observation
 import lsp/query
 import simplifile
 import tools/agent.{type Agency, type Caller, type Refusal}
+import tools/attention as tool_attention
 import tools/blob
 import tools/call_record
 import tools/codemode as codemode_tool
@@ -370,6 +372,10 @@ pub type Config {
     /// The shared blackboard data door, installed independently of agent
     /// orchestration. None removes its imports, signatures, and routing.
     notes: Option(notes.Door),
+    /// The attention door behind `attention.*`, answered by the same closures
+    /// the `ask` and `notice` tools hold. None removes its imports,
+    /// signatures, routing and quotas.
+    attention: Option(codemode_attention.Door),
     /// Where the session keeps its content-addressed blobs, and
     /// therefore where a `report.emit` artifact lands.
     ///
@@ -682,6 +688,32 @@ pub fn serving(config: Config, seams: Seams, over agency: Agency) -> Config {
   )
 }
 
+/// The same host configuration, answering `attention.ask` and
+/// `attention.notice` with the closures the `ask` and `notice` tools hold.
+///
+/// The door is built from the tools' own seam so the bound checks, the strand
+/// check and the record writes have one implementation, as `serving` builds
+/// the notes door from the Agency that registers `agent_note`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.attending(over: attention.seam(wiring))
+/// ```
+///
+pub fn attending(
+  config: Config,
+  over seam: tool_attention.Attention,
+) -> Config {
+  Config(..config, attention: Some(door_of(seam)))
+}
+
+/// The door over the tools' closures.
+fn door_of(seam: tool_attention.Attention) -> codemode_attention.Door {
+  codemode_attention.Door(ask: seam.ask, notice: seam.notice)
+}
+
 /// The surface a setting and an Agency make, shared by a host that serves code
 /// mode and by an owner that only answers for one.
 fn surface_of(seams: Seams, agency: Agency) -> Surface {
@@ -833,6 +865,12 @@ pub fn seam_allowlist(
   let noted = case notes_on(config, seam) {
     None -> allowed
     Some(_) -> vet_policy.allow(allowed, "cap/notes")
+  }
+
+  // The attention door is admitted only when the host wired its closures.
+  let noted = case attention_on(config, seam) {
+    None -> noted
+    Some(_) -> vet_policy.allow(noted, "cap/attention")
   }
 
   // Include evolution module when configured.
@@ -1004,6 +1042,12 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
     Some(_) -> list.append(caps, notes.serviced_caps)
   }
 
+  // Add attention capabilities only when the host wired their closures.
+  let noted = case attention_on(config, seam) {
+    None -> noted
+    Some(_) -> list.append(noted, codemode_attention.serviced_caps)
+  }
+
   // Add evolution capability when enabled.
   let noted = case evolution_on(config, seam) {
     None -> noted
@@ -1161,6 +1205,7 @@ pub fn default_config(
     fixed_deadline: None,
     wrap_router: fn(_request, router) { router },
     notes: None,
+    attention: None,
     blob_root: default_blob_root(workspace),
     scratch: scratch.none(),
     // No scheduling plane by default, the same posture `scratch.none()`
@@ -2918,6 +2963,8 @@ pub type OwnerArms {
     agency: Option(Agency),
     /// The blackboard `notes.*` answers over, when the seam admits it.
     notes: Option(notes.Door),
+    /// The attention door `attention.*` answers over, when the seam admits it.
+    attention: Option(codemode_attention.Door),
     /// The scheduling door `schedule.*` answers over, or `None` when the
     /// operator shut it.
     schedules: Option(scheduleseam.Door),
@@ -2939,6 +2986,8 @@ pub type OwnerSide {
     surface: Surface,
     /// The blackboard door behind `notes.*`.
     notes: Option(notes.Door),
+    /// The attention door behind `attention.*`.
+    attention: Option(codemode_attention.Door),
     /// The scheduling door behind `schedule.*`.
     schedules: Option(scheduleseam.Door),
     /// The MCP servers behind `mcp.<server>`.
@@ -2989,6 +3038,7 @@ pub fn owner_side(config: Config) -> OwnerSide {
   OwnerSide(
     surface: config.surface,
     notes: config.notes,
+    attention: config.attention,
     schedules: config.schedules,
     mcp: config.mcp,
     evolution: None,
@@ -3023,11 +3073,29 @@ pub fn owner_serving(
   OwnerSide(
     surface: surface_of(seams, agency),
     notes: Some(notes.Door(put: agency.note, scan: agency.notes)),
+    attention: None,
     schedules:,
     mcp: mcp_wiring.none(),
     evolution: None,
     host: None,
   )
+}
+
+/// The same owner side, answering `attention.*` with the closures the `ask`
+/// and `notice` tools hold.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.owner_serving(codemode.BothSeams, agency_seam, schedule_door)
+/// // |> codemode.owner_attending(over: attention.seam(wiring))
+/// ```
+///
+pub fn owner_attending(
+  side: OwnerSide,
+  over seam: tool_attention.Attention,
+) -> OwnerSide {
+  OwnerSide(..side, attention: Some(door_of(seam)))
 }
 
 /// Reads the owner-bound arms off the configuration for one seam.
@@ -3053,6 +3121,7 @@ fn arms_of(side: OwnerSide, seam: vet_policy.Seam) -> OwnerArms {
       Orchestration(agency:, ..) | Both(agency:, ..) -> Some(agency)
     },
     notes: notes_for(side.notes, seam),
+    attention: attention_for(side.attention, seam),
     schedules: side.schedules,
     mcp: mcp_for(side.mcp, seam),
   )
@@ -3096,6 +3165,13 @@ fn owner_calls(
         }
       }
     }
+  }
+
+  // Wrap router with the attention router if its door is available.
+  let router = case arms.attention {
+    None -> router
+    Some(door) ->
+      codemode_attention.routing(door, strand, source_index, over: router)
   }
 
   // Wrap router with notes router if notes door is available.
@@ -4427,6 +4503,12 @@ fn surface_ceilings(
     Some(_) -> list.append(ceilings, notes.ceilings())
   }
 
+  // Attention ceilings apply only when its closures are wired on this seam.
+  let ceilings = case attention_on(config, vetting_seam(request.seam)) {
+    None -> ceilings
+    Some(_) -> list.append(ceilings, codemode_attention.ceilings())
+  }
+
   // Add evolution and observation ceilings when enabled.
 
   // Evolution ceilings apply only when evolution is configured on this seam.
@@ -4714,6 +4796,27 @@ fn evolution_on(
 // This choice gates the import surface, advertised calls, router, and quotas.
 fn notes_on(config: Config, seam: vet_policy.Seam) -> Option(notes.Door) {
   notes_for(config.notes, seam)
+}
+
+// The attention door follows the notes door's seams: programs of the workspace
+// and orchestration seams may record a question or a find, and installed
+// extensions and resident hooks may not.
+fn attention_on(
+  config: Config,
+  seam: vet_policy.Seam,
+) -> Option(codemode_attention.Door) {
+  attention_for(config.attention, seam)
+}
+
+/// Returns the attention service authorized for the seam.
+fn attention_for(
+  door: Option(codemode_attention.Door),
+  seam: vet_policy.Seam,
+) -> Option(codemode_attention.Door) {
+  case seam {
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> door
+    vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
+  }
 }
 
 /// Returns the note service authorized for the current seam.

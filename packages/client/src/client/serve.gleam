@@ -67,6 +67,7 @@ import client/agency
 import client/approval_ceiling
 import client/async_codemode
 import client/async_runs
+import client/attention
 import client/blobs
 import client/blocksummary
 import client/blocksummarybook
@@ -244,6 +245,7 @@ import telemetry/field
 import telemetry/log.{type Logger}
 import tools/advise
 import tools/agent.{type Agency}
+import tools/attention as attention_tools
 import tools/codemode as codemode_tool
 import tools/evolution as evolution_tool
 import tools/history as history_tool
@@ -2780,6 +2782,7 @@ pub fn evolution_offer(
 fn code_mode_arms(
   settings: Settings,
   agency_seam: Agency,
+  attention_seam: attention_tools.Attention,
   schedule_door: Option(scheduleseam.Door),
   layer: mcp_wiring.Layer,
   host_layer: Option(host_seam.Layer),
@@ -2793,6 +2796,10 @@ fn code_mode_arms(
     // Agency the orchestration one routes onto is the same seam the
     // `agent_*` tools call — one messaging plane, reached two ways.
     |> codemode_wiring.serving(seams, over: agency_seam)
+    // `attention.*` is answered by the closures the `ask` and `notice` tools
+    // hold, so a program's call and a model's own go through one
+    // implementation of the bounds and the records.
+    |> codemode_wiring.attending(over: attention_seam)
     // `schedule.*` is answered by the same door the `schedule_*` tools
     // call, so a program and a tool call cannot disagree about what this
     // session's schedules are. A shut door leaves the capabilities
@@ -4156,6 +4163,19 @@ fn assemble_in(
 
   // Construct agency seam and peer discovery wiring.
   let agency_seam = agency.seam(agency_config)
+
+  // The attention tools and the `attention.*` capabilities record through
+  // this one seam, so a program and a model's own call cannot disagree about
+  // the bounds or the records. It borrows the runtime through the Agency's
+  // holder, as the schedule plane does, because the tools are built before
+  // `api.open` returns it. Its clock is the session's own, in Unix
+  // milliseconds, since a record's `created_at` is read by people.
+  let attention_seam =
+    attention.seam(attention.Wiring(
+      runtime: agency.runtime_supplier(agency_config),
+      clock:,
+      entropy:,
+    ))
   let peer_endpoint = agency.peer_endpoint(agency_config, settings.session_id)
   let peer_wiring =
     peers.Wiring(
@@ -4326,10 +4346,13 @@ fn assemble_in(
           let seams = settings.codemode_seams
           let side_over = fn(over: Agency) {
             codemode_wiring.OwnerSide(
-              ..codemode_wiring.owner_serving(
-                seams,
-                over:,
-                schedules: schedule_door,
+              ..codemode_wiring.owner_attending(
+                codemode_wiring.owner_serving(
+                  seams,
+                  over:,
+                  schedules: schedule_door,
+                ),
+                over: attention_seam,
               ),
               mcp: mcp_layer,
               // The same six operations a local program has, answered over
@@ -4385,6 +4408,7 @@ fn assemble_in(
             arms: code_mode_arms(
               settings,
               agency_seam,
+              attention_seam,
               schedule_door,
               mcp_layer,
               host_layer,
@@ -4726,6 +4750,13 @@ fn assemble_in(
         contributions.Contribution(
           contributions.BuiltIn,
           contributions.proposal_tools(proposals.seam(proposal_wiring)),
+        ),
+        // `ask` and `notice` record into the session's own store and never
+        // block, so they are registered unconditionally, after `propose`.
+        // `project_shaped` below refuses `ask` to a project worker.
+        contributions.Contribution(
+          contributions.BuiltIn,
+          contributions.attention_tools(attention_seam),
         ),
         contributions.Contribution(contributions.BuiltIn, case advisor_wiring {
           None -> []
@@ -6737,10 +6768,11 @@ fn project_shaped(
         ]
         project_standing.Worker(..) -> {
           let refused =
-            list.append(
+            list.flatten([
               list.map(peer_tools, fn(each) { each.name }),
               list.filter(agent.tool_names, project_standing.worker_excludes),
-            )
+              project_jail.worker_tools.refused_names,
+            ])
           list.append(contributions.deactivate(found, refused), [
             contributions.Contribution(
               contributions.BuiltIn,

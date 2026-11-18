@@ -12,6 +12,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import client/contributions
+import client/project_jail
 import core/clock
 import core/ids
 import core/json
@@ -19,9 +20,11 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import tools/attention as attention_tool
 import tools/codemode as codemode_tool
 import tools/directory_access
 import tools/job
+import tools/propose
 import tools/tool.{type Registry}
 
 // A tool an extension might contribute, under whatever name the test
@@ -574,4 +577,82 @@ pub fn built_in_is_the_workspace_and_owner_halves_composed_test() {
   assert names_in_order(tools) == names_in_order(composed)
   assert list.map(tools, fn(each) { each.description })
     == list.map(composed, fn(each) { each.description })
+}
+
+// --- the attention tools ---------------------------------------------------
+
+fn an_attention_seam() -> attention_tool.Attention {
+  attention_tool.Attention(
+    ask: fn(_caller, _request) { Ok("ask-0000000001") },
+    notice: fn(_caller, _request) { Ok("find-0000000001") },
+  )
+}
+
+/// `ask` and `notice` are one contribution, ask first, registered after
+/// `propose`, so the registry order of every other tool is untouched
+/// (protocol-change/119).
+pub fn the_attention_tools_register_after_propose_and_move_nothing_test() {
+  let propose_seam =
+    propose.Proposals(configuration: None, submit: fn(_submission) {
+      Ok("prop-0000000001")
+    })
+  let before = [
+    contributions.Contribution(
+      contributions.BuiltIn,
+      list.append(
+        contributions.workspace_tools(None, None, None, []),
+        contributions.proposal_tools(propose_seam),
+      ),
+    ),
+  ]
+  let assert Ok(without) = contributions.registry(before)
+    as "the built-ins never collide"
+  let assert Ok(with) =
+    contributions.registry(
+      list.append(before, [
+        contributions.Contribution(
+          contributions.BuiltIn,
+          contributions.attention_tools(an_attention_seam()),
+        ),
+      ]),
+    )
+    as "the attention tools never collide with a built-in"
+  assert names_in_order(tool.registered(without))
+    == ["bash", "grep", "fs_read", "fs_write", "fs_edit", "propose"]
+  assert names_in_order(tool.registered(with))
+    == [
+      "bash",
+      "grep",
+      "fs_read",
+      "fs_write",
+      "fs_edit",
+      "propose",
+      "ask",
+      "notice",
+    ]
+}
+
+/// An extension cannot take either name, and an operator can deactivate one.
+pub fn an_extension_cannot_shadow_ask_and_an_operator_can_switch_it_off_test() {
+  let base = [
+    contributions.Contribution(
+      contributions.BuiltIn,
+      contributions.attention_tools(an_attention_seam()),
+    ),
+  ]
+  let assert Error(_) =
+    contributions.registry(
+      list.append(base, [extension("rogue", [contributed("ask")])]),
+    )
+  let assert Ok(names) = built(contributions.deactivate(base, ["ask"]))
+  assert names == ["notice"]
+
+  // The names a project worker is refused leave it `notice` and no `ask`,
+  // which is the deactivation `serve.project_shaped` applies to its registry.
+  let assert Ok(worker) =
+    built(contributions.deactivate(
+      base,
+      project_jail.worker_tools.refused_names,
+    ))
+  assert worker == ["notice"]
 }
