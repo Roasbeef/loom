@@ -33,8 +33,10 @@ static page that opens directly in a browser. All of them take
 `?theme=dark|light` and `?frame=phone`, and most take `?open=<item>`; each
 note names its own. The final mockup also takes `?view=live&s=coord|repair`
 for the live mode, `?demo=staged` for staged sends and `?sheet=open` for the
-phone's lifted sheet. [`screens/`](screens/) holds the screenshots the
-critics, the ranking and the owner read, at 1440×900 and 390×844.
+phone's lifted sheet. The screenshots the
+critics, the ranking and the owner read, at 1440×900 and 390×844, are kept
+in the [capture archive](../capture-archive.md) at
+[`8143a790f`](https://github.com/Roasbeef/loom/tree/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens).
 
 The final ranking put A first, then D, C and B, and recommended a hybrid: A's
 queue as the home page, with D's returned-state session page as the place a
@@ -61,14 +63,14 @@ sessions under "Watch live", then a line saying what the counts read.
 
 | The inbox, an approval open | A review, with a verdict staged |
 |---|---|
-| ![inbox](screens/final-inbox-light.png) | ![review](screens/final-review.png) |
+| ![inbox](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-inbox-light.png) | ![review](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-review.png) |
 | **An update, messaged directly** | **The live mode** |
-| ![update](screens/final-update.png) | ![live](screens/final-live-light.png) |
+| ![update](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-update.png) | ![live](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-live-light.png) |
 | **Live, deciding an approval** | **The phone: inbox, and live with the sheet open** |
-| ![approval](screens/final-live-approval.png) | ![phone inbox](screens/final-phone-inbox.png) ![phone live](screens/final-phone-live.png) |
+| ![approval](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-live-approval.png) | ![phone inbox](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-phone-inbox.png) ![phone live](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-phone-live.png) |
 
-Dark captures are [`final-inbox-dark.png`](screens/final-inbox-dark.png) and
-[`final-live-dark.png`](screens/final-live-dark.png).
+Dark captures are [`final-inbox-dark.png`](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-inbox-dark.png) and
+[`final-live-dark.png`](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/final-live-dark.png).
 
 The mockup draws the page as it stands after phase 2. Ages, asks with
 options, finds, the stuck strand and a ticket's check output do not exist in
@@ -293,4 +295,4 @@ The final mockup corrects the last two of these.
   "about the same grant" or "not answered". Nothing in Loom can know that.
 - **D's dock** shows a question from `runner/pod-reach` above a reply box
   addressed to `storage/branch-index-repair`
-  ([`screens/d-open-item.png`](screens/d-open-item.png)).
+  ([`screens/d-open-item.png`](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/d-open-item.png)).
