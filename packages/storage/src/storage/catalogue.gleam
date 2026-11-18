@@ -3359,11 +3359,12 @@ pub fn statement(catalogue: Catalogue, generated: #(String, List(dev.Param))) {
   query(catalogue, #(text, params, decode.success(Nil))) |> result.replace(Nil)
 }
 
-// These queries bind only non-null strings and integers. Parrot types a
-// parameter that assigns a nullable column as `ParamNullable`, as the claim
-// binding does; a present value binds as itself, and an absent one is refused
-// rather than silently binding NULL, because no catalogue write clears a
-// column. A future generator change must add an explicit conversion here.
+// These queries bind strings, integers and nullable values of those. Parrot
+// types a parameter that assigns a nullable column as `ParamNullable`: a
+// present value binds as itself and an absent one binds NULL. The attention
+// summary relies on that to clear `oldest_open_at` when nothing is open. Any
+// other parameter type is refused, so a generator change that introduces one
+// must add an explicit conversion here.
 /// Converts an internal query parameter into an sqlight value.
 fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
   case param {
