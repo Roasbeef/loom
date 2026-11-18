@@ -798,11 +798,15 @@ fn websocket(
           // The orchestrator did not answer. The run asks again at growing
           // pauses and hands the socket one `Stop(Retry)` when it does, so a
           // box that stays down costs no socket exit and no crash report per
-          // attempt. A second `Held` cannot arrive, because the feed reports
-          // its end once.
+          // attempt. A page whose own standing ended ends as the feed would end
+          // it, with that ending. A second `Held` cannot arrive, because the
+          // feed reports its end once.
           Serving(signals:, ..) as serving, mist.Custom(Held(lead, awaiting)) -> {
-            ui_wait.start(ui_wait.production(), lead, awaiting, fn() {
-              process.send(signals, Stop(ending.Retry))
+            ui_wait.start(ui_wait.production(), lead, awaiting, fn(reach) {
+              process.send(signals, case reach {
+                ui_wait.Standing(why) -> Ended(why)
+                ui_wait.Answering | ui_wait.Silent -> Stop(ending.Retry)
+              })
             })
             mist.continue(serving)
           }

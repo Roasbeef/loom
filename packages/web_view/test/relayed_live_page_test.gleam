@@ -330,7 +330,7 @@ pub fn a_relayed_page_whose_link_dropped_refuses_input_test() {
   let #(model, _effects) =
     component.submit(dropped(), "hello", operator.Prompt, [])
   let assert component.Said(words) = component.notice(model)
-  assert string.contains(words, "draft retained")
+  assert string.contains(words, "no conversation is attached")
 }
 
 // The words are for a wait only: a page whose session stopped has a final

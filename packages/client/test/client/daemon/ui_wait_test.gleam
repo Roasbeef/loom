@@ -12,6 +12,7 @@ import client/daemon/ui_wait
 import client/remote/top_relay
 import client/remote_top
 import gleam/erlang/process.{type Subject}
+import web_view/ending
 
 const patience_ms = 5000
 
@@ -37,7 +38,7 @@ fn short() -> ui_wait.Timing {
 pub fn a_silent_box_never_closes_the_socket_and_an_answer_closes_it_once_test() {
   let asked = process.new_subject()
   let done = process.new_subject()
-  ui_wait.start(short(), ui_wait.AskAtOnce, asking(asked), fn() {
+  ui_wait.start(short(), ui_wait.AskAtOnce, asking(asked), fn(_) {
     process.send(done, Nil)
   })
 
@@ -71,7 +72,7 @@ pub fn a_wait_that_runs_out_closes_the_socket_once_test() {
     ui_wait.Timing(first_pause_ms: 2, longest_pause_ms: 4, max_wait_ms: 40),
     ui_wait.AskAtOnce,
     fn() { ui_wait.Silent },
-    fn() { process.send(done, Nil) },
+    fn(_) { process.send(done, Nil) },
   )
 
   let assert Ok(Nil) = process.receive(done, patience_ms) as "the close"
@@ -98,16 +99,20 @@ pub fn a_revoked_page_closes_without_asking_the_box_test() {
   let asked = process.new_subject()
   let done = process.new_subject()
   let awaiting = fn() {
-    ui_wait.checked(fn() { Error("revoked") }, fn() {
+    ui_wait.checked(fn() { Error(ending.AccessRevoked) }, fn() {
       process.send(asked, process.new_subject())
       ui_wait.Silent
     })
   }
-  ui_wait.start(short(), ui_wait.AskAtOnce, awaiting, fn() {
-    process.send(done, Nil)
+  ui_wait.start(short(), ui_wait.AskAtOnce, awaiting, fn(reach) {
+    process.send(done, reach)
   })
 
-  let assert Ok(Nil) = process.receive(done, patience_ms) as "the close"
+  // The wait ends with the ending the standing check named, which is final, so
+  // the socket ends as an attached page's does and does not retry.
+  let assert Ok(reach) = process.receive(done, patience_ms) as "the close"
+  assert reach == ui_wait.Standing(ending.AccessRevoked)
+  assert ending.close(ending.AccessRevoked) == ending.Final
   assert process.receive(asked, 0) == Error(Nil)
 
   // A page that is still open asks the box.
@@ -131,7 +136,7 @@ pub fn a_page_refused_as_a_wait_pauses_before_it_asks_test() {
       process.send(asked, process.new_subject())
       ui_wait.Answering
     },
-    fn() { process.send(done, Nil) },
+    fn(_) { process.send(done, Nil) },
   )
 
   // Nothing has been asked for most of the pause, then the ask and the close.

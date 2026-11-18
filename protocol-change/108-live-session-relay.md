@@ -1167,7 +1167,10 @@ which wraps `still_open`), so a UI session that ended or a credential that was r
 while the box was down closes the socket at the next ask and the reconnect meets the
 upgrade check. A page whose attach was refused as a wait (`Waiting`, `Crowded`) pauses
 `first_pause_ms` before its first ask, so a box that answers placements but refuses the
-attach cannot make the socket close and reopen faster than that pause. A held page asks
+attach cannot make the socket close and reopen faster than that pause. Any error from the
+standing check ends the hold, a transient registry timeout included, with the ending the check
+names (`PageEnded` or `AccessRevoked`, both final), which is the fail-closed direction and
+matches the live feed. A held page asks
 the box for nothing else: the workspace read is skipped once the status is `Ended`.
 
 **What stays open.** A local page that reconnects into a Retry-class refusal (`NotOpen`,

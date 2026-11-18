@@ -43,6 +43,7 @@
 
 import client/remote/top_relay
 import gleam/erlang/process
+import web_view/ending.{type Ending}
 import weft
 import weft/poll
 
@@ -70,6 +71,11 @@ pub type Reach {
   /// The orchestrator did not answer: it could not be connected to, or it was
   /// connected and said nothing.
   Silent
+
+  /// The page's own standing ended while it waited, for the reason carried. It
+  /// is the ending the page's feed reports on the same failure, so the socket
+  /// ends the way an attached page's does.
+  Standing(ending: Ending)
 }
 
 /// How a wait paces itself and how long it lasts.
@@ -110,19 +116,25 @@ pub type Lead {
 
 /// The standing check, then the question. A page whose own session ended or
 /// whose access was revoked while it waited has no reason to keep its socket,
-/// so `open` failing counts as an answer: the socket closes and the browser's
-/// reconnect meets the upgrade check. `probe` is asked only while the page is
-/// still open.
+/// so `open` failing ends the wait with the ending it names, and any error ends
+/// it, a registry timeout included, which is the direction the live feed fails
+/// in too. `probe` is asked only while the page is still open.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert ui_wait.checked(fn() { Error("revoked") }, fn() { ui_wait.Silent })
-///   == ui_wait.Answering
+/// assert ui_wait.checked(
+///     fn() { Error(ending.AccessRevoked) },
+///     fn() { ui_wait.Silent },
+///   )
+///   == ui_wait.Standing(ending.AccessRevoked)
 /// ```
-pub fn checked(open: fn() -> Result(Nil, e), probe: fn() -> Reach) -> Reach {
+pub fn checked(
+  open: fn() -> Result(Nil, Ending),
+  probe: fn() -> Reach,
+) -> Reach {
   case open() {
-    Error(_) -> Answering
+    Error(why) -> Standing(why)
     Ok(Nil) -> probe()
   }
 }
@@ -141,7 +153,7 @@ pub fn start(
   timing: Timing,
   lead: Lead,
   awaiting: fn() -> Reach,
-  done: fn() -> Nil,
+  done: fn(Reach) -> Nil,
 ) -> Nil {
   let _ =
     weft.new([
@@ -153,7 +165,7 @@ pub fn start(
           PauseFirst -> process.sleep(timing.first_pause_ms)
         }
 
-        let _ =
+        let outcome =
           poll.until_on(
             clock: poll.monotonic(),
             within: timing.max_wait_ms,
@@ -163,7 +175,14 @@ pub fn start(
             ),
             attempt: fn() { attempt(awaiting()) },
           )
-        done()
+
+        // A wait that ran out closes as an answer would, so the reconnect
+        // meets the page's real standing.
+        case outcome {
+          poll.Answered(reach) -> done(reach)
+          poll.Failed(Nil) | poll.Expired -> done(Answering)
+        }
+
         Ok(Nil)
       },
     ])
@@ -177,11 +196,11 @@ pub fn start(
 /// ## Examples
 ///
 /// ```gleam
-/// assert ui_wait.attempt(ui_wait.Answering) == poll.Done(Nil)
+/// assert ui_wait.attempt(ui_wait.Answering) == poll.Done(ui_wait.Answering)
 /// ```
-pub fn attempt(reach: Reach) -> poll.Attempt(Nil, Nil) {
+pub fn attempt(reach: Reach) -> poll.Attempt(Reach, Nil) {
   case reach {
-    Answering -> poll.Done(Nil)
+    Answering | Standing(_) -> poll.Done(reach)
     Silent -> poll.Retry
   }
 }
