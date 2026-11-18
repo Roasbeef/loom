@@ -685,6 +685,22 @@
   .inbox-mark{color:var(--color-current);font:12px/1.4 var(--font-sans);}
   .inbox-note{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .inbox-outbox-list ul{margin:0 0 6px 0;padding:0 0 0 18px;overflow-wrap:anywhere;}
+  /* The review pane: a stat line, one details for each file, the shared diff
+     drawer for its hunks and a find card under the line it names. A card is a
+     tinted ground inside a hairline, never a coloured bar. */
+  .review-body{display:flex;flex-direction:column;gap:10px;}
+  .review-stat p{margin:0;font:13px/1.5 var(--font-sans);}
+  .review-notice{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .review-files{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;}
+  .review-file{border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);}
+  .review-file-head{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;padding:6px 10px;cursor:pointer;}
+  .review-path{font:13px/1.4 var(--font-mono,monospace);overflow-wrap:anywhere;}
+  .review-change,.review-marks{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .review-file > *:not(summary){margin:6px 10px;}
+  .review-find{margin:4px 8px;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-soft,var(--color-bg));font-family:var(--font-sans);white-space:normal;position:sticky;left:0;}
+  .review-finds{display:flex;flex-direction:column;gap:4px;}
+  .review-verdict{justify-content:flex-start;flex-wrap:wrap;}
+  .review-verdict button[aria-pressed=true]{outline:2px solid var(--color-current);outline-offset:1px;}
   form.inbox-form{margin:0;}
   .inbox-form .cbar{justify-content:flex-end;flex-wrap:wrap;}
   .inbox-form .place-send{margin:0;}
