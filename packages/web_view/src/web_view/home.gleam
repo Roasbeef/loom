@@ -954,6 +954,9 @@ pub opaque type Model {
     /// not replace a pane or a composer the person is using. After that only
     /// the person's clicks change it.
     centre_choice: CentreChoice,
+    /// Whether the first board read, which takes part in the landing, has
+    /// answered.
+    board_state: BoardState,
     /// What the inbox's outbox says: nothing sent, a message out to a session,
     /// or the daemon's answer to the last one (`thread_send.Outbox`). There is
     /// one outbox, so a second message waits for the first's answer.
@@ -1114,6 +1117,18 @@ pub type OpenTicket {
     /// How many answers have been recorded, which keys the answer box.
     answered: Int,
   )
+}
+
+/// Whether the first board read has answered. It takes part in the landing the
+/// way the first catalogue summary does, so a ticket waiting on a person can
+/// take a page with no running session to the inbox.
+pub type BoardState {
+  /// The page lists projects and no board has answered yet. The landing waits
+  /// for it, as it waits for the first catalogue summary.
+  BoardsPending
+
+  /// The first board read has answered, or the page lists no projects.
+  BoardsSettled
 }
 
 /// Whether the page has decided its centre. The decision is made once per page
@@ -1753,6 +1768,10 @@ pub fn new(start: Start) -> Model {
     presses: 0,
     shown: None,
     centre_choice: Awaiting,
+    board_state: case start.projects {
+      Some(_) -> BoardsPending
+      None -> BoardsSettled
+    },
     outbox: thread_send.Unsent,
     delivered: 0,
     feed: dict.new(),
@@ -4450,6 +4469,50 @@ fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
   #(model, effect)
 }
 
+/// Whether the first board read is still to come, so the landing may not settle
+/// on the composer yet.
+fn boards_pending(model: Model) -> Bool {
+  model.board_state == BoardsPending
+}
+
+/// The model once a board read has answered. The first read takes part in the
+/// landing, once, as the first catalogue summary does: while the centre is
+/// undecided a ticket waiting on a person lands the inbox, and a read that finds
+/// none settles the composer for a list with nothing running unless a summary is
+/// still to come. A centre that is decided never moves.
+fn board_landed(model: Model, boards: List(feed.Loaded)) -> Model {
+  let read = Model(..model, boards:, board_state: BoardsSettled)
+
+  case model.board_state {
+    BoardsSettled -> model
+    BoardsPending ->
+      Model(
+        ..read,
+        centre_choice: case
+          read.centre_choice,
+          something_waits(read),
+          quiet_list(read)
+        {
+          Awaiting, True, _ -> Decided(InboxCentre)
+          Awaiting, False, True -> Decided(FormCentre)
+          Awaiting, False, False | Decided(_), _, _ -> read.centre_choice
+        },
+      )
+  }
+}
+
+/// Whether the list has answered with nothing running and no summary still to
+/// come, so no later read will decide the centre and the composer is the
+/// landing.
+fn quiet_list(model: Model) -> Bool {
+  case model.status {
+    Connected ->
+      running_sessions(model) == 0
+      && !{ summary_due(model) && dict.is_empty(model.saved) }
+    Connecting | Ended(_) -> False
+  }
+}
+
 /// Starts the read of the open ticket thread's ticket from the daemon's own
 /// task.
 fn reading_ticket_thread(
@@ -4659,12 +4722,14 @@ fn boards_heard(
   model: Model,
   boards: List(feed.Loaded),
 ) -> #(Model, Effect(Msg)) {
+  let landed = board_landed(model, boards)
+
   // Equal boards mean the revision did not move, because a revision is part of
   // what a decoded board holds.
   case boards == model.boards {
-    True -> #(model, effect.none())
+    True -> #(landed, effect.none())
     False -> {
-      let model = Model(..model, boards:)
+      let model = Model(..landed, boards:)
 
       // A ticket page is refreshed only when it is open and stale, so a board
       // that moved elsewhere costs the open page nothing. The same holds for
@@ -4983,10 +5048,12 @@ fn answered(model: Model, listing: Listing) -> Model {
         )
 
       // A list with no running session asks for no activity, so no answer will
-      // come to decide the landing. The composer is the landing.
+      // come to decide the landing. The composer is the landing, unless a
+      // catalogue summary or the first board read is still to come: either may
+      // say something waits, and it decides the centre when it arrives.
       case listed.centre_choice, running_sessions(listed) {
         Awaiting, 0 ->
-          case summary_due(listed) {
+          case summary_due(listed) || boards_pending(listed) {
             True -> listed
             False -> Model(..listed, centre_choice: Decided(FormCentre))
           }
@@ -5387,9 +5454,10 @@ fn summary_due(model: Model) -> Bool {
 }
 
 /// Whether the next summary is the answer that decides the centre: nothing
-/// runs, so no activity read will come, and a summary is due.
+/// runs, so no activity read will come, a summary is due, and no board read is
+/// still to come that could hold a ticket.
 fn summary_decides(model: Model) -> Bool {
-  running_sessions(model) == 0 && summary_due(model)
+  running_sessions(model) == 0 && summary_due(model) && !boards_pending(model)
 }
 
 /// Whether the inbox has anything to show: a thread drawn from a report, or an

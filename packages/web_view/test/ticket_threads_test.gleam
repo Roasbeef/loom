@@ -559,3 +559,54 @@ pub fn the_answer_form_is_keyed_by_ticket_and_question_test() {
   let after = run(picked(model, "t-ask"), home.TicketAnswerSent(7, "sqlite"))
   assert string.contains(drawn(after), "ticket-answer-p1-t-ask-7-1")
 }
+
+// A page with no running session lands on the inbox when its first board read
+// holds a ticket waiting on a person, with no press: the board takes part in the
+// landing as the first catalogue summary does.
+pub fn a_ticket_only_page_lands_on_the_inbox_test() {
+  let asked = process.new_subject()
+  let start =
+    home.Start(
+      ..start_with(home.OperatorCeiling, Some(projects_for(asked, accepting()))),
+      sessions: fn(deliver) { deliver(home.Listed([])) },
+    )
+  let model = run(home.new(start), home.TimerReady(process.new_subject()))
+  let html = drawn(model)
+
+  assert string.contains(html, "Ticket · answer")
+  assert string.contains(html, "4 tickets need you")
+}
+
+// A page whose first board read held nothing settles on the composer, and a
+// ticket that appears in a later read never covers it.
+pub fn a_later_board_never_covers_a_settled_composer_test() {
+  let asked = process.new_subject()
+  let empty =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(1)),
+      #("total", json.Int(0)),
+      #("tickets", json.Array([])),
+    ])
+  let quiet =
+    home.Projects(..projects_for(asked, accepting()), boards: fn(deliver) {
+      deliver(feed.Heard([feed.Listed("p1", "/src/loom", empty)]))
+    })
+  let start =
+    home.Start(
+      ..start_with(home.OperatorCeiling, Some(quiet)),
+      sessions: fn(deliver) { deliver(home.Listed([])) },
+    )
+  let model = run(home.new(start), home.TimerReady(process.new_subject()))
+  assert !string.contains(drawn(model), "Ticket ·")
+
+  let later =
+    run(
+      model,
+      home.BoardsRead(
+        home.board_reads(model),
+        feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]),
+      ),
+    )
+  assert !string.contains(drawn(later), "Ticket ·")
+}
