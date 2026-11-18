@@ -295,7 +295,7 @@ pub type Command {
 
   /// Reads the session's worktree as a review: the files its workspace
   /// changed, each file's hunks and a diff stat, bounded (`protocol-change/123`).
-  /// The owner, or a member that holds the session at any role.
+  /// The owner, or a member that holds the session as an Operator.
   ReviewSession(session: String, epoch: String)
 
   /// Closes an open find as dismissed, fixed or filed, expecting the record to

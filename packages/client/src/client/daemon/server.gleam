@@ -6802,9 +6802,9 @@ pub fn attention_reach(
 /// (`ui_sessions.reserve_worktree_read`). The read blocks for up to
 /// `review_door.deadline_ms`, so a page runs it off its own runtime.
 ///
-/// The authority checked here is the credential's over the session. The page's
-/// own ceiling is not, so a caller does not offer this to a page whose ceiling
-/// is an observer's unless it means that page to see hunks.
+/// The authority checked here is the credential's over the session, and an
+/// observer's is refused. The page's own ceiling is not checked, so a caller
+/// does not offer this to a page whose ceiling is an observer's.
 ///
 /// ## Examples
 ///

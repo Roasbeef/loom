@@ -114,21 +114,16 @@ through `reserve`.
 
 The credential's authority is read from the registry at the call
 (`manager.session_authority`) and never from the request: the owner, and a member
-holding the session at any role. An observer reads, because the design lets an
-observer see a session's threads and a review is a thread's body. The read
-has no side effect on the session, so no role needs to be withheld to protect
-it. A session the credential does not hold is `not_found`, the word an unknown
-session gets. This is wider than the Changes tab, whose addendum to
+holding the session as an Operator. An observer is refused as `forbidden`,
+for the same reason as the Changes tab: the addendum to
 [051](051-web-view-route.md) shows the worktree to an owner's page and an
-operator's and never to an observer's. The two differ in what they put in front
-of a person: the Changes tab is part of a live session's page, which an observer
-link is meant to hand to someone who may only watch, while the review is read
-through a credential's own membership. A caller that holds an observer-ceiling
-page does not offer it `home_review` (the ceiling is the page's, not the
-credential's, and the function does not see it). Home's inbox is owner-only in
-phase 0, so no caller offers it today. If the owner prefers the Changes tab's
-rule, the one change is to refuse `Participant(Observer)` in
-`review_door.held`; the rest does not move.
+operator's and never to an observer's, because an observer link is meant to be
+handed to someone who may only watch, and the tree's bytes are not what they
+were given. A session the credential does not hold is `not_found`, the word an
+unknown session gets. A caller that holds an observer-ceiling page does not
+offer it `home_review` (the ceiling is the page's, not the credential's, and the
+function does not see it). Home's inbox is owner-only in phase 0, so no caller
+offers it today.
 
 ### Reading the tree: the effect path
 
@@ -199,6 +194,7 @@ or `fixtures`, or named `*_test.*`, `*.test.*`, `*_spec.*`, `*.spec.*` or
 | --- | --- |
 | `stale_epoch` | the `epoch` is not the daemon's current one |
 | `bad_request` | `session` is not a canonical identity |
+| `forbidden` | the credential holds the session as an observer |
 | `not_found` | an unknown session, or one the credential does not hold |
 | `not_resident` | the session is saved, opening, stopping or has no observation |
 | `unavailable` | the credential's workspace reads were spent, or the observation failed, ran past its deadline, or answered something that is not a board |
@@ -225,9 +221,9 @@ carry a repository's words, so it is never forwarded.
 - **Reading another session's tree.** The authority walk is the registry's, at
   the call. An unknown session and a session the credential does not hold are
   the same refusal, so a reply never confirms that a session exists.
-- **An observer reads hunks.** Intended (above). The hunks are what the
-  session's own transcript already shows through its tool results; the read
-  adds the tree's uncommitted state, and no write.
+- **An observer reads hunks.** Refused (above), as the Changes tab refuses
+  it. The check is made from the registry at the call, before the allowance is
+  spent and before the observation runs.
 - **Exhausting the helper pool.** A credential's reads are counted together with
   the Changes tab's (`ui_sessions.reserve_worktree_read`), so sockets and
   threads cannot spend a session's helper pool on Git calls. A refused read is
@@ -279,16 +275,14 @@ carry a repository's words, so it is never forwarded.
   sessions, the owner reads a review in order, an old epoch is refused, an
   observation that fails is `unavailable` and its words are not in the reply,
   an unknown identity is `not_found` and a malformed one `bad_request`, a
-  stopped session is `not_resident`, an operator and an observer read and a
-  member holding nothing is `not_found`, the door refuses a bystander without
-  spending the allowance, and a credential past its allowance is `unavailable`.
+  stopped session is `not_resident`, an operator reads, an observer is `forbidden`
+  and a member holding nothing is `not_found`, the door refuses a bystander or an observer
+  without spending the allowance, and a credential past its allowance is `unavailable`.
 - `make check-core`, `check-web_view`, `lint`, `doc-check`, `client-check`,
   `prelude-check`, and the `ui_socket`, `ui_route` and `daemon_server` tests.
 
 ## Decisions for the owner
 
-1. **Observers read hunks.** The brief says they may. If the Changes tab's rule
-   is wanted instead, refuse `Participant(Observer)` in `review_door.held`.
-2. **Committed work.** Whether the review should wait for a per-file committed
+1. **Committed work.** Whether the review should wait for a per-file committed
    observation, or ship with the gap named, before the pane is the landing
    page.

@@ -2128,8 +2128,8 @@ during a drain.
 A session's worktree as a review: the files its workspace changed, each file's
 hunks and a diff stat, in the order a reviewer reads them. It takes `session` (a
 canonical identity) and the current `epoch`, and is refused `stale_epoch` when
-it is old. The owner, and a member holding the session at any role (observers
-included), are answered. See [Protocol 123](../protocol-change/123-review-hunks.md).
+it is old. The owner, and a member holding the session as an Operator, are answered; an
+observer is `forbidden`, as the Changes tab refuses an observer's page. See [Protocol 123](../protocol-change/123-review-hunks.md).
 
 The daemon does not run Git. It calls the resident session's own observation of
 its workspace, which clears a fixed set of Git calls through the session's
@@ -2156,7 +2156,8 @@ bytes, whose last files go first. `stat.files` counts every file the observation
 read; line counts are lower bounds on a `cut` file. Commits made since the
 session began are not shown.
 
-Refusals: `stale_epoch`; `bad_request` (not a canonical identity); `not_found` (an
+Refusals: `stale_epoch`; `bad_request` (not a canonical identity); `forbidden` (an
+observer); `not_found` (an
 unknown session, or one the credential does not hold); `not_resident` (the
 session is saved, opening, stopping or has no observation); `unavailable` (the
 credential's workspace reads, counted with the web view's Changes tab, were

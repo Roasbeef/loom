@@ -325,7 +325,7 @@ pub fn a_saved_session_is_not_read_test() {
 
 // --- authority -----------------------------------------------------------------
 
-pub fn members_read_by_their_membership_and_bystanders_see_nothing_test() {
+pub fn operators_read_observers_are_refused_and_bystanders_see_nothing_test() {
   with_rig(fn(_registry, port, _credential, epoch, rig) {
     let assert Ok(store) = catalogue.open(rig.state_root <> "/catalogue.db")
       as "the catalogue opens"
@@ -348,16 +348,19 @@ pub fn members_read_by_their_membership_and_bystanders_see_nothing_test() {
     member("rev-observer", observer, Some(access.Observer))
     member("rev-bystander", bystander, None)
 
-    // An operator and an observer both read: the design lets an observer see a
-    // thread, and a review is its body.
-    list.each([operator, observer], fn(token) {
-      let #(socket, _) = connect(port, token, "/v2/control")
-      let _ = frame(socket, within_ms: 1000)
-      let reply = review(socket, 1, rig.good, epoch)
-      assert field(reply, "event") == json.String("sessions.review")
-      let _ = ffi_ws.tcp_close(socket)
-      Nil
-    })
+    // An operator reads. An observer is refused, as the Changes tab refuses an
+    // observer's page.
+    let #(op_socket, _) = connect(port, operator, "/v2/control")
+    let _ = frame(op_socket, within_ms: 1000)
+    assert field(review(op_socket, 1, rig.good, epoch), "event")
+      == json.String("sessions.review")
+    let _ = ffi_ws.tcp_close(op_socket)
+
+    let #(ob_socket, _) = connect(port, observer, "/v2/control")
+    let _ = frame(ob_socket, within_ms: 1000)
+    assert code(review(ob_socket, 1, rig.good, epoch))
+      == json.String("forbidden")
+    let _ = ffi_ws.tcp_close(ob_socket)
 
     // A member holding nothing is told what an unknown session is told.
     let #(socket, _) = connect(port, bystander, "/v2/control")
@@ -372,8 +375,14 @@ pub fn members_read_by_their_membership_and_bystanders_see_nothing_test() {
       == Error(Refusal("not_found", "no such session"))
     assert review_door.read(rig.reach(digest_of(bystander), spent), rig.good)
       == Error(Refusal("not_found", "no such session"))
+    let forbidden =
+      Error(Refusal("forbidden", "an observer cannot read a session's worktree"))
+    assert review_door.read(rig.reach(digest_of(observer), open), rig.good)
+      == forbidden
+    assert review_door.read(rig.reach(digest_of(observer), spent), rig.good)
+      == forbidden
     let assert Ok(seen) =
-      review_door.read(rig.reach(digest_of(observer), open), rig.good)
+      review_door.read(rig.reach(digest_of(operator), open), rig.good)
     assert seen.stat.files == 4
     assert catalogue.close(store) == Ok(Nil)
   })
@@ -387,7 +396,7 @@ pub fn a_credential_past_its_allowance_is_asked_to_wait_test() {
     let assert Ok(principal) =
       access.create_member(store, "rev-busy", "rev-busy", digest_of(token))
     let assert Ok(Nil) =
-      access.grant(store, principal.id, rig.good, access.Observer)
+      access.grant(store, principal.id, rig.good, access.Operator)
 
     assert review_door.read(
         rig.reach(digest_of(token), fn() { Error(Nil) }),

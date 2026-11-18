@@ -31,11 +31,13 @@
 ////
 //// ## Who may read
 ////
-//// The owner, and a member holding the session at any role, observers included.
-//// The design lets an observer see a session's threads, and a review is the
-//// thread's body. Nothing here stages, sends or writes: the read has no side
-//// effect on the session, and the in-process path for Home hands the page a
-//// value and no handle.
+//// The owner, and a member holding the session as an Operator. An observer is
+//// refused as `forbidden`, for the reason the Changes tab never shows an
+//// observer's page the worktree (protocol-change/051, the addendum on the
+//// worktree read): an observer link is handed to someone who may only watch,
+//// and the tree's bytes are not what they were given. Nothing here stages,
+//// sends or writes, and the in-process path for Home hands the page a value
+//// and no handle.
 ////
 //// ## What a refusal says
 ////
@@ -98,16 +100,24 @@ pub fn read(
   review_feed.of_board(board)
 }
 
-/// The caller's authority over the session, read from the registry now. Any
-/// role reads; a session the caller does not hold is `not_found`, the word an
-/// unknown one gets.
+/// The caller's authority over the session, read from the registry now. The
+/// owner and an Operator read; an observer is `forbidden`, and a session the
+/// caller does not hold is `not_found`, the word an unknown one gets.
 fn held(
   reach: Reach(instance),
   session: String,
 ) -> Result(access.Authority, Refusal) {
-  manager.session_authority(reach.registry, reach.digest, session)
-  |> result.map(fn(held) { held.1 })
-  |> result.replace_error(Refusal("not_found", "no such session"))
+  use held <- result.try(
+    manager.session_authority(reach.registry, reach.digest, session)
+    |> result.replace_error(Refusal("not_found", "no such session")),
+  )
+
+  // The owner and an operator may read the tree; an observer may not.
+  case held.1 {
+    access.Owner | access.Participant(access.Operator) -> Ok(held.1)
+    access.Participant(access.Observer) ->
+      Error(Refusal("forbidden", "an observer cannot read a session's worktree"))
+  }
 }
 
 /// The resident session's observation, or `not_resident`. A session that is

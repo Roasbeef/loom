@@ -7275,8 +7275,8 @@ take a strand; `send_message` and `message_to` stay the main-strand defaults, an
 the gateway's `unknown_strand` is `thread_send.UnknownStrand`.
 
 `daemon/review_door` is the walk of `sessions.review` (protocol-change/123): the
-registry's authority at the call (owner or any membership, observers included;
-`not_found` for a non-holder), residency (`not_resident` for a saved session or a
+registry's authority at the call (owner or an Operator member; `forbidden` for an
+observer, as the Changes tab refuses one; `not_found` for a non-holder), residency (`not_resident` for a saved session or a
 resident with no observation), one `Reach.reserve` from the credential's workspace
 reads (the Changes tab's count, `ui_sessions.reserve_worktree_read`), then the
 resident's own observation (`server.Config.worktree` projects `Resident.worktree`,
