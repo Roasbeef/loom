@@ -94,19 +94,22 @@ pub type Outbox {
   /// delivered and the field cleared.
   Unsent
 
-  /// A send to `session` is out, and the daemon has not answered.
-  Sending(session: String)
+  /// A send to `session` is out as `delivery`, and the daemon has not
+  /// answered. The page keeps the delivery because the answer does not carry
+  /// it, and a delivered steer is worded differently from a delivered queue.
+  Sending(session: String, delivery: Delivery)
 
-  /// The daemon answered a send to `session`.
-  Settled(session: String, answer: Answer)
+  /// The daemon answered a send to `session` that went as `delivery`.
+  Settled(session: String, delivery: Delivery, answer: Answer)
 }
 
 /// The buttons a thread of this kind offers, in the order they are drawn.
 ///
 /// An idle, failed or settled session takes one `Send`. A working one takes a
-/// `Queue` and a `Steer`. A session with an approval pending takes a `Queue`
-/// alone, because a steer to a session that waits on a person would stop
-/// nothing and a prompt waits behind the approval whatever it is called.
+/// `Queue` and a `Steer`. A session with an approval pending takes a `Send`
+/// alone: the approval parks and detaches, so its strand is idle and a prompt
+/// starts a turn at once rather than waiting behind it. A steer would stop
+/// nothing.
 ///
 /// ## Examples
 ///
@@ -118,7 +121,7 @@ pub fn choices(kind: Kind) -> List(Choice) {
   case kind {
     inbox_rule.Idle | inbox_rule.Failed | inbox_rule.Settled -> [Send]
     inbox_rule.Working -> [Queue, Steer]
-    inbox_rule.ApprovalPending -> [Queue]
+    inbox_rule.ApprovalPending -> [Send]
   }
 }
 
@@ -154,8 +157,9 @@ pub fn label(choice: Choice) -> String {
 }
 
 /// The note a thread of this kind shows beside its buttons, or nothing. Only
-/// the approval's thread has one: its message is held behind the approval,
-/// which is decided on the session's own page and never here.
+/// the approval's thread has one: a message starts a new turn now and does not
+/// decide the approval, which is decided on the session's own page and never
+/// here.
 ///
 /// ## Examples
 ///
@@ -164,7 +168,10 @@ pub fn label(choice: Choice) -> String {
 /// ```
 pub fn hold_note(kind: Kind) -> Option(String) {
   case kind {
-    inbox_rule.ApprovalPending -> Some("held behind the approval")
+    inbox_rule.ApprovalPending ->
+      Some(
+        "This session is waiting on an approval. A message starts a new turn now; it does not decide the approval.",
+      )
     inbox_rule.Idle
     | inbox_rule.Failed
     | inbox_rule.Settled
@@ -188,41 +195,54 @@ pub fn sendable(text: String) -> Bool {
 }
 
 /// What the outbox prints for a thread. `name` is the thread's session name,
-/// which the page draws as text. An outbox that is about another session reads
-/// as unsent for this one.
+/// which the page draws as text. Nothing is printed before a send, or for an
+/// outbox that is about another session: "Not sent" would read as a failure.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert thread_send.words(thread_send.Unsent, "a1", "web ui") == "Not sent"
+/// assert thread_send.words(thread_send.Unsent, "a1", "web ui") == ""
 /// ```
 pub fn words(outbox: Outbox, session: String, name: String) -> String {
   case outbox {
-    Unsent -> "Not sent"
-    Sending(session: out) if out == session -> "Sending…"
-    Settled(session: out, answer:) if out == session ->
-      answer_words(answer, name)
-    Sending(_) | Settled(_, _) -> "Not sent"
+    Unsent -> ""
+    Sending(session: out, ..) if out == session -> "Sending…"
+    Settled(session: out, delivery:, answer:) if out == session ->
+      answer_words(answer, delivery, name)
+    Sending(..) | Settled(..) -> ""
   }
 }
 
-/// The words for one answer.
+/// The words for one answer to a send that went as `delivery`. A delivered
+/// steer says what a steer does, since the gateway answers it "queued" as it
+/// answers a queued prompt.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert thread_send.answer_words(thread_send.Refused(thread_send.QueueFull), "x")
+/// assert thread_send.answer_words(thread_send.Refused(thread_send.QueueFull), operator.Prompt, "x")
 ///   == "Not sent: its queue is full"
 /// ```
-pub fn answer_words(answer: Answer, name: String) -> String {
+pub fn answer_words(
+  answer: Answer,
+  delivery: Delivery,
+  name: String,
+) -> String {
   case answer {
     Delivered(Admitted) -> "Delivered to " <> name <> " · admitted"
-    Delivered(Queued) -> "Delivered to " <> name <> " · queued"
+    Delivered(Queued) ->
+      case delivery {
+        operator.Steer ->
+          "Delivered to "
+          <> name
+          <> " · steering: it stops the current turn and runs next"
+        operator.Prompt -> "Delivered to " <> name <> " · queued"
+      }
     Refused(NotHeld) -> "Not sent: this home no longer holds that session"
     Refused(NotResident) -> "Not sent: the session is not running"
     Refused(NotAccepted(_)) -> "Not sent: the session refused it"
     Refused(QueueFull) -> "Not sent: its queue is full"
     Refused(Unanswered) ->
-      "No answer in time; it may have arrived — check the session before sending again"
+      "No answer in time; it may have arrived. Check the session before sending again."
   }
 }

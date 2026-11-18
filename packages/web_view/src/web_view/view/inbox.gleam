@@ -101,6 +101,10 @@ pub type Offer(message) {
     open: fn(String) -> message,
     /// What "All sessions" sends: show the page's full list.
     all_sessions: message,
+    /// How many threads the person has pressed. It keys the reveal element, so
+    /// each press brings the pane on screen again, and a press of the thread
+    /// already shown does too.
+    presses: Int,
     /// The message field of each thread, or nothing on a page that holds no
     /// capability to send: a member's home and an observer's draw no field.
     field: Option(Field(message)),
@@ -246,7 +250,7 @@ fn reading(
 ) -> Element(message) {
   let kind = inbox_rule.kind(thread.report)
 
-  html.article(
+  html.section(
     [
       attribute.class("inbox-reading"),
       attribute.class(case pick {
@@ -255,6 +259,7 @@ fn reading(
       }),
     ],
     [
+      reveal(pick, offer.presses),
       html.p([attribute.class("inbox-eyebrow")], [
         html.text(eyebrow(thread, kind)),
       ]),
@@ -265,6 +270,25 @@ fn reading(
       message_field(thread, kind, offer),
     ],
   )
+}
+
+/// The element that scrolls the pane into view, drawn only for a thread the
+/// person pressed. On a narrow screen the pane sits below the list, so a press
+/// would change what is off screen. `<loom-reveal>` scrolls its nearest section
+/// into view when it is inserted, so it is keyed by the press count to be
+/// inserted again each time. A default thread draws nothing, since the page
+/// did not ask to be looked at.
+fn reveal(pick: Pick, presses: Int) -> Element(message) {
+  case pick {
+    Pressed(_) ->
+      keyed.div([attribute.class("inbox-reveal")], [
+        #(
+          "reveal-" <> int.to_string(presses),
+          element.element("loom-reveal", [], []),
+        ),
+      ])
+    Default(_) -> element.none()
+  }
 }
 
 /// The thread's message field and its outbox, or nothing when the page holds no
@@ -304,8 +328,8 @@ fn message_form(
   // A send that is out, for any thread, disables every button: there is one
   // outbox, and a second press would be refused by the page anyway.
   let out = case field.outbox {
-    thread_send.Sending(_) -> True
-    thread_send.Unsent | thread_send.Settled(_, _) -> False
+    thread_send.Sending(..) -> True
+    thread_send.Unsent | thread_send.Settled(..) -> False
   }
 
   html.form(
