@@ -4489,10 +4489,13 @@ needs, and a reading pane for the selected thread. The region is drawn
 inside Home's existing table region, so it stays beneath `home.table_path`
 (`web_view/home.gleam:345`).
 
-The landing rule is as follows. The inbox replaces the new-session form only
-when at least one session is waiting or running. When nothing waits and
-nothing runs, the form stays, as it does on a first run. A "New session"
-control is always available.
+The landing rule is as follows. The first answer decides the centre once per
+page load: the inbox when at least one session is waiting or running, and the
+new-session form otherwise (a list with no running session settles on the form
+at once). No later read changes it; only the person's clicks do, through "New
+session", "All sessions", and an "Inbox" control that is drawn whenever the
+inbox has a thread and the centre is elsewhere. An inbox whose threads all go
+away says that nothing waits and offers "New session" rather than switching.
 
 ### The click paths
 

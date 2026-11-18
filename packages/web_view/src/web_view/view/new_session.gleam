@@ -335,7 +335,7 @@ fn inbox_link(inbox: Option(message)) -> List(Element(message)) {
   case inbox {
     None -> []
     Some(back) -> [
-      html.text(" "),
+      html.text(" · "),
       html.button(
         [
           attribute.type_("button"),

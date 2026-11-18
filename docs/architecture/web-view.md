@@ -1093,12 +1093,16 @@ untrusted text", and the strands' glances. A pending approval is named and
 sent to the session's own page; nothing of the approval, and no deciding
 control, is drawn on Home.
 
-The landing yields to the person: `Model.centre_choice` becomes `Chose` on
-"New session", the list link or any composer control, and the inbox never
-overrides it again. The first activity read alone decides the landing; a page
-that landed on the composer keeps it when a later read finds something waiting
-(it offers an "Inbox" control), and the thread shown by default stays shown. When
-nothing waits or runs the page lands on the composer as before, and an observer's page lands on the same inbox read-only. Pressing a
+The centre is decided once per page load (`Model.centre_choice`): the first
+activity read puts the inbox or the composer there by the landing rule, and a
+list with no running session settles on the composer at once. No later read
+changes it, so a missed or late read, or a session that starts working later,
+never replaces a pane or a composer the person is using. Only clicks change it:
+"New session", the list link, a composer control, and the "Inbox" control, which
+is drawn whenever the inbox has a thread and the centre is elsewhere. An inbox
+whose threads all go away says "Nothing waits on you right now" and offers "New
+session"; it does not switch by itself. The thread shown by default stays shown.
+An observer's page lands on the same inbox read-only. Pressing a
 thread is `InboxOpened`; "Open session" and "Decide on the session's page" send
 `Opening`, the message a list row sends, and every handler is a click beneath
 `home.table_path`, which `ui_socket.home_accepts` already admits, so the inbox

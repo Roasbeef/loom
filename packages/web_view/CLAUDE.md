@@ -233,11 +233,15 @@ page keys and nonces, and the relay into the session's gateway.
   (`Inbox` when any session needs the owner, failed, works or is idle with a last
   message; else `Form`). `view/inbox` draws the grouped list and a reading pane
   inside the centre's body (so at `table_path`); `home.centre_body` shows it when
-  `landed_inbox` holds: pane `NewSession` or `SessionList`, `centre_choice` is
-  `Landed` (`ShowingNew`, `ShowingList` and `Composed` set `Chose`), and the
-  landing is `Inbox`. The first `Observed` alone decides it (`Awaiting` becomes
-  `Landed` or `Chose`), so a later read never replaces a composer being typed in;
-  `inbox_return` offers "Inbox" instead. `Model.selected` is a `Selection`
+  `landed_inbox` holds: pane `NewSession` or `SessionList` and `centre_choice`
+  is `Decided(InboxCentre)`. The centre is decided once per page load
+  (`CentreChoice`: `Awaiting`, then `Decided(InboxCentre | FormCentre |
+  ListCentre)`): by the first `Observed` through the landing rule, or by a list
+  answer with no running session (`FormCentre`); no later read ever changes it,
+  and only the clicks `ShowingInbox`, `ShowingList`, `ShowingNew` and `Composed`
+  do. `inbox_return` draws "Inbox" whenever the inbox has a thread and the
+  centre is not the inbox. An inbox shown with no thread left says "Nothing waits
+  on you right now" with a "New session" link. `Model.selected` is a `Selection`
   (`Unchosen | Defaulted(id) | Pressed(id)`): the default is fixed at the first
   read with a thread and does not move, and the shown thread keeps its previous
   report when one read omits it while its session is still listed (`observed`).

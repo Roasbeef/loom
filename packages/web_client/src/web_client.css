@@ -671,6 +671,7 @@
      card; its buttons sit together at the right, the note on what a message
      waits behind at the left, and the outbox reads under it as quiet text. */
   .inbox-reveal{display:none;}
+  .inbox-empty{margin:0 0 14px 0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
   .inbox-send{margin-top:2px;}
   form.inbox-form{margin:0;}
   .inbox-form .cbar{justify-content:flex-end;flex-wrap:wrap;}

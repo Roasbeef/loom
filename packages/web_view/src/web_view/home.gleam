@@ -836,15 +836,15 @@ pub opaque type Model {
     presses: Int,
     /// The last report of the selected thread, kept apart from `reports` so a
     /// read that omits it does not blank the pane while its session is still
-    /// listed. It is drawn for that thread alone: the headline, the groups'
-    /// counts and the landing are counted from the fresh read.
+    /// listed. It is drawn for that thread, and so counted in the group header
+    /// that holds it and listed in the thread list; the headline's count, the
+    /// states and the landing are counted from the fresh read alone.
     shown: Option(#(String, sessions.Report)),
-    /// Whether the person has chosen a centre. The first read decides what the
-    /// page lands on: the inbox when something waits or runs, and the composer
-    /// otherwise, and the landing is not changed by a later read, because
-    /// replacing a composer the person is typing in would lose the text. A press
-    /// of "New session", the list link or a composer control is a choice that
-    /// the inbox never overrides.
+    /// Which centre the page shows, decided once. It is `Awaiting` until the
+    /// first decisive answer, then the inbox or the composer by the landing
+    /// rule, and no later read changes it: a read that is missed or late must
+    /// not replace a pane or a composer the person is using. After that only
+    /// the person's clicks change it.
     centre_choice: CentreChoice,
     /// What the inbox's outbox says: nothing sent, a message out to a session,
     /// or the daemon's answer to the last one (`thread_send.Outbox`). There is
@@ -976,21 +976,30 @@ pub type OpenTicket {
   )
 }
 
-/// Whether the person has chosen the centre the page shows. A page that has
-/// not lands on the inbox whenever something waits or runs
-/// (`inbox_rule.landing`); once the person presses "New session", the link to
-/// the list, or a control of the composer, the page shows what they chose.
+/// Whether the page has decided its centre. The decision is made once per page
+/// load, by the first decisive answer: an activity read (the inbox when
+/// something waits or runs, the composer otherwise, `inbox_rule.landing`) or a
+/// list with no running session (the composer). After that the person's clicks
+/// are the only thing that change it.
 pub type CentreChoice {
-  /// No read of the sessions' activity has answered yet, so there is nothing to
-  /// land on and the page shows the composer or the list.
+  /// No decisive answer has come, so the page shows the composer or the list.
   Awaiting
 
-  /// The first read found something waiting or running, and the page shows what
-  /// it landed on: the inbox.
-  Landed
+  /// The centre is decided.
+  Decided(centre: Centre)
+}
 
-  /// The person chose the composer or the list.
-  Chose
+/// The centre the page shows in the body of its middle column, when no ticket's
+/// page or relayed session has taken it over.
+pub type Centre {
+  /// The attention inbox (`view/inbox`).
+  InboxCentre
+
+  /// The new-session composer.
+  FormCentre
+
+  /// The full session list.
+  ListCentre
 }
 
 /// The thread the inbox's reading pane shows and how it came to be shown.
@@ -1752,7 +1761,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     )
 
     // A send asks the daemon in a task of its own. A draft with nothing in it
-    // or over the bound, a session the page's last read does not report, a page
+    // or over the bound, a session the inbox does not draw, a page
     // that is not connected and a send already out ask nothing. Past that the
     // daemon is the authority: it checks the page and the session again.
     ThreadSubmitted(session:, text:, delivery:) ->
@@ -1762,7 +1771,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         ->
           case
             thread_send.sendable(text),
-            dict.has_key(model.reports, session)
+            list.any(drawn_threads(model), fn(thread) { thread.id == session })
           {
             True, True -> #(
               Model(..model, outbox: thread_send.Sending(session, delivery)),
@@ -1815,24 +1824,32 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
     }
 
-    ShowingInbox -> #(Model(..model, centre_choice: Landed), effect.none())
+    ShowingInbox -> #(
+      Model(..model, centre_choice: Decided(InboxCentre)),
+      effect.none(),
+    )
 
     ShowingList -> #(
-      Model(..model, pane: SessionList, centre_choice: Chose),
+      Model(..model, pane: SessionList, centre_choice: Decided(ListCentre)),
       effect.none(),
     )
 
     ShowingNew ->
       case model.start.create {
         Some(_) -> #(
-          Model(..model, pane: NewSession, note: None, centre_choice: Chose),
+          Model(
+            ..model,
+            pane: NewSession,
+            note: None,
+            centre_choice: Decided(FormCentre),
+          ),
           effect.none(),
         )
         None -> #(model, effect.none())
       }
 
     Composed(message:) ->
-      composing(Model(..model, centre_choice: Chose), message)
+      composing(Model(..model, centre_choice: Decided(FormCentre)), message)
 
     // A press asks the daemon in the component's own process. An ended page
     // asks nothing: its principal's access is gone, and the daemon would
@@ -3947,11 +3964,10 @@ fn answered(model: Model, listing: Listing) -> Model {
         )
 
       // A list with no running session asks for no activity, so no answer will
-      // come to decide the landing; waiting for a much later one would replace
-      // a composer the person is typing in. The composer is the landing.
+      // come to decide the landing. The composer is the landing.
       case listed.centre_choice, running_sessions(listed) {
-        Awaiting, 0 -> Model(..listed, centre_choice: Chose)
-        Awaiting, _ | Landed, _ | Chose, _ -> listed
+        Awaiting, 0 -> Model(..listed, centre_choice: Decided(FormCentre))
+        Awaiting, _ | Decided(_), _ -> listed
       }
     }
     Unread -> model
@@ -4342,11 +4358,12 @@ fn would_land(model: Model) -> inbox_rule.Landing {
 }
 
 /// Applies the daemon's answer to the activity read. The reports, and so the
-/// states, the headline's count and the landing, are the fresh answer alone. The
-/// one exception is the thread the pane shows, whose last report is kept in
-/// `shown` when one read leaves it out and its session is still listed, since a
-/// slow session is not a gone one. The first answer decides the landing
-/// (`first_landing`) and fixes the default thread (`settled_selection`).
+/// states and the headline's count, are the fresh answer alone. The one
+/// exception is the thread the pane shows, whose last report is kept in `shown`
+/// when one read leaves it out and its session is still listed, since a slow
+/// session is not a gone one. The first answer decides the landing (`landing`)
+/// and fixes the default thread (`settled_selection`); no later answer changes
+/// the centre.
 fn observed(model: Model, rows: List(#(String, sessions.Report))) -> Model {
   let fresh = dict.from_list(rows)
   let read =
@@ -4357,11 +4374,7 @@ fn observed(model: Model, rows: List(#(String, sessions.Report))) -> Model {
       shown: shown_report(model, fresh),
     )
 
-  Model(
-    ..read,
-    selected: settled_selection(read),
-    centre_choice: first_landing(read),
-  )
+  Model(..read, selected: settled_selection(read), centre_choice: landing(read))
 }
 
 /// The report to keep for the selected thread: its fresh one, or else the one
@@ -4404,25 +4417,16 @@ fn still_running(model: Model, id: String) -> Bool {
   })
 }
 
-/// The first answer decides where the page lands: the inbox when something
-/// waits or runs, and otherwise the composer or the list as a choice. After
-/// that the page only leaves the inbox: when every session goes quiet it turns
-/// the landing into a choice, so a session that starts working later does not
-/// put the inbox back over a composer the person is typing in. The "Inbox"
-/// control is the way back.
-fn first_landing(model: Model) -> CentreChoice {
+/// The centre after a read: the first answer decides, by the landing rule over
+/// what it said, and a centre that is decided stays as it is.
+fn landing(model: Model) -> CentreChoice {
   case model.centre_choice {
     Awaiting ->
       case would_land(model) {
-        inbox_rule.Inbox -> Landed
-        inbox_rule.Form -> Chose
+        inbox_rule.Inbox -> Decided(InboxCentre)
+        inbox_rule.Form -> Decided(FormCentre)
       }
-    Landed ->
-      case would_land(model) {
-        inbox_rule.Inbox -> Landed
-        inbox_rule.Form -> Chose
-      }
-    Chose -> Chose
+    Decided(_) as decided -> decided
   }
 }
 
@@ -4451,20 +4455,20 @@ fn settled_selection(model: Model) -> Selection {
   }
 }
 
-/// Whether the centre is the inbox: the pane is the composer's or the list's,
-/// the first read landed on the inbox and the person has chosen neither. A
-/// ticket's page and a relayed session are the centre's whole subject, and a
-/// person's own choice of the composer or the list is never overridden.
+/// Whether the centre is the inbox: the pane is the composer's or the list's
+/// and the centre was decided to be the inbox. A ticket's page and a relayed
+/// session are the centre's whole subject.
 fn landed_inbox(model: Model) -> Bool {
   case model.pane, model.centre_choice {
-    NewSession, Landed | SessionList, Landed ->
-      would_land(model) == inbox_rule.Inbox
+    NewSession, Decided(InboxCentre) | SessionList, Decided(InboxCentre) -> True
     Ticketed(_), _
     | Relayed(_), _
     | NewSession, Awaiting
     | SessionList, Awaiting
-    | NewSession, Chose
-    | SessionList, Chose
+    | NewSession, Decided(FormCentre)
+    | SessionList, Decided(FormCentre)
+    | NewSession, Decided(ListCentre)
+    | SessionList, Decided(ListCentre)
     -> False
   }
 }
@@ -4494,6 +4498,10 @@ fn inbox_page(model: Model) -> Element(Msg) {
       pick: InboxOpened,
       open: Opening,
       all_sessions: ShowingList,
+      new_session: case model.start.create {
+        Some(_) -> Some(ShowingNew)
+        None -> None
+      },
       presses: model.presses,
       field: case model.start.thread_send {
         Some(_) ->
@@ -4508,23 +4516,18 @@ fn inbox_page(model: Model) -> Element(Msg) {
   )
 }
 
-/// The message the "Inbox" control sends, on a centre the person chose while the
-/// page would land on the inbox, and nothing otherwise. A page that lands on the
-/// composer (every session is quiet, or none runs) has no inbox to return to, so
-/// it draws no control; and a page already showing the inbox needs none.
+/// The message the "Inbox" control sends: whenever the inbox has a thread to
+/// show and the centre is not the inbox. The centre is never switched for the
+/// person, so this is the way back from the composer or the list. A page with no
+/// thread has no inbox to return to.
 fn inbox_return(model: Model) -> Option(Msg) {
-  case model.pane, model.centre_choice {
-    NewSession, Chose | SessionList, Chose ->
-      case would_land(model) {
-        inbox_rule.Inbox -> Some(ShowingInbox)
-        inbox_rule.Form -> None
-      }
-    NewSession, Awaiting
-    | SessionList, Awaiting
-    | NewSession, Landed
-    | SessionList, Landed
-    | Ticketed(_), _
-    | Relayed(_), _
+  case model.pane, landed_inbox(model), drawn_threads(model) {
+    NewSession, False, [_, ..] | SessionList, False, [_, ..] ->
+      Some(ShowingInbox)
+    NewSession, _, _
+    | SessionList, _, _
+    | Ticketed(_), _, _
+    | Relayed(_), _, _
     -> None
   }
 }

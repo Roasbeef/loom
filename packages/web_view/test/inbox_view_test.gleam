@@ -606,25 +606,6 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
 }
 
-// A page that would land on the composer or the list, because every running
-// session is quiet or none runs, has no inbox to return to and draws no
-// control.
-pub fn a_page_with_no_inbox_to_return_to_draws_no_control_test() {
-  let quiet = [#("A", Report(sessions.Idle, None, []))]
-  let model =
-    opened(
-      home.Start(
-        ..start(home.OperatorCeiling, quiet),
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
-      ),
-    )
-
-  list.each([run(model, home.ShowingList), run(model, home.ShowingNew)], fn(m) {
-    assert !string.contains(drawn(m), "‹ Inbox")
-    assert !string.contains(drawn(m), "Back to the inbox")
-  })
-}
-
 // The control is a click beneath the table's region, which every home's socket
 // admits, so it needs no new admission.
 pub fn the_return_control_is_a_click_beneath_the_table_test() {
@@ -641,30 +622,6 @@ pub fn the_return_control_is_a_click_beneath_the_table_test() {
 }
 
 // --- a refresh does not move what the person is using -----------------------
-
-// The first read decides where the page lands. A page that landed on the
-// composer, because nothing waited, keeps it when a later read finds something
-// that does: replacing the composer would lose what the person was typing. The
-// "Inbox" control is offered instead.
-pub fn a_later_read_does_not_replace_the_composer_test() {
-  let quiet = [#("A", Report(sessions.Idle, None, []))]
-  let model =
-    opened(
-      home.Start(
-        ..start(home.OperatorCeiling, quiet),
-        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
-      ),
-    )
-  assert !string.contains(drawn(model), "<h1>Inbox</h1>")
-  assert !string.contains(drawn(model), "Back to the inbox")
-
-  let later = run(model, home.Observed(reports()))
-  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
-  assert string.contains(drawn(later), "Back to the inbox")
-
-  let back = run(later, home.ShowingInbox)
-  assert string.contains(drawn(back), "<h1>Inbox</h1>")
-}
 
 // The thread shown by default stays shown when a later read ranks another
 // thread first, so the pane does not change under the person's reading or
@@ -699,23 +656,6 @@ pub fn a_slow_session_keeps_its_last_report_test() {
 }
 
 // --- landing, kept reports, steering and revealing ---------------------------
-
-// After the first read lands on the inbox, a read that finds every session
-// quiet turns the landing into a choice. A session that starts working later
-// does not put the inbox back over the composer the person may be typing in;
-// the "Inbox" control is the way back.
-pub fn the_inbox_does_not_return_over_a_composer_test() {
-  let quiet = [#("A", Report(sessions.Idle, None, []))]
-  let model = opened(creating())
-  assert string.contains(drawn(model), "<h1>Inbox</h1>")
-
-  let settled = run(model, home.Observed(quiet))
-  assert !string.contains(drawn(settled), "<h1>Inbox</h1>")
-
-  let later = run(settled, home.Observed(reports()))
-  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
-  assert string.contains(drawn(later), "Back to the inbox")
-}
 
 // A list with no running session asks for no activity, so no read will decide
 // the landing. The page takes the composer as chosen at once, so a much later
@@ -832,4 +772,102 @@ pub fn a_press_reveals_the_pane_test() {
   let again = run(pressed, home.InboxOpened("A"))
   assert string.contains(drawn(again), "data-lustre-key=\"reveal-2\"")
   assert string.contains(drawn(pressed), "<section class=\"inbox-reading")
+}
+
+// --- the centre is decided once ---------------------------------------------
+
+fn saved_only() -> List(Entry) {
+  [entry("D", "hex release", Saved)]
+}
+
+// The first read decides the centre and no later one changes it. A page that
+// landed on the composer keeps it when a session starts working later, and
+// offers the "Inbox" control, which is the way back.
+pub fn a_session_starting_later_does_not_change_the_centre_test() {
+  let quiet = [#("A", Report(sessions.Idle, None, []))]
+  let model =
+    opened(
+      home.Start(
+        ..start(home.OperatorCeiling, quiet),
+        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+      ),
+    )
+  assert !string.contains(drawn(model), "<h1>Inbox</h1>")
+
+  let later = run(model, home.Observed(reports()))
+  assert !string.contains(drawn(later), "<h1>Inbox</h1>")
+  assert string.contains(drawn(later), "Back to the inbox")
+
+  let back = run(later, home.ShowingInbox)
+  assert string.contains(drawn(back), "<h1>Inbox</h1>")
+}
+
+// A read that is missed, or that finds every session quiet, does not eject the
+// person from the inbox: the pane and its draft stay where they are.
+pub fn a_missed_read_does_not_change_the_centre_test() {
+  let model = opened(start(home.OperatorCeiling, reports()))
+  assert string.contains(drawn(model), "<h1>Inbox</h1>")
+
+  let missed = run(model, home.Observed([]))
+  assert string.contains(drawn(missed), "<h1>Inbox</h1>")
+  assert string.contains(drawn(missed), "Approval · vetting lint")
+
+  let quiet = [#("A", Report(sessions.Idle, None, []))]
+  let calm = run(model, home.Observed(quiet))
+  assert string.contains(drawn(calm), "<h1>Inbox</h1>")
+}
+
+// An inbox that is shown while every thread goes away says that nothing waits
+// and offers the composer. It does not switch on its own.
+pub fn an_emptied_inbox_says_nothing_waits_test() {
+  let model =
+    opened(
+      home.Start(
+        ..start(home.OperatorCeiling, reports()),
+        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+      ),
+    )
+  let emptied =
+    run(
+      run(model, home.Answered(home.reads(model), home.Listed(saved_only()))),
+      home.Observed([]),
+    )
+  let html = drawn(emptied)
+
+  assert string.contains(html, "<h1>Inbox</h1>")
+  assert string.contains(html, "Nothing waits on you right now.")
+  assert string.contains(html, ">New session</button>")
+
+  // A page with threads says nothing of the kind.
+  assert !string.contains(drawn(model), "Nothing waits on you right now.")
+}
+
+// The "Inbox" control shows when the inbox has a thread and the centre is
+// elsewhere, and not when there is no thread to return to.
+pub fn the_inbox_control_follows_the_threads_test() {
+  let with_thread = run(opened(creating()), home.ShowingList)
+  assert string.contains(drawn(with_thread), "‹ Inbox")
+
+  let empty =
+    opened(
+      home.Start(
+        ..start(home.OperatorCeiling, []),
+        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+      ),
+    )
+  assert !string.contains(drawn(empty), "Back to the inbox")
+  assert !string.contains(drawn(run(empty, home.ShowingList)), "‹ Inbox")
+}
+
+// A message to the thread the pane shows goes out even when the last read left
+// that thread out and the page is drawing its kept report.
+pub fn a_send_to_a_shown_thread_goes_out_test() {
+  let asked = process.new_subject()
+  let model = run(opened(sending(asked, reports())), home.InboxOpened("C"))
+  let without_c = list.filter(reports(), fn(row) { row.0 != "C" })
+  let kept = run(model, home.Observed(without_c))
+  assert string.contains(drawn(kept), "reading the spec")
+
+  let _ = run(kept, home.ThreadSubmitted("C", "go on", operator.Prompt))
+  assert received(asked) == [#("C", "go on", operator.Prompt)]
 }

@@ -101,6 +101,9 @@ pub type Offer(message) {
     open: fn(String) -> message,
     /// What "All sessions" sends: show the page's full list.
     all_sessions: message,
+    /// What "New session" sends, on a page that may create one, and nothing on
+    /// a page that may not. It is drawn only when no thread is left.
+    new_session: Option(message),
     /// How many threads the person has pressed. It keys the reveal element, so
     /// each press brings the pane on screen again, and a press of the thread
     /// already shown does too.
@@ -133,12 +136,13 @@ pub type Field(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// // inbox.view(inbox.Offer(headline:, groups:, selected: None, opening: None, pick:, open:, all_sessions:))
+/// // inbox.view(inbox.Offer(headline:, groups:, selected: None, opening: None, pick:, open:, all_sessions:, new_session: None))
 /// ```
 pub fn view(offer: Offer(message)) -> Element(message) {
   html.section([attribute.class("home-sessions inbox")], [
     html.h2([attribute.class("home-heading")], [html.text("Inbox")]),
     html.p([attribute.class("inbox-headline")], [html.text(offer.headline)]),
+    nothing_waits(offer),
     html.div([attribute.class("inbox-body")], [
       threads_list(offer),
       reading_pane(offer),
@@ -152,6 +156,31 @@ pub fn view(offer: Offer(message)) -> Element(message) {
       [html.text("All sessions ›")],
     ),
   ])
+}
+
+/// What the inbox says when every thread has gone while it is shown: the page
+/// never switches the centre by itself, so it says that nothing waits and offers
+/// the composer. An inbox with threads draws nothing here.
+fn nothing_waits(offer: Offer(message)) -> Element(message) {
+  case list.all(offer.groups, fn(entry) { entry.1 == [] }) {
+    False -> element.none()
+    True ->
+      html.p([attribute.class("inbox-empty")], [
+        html.text("Nothing waits on you right now. "),
+        case offer.new_session {
+          Some(press) ->
+            html.button(
+              [
+                attribute.type_("button"),
+                attribute.class("link-button"),
+                event.on_click(press),
+              ],
+              [html.text("New session")],
+            )
+          None -> element.none()
+        },
+      ])
+  }
 }
 
 /// The grouped list: a section for each group that holds threads and has
