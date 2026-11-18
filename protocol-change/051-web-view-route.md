@@ -4882,7 +4882,10 @@ session at a time, once for each last message the session has said
 (`web_view/review_scan_rule`). A read is about twenty-six jailed Git calls and
 the daemon allows a credential two in four seconds, so the page never reads more
 than one at once, keeps a verdict for each session and not the review, and
-retries a failure at most three times for the same message. The open thread's
+retries a failure at most three times for the same message. A refusal for the
+allowance is not a failure: it ends the run, counts as no try, and sets one timer
+(the allowance's window and half a second, `Attention.review_pause_ms`) that
+starts the scan again, with at most one outstanding. The open thread's
 review is read once more when it opens, and the record of each find the pane
 shows is read for its revision (`attention.read`, as an ask's is).
 
