@@ -274,3 +274,32 @@ pub fn the_rail_laws_hold_over_generated_lanes_test() {
     })
   })
 }
+
+// The session's own open records join the rail: an ask and a stuck strand are
+// pinned after the approvals, a find folds once opened, and the order of the
+// records is the host's.
+pub fn open_records_are_pinned_or_folded_after_the_approvals_test() {
+  let rows =
+    attention.lift_all([], [], [
+      attention.FindRecord("find-1", "bug", "No backoff."),
+      attention.StuckRecord("sub:a"),
+      attention.AskRecord("ask-1", "Which\nbranch?"),
+    ])
+
+  assert list.map(rows, fn(row) { row.key })
+    == ["stuck:sub:a", "ask:ask-1", "find:find-1"]
+  assert list.map(rows, fn(row) { row.hold })
+    == [
+      attention.PinnedUntilAnswered,
+      attention.PinnedUntilAnswered,
+      attention.FoldsOnceOpened,
+    ]
+  assert list.map(rows, fn(row) { row.head })
+    == ["Stopped on a failed run", "Which branch?", "No backoff."]
+  assert attention.ask_key("ask-1") == "ask:ask-1"
+}
+
+// With no records the rail is what it was.
+pub fn lift_is_lift_all_without_records_test() {
+  assert attention.lift([], []) == attention.lift_all([], [], [])
+}

@@ -14,8 +14,11 @@
 //// `PinnedUntilAnswered`: it stays on the rail until a decision commits,
 //// because the strand cannot proceed without it. Everything else is
 //// `FoldsOnceOpened`: it is shown until the reader opens it, then folded
-//// away. Phase 1 adds stuck strands and open asks to the pinned group; they
-//// are not variants here because nothing in the lane can say them yet.
+//// away. Phase 1 adds the session's own open records to the same two groups:
+//// an open ask and a stuck strand are pinned until answered, and an open find
+//// folds once opened. The lane cannot say them, so a host that has read the
+//// session's feed row hands them in as `Record`s (`lift_all`), and this module
+//// words them without knowing where they were read from.
 ////
 //// ## Keys and heads
 ////
@@ -78,6 +81,30 @@ pub type Kind {
 
   /// A message another session's strand stored for this session.
   PeerMessage(session: String, strand: String)
+
+  /// An ask routed to the owner that has no answer yet.
+  AskPending
+
+  /// A strand that stopped on a failed run and has not run since.
+  StuckStrand(strand: String)
+
+  /// An open find, of the kind the agent called it (`risk`, `idea`, `bug` or
+  /// `question`).
+  FindOpen(kind: String)
+}
+
+/// An open record of the session's own, as its feed row names it. The identity
+/// is a daemon identity and the head is the model's own words, cut by the
+/// daemon, so a view draws it as a text node.
+pub type Record {
+  /// An open ask, by its identifier.
+  AskRecord(id: String, head: String)
+
+  /// A stuck strand, by its name.
+  StuckRecord(strand: String)
+
+  /// An open find, by its identifier, with the kind word and a head.
+  FindRecord(id: String, kind: String, head: String)
 }
 
 /// One row of the rail.
@@ -107,14 +134,78 @@ pub fn lift(
   pieces: List(turns.Piece),
   approvals: List(approval.Review),
 ) -> List(Lifted) {
+  lift_all(pieces, approvals, [])
+}
+
+/// The rows the rail shows when the host has also read the session's own open
+/// records: the pending approvals first, then the open asks and stuck strands,
+/// all pinned, then the open finds and the lane's notable pieces, which fold
+/// once opened. The records keep the order they were handed in, since the
+/// host's feed ranks them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.lift_all([], [], [attention.StuckRecord("sub:a")])
+///   == [attention.Lifted("stuck:sub:a", attention.StuckStrand("sub:a"), attention.PinnedUntilAnswered, "Stopped on a failed run")]
+/// ```
+pub fn lift_all(
+  pieces: List(turns.Piece),
+  approvals: List(approval.Review),
+  records: List(Record),
+) -> List(Lifted) {
   let pending = list.filter_map(approvals, approval_row)
+  let waiting = list.filter_map(records, waiting_row)
+  let finds = list.filter_map(records, find_row)
 
   let insights =
     pieces
     |> list.flat_map(piece_rows)
     |> list.reverse
 
-  list.append(pending, insights)
+  list.flatten([pending, waiting, finds, insights])
+}
+
+/// The key an ask is lifted under, which the host maps back to the ask.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.ask_key("ask-0123456789") == "ask:ask-0123456789"
+/// ```
+pub fn ask_key(id: String) -> String {
+  "ask:" <> id
+}
+
+/// The pinned row of an open ask or a stuck strand, or nothing for a find.
+fn waiting_row(record: Record) -> Result(Lifted, Nil) {
+  // Only what waits on the owner is pinned.
+  case record {
+    AskRecord(id:, head:) ->
+      Ok(Lifted(
+        key: ask_key(id),
+        kind: AskPending,
+        hold: PinnedUntilAnswered,
+        head: one_line(head),
+      ))
+    StuckRecord(strand:) ->
+      Ok(Lifted(
+        key: "stuck:" <> strand,
+        kind: StuckStrand(strand),
+        hold: PinnedUntilAnswered,
+        head: "Stopped on a failed run",
+      ))
+    FindRecord(..) -> Error(Nil)
+  }
+}
+
+/// The insight row of an open find, or nothing for the records that wait.
+fn find_row(record: Record) -> Result(Lifted, Nil) {
+  case record {
+    FindRecord(id:, kind:, head:) ->
+      Ok(insight("find:" <> id, FindOpen(kind), head))
+    AskRecord(..) | StuckRecord(..) -> Error(Nil)
+  }
 }
 
 /// The rows that wait on the owner.
