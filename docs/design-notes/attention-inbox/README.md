@@ -234,6 +234,18 @@ new tools:
 - `notice` records a risk, idea or bug seen outside the task, with a kind, a
   short text and an optional path and line. It does not stop work.
 
+An ask's answer has a typed shape, chosen by the agent from a closed set that
+the page draws with fixed components, so no model-written markup reaches it.
+Phase 1 carries confirm, single choice, multiple choice (with a minimum and
+maximum), a checklist, and fill-in (short or long text, with a format such as
+a path, a number or a URL). Later kinds are ranking, a scale, a path or line
+picked from the worktree, and a choice between two diffs, since each needs a
+client component. Every ask also offers "Other" as free text, and one ask can
+carry up to four questions. The answer reaches the agent as a typed value,
+not prose. An ask never requests a secret: credentials go through grants.
+Both tools are also capabilities in code mode's prelude, so a program can
+record an ask or a find as a model's own call can.
+
 Everything else stays derived by the harness, because a model asked by prompt
 to report its own state does so unreliably: stuck strands, failed calls,
 approvals, peer messages and sub-agent results already have records. The
