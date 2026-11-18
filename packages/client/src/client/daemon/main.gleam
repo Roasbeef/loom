@@ -3684,6 +3684,9 @@ pub fn prepare_startup(
             first_prompt: Some(fn(text) {
               manager.seed_subtitle(directory, session_id, text)
             }),
+            attention_report: Some(fn(summary) {
+              manager.record_attention(directory, session_id, summary)
+            }),
             profile_desk: Some(profile_desk(
               directory,
               registration,

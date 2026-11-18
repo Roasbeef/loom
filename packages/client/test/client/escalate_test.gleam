@@ -26,6 +26,7 @@ import broker/exec
 import broker/policy
 import broker/token
 import client/approval_ceiling
+import client/attention
 import client/delegate_outbox
 import client/escalate
 import client/grants
@@ -2377,4 +2378,40 @@ pub fn a_grandchild_whose_parent_is_local_is_not_woken_test() {
   assert current_operation(harness.runtime, grandchild) == None
   assert child_runs(harness.runtime) == []
   let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+// --- the catalogue summary (protocol-change/122) ---------------------------
+
+// A refusal that raises a record tells the report once the record has
+// committed and is pending, which is the write a restart test depends on. The
+// spend that follows an approval moves the record from approved to consumed,
+// which the summary does not count, so it tells the report nothing.
+pub fn a_raised_approval_tells_the_report_and_its_spend_does_not_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
+  let sent = process.new_subject()
+  let headless =
+    escalate.Config(
+      ..harness.escalations,
+      interactive: fn() { False },
+      report: attention.reporter(
+        clock.fixed(at: 1_756_000_000_000),
+        fn(summary) { process.send(sent, summary) },
+        fn(_reason) { Nil },
+      ),
+    )
+  let recording =
+    wiring.Config(..harness.config, escalations: escalate.seam(headless))
+
+  let first = result_text(wiring.run_tool(recording, bash_run("call_1")))
+  assert string.contains(first, "policy refused")
+  let assert Ok(raised) = process.receive(sent, 1000)
+  assert raised.pending_approvals == 1
+
+  let assert Ok([record]) = api.escalations(harness.runtime)
+  approve_with_the_wanted_diff(harness.runtime)(record.id)
+
+  // The retry spends the approval through a claim that finds it approved.
+  let spent = result_text(wiring.run_tool(recording, bash_run("call_2")))
+  assert string.contains(spent, "no sandbox helper")
+  assert process.receive(sent, 50) == Error(Nil)
 }

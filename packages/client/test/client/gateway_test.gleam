@@ -8,6 +8,7 @@ import broker/policy.{type Grant}
 import client/advisor
 import client/advisorguard
 import client/approval_ceiling
+import client/attention
 import client/blocksummary
 import client/blocksummarybook
 import client/catalog
@@ -77,6 +78,7 @@ import session_view/operator as session_operator
 import session_view/remembered as session_remembered
 import simplifile
 import storage/access
+import storage/catalogue
 import storage/storage
 import support/addresses
 import support/fake_orchestrators
@@ -9557,4 +9559,131 @@ pub fn a_backlog_past_the_window_keeps_its_attribution_test() {
     == [#(11, "scale-steady"), #(22, "scale-late")]
     as "each row is observed under the strand whose branch holds its entry"
   let assert Ok(Nil) = api.close(harness.runtime)
+}
+
+// --- the catalogue summary (protocol-change/122) ---------------------------
+
+fn start_summarizing_harness(
+  sent: Subject(catalogue.AttentionSummary),
+) -> Harness {
+  start_harness_adjusted(
+    None,
+    None,
+    None,
+    None,
+    SettlingProvider,
+    None,
+    None,
+    gateway.with_attention_report(
+      _,
+      attention.reporter(
+        clock.fixed(at: 5),
+        fn(summary) { process.send(sent, summary) },
+        fn(_reason) { Nil },
+      ),
+    ),
+  )
+}
+
+/// An approval tells the report after it commits, and the summary the report
+/// makes no longer counts the escalation as pending.
+pub fn an_approval_tells_the_attention_report_test() {
+  let sent = process.new_subject()
+  let harness = start_summarizing_harness(sent)
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-sum",
+    scope_on("main", op_id(61)),
+    durable.Action(tool: "bash", digest: "d-sum", preview: "{}"),
+    [wall(60)],
+  )
+  let displayed = next_escalation(harness)
+  send(
+    harness,
+    71,
+    protocol.Approve("esc-sum", [wall(60)], "d-sum", displayed.seq),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 71, 8).event
+  assert record.status == "approved"
+  let assert Ok(summary) = process.receive(sent, 1000)
+  assert summary.pending_approvals == 0
+}
+
+/// A denial tells the report the same way.
+pub fn a_denial_tells_the_attention_report_test() {
+  let sent = process.new_subject()
+  let harness = start_summarizing_harness(sent)
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-deny",
+    scope_on("main", op_id(62)),
+    durable.Action(tool: "bash", digest: "d-deny", preview: "{}"),
+    [wall(60)],
+  )
+  let displayed = next_escalation(harness)
+  send(harness, 72, protocol.Deny("esc-deny", displayed.seq))
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 72, 8).event
+  assert record.status == "rejected"
+  let assert Ok(summary) = process.receive(sent, 1000)
+  assert summary.pending_approvals == 0
+}
+
+/// A refused approval changed nothing, so it tells the report nothing.
+pub fn a_stale_approval_does_not_tell_the_attention_report_test() {
+  let sent = process.new_subject()
+  let harness = start_summarizing_harness(sent)
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-stale",
+    scope_on("main", op_id(63)),
+    durable.Action(tool: "bash", digest: "d-stale", preview: "{}"),
+    [wall(60)],
+  )
+  let displayed = next_escalation(harness)
+  send(
+    harness,
+    73,
+    protocol.Approve("esc-stale", [wall(60)], "d-wrong", displayed.seq),
+  )
+  let assert protocol.ErrorEvent(code:, ..) = next_reply(harness, 73, 8).event
+  assert code == protocol.code_stale_approval
+  assert process.receive(sent, 50) == Error(Nil)
+}
+
+/// A decision a relayed page makes tells the attention report after the commit
+/// attempt, as an operator's own decision does (protocol-change/122).
+pub fn a_relayed_decision_tells_the_attention_report_test() {
+  let sent = process.new_subject()
+  let harness = start_summarizing_harness(sent)
+  claim(
+    harness,
+    "esc-rel",
+    scope_on("main", op_id(64)),
+    durable.Action(tool: "bash", digest: "d-rel", preview: "{}"),
+    [policy.GrantEnv("TOKEN")],
+  )
+  let seq = current_question_seq(harness, "esc-rel")
+  let ceiling =
+    Some(approval_ceiling.Ceiling(..approval_ceiling.nothing(), env: ["TOKEN"]))
+  let assert Ok(remote_escalation.Decided(_)) =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      ceiling,
+      "esc-rel",
+      remote_escalation.Approve(
+        grants: [policy.GrantEnv("TOKEN")],
+        action: "d-rel",
+        scope: remote_escalation.Once,
+      ),
+      seq,
+      the_decider(),
+    )
+  let assert Ok(summary) = process.receive(sent, 1000)
+  assert summary.pending_approvals == 0
 }

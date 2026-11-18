@@ -162,6 +162,7 @@
 import broker/escalation.{type Denial}
 import broker/internal/call
 import broker/policy.{type Grant}
+import client/attention
 import client/grants
 import client/internal/session_owner
 import client/internal/timebase
@@ -230,6 +231,11 @@ pub type Config {
     /// (protocol-change/089). It runs on the parked call's own process and must
     /// not wait on the network.
     parked: fn(api.Runtime, String, Int) -> Nil,
+    /// Told after a claim commits an escalation as pending, or reopens a
+    /// decided one, so the catalogue's attention summary counts it
+    /// (protocol-change/122). It runs on the refused call's own process and
+    /// does not wait. A host with no catalogue passes `attention.silent()`.
+    report: attention.Report,
   )
 }
 
@@ -348,6 +354,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     max_records: 256,
     max_asks: 3,
     parked: fn(_runtime, _id, _until) { Nil },
+    report: attention.silent(),
   )
 }
 
@@ -892,6 +899,18 @@ fn raise(
   {
     Ok(durable.Claimed(record)) -> {
       record_want_asks(runtime, want, next_asks)
+
+      // The record has committed, so the summary is told before the call
+      // parks on it: a daemon that stops while it waits has already written
+      // the row that says an approval is pending. Only a claim that leaves the
+      // record pending changes the count. One that finds it approved is about
+      // to spend it, and the spend that follows (`consume`) moves it from
+      // approved to consumed, neither of which the summary counts.
+      case record.status == durable.Pending {
+        True -> config.report(runtime)
+        False -> Nil
+      }
+
       Ok(record)
     }
     Ok(durable.Exhausted(_record)) | Error(_error) -> Error(Nil)

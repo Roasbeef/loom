@@ -592,6 +592,10 @@ type Message(instance) {
   /// is no reply: the sender is a hub that must not wait on the registry.
   SeedSubtitle(String, String)
 
+  /// A session's attention summary, to be written as its catalogue row
+  /// (protocol-change/122). There is no reply, as for `SeedSubtitle`.
+  RecordAttention(String, catalogue.AttentionSummary)
+
   /// Records the executor a pooled session's first attach chose, once.
   SeedExecutor(String, String)
 
@@ -1588,6 +1592,29 @@ pub fn seed_subtitle(
   prompt: String,
 ) -> Nil {
   process.send(manager.commands, SeedSubtitle(id, prompt))
+}
+
+/// Writes a session's attention summary to the catalogue, without waiting.
+///
+/// The session's host calls it after it commits a change to an escalation, an
+/// ask or a find, and once when it opens (`client/attention.reporter`). The
+/// write runs in the registry's turn, which serializes it with every other
+/// catalogue change. A failed write is not reported to the host: the record has
+/// committed, the row lags it, and the next change or open rewrites the row
+/// from the records (protocol-change/122).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.record_attention(registry, session_id, summary)
+/// ```
+@internal
+pub fn record_attention(
+  manager: Manager(instance),
+  id: String,
+  summary: catalogue.AttentionSummary,
+) -> Nil {
+  process.send(manager.commands, RecordAttention(id, summary))
 }
 
 /// Records which executor a pooled session's first attach chose, without
@@ -3503,6 +3530,10 @@ fn handle(
     }
     SeedSubtitle(id, prompt) -> {
       let _written = catalogue.seed_subtitle(book.catalogue, id, prompt)
+      sm.keep(book)
+    }
+    RecordAttention(id, summary) -> {
+      let _written = catalogue.record_attention(book.catalogue, id, summary)
       sm.keep(book)
     }
     SeedExecutor(id, executor) -> {

@@ -39,6 +39,17 @@
 //// it already holds. That keeps the prefix bounded however a settled record
 //// came to exist, and it is a no-op for every session today.
 ////
+//// ## The catalogue summary
+////
+//// Home reads a saved session's counts from a row in the catalogue
+//// (protocol-change/122), because it must not open the session to count. The
+//// row is a cache of the records, so whoever commits a change to one of them
+//// tells a `Report` afterwards. `summary` reads the escalations, asks and
+//// finds and `summarize` turns them into the four figures; `reporter` sends
+//// the result to the registry without waiting. `settled` is the call the
+//// settle path makes after it answers an ask or closes a find, and session
+//// open makes the same call once to repair a row that lagged.
+////
 //// ## What is left to the caller
 ////
 //// The tools check everything the arguments decide. This module checks what
@@ -49,12 +60,15 @@ import core/attention
 import core/clock.{type Clock}
 import core/json.{type JsonValue}
 import gleam/bool
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import runtime/api
+import runtime/escalation
 import runtime/lineage
+import storage/catalogue.{type AttentionSummary, AttentionSummary}
 import tools/agent.{type Caller}
 import tools/attention as tool_attention
 
@@ -84,6 +98,130 @@ pub type Wiring {
     clock: Clock,
     /// A source of entropy for ids, forty bits of which are kept.
     entropy: fn() -> Int,
+    /// Told after a record commits, so the catalogue's summary follows it
+    /// (protocol-change/122). `silent()` for a host with no catalogue.
+    report: Report,
+  )
+}
+
+/// The call a committer makes after a change to an escalation, an ask or a
+/// find, with the session's runtime. It reads the records and has the summary
+/// written to the catalogue; it never waits for the write and never fails the
+/// caller, because the record has already committed and the summary can lag it.
+pub type Report =
+  fn(api.Runtime) -> Nil
+
+/// A report that writes nothing, for a host with no catalogue and for tests
+/// about something else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.Wiring(runtime:, clock:, entropy:, report: attention.silent())
+/// ```
+pub fn silent() -> Report {
+  fn(_runtime) { Nil }
+}
+
+/// A report that makes the summary on `clock` and hands it to `send`, which
+/// the daemon connects to the registry's fire-and-forget `RecordAttention`.
+/// A summary that cannot be made, because a record read failed, is handed to
+/// `failed` with the reason and nothing is sent, so the old row stands.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.reporter(clock, fn(summary) { manager.record_attention(registry, id, summary) }, log_it)
+/// ```
+pub fn reporter(
+  clock: Clock,
+  send: fn(AttentionSummary) -> Nil,
+  failed: fn(String) -> Nil,
+) -> Report {
+  fn(runtime) {
+    let #(now, _clock) = clock.read(clock)
+
+    // A summary that was made goes to the registry; one that could not be made
+    // is reported and sends nothing, so the row the catalogue holds stands.
+    case summary(runtime, now) {
+      Ok(made) -> send(made)
+      Error(reason) -> failed(reason)
+    }
+  }
+}
+
+/// The hook the settle path of protocol-change/120 calls after it commits an
+/// ask's answer or a find's close, so the lowered count reaches the catalogue.
+/// It is the whole of what that path owes the summary. The open-time reconcile
+/// calls the report directly and does not use it; this name is kept for the
+/// settle path so a reader can find the one call that path must make.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.settled(report, runtime)
+/// ```
+pub fn settled(report: Report, runtime: api.Runtime) -> Nil {
+  report(runtime)
+}
+
+/// Reads the session's own records and counts what is open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.summary(runtime, now)
+/// ```
+pub fn summary(
+  runtime: api.Runtime,
+  now: Int,
+) -> Result(AttentionSummary, String) {
+  use escalations <- result.try(
+    api.escalations(runtime) |> result.map_error(string.inspect),
+  )
+  use open_asks <- result.try(asks(runtime))
+  use open_finds <- result.map(finds(runtime))
+  summarize(escalations, open_asks, open_finds, now)
+}
+
+/// The four figures of the summary, from records already read.
+///
+/// An approval counts while its status is pending. An ask counts while it is
+/// open and routed to the owner, since an ask to a strand needs no person. A
+/// find counts while it is open. `oldest_open_at` is the smallest creation
+/// time over those asks and finds, and says nothing of approvals, which carry
+/// no raise time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.summarize([], [], [], 5).oldest_open_at == None
+/// ```
+pub fn summarize(
+  escalations: List(escalation.Escalation),
+  asks: List(attention.Ask),
+  finds: List(attention.Find),
+  now: Int,
+) -> AttentionSummary {
+  let pending =
+    list.count(escalations, fn(record) { record.status == escalation.Pending })
+  let owner_asks =
+    list.filter(asks, fn(ask) {
+      ask.state == attention.AskOpen && ask.header.routing == attention.ToOwner
+    })
+  let open_finds =
+    list.filter(finds, fn(find) { find.state == attention.FindOpen })
+  let times =
+    list.append(
+      list.map(owner_asks, fn(ask) { ask.header.created_at }),
+      list.map(open_finds, fn(find) { find.header.created_at }),
+    )
+  AttentionSummary(
+    pending_approvals: pending,
+    open_asks: list.length(owner_asks),
+    open_finds: list.length(open_finds),
+    oldest_open_at: list.reduce(times, int.min) |> option.from_result,
+    updated_at: now,
   )
 }
 
@@ -149,6 +287,7 @@ pub fn ask(
     },
     attempts,
   )
+  |> reported(wiring, runtime)
 }
 
 /// Records a find and answers its id.
@@ -191,6 +330,19 @@ pub fn notice(
     },
     attempts,
   )
+  |> reported(wiring, runtime)
+}
+
+/// Tells the report about a record that committed, and leaves a refusal alone:
+/// nothing changed, so there is nothing to summarize.
+fn reported(
+  inserted: Result(String, tool_attention.Refusal),
+  wiring: Wiring,
+  runtime: api.Runtime,
+) -> Result(String, tool_attention.Refusal) {
+  use id <- result.map(inserted)
+  wiring.report(runtime)
+  id
 }
 
 /// Reads every ask in the session, open and settled, leaving out a cell that

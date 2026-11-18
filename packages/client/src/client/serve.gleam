@@ -563,6 +563,11 @@ pub type Settings {
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
     first_prompt: Option(fn(String) -> Nil),
+    /// Told the session's attention summary whenever an approval, ask or find
+    /// changes, and once when the session opens, so the daemon can keep the
+    /// catalogue's row current (`protocol-change/122`). `None` for a host with
+    /// no catalogue.
+    attention_report: Option(fn(catalogue.AttentionSummary) -> Nil),
     /// What the session's hub needs from the daemon to read and switch its
     /// model profile (`protocol-change/082`): the names, a loader for the
     /// catalogue a profile would route by, the registration write and the
@@ -1686,6 +1691,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       spawner: None,
       laptop: None,
       first_prompt: None,
+      attention_report: None,
       profile_desk: None,
       codemode_sockets: None,
       base_policy: workspace_policy.admitting_config_mounts(
@@ -4170,11 +4176,13 @@ fn assemble_in(
   // holder, as the schedule plane does, because the tools are built before
   // `api.open` returns it. Its clock is the session's own, in Unix
   // milliseconds, since a record's `created_at` is read by people.
+  let attention_report = attention_reporter(settings, clock, logger)
   let attention_seam =
     attention.seam(attention.Wiring(
       runtime: agency.runtime_supplier(agency_config),
       clock:,
       entropy:,
+      report: attention_report,
     ))
   let peer_endpoint = agency.peer_endpoint(agency_config, settings.session_id)
   let peer_wiring =
@@ -4221,6 +4229,7 @@ fn assemble_in(
           logger,
         )
       },
+      report: attention_report,
     )
 
   // The scheduling plane is decided once, here, and reached two ways:
@@ -5215,6 +5224,13 @@ fn assemble_in(
   // who configured one deserves to be told which reason stopped it.
   seed_advisor(runtime, advisor_wiring, tool_registry, logger)
 
+  // The catalogue's attention row is rewritten from the records now, whether or
+  // not it differs, before the session is reported resident. A row that lagged
+  // a stopped daemon, or that never existed because the session was saved
+  // before the summary did, is repaired here and nowhere else. An unreadable
+  // record leaves the old row and the open continues (protocol-change/122).
+  attention_report(runtime)
+
   // Context observations need the immutable tool descriptions, while the hub's
   // execution surface owns the registry. Build the reader before retaining the
   // service start callback so observations carry neither executors nor Settings.
@@ -5469,6 +5485,7 @@ fn assemble_in(
             |> with_child_history(child_history_reach, runtime)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(first_prompt)
+            |> hub.with_attention_report(attention_report)
             |> with_profile_desk(profile_desk)
             |> with_spawner_link(spawner_link)
             |> hub.with_remote_reach(hub_remote_reach)
@@ -7316,6 +7333,30 @@ fn with_child_history(
   }
 }
 
+// The session's attention report: the summary made on the session's own clock
+// and sent to the daemon's registry when the host listens for one, and nothing
+// when it has no catalogue. A summary that cannot be made is logged, and the
+// old row stands.
+
+/// Builds the report every writer of an escalation, ask or find calls after it
+/// commits, closed over the session's clock and logger so the writers need only
+/// the runtime. A host with no catalogue gets the silent report.
+fn attention_reporter(
+  settings: Settings,
+  clock: Clock,
+  logger: Logger,
+) -> attention.Report {
+  case settings.attention_report {
+    None -> attention.silent()
+    Some(send) ->
+      attention.reporter(clock, send, fn(reason) {
+        log.warn(logger, "attention.summary_unread", [
+          field.text(key: "reason", value: reason),
+        ])
+      })
+  }
+}
+
 // The report of the session's first prompt, when the host listens for one.
 
 /// Establishes with first prompt for the caller, keeping its validation and result policy at this boundary.
@@ -8958,6 +8999,7 @@ pub fn trial_settings(
     spawner: None,
     laptop: None,
     first_prompt: None,
+    attention_report: None,
     profile_desk: None,
     // The trial binds under the source's own socket root, not a directory
     // below it. The inherited protected list masks that root, and

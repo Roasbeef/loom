@@ -21,9 +21,11 @@ import machine/strand as machine_strand
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/escalation as durable
 import runtime/lineage
 import session/session
 import simplifile
+import storage/catalogue
 import tools/agent
 import tools/attention as tool_attention
 
@@ -88,6 +90,7 @@ fn wiring(runtime: api.Runtime) -> attention.Wiring {
     runtime: fn() { Ok(runtime) },
     clock: clock.fixed(at: now),
     entropy: ffi_os.unique_positive_integer,
+    report: attention.silent(),
   )
 }
 
@@ -312,6 +315,7 @@ pub fn a_session_that_is_not_up_refuses_in_band_test() {
       runtime: fn() { Error(Nil) },
       clock: clock.fixed(at: now),
       entropy: fn() { 1 },
+      report: attention.silent(),
     )
   let assert Error(tool_attention.Unavailable(_)) =
     attention.ask(down, caller("main"), request(None))
@@ -532,5 +536,149 @@ pub fn a_models_fact_write_cannot_forge_a_record_test() {
     )
   let assert Error(api.ReservedFactKey(..)) =
     api.put_fact(runtime, records.find_key("find-0000000001"), json.Null)
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+// --- the catalogue summary (protocol-change/122) ---------------------------
+
+fn open_ask_at(at: Int, routing: records.Routing) -> records.Ask {
+  let settled = settled_ask("ask-0000000001", 1)
+  records.Ask(
+    ..settled,
+    header: records.Header(..settled.header, created_at: at, routing:),
+    state: records.AskOpen,
+  )
+}
+
+fn find_at(at: Int, state: records.FindState) -> records.Find {
+  records.Find(
+    header: records.Header(
+      ..settled_ask("find-0000000001", 1).header,
+      id: "find-0000000001",
+      created_at: at,
+    ),
+    kind: records.Bug,
+    text: "No backoff.",
+    path: None,
+    line: None,
+    state:,
+  )
+}
+
+fn escalation_with(status: durable.Status) -> durable.Escalation {
+  durable.Escalation(
+    id: "esc-1",
+    denial: json.Null,
+    scope: None,
+    grants: [],
+    status:,
+    tool: None,
+    action: None,
+    preview: None,
+    asked: 1,
+    origin: None,
+  )
+}
+
+fn reporting(
+  runtime: api.Runtime,
+  sent: process.Subject(catalogue.AttentionSummary),
+) -> attention.Wiring {
+  attention.Wiring(
+    ..wiring(runtime),
+    report: attention.reporter(
+      clock.fixed(at: now),
+      fn(summary) { process.send(sent, summary) },
+      fn(_reason) { Nil },
+    ),
+  )
+}
+
+pub fn summarize_counts_what_is_open_and_takes_the_oldest_time_test() {
+  let summary =
+    attention.summarize(
+      [
+        escalation_with(durable.Pending),
+        escalation_with(durable.Pending),
+        escalation_with(durable.Approved),
+        escalation_with(durable.Rejected),
+      ],
+      [
+        open_ask_at(300, records.ToOwner),
+        open_ask_at(200, records.ToOwner),
+        settled_ask("ask-0000000002", 9),
+      ],
+      [
+        find_at(250, records.FindOpen),
+        find_at(5, records.Closed(at: 6, closure: records.Fixed, by: "owner")),
+      ],
+      900,
+    )
+  assert summary.pending_approvals == 2
+  assert summary.open_asks == 2
+  assert summary.open_finds == 1
+  assert summary.oldest_open_at == Some(200)
+  assert summary.updated_at == 900
+}
+
+pub fn an_ask_to_a_strand_does_not_lower_the_oldest_time_test() {
+  let summary =
+    attention.summarize(
+      [],
+      [
+        open_ask_at(10, records.ToStrand("sub:helper")),
+        open_ask_at(400, records.ToOwner),
+      ],
+      [],
+      900,
+    )
+  assert summary.open_asks == 1
+  assert summary.oldest_open_at == Some(400)
+}
+
+pub fn approvals_alone_leave_the_oldest_time_empty_test() {
+  let summary =
+    attention.summarize([escalation_with(durable.Pending)], [], [], 7)
+  assert summary.pending_approvals == 1
+  assert summary.oldest_open_at == None
+}
+
+pub fn a_committed_ask_and_find_each_tell_the_report_test() {
+  let runtime = open(path())
+  let sent = process.new_subject()
+  let wired = reporting(runtime, sent)
+
+  let assert Ok(_) = attention.ask(wired, caller("main"), request(None))
+  let assert Ok(first) = process.receive(sent, 1000)
+  assert first.open_asks == 1
+  assert first.open_finds == 0
+  assert first.oldest_open_at == Some(now)
+
+  let assert Ok(_) = attention.notice(wired, caller("main"), notice())
+  let assert Ok(second) = process.receive(sent, 1000)
+  assert second.open_asks == 1
+  assert second.open_finds == 1
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_refused_insertion_does_not_tell_the_report_test() {
+  let runtime = open(path())
+  let sent = process.new_subject()
+  let wired = reporting(runtime, sent)
+
+  // A refusal for a strand the session does not have commits nothing.
+  let assert Error(_) =
+    attention.ask(wired, caller("main"), request(Some("sub:nobody")))
+  assert process.receive(sent, 50) == Error(Nil)
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn settled_hands_the_runtime_to_the_report_test() {
+  let runtime = open(path())
+  let sent = process.new_subject()
+  attention.settled(reporting(runtime, sent).report, runtime)
+  let assert Ok(summary) = process.receive(sent, 1000)
+  assert summary.pending_approvals == 0
+  assert summary.updated_at == now
   let assert Ok(Nil) = api.close(runtime)
 }

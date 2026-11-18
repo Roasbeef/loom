@@ -74,6 +74,7 @@ fn settings(root: String, file: String) -> serve.Settings {
     spawner: None,
     laptop: None,
     first_prompt: None,
+    attention_report: None,
     profile_desk: None,
     evolution_role: serve.Source,
     pack: None,
