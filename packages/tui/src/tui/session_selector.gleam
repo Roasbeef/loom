@@ -1932,7 +1932,9 @@ fn detail_lines(
             theme.overlay_quiet(),
           ),
         ],
-        list.flat_map(glances, glance_lines(_, width)),
+        glances
+          |> list.filter(fn(glance) { glance.strand != agent_roster.primary })
+          |> list.flat_map(glance_lines(_, width)),
       )
     _ -> []
   }
@@ -1991,7 +1993,9 @@ fn detail_lines(
   list.flatten([heading, status, message, strands, [span.line_new([]), ..place]])
 }
 
-/// Formats glance summary line for an active strand.
+/// Formats glance summary line for an active strand. The daemon also writes
+/// a glance for `main` (`protocol-change/121`); the caller leaves it out,
+/// since the selector describes `main` from the row's own data.
 fn glance_lines(glance: protocol.GlanceLine, width: Int) -> List(span.Line) {
   // Prefer summary over title if present.
   let doing = case glance.summary {

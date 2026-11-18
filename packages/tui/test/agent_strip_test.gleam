@@ -277,6 +277,31 @@ pub fn a_glance_for_the_current_operation_replaces_the_fallback_test() {
   assert line.tokens == Some(42)
 }
 
+// The daemon writes a glance for `main` for the web view's attention inbox
+// (`protocol-change/121`). The strip draws `main` from its own row, so that
+// glance must not replace the row's words.
+pub fn the_glance_for_main_is_left_to_the_inbox_test() {
+  let current = op_id(1)
+  let seen = Glance(current, "Refactor router", "Editing router.go", 5000, 42)
+  let state =
+    agent_strip.observe(
+      agent_strip.new(),
+      view([#("main", current)], [glance_cell("main", seen)]),
+      0,
+    )
+  assert dict.size(state.roster.glances) == 0
+  let assert [line] =
+    agent_strip.lines(
+      state,
+      [row("main", agent_view.Working, Some(current))],
+      "main",
+    )
+    as "one listed row"
+  assert line.text == "activity of main"
+  assert line.title == "task of main"
+  assert line.tokens == None
+}
+
 // A successor operation must not wear the summary its predecessor earned.
 pub fn a_glance_for_another_operation_is_ignored_test() {
   let old = op_id(1)
