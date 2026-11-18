@@ -1,5 +1,13 @@
 # runtime
 
+## Attention records
+
+`attention/ask/` and `attention/find/` are reserved fact prefixes
+(protocol-change/119). `client/attention` writes an ask's or a find's record
+there and a model's `put_fact` is refused, so a question a person is about to
+answer, and an answer, cannot be forged. The runtime treats the payloads as
+opaque; `core/attention` owns their shape and the host owns the bounds.
+
 ## Native evolution fact ownership
 
 The `evolution/` FactCustom prefix and existing `client/` and `prompt/`

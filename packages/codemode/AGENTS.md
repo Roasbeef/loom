@@ -201,7 +201,8 @@ session and sends it many invocations.
   `job_poll`, `job.send` and `job.kill` to their tools, `fs.write`,
   `fs.edit` and `lsp.rename` to `fs_write`/`fs_edit`, `schedule.*` to
   `schedule_*`, `notes.put` to `agent_note`, `notes.get/list/read` to
-  `agent_notes`, `workflow.step` to `agent_spawn`, `peer.send` to
+  `agent_notes`, `attention.ask` to `ask`, `attention.notice` to `notice`,
+  `workflow.step` to `agent_spawn`, `peer.send` to
   `peer_send`). `open_caps` lists what stays open on purpose (reads, `kv.*`,
   `report.emit`, the `peer.*` reads, the `execution.*` channel, `mcp.*`),
   and `decided` is true for exactly those plus the table, which is what

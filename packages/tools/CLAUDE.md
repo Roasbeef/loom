@@ -131,6 +131,20 @@ reads share the workspace checks and 8 MiB file bound with text reads. Only
 text reads use offset/limit and hashline anchors; `cap/fs.read` remains text. WP-I.
 Tool failures are data, never crashes.
 
+`tools/attention.{ask_name, notice_name, AskRequest, NoticeRequest, Refusal,
+Attention, tools, ask_request, notice_request, ask_outcome, notice_outcome,
+refusal_outcome, refusal_code, describe}` — the `ask` and `notice` tools
+(protocol-change/119) over a seam of two closures that `client/attention`
+fills and the code-mode door shares. `ask` puts one to four typed questions
+to the owner (or a strand), records the ask, replies `asked as <id>` and ends
+the run: `TerminateRun`, `replay: Never`, `execution: Exclusive`, which is what
+keeps the call alone in its batch. A refusal continues the run. `notice`
+records a find, replies `noted as <id>` and continues: `Concurrent`. The
+description says an ask must never request a secret and that credentials go
+through grants and approvals. The arguments are decoded here, from the bounds
+in `core/attention`, and nothing a schema field carries is markup or a
+question identifier.
+
 Also the `agent_*` family — `agent_spawn`, `agent_wait`, `agent_send`,
 `agent_note`, `agent_notes`, `agent_roster` — the six shells through
 which a model reaches the messaging plane. They are shells only: each is

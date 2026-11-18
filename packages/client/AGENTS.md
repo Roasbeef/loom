@@ -3366,6 +3366,20 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   and retires the storage actor on success or failure. A store written while a distillation pipeline existed can hold
   distillate rows and `distill/*` cells; nothing reads them and nothing
   deletes them.
+- `client/attention.{Wiring, seam, ask, notice, asks, finds}` — the host side
+  of the `ask` and `notice` tools and of `attention.*` in code mode
+  (protocol-change/119). It writes `core/attention` records as reserved
+  `attention/ask/<id>` and `attention/find/<id>` cells in the session store,
+  with the header taken from the driver's own `Caller`, the session clock
+  and the strand's lineage. An insertion reads the prefix's guard cell, counts
+  the open records, refuses past 32 asks or 128 finds, and commits the record,
+  the guard's replacement (guarded by the seq read first, so two racers cannot
+  both take the last slot) and the removal of any retired settled record in one
+  `api.edit_reserved_facts`; `RaceLost` re-reads. A named `to` must be a strand
+  of the session. `Wiring.runtime` borrows the runtime through the Agency's
+  holder. `contributions.attention_tools` registers both tools after
+  `propose`; `project_jail.worker_tools.refused_names` refuses `ask` to a
+  project worker, which keeps `notice`.
 - `client/proposals.{rules_file, key_prefix, lease_owner, max_rules_bytes,
   max_listed, Kind, State, Decision, Source, Proposal, Listing, Wiring, Admin,
   seam, admin, channel, submit, listing, decide, rules, read_rules,

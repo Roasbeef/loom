@@ -56,6 +56,22 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   unique phase names and unique task text across the board), and every
   stored board has passed it because the tool is the cell's only writer.
   `active`, `focus` and `count` answer the questions a renderer asks.
+- `core/attention.{Ask, Find, Header, Question, Kind, Alternative, Answer,
+  Value, AskState, FindState, Settled, encode_ask, decode_ask, encode_find,
+  decode_find, retired, ask_key, find_key, guard_key, mint_ask_id,
+  mint_find_id}` — the attention inbox's two durable records
+  (protocol-change/119). An ask is up to four typed questions put to the
+  owner (`confirm`, `choice`, `multiple`, `checklist`, `fill`); a find is a
+  note the agent left outside its task. They live as reserved `fact.custom`
+  cells `attention/ask/<id>` and `attention/find/<id>`, written by
+  `client/attention` and read by the feed, so the shape and the bounds
+  (`max_open_asks` 32, `max_open_finds` 128, `max_settled` 200,
+  `max_settled_age_ms` seven days) live here, in the one package every side
+  depends on. `decode_ask` and `decode_find` are total and check shape, not
+  size. `retired` is the pure pruning rule: the settled records older than
+  seven days or past 200, oldest first, never an open one. `guard_key` names
+  the cell every insertion replaces so two inserts cannot both take the last
+  slot.
 - `core/glance.Glance` — a strand's operator-facing title and one-line
   activity summary, written by the daemon's glance loop under the reserved
   `client/glance/{strand}` fact and read by the TUI's agent strip from each
