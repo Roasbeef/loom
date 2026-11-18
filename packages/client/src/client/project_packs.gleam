@@ -25,7 +25,8 @@ import prompt/default
 pub fn router() -> String {
   default.source
   |> with_section("delegation", router_text)
-  |> string.replace("%% version loom-default-17", "%% version loom-router-17")
+  |> without_ask_sentence
+  |> string.replace("%% version loom-default-18", "%% version loom-router-18")
 }
 
 /// The worker's pack.
@@ -38,7 +39,8 @@ pub fn router() -> String {
 pub fn worker() -> String {
   default.source
   |> with_section("delegation", worker_text)
-  |> string.replace("%% version loom-default-17", "%% version loom-worker-17")
+  |> without_ask_sentence
+  |> string.replace("%% version loom-default-18", "%% version loom-worker-18")
 }
 
 const router_text =
@@ -72,6 +74,20 @@ not work. A message that is not yours goes back with `project_handback`.
 
 You have no access to GitHub and no credentials. Do not try to push or to
 open a pull request: the host does that when the work passes its check."
+
+/// The pack without the default's sentence that sends an owner's decision
+/// through `ask`. A router holds three tools and none of them is `ask`, and a
+/// worker is refused it (`project_jail.worker_tools`), so neither is told to
+/// use a tool it does not have. A worker's question goes in its report. A pack
+/// whose text no longer carries the sentence is returned as it was, and
+/// `project_standing_test` fails on the sentence reaching either pack.
+fn without_ask_sentence(source: String) -> String {
+  string.replace(
+    source,
+    " When a decision belongs to the owner, ask with `ask` and give\noptions rather than asking in prose.",
+    "",
+  )
+}
 
 /// Replaces the body of `name`, which runs from its header line to the next
 /// section header or the end of the pack. A pack without the section is
