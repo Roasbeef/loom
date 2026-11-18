@@ -137,7 +137,7 @@ grants demoted to reads, under one deadline (8 s) and a byte budget. Nothing
 the page or the caller sends reaches it: not a path, not a command, not a
 revision. `server.Config` gains one projection, `worktree`, from the resident to
 that closure, as `peer_endpoint` projects the resident's peer address. The
-review calls it in a weft run of its own with a 14 s deadline (the observation's
+review calls it in a weft run of its own with a 14 s deadline, which is not a hard cover of a stalled broker (the observation's
 8 s execution deadline, the broker's 5 s cleanup grace, and a second), and the
 caller waits on the run; the registry and the session are never held.
 
@@ -177,8 +177,9 @@ the page thinks a file is.
 
 The decoder holds the same bounds on what it keeps: a damaged file is dropped
 alone and counted in `omitted`, files, hunks and lines past the bounds are
-dropped, and text past the line bound is cut at a character boundary. A value
-from any source is as bounded as one the daemon made.
+dropped without being counted, and text past the line bound is cut at a
+character boundary. The decoder does not re-check `max_bytes`. A decoded value is
+bounded in shape, and is not guaranteed to be one the daemon made.
 
 Files are ordered source, then tests, then docs, and by path inside each, by a
 pure rule (`review_feed.order`). A document is decided first: a file under

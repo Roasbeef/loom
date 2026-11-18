@@ -55,9 +55,12 @@ import storage/access
 import web_view/review_feed
 import weft
 
-/// How long the observation may run before the read gives up: its execution
-/// deadline and the broker's cleanup grace, which are 13 s together
-/// (`worktree_diff.capture_timeout_ms`, `settlement_grace_ms`), and a second.
+/// How long the read waits for the observation before it gives up: the
+/// observation's 8 s execution deadline, the broker's 5 s cleanup grace
+/// (`worktree_diff.capture_timeout_ms`, `settlement_grace_ms`) and a second. It
+/// is the page's own read deadline too (`ui_socket.reading`). A stalled broker
+/// can take longer than that, in which case the caller is refused as
+/// `unavailable` and the run is cancelled.
 pub const deadline_ms = 14_000
 
 /// What the daemon needs to read one session's tree as one caller.
@@ -171,7 +174,7 @@ fn board_of(value: JsonValue) -> Result(worktree_view.Board, Nil) {
         json.Object([
           #("status", json.String("ready")),
           #("request_id", json.Int(0)),
-          ..list.filter(fields, fn(field) { field.0 != "status" })
+          ..fields
         ]),
       )
       |> result.replace_error(Nil)
