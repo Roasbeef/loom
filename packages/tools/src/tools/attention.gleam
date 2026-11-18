@@ -54,7 +54,6 @@ import core/attention.{
   Recommended,
 }
 import core/json.{type JsonValue}
-import gleam/bit_array
 import gleam/bool
 import gleam/int
 import gleam/list
@@ -712,7 +711,7 @@ fn distinct_labels(
   options: List(Alternative),
   name: String,
 ) -> Result(Nil, String) {
-  let labels = list.map(options, fn(choice) { choice.label })
+  let labels = list.map(options, fn(choice) { string.trim(choice.label) })
 
   // A repeated label would make an answer ambiguous, since it carries the label.
   case set.size(set.from_list(labels)) == list.length(labels) {
@@ -833,7 +832,11 @@ fn notice_tool(
         ),
         #(
           "path",
-          tool.string_property("a path relative to the workspace, with no `..`"),
+          tool.string_property(
+            "a path relative to the workspace, with no `..`, at most "
+            <> int.to_string(max_path_bytes)
+            <> " bytes",
+          ),
         ),
         #("line", tool.integer_property("a line in `path`, from 1")),
       ],
@@ -918,22 +921,21 @@ const max_path_bytes = 512
 fn relative_path(given: String) -> Result(String, String) {
   let path = string.trim(given)
   let segments = string.split(path, on: "/")
-  let oversize = byte_size(path) > max_path_bytes
+  let oversize = string.byte_size(path) > max_path_bytes
 
   // Empty, absolute and parent-escaping paths are refused, each with its own
   // words, because each is a different mistake.
   case path, string.starts_with(path, "/"), list.contains(segments, "..") {
     "", _, _ -> Error("`path` is empty")
-    _, _, _ if oversize -> Error("`path` is longer than 512 bytes")
+    _, _, _ if oversize ->
+      Error(
+        "`path` is longer than " <> int.to_string(max_path_bytes) <> " bytes",
+      )
     _, True, _ ->
       Error("`path` must be relative to the workspace, not absolute")
     _, _, True -> Error("`path` must not contain `..`")
     _, False, False -> Ok(path)
   }
-}
-
-fn byte_size(text: String) -> Int {
-  bit_array.byte_size(<<text:utf8>>)
 }
 
 // --- refusals --------------------------------------------------------------
