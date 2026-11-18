@@ -3846,7 +3846,8 @@ Example:
 
 /// Establishes and coordinates executor usage operations for the TUI runtime.
 fn executor_usage() -> String {
-  "usage: loom executor release SESSION [--state-dir PATH]   (also: loomd executor release)
+  "usage: loom executor release SESSION [--processes-gone] [--state-dir PATH]
+       (also: loomd executor release)
        loom executor release --worktrees --config PATH [--state-dir PATH]
                              [--helper PATH] [--force-session SESSION]...
 
@@ -3866,8 +3867,17 @@ SESSION is the orchestrator's session id, as the refused open names it.
 exec-ledger.db lives.
 
 Check that nothing from the session still runs on this machine first. The
-command refuses a scope that is open, and a scope that is already closed
-cleanly.
+command refuses a scope that is open unless --processes-gone is given, and a
+scope that is already closed cleanly.
+
+--processes-gone releases a scope that is still open. It is the operator saying
+two things: the executor is stopped, and the orchestrator that owned the session
+no longer runs it, so no process of the session remains on this machine. Use it
+for a scope left open after the orchestrator and the executor stopped together.
+Do not use it while the session is live. The session's next open reopens the
+scope at the next incarnation, as for any other release. A scope that holds a
+worktree keeps its record and the tree stays on disk; the command names it, and
+--worktrees below removes it.
 
 While it runs it holds the state directory's daemon reservation, and it leaves
 that record behind when it exits. A daemon started during the release is
