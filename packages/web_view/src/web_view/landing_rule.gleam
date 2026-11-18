@@ -15,8 +15,11 @@
 //// due read answers, once, from everything the round gathered (`landing`). Any
 //// kind of answer counts, since the page cannot wait for a read that failed:
 //// an unreadable, overtaken or empty answer marks its read `Answered` as a
-//// good one does. Every read task delivers, so the round completes in
-//// milliseconds and needs no timer.
+//// good one does. A read may wait up to the timeouts of the daemon calls it
+//// makes. A task that crashes delivers nothing, so its read stays due until
+//// the next readable list, which is read every refresh interval (30 s) and
+//// releases any read it no longer starts (`relisted`). The round needs no
+//// timer of its own.
 ////
 //// The module is pure. It imports no Lustre and reads no clock, so every
 //// arrival order is a test of a function over a record, with no page to draw.
@@ -26,7 +29,7 @@
 ////
 //// ## Flow
 ////
-//// `open` → `listed` / `answer` → `landing`
+//// `open` → `listed` / `relisted` / `answer` → `landing`
 ////
 //// 1. `open` starts a round with the list due, and the boards due on a page
 ////    that lists projects.
@@ -34,7 +37,8 @@
 ////    summary and feed reads that list started, since a page asks a read only
 ////    for a session of the matching kind.
 //// 3. `answer` records each later first answer, and says whether it was the
-////    last one due.
+////    last one due. `relisted` takes every later readable list and releases a
+////    due read the list no longer starts, since its task may have crashed.
 //// 4. `landing` reads the gathered picture once the round has closed.
 ////
 //// ## Transitions
@@ -170,7 +174,53 @@ pub fn listed(
 ) -> #(Round, Close) {
   case round.list {
     Due -> answer(Round(..round, activity:, summary:, feed:), ListSource)
-    Answered | NotDue -> #(round, Continues)
+    Answered | NotDue -> relisted(round, activity:, summary:, feed:)
+  }
+}
+
+/// Takes a later readable list. A read that is still due but that the list no
+/// longer starts, because its session stopped or was resumed or deleted, will
+/// not answer if its task crashed, so it is marked `Answered`, and the answer is
+/// `Closes` if that leaves no read due. A read the list still starts keeps its
+/// reading, and a read that was not due is not made due.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let round = landing_rule.open(landing_rule.NotDue)
+/// let #(round, _) =
+///   landing_rule.listed(round, activity: landing_rule.Due, summary: landing_rule.NotDue, feed: landing_rule.NotDue)
+/// let #(_, close) =
+///   landing_rule.relisted(round, activity: landing_rule.NotDue, summary: landing_rule.NotDue, feed: landing_rule.NotDue)
+/// assert close == landing_rule.Closes
+/// ```
+pub fn relisted(
+  round: Round,
+  activity activity: Reading,
+  summary summary: Reading,
+  feed feed: Reading,
+) -> #(Round, Close) {
+  let next =
+    Round(
+      ..round,
+      activity: released(round.activity, activity),
+      summary: released(round.summary, summary),
+      feed: released(round.feed, feed),
+    )
+
+  // Only a round that was waiting can close, and only by releasing its last read.
+  case owed(round), owed(next) {
+    0, _ -> #(next, Continues)
+    _, 0 -> #(next, Closes)
+    _, _ -> #(next, Continues)
+  }
+}
+
+/// A read after a later list: a due read the list no longer starts is released.
+fn released(held: Reading, started: Reading) -> Reading {
+  case held, started {
+    Due, NotDue -> Answered
+    Due, Due | Due, Answered | Answered, _ | NotDue, _ -> held
   }
 }
 

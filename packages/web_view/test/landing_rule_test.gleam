@@ -119,12 +119,8 @@ pub fn a_list_that_starts_no_read_closes_at_once_test() {
 pub fn only_the_first_list_sets_the_reads_test() {
   let round = everything_due()
 
-  assert landing_rule.listed(
-      round,
-      activity: NotDue,
-      summary: NotDue,
-      feed: NotDue,
-    )
+  // A later list that starts the same reads changes nothing.
+  assert landing_rule.listed(round, activity: Due, summary: Due, feed: Due)
     == #(round, Continues)
 
   let #(closed, _) =
@@ -206,4 +202,63 @@ pub fn a_quiet_session_lands_the_form_unless_something_waits_test() {
 // Nothing at all gives the form.
 pub fn nothing_gives_the_form_test() {
   assert landing_rule.landing(picture([], 0, 0, 0)) == inbox_rule.Form
+}
+
+// A later list that no longer starts a read still due releases it, since its
+// task may have crashed and delivered nothing, and closes the round if that
+// was the last read owed.
+pub fn a_list_that_no_longer_starts_a_due_read_releases_it_test() {
+  let #(round, _) =
+    landing_rule.listed(
+      landing_rule.open(NotDue),
+      activity: Due,
+      summary: Due,
+      feed: NotDue,
+    )
+  let #(round, close) = landing_rule.answer(round, SummarySource)
+  assert close == Continues
+
+  let #(released, close) =
+    landing_rule.relisted(
+      round,
+      activity: NotDue,
+      summary: NotDue,
+      feed: NotDue,
+    )
+  assert close == Closes
+  assert released.activity == landing_rule.Answered
+}
+
+// A read the later list still starts stays due, so the round stays open, and a
+// read that was not due is not made due by it.
+pub fn a_list_that_still_starts_the_read_keeps_it_due_test() {
+  let #(round, _) =
+    landing_rule.listed(
+      landing_rule.open(NotDue),
+      activity: Due,
+      summary: NotDue,
+      feed: NotDue,
+    )
+
+  assert landing_rule.relisted(round, activity: Due, summary: Due, feed: Due)
+    == #(round, Continues)
+}
+
+// A round that has closed is not closed again by a later list.
+pub fn a_later_list_never_closes_a_closed_round_test() {
+  let #(round, _) =
+    landing_rule.listed(
+      landing_rule.open(NotDue),
+      activity: NotDue,
+      summary: NotDue,
+      feed: NotDue,
+    )
+
+  assert landing_rule.relisted(
+      round,
+      activity: NotDue,
+      summary: NotDue,
+      feed: NotDue,
+    )
+    == #(round, Continues)
 }

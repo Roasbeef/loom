@@ -1017,3 +1017,41 @@ pub fn a_composer_with_no_saved_session_listed_stays_the_persons_test() {
   let refreshed = run(model, home.Ticked)
   assert !string.contains(drawn(refreshed), "<h1>Inbox</h1>")
 }
+
+// An activity read whose task crashed delivers nothing, so the round would wait
+// on it for ever. The next readable list no longer holds the running session, so
+// it releases the read and the round decides, on the composer. A read that comes
+// much later must not cover the composer in use: not a summary that now counts
+// something, and not an activity read that finally answers.
+pub fn a_crashed_read_is_released_by_the_next_list_test() {
+  let lists = process.new_subject()
+  process.send(lists, quiet_and_saved())
+  let base =
+    composing(quiet_and_saved(), fn(_) { Nil }, fn(deliver) {
+      deliver([none_waiting()])
+    })
+  let model =
+    opened(
+      home.Start(..base, sessions: fn(deliver) {
+        case process.receive(lists, 0) {
+          Ok(entries) -> deliver(home.Listed(entries))
+          Error(Nil) ->
+            deliver(home.Listed([entry("D", "hex release", sessions.Saved)]))
+        }
+      }),
+    )
+
+  // The crashed read leaves the round open; the next list releases it.
+  let ticked = run(model, home.Ticked)
+  assert string.contains(drawn(ticked), "<h1>New session</h1>")
+
+  let later =
+    ticked
+    |> run(home.SavedRead([approval_waiting()]))
+    |> run(home.Observed(quiet_report()))
+  let html = drawn(later)
+
+  assert string.contains(html, "<h1>New session</h1>")
+  assert !string.contains(html, "<h1>Inbox</h1>")
+  assert string.contains(html, "Back to the inbox")
+}

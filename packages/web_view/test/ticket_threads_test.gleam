@@ -810,3 +810,30 @@ pub fn the_inbox_control_shows_for_a_ticket_on_a_decided_composer_test() {
   assert string.contains(later, "<h1>New session</h1>")
   assert string.contains(later, "Back to the inbox")
 }
+
+// A first list that cannot be read is no answer: a board that answers beside it
+// decides nothing, and the first readable list then decides with the board in
+// hand, here on the inbox because the board holds tickets.
+pub fn an_unread_first_list_leaves_the_round_open_test() {
+  let asked = process.new_subject()
+  let lists = process.new_subject()
+  process.send(lists, home.Unread)
+  let start =
+    home.Start(
+      ..start_with(home.OperatorCeiling, Some(projects_for(asked, accepting()))),
+      sessions: fn(deliver) {
+        case process.receive(lists, 0) {
+          Ok(first) -> deliver(first)
+          Error(Nil) -> deliver(home.Listed([]))
+        }
+      },
+    )
+  let model = run(home.new(start), home.TimerReady(process.new_subject()))
+
+  // The board answered, and with an unread list it decided nothing.
+  assert !string.contains(drawn(model), "<h1>Inbox</h1>")
+
+  let decided = drawn(run(model, home.Ticked))
+  assert string.contains(decided, "<h1>Inbox</h1>")
+  assert string.contains(decided, "4 tickets need you")
+}

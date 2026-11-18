@@ -5499,7 +5499,7 @@ fn arrived(model: Model, source: landing_rule.Source) -> Model {
 }
 
 /// The model once a round has taken an answer. Only the answer that closes the
-/// round decides, and only for a page that has not been chosen away from.
+/// round decides, and only for a page whose centre is still `Awaiting`.
 fn concluded(model: Model, close: landing_rule.Close) -> Model {
   case close, model.centre_choice {
     landing_rule.Closes, Awaiting ->
