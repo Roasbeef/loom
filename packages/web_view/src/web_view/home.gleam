@@ -325,6 +325,7 @@ import web_view/sessions.{
 }
 import web_view/signins.{type Signin}
 import web_view/thread_send
+import web_view/ticket_rule
 import web_view/view/archiving
 import web_view/view/attention_thread
 import web_view/view/create.{type Create}
@@ -345,6 +346,7 @@ import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/signins as signins_view
 import web_view/view/switch
+import web_view/view/ticket_thread
 import web_view/view/your_name
 
 /// The Lustre event path of the sidebar on the home page: it is the second
@@ -1089,6 +1091,9 @@ pub opaque type Model {
     /// How many reads of the boards have been started, which numbers the next as
     /// `reads` does for the list: an answer a newer read overtook is dropped.
     board_reads: Int,
+    /// The project ticket whose thread the inbox's pane shows, if one is open.
+    /// It is never open together with an attention item's thread.
+    ticket: Option(ticket_rule.Opened),
   )
 }
 
@@ -1312,6 +1317,37 @@ pub type Msg {
 
   /// The gateway's word on the prompt a review's Send delivered.
   ReviewPrompted(answer: thread_send.Answer)
+
+  /// A project ticket's row was pressed: open its thread. The address is drawn
+  /// into the handler by the server, and the page honours it only for a ticket
+  /// its last board read still holds.
+  TicketThreadPicked(key: ticket_rule.Key)
+
+  /// A read of the open ticket thread's ticket arrived. It is the effect's own
+  /// message.
+  TicketThreadRead(key: ticket_rule.Key, read: feed.TicketRead)
+
+  /// A control on the open ticket thread was pressed. The control was drawn into
+  /// the handler, and the page honours it only when the ticket's daemon-listed
+  /// actions still hold it.
+  TicketControlPressed(control: ticket_rule.Control)
+
+  /// The thread's answer form was submitted, with the question's sequence number
+  /// it was drawn with and the text.
+  TicketAnswerSent(seq: Int, text: String)
+
+  /// The confirmation of a Stop or a Close was pressed: do what was asked.
+  TicketActConfirmed
+
+  /// The confirmation's "Keep" was pressed: take the question back.
+  TicketActKept
+
+  /// The daemon's word on a ticket act. It is the effect's own message.
+  TicketActSettled(
+    key: ticket_rule.Key,
+    control: ticket_rule.Control,
+    outcome: ticket_rule.Outcome,
+  )
 
   /// The person pressed "Inbox" on the composer or the list: show the centre the
   /// page lands on, which is the inbox while something waits or runs.
@@ -1773,6 +1809,7 @@ pub fn new(start: Start) -> Model {
     side_timer: None,
     boards: [],
     board_reads: 0,
+    ticket: None,
   )
 }
 
@@ -2039,6 +2076,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               review_pane.closed()
             _, _ -> model.review
           },
+          ticket: None,
         )
       let #(reviewed, reading) = reviewing(next)
       #(reviewed, effect.batch([approving(reviewed), reading]))
@@ -2298,7 +2336,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Some(reads), Some(_) -> {
           let #(state, reading) = item_pane.pick(model.item, key)
           #(
-            Model(..model, item: state, item_presses: model.item_presses + 1),
+            Model(
+              ..model,
+              item: state,
+              item_presses: model.item_presses + 1,
+              ticket: None,
+            ),
             case reading {
               item_pane.ReadRecord -> {
                 use dispatch <- effect.from
@@ -2508,6 +2551,82 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           #(next, attending(next))
         }
         False -> #(model, effect.none())
+      }
+
+    // A ticket row opens its thread for a ticket the last board read still holds
+    // as waiting on a person, and reads the ticket in full. The attention item
+    // thread closes, since one pane shows one thread.
+    TicketThreadPicked(key:) ->
+      case
+        model.start.projects,
+        list.any(ticket_rule.waiting(model.boards), fn(each) { each.key == key })
+      {
+        Some(_), True ->
+          reading_ticket_thread(
+            Model(
+              ..model,
+              item: item_pane.closed(),
+              ticket: Some(ticket_rule.open(key)),
+            ),
+            key,
+          )
+        Some(_), False | None, _ -> #(model, effect.none())
+      }
+
+    // A read keeps its detail for the thread that asked, and a ticket the
+    // project no longer holds closes the thread.
+    TicketThreadRead(key:, read:) ->
+      case model.ticket {
+        Some(opened) if opened.key == key ->
+          ticket_thread_heard(model, opened, read)
+        Some(_) | None -> #(model, effect.none())
+      }
+
+    TicketControlPressed(control:) -> ticket_pressed(model, control, "")
+
+    TicketAnswerSent(seq:, text:) -> ticket_answered(model, seq, text)
+
+    // The confirmation sends the act it asked about, if the daemon still lists
+    // it for the ticket.
+    TicketActConfirmed ->
+      case model.ticket {
+        Some(opened) ->
+          case ticket_rule.confirmed(opened) {
+            ticket_rule.Send(next, control) ->
+              ticket_acted(model, next, control, "")
+            ticket_rule.Confirming(_) | ticket_rule.Nothing -> #(
+              model,
+              effect.none(),
+            )
+          }
+        None -> #(model, effect.none())
+      }
+
+    TicketActKept ->
+      case model.ticket {
+        Some(opened) -> #(
+          Model(..model, ticket: Some(ticket_rule.cancelled(opened))),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
+    // The daemon's word on an act becomes the pane's notice, and the ticket and
+    // the boards are read again so the pane and the list show what the daemon now
+    // holds.
+    TicketActSettled(key:, control:, outcome:) ->
+      case model.ticket {
+        Some(opened) if opened.key == key -> {
+          let next =
+            Model(
+              ..model,
+              ticket: Some(ticket_rule.settled(opened, control, outcome)),
+            )
+          let #(next, reading) = reading_ticket_thread(next, key)
+
+          #(next, effect.batch([reading, reading_boards(next)]))
+        }
+        Some(_) | None -> #(model, effect.none())
       }
 
     ShowingInbox -> #(
@@ -4331,6 +4450,208 @@ fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
   #(model, effect)
 }
 
+/// Starts the read of the open ticket thread's ticket from the daemon's own
+/// task.
+fn reading_ticket_thread(
+  model: Model,
+  key: ticket_rule.Key,
+) -> #(Model, Effect(Msg)) {
+  case model.start.projects {
+    Some(Projects(ticket: read, ..)) -> #(model, {
+      use dispatch <- effect.from
+      read(key.project, key.ticket, fn(heard) {
+        dispatch(TicketThreadRead(key, heard))
+      })
+    })
+    None -> #(model, effect.none())
+  }
+}
+
+/// Starts a read of the projects' boards, so the list shows what an act changed
+/// without waiting for the next timer.
+fn reading_boards(model: Model) -> Effect(Msg) {
+  // A page with no projects capability has no board to read.
+  case model.start.projects {
+    Some(Projects(boards:, ..)) -> {
+      use dispatch <- effect.from
+      let serial = model.board_reads
+
+      boards(fn(read) { dispatch(BoardsRead(serial, read)) })
+    }
+    None -> effect.none()
+  }
+}
+
+/// What a read of the open ticket thread's ticket changes. A detail that does
+/// not decode is said in words and keeps what the pane had, and a ticket the
+/// project no longer holds closes the thread.
+fn ticket_thread_heard(
+  model: Model,
+  opened: ticket_rule.Opened,
+  read: feed.TicketRead,
+) -> #(Model, Effect(Msg)) {
+  case read {
+    feed.TicketHeard(detail: document) ->
+      case board.decode_detail(document) {
+        Ok(detail) -> #(
+          Model(..model, ticket: Some(ticket_rule.heard(opened, detail))),
+          effect.none(),
+        )
+        Error(_) -> #(
+          Model(..model, ticket: Some(ticket_rule.unreadable(opened))),
+          effect.none(),
+        )
+      }
+    feed.TicketGone -> #(Model(..model, ticket: None), effect.none())
+    feed.TicketUnread -> #(model, effect.none())
+  }
+}
+
+/// What the page may do to a ticket: operate when the page holds the projects
+/// capability at the owner's Operator ceiling, which `closable` requires too.
+/// Any other page draws the thread and no control.
+fn ticket_standing(model: Model) -> ticket_rule.Standing {
+  case model.start.projects, model.start.ceiling {
+    Some(_), OperatorCeiling -> ticket_rule.Operating
+    Some(_), ObserverCeiling | None, _ -> ticket_rule.Watching
+  }
+}
+
+/// The ticket the open thread draws now: its last read, or the board's row.
+fn open_ticket(model: Model) -> Option(#(ticket_rule.Opened, board.Ticket)) {
+  case model.ticket {
+    Some(opened) ->
+      case ticket_rule.current(opened, model.boards) {
+        Some(ticket) -> Some(#(opened, ticket))
+        None -> None
+      }
+    None -> None
+  }
+}
+
+/// A press on a control, with the text of an answer when the control is one and
+/// empty otherwise. The authority is derived again here, at the press: the page
+/// must be connected and hold the capability at the Operator ceiling, and the
+/// control must be one the daemon lists for the ticket as it now stands. A press
+/// that fails either asks nothing.
+fn ticket_pressed(
+  model: Model,
+  control: ticket_rule.Control,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  // The open ticket, the page's connection and its standing together say whether
+  // this page may act at all; only then is the control itself judged.
+  case open_ticket(model), model.status, ticket_standing(model) {
+    Some(#(opened, ticket)), Connected, ticket_rule.Operating ->
+      case ticket_rule.allowed(ticket, ticket_rule.Operating, control) {
+        True -> ticket_stepped(model, ticket_rule.press(opened, control), text)
+        False -> #(model, effect.none())
+      }
+    Some(_), Connected, ticket_rule.Watching
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+/// What the rule made of a press: a confirmation to draw, an act to send, or
+/// nothing.
+fn ticket_stepped(
+  model: Model,
+  step: ticket_rule.Press,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  case step {
+    ticket_rule.Confirming(next) -> #(
+      Model(..model, ticket: Some(next)),
+      effect.none(),
+    )
+    ticket_rule.Send(next, sent) -> ticket_acted(model, next, sent, text)
+    ticket_rule.Nothing -> #(model, effect.none())
+  }
+}
+
+/// An answer from the thread's form. An empty answer asks nothing, and one past
+/// the box's limit is refused here in words. Past that the daemon is the
+/// authority: an answer to a question that has since changed is refused there.
+fn ticket_answered(
+  model: Model,
+  seq: Int,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  // The box's own limits are judged before the press is.
+  case string.trim(text), string.length(text) > ticket_thread.answer_limit {
+    "", _ -> #(model, effect.none())
+    _, True -> #(
+      Model(
+        ..model,
+        ticket: option.map(model.ticket, fn(opened) {
+          ticket_rule.Opened(
+            ..opened,
+            notice: Some(ticket_rule.Refused(
+              "That answer is longer than the box allows.",
+            )),
+          )
+        }),
+      ),
+      effect.none(),
+    )
+    _, False -> ticket_pressed(model, ticket_rule.Answer(seq), text)
+  }
+}
+
+/// Sends the act through the capability the page holds, from the daemon's own
+/// task, and answers `TicketActSettled`. The text is the answer's and is empty
+/// for any other act.
+fn ticket_acted(
+  model: Model,
+  opened: ticket_rule.Opened,
+  control: ticket_rule.Control,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  let model = Model(..model, ticket: Some(opened))
+  let key = opened.key
+
+  // A page with no projects capability has nothing to send through.
+  case model.start.projects {
+    Some(Projects(answer:, close:, stop:, retry:, ..)) -> #(model, {
+      use dispatch <- effect.from
+      let settle = fn(outcome) {
+        dispatch(TicketActSettled(key, control, outcome))
+      }
+      let acted = fn(told) {
+        settle(case told {
+          feed.Acted -> ticket_rule.Done
+          feed.Declined(code:) -> ticket_rule.Declined(code)
+        })
+      }
+
+      // Each act goes through its own capability, and each answer is read into
+      // the rule's one outcome.
+      case control {
+        ticket_rule.Answer(seq) ->
+          answer(key.project, key.ticket, seq, text, fn(told) {
+            settle(case told {
+              feed.Recorded -> ticket_rule.Done
+              feed.Refused(code:) -> ticket_rule.Declined(code)
+            })
+          })
+        ticket_rule.Close ->
+          close(key.project, key.ticket, fn(told) {
+            settle(case told {
+              feed.Closed -> ticket_rule.Done
+              feed.NotClosed(code:) -> ticket_rule.Declined(code)
+            })
+          })
+        ticket_rule.Retry -> retry(key.project, key.ticket, acted)
+        ticket_rule.Stop -> stop(key.project, key.ticket, acted)
+      }
+    })
+    None -> #(model, effect.none())
+  }
+}
+
 /// The boards a read gave. A board set equal to the one held changes nothing; a
 /// new one replaces it, and an open ticket is read again when its project's board
 /// has moved past the revision its detail was read at.
@@ -4346,14 +4667,26 @@ fn boards_heard(
       let model = Model(..model, boards:)
 
       // A ticket page is refreshed only when it is open and stale, so a board
-      // that moved elsewhere costs the open page nothing.
-      case model.pane {
-        Ticketed(open) ->
+      // that moved elsewhere costs the open page nothing. The same holds for
+      // the inbox's ticket thread.
+      case model.pane, model.ticket {
+        Ticketed(open), _ ->
           case ticket_is_stale(boards, open) {
             True -> reading_ticket(model, open.project, open.ticket)
             False -> #(model, effect.none())
           }
-        NewSession | SessionList | Relayed(_) -> #(model, effect.none())
+        NewSession, Some(opened)
+        | SessionList, Some(opened)
+        | Relayed(_), Some(opened)
+        ->
+          case ticket_rule.stale(opened, boards) {
+            True -> reading_ticket_thread(model, opened.key)
+            False -> #(model, effect.none())
+          }
+        NewSession, None | SessionList, None | Relayed(_), None -> #(
+          model,
+          effect.none(),
+        )
       }
     }
   }
@@ -5076,7 +5409,7 @@ fn would_land(model: Model) -> inbox_rule.Landing {
 
   // Something waiting in the feed or the catalogue lands on the inbox even when
   // no session runs, which is a restart with an approval pending.
-  case reports, tally.needing + tally.finds {
+  case reports, tally.needing + tally.finds + waiting_tickets(model) {
     inbox_rule.Inbox, _ -> inbox_rule.Inbox
     inbox_rule.Form, 0 -> inbox_rule.Form
     inbox_rule.Form, _ -> inbox_rule.Inbox
@@ -5203,7 +5536,13 @@ fn landed_inbox(model: Model) -> Bool {
 /// a stuck strand or a find. A session that runs does not count by running.
 fn something_waits(model: Model) -> Bool {
   let tally = attention_rule.tally(standings(model))
-  tally.needing + tally.finds > 0
+  tally.needing + tally.finds + waiting_tickets(model) > 0
+}
+
+/// How many project tickets the last board read holds as waiting on a person.
+/// They count toward landing on the inbox, as an ask does.
+fn waiting_tickets(model: Model) -> Int {
+  list.length(ticket_rule.waiting(model.boards))
 }
 
 /// The running session whose thread the pane shows when its activity says an
@@ -5478,9 +5817,87 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
   }
 }
 
+/// The inbox's threads with the project tickets that wait on a person added.
+/// Their rows follow the attention rows in Needs you, and the open ticket's pane
+/// takes the reading pane, which no attention item's pane shares: opening one
+/// closes the other.
+fn with_tickets(
+  model: Model,
+  base: Option(inbox_view.Threads(Msg)),
+) -> Option(inbox_view.Threads(Msg)) {
+  let waiting = ticket_rule.waiting(model.boards)
+  let shown = open_ticket(model)
+
+  // A page with neither feed nor tickets has no threads; any other draws the
+  // feed's, with tickets added.
+  case base, waiting, shown {
+    None, [], None -> None
+    Some(held), _, _ -> Some(ticketed(model, held, waiting, shown))
+    None, _, _ ->
+      Some(ticketed(
+        model,
+        inbox_view.Threads(needs: [], finds: [], pane: None, evidence: []),
+        waiting,
+        shown,
+      ))
+  }
+}
+
+/// The threads of `held` with the ticket rows appended to what needs the owner,
+/// and the open ticket's pane drawn in place of the pane `held` has, if one is
+/// open.
+fn ticketed(
+  model: Model,
+  held: inbox_view.Threads(Msg),
+  waiting: List(ticket_rule.Waiting),
+  shown: Option(#(ticket_rule.Opened, board.Ticket)),
+) -> inbox_view.Threads(Msg) {
+  let selected = option.map(model.ticket, fn(opened) { opened.key })
+  let standing = ticket_standing(model)
+
+  inbox_view.Threads(
+    ..held,
+    needs: list.append(
+      held.needs,
+      list.map(waiting, fn(each) {
+        ticket_thread.row(each, model.now, selected, TicketThreadPicked)
+      }),
+    ),
+    pane: case shown {
+      Some(#(opened, ticket)) ->
+        Some(
+          ticket_thread.pane(ticket_thread.Offer(
+            now: model.now,
+            opened:,
+            ticket:,
+            standing:,
+            controls: ticket_rule.controls(ticket, standing),
+            press: TicketControlPressed,
+            answer: TicketAnswerSent,
+            confirm: TicketActConfirmed,
+            keep: TicketActKept,
+          )),
+        )
+      None -> held.pane
+    },
+  )
+}
+
 /// The headline over the inbox: the attention tally's when the page reads the
 /// feed, and the phase-0 words otherwise.
 fn inbox_headline(model: Model, threads: List(inbox_rule.Thread)) -> String {
+  let words = headline_of(model, threads)
+
+  // Tickets are read from the project boards, which the feed's words say nothing
+  // about, so their count is its own clause.
+  case ticket_rule.waiting_words(waiting_tickets(model)) {
+    "" -> words
+    tickets -> words <> " · " <> tickets
+  }
+}
+
+/// The headline words before the tickets' clause is added.
+fn headline_of(model: Model, threads: List(inbox_rule.Thread)) -> String {
   case model.start.attention {
     Some(_) -> attention_rule.headline(attention_rule.tally(standings(model)))
     None ->
@@ -5526,7 +5943,7 @@ fn inbox_page(model: Model) -> Element(Msg) {
         ))
       None -> None
     },
-    attention: attention_threads(model),
+    attention: with_tickets(model, attention_threads(model)),
     review: review_offer(model),
   ))
 }

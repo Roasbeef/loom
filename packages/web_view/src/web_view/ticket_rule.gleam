@@ -45,6 +45,7 @@
 ////    question back.
 //// 5. `settled` takes the daemon's word and makes the notice the pane shows.
 
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import session_view/project_board.{type Detail, type Ticket} as board
@@ -201,6 +202,22 @@ pub fn waiting(held: List(Loaded)) -> List(Waiting) {
       None -> []
     }
   })
+}
+
+/// The clause the inbox's headline adds for the tickets waiting on a person, or
+/// nothing when there are none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ticket_rule.waiting_words(2) == "2 tickets need you"
+/// ```
+pub fn waiting_words(count: Int) -> String {
+  case count {
+    0 -> ""
+    1 -> "1 ticket needs you"
+    many -> int.to_string(many) <> " tickets need you"
+  }
 }
 
 /// The ticket the thread draws: the last read of it when one has answered,

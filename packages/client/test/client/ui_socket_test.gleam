@@ -2319,3 +2319,35 @@ pub fn the_review_forms_need_no_new_admission_test() {
     assert !ui_socket.home_owner_accepts(submit_on(path))
   })
 }
+
+// A project ticket's thread on Home adds no admission (protocol-change/051, the
+// addendum "project tickets on Home"). Its row, its Close, Retry, Stop, Confirm
+// and Keep buttons are clicks beneath the table's region, which every home's
+// socket admits, and its answer form is a submit beneath it, which only the
+// owner's socket admits. The page acts only where it holds the projects
+// capability, which is the owner's operating page's alone, so a member's or an
+// observer's home admits the clicks and does nothing with them. A click beneath
+// the projects section's region is admitted by the owner's socket alone, and a
+// submit there by none.
+pub fn a_ticket_thread_needs_no_new_admission_test() {
+  let answer = home.table_path <> "\t1\t0\t4\t0\t2\t1"
+  let control = home.table_path <> "\t1\t0\t4\t0\t3\t0"
+
+  assert !ui_socket.home_accepts(submit_on(answer))
+  assert ui_socket.home_owner_accepts(submit_on(answer))
+  assert ui_socket.home_accepts(click_on(control))
+  assert ui_socket.home_owner_accepts(click_on(control))
+
+  // Beneath the projects section's region only the owner's socket admits a
+  // click, and nothing admits a submit there.
+  let strip = home.projects_path <> "\t0\t1\t0\t0\t0"
+  assert !ui_socket.home_accepts(click_on(strip))
+  assert ui_socket.home_owner_accepts(click_on(strip))
+  assert !ui_socket.home_owner_accepts(submit_on(strip))
+
+  // Outside both regions a submit is admitted by no socket.
+  list.each([home.sidebar_path <> "\t1\t0\t2", "0\t0\t1"], fn(path) {
+    assert !ui_socket.home_accepts(submit_on(path))
+    assert !ui_socket.home_owner_accepts(submit_on(path))
+  })
+}
