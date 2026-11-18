@@ -1942,6 +1942,70 @@ pub fn delete_session_agency_limits(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
+pub type SessionAttention {
+  SessionAttention(
+    pending_approvals: Int,
+    open_asks: Int,
+    open_finds: Int,
+    oldest_open_at: Option(Int),
+    updated_at: Int,
+  )
+}
+
+pub fn session_attention(session_id session_id: String) {
+  let sql =
+    "SELECT pending_approvals, open_asks, open_finds, oldest_open_at, updated_at
+FROM catalogue_session_attention WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_attention_decoder())
+}
+
+pub fn session_attention_decoder() -> decode.Decoder(SessionAttention) {
+  use pending_approvals <- decode.field(0, decode.int)
+  use open_asks <- decode.field(1, decode.int)
+  use open_finds <- decode.field(2, decode.int)
+  use oldest_open_at <- decode.field(3, decode.optional(decode.int))
+  use updated_at <- decode.field(4, decode.int)
+  decode.success(SessionAttention(
+    pending_approvals:,
+    open_asks:,
+    open_finds:,
+    oldest_open_at:,
+    updated_at:,
+  ))
+}
+
+pub fn set_session_attention(
+  session_id session_id: String,
+  pending_approvals pending_approvals: Int,
+  open_asks open_asks: Int,
+  open_finds open_finds: Int,
+  oldest_open_at oldest_open_at: Option(Int),
+  updated_at updated_at: Int,
+) {
+  let sql =
+    "INSERT INTO catalogue_session_attention (session_id, pending_approvals, open_asks, open_finds, oldest_open_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET
+  pending_approvals = excluded.pending_approvals,
+  open_asks = excluded.open_asks,
+  open_finds = excluded.open_finds,
+  oldest_open_at = excluded.oldest_open_at,
+  updated_at = excluded.updated_at"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamInt(pending_approvals),
+    dev.ParamInt(open_asks),
+    dev.ParamInt(open_finds),
+    dev.ParamNullable(option.map(oldest_open_at, fn(v) { dev.ParamInt(v) })),
+    dev.ParamInt(updated_at),
+  ])
+}
+
+pub fn delete_session_attention(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_attention WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
