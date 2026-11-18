@@ -315,6 +315,15 @@ pub fn the_creation_time_is_an_age_with_the_utc_minute_in_its_title_test() {
   assert string.contains(html, ">just now</time>")
 }
 
+// A name of only whitespace is no name, so the label falls back to the
+// identity wherever it is drawn.
+pub fn a_blank_name_is_labelled_by_the_identity_test() {
+  assert sessions.label(entry("0198a2f4-7c3b", "  \n", "/w", 0, Saved))
+    == "Session 0198a2f4"
+  assert sessions.label(entry("0198a2f4-7c3b", "build", "/w", 0, Saved))
+    == "build"
+}
+
 pub fn an_age_is_counted_in_whole_units_test() {
   assert sessions.ago(59_999, 0) == "just now"
   assert sessions.ago(60_000, 0) == "1m ago"

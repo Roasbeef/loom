@@ -180,9 +180,10 @@ pub fn role_words(role: Role) -> String {
 ///   == "Session 0198a2f4"
 /// ```
 pub fn label(entry: Entry) -> String {
-  case entry.name {
+  // A name of only whitespace is no name, wherever the label is drawn.
+  case string.trim(entry.name) {
     "" -> "Session " <> string.slice(entry.id, 0, 8)
-    named -> named
+    _ -> entry.name
   }
 }
 
