@@ -876,6 +876,16 @@ pub fn a_session_that_was_a_local_directory_here_is_not_taken_back_from_an_execu
     reason,
     "the directory it came from on that orchestrator is not supported yet",
   )
+  assert string.contains(
+    reason,
+    "Nothing moved: the session stays where it was",
+  )
+  assert string.contains(
+    reason,
+    "its commits are on the branch `loom/"
+      <> copy.session
+      <> "` in that executor's repository",
+  )
 
   // Nothing changed: the tombstone stands and no file was placed.
   assert manager.custody(rig.registry, copy.session)

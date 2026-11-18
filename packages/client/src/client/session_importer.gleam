@@ -427,6 +427,7 @@ fn not_back_to_a_directory(
               Error(
                 Refused(
                   session_move.Malformed(returning_to_a_directory(
+                    activation.session,
                     executor,
                     pool,
                   )),
@@ -444,19 +445,32 @@ fn not_back_to_a_directory(
 }
 
 /// The sentence for a session that would go back to a directory: where its work
-/// is, and that moving it back is not supported yet.
-fn returning_to_a_directory(executor: String, pool: String) -> String {
+/// is, that moving it back is not supported yet, and that nothing moved. The
+/// refusal is shown in the source's abort report, so it says what the operator
+/// can rely on there: the session stays where it was, and its commits are on the
+/// executor's branch for the session.
+fn returning_to_a_directory(
+  session: String,
+  executor: String,
+  pool: String,
+) -> String {
   // A session in a pool that has not attached names no executor, and the pool
-  // is then the only place its work can be.
-  let place = case executor {
-    "" -> "the pool `" <> pool <> "`"
-    name -> "the executor `" <> name <> "`"
+  // is then the only place its work can be and no branch exists yet.
+  let #(place, kept) = case executor {
+    "" -> #("the pool `" <> pool <> "`", "")
+    name -> #(
+      "the executor `" <> name <> "`",
+      ", and its commits are on the branch `loom/"
+        <> session
+        <> "` in that executor's repository",
+    )
   }
 
   "this session's work is on "
   <> place
   <> ", and moving it back to the directory it came from on that orchestrator "
-  <> "is not supported yet"
+  <> "is not supported yet. Nothing moved: the session stays where it was"
+  <> kept
 }
 
 // The orchestrator this daemon lists for the activation's node.

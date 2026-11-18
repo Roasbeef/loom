@@ -1888,3 +1888,91 @@ Before this addendum the three "reserved, no slot" rows ended the row (no room) 
   `daemon_manager_test`: `a_reserved_delegate_session_is_built_again_by_the_next_message_test`;
   `agency_test`: `a_spawn_answered_not_yet_open_leaves_the_pass_its_join_test`; and
   `daemon_spawn_host_test` asserts the `NotOpen` mapping.
+
+## Addendum: the source learns the close of a scope the host freed, and a refused move says what stayed (2026-11-17)
+
+The live re-drive of `back.sh` and `dfault2.sh` on the commit that merged the addendum "a move back is refused,
+and an open scope for an unserved name is freed" found that the freeing rule did not finish
+the job, and this addendum records the cause and the ruling. Nothing above is edited. No wire constructor
+is added and the version stays at 6.
+
+**What the first rule missed.** After the retry closed the executor's scope, the move with the corrected
+name was refused with the text for an open scope, although the executor's row read closed with no tree.
+Following the advice once (name the bound workspace, move, then correct the name) finished the move, and
+the advice took two such rounds when the name had been corrected before the dead source's retry. The
+cause is the source's own record of the scope in its session file (`scope.Scope`), not the executor's.
+The retry is a rebound attach, and `workspace.close_if_opened` records a close only for an attach that
+created or reopened the scope, because a rebound scope may be a session's own. The host had closed the
+empty scope, and the source cannot tell, so its record still read "attach at incarnation 1, no close".
+The corrected name was attached at incarnation 1, the executor found the scope closed at that
+incarnation and answered `StaleIncarnation`, and `workspace.learn_unrecorded_close` asked how that close
+ended. The executor judges a close by workspace before it looks at the scope (`exec_ledger.scope_at`,
+`same_workspace`), so the question under the corrected name was refused as `WorkspaceMismatch`, and the
+source turned that into the refusal text. Naming the bound workspace made the question match, the source
+learned the close, and the next attempt reopened the scope at incarnation 2, which is the sequence of the
+drive. The tests of that addendum stopped before the corrected move or pinned the refusal as a
+ruling, and the checkout model chose every attach's incarnation from the executor's ledger, as if the
+source always knew it, so a stale record could not arise in it.
+
+- *The rule.* When the source's question about an unrecorded close is refused for the workspace, it asks
+  again under the workspace the refusal names (`workspace.learn_unrecorded_close`). The attach that led
+  to the question was told that the scope is at the incarnation it named, and for a workspace the scope is
+  not bound to the executor says that only of a scope that is closed cleanly and holds no tree
+  (`workspace_for_attach` refuses every other state for its workspace first), so the second question is
+  answered with the stored outcome. A close is not a read, since `host.close_scope` calls `begin_close`,
+  which would close an open scope. It is safe because the incarnation never goes down: a scope seen closed
+  at the incarnation can be open again only at the next one, where the executor refuses the question as a
+  stale incarnation and the source records nothing. The source records that close and attaches
+  again, and the executor rebinds the scope to the corrected name. A second refusal ends the move with the
+  refusal text, as before. The executor is not changed and no message is added.
+- *The result.* The move with the corrected name is accepted after the retry that freed the scope, with
+  no operator step. That addendum says the corrected name "is refused with that text once" and
+  that setting the name back "learns the close"; both are replaced by this rule. A name corrected while the
+  scope is still open is refused with a true text, and naming the bound workspace is one round: that
+  attach is a rebound attach, the host closes the empty scope, and the corrected name then lands. The
+  earlier second round is gone. The tests are
+  `an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test`, which now runs the fault, the
+  retry and the corrected name against one source, `a_name_corrected_before_the_retry_needs_one_round_of_the_advice_test`
+  and `a_close_the_record_never_saw_is_learned_under_the_bound_workspace_test`, which replaces the test
+  that pinned the refusal. The first two failed before the change with the refusal the drive showed.
+- *The refusal text.* `workspace.mismatch_words` said the scope "is open or holds a tree", which was false
+  for the state above and incomplete for a scope that is closing or was closed without proof that its
+  children are gone. It now says that a scope keeps its workspace while it is open, is closing, was closed
+  without that proof, or holds a tree, and gives the advice for an open scope. After the rule above a
+  closed scope with no tree no longer reaches it.
+- *The checkout model.* `MoveCheckout.tla` has the variable `srec` (the source's record, `open` or
+  `closed`), `StaleOpen` and `LearnOk` inside `AttachAllowed`, the constant `LearnsUnderBound` (the rule),
+  and the invariant `ClosedEmptyScopeTakesTheNextName`: a closed scope with no tree record and a good
+  name is never refused for its bound workspace. `MoveCheckoutAlsoWorkspaces.cfg` and
+  `MoveCheckout.cfg` check it and pass. `MoveCheckoutMutantSourceKeepsOpenRecord.cfg` runs
+  `OwnerDiesInAttach` without the rule and breaks it with the drive's trace: the dying attach, the retry
+  that frees the scope, the corrected name. The model's operator only corrects the name, so the order
+  in which the name is corrected first, and the second naming of the bound workspace, are outside it, and
+  are covered by the Gleam test above. A source that dies inside a landing keeps a record that reads
+  `open` and a scope that is held, which `MoveCheckoutMutantCrashInLanding.cfg` records.
+
+**A move back to a laptop directory, as an operator sees it.** The drive confirmed that the refusal changes
+nothing: the session stays on the orchestrator it was on, its work is on the executor, and the laptop
+directory is untouched. It also found that the outcome reaches the operator nowhere but the daemons' logs.
+`loom sessions move` asks for the move and answers at once with the operation, and a move that the
+destination refuses ends in the source's log as `daemon.move_aborted`; `loom deployment status` lists
+moves that are in flight or stalled, and an aborted move is neither, so it is not listed, and
+`loom sessions list --all` shows only where the session now is.
+
+- *The text.* The refusal now ends with "Nothing moved: the session stays where it was", and for a session
+  on an executor adds that its commits are on the branch `loom/<session>` in that executor's repository.
+  For a session in a pool that has not attached it says only that nothing moved, because no branch exists.
+  The prefix "the request is malformed" is unchanged, for the reason in that addendum.
+- *The command.* `loom sessions move` prints, after the operation, that it does not wait for the move,
+  that `loom sessions list --all` shows where the session is, and that a refusal is in the daemon log as
+  `daemon.move_aborted`.
+- *Not built.* A surface for the outcome of a move that ended. It would need the movers to keep the last
+  abort reason for a session and `deployment status` or the session list to show it, which is a change to
+  a document that crosses the client boundary and is left for its own proposal.
+
+**Still open.** Nothing in this addendum was run over a real distribution link. The re-drive of the
+sequence on a real executor is the drive's `dfault2.sh` with the corrected name and no second round.
+`session_mover.asked_to_close` asks about an unrecorded close only under the registration's workspace,
+so a `WorkspaceMismatch` there abandons the move without a second ask under the bound name. It is
+reachable only after a crash in the landing followed by a rename of the workspace before the resume,
+and it is left for a follow-up.

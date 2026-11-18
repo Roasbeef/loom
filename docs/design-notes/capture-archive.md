@@ -13,10 +13,22 @@ repository's existing history; it does not reduce a full-history clone.
 | TUI workspace captures | 86 | 3535175 | [tui-agent-workspace](https://github.com/Roasbeef/loom/tree/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/tui-agent-workspace) |
 | Website QA captures | 26 | 2999588 | [site/screenshots](https://github.com/Roasbeef/loom/tree/dc70d25d42da531284225bf399f40f82e13539d4/site/screenshots) |
 
+The attention-inbox bracket's captures were archived later, at commit
+[`8143a790f58993a7c04e594868c531b6811c0fee`](https://github.com/Roasbeef/loom/tree/8143a790f58993a7c04e594868c531b6811c0fee), when that
+design was decided:
+
+| Collection | Files | Uncompressed bytes | Browse archive |
+|---|---:|---:|---|
+| Attention-inbox captures | 31 | 5074907 | [attention-inbox/screens](https://github.com/Roasbeef/loom/tree/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens) |
+
+The mockups that produced them stay in the tree beside the notes, as static
+pages that open directly in a browser.
+
 The [SHA-256 manifest](capture-archive.sha256) lists every archived file with
-its original repository path. In total, 782 files account for 55,965,157 bytes
-(53.37 MiB). Useful design prose, both terminal mockup generators and the tmux
-capture renderer remain in the source tree. README images, logos and website
+its original repository path. The first archive's 782 files account for
+55,965,157 bytes (53.37 MiB), and the manifest also lists the 31
+attention-inbox captures. Useful design prose, both terminal mockup
+generators and the tmux capture renderer remain in the source tree. README images, logos and website
 assets under `site/public/` remain tracked.
 
 ## Recovering the captures
@@ -31,6 +43,14 @@ git archive dc70d25d42da531284225bf399f40f82e13539d4 \
   docs/design-notes/web-design \
   docs/design-notes/tui-agent-workspace \
   site/screenshots | tar -x -C ../loom-ui-archive
+```
+
+The attention-inbox captures come from their own commit, into the same
+directory:
+
+```sh
+git archive 8143a790f58993a7c04e594868c531b6811c0fee \
+  docs/design-notes/attention-inbox/screens | tar -x -C ../loom-ui-archive
 ```
 
 That export also includes the original prose and scripts in those directories.

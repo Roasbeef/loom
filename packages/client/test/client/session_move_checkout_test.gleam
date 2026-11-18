@@ -593,8 +593,6 @@ const second_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9f"
 // A third and a fourth, for a move asked for again after each of two abandons.
 const third_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8da0"
 
-const fourth_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8da1"
-
 // --- what a finished move leaves ---------------------------------------------------------
 
 fn assert_moved(rig: Rig) -> Nil {
@@ -1358,8 +1356,7 @@ pub fn a_rebound_scope_with_a_lost_result_keeps_its_unserved_workspace_test() {
 // attach, which the host used to leave open, so the scope could not be freed and
 // the refusal's recovery went round in a circle. The host closes it now, on the
 // path that finds the name unserved, so the move ends with a closed scope, and
-// the recovery the refusal gives works: name the bound workspace again, then
-// correct the name.
+// the corrected name then lands on the same source with no operator step.
 pub fn an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test() {
   let rig = start("open-unserved", InWorktrees, 0)
   let move = begin(rig)
@@ -1371,25 +1368,44 @@ pub fn an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test()
   assert string.contains(reason, "nosuch")
   assert executor_scope(rig).state == exec_ledger.Closed(exec_ledger.AllRetired)
 
-  // The record still shows no close, so the corrected name is asked about the
-  // close under a workspace the scope is not bound to, and is refused with the
-  // workspace to set back.
+  // The source's record still shows an attach with no close, because the retry
+  // was a rebound attach and the source cannot tell that the host closed the
+  // scope. The corrected name is attached at that incarnation, the executor says
+  // the scope is already there, and the source learns the close from the
+  // executor, under the workspace the scope is bound to. No operator step is
+  // needed: the same source lands the checkout at the next incarnation.
   let corrected = begin_as(rig, second_op)
-  let assert Aborted(refusal) = session_mover.drive(plain(rig), corrected)
+  assert session_mover.drive(plain(rig), corrected) == Finished
+  assert_moved_as(rig, second_op)
+  finish(rig)
+}
+
+// The other order: the operator corrects the name before the dead source's
+// retry. The scope is still open, so it keeps the workspace it is bound to and the
+// refusal is true. Naming the bound workspace again is one round: the attach
+// rebinds the open scope, the host closes it as empty, and the corrected name
+// then lands with no second round.
+pub fn a_name_corrected_before_the_retry_needs_one_round_of_the_advice_test() {
+  let rig = start("open-unserved-early", InWorktrees, 0)
+  let move = begin(rig)
+  open_scope_in(rig, "nosuch")
+  unclosed_record(rig)
+
+  // The corrected name meets an open scope bound to another workspace.
+  let assert Aborted(refusal) = session_mover.drive(plain(rig), move)
   assert string.contains(refusal, "bound to the workspace `nosuch`")
+  assert executor_scope(rig).state == exec_ledger.Open
 
-  // Setting it back is the recovery the refusal gives. The close is learned and
-  // recorded, and the move ends again with the scope closed.
-  let set_back = begin_as(rig, third_op)
+  // The advice: name the bound workspace again. The move ends and the scope is
+  // closed.
+  let set_back = begin_as(rig, second_op)
   let assert Aborted(_) = session_mover.drive(named(rig, "nosuch"), set_back)
-  let assert Ok(Some(cell)) =
-    scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
-  assert cell.closed == Some(protocol.AllRetired)
+  assert executor_scope(rig).state == exec_ledger.Closed(exec_ledger.AllRetired)
 
-  // The corrected name then lands the checkout at the next incarnation.
-  let landing = begin_as(rig, fourth_op)
+  // The corrected name lands on the same source.
+  let landing = begin_as(rig, third_op)
   assert session_mover.drive(plain(rig), landing) == Finished
-  assert_moved_as(rig, fourth_op)
+  assert_moved_as(rig, third_op)
   finish(rig)
 }
 
@@ -1398,9 +1414,11 @@ pub fn an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test()
 // written, because it died between the attach and the record. The corrected
 // workspace is attached at that incarnation, the ledger answers that the scope is
 // at it, and the question about the close names the new workspace, which the scope
-// is not bound to. That is a refusal for the workspace and ends the move, where it
-// used to be taken for a lost connection and stall for good.
-pub fn a_close_asked_under_the_corrected_workspace_ends_the_move_test() {
+// is not bound to. That refusal used to end the move, and before that it was taken
+// for a lost connection and stalled for good. The scope is closed cleanly and
+// holds no tree, so the source asks again under the workspace the executor names,
+// learns the close, and lands the checkout in the corrected workspace.
+pub fn a_close_the_record_never_saw_is_learned_under_the_bound_workspace_test() {
   let rig = start("unrecorded-close", Both, 0)
   let move = begin(rig)
   open_scope_in(rig, "shared1")
@@ -1416,9 +1434,8 @@ pub fn a_close_asked_under_the_corrected_workspace_ends_the_move_test() {
       exec_ledger.AllRetired,
     )
   unclosed_record(rig)
-  let assert Aborted(reason) = session_mover.drive(named(rig, "repo"), move)
-  assert string.contains(reason, "shared1")
-  assert_stays_on_source(rig)
+  assert session_mover.drive(named(rig, "repo"), move) == Finished
+  assert_moved(rig)
   finish(rig)
 }
 

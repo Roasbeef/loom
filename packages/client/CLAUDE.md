@@ -9184,8 +9184,20 @@ the protocol-change/078 addendum on moving a session have the protocol.
   executor restarted with the workspace dropped must not close it. This is what frees the
   open scope that a source dying in the attach leaves, since the retry is a rebound
   attach. `workspace.refused_attempt` still closes only a scope its record shows it
-  opened, so after the host's close the corrected name is refused once for the bound
-  name (twice when it was corrected before the retry), and setting the name back records the close.
+  opened, so after the host's close the source's record still shows an attach with no
+  close. The corrected name is attached at that incarnation and the executor answers that
+  the scope is there; `workspace.learn_unrecorded_close` asks how the close ended, the
+  executor refuses the question under the corrected name for the workspace the scope is
+  bound to, and the source then asks again under the workspace the refusal names, which
+  the executor answers with the stored outcome of the closed scope, and the attach
+  rebinds. A close is not a read, and the ask is safe because the incarnation never goes
+  down: a scope seen closed at `held` is open again only at `held + 1`, where the executor
+  refuses the ask as stale and the source records nothing. The corrected name lands in one
+  move with no operator step (`an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test`);
+  a name corrected while the scope is still open takes one round of the advice
+  (`a_name_corrected_before_the_retry_needs_one_round_of_the_advice_test`).
+  `workspace.mismatch_words` is shown for a scope that is open, closing, closed without
+  proof or holding a tree, and says so.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
   linked to the process that starts the daemon's services. `Control` carries the
   listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;

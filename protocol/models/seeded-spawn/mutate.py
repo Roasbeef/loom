@@ -18,6 +18,29 @@ scripts/model_check.sh runs after the project's cases and probes. A mutation
 that no longer applies (its pattern is not found exactly once) fails loudly
 rather than running the unmutated model; update the pattern when the model's
 text changes.
+
+The schedule budget of a mutation is set by how rare its witness is. A check
+stops at its first witness, so a large budget costs nothing when the mutant is
+caught and is spent only by a mutant that survives. P picks schedules at random,
+so a witness that is found in one schedule in N survives a budget B with
+probability (1 - 1/N)^B. Twelve runs of each rare mutant with a budget of 100,000
+found the witness after these schedules:
+
+  M19: 15, 88, 606, 705, 1234, 2028, 2192, 3118, 5092, 6901, 7490, 8248
+       (mean 3,143, about 1 in 3,100)
+  M20: 171, 203, 2690, 4385, 4612, 4697, 8225, 8564, 8608, 13758, 24888, 28311
+       (mean 9,093, about 1 in 9,100)
+
+The other mutations were found after 260 schedules or fewer in every one of five
+runs, so their budgets are many times what they need. At 1 in 9,100 a budget of
+8,000 survives about 41 runs in 100, which is how M19 and M20 failed the gate. A
+budget of 150,000 survives about one run in 14 million for M20 and one in 10^20
+for M19. Measure again before lowering a budget or adding a mutation whose
+witness needs more than a few hundred schedules.
+
+`p check -tc` matches a case name by prefix. A mutation whose case name is a
+prefix of another case (M6, M9 and M11 are) also runs that case, which passes and
+spends the whole budget, so do not give such a mutation a large budget.
 """
 import os
 import re
@@ -110,7 +133,7 @@ MUTATIONS = {
   # An ask that finds a verdict ends the session. Without that, an ask that
   # arrives between the verdict and the end of the session is answered and the
   # session is lost to a restart that comes before the step that ends it.
-  "M19-ask-that-finds-a-verdict-keeps-the-session": ("tcOnlyReleasedRefused", 8000, r"liveness bug", [
+  "M19-ask-that-finds-a-verdict-keeps-the-session": ("tcOnlyReleasedRefused", 150000, r"liveness bug", [
     ("PSrc/Orch.p",
      "      releaseSession();\n      toOwner(R_REFUSED, 0, 0, 0);\n      return;",
      "      toOwner(R_REFUSED, 0, 0, 0);\n      return;")]),
@@ -168,7 +191,7 @@ MUTATIONS = {
 
   # The return waits for the window before it gives up on the commits. Without the
   # wait it gives up at the first failure.
-  "M20-gives-up-before-the-window": ("tcOnlyWindow", 8000, r"before the window passed", [
+  "M20-gives-up-before-the-window": ("tcOnlyWindow", 150000, r"before the window passed", [
     ("PSrc/Orch.p",
      "    if (windowPassed) {\n      announce eGaveUp;",
      "    if (true) {\n      announce eGaveUp;")]),

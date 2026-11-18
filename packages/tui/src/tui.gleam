@@ -3282,7 +3282,9 @@ fn move_registration(
   <> destination
   <> " (operation "
   <> op
-  <> ")"
+  <> "); this only asks for the move and does not wait for it. "
+  <> "`loom sessions list --all` shows where the session is, and a move that is "
+  <> "refused is reported in the daemon log as daemon.move_aborted"
 }
 
 /// Establishes and coordinates list destinations operations for the TUI runtime.
