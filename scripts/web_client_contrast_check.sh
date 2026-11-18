@@ -90,18 +90,21 @@ text_tokens="fg fg-quiet current signal-text advisor-text peer-text danger-text 
 surfaces="bg bg-raised bg-sunk bg-user code"
 
 # The pairs the diff draws on a coloured surface, as `token:surface`.
-extra_pairs="added-text:added-bg danger-text:removed-bg fg:added-bg fg:removed-bg fg-quiet:bg-sunk on-danger:danger bg:fg"
+extra_pairs="added-text:added-bg danger-text:removed-bg fg:added-bg fg:removed-bg fg-quiet:bg-sunk on-danger:danger on-signal:signal bg:fg"
 
 # The avatar's discs: each hue's mark token and the text token the letter is
 # drawn in, as `mark:text`, tinted at `avatar_tint` percent over a surface.
 # The percentage is the stylesheet's `.avatar` rule's, which `check` holds
 # the stylesheet to. It is 8 and not the 14 the critique drew: at 14 the
 # light theme's strand text tokens, which clear 4.5 on the page by a hair,
-# fall to 4.2 on their own disc. The hue-less `fg-quiet` is left out: a
+# fell to 4.2 on their own disc. The hue-less `fg-quiet` is left out: a
 # card's hue comes from its position and is never `hue-none`.
 avatar_hues="current:current advisor:advisor-text strand-2:strand-2-text strand-3:strand-3-text strand-4:strand-4-text strand-5:strand-5-text strand-6:strand-6-text"
 avatar_tint=8
 # The card is drawn on `bg-raised` and a strand's own view on the panel, `bg`.
+# The 8 is the stylesheet's figure, and this check blends what the stylesheet
+# draws. The OKLCH palette leaves the letters more margin than an 8% tint can
+# take, so the self-test plants a letter at the floor before a dark mark.
 avatar_surfaces="bg bg-raised"
 
 # The mark tokens a `color:` may not read.
@@ -128,6 +131,11 @@ cvd_pairs="added:danger current:peer signal:danger signal:added"
 
 # The marks held to `mark_min` (rule 10).
 mark_tokens="current signal advisor peer danger added strand-2 strand-3 strand-4 strand-5 strand-6"
+
+# Every token a rule reads. A token that is absent, or written in a notation
+# `token_line` does not read, would otherwise be skipped by the rules that read
+# it, and the gate would pass a palette it never measured.
+required_tokens="$text_tokens $surfaces $mark_tokens divider fg-faint added-bg removed-bg on-danger on-signal"
 
 # The awk library every pass shares. `rgb(v)` reads a token value, `#rrggbb`
 # or `oklch(L C H)`, into the encoded sRGB channels `R`, `G` and `B` (0 to 1)
@@ -227,7 +235,8 @@ colour_lib='
 		seen(v, vision)
 		return sqrt((l - OL) ^ 2 + (a - OA) ^ 2 + (b - OB) ^ 2)
 	}
-	# token: the value of a `--color-X: <value>;` line, as written.
+	# tokenvalue: the value of a `--color-X: <value>;` line, as written, and
+	# tokenname: its X.
 	function tokenvalue(line,   v) {
 		v = line
 		sub(/^[ \t]*--color-[a-z0-9-]+:[ \t]*/, "", v)
@@ -356,7 +365,7 @@ agreement() {
 # worded. The thresholds come from the variables above.
 measures() {
 	awk -v text="$text_tokens" -v surfaces="$surfaces" -v tokenre="$token_line" \
-		-v apca_text="$apca_text" -v apca_fg="$apca_fg" -v steps="$steps" \
+		-v required="$required_tokens" -v apca_text="$apca_text" -v apca_fg="$apca_fg" -v steps="$steps" \
 		-v step_dark="$step_dark" -v step_light="$step_light" \
 		-v divider_step="$divider_step" -v pairs="$cvd_pairs" -v cvd_min="$cvd_min" \
 		-v cvd_bg_min="$cvd_bg_min" -v marks="$mark_tokens" -v mark_min="$mark_min" \
@@ -371,6 +380,11 @@ measures() {
 			nt = split(text, tokens, " "); ns = split(surfaces, surf, " ")
 			np = split(pairs, pair, " "); nm = split(marks, mark, " ")
 			nst = split(steps, step, " ")
+			nr = split(required, need_token, " ")
+			for (i = 1; i <= nr; i++) {
+				if (!has("dark", need_token[i])) printf "dark theme has no %s token\n", need_token[i]
+				if (!has("light", need_token[i])) printf "light theme has no %s token\n", need_token[i]
+			}
 			for (key in value) {
 				split(key, kt, SUBSEP)
 				if (kt[1] != "dark" && kt[1] != "light") continue
@@ -467,6 +481,18 @@ check() {
 		failed=1
 	done < <(measures "$css")
 
+	# A colour token in a notation no rule reads, which the rules would skip.
+	# A value is read when it is `#rrggbb`, or `oklch(L C H)` with L from 0 to
+	# 1, after one space; `inherit`, `var(...)` and `color-mix(...)` are
+	# derived values and are not measured.
+	while IFS= read -r line; do
+		echo "web_client_contrast_check: unreadable colour value at line $line" >&2
+		failed=1
+	done < <(awk -v tokenre="$token_line" '
+		/^[ \t]*--color-[a-z0-9-]+:/ && $0 !~ tokenre \
+			&& $0 !~ /:[ \t]*(inherit|var[(]|color-mix[(])/ { sub(/^[ \t]*/, ""); print NR ": " $0 }
+	' "$css")
+
 	if grep -nE "(^|[;{ ])color:var\\(--color-($marks)\\)" "$css" >&2; then
 		echo "web_client_contrast_check: a rule sets text from a mark token; use its -text token" >&2
 		failed=1
@@ -538,6 +564,13 @@ self_test() {
 	awk '/--color-code: oklch\(0.952 0.006 85\);/ { n++; if (n == 2) next } { print }' \
 		"$default_css" >"$tmp/light-lacks.css"
 
+	# A mark the rules read, gone from every palette.
+	grep -v -- '--color-peer: oklch' "$default_css" >"$tmp/mark-gone.css"
+
+	# A mark in a notation the gate does not read (a percent lightness).
+	sed 's/--color-peer: oklch(0.660 0.170 315);/--color-peer: oklch(99% 0.01 315);/' \
+		"$default_css" >"$tmp/mark-notation.css"
+
 	# Rule 6: a dark token outside sRGB.
 	sed 's/--color-strand-3: oklch(0.820 0.140 118);/--color-strand-3: oklch(0.820 0.400 118);/' \
 		"$default_css" >"$tmp/gamut.css"
@@ -561,7 +594,7 @@ self_test() {
 
 	local name
 	for name in light-mark-as-text dark-quiet pale-avatar avatar-drift missing raw-mark raw-hue faint \
-		light-drift no-inherit light-lacks gamut apca flat cvd pale-mark; do
+		light-drift no-inherit light-lacks gamut apca flat cvd pale-mark mark-gone mark-notation; do
 		if check "$tmp/$name.css" >/dev/null 2>&1; then
 			echo "web_client_contrast_check: self-test: $name passed the check" >&2
 			return 1
