@@ -400,6 +400,11 @@ pub fn update(
 /// // element.to_string(operator_page.view(model))
 /// ```
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
+  // The lane's pieces are read once and shared by the lane, the rail and the
+  // sheet.
+  let pieces = component.pieces(model)
+  let lift = component.lift(model, pieces, lifted_view.InDock)
+
   shell.view(
     shell.Operator,
     component.heading(
@@ -420,7 +425,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         True -> ended.content_unavailable()
         False ->
           lane.navigable(
-            component.pieces(model),
+            pieces,
             component.live(model),
             component.top(model),
             Observed(component.OlderRequested),
@@ -435,7 +440,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
                 component.queue_row(model, input) |> element.map(Observed)
               },
             ),
-            component.marks(model),
+            component.marked(model, lift),
             lane.Folds(
               fn(fold) { Observed(component.FoldToggled(fold)) },
               fn(key) { Observed(component.MessageToggled(key)) },
@@ -477,7 +482,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 
       // The phone's sheet comes last so no admitted path moves; the
       // stylesheet orders it above the dock.
-      component.sheet(model, lifted_view.InDock),
+      component.sheet(model, lift),
     ],
     component.panel(
       model,
@@ -567,7 +572,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         component.Relayed(..) ->
           evolution_view.elsewhere(component.session_machine(model))
       },
-      lifted_view.InDock,
+      lift,
     ),
     component.needing(model),
     component.proposals_pending(model),

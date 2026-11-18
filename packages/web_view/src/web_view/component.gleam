@@ -1084,8 +1084,10 @@ type View(socket) {
     /// The keys of the rail's insights the reader has opened, the most
     /// recently opened first and at most `open_insights`. An insight is drawn
     /// whole until its key is here and folded to one line after, for the life
-    /// of the page. The keys are `attention.Lifted.key` values, which are
-    /// daemon identities; nothing is stored in the browser.
+    /// of the strand on screen: a strand the reader leaves forgets them, as it
+    /// forgets `said`, because the keys name rows of that strand's lane. The
+    /// keys are `attention.Lifted.key` values, which are daemon identities;
+    /// nothing is stored in the browser.
     opened: List(String),
     /// The `paging` of each strand the reader left, keyed by strand name,
     /// for the life of the page. `focus` parks the departing strand's here
@@ -6892,6 +6894,7 @@ fn focus_strand_at(
             floor: Unheld,
             folds: [],
             said: [],
+            opened: [],
             parked_paging: dict.delete(remembered, strand),
             refusal: None,
             outcome: "",
@@ -7295,24 +7298,52 @@ pub fn lifted(model: Model(socket)) -> List(attention.Lifted) {
   attention.lift(pieces(model), model.shared.approvals)
 }
 
-/// The lifted rows with the place each press goes, for the rail and the sheet.
-/// `open` is the rail's handler for an unopened insight, or `None` for the
-/// sheet, whose rows send nothing.
+/// What the page lifts, worked out once per render from the pieces the lane
+/// draws: the rows and the place each press goes. The page passes the one
+/// value to the lane's marks, the rail and the sheet, so the lane's pieces are
+/// read and lifted once however many places draw them. `dock` says whether an
+/// approval entry points at a dock.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.lift(model, component.pieces(model), lifted_view.InDock)
+/// ```
+pub fn lift(
+  model: Model(socket),
+  pieces: List(turns.Piece),
+  dock: lifted_view.Dock,
+) -> lifted_view.Lift {
+  lifted_view.Lift(
+    items: lifted_view.items(
+      pieces,
+      attention.lift(pieces, model.shared.approvals),
+      dock,
+    ),
+    dock:,
+  )
+}
+
+/// The rail's drawing inputs: what was lifted, which insights the reader has
+/// opened, the strand on screen, and how to name a session. `open` is the
+/// rail's handler for an unopened insight, or `None` for the sheet, whose rows
+/// send nothing.
 fn lifted_rail(
   model: Model(socket),
-  dock: lifted_view.Dock,
+  lift: lifted_view.Lift,
   open: option.Option(fn(String) -> message),
 ) -> lifted_view.Rail(message) {
   lifted_view.Rail(
-    items: lifted_view.items(pieces(model), lifted(model), dock),
+    items: lift.items,
     opened: model.view.opened,
     strand: model.shared.active_strand,
-    dock:,
+    dock: lift.dock,
+    names: fn(id) { session_name(model, id) },
     open:,
   )
 }
 
-/// The live rail for the Strands pane: the rows `lifted` found, grouped as
+/// The live rail for the Strands pane: the rows `lift` holds, grouped as
 /// "Needs you" and "Insights", or nothing when there are none. An unopened
 /// insight's press is `RailOpened` wrapped by `observed`; the jump to its row
 /// is the browser's.
@@ -7320,16 +7351,16 @@ fn lifted_rail(
 /// ## Examples
 ///
 /// ```gleam
-/// // component.rail(model, lifted_view.InDock, fn(msg) { msg })
+/// // component.rail(model, lift, fn(msg) { msg })
 /// ```
 pub fn rail(
   model: Model(socket),
-  dock: lifted_view.Dock,
+  lift: lifted_view.Lift,
   observed: fn(Msg(socket)) -> message,
 ) -> Element(message) {
   lifted_view.view(lifted_rail(
     model,
-    dock,
+    lift,
     Some(fn(key) { observed(RailOpened(key)) }),
   ))
 }
@@ -7341,10 +7372,10 @@ pub fn rail(
 /// ## Examples
 ///
 /// ```gleam
-/// // component.sheet(model, lifted_view.InDock)
+/// // component.sheet(model, lift)
 /// ```
-pub fn sheet(model: Model(socket), dock: lifted_view.Dock) -> Element(message) {
-  lifted_view.sheet(lifted_rail(model, dock, None))
+pub fn sheet(model: Model(socket), lift: lifted_view.Lift) -> Element(message) {
+  lifted_view.sheet(lifted_rail(model, lift, None))
 }
 
 /// Remembers that an insight was opened. A key that names no insight the rail
@@ -7392,6 +7423,31 @@ pub fn message_click(path: String) -> Bool {
   case string.split(path, "\t") {
     ["0", "2", "1", "1", key, "1", "0", "0", "1"]
     | ["0", "2", "1", "1", key, "1", "0", "1", "0", "1"] -> is_block_key(key)
+    _ -> False
+  }
+}
+
+/// Whether a Lustre event path is an insight's press on the live rail. The
+/// rail is a section whose second child holds the groups, the "Insights" group
+/// is the groups' second child, its list is that section's second child, and
+/// each insight is one item of the list holding one button, so a press is at
+/// `rail_path`, then `1\t1\t1`, then the item's position, then `0`. The
+/// "Needs you" group draws no handler, and nothing else in the rail does, so no
+/// other path is a press. An observer's socket admits a `click` at exactly this
+/// shape and nowhere else beneath the rail
+/// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the
+/// addendum on the live rail). `lifted_test` fails if the view moves the
+/// button, so the predicate and the view cannot drift apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_click("0\t3\t0\t4\t1\t1\t1\t2\t0")
+/// assert !component.rail_click("0\t3\t0\t4\t1\t0\t1\t2\t0")
+/// ```
+pub fn rail_click(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "1", "1", position, "0"] -> is_counter(position)
     _ -> False
   }
 }
@@ -8286,6 +8342,11 @@ pub fn session_id(model: Model(socket)) -> String {
 /// // element.to_string(component.view(model))
 /// ```
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
+  // The lane's pieces are read once and shared by the lane, the rail and the
+  // sheet.
+  let pieces = pieces(model)
+  let lift = lift(model, pieces, lifted_view.NoDock)
+
   shell.view(
     shell.Observer,
     heading(
@@ -8300,13 +8361,13 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         True -> ended.content_unavailable()
         False ->
           lane.navigable(
-            pieces(model),
+            pieces,
             live(model),
             top(model),
             OlderRequested,
             latest_action(model, LatestRequested),
             lane.NoReplies,
-            marks(model),
+            marked(model, lift),
             lane.Folds(FoldToggled, MessageToggled, expanded(model)),
             session_id(model),
             result_links(model),
@@ -8328,7 +8389,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 
       // The phone's sheet is the centre's last child, so no admitted path
       // moves with it; the stylesheet orders it above the bar.
-      sheet(model, lifted_view.NoDock),
+      sheet(model, lift),
     ],
     panel(
       model,
@@ -8343,7 +8404,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       element.none(),
       element.none(),
       element.none(),
-      lifted_view.NoDock,
+      lift,
     ),
     needing(model),
     proposals_pending(model),
@@ -8409,14 +8470,14 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// owner's review of proposed standing rules (`view/proposals`), likewise, and
 /// `memory` the owner's read-only overview of the daemon's memory
 /// (`view/memory`), likewise, and `evolution` the operator's governed-evolution
-/// tab (`view/evolution`), likewise. `dock` says whether the page has a dock
-/// where an approval is decided, which the live rail's approval rows point at
-/// (`view/lifted`).
+/// tab (`view/evolution`), likewise. `lift` is what the page lifted for the
+/// live rail (`lift`), which the Strands pane draws and whose approval rows
+/// point at the dock (`view/lifted`).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, observed, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), lifted_view.InDock)
+/// // component.panel(model, FocusRequested, observed, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), lift)
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -8431,7 +8492,7 @@ pub fn panel(
   proposals: Element(message),
   memory: Element(message),
   evolution: Element(message),
-  dock: lifted_view.Dock,
+  lift: lifted_view.Lift,
 ) -> Element(message) {
   // A page that never held the session's content has none of it to list, and
   // a pane that said "No edits yet" would be a statement about a session it
@@ -8489,7 +8550,7 @@ pub fn panel(
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),
     commentary.view(advisor_commentary(model)),
-    rail(model, dock, observed),
+    rail(model, lift, observed),
     notes_panel.view(
       model.view.notes,
       strand(model),
@@ -8565,15 +8626,27 @@ pub fn marks(model: Model(socket)) -> lane.Marks {
     positions: strip.positions(model.view.strip),
     key: dict.get(model.view.strand_keys, model.shared.active_strand)
       |> result.unwrap(0),
-    lifted: lifted_rows(model),
+    lifted: dict.new(),
   )
+}
+
+/// `marks`, with the rows the rail lifted (`lift`) set on it, so the lane
+/// tags them. The lane draws the same pieces the lift was read from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.marked(model, lift).lifted
+/// ```
+pub fn marked(model: Model(socket), lift: lifted_view.Lift) -> lane.Marks {
+  lane.Marks(..marks(model), lifted: lifted_rows(lift))
 }
 
 /// The rows of the lane the rail lifted, by the key the lane draws each under.
 /// A row that needs the owner wins over an insight in the same row, and an
 /// approval names no lane row, since it lives in the dock.
-fn lifted_rows(model: Model(socket)) -> Dict(String, attention.Hold) {
-  lifted_view.items(pieces(model), lifted(model), lifted_view.InDock)
+fn lifted_rows(lift: lifted_view.Lift) -> Dict(String, attention.Hold) {
+  lift.items
   |> list.fold(dict.new(), fn(rows, item) {
     // A pinned mark is kept; any other mark is written or replaced.
     case item.target, dict.get(rows, item.target) {

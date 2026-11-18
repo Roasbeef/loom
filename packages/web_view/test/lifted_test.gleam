@@ -81,7 +81,8 @@ pub fn the_rail_draws_both_groups_from_the_pieces_and_the_approvals_test() {
   assert string.contains(rail, "Needs you")
   assert string.contains(rail, "Insights")
   assert string.contains(rail, "write a file · write the file")
-  assert string.contains(rail, "lint-census · main messaged this session")
+  assert string.contains(rail, "another session")
+  assert string.contains(rail, "messaged this session")
   assert string.contains(rail, "Approval")
   assert string.contains(rail, "Peer")
   assert string.contains(rail, "Result")
@@ -119,6 +120,7 @@ pub fn an_empty_group_draws_nothing_test() {
       opened: [],
       strand: "main",
       dock: lifted.InDock,
+      names: fn(_) { None },
       open: None,
     )
   let html = element.to_string(lifted.view(only_insights))
@@ -205,17 +207,47 @@ pub fn markers_carry_keys_and_text_stays_text_test() {
   assert string.contains(rail, "data-loom-jump=\"6.0/0/0\"")
   assert string.contains(rail, "data-loom-jump=\"dock\"")
   assert count(rail, "data-loom-jump=") == 3
-  assert string.contains(rail, "&lt;b&gt;review-1a2b3c")
   assert !string.contains(html, "<b>review")
 }
 
-pub fn a_step_and_a_fold_resolve_to_the_turns_row_test() {
+// A result says only its outcome, and a peer's message names the session by a
+// catalogue name or by "another session": no raw identity reaches the rail.
+pub fn heads_and_sources_carry_no_raw_identity_test() {
+  let rail = rail_of(operator(lifting()))
+  assert !string.contains(rail, "review-1a2b3c")
+  assert !string.contains(rail, "lint-census")
+  assert string.contains(rail, "<span class=\"lift-head\">completed</span>")
+}
+
+// The rows are plain buttons: only a disclosure would say `aria-expanded`.
+pub fn the_rows_state_no_expansion_test() {
+  assert !string.contains(rail_of(operator(lifting())), "aria-expanded")
+}
+
+// Every handler the rail draws is at a path the observer's socket admits, on
+// a page with an approval and on one with none.
+pub fn every_rail_handler_is_at_the_admitted_shape_test() {
+  let without_approval =
+    component.new(page_fixture.start())
+    |> component.apply([lane_fixture.captured(10, None)])
+  list.each([lifting(), without_approval], fn(model) {
+    let keys = rail_handlers(component.view(model))
+    assert list.length(keys) == 2
+    assert list.all(keys, fn(key) {
+      let assert Ok(#(path, _)) = string.split_once(key, "\n")
+      component.rail_click(path)
+    })
+  })
+}
+
+// A key that names no lane row stays as it is, and the browser finds none.
+pub fn a_key_with_no_row_is_left_alone_test() {
   let step =
     attention.Lifted(
-      "work:7#2",
+      "work:7",
       attention.FailedStep,
       attention.FoldsOnceOpened,
-      "x",
+      "1 step failed",
     )
   let items = lifted.items([], [step], lifted.InDock)
   assert list.map(items, fn(item) { item.target }) == ["work:7"]
@@ -232,7 +264,10 @@ pub fn rows_carry_their_key_and_lifted_rows_a_tag_test() {
 }
 
 pub fn the_marks_carry_the_lifted_rows_test() {
-  let marks = component.marks(lifting())
+  let model = lifting()
+  let pieces = component.pieces(model)
+  let marks =
+    component.marked(model, component.lift(model, pieces, lifted.InDock))
   assert dict.get(marks.lifted, "9.0") == Ok(attention.FoldsOnceOpened)
   assert dict.get(marks.lifted, "6.0/0/0") == Ok(attention.FoldsOnceOpened)
   assert dict.size(marks.lifted) == 2
@@ -341,6 +376,7 @@ pub fn handlers_are_the_unopened_insights_and_pins_never_fold_test() {
           opened:,
           strand: "main",
           dock: lifted.InDock,
+          names: fn(_) { None },
           open: Some(fn(key) { key }),
         ))
       let html = element.to_string(view)

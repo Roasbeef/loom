@@ -1903,9 +1903,12 @@ search, refresh selection and markup-looking content.
 ## The live rail (protocol-change/051, the addendum on the live rail)
 
 `view/lifted` draws "Lifted from this session": `component.lifted(model)` is
-`attention.lift(pieces(model), shared.approvals)`, and `lifted.items` pairs each
-row with the place its press goes (an approval is `dock`, a step inside a fold
-is its turn's key, anything else its own key). The rail is the Strands pane's
+`attention.lift(pieces, shared.approvals)`, and `component.lift(model, pieces,
+dock)` pairs each row with the place its press goes (an approval is `dock`, a
+failed response inside a fold is its turn's key, anything else its own key). It
+is worked out once per render, from the one `pieces` the page also gives the
+lane, and shared by `marked`, `rail` and `sheet`. A turn with failed steps
+lifts once under its own key from `Worked.failed`. The rail is the Strands pane's
 fifth and last child (`component.rail_path`, `0\t3\t0\t4`; `view/panel` takes
 it after `commentary`), ordered first on screen by the stylesheet, so no
 admitted path moved. Two groups, "Needs you" (`PinnedUntilAnswered`) and
@@ -1914,8 +1917,9 @@ admitted path moved. Two groups, "Needs you" (`PinnedUntilAnswered`) and
 A pinned row carries no handler and no deciding control: it says "Decide in the
 dock ↓" (`InDock`, the operator page) or "The operator decides" (`NoDock`, the
 observer page, which also draws no jump). An insight is drawn open until
-`RailOpened(key)` (an observer may send it: one more admitted click path,
-`ui_socket.observer_accepts`), then folded; `View.opened` holds the keys, newest
+`RailOpened(key)` (an observer may send it, at exactly the path
+`component.rail_click` names in `ui_socket.observer_accepts`), then folded;
+strand focus clears the opened set; `View.opened` holds the keys, newest
 first, at most `component.open_insights`, and `rail_opened` accepts only a key
 naming a current insight. Every button carries `data-loom-jump`; the lane draws
 each row with `data-loom-row` (`lane.row_attribute`, the piece key), a "lifted"

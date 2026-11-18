@@ -86,6 +86,17 @@ pub type Item {
   )
 }
 
+/// What a page lifted: the rows and whether it has a dock. It is worked out
+/// once per render (`component.lift`) and handed to every place that draws it.
+pub type Lift {
+  Lift(
+    /// The rows with the place each press goes.
+    items: List(Item),
+    /// Whether an approval is decided on this page.
+    dock: Dock,
+  )
+}
+
 /// What a rail needs to be drawn.
 pub type Rail(message) {
   Rail(
@@ -97,6 +108,9 @@ pub type Rail(message) {
     strand: String,
     /// Whether an approval is decided on this page.
     dock: Dock,
+    /// The catalogue's name for a listed session, given its identity, or
+    /// `None` for one the page does not list.
+    names: fn(String) -> Option(String),
     /// The message a press on an unopened insight sends, given its key. It
     /// is `None` for the sheet, whose rows are not handlers.
     open: Option(fn(String) -> message),
@@ -106,10 +120,10 @@ pub type Rail(message) {
 /// The rows of the page's lane with the place each press goes: an approval
 /// goes to the dock, and any other row to the transcript row that holds it.
 ///
-/// A step inside a turn's fold is lifted as `<work key>#<index>`, and a failed
+/// A turn's failed steps are lifted under the turn's own key, and a failed
 /// response inside a fold by its block's key, but only the turn's row is in
-/// the lane, so both resolve to the turn's key. A key that names no piece
-/// stays as it is, and the browser finds no row for it and does nothing.
+/// the lane, so the block resolves to the turn's key. A key that names no
+/// piece stays as it is, and the browser finds no row for it and does nothing.
 ///
 /// ## Examples
 ///
@@ -143,26 +157,15 @@ fn target(pieces: List(turns.Piece), row: Lifted, dock: Dock) -> String {
 }
 
 /// The key of the lane row that holds a lifted key: the key itself when it is
-/// a piece's, the turn before the `#` for a step in a fold, and the turn whose
-/// fold holds the block otherwise.
+/// a piece's, and otherwise the turn whose fold holds a narrated block with
+/// that key (a failed response inside a fold).
 fn row_of(pieces: List(turns.Piece), key: String) -> String {
   let is_piece = list.any(pieces, fn(piece) { piece_key(piece) == key })
 
   // A piece's own key is already a row; only the others need a search.
   case is_piece {
     True -> key
-    False -> fold_holding(pieces, key)
-  }
-}
-
-/// The key of the turn that holds a lifted key inside its fold, or the key
-/// itself when no turn does. A step is `<work key>#<index>`; a failed response
-/// is a narrated block's key.
-fn fold_holding(pieces: List(turns.Piece), key: String) -> String {
-  // A step's key names its turn before the separator.
-  case string.split_once(key, "#") {
-    Ok(#(work, _)) -> work
-    Error(Nil) -> work_holding(pieces, key)
+    False -> work_holding(pieces, key)
   }
 }
 
@@ -365,13 +368,10 @@ fn row(item: Item, rail: Rail(message)) -> Element(message) {
         [attribute.type_("button"), attribute.class("lift-press")],
         jump(item.target),
         press(lifted, folded, rail.open),
-        expanded(lifted, folded),
       ]),
       [
         html.span([attribute.class("lift-kind")], [html.text(kind_word(lifted))]),
-        html.span([attribute.class("lift-source")], [
-          html.text(source_words(lifted, rail.strand)),
-        ]),
+        source(source_words(rail, lifted)),
         html.span([attribute.class("lift-head")], [html.text(lifted.head)]),
         decide(lifted, rail.dock),
       ],
@@ -417,17 +417,12 @@ fn press(
   }
 }
 
-/// `aria-expanded` for an insight, which is the only kind of row that folds.
-fn expanded(row: Lifted, folded: Bool) -> List(attribute.Attribute(message)) {
-  // A pinned row is always whole, so it states no expansion.
-  case row.hold, folded {
-    attention.PinnedUntilAnswered, _ -> []
-    attention.FoldsOnceOpened, True -> [
-      attribute.attribute("aria-expanded", "false"),
-    ]
-    attention.FoldsOnceOpened, False -> [
-      attribute.attribute("aria-expanded", "true"),
-    ]
+/// The words after the kind, or nothing when the row names no source.
+fn source(words: String) -> Element(message) {
+  // An empty source draws no span, so the head follows the kind directly.
+  case words {
+    "" -> element.none()
+    words -> html.span([attribute.class("lift-source")], [html.text(words)])
   }
 }
 
@@ -453,13 +448,7 @@ fn decide(row: Lifted, dock: Dock) -> Element(message) {
 }
 
 /// The word a row's kind is named by.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert lifted.kind_word(row) == "Approval"
-/// ```
-pub fn kind_word(row: Lifted) -> String {
+fn kind_word(row: Lifted) -> String {
   case row.kind {
     attention.ApprovalPending(..) -> "Approval"
     attention.FailedStep -> "Failed step"
@@ -469,15 +458,18 @@ pub fn kind_word(row: Lifted) -> String {
   }
 }
 
-/// Where a row came from: the tool an approval asks to use, the child or the
-/// session that spoke, or the strand on screen for a failure in it. Every part
-/// is text the session or its peers named, so it is drawn as text only.
-fn source_words(row: Lifted, strand: String) -> String {
+/// Where a row came from, or nothing: the tool an approval asks to use, the
+/// name of the session that messaged, or the strand on screen for a failure in
+/// it. A result names no source, since its child's identity is not for the
+/// reader. A session the page does not list is "another session", never its
+/// identity. Every part is text the session or the catalogue named, so it is
+/// drawn as text only.
+fn source_words(rail: Rail(message), row: Lifted) -> String {
   case row.kind {
     attention.ApprovalPending(tool:) -> tool
-    attention.SubagentResult(child:) -> child
-    attention.PeerMessage(session:, strand: peer_strand) ->
-      session <> " · " <> peer_strand
-    attention.FailedStep | attention.FailedTurn -> strand
+    attention.SubagentResult(..) -> ""
+    attention.PeerMessage(session:, ..) ->
+      rail.names(session) |> option.unwrap("another session")
+    attention.FailedStep | attention.FailedTurn -> rail.strand
   }
 }
