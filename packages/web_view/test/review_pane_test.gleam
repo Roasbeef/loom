@@ -102,6 +102,51 @@ pub fn a_verdict_survives_a_read_that_is_out_fails_or_is_refused_test() {
   assert scan.ready(candidates, empty) == []
 }
 
+// A session never moves between To review and Waiting as the scan works: it is
+// listed under To review until a successful read says its tree is clean, and
+// nothing that happens after that, for the same message, moves it back.
+pub fn a_session_leaves_to_review_only_once_and_only_for_a_clean_read_test() {
+  let candidates = [#("a", "m")]
+
+  // Unread, being read, refused and failed: where it was.
+  let unread = dict.new()
+  assert scan.to_review(candidates, unread) == ["a"]
+  let reading = scan.started(unread, "a", "m", 0)
+  assert scan.to_review(candidates, reading) == ["a"]
+  let refused = scan.answered(reading, "a", "m", Error(scan.busy_words))
+  assert scan.to_review(candidates, refused) == ["a"]
+  let failed = scan.answered(reading, "a", "m", Error("boom"))
+  assert scan.to_review(candidates, failed) == ["a"]
+  assert scan.checking(candidates, failed) == ["a"]
+
+  // A read that found changes keeps it, no longer checking.
+  let changed =
+    scan.answered(failed, "a", "m", Ok(review(review_feed.Head, ["x"], 0)))
+  assert scan.to_review(candidates, changed) == ["a"]
+  assert scan.checking(candidates, changed) == []
+
+  // A clean read moves it to Waiting, and a later read in flight, failure or
+  // refusal for the same message does not move it back.
+  let clean =
+    scan.answered(failed, "a", "m", Ok(review(review_feed.Head, [], 0)))
+  assert scan.to_review(candidates, clean) == []
+  let again = scan.started(clean, "a", "m", 9)
+  assert scan.to_review(candidates, again) == []
+  assert scan.to_review(
+      candidates,
+      scan.answered(again, "a", "m", Error("boom")),
+    )
+    == []
+  assert scan.to_review(
+      candidates,
+      scan.answered(again, "a", "m", Error(scan.busy_words)),
+    )
+    == []
+
+  // A new last message is unread again.
+  assert scan.to_review([#("a", "m2")], clean) == ["a"]
+}
+
 // A read that keeps failing is tried `max_attempts` times and then left: the
 // count survives each restart of the read.
 pub fn a_read_that_keeps_failing_stops_at_the_bound_test() {

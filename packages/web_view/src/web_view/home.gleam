@@ -6118,6 +6118,7 @@ fn inbox_page(model: Model) -> Element(Msg) {
     },
     attention: with_tickets(model, attention_threads(model)),
     review: review_offer(model),
+    checking: checking_ids(model),
   ))
 }
 
@@ -6145,10 +6146,23 @@ fn scan_candidates(model: Model) -> List(#(String, String)) {
   })
 }
 
-/// The sessions whose last read of their worktree found changes at the message
-/// they say now.
+/// The sessions listed under "To review": the idle ones with a last message
+/// whose tree is not known to be clean. A page that cannot read a worktree has
+/// no such group, so it lists none, whatever the sessions hold.
 fn reviewing_ids(model: Model) -> List(String) {
-  review_scan_rule.ready(scan_candidates(model), model.reviews)
+  case review_reader(model) {
+    Some(_) -> review_scan_rule.to_review(scan_candidates(model), model.reviews)
+    None -> []
+  }
+}
+
+/// The sessions under "To review" whose tree has not been read at the message
+/// they say now, which their rows word as being checked.
+fn checking_ids(model: Model) -> List(String) {
+  case review_reader(model) {
+    Some(_) -> review_scan_rule.checking(scan_candidates(model), model.reviews)
+    None -> []
+  }
 }
 
 /// How the page reads a worktree, or nothing for a page that may not: an

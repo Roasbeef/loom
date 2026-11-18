@@ -576,6 +576,26 @@ pub fn a_page_that_may_not_act_draws_no_controls_test() {
   assert !string.contains(drawn(model), "Comment on src/retry.gleam: x")
 }
 
+// A session that has not been read yet is already under To review, with a quiet
+// line in place of a count of changes, so it does not jump there when its turn
+// comes. A refused read leaves it where it is.
+pub fn an_unread_session_is_under_to_review_and_says_it_is_being_checked_test() {
+  let silent = fn(_session, _deliver) { Nil }
+  let model = opened(start(Some(silent), None))
+  let html = drawn(model)
+
+  assert string.contains(html, "To review<span class=\"inbox-count\">2</span>")
+  assert string.contains(html, "Checking for changes…")
+  assert !string.contains(html, "Waiting<span")
+
+  let refusing = fn(_session, deliver) { deliver(Error(scan.busy_words)) }
+  let refused = opened(start(Some(refusing), None))
+  assert string.contains(
+    drawn(refused),
+    "To review<span class=\"inbox-count\">2</span>",
+  )
+}
+
 // An observer's page is given no review: nothing is read, the session waits
 // with its last message, and no review pane is drawn.
 pub fn an_observer_sees_no_review_test() {
@@ -839,12 +859,12 @@ pub fn a_refusing_reader_still_reaches_every_session_test() {
     list.map(["S1", "S2", "S3", "S4", "S5"], fn(id) { entry(id, "n" <> id) })
   let model = opened(start_for(listed, five(), Some(reader), None))
 
-  // The first session was read, and then the open thread's own read took the
-  // second grant and kept the scan from starting beside it.
-  assert process.call(allowance, 1000, Count) == 2
+  // Every idle session is under To review from the start, unread. The open
+  // thread's own read took the first grant, and the scan waits beside it.
+  assert process.call(allowance, 1000, Count) == 1
   assert string.contains(
     drawn(model),
-    "To review<span class=\"inbox-count\">1</span>",
+    "To review<span class=\"inbox-count\">5</span>",
   )
 
   // Each later read of the page's activity finds the allowance refilled.
@@ -858,7 +878,8 @@ pub fn a_refusing_reader_still_reaches_every_session_test() {
     "To review<span class=\"inbox-count\">5</span>",
   )
 
-  // Four scans and one open read, and the one refusal that stopped a run, and
-  // no other ask: a refusal never starts the next read.
-  assert process.call(allowance, 1000, Count) == 7
+  // One open read, which also answers for its session, four scans for the other
+  // four, and the one refusal that stopped a run, and no other ask: a refusal
+  // never starts the next read.
+  assert process.call(allowance, 1000, Count) == 6
 }

@@ -49,10 +49,12 @@ pub type Group {
   /// last run failed and only the owner can fix the cause.
   NeedsYou
 
-  /// A finished session whose worktree holds changes: it is idle, it said
-  /// something when it stopped, and the page's read of its tree found files
-  /// (`web_view/review_scan_rule`). Only a page that may read a worktree has
-  /// this group.
+  /// A finished session whose worktree is not known to be clean: it is idle, it
+  /// said something when it stopped, and the page's read of its tree found
+  /// files or has not been made yet (`web_view/review_scan_rule`). A session
+  /// leaves it for "Waiting" only when a successful read says its tree is
+  /// clean, so the list does not reshuffle as the scan works. Only a page that
+  /// may read a worktree has this group.
   ToReview
 
   /// An idle session that said something when it stopped. Phase 0 cannot tell

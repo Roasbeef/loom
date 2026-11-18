@@ -32,7 +32,11 @@
 //// 2. `started` records that its read is out, and `answered` records what the
 ////    read found.
 //// 3. `ready` names the sessions whose last read, at their current message,
-////    found changes.
+////    found changes. `to_review` names the sessions the inbox lists under "To
+////    review": those, and every session not yet read, so a session moves to
+////    "Waiting" only when a successful read says its tree is clean and never
+////    jumps the other way as the scan works through the list. `checking` names
+////    the ones still unread.
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -285,6 +289,57 @@ pub fn ready(
       Some(Verdict(message: read, changes: Changed)) if read == message ->
         Ok(session)
       Some(_) | None -> Error(Nil)
+    }
+  })
+}
+
+/// The sessions the inbox lists under "To review": every candidate except one
+/// whose verdict for its current message says the tree is clean. A session not
+/// yet read is listed, since the scan reads one at a time within the daemon's
+/// allowance and a session that moved to "Waiting" only to jump back when its
+/// turn came would shuffle the list on every load. A refused or failed read
+/// changes no verdict, so it leaves the session where it was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert review_scan_rule.to_review([#("a", "m")], dict.new()) == ["a"]
+/// ```
+pub fn to_review(
+  candidates: List(#(String, String)),
+  seen: Dict(String, Seen),
+) -> List(String) {
+  list.filter_map(candidates, fn(candidate) {
+    let #(session, message) = candidate
+
+    // Only a clean verdict for the current message sends a session to Waiting.
+    case verdict_of(seen, session) {
+      Some(Verdict(message: read, changes: Unchanged)) if read == message ->
+        Error(Nil)
+      Some(_) | None -> Ok(session)
+    }
+  })
+}
+
+/// The sessions listed under "To review" whose current message has no verdict
+/// yet, which the row words as being checked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert review_scan_rule.checking([#("a", "m")], dict.new()) == ["a"]
+/// ```
+pub fn checking(
+  candidates: List(#(String, String)),
+  seen: Dict(String, Seen),
+) -> List(String) {
+  list.filter_map(candidates, fn(candidate) {
+    let #(session, message) = candidate
+
+    // A verdict for another message is no verdict for this one.
+    case verdict_of(seen, session) {
+      Some(Verdict(message: read, ..)) if read == message -> Error(Nil)
+      Some(_) | None -> Ok(session)
     }
   })
 }

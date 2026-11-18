@@ -118,6 +118,9 @@ pub type Offer(message) {
     /// nothing on a page that may not read a worktree
     /// (`web_view/view/review_thread`).
     review: Option(Reviewed(message)),
+    /// The sessions listed under "To review" whose tree has not been read yet:
+    /// their rows say they are being checked in place of a count of changes.
+    checking: List(String),
   )
 }
 
@@ -342,6 +345,13 @@ fn row(
         html.span([attribute.class("inbox-head")], [
           html.text(inbox_rule.thread_head(thread)),
         ]),
+        case which, list.contains(offer.checking, thread.id) {
+          inbox_rule.ToReview, True ->
+            html.span([attribute.class("inbox-age")], [
+              html.text("Checking for changes…"),
+            ])
+          _, _ -> element.none()
+        },
       ],
     ),
   ])
