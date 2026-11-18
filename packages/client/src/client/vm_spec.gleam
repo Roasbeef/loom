@@ -9,8 +9,7 @@
 //// - which command and options an argument list asks for (`parse`);
 //// - what the artifact manifest says, and whether those artifacts match the
 ////   running build (`decode_manifest`, `check_revision`);
-//// - the two-node deployment plan and the executor's own `loom.toml`
-////   (`deployment_plan`, `guest_config`);
+//// - the executor's own `loom.toml` (`guest_config_with`);
 //// - the `loom-vm run` command line (`launch_arguments`) and the shell
 ////   command that clones a tree (`copy_arguments`);
 //// - the extra egress hosts a guest may reach and the file that records them
@@ -25,13 +24,12 @@
 //// - what a workspace copy may keep of its Git configuration
 ////   (`scrub_git_config`);
 //// - what to tell the user about a daemon that read its configuration before
-////   `up` changed it (`occupied_sessions`, `daemon_note`);
+////   `up` changed it (`occupied_sessions`, `daemon_note_about`);
 //// - how to read the two small records the command leaves behind and consults
 ////   later: its pid file (`encode_pid`, `decode_pid`) and the host epmd's
 ////   listing (`registered_port`);
-//// - what kind of deployment a `loom.toml` already holds and what enrolling a
-////   guest in a ledger would ask of the operator's tooling (`deployment_state`,
-////   `guest_enrollment`);
+//// - what kind of deployment a `loom.toml` holds, which `rm` reads to undo an
+////   old guest's enrolment (`deployment_state`);
 //// - the daily verbs: what may be printed of text a guest wrote (`printable`),
 ////   the record of each workspace's developer checkout (`encode_checkouts`,
 ////   `decode_checkouts`), the Git command lines of `sync` (`fetch_arguments`,
@@ -46,12 +44,12 @@
 ////   and `setup_failure` what to say when none of it worked.
 //// - `decode_manifest` reads the artifact manifest and `check_revision`
 ////   compares it with the running build.
-//// - `names` derives the node names, `deployment_plan` the two-node plan, and
-////   `guest_config` the executor's configuration file, with the tools table that
+//// - `names` derives a guest's names, and `guest_config_with` the executor's
+////   configuration file around the tables of its link, with the tools table that
 ////   GitHub access needs.
-//// - `deployment_state` says which deployment a configuration file belongs to,
-////   and `guest_enrollment` is the request that enrols a guest in a ledger.
-////   `bundle_deployment` and `authority_directory` find the sealed key.
+//// - `deployment_state` says which deployment a configuration file belongs to.
+////   `bundle_deployment` and `authority_directory` find the key that
+////   removing an old guest unseals.
 //// - `launch_arguments` builds the `loom-vm run` command line.
 //// - `valid_host`, `encode_allow`, `decode_allow` and `effective_allow` keep
 ////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
@@ -65,21 +63,19 @@
 ////   guest's root and sync it; `read_enrolment` and `plan_teardown` decide what
 ////   removing a guest takes out of the user's configuration.
 ////
-//// ## The deployment
+//// ## The link
 ////
-//// One standing guest is two daemons that trust each other. The orchestrator
-//// is the user's own daemon, enrolled by installing its bundle into their
-//// `loom.toml`. The executor runs in the guest. Both have `127.0.0.1` as
-//// their host: the guest has no route to the host's network, so the
-//// orchestrator reaches the executor through the port `loom-vm run --publish`
-//// forwards, under the executor's own node name (ADR-022, "The link").
-//// Nothing here reads the clock, the environment or a file.
+//// One standing guest is an executor that the user's own daemon reaches over the
+//// untrusted link (ADR-022, "The link"). The guest has no route to the host's
+//// network, so the daemon dials the loopback port `loom-vm run --forward` maps
+//// to the guest's listener. The decisions about that link are in
+//// `client/vm_link`; what remains here serves every guest, and the teardown of a
+//// guest an older loom made as a distribution peer. Nothing here reads the
+//// clock, the environment or a file.
 
 import client/distribution.{type CredentialFiles, CredentialFiles}
 import client/distribution_bundle.{type Bundle}
-import client/distribution_plan.{type Plan, Executor, Node, Orchestrator, Plan}
-import client/ledger_operator
-import client/membership_entry
+import client/distribution_plan
 import client/membership_ledger
 import client/membership_signing
 import core/json as core_json
@@ -1805,26 +1801,6 @@ pub fn valid_workspace_name(name: String) -> Result(Nil, String) {
   }
 }
 
-/// The reason `distribution install` refused, without its advice to pass
-/// `--force`, which `loom vm up` has no such flag for.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.without_force_hint("a.toml has [x]; pass --force to replace it")
-///   == "a.toml has [x]"
-/// ```
-pub fn without_force_hint(reason: String) -> String {
-  case string.split_once(reason, "; pass --force") {
-    Ok(#(before, _)) -> before
-    Error(Nil) ->
-      case string.split_once(reason, ". Pass --force") {
-        Ok(#(before, _)) -> before <> "."
-        Error(Nil) -> reason
-      }
-  }
-}
-
 // --- the artifact manifest ---------------------------------------------------
 
 /// What `<vm home>/manifest.json` names: the built pieces of the tier.
@@ -2080,51 +2056,6 @@ pub fn names(name: String) -> Names {
   )
 }
 
-/// The plan for one orchestrator, whose credentials go in `orchestrator_dir`,
-/// and one executor that orchestrator uses. The executor serves no workspace
-/// in the plan: `up` registers the one it copies in the guest's own
-/// configuration, so the deployment does not depend on which directory was
-/// copied last.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let assert Ok(plan) = vm_spec.deployment_plan(vm_spec.names("vm"), "/home/me/.loom/vm/vm/orch")
-/// assert list.length(plan.nodes) == 2
-/// ```
-pub fn deployment_plan(
-  names: Names,
-  orchestrator_dir: String,
-) -> Result(Plan, String) {
-  distribution_plan.validate(
-    Plan(
-      nodes: [
-        Node(
-          name: names.orchestrator,
-          role: Orchestrator,
-          erlang_node: names.orchestrator_node,
-          host: "127.0.0.1",
-          listen_port: None,
-          bundle_dir: Some(orchestrator_dir),
-          executors: [names.name],
-          workspaces: [],
-        ),
-        Node(
-          name: names.name,
-          role: Executor,
-          erlang_node: names.executor_node,
-          host: "127.0.0.1",
-          listen_port: Some(guest_port),
-          bundle_dir: None,
-          executors: [],
-          workspaces: [],
-        ),
-      ],
-      directory: [],
-    ),
-  )
-}
-
 // --- what the configuration already holds ------------------------------------
 
 /// The deployment a daemon's `loom.toml` already belongs to, which decides
@@ -2171,36 +2102,6 @@ pub fn deployment_state(text: String) -> Result(DeploymentState, String) {
   }
 }
 
-/// What `loom distribution enroll` is asked for the guest called `names.name`
-/// when the guest joins a deployment that already exists: an executor on
-/// loopback at the guest's port, linked to `orchestrator_member`, the ledger's
-/// name for the orchestrator that will use it, and not in the session
-/// directory. The link is required because links cannot be added to a member
-/// later (`ledger_operator.check_enrollment`).
-///
-/// ## Examples
-///
-/// ```gleam
-/// let request = vm_spec.guest_enrollment(vm_spec.names("vm"), "laptop")
-/// assert request.links == ["laptop"]
-/// ```
-pub fn guest_enrollment(
-  names: Names,
-  orchestrator_member: String,
-) -> ledger_operator.Enrollment {
-  ledger_operator.Enrollment(
-    name: names.name,
-    node: names.executor_node,
-    role: Executor,
-    host: Some("127.0.0.1"),
-    listen_port: Some(guest_port),
-    links: [orchestrator_member],
-    directory: membership_entry.NotInDirectory,
-    workspaces: [],
-    bundle_dir: None,
-  )
-}
-
 /// The deployment id a ledger bundle's genesis entry carries, or `Nil` for a
 /// static bundle and for a ledger that does not replay against the bundle's
 /// own certificate authority. `rm` uses it to find the authority directory
@@ -2234,68 +2135,6 @@ fn replayed(
   |> result.replace_error(Nil)
 }
 
-/// Who the daemon whose configuration is being joined is, in the deployment
-/// its installed ledger records.
-pub type Membership {
-  Membership(
-    /// The deployment id of the ledger's genesis entry.
-    deployment: String,
-    /// The ledger's name for the daemon, which a guest's enrolment links to.
-    member: String,
-  )
-}
-
-/// Reads the installed ledger (`ledger_text`, the file the configuration
-/// names) against its certificate authority `ca` and finds the member whose
-/// node is `node`, the `[distribution] node` of the same configuration. A
-/// ledger that does not replay, a node the ledger has no active member for,
-/// and a member that is not an orchestrator are each an error, because a
-/// guest can only be linked to an orchestrator that uses it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let assert Ok(vm_spec.Membership(member: "laptop", ..)) =
-///   vm_spec.orchestrator_membership(ca, ledger_text, "laptop@127.0.0.1")
-/// ```
-pub fn orchestrator_membership(
-  ca: String,
-  ledger_text: String,
-  node: String,
-) -> Result(Membership, String) {
-  let lines =
-    string.split(ledger_text, "\n")
-    |> list.filter(fn(line) { string.trim(line) != "" })
-  use ledger <- result.try(
-    replayed(ca, lines)
-    |> result.map_error(fn(_) {
-      "the installed ledger does not replay against the configuration's ca"
-    }),
-  )
-  use member <- result.try(
-    membership_ledger.member_at(ledger, node)
-    |> result.map_error(fn(_) {
-      node <> " is not an active member of the installed ledger"
-    }),
-  )
-
-  // Only an orchestrator uses an executor.
-  case member.role {
-    Orchestrator ->
-      Ok(Membership(
-        deployment: membership_ledger.deployment(ledger),
-        member: member.name,
-      ))
-    _ ->
-      Error(
-        node
-        <> " is a "
-        <> distribution_plan.role_word(member.role)
-        <> " in the installed ledger, and only an orchestrator uses a guest",
-      )
-  }
-}
-
 /// Where a guest stands in the ledger text of a daemon's configuration, read
 /// against the certificate authority `ca`. `Error(Nil)` means the ledger does
 /// not replay against that authority, which says nothing about the guest.
@@ -2315,49 +2154,6 @@ pub fn standing(
     |> list.filter(fn(line) { string.trim(line) != "" })
   replayed(ca, lines)
   |> result.map(membership_ledger.enrollment(_, name))
-}
-
-/// The lines of the ledger a guest's executor starts with. The daemon's
-/// installed ledger (`installed`) is the more recent one, since the guest's
-/// bundle holds the ledger as of its enrolment and a certificate renewed since
-/// makes the bundle's pin table refuse the handshake. It is used only when it
-/// replays against the executor's own certificate authority and holds the
-/// executor as an active member of the node the bundle names; otherwise the
-/// bundle's lines are used. A static bundle has none.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.ledger_to_stage(static_bundle, None) == []
-/// ```
-pub fn ledger_to_stage(
-  executor: Bundle,
-  installed: Option(String),
-) -> List(String) {
-  // The installed ledger is considered only for a ledger bundle that has one
-  // to compare with.
-  case executor.trust, installed {
-    distribution_bundle.StaticPeers(_), _ -> []
-    distribution_bundle.SignedLedger(lines), None -> lines
-    distribution_bundle.SignedLedger(lines), Some(text) -> {
-      let candidate =
-        string.split(text, "\n")
-        |> list.filter(fn(line) { string.trim(line) != "" })
-
-      // The installed ledger must say this node is this guest.
-      let current =
-        replayed(executor.ca, candidate)
-        |> result.try(fn(ledger) {
-          membership_ledger.member(ledger, executor.name)
-        })
-
-      // Anything short of that is the bundle's own ledger.
-      case current {
-        Ok(member) if member.node == executor.erlang_node -> candidate
-        _ -> lines
-      }
-    }
-  }
 }
 
 /// The line `rm` prints about the checks its revoke skipped. `rm` signs the
@@ -2412,84 +2208,6 @@ pub fn rm_revoke_failure(
   <> " --yes` again."
 }
 
-/// What a join answers when the daemon did not take the entry it was handed
-/// (`delivery`, from `ledger_cli.delivered`). The entry is signed and the
-/// bundle at `bundle` holds the only copy of the node's key, so the bundle is
-/// kept, but the daemon never learned the member and would not derive its row,
-/// so the join fails and no guest boots. The words name the bundle, and the
-/// import that gives the daemon the entry, after which `up` resumes from the
-/// bundle. A delivered entry is `Ok`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.undelivered_refusal(Ok("the daemon"), "/b", "vm2") == Ok(Nil)
-/// ```
-pub fn undelivered_refusal(
-  delivery: Result(String, String),
-  bundle: String,
-  name: String,
-) -> Result(Nil, String) {
-  case delivery {
-    Ok(_) -> Ok(Nil)
-    Error(sentence) ->
-      Error(
-        name
-        <> " is enrolled, but "
-        <> sentence
-        <> " Its bundle is kept at "
-        <> bundle
-        <> ". After the import, run `loom vm up --name "
-        <> name
-        <> "` again, which resumes the guest from it. No guest was booted.",
-      )
-  }
-}
-
-/// What resuming a joined guest does given where the daemon's installed ledger
-/// puts it (`standing`). A revoked guest would not be trusted, and one the
-/// ledger does not hold yet is one whose entry never reached the daemon, which
-/// would not derive its row; both are refused and neither boots. Any other
-/// answer, including an unreadable ledger, lets the resume go on.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.resume_refusal("vm2", "/h/loom.toml", Error(Nil)) == Ok(Nil)
-/// ```
-pub fn resume_refusal(
-  name: String,
-  config: String,
-  standing: Result(membership_ledger.Enrollment, Nil),
-) -> Result(Nil, String) {
-  case standing {
-    Ok(membership_ledger.Revoked) ->
-      Error(
-        "the guest "
-        <> name
-        <> " was revoked from the deployment of "
-        <> config
-        <> ", so its executor would not be trusted. Remove it with `loom vm "
-        <> "rm --name "
-        <> name
-        <> "`, and run `loom vm up` for a new guest.",
-      )
-    Ok(membership_ledger.NotEnrolled) ->
-      Error(
-        "the deployment of "
-        <> config
-        <> " does not hold the guest "
-        <> name
-        <> " yet, so its daemon would not derive the guest's row. Run "
-        <> "`loom distribution import FILE` with the operator's copy of the "
-        <> "ledger, then `loom vm up --name "
-        <> name
-        <> "` again.",
-      )
-    Ok(membership_ledger.Enrolled(..)) | Error(Nil) -> Ok(Nil)
-  }
-}
-
 /// The authority directory of a deployment under the vm home.
 ///
 /// ## Examples
@@ -2533,32 +2251,6 @@ pub fn registered_workspaces(
   current: String,
 ) -> List(String) {
   list.sort(list.unique([current, ..recorded]), string.compare)
-}
-
-/// The executor's `loom.toml`, written with guest paths only.
-///
-/// The model table is one every daemon's configuration carries and an
-/// executor never uses: it opens no session. Each of `workspaces` is a name a
-/// copy is registered under; its root is `workspaces_dir/<name>`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let text = vm_spec.guest_config(executor_bundle, ["proj"], vm_spec.GitHubOff, [])
-/// assert string.contains(text, "[workspaces.proj]")
-/// ```
-pub fn guest_config(
-  bundle: Bundle,
-  workspaces: List(String),
-  github: GitHubAccess,
-  allow: List(String),
-) -> String {
-  // The executor's own tables come from the bundle, so its node name, its
-  // listen port and its trust in the orchestrator are what the plan said.
-  let tables =
-    distribution_bundle.config_tables(bundle, guest_files())
-    |> list.map(fn(table) { table.text })
-  guest_config_with(tables, workspaces, github, allow)
 }
 
 /// The executor's `loom.toml` around the tables that say how it is reached.
@@ -2641,7 +2333,7 @@ pub type Launch {
     root: String,
     memory_mib: Int,
     cpus: Int,
-    /// The host loopback port forwarded to the guest's distribution port.
+    /// The host loopback port forwarded to the guest's listener.
     host_port: Int,
     /// The raw image `loom-vm` attaches as the guest's state device.
     state_disk: String,
@@ -2650,53 +2342,7 @@ pub type Launch {
     /// The hosts the guest may reach besides GitHub's. They are allowed and
     /// never injection hosts: nothing here reaches `--inject-host`.
     allow: List(String),
-    /// How the forwarded port is announced.
-    reach: Reach,
   )
-}
-
-/// How `loom-vm run` makes the guest's port reachable from the host.
-pub type Reach {
-  /// `--publish`: forward the port and register the executor's node name in
-  /// the host's epmd, which a distribution peer is found by.
-  Publish
-
-  /// `--forward`: forward the port and register nothing, so the host's epmd
-  /// lists no node for the guest. The untrusted link dials the port directly.
-  Forward
-}
-
-/// `text`, a `loom.toml` just enrolled for a standing guest, with its
-/// distribution listener bound to loopback (protocol-change/106). A table that
-/// already names a listen address is left as the user wrote it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.with_loopback_listener("[distribution]\nnode = \"a@127.0.0.1\"\n")
-///   == "[distribution]\nlisten_address = \"127.0.0.1\"\nnode = \"a@127.0.0.1\"\n"
-/// ```
-pub fn with_loopback_listener(text: String) -> String {
-  // The install writes the table header on a line of its own; anything else
-  // is a file this function does not recognise and leaves alone.
-  // The header must start a line, so a commented `#[distribution]` does not
-  // take the key.
-  let header = "[distribution]\n"
-
-  // The header either opens the file or follows a newline.
-  let anchored = case string.starts_with(text, header) {
-    True -> Ok(#("", string.drop_start(text, string.length(header))))
-    False ->
-      string.split_once(text, "\n" <> header)
-      |> result.map(fn(parts) { #(parts.0 <> "\n", parts.1) })
-  }
-
-  // A file that already names a listener keeps the operator's choice.
-  case string.contains(text, "listen_address"), anchored {
-    False, Ok(#(before, after)) ->
-      before <> header <> "listen_address = \"127.0.0.1\"\n" <> after
-    _, _ -> text
-  }
 }
 
 /// The `loom-vm` arguments that boot the guest and run its executor.
@@ -2709,7 +2355,7 @@ pub fn with_loopback_listener(text: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert list.contains(vm_spec.launch_arguments(launch), "--publish")
+/// assert list.contains(vm_spec.launch_arguments(launch), "--forward")
 /// ```
 pub fn launch_arguments(launch: Launch) -> List(String) {
   // The stock libkrunfw needs no flag; a custom one, such as the Landlock
@@ -2753,27 +2399,20 @@ pub fn launch_arguments(launch: Launch) -> List(String) {
       "--state-disk",
       launch.state_disk,
     ],
-    reach_arguments(launch),
+    forward_arguments(launch),
     github,
     list.flat_map(launch.allow, fn(host) { ["--allow", host] }),
     ["--", guest_entry, node_dir, "--state-device", state_device],
   ])
 }
 
-/// The flag that forwards the guest's port: `--publish` also registers the
-/// executor's node in the host's epmd, and `--forward` does not.
-fn reach_arguments(launch: Launch) -> List(String) {
+/// The flag that forwards the host's loopback port to the guest's listener. It
+/// registers no node with the host's epmd: the untrusted link dials the port
+/// directly.
+fn forward_arguments(launch: Launch) -> List(String) {
   let host = int.to_string(launch.host_port)
   let guest = int.to_string(guest_port)
-
-  // Only a distribution peer is found through epmd.
-  case launch.reach {
-    Publish -> [
-      "--publish",
-      launch.names.executor_short <> ":" <> host <> ":" <> guest,
-    ]
-    Forward -> ["--forward", host <> ":" <> guest]
-  }
+  ["--forward", host <> ":" <> guest]
 }
 
 /// `--allow` for each GitHub host.
@@ -3289,66 +2928,26 @@ pub fn stop_command(pid: Int) -> String {
   "kill -TERM " <> int.to_string(pid)
 }
 
-/// Whether a daemon that is already running has yet to read what `up` put into
-/// the user's configuration. The daemon's note depends on it, because only a
-/// change that is new to a running daemon obliges the daemon to restart.
-pub type Table {
-  /// A daemon that was already running read its configuration without the
-  /// change: this `up` wrote it, or an earlier one did and the daemon says it
-  /// still runs without it.
-  Installed
-
-  /// A resume: an earlier `up` wrote the change, this one changed nothing in
-  /// the configuration, and nothing says the daemon runs without it.
-  AlreadyThere
-}
-
-/// The lines `up` ends with about the daemon.
-///
-/// A daemon that holds any session is never stopped for the user. After an
-/// install the note names the exact command that stops it, because the daemon
-/// must restart to read the new table. After a resume the note says the daemon
-/// needs no restart on this `up`'s account, because this `up` changed nothing
-/// the daemon reads. A stopped daemon is started again by the next `loom`
-/// command, which renders the TLS options file the table needs
-/// (protocol-change/106).
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.Installed) != []
-/// ```
-pub fn daemon_note(outcome: DaemonOutcome, table: Table) -> List(String) {
-  daemon_note_about(outcome, "the table", restart_reason(table), table)
-}
-
 /// The lines `up` ends with about the daemon, for a change to the daemon's
 /// configuration that it reads only at its start: `effect` names what the next
-/// start puts in effect, and `reason` says whether a running daemon must
-/// restart and why. `table` says whether a running daemon has yet to read the
-/// change, because only then does the note name the command that stops it.
-/// `daemon_note` is the words for a `[distribution]` table, and
-/// `client/vm_link.daemon_lines` the words for an untrusted guest's row.
+/// start puts in effect, and `reason` says why a running daemon must restart.
+/// A daemon that is still running gets the command that stops it.
+/// `client/vm_link.daemon_lines` is the caller, with the words for an
+/// untrusted guest's row.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.daemon_note_about(
-///     vm_spec.NoDaemon,
-///     "the row",
-///     "Restart it.",
-///     vm_spec.Installed,
-///   )
+/// assert vm_spec.daemon_note_about(vm_spec.NoDaemon, "the row", "Restart it.")
 ///   != []
 /// ```
 pub fn daemon_note_about(
   outcome: DaemonOutcome,
   effect: String,
   reason: String,
-  table: Table,
 ) -> List(String) {
   // Each outcome is one thing said, and only a daemon that is still running
-  // gets the command that stops it, and only after an install.
+  // gets the command that stops it.
   case outcome {
     NoDaemon -> [
       "The next `loom` command starts the daemon with "
@@ -3371,7 +2970,7 @@ pub fn daemon_note_about(
           <> "). "
           <> reason,
         ],
-        stop_lines(table, pid, "Stop it"),
+        [stop_line(pid, "Stop it")],
         [""],
       ])
     Holding(pid, sessions) ->
@@ -3384,7 +2983,7 @@ pub fn daemon_note_about(
           <> ", so it was left running. "
           <> reason,
         ],
-        stop_lines(table, pid, "When they are finished, stop it"),
+        [stop_line(pid, "When they are finished, stop it")],
         [""],
       ])
     Unasked(pid) ->
@@ -3394,32 +2993,15 @@ pub fn daemon_note_about(
           <> "so it was left running. "
           <> reason,
         ],
-        stop_lines(table, pid, "When it holds none, stop it"),
+        [stop_line(pid, "When it holds none, stop it")],
         [""],
       ])
   }
 }
 
-/// Why a running daemon does or does not have to restart: it read its
-/// configuration before an install, and a resume installed nothing.
-fn restart_reason(table: Table) -> String {
-  case table {
-    Installed ->
-      "It read its configuration before the [distribution] table was "
-      <> "installed, so it must restart to use the guest."
-    AlreadyThere ->
-      "This `up` resumed the guest and installed nothing, so the daemon "
-      <> "needs no restart on its account."
-  }
-}
-
-/// The line that gives the command that stops the daemon, only for an install,
-/// the one case that needs the daemon to restart.
-fn stop_lines(table: Table, pid: Int, lead: String) -> List(String) {
-  case table {
-    Installed -> [lead <> " with: " <> stop_command(pid)]
-    AlreadyThere -> []
-  }
+/// The line that gives the command that stops the daemon with `pid`.
+fn stop_line(pid: Int, lead: String) -> String {
+  lead <> " with: " <> stop_command(pid)
 }
 
 fn plural(count: Int) -> String {
@@ -3431,35 +3013,28 @@ fn plural(count: Int) -> String {
 
 // --- ensure: one guest per workspace, made ready --------------------------------
 
-/// The exit status `ensure` ends with when the only thing missing is a running
-/// daemon. It is not otherwise used by `loomd vm`, whose failures all exit 1.
-pub const daemon_required_status = 75
-
-/// The last line of standard output that goes with `daemon_required_status`.
-pub const daemon_required_line = "daemon=required"
-
-/// What the host says about a guest's process and its executor node.
+/// What the host says about a guest's process and its executor's console.
 pub type GuestState {
   /// No process the pid record names is there.
   GuestStopped
 
-  /// The process is there, but its node is not in the host's epmd yet, so the
-  /// guest is booting or its executor failed.
+  /// The process is there, but its console does not yet say the executor
+  /// serves, so the guest is booting or its executor failed.
   GuestStarting(pid: Int)
 
-  /// The process is there and its node is in epmd: the executor serves.
+  /// The process is there and its console says the executor serves.
   GuestServing(pid: Int)
 }
 
-/// Whether the host epmd lists the guest's executor node.
+/// Whether the guest's console holds the line that says its executor serves.
 pub type Registration {
   Registered
   Unregistered
 }
 
 /// The guest's state from the pid record's process, when it is still there,
-/// and the epmd listing. A node listed with no process is a stranded runner,
-/// which `up` refuses on its own account, so it reads as stopped here.
+/// and the console. A ready line with no process is a stale console, so it reads
+/// as stopped here.
 ///
 /// ## Examples
 ///
@@ -3476,24 +3051,6 @@ pub fn guest_state(pid: Option(Int), registration: Registration) -> GuestState {
   }
 }
 
-/// Whether bringing the guest up would enrol it in a ledger deployment that
-/// already exists, which only a running daemon can do.
-pub type EnrolmentNeed {
-  /// The guest has its bundles, or the configuration holds no ledger
-  /// deployment to join, so enrolment needs no daemon.
-  NeedsNoDaemon
-
-  /// The guest has no bundles and the default configuration holds a ledger
-  /// deployment: the second and later guests of a machine.
-  JoinsLedger
-}
-
-/// Whether the daemon of the default configuration is running.
-pub type DaemonFact {
-  DaemonRunning
-  DaemonStopped
-}
-
 /// Everything `ensure` looks at before it changes anything.
 pub type EnsureFacts {
   EnsureFacts(
@@ -3503,10 +3060,6 @@ pub type EnsureFacts {
     state: GuestState,
     /// The manifest decision, or why the manifest could not be read.
     manifest: Result(ManifestAction, String),
-    /// Whether enrolment will need the daemon.
-    enrolment: EnrolmentNeed,
-    /// Whether the daemon runs.
-    daemon: DaemonFact,
   )
 }
 
@@ -3514,11 +3067,6 @@ pub type EnsureFacts {
 pub type EnsureStep {
   /// The guest serves already: print the line and stop, touching nothing.
   AlreadyServing
-
-  /// Enrolment needs the daemon and none runs. Nothing was written. The caller
-  /// is a launcher that starts daemons, and answers with
-  /// `daemon_required_status`.
-  NeedsDaemon
 
   /// Run `up` for the guest, fresh or resumed.
   Boot
@@ -3534,9 +3082,8 @@ pub type EnsureStep {
 /// cannot break a guest that already runs. A guest that is running but not
 /// registered is refused, since `up` refuses a running guest and a second
 /// process on its root would corrupt it. Then a manifest that must be refused
-/// is, then a missing daemon is reported, before any setup, so that answer
-/// leaves the disk as it was. Only then does a missing or stale manifest
-/// start setup, and only a usable one boots.
+/// is. A missing or stale manifest starts setup inside `up`'s own path, so only
+/// a usable one boots.
 ///
 /// ## Examples
 ///
@@ -3555,26 +3102,13 @@ pub fn ensure_step(facts: EnsureFacts) -> EnsureStep {
 }
 
 /// The step for a guest that is not running: a manifest that cannot be used
-/// refuses, a join with no daemon waits for one, and only then does setup or
-/// the boot follow.
+/// refuses, and any other boots, setup included.
 fn stopped_step(facts: EnsureFacts) -> EnsureStep {
-  // A manifest that must be refused ends it before anything else is asked.
+  // A manifest that must be refused ends it before anything is written.
   case facts.manifest {
     Error(reason) -> Refuse(reason)
     Ok(RefuseManifest(reason)) -> Refuse(reason)
-    Ok(_) -> usable_step(facts.enrolment, facts.daemon)
-  }
-}
-
-/// The step once the manifest is usable or installable: the daemon question
-/// comes first so that its answer leaves the disk unchanged. Setup itself is
-/// not a step of its own: `bring_up` installs a missing or stale manifest as
-/// `up` does, so a `Boot` covers it.
-fn usable_step(enrolment: EnrolmentNeed, daemon: DaemonFact) -> EnsureStep {
-  // A join with the daemon down is reported first; anything else boots.
-  case enrolment, daemon {
-    JoinsLedger, DaemonStopped -> NeedsDaemon
-    _, _ -> Boot
+    Ok(_) -> Boot
   }
 }
 
@@ -3661,95 +3195,7 @@ pub fn restart_refusal(outcome: DaemonOutcome) -> Result(Nil, String) {
   }
 }
 
-// --- what a first guest may write, and what a kept one still owes --------------
-
-/// Whether the home already has an `.erlang.cookie`.
-pub type HomeCookie {
-  NoHomeCookie
-  HomeCookieThere
-}
-
-/// Decides, before anything is minted, whether a deployment can be installed in
-/// a configuration that holds none. A deployment's cookie is minted fresh, so
-/// it can never equal a file that already exists, and `install` refuses to
-/// replace that file. Deciding it here leaves nothing behind: the bundles and
-/// the sealed key are written only after this answers `Ok`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.mint_check(vm_spec.NoHomeCookie, "/h/.erlang.cookie") == Ok(Nil)
-/// assert result.is_error(vm_spec.mint_check(vm_spec.HomeCookieThere, "/h/.erlang.cookie"))
-/// ```
-pub fn mint_check(cookie: HomeCookie, path: String) -> Result(Nil, String) {
-  case cookie {
-    NoHomeCookie -> Ok(Nil)
-    HomeCookieThere -> Error(cookie_refusal(path))
-  }
-}
-
-/// The refusal for a home that has a cookie already. It says what the choice
-/// costs, because the file is the one every other Erlang node of the user reads.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert string.contains(vm_spec.cookie_refusal("/h/.erlang.cookie"), "nothing was written")
-/// ```
-pub fn cookie_refusal(path: String) -> String {
-  path
-  <> " already exists, and a guest's deployment needs its own cookie there. "
-  <> "Erlang reads that one file for every distributed node this user starts, "
-  <> "so `loom vm` will not replace it, and nothing was written. If no other "
-  <> "Erlang, Elixir or Gleam node of yours relies on that cookie, move it "
-  <> "aside and run this again; otherwise this home cannot host a guest's "
-  <> "deployment."
-}
-
-/// What a guest with both of its bundles owes the configuration.
-pub type KeptStep {
-  /// The configuration holds no deployment, as after a refused install: the
-  /// bundles are installed now, which is the install that was refused.
-  InstallKept
-
-  /// The configuration holds a deployment: only the guest's row is checked.
-  CheckKeptRow
-}
-
-/// Decides what a resumed guest with orchestrator bundles does about the
-/// configuration. A deployment that is there means the earlier `up` installed
-/// it and the row is what must still exist. One that is not there means the
-/// earlier `up` minted the bundles and its install was refused, so reporting a
-/// missing row would be false: the bundles are installed instead.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.kept_step(Ok(vm_spec.NoDeployment)) == vm_spec.InstallKept
-/// ```
-pub fn kept_step(state: Result(DeploymentState, String)) -> KeptStep {
-  case state {
-    Ok(NoDeployment) -> InstallKept
-    Ok(LedgerDeployment(..)) | Ok(StaticDeployment) | Error(_) -> CheckKeptRow
-  }
-}
-
-/// Whether a `deployment.status` reply says the daemon runs without
-/// distribution, which means it has not read a `[distribution]` table. A reply
-/// that says nothing about it is not read as lacking it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.lacks_distribution(core_json.Object([#("distribution", core_json.String("none"))]))
-/// ```
-pub fn lacks_distribution(body: core_json.JsonValue) -> Bool {
-  case body {
-    core_json.Object(fields) ->
-      list.key_find(fields, "distribution") == Ok(core_json.String("none"))
-    _ -> False
-  }
-}
+// --- a guest in another configuration ---------------------------------------
 
 /// The refusal for a guest enrolled in a configuration other than the default,
 /// whose daemon `ensure` cannot find or ask.

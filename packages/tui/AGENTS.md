@@ -513,18 +513,16 @@ runs the server through `/bin/sh` with standard error on `/dev/tty` when it open
 alone. `loom --vm` serves the nearest `.git` ancestor (`tui.vm_directory`);
 `loom run --vm` the directory itself. `--github` and `--allow` are taken out by
 `vm_ensure.guest_flags` and passed to `ensure`; `--state-dir` is refused with
-`--vm`. `answer` takes the last line that reads as an answer, and a refused
-first run (`daemon=required`) prints one launcher line instead of its refusal. `parse_line` is the total parser of the last
-line, `executor=NAME workspace=NAME`, validated by `placement.new`; `answer` reads
-a status and output as `Ready`, `NeedsDaemon` (status 75 and the last line
-`daemon=required`) or `Failed`. The ordering is `ensure` first, because a new
-guest's untrusted row goes into `loom.toml` and `ensure` asks a running daemon to
-reload it, while a daemon the launcher starts afterwards reads it at boot. On
-`NeedsDaemon`, which no current guest asks for since none joins a ledger
-deployment, `start_daemon` resolves the daemon of the launch (which starts one if
-none runs) and `ensure` runs once more, whose answer is final. The
-runner, the daemon start and the reporter are arguments of `vm_ensure.ensure`;
-`launch` supplies the real ones. The returned options have the executor placement
+`--vm`. `answer` takes the last line that reads as an answer. `parse_line` is the
+total parser of the last line, `executor=NAME workspace=NAME`, validated by
+`placement.new`; `answer` reads a status and output as `Ready` or `Failed`. The
+ordering is `ensure` first, because a new guest's untrusted row goes into
+`loom.toml` and `ensure` asks a running daemon to reload it, while a daemon the
+launcher starts afterwards reads it at boot. `ensure` never needs the launcher to
+start a daemon, so it runs once; the status 75 and `daemon=required` ending, and
+the retry that answered it, were deleted with the distribution bring-up. The
+runner and the reporter are arguments of `vm_ensure.ensure`; `launch` supplies
+the real ones. The returned options have the executor placement
 and an empty `workspace`, exactly the `--executor` launch's. `loom run -p ...
 --vm` (`run.Request.tools`, `InTheGuest`) calls `vm_ensure.launch` in `execute`
 before it reaches the daemon, and `run.create_target` creates the session from

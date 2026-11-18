@@ -1,10 +1,9 @@
 //// `loom --vm`: how the launcher reads the flag, what it asks the server to do,
-//// how it reads the answer, and the two orderings of `ensure` and the daemon.
+//// how it reads the answer, and that `ensure` runs once and starts no daemon.
 ////
-//// The runner that runs `loomd vm ensure` and the function that starts the
-//// daemon are arguments of `vm_ensure.ensure`, so each case here scripts the
-//// answers the server would give and records what the launcher did in what
-//// order. Nothing starts a guest or a daemon.
+//// The runner that runs `loomd vm ensure` is an argument of
+//// `vm_ensure.ensure`, so each case here scripts the answers the server would
+//// give and records what the launcher did. Nothing starts a guest or a daemon.
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -188,15 +187,12 @@ pub fn status_zero_ends_with_a_guest_test() {
   let assert vm_ensure.Failed(1, _) = vm_ensure.answer(0, "")
 }
 
-pub fn status_75_with_the_line_is_a_missing_daemon_test() {
-  let assert vm_ensure.NeedsDaemon(progress) =
-    vm_ensure.answer(75, "loomd: needs the daemon\ndaemon=required\n")
-  assert progress == "loomd: needs the daemon"
-
-  // The status alone is not enough, and the line alone is not either.
-  let assert vm_ensure.Failed(75, _) = vm_ensure.answer(75, "something\n")
-  let assert vm_ensure.Failed(1, _) =
-    vm_ensure.answer(1, "loomd: x\ndaemon=required\n")
+pub fn status_75_is_an_ordinary_failure_test() {
+  // Status 75 once asked the launcher to start a daemon and run `ensure`
+  // again. No server answers it now, so it keeps its output like any status.
+  let assert vm_ensure.Failed(75, output) =
+    vm_ensure.answer(75, "loomd: x\ndaemon=required\n")
+  assert output == "loomd: x\ndaemon=required"
 }
 
 pub fn any_other_status_keeps_the_whole_output_test() {
@@ -205,22 +201,14 @@ pub fn any_other_status_keeps_the_whole_output_test() {
   assert output == "step\nloomd: the guest failed:\nlog line"
 }
 
-// --- the orderings ------------------------------------------------------------------
+// --- the run -------------------------------------------------------------------------
 
-// Scripts `ensure`'s answers and records, in order, each run and each daemon
-// start as the words `ensure` and `daemon`.
+// Scripts `ensure`'s answers and records each run as the word `ensure`.
 type Script {
-  Script(
-    runner: vm_ensure.Runner,
-    start_daemon: fn() -> Result(Nil, String),
-    events: Subject(String),
-  )
+  Script(runner: vm_ensure.Runner, events: Subject(String))
 }
 
-fn script(
-  answers: List(#(Int, String)),
-  daemon: Result(Nil, String),
-) -> Script {
+fn script(answers: List(#(Int, String))) -> Script {
   let queue = process.new_subject()
   list.each(answers, fn(answer) { process.send(queue, answer) })
   let events = process.new_subject()
@@ -231,10 +219,6 @@ fn script(
         Ok(answer) -> Ok(answer)
         Error(Nil) -> Error("the script has no more answers")
       }
-    },
-    start_daemon: fn() {
-      process.send(events, "daemon")
-      daemon
     },
     events:,
   )
@@ -252,19 +236,16 @@ fn run(script: Script) -> Result(bootstrap.Options, vm_ensure.Failure) {
     options("/src/proj", ""),
     flags: [],
     run: script.runner,
-    start_daemon: script.start_daemon,
     report: fn(_) { Nil },
   )
 }
 
 const guest_answer = #(0, "executor=proj-1a2b3c workspace=proj\n")
 
-const daemon_answer = #(75, "loomd: join needs the daemon\ndaemon=required\n")
-
-pub fn the_first_guest_runs_ensure_before_any_daemon_test() {
-  // A daemon that started before the deployment existed would not have read
-  // it, so the default is ensure first, with no daemon start in between.
-  let script = script([guest_answer], Ok(Nil))
+pub fn the_first_guest_runs_ensure_once_and_starts_no_daemon_test() {
+  // A daemon that started before the guest's row existed would not have read
+  // it, so `ensure` runs alone and asks a running daemon to reload itself.
+  let script = script([guest_answer])
   let assert Ok(chosen) = run(script)
   assert drained(script.events) == ["ensure"]
 
@@ -274,38 +255,8 @@ pub fn the_first_guest_runs_ensure_before_any_daemon_test() {
   assert chosen.workspace == ""
 }
 
-pub fn a_missing_daemon_is_started_once_and_ensure_runs_again_test() {
-  let script = script([daemon_answer, guest_answer], Ok(Nil))
-  let assert Ok(chosen) = run(script)
-  assert drained(script.events) == ["ensure", "daemon", "ensure"]
-  assert chosen.placement == placement.OnExecutor("proj-1a2b3c", "proj")
-}
-
-pub fn a_second_missing_daemon_answer_is_an_error_not_a_loop_test() {
-  let script = script([daemon_answer, daemon_answer, guest_answer], Ok(Nil))
-  let assert Error(vm_ensure.Failure(75, reason)) = run(script)
-  assert string.contains(reason, "still needs a running daemon")
-  assert drained(script.events) == ["ensure", "daemon", "ensure"]
-}
-
-pub fn the_second_run_s_error_is_the_error_test() {
-  let script =
-    script([daemon_answer, #(1, "loomd: the guest failed\n")], Ok(Nil))
-  let assert Error(vm_ensure.Failure(1, reason)) = run(script)
-  assert reason == "loomd: the guest failed"
-}
-
-pub fn a_daemon_that_cannot_start_ends_the_launch_test() {
-  let script = script([daemon_answer, guest_answer], Error("no socket"))
-  let assert Error(vm_ensure.Failure(1, reason)) = run(script)
-  assert string.contains(reason, "no socket")
-
-  // Ensure was not run again.
-  assert drained(script.events) == ["ensure", "daemon"]
-}
-
 pub fn a_failed_ensure_ends_with_its_own_status_test() {
-  let script = script([#(3, "loomd: refused\n"), guest_answer], Ok(Nil))
+  let script = script([#(3, "loomd: refused\n"), guest_answer])
   let assert Error(vm_ensure.Failure(3, "loomd: refused")) = run(script)
   assert drained(script.events) == ["ensure"]
 }
@@ -314,7 +265,7 @@ pub fn a_refusal_already_on_the_terminal_adds_no_line_test() {
   // On the interactive launch the server's standard error went to the
   // terminal, so the refusal of an old guest leaves the captured text empty,
   // and the failure is read with no reason.
-  let script = script([#(1, "\n"), guest_answer], Ok(Nil))
+  let script = script([#(1, "\n"), guest_answer])
   let assert Error(vm_ensure.Failure(1, reason)) = run(script)
     as "a refusal with nothing captured is a failure"
   assert vm_ensure.failure_lines(reason) == []
@@ -330,7 +281,6 @@ pub fn a_server_that_cannot_run_is_a_failure_test() {
       options("", ""),
       flags: [],
       run: fn(_) { Error("no such file") },
-      start_daemon: fn() { Ok(Nil) },
       report: fn(_) { Nil },
     )
   assert string.contains(reason, "no such file")
@@ -352,7 +302,6 @@ pub fn the_launch_options_other_than_the_workspace_survive_test() {
       given,
       flags: [],
       run: fn(_) { Ok(guest_answer) },
-      start_daemon: fn() { Ok(Nil) },
       report: fn(_) { Nil },
     )
   assert chosen.server == "/s/loomd"
@@ -469,10 +418,6 @@ pub fn the_last_line_that_reads_as_the_answer_wins_test() {
   assert guest == vm_ensure.Guest("g-1", "app")
   assert progress == "booting\nloom vm ensure: g-1: the guest serves port 9."
 
-  // The daemon line is found the same way.
-  let assert vm_ensure.NeedsDaemon(_) =
-    vm_ensure.answer(75, "daemon=required\nloomd: late line\n")
-
   // An earlier line that parses is not preferred to a later one.
   let assert vm_ensure.Ready(later, _) =
     vm_ensure.answer(0, "executor=a-1 workspace=a\nexecutor=b-2 workspace=b\n")
@@ -486,36 +431,18 @@ fn collecting(events: Subject(String)) -> fn(String) -> Nil {
 }
 
 pub fn the_launch_says_what_it_does_before_it_does_it_test() {
-  let script = script([guest_answer], Ok(Nil))
+  let script = script([guest_answer])
   let reports = process.new_subject()
   let assert Ok(_) =
     vm_ensure.ensure(
       options("/src/proj", ""),
       flags: [],
       run: script.runner,
-      start_daemon: script.start_daemon,
       report: collecting(reports),
     )
   let assert Ok(first) = process.receive(reports, 0)
   assert string.contains(first, "/src/proj")
   assert string.contains(first, "can take minutes")
-}
-
-pub fn a_missing_daemon_prints_one_launch_line_not_the_refusal_test() {
-  let script = script([daemon_answer, guest_answer], Ok(Nil))
-  let reports = process.new_subject()
-  let assert Ok(_) =
-    vm_ensure.ensure(
-      options("/src/proj", ""),
-      flags: [],
-      run: script.runner,
-      start_daemon: script.start_daemon,
-      report: collecting(reports),
-    )
-  let said = drained(reports)
-  assert list.contains(said, "starting the daemon so the guest can join")
-  assert !list.any(said, string.contains(_, "starts none"))
-  assert !list.any(said, string.contains(_, "join needs the daemon"))
 }
 
 // --- the terminal wrapper ---------------------------------------------------------------

@@ -7,7 +7,6 @@
 //// red run is the same red run everywhere.
 
 import client/vm_spec
-import core/json as core_json
 import gleam/bit_array
 import gleam/crypto
 import gleam/list
@@ -26,16 +25,8 @@ const cases = 300
 fn facts(
   state: vm_spec.GuestState,
   manifest: Result(vm_spec.ManifestAction, String),
-  enrolment: vm_spec.EnrolmentNeed,
-  daemon: vm_spec.DaemonFact,
 ) -> vm_spec.EnsureFacts {
-  vm_spec.EnsureFacts(
-    name: "proj-1a2b3c",
-    state:,
-    manifest:,
-    enrolment:,
-    daemon:,
-  )
+  vm_spec.EnsureFacts(name: "proj-1a2b3c", state:, manifest:)
 }
 
 const use_it =
@@ -54,42 +45,20 @@ const use_it =
 
 pub fn a_serving_guest_is_never_touched_test() {
   // Whatever else is wrong, a guest that serves answers first: the manifest is
-  // not even readable here and the daemon is down.
-  assert vm_spec.ensure_step(facts(
-      vm_spec.GuestServing(7),
-      Error("unreadable"),
-      vm_spec.JoinsLedger,
-      vm_spec.DaemonStopped,
-    ))
+  // not even readable here.
+  assert vm_spec.ensure_step(facts(vm_spec.GuestServing(7), Error("unreadable")))
     == vm_spec.AlreadyServing
 }
 
 pub fn a_guest_that_runs_but_is_not_registered_is_refused_test() {
   let assert vm_spec.Refuse(reason) =
-    vm_spec.ensure_step(facts(
-      vm_spec.GuestStarting(7),
-      use_it,
-      vm_spec.NeedsNoDaemon,
-      vm_spec.DaemonRunning,
-    ))
+    vm_spec.ensure_step(facts(vm_spec.GuestStarting(7), use_it))
   assert string.contains(reason, "process 7")
   assert string.contains(reason, "loom vm down --name proj-1a2b3c")
 }
 
 pub fn a_stopped_guest_with_a_usable_manifest_boots_test() {
-  assert vm_spec.ensure_step(facts(
-      vm_spec.GuestStopped,
-      use_it,
-      vm_spec.NeedsNoDaemon,
-      vm_spec.DaemonStopped,
-    ))
-    == vm_spec.Boot
-  assert vm_spec.ensure_step(facts(
-      vm_spec.GuestStopped,
-      use_it,
-      vm_spec.JoinsLedger,
-      vm_spec.DaemonRunning,
-    ))
+  assert vm_spec.ensure_step(facts(vm_spec.GuestStopped, use_it))
     == vm_spec.Boot
 }
 
@@ -99,45 +68,17 @@ pub fn a_stopped_guest_with_no_current_manifest_boots_and_up_sets_up_test() {
   assert vm_spec.ensure_step(facts(
       vm_spec.GuestStopped,
       Ok(vm_spec.InstallRelease("stale")),
-      vm_spec.NeedsNoDaemon,
-      vm_spec.DaemonStopped,
     ))
     == vm_spec.Boot
 }
 
-pub fn a_join_without_a_daemon_is_reported_before_any_setup_test() {
-  // Setup writes the manifest and the artifacts, and the answer must leave the
-  // disk as it was, so the daemon is asked for first.
-  assert vm_spec.ensure_step(facts(
-      vm_spec.GuestStopped,
-      Ok(vm_spec.InstallRelease("stale")),
-      vm_spec.JoinsLedger,
-      vm_spec.DaemonStopped,
-    ))
-    == vm_spec.NeedsDaemon
-  assert vm_spec.ensure_step(facts(
-      vm_spec.GuestStopped,
-      use_it,
-      vm_spec.JoinsLedger,
-      vm_spec.DaemonStopped,
-    ))
-    == vm_spec.NeedsDaemon
-}
-
-pub fn a_refused_or_unreadable_manifest_is_refused_whatever_the_daemon_test() {
+pub fn a_refused_or_unreadable_manifest_is_refused_test() {
   assert vm_spec.ensure_step(facts(
       vm_spec.GuestStopped,
       Ok(vm_spec.RefuseManifest("dev build")),
-      vm_spec.JoinsLedger,
-      vm_spec.DaemonStopped,
     ))
     == vm_spec.Refuse("dev build")
-  assert vm_spec.ensure_step(facts(
-      vm_spec.GuestStopped,
-      Error("bad json"),
-      vm_spec.NeedsNoDaemon,
-      vm_spec.DaemonRunning,
-    ))
+  assert vm_spec.ensure_step(facts(vm_spec.GuestStopped, Error("bad json")))
     == vm_spec.Refuse("bad json")
 }
 
@@ -153,8 +94,6 @@ pub fn a_guest_is_serving_only_with_a_process_and_a_registration_test() {
 pub fn the_last_line_names_the_executor_and_the_workspace_test() {
   assert vm_spec.ensure_line("proj-1a2b3c", "proj")
     == "executor=proj-1a2b3c workspace=proj"
-  assert vm_spec.daemon_required_line == "daemon=required"
-  assert vm_spec.daemon_required_status == 75
 }
 
 pub fn a_restart_is_asked_only_of_a_daemon_left_running_test() {
@@ -395,45 +334,7 @@ pub fn guest_names_never_collide_with_the_authority_directory_test() {
   )
 }
 
-// --- a first guest in a home that has a cookie ---------------------------------
-
-pub fn a_home_with_a_cookie_is_refused_before_anything_is_written_test() {
-  assert vm_spec.mint_check(vm_spec.NoHomeCookie, "/h/.erlang.cookie")
-    == Ok(Nil)
-  let assert Error(reason) =
-    vm_spec.mint_check(vm_spec.HomeCookieThere, "/h/.erlang.cookie")
-
-  // The refusal says nothing was written, and says what the choice costs.
-  assert string.contains(reason, "/h/.erlang.cookie already exists")
-  assert string.contains(reason, "nothing was written")
-  assert string.contains(reason, "every distributed node this user starts")
-  assert string.contains(reason, "relies on that cookie")
-}
-
-pub fn bundles_kept_from_a_refused_install_are_installed_not_checked_test() {
-  // No deployment in the file: the earlier install was refused, so a missing
-  // row would be a false report.
-  assert vm_spec.kept_step(Ok(vm_spec.NoDeployment)) == vm_spec.InstallKept
-  assert vm_spec.kept_step(Ok(vm_spec.LedgerDeployment("/l")))
-    == vm_spec.CheckKeptRow
-  assert vm_spec.kept_step(Ok(vm_spec.StaticDeployment)) == vm_spec.CheckKeptRow
-  assert vm_spec.kept_step(Error("bad toml")) == vm_spec.CheckKeptRow
-}
-
-// --- whether the daemon has read the deployment ----------------------------------
-
-pub fn a_daemon_that_says_none_has_no_distribution_test() {
-  assert vm_spec.lacks_distribution(
-    core_json.Object([#("distribution", core_json.String("none"))]),
-  )
-  assert !vm_spec.lacks_distribution(
-    core_json.Object([#("distribution", core_json.String("configured"))]),
-  )
-
-  // A reply that says nothing is not read as lacking it.
-  assert !vm_spec.lacks_distribution(core_json.Object([]))
-  assert !vm_spec.lacks_distribution(core_json.String("none"))
-}
+// --- a guest in another configuration -----------------------------------------
 
 pub fn another_configuration_is_named_in_its_refusal_test() {
   let reason = vm_spec.other_config_refusal("/c/loom.toml")

@@ -1208,7 +1208,6 @@ pub fn daemon_lines(name: String, outcome: DaemonOutcome) -> List(String) {
     "It has not read [executors."
       <> name
       <> "], so it must restart to reach the guest.",
-    vm_spec.Installed,
   )
 }
 
