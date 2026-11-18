@@ -2411,7 +2411,8 @@ attaches the child's), so revoking the parent does not end it, and revoking the
 child now does, where before it ran to its eight hours. Revoking a parent drops
 its unredeemed device tickets, and refuses a new child login under it
 (`access.issue_login` refuses an issuing login on record as revoked, and the
-table refuses a page's ticket for a login no page holds, which closes the gap
+table refuses a page's ticket for a login that no live page opened under the same
+credential holds, which closes the gap
 between a page's check and its mint). It does not cascade to child logins that
 already exist or to their pages, which is unchanged.
 

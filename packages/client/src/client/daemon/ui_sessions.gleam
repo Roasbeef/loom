@@ -299,8 +299,8 @@ type Life {
 /// be held by a live page when the table files it.
 type Minter {
   /// A live page of the login asks, through `mint_in`, `mint_device` or
-  /// `mint_before`. The ticket is filed only while some page still holds the
-  /// login it carries. A page's own check and its registry calls come before the
+  /// `mint_before`. The ticket is filed only while some live page of the login,
+  /// opened under the ticket's own credential, still holds the login it carries. A page's own check and its registry calls come before the
   /// mint, so a revocation can land between them. The table serialises the mint
   /// against `EndLogin`: either the end runs first and no page holds the login,
   /// so the mint is refused, or the mint runs first and the end drops its ticket.
@@ -1114,7 +1114,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // A page's ticket for a login that no page holds any more is refused, so a
     // revocation that landed after the page's check cannot leave a ticket behind.
     Mint(grant:, until:, login:, life:, minter:, reply:) ->
-      case refuses_mint(state, minter, login, now) {
+      case refuses_mint(state, minter, grant, login, now) {
         True -> {
           process.send(reply, Error(Nil))
           actor.continue(state)
@@ -1507,20 +1507,28 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 fn refuses_mint(
   state: State,
   minter: Minter,
+  grant: Grant,
   login: Option(Issuer),
   now: Int,
 ) -> Bool {
   case minter, login {
-    ByPage, Some(issuer) -> !held_by_page(state, issuer, now)
+    ByPage, Some(issuer) -> !held_by_page(state, grant, issuer, now)
     ByPage, None | ByLauncher, _ -> False
   }
 }
 
-/// Whether a live page holds `login`, judged by its fingerprint.
-fn held_by_page(state: State, login: Issuer, now: Int) -> Bool {
+/// Whether a live page of `login` was opened under the credential `grant`
+/// carries. A page's mint carries its own credential, so a page that mints
+/// matches itself, and this approximates "the minting page" without the table
+/// knowing which page asked. The credential is required because a resume verified
+/// before a revocation can be redeemed after it, leaving a page of the revoked
+/// login bound to the login's own credential, which would otherwise stand in as
+/// the holder for a page minting under another credential.
+fn held_by_page(state: State, grant: Grant, login: Issuer, now: Int) -> Bool {
   dict.values(state.sessions)
   |> list.any(fn(entry) {
     entry.expires_at > now
+    && entry.value.grant.credential == grant.credential
     && case entry.value.login {
       Some(held) -> held.fingerprint == login.fingerprint
       None -> False

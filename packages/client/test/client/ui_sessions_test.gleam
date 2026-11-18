@@ -1509,6 +1509,39 @@ pub fn a_page_cannot_mint_a_ticket_for_a_login_that_has_ended_test() {
   ))
 }
 
+// A resume verified before a revocation can be redeemed after it, which leaves a
+// page of the revoked login bound to the login's own credential. That page is not
+// the holder for a page minting under another credential, so the mint is refused
+// until a page of the login under that credential exists.
+pub fn a_page_of_the_login_under_another_credential_is_not_its_holder_test() {
+  let sessions = table(clock())
+  let login = issuer("1111111111111111")
+  let assert Ok(other) = access.credential_digest(string.repeat("d", 64))
+    as "another credential's digest is valid"
+  let assert Ok(issued) =
+    ui_sessions.mint_resumed(
+      sessions,
+      ui_sessions.Grant(
+        ..home_for("alice"),
+        credential: other,
+        origin: ui_sessions.Resumed,
+      ),
+      login,
+    )
+    as "a resume's ticket is minted"
+  let assert Ok(resumed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the resume redeems"
+  assert ui_sessions.login_of(sessions, resumed.cookie) == Some(login)
+
+  let mint = fn() {
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(login))
+  }
+  assert mint() == Error(Nil)
+  held_by_a_page(sessions, login)
+  assert result.is_ok(mint())
+}
+
 // "Sign out everywhere" ends every page of the principal that has a login, and
 // not the principal's pages with no login, which are the bearer's and which
 // signing out does not revoke, and not another principal's pages.

@@ -1490,7 +1490,9 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   principal matches and whose login is `Some`) and the call returns once it has,
   so the page's next check finds nothing and it ends as `PageEnded`. A page's
   own mints (`mint_in`, `mint_device`, `mint_before`, `Minter = ByPage`) are
-  refused in the table's turn when the login they carry is held by no live page,
+  refused in the table's turn when the login they carry is held by no live page
+  opened under the ticket's own credential (a page of the login bound to another
+  credential, such as a resume redeemed after the revocation, does not count),
   so a revocation landing between a page's check and its mint leaves no ticket;
   `mint`, `mint_carried` and `mint_resumed` (`ByLauncher`) are not held to a page.
   `access.issue_login` also refuses a child login whose issuing login is on
