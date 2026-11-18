@@ -24,7 +24,7 @@ page keys and nonces, and the relay into the session's gateway.
 
 `web_view/saved_attention.{Saved, from_row}` is one saved session's attention summary row as the catalogue keeps it (protocol-change/122), built by `server.home_saved_attention` and refusing negative figures. The inbox counts it for saved sessions (`attention_rule.tally`).
 
-**The attention threads** (phase 1, protocol-change/051's addendum "the attention threads"): `Start.attention` is `Some(Attention(feed, saved, record, approvals, review, act))` on every page that reads the feed, and `act` (`Act(answer, close, strand)`) is `Some` only for the owner's operating page (`ui_socket.home_attention_capability`). `attention_rule` (pure) flattens feed rows into `Item`s (`AskItem | FindItem | StuckItem`), ranks them by wait (`needs_you`, `finds`, unknown times last), words ages (`age_line`), keys a thread (`Key(sort, session, id)`, compared and never drawn) and tallies the headline across running and saved sessions. `answer_rule` (pure) reads an ask form's fields back into the wire object (a question is its key, an option its position, never a label) and asks `core/attention_answer.check` for validity. `item_pane` (pure) is the open thread's state: the record read, the one outbox (a staged answer and a staged note) and the send's progress. `view/attention_thread` draws rows and the pane; every word a session wrote is a text node. `Model` holds `feed`, `saved`, `item` and `item_presses`; the messages are `FeedRead`, `SavedRead`, `ItemPicked`, `RecordRead`, `ItemStaged`, `ItemNoted`, `ItemCleared`, `ItemSent`, `ItemClosed`, `ItemRetried`, `ItemActed`, `ItemNoteAnswered` and `ItemRetryAnswered`. A list with no running session leaves `CentreChoice` at `Awaiting` while a summary is due, so the summary that counts something decides the inbox (`summary_due`).
+**The attention threads** (phase 1, protocol-change/051's addendum "the attention threads"): `Start.attention` is `Some(Attention(feed, saved, record, approvals, review, act))` on every page that reads the feed, and `act` (`Act(answer, close, strand)`) is `Some` only for the owner's operating page (`ui_socket.home_attention_capability`). `attention_rule` (pure) flattens feed rows into `Item`s (`AskItem | FindItem | StuckItem`), ranks them by wait (`needs_you`, `finds`, unknown times last), words ages (`age_line`), keys a thread (`Key(sort, session, id)`, compared and never drawn) and tallies the headline across running and saved sessions. `answer_rule` (pure) reads an ask form's fields back into the wire object (a question is its key, an option its position, never a label) and asks `core/attention_answer.check` for validity. `item_pane` (pure) is the open thread's state: the record read, the one outbox (a staged answer and a staged note) and the send's progress. `view/attention_thread` draws rows and the pane; every word a session wrote is a text node. `Model` holds `feed`, `saved`, `item` and `item_presses`; the messages are `FeedRead`, `SavedRead`, `ItemPicked`, `RecordRead`, `ItemStaged`, `ItemNoted`, `ItemCleared`, `ItemSent`, `ItemClosed`, `ItemRetried`, `ItemActed`, `ItemNoteAnswered` and `ItemRetryAnswered`. `CentreChoice` stays `Awaiting` until the first round of reads is complete (`landing_rule`), so a summary, a ticket or an ask that counts something is weighed with the activity read whichever came first.
 
 **The review pane** (protocol-change/051's addendum "the review pane", [123](../../protocol-change/123-review-hunks.md)): `Attention.review` reads one session's worktree as a `review_feed.Review` and is `Some` for an operator's page (owner's or member's), never an observer's (`ui_socket.home_attention_capability`, `ui_socket.review_for`). `review_scan_rule` (pure) decides who is "To review": one read at a time, once for each last message, a `Seen` for each session and never the review; `inbox_rule.grouped_with` moves those idle sessions out of "Waiting". `review_pane` (pure) is the open thread: the `Loaded` review, the revisions of its finds, `review_stage_rule.Staging` (verdict, one comment for each file, find actions) and the Send as a machine (`send` → `closed_with` → `prompted`; a refused close halts it and no prompt goes). `review_outbox_rule` (pure) words the one prompt and refuses past `composer.prompt_limit` before any close. `review_pin_rule` (pure) anchors a find at a line a shown hunk holds, else loose in its file, else at the pane's top. `view/review_thread` draws it through `view/diff.view_with`, with every session word a text node and each form keyed by session, open count and position. `Model` holds `reviews`, `review` and `review_presses`; the messages are `ReviewScanned`, `ReviewRead`, `ReviewFindRead`, `ReviewVerdictChosen`, `ReviewCommented`, `ReviewFindStaged`, `ReviewCleared`, `ReviewSent`, `ReviewClosed` and `ReviewPrompted`.
 
@@ -240,7 +240,7 @@ page keys and nonces, and the relay into the session's gateway.
   `Start.activity` hands over `sessions.Report`s (`activity`, `last_message`,
   `glances`; all model text, drawn as text nodes only) and `Model` keeps them in
   `reports` beside the narrow `activity` dict the sidebar and `listing` read.
-  `inbox_rule` (pure, no Lustre) decides `Group` (`NeedsYou | Waiting | Updates |
+  `landing_rule` (pure, no Lustre) is the first round that decides the centre: `Round` holds one `Reading` (`Due | Answered | NotDue`) for the list, the activity read, the catalogue summaries, the boards and the feed; `listed` takes the first list that was read and with it which of the reads that depend on it are due, `answer` marks a read's first answer and says whether it was the last due (`Closes`), and `landing` reads the gathered `Picture` (the running sessions' reports and the counts of what waits). `inbox_rule` (pure, no Lustre) decides `Group` (`NeedsYou | Waiting | Updates |
   Quiet`), `Kind`, `head`, `headline`, the ordering by name and `landing`
   (`Inbox` when any session needs the owner, failed, works or is idle with a last
   message; else `Form`). `view/inbox` draws the grouped list and a reading pane
@@ -248,9 +248,9 @@ page keys and nonces, and the relay into the session's gateway.
   `landed_inbox` holds: pane `NewSession` or `SessionList` and `centre_choice`
   is `Decided(InboxCentre)`. The centre is decided once per page load
   (`CentreChoice`: `Awaiting`, then `Decided(InboxCentre | FormCentre |
-  ListCentre)`): by the first `Observed` through the landing rule, or by a list
-  answer with no running session (`FormCentre`); no later read ever changes it,
-  and only the clicks `ShowingInbox`, `ShowingList`, `ShowingNew` and `Composed`
+  ListCentre)`): when the last read of the first round answers (`landing_rule.answer`
+  returns `Closes`), through the landing rule over everything the round gathered;
+  no later read ever changes it, and only the clicks `ShowingInbox`, `ShowingList`, `ShowingNew` and `Composed`
   do. `inbox_return` draws "Inbox" whenever the inbox has a thread and the
   centre is not the inbox. An inbox shown with no thread left says "Nothing waits
   on you right now" with a "New session" link. `Model.selected` is a `Selection`
@@ -279,7 +279,7 @@ page keys and nonces, and the relay into the session's gateway.
   `Submitting`, so no admission is added. `ShowingInbox` sets `centre_choice`
   back to `Landed`; `inbox_return` offers it ("‹ Inbox" in `home_table`,
   "Back to the inbox" in the composer) only on a chosen list or composer while
-  `inbox_rule.landing` is `Inbox`. The centre's first child is an empty node, so
+  the inbox has content. The centre's first child is an empty node, so
   the table keeps its path; what the page says about a press is a `Note`
   (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
   its workspace's heading when the row is gone, or under `Sessions`, and it

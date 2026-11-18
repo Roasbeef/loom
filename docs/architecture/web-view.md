@@ -1093,10 +1093,13 @@ untrusted text", and the strands' glances. A pending approval is named and
 sent to the session's own page; nothing of the approval, and no deciding
 control, is drawn on Home.
 
-The centre is decided once per page load (`Model.centre_choice`): the first
-activity read puts the inbox or the composer there by the landing rule, and a
-list with no running session settles on the composer at once. No later read
-changes it, so a missed or late read, or a session that starts working later,
+The centre is decided once per page load (`Model.centre_choice`), when the last
+read of the first round has answered (`web_view/landing_rule`): the list, the
+activity read of the running sessions, the catalogue summaries of the saved ones,
+the projects' boards and the feed, each due only when the page asks it, in any
+order. The round puts the inbox there when anything across them waits or runs,
+and the composer otherwise; an unreadable, overtaken or empty answer counts as an
+answer. No later read changes it, so a missed or late read, or a session that starts working later,
 never replaces a pane or a composer the person is using. Only clicks change it:
 "New session", the list link, a composer control, and the "Inbox" control, which
 is drawn whenever the inbox has a thread and the centre is elsewhere. An inbox
@@ -1122,7 +1125,7 @@ session's own page. The outbox says nothing before a send, then "Sending…", "D
 (session) · admitted", "· queued" or "· steering: …", or one of five fixed refusals; none
 carries text from the session or the gateway. Once the person has chosen the
 list or the composer, an "Inbox" control returns to the landing centre while the
-landing rule still says inbox.
+inbox has content.
 
 ### Navigation: home to session and back
 
