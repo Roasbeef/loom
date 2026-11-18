@@ -503,7 +503,8 @@ pub fn the_shared_stdlib_list_admits_no_capability_test() {
 /// A capability on no seam is a decision, written down.
 ///
 /// `cap/runtime` is the boot runtime and belongs to the harness, not to a
-/// submitted program; `cap/notes` and `cap/lsp` are admitted per host,
+/// submitted program; `cap/notes`, `cap/attention` and `cap/lsp` are admitted
+/// per host,
 /// only where their doors are present; `cap/mcp` is the generated `cap/mcp/<server>`
 /// modules' types-only vocabulary, off every seam until the generated
 /// path lands end to end (issue #106). The list exists so that
@@ -515,8 +516,8 @@ pub fn a_harness_only_capability_is_on_no_seam_test() {
   let harness_only = policy.harness_only_cap_modules()
   assert harness_only
     == [
-      "cap/notes", "cap/lsp", "cap/lsp_sql", "cap/evolution", "cap/mcp",
-      "cap/runtime",
+      "cap/notes", "cap/attention", "cap/lsp", "cap/lsp_sql", "cap/evolution",
+      "cap/mcp", "cap/runtime",
     ]
   assert list.all(harness_only, fn(name) {
     !policy.contains(policy.default(), name)

@@ -12,6 +12,7 @@
 import broker/budget
 import broker/exec
 import broker/policy
+import codemode/attention
 import codemode/evolution
 import codemode/identity
 import codemode/lsp
@@ -77,6 +78,8 @@ fn gated() -> List(#(String, String)) {
     #("notes.get", "agent_notes"),
     #("notes.list", "agent_notes"),
     #("notes.read", "agent_notes"),
+    #("attention.ask", "ask"),
+    #("attention.notice", "notice"),
     #("lsp.rename", "fs_edit"),
     #("workflow.step", "agent_spawn"),
     #("peer.send", "peer_send"),
@@ -138,6 +141,7 @@ pub fn every_serviced_capability_is_decided_test() {
     list.flatten([
       orchestration.serviced_caps,
       notes.serviced_caps,
+      attention.serviced_caps,
       workspace.serviced_caps,
       search.serviced_caps,
       lsp.serviced_caps,
@@ -227,4 +231,16 @@ pub fn the_question_is_asked_every_call_as_the_dispatching_strand_test() {
     as "the second call must be refused"
   assert denial.code == "tool_not_held"
   assert process.receive(asked, 0) == Ok("sub:main/reviewer-1")
+}
+
+pub fn a_strand_without_the_tool_is_refused_the_attention_capability_test() {
+  // A project worker holds `notice` and not `ask`, so a program on a worker
+  // may record a find and may not put a question.
+  let check = tool_gate.precheck(holding(["notice"]), "main", 0)
+  let assert Error(denial) = check(request("attention.ask"))
+    as "a worker's program must not ask"
+  assert denial.code == "tool_not_held"
+  assert denial.message
+    == "attention.ask needs ask, which this strand does not hold"
+  assert check(request("attention.notice")) == Ok(Nil)
 }

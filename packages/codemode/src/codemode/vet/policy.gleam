@@ -666,6 +666,13 @@ pub fn extension_stdlib_modules() -> List(String) {
 /// it. Its static absence prevents advertising a door an unconfigured host
 /// cannot answer.
 ///
+/// `cap/attention` is the same kind of wait as `cap/notes`: `client/codemode`
+/// admits it for workspace and orchestration programs on a host that wired
+/// the `ask` and `notice` closures, together with the `attention.*` router arm
+/// and quotas, and never for extensions or resident hooks. Listing it in
+/// `program_cap_modules` instead would render its types into the `code_mode`
+/// description of a host that cannot answer it.
+///
 /// `cap/lsp` is the same kind of wait as `cap/notes`: `client/codemode`
 /// admits it for workspace and orchestration programs on a host whose
 /// session runs a language server, together with the `lsp.*` router arm
@@ -712,15 +719,15 @@ pub fn extension_stdlib_modules() -> List(String) {
 /// ```gleam
 /// assert policy.harness_only_cap_modules()
 ///   == [
-///     "cap/notes", "cap/lsp", "cap/lsp_sql", "cap/evolution", "cap/mcp",
-///     "cap/runtime",
+///     "cap/notes", "cap/attention", "cap/lsp", "cap/lsp_sql", "cap/evolution",
+///     "cap/mcp", "cap/runtime",
 ///   ]
 /// ```
 ///
 pub fn harness_only_cap_modules() -> List(String) {
   [
-    "cap/notes", "cap/lsp", "cap/lsp_sql", "cap/evolution", "cap/mcp",
-    "cap/runtime",
+    "cap/notes", "cap/attention", "cap/lsp", "cap/lsp_sql", "cap/evolution",
+    "cap/mcp", "cap/runtime",
   ]
 }
 
