@@ -408,7 +408,7 @@
   .toggle-sidebar .toggle-icon::after{left:0;}
   .toggle-panel .toggle-icon::after{right:0;}
   .shell-toggle[aria-expanded="false"] .toggle-icon::after{opacity:.2;}
-  main.centre{flex:1 1 0;display:flex;flex-direction:column;min-width:0;min-height:0;box-sizing:border-box;padding:16px 16px 0;overflow:hidden;}
+  main.centre{flex:1 1 0;display:flex;flex-direction:column;reading-flow:flex-visual;min-width:0;min-height:0;box-sizing:border-box;padding:16px 16px 0;overflow:hidden;}
   main.centre > :not(loom-follow){width:100%;max-width:780px;margin-left:auto;margin-right:auto;box-sizing:border-box;}
   /* A strand's hue as a mark (--hue: a dot, a bar, a border) and as words
      (--hue-text: a name or a heading), which is a darker colour in the light
@@ -2179,18 +2179,19 @@
 
   /* The phone's bar and sheet. Wide frames draw the rail in the panel and hide
      these; below 980px the panel is a row of cards, the rail is hidden, and the
-     bar sits above the dock and opens the same rows as a sheet over the
-     transcript. The sheet is a native details element, so opening it is the
-     browser's. */
+     bar sits above the dock and opens the same rows as a sheet. The sheet is
+     in the column's flow, below the bar and above the dock, so the transcript
+     gives up the room and the sheet's top edge is never clipped by the column.
+     It is a native details element, so opening it is the browser's. */
   details.lift-sheet{display:none;}
   @media (max-width:979px){
     .pane-strands > section.lifted{display:none;}
-    details.lift-sheet{display:block;order:1;position:relative;z-index:5;flex:0 0 auto;margin:8px 0 0 0;font:12px/1.45 var(--font-sans);}
+    details.lift-sheet{display:block;order:1;flex:0 0 auto;margin:8px 0 0 0;font:12px/1.45 var(--font-sans);}
     main.centre > footer.dock,main.centre > .observer-bar{order:2;}
     summary.lift-bar{list-style:none;cursor:pointer;box-sizing:border-box;min-height:44px;display:flex;align-items:center;padding:8px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg);font-weight:500;}
     summary.lift-bar::-webkit-details-marker{display:none;}
     summary.lift-bar:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
-    details.lift-sheet[open] > .lift-sheet-body{position:absolute;left:0;right:0;bottom:100%;max-height:50dvh;overflow-y:auto;box-sizing:border-box;margin:0 0 6px 0;padding:12px;border:1px solid var(--color-divider);border-radius:12px 12px 0 0;background:var(--color-bg-raised);}
+    details.lift-sheet[open] > .lift-sheet-body{max-height:40dvh;overflow-y:auto;box-sizing:border-box;margin:6px 0 0 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
     .lift-sheet .lift-press{min-height:44px;}
   }
 }

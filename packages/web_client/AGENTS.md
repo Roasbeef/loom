@@ -105,9 +105,8 @@ renders again just for it:
   for `click` on the document and, when the path holds an element with
   `data-loom-jump`, resolves it: `dock` scrolls `footer.dock` into view, and any
   other value is a transcript row's key, looked up among the `data-loom-row`
-  elements of the button's own tree by string comparison (`jump_rule.resolve`,
-  a `#` suffix falling back to the turn's key). A found row is scrolled to the
-  middle (`ffi_dom.scroll_into_view_centered`), the reader becomes `Reading`,
+  elements of the button's own tree by string comparison (`jump.find`). A found row is scrolled to the
+  middle (`jump_rule.centring` over `scroll_by`), the reader becomes `Reading`,
   and the row carries `data-loom-jumped` for `jump_rule.marked_for` (900 ms); a
   row not on the page changes nothing. A jump closes the enclosing
   `details[data-loom-sheet]` (the phone sheet). Nothing is sent to the server.

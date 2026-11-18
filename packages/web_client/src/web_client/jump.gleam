@@ -57,17 +57,17 @@ pub fn pressed(
   }
 }
 
-/// The row one of `candidates` names, among the rows in the tree `origin` is
+/// The row the key names, among the rows in the tree `origin` is
 /// in, or `Error` when the page holds none: the row is older than the loaded
 /// window, and the press does nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // jump.find(["9.0"], button)
+/// // jump.find("9.0", button)
 /// ```
 pub fn find(
-  candidates: List(String),
+  key: String,
   origin: ffi_dom.Element,
 ) -> Result(ffi_dom.Element, Nil) {
   let rows =
@@ -80,8 +80,7 @@ pub fn find(
       |> result.map(fn(key) { #(key, row) })
     })
 
-  jump_rule.resolve(candidates, list.map(rows, fn(row) { row.0 }))
-  |> result.try(fn(key) { list.key_find(rows, key) })
+  list.key_find(rows, key)
 }
 
 /// Scrolls `row` to the middle of the transcript `host` scrolls, marks it for

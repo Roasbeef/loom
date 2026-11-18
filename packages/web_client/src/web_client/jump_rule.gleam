@@ -17,16 +17,12 @@
 ////
 //// ## Keys
 ////
-//// A step inside a turn's fold is lifted as `<work key>#<index>`, and the
-//// fold's steps are not rows of the lane while it is closed, so the turn's row
-//// is the nearest row that holds it. `candidates` lists the key and then the
-//// part before the `#`, and `resolve` takes the first of them the page has. A
-//// key whose row is not in the loaded window resolves to nothing, and the
-//// press does nothing visible.
+//// The server names the row itself: a failed turn's rail row carries the
+//// turn's own key, so the value is looked up as it stands. A key whose row is
+//// not in the loaded window finds nothing, and the press does nothing visible.
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/string
 
 /// The attribute the rail's buttons carry. Its value is a row key or
 /// `dock_value`.
@@ -55,8 +51,8 @@ pub type Destination {
   /// The approval card's place: the dock above the composer.
   Dock
 
-  /// A transcript row, by the keys that may name it, best first.
-  Row(candidates: List(String))
+  /// A transcript row, by the key the server drew it with.
+  Row(key: String)
 }
 
 /// The destination of a click, given the value of `marker` on each element of
@@ -73,40 +69,8 @@ pub fn destination(path: List(Result(String, Nil))) -> Option(Destination) {
   case list.find_map(path, fn(value) { value }) {
     Ok("") | Error(Nil) -> None
     Ok(value) if value == dock_value -> Some(Dock)
-    Ok(key) -> Some(Row(candidates(key)))
+    Ok(key) -> Some(Row(key))
   }
-}
-
-/// The row keys a marker value may stand for: the value itself, and for a
-/// step in a fold (`<work key>#<index>`) the turn's key as well.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert jump_rule.candidates("9.0") == ["9.0"]
-/// assert jump_rule.candidates("work:7#2") == ["work:7#2", "work:7"]
-/// ```
-pub fn candidates(key: String) -> List(String) {
-  case string.split_once(key, "#") {
-    Ok(#("", _)) | Error(Nil) -> [key]
-    Ok(#(work, _)) -> [key, work]
-  }
-}
-
-/// The first candidate the page holds a row for, or `Error` when it holds
-/// none, which is a row older than the loaded window.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert jump_rule.resolve(["a#1", "a"], ["a", "b"]) == Ok("a")
-/// assert jump_rule.resolve(["z"], ["a"]) == Error(Nil)
-/// ```
-pub fn resolve(
-  candidates: List(String),
-  present: List(String),
-) -> Result(String, Nil) {
-  list.find(candidates, fn(key) { list.contains(present, key) })
 }
 
 /// How far to scroll a transcript so that a row lands in the middle of its

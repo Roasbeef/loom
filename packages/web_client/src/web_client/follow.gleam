@@ -521,9 +521,9 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // is looked for in the page first, since a row older than the loaded
     // window is not there and the press then changes nothing, the reader's
     // position included.
-    Railed(destination: jump_rule.Row(candidates:), origin:) -> #(
+    Railed(destination: jump_rule.Row(key:), origin:) -> #(
       model,
-      locate(candidates, origin),
+      locate(key, origin),
     )
     Railed(destination: jump_rule.Dock, origin:) -> #(model, to_dock(origin))
 
@@ -650,11 +650,11 @@ fn start() -> Effect(Msg) {
 
 /// Looks for the row a rail button names and tells the element when the page
 /// holds it (`jump.find`).
-fn locate(candidates: List(String), origin: ffi_dom.Element) -> Effect(Msg) {
+fn locate(key: String, origin: ffi_dom.Element) -> Effect(Msg) {
   use dispatch <- effect.from
 
   // A row older than the loaded window is not there, and nothing happens.
-  case jump.find(candidates, origin) {
+  case jump.find(key, origin) {
     Ok(row) -> dispatch(Located(row:, origin:))
     Error(Nil) -> Nil
   }
