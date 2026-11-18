@@ -297,11 +297,13 @@ pub fn home_link(press: message) -> Element(message) {
 /// ```gleam
 /// assert heading.session_name("0192ab34cd", None) == "Session 0192ab34"
 /// assert heading.session_name("0192ab34cd", Some("docs")) == "docs"
+/// assert heading.session_name("0192ab34cd", Some("  ")) == "Session 0192ab34"
 /// ```
 pub fn session_name(session_id: String, name: Option(String)) -> String {
-  case name {
+  // A name of only whitespace is no name, as `sessions.label` also judges.
+  case option.map(name, string.trim) {
     Some("") | None -> "Session " <> string.slice(session_id, 0, 8)
-    Some(name) -> name
+    Some(_) -> option.unwrap(name, "")
   }
 }
 

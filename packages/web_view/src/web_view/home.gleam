@@ -5874,7 +5874,7 @@ fn standings(model: Model) -> List(attention_rule.Standing) {
   })
 }
 
-/// The line a refused resume leaves on the saved row it was about, and nothing
+/// The line any refusal leaves on the saved row it was placed on, and nothing
 /// for any other row. The table draws the same note beside its own row, which
 /// is not on screen in the inbox.
 fn saved_refusal(model: Model, session: String) -> Option(Element(Msg)) {

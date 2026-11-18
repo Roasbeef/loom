@@ -266,3 +266,10 @@ pub fn an_unknown_model_draws_nothing_but_the_name_test() {
     )
   })
 }
+
+pub fn a_whitespace_only_name_falls_back_to_the_id_test() {
+  assert heading.session_name("0192ab34cd", Some("  \t")) == "Session 0192ab34"
+  assert heading.session_name("0192ab34cd", Some("")) == "Session 0192ab34"
+  assert heading.session_name("0192ab34cd", None) == "Session 0192ab34"
+  assert heading.session_name("0192ab34cd", Some(" docs ")) == " docs "
+}
