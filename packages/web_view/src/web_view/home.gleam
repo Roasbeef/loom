@@ -4483,6 +4483,7 @@ fn boards_pending(model: Model) -> Bool {
 fn board_landed(model: Model, boards: List(feed.Loaded)) -> Model {
   let read = Model(..model, boards:, board_state: BoardsSettled)
 
+  // Only the first read decides; every later one leaves the centre as it is.
   case model.board_state {
     BoardsSettled -> model
     BoardsPending ->
