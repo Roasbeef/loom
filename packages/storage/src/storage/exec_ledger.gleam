@@ -92,6 +92,15 @@
 //// `release` does not look for children: the operator is the witness, and the
 //// record is how a later reader learns that the evidence was a person.
 ////
+//// An `open` scope can also be orphaned: the orchestrator that owned the session
+//// stopped, the close it sent at shutdown went unanswered, and nothing closes the
+//// scope afterwards. `release_processes_gone` is `release` for that case. It
+//// takes an `open` scope as well, on the operator's word that the executor is
+//// stopped and the owner no longer runs, and it records `open` as what the scope
+//// was. The scope ends `Closed(AllRetired)` at the incarnation it held, so the
+//// owner's next attach, made at that incarnation, is answered `StaleIncarnation`
+//// and the owner learns the close and reopens at the next one.
+////
 //// ## The key fence
 ////
 //// A runtime that restarts inside one VM leaves effect processes behind whose
@@ -164,7 +173,8 @@
 ////    session's calls of one kind that are still running.
 //// 6. `begin_close` is the fence that stops new admissions, and `finish_close`
 ////    records how the cleanup ended. `release` is the operator's way out of a
-////    scope no close will ever finish.
+////    scope no close will ever finish, and `release_processes_gone` is the same
+////    way out for an open scope whose owner is gone.
 //// 7. `summary` counts scopes by state, lists the ones that block a reopen,
 ////    and totals the bytes and unacknowledged calls, for the report an
 ////    executor gives of itself (protocol-change/085).
@@ -415,8 +425,8 @@ pub type Released {
     workspace: String,
     /// The incarnation the scope was at. The next attach reopens at one more.
     incarnation: Int,
-    /// The state before the release: `Closing`, or
-    /// `Closed(UnknownCleanup(count))`.
+    /// The state before the release: `Closing`, `Closed(UnknownCleanup(count))`,
+    /// or `Open` after `release_processes_gone`.
     was: ScopeState,
   )
 }
@@ -519,7 +529,8 @@ pub type Error {
   UncleanClose(count: Int)
 
   /// `release` found a scope that is open or already cleanly closed, so there is
-  /// nothing for an operator to release.
+  /// nothing for an operator to release. `release_processes_gone` refuses only
+  /// the cleanly closed one.
   NotReleasable(state: ScopeState)
 
   /// The executor already holds `limit` scopes that are not cleanly closed.
@@ -1436,11 +1447,56 @@ pub fn release(
   session: String,
   released_at_ms: Int,
 ) -> Result(Released, Error) {
+  release_scope(ledger, session, released_at_ms, StuckOnly)
+}
+
+/// Releases a scope like `release`, and also an `Open` one, on the operator's
+/// word that no process of the session runs.
+///
+/// An open scope is the one `release` refuses, because its session may be
+/// running and closing the scope under it would free a slot that live children
+/// still use. The operator's command asks for this form only when the executor
+/// is stopped and the orchestrator that owned the session no longer runs it, so
+/// there is no plane for the scope and no owner to race. The scope ends exactly
+/// as `release` ends a stuck one: `Closed(AllRetired)`, with a `scope_release`
+/// row whose `was` is `Open`. The owner's next attach is answered
+/// `StaleIncarnation` at the incarnation it holds, which is the answer that
+/// makes it ask how the close ended and reopen at the next one. Its tree
+/// record, if it has one, is not touched. A scope that is already cleanly
+/// closed is still refused with `NotReleasable`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.release_processes_gone(ledger, "s", 1_700_000_000_000)
+/// ```
+pub fn release_processes_gone(
+  ledger: Ledger,
+  session: String,
+  released_at_ms: Int,
+) -> Result(Released, Error) {
+  release_scope(ledger, session, released_at_ms, OpenToo)
+}
+
+// Which scopes a release takes. The wider rule rests on a claim only the
+// operator can make, so it is a type of its own and not a flag.
+type ReleaseRule {
+  StuckOnly
+  OpenToo
+}
+
+/// Closes the scope under the rule and records the release, in one transaction.
+fn release_scope(
+  ledger: Ledger,
+  session: String,
+  released_at_ms: Int,
+  rule: ReleaseRule,
+) -> Result(Released, Error) {
   let connection = ledger.connection
   transaction(connection, fn() {
     use found <- result.try(find_scope(connection, session))
     use scope <- result.try(option.to_result(found, NoSuchScope))
-    use was <- result.try(release_text(scope.state))
+    use was <- result.try(release_text(scope.state, rule))
     use closed <- result.try(close_outcome_text(AllRetired))
     use Nil <- result.try(statement(
       connection,
@@ -2012,14 +2068,15 @@ fn close_outcome_text(outcome: CloseOutcome) -> Result(String, Error) {
   }
 }
 
-// The text a release row keeps for the state the scope was in. Only the two
-// states `release` accepts have one.
+// The text a release row keeps for the state the scope was in. The two states
+// `release` accepts have one, and `Open` has one only under the wider rule.
 /// Formats an unretired ScopeState for storage in release tables.
-fn release_text(state: ScopeState) -> Result(String, Error) {
-  case state {
-    Closing -> Ok("closing")
-    Closed(UnknownCleanup(count)) -> Ok("unknown:" <> int.to_string(count))
-    Open | Closed(AllRetired) -> Error(NotReleasable(state))
+fn release_text(state: ScopeState, rule: ReleaseRule) -> Result(String, Error) {
+  case state, rule {
+    Closing, _ -> Ok("closing")
+    Closed(UnknownCleanup(count)), _ -> Ok("unknown:" <> int.to_string(count))
+    Open, OpenToo -> Ok("open")
+    Open, StuckOnly | Closed(AllRetired), _ -> Error(NotReleasable(state))
   }
 }
 
@@ -2027,6 +2084,7 @@ fn release_text(state: ScopeState) -> Result(String, Error) {
 fn parse_release_text(text: String) -> Result(ScopeState, Error) {
   case text {
     "closing" -> Ok(Closing)
+    "open" -> Ok(Open)
     "unknown:" <> count ->
       case int.parse(count) {
         Ok(parsed) if parsed >= 0 -> Ok(Closed(UnknownCleanup(parsed)))
