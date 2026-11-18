@@ -15,9 +15,9 @@
 //// `fetch`
 ////
 //// 1. `held` asks the registry for the caller's authority over the session. A
-////    session the caller does not hold is `not_found`, as an unknown one is.
-//// 2. `endpoint_of` resolves the resident session's peer endpoint, or says it
-////    is `not_resident`.
+////    session the caller does not hold is refused as an unknown one is.
+//// 2. `endpoint_of` resolves the resident session's peer endpoint, or says the
+////    session is not running.
 //// 3. `fetch` reads the record and its revision through `AttentionRead`.
 //// 4. `answer` validates the answer against the record
 ////    (`core/attention_answer`), delivers one prompt to the asking strand, and
@@ -191,10 +191,13 @@ fn deliver_then_settle(
   principal: access.Principal,
 ) -> Result(Answered, AnswerFault) {
   let text = attention_answer.prompt_text(ask.header.id, values)
+
+  // The prompt must be taken before the record is settled.
   use admission <- result.try(case send(ask.header.strand, text) {
     thread_send.Delivered(admission) -> Ok(admission)
     thread_send.Refused(refusal) -> Error(NotSent(refusal))
   })
+
   let settlement =
     attention.Answering(records.Answer(values:, by: principal.id))
   settle(reach, session, ask.header.id, revision, settlement)
@@ -280,6 +283,8 @@ fn held_for_acting(
     manager.session_authority(reach.registry, reach.digest, session)
     |> result.replace_error(Refusal("not_found", "no such session")),
   )
+
+  // The owner and an operator may act; an observer may only read.
   case held.1 {
     access.Owner | access.Participant(access.Operator) -> Ok(held)
     access.Participant(access.Observer) ->
@@ -317,10 +322,12 @@ fn fetch(
   session: String,
   id: String,
 ) -> Result(attention.Stored, Refusal) {
+  // A record's shape and a resident session are needed before the store is asked.
   use Nil <- result.try(case records.is_ask_id(id) || records.is_find_id(id) {
     True -> Ok(Nil)
     False -> Error(Refusal("bad_request", "not the identifier of a record"))
   })
+
   use endpoint <- result.try(endpoint_of(reach, session))
   use reply <- result.try(call(endpoint, peer_mail.AttentionRead(id)))
   decode_stored(id, reply)
@@ -332,6 +339,8 @@ fn decode_stored(
   reply: JsonValue,
 ) -> Result(attention.Stored, Refusal) {
   let missing = Refusal("not_found", "no such record")
+
+  // The reply holds the revision and the stored record.
   case reply {
     json.Object(fields) ->
       case list.key_find(fields, "revision"), list.key_find(fields, "record") {
@@ -371,6 +380,8 @@ fn settle(
     endpoint,
     peer_mail.AttentionSettle(id, revision, settlement),
   ))
+
+  // The reply must name the record's new revision.
   case reply {
     json.Object(fields) ->
       case list.key_find(fields, "revision") {

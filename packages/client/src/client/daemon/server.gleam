@@ -4831,6 +4831,8 @@ fn dispatch_class(
         protocol.event(Some(reply_to), "sessions.attention", body)
         |> result.replace_error("metadata_too_large"),
       )
+
+      // A frame over the bound is refused rather than sent.
       case string.byte_size(frame) <= 60_000 {
         True -> Ok(#("sessions.attention", body))
         False -> Error("metadata_too_large")
@@ -6690,6 +6692,7 @@ pub fn home_attention(
 pub fn attention_row_of(
   row: JsonValue,
 ) -> Result(#(String, page_attention.Row), Nil) {
+  // Only an object can be a row.
   case row {
     json.Object(fields) -> {
       use id <- result.try(text_field(fields, "session_id"))
@@ -6738,8 +6741,10 @@ fn within_frame(
 ) -> Result(#(String, JsonValue), Refused) {
   use frame <- result.try(
     protocol.event(Some(reply_to), event, body)
-    |> result.replace_error(control_refusal("metadata_too_large")),
+    |> result.map_error(fn(_) { control_refusal("metadata_too_large") }),
   )
+
+  // The encoded frame is checked against the reply bound.
   case string.byte_size(frame) <= 60_000 {
     True -> Ok(#(event, body))
     False -> Error(control_refusal("metadata_too_large"))

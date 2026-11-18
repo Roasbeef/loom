@@ -12,7 +12,7 @@
 //// 2. `stuck_strands` names the strands that stopped on a failed run and were
 ////    not run again. `row_of` reduces the three kinds to counts and short
 ////    items.
-//// 3. `shed` removes items until the encoded row fits `row_bytes`, and
+//// 3. `shed` removes items until the encoded row fits the row bound, and
 ////    `encode` words it. A count is never reduced.
 //// 4. `record_json` words one record for `attention.read`, from the typed
 ////    record, with the revision and whether the caller may act on it.
@@ -227,10 +227,12 @@ fn newest_stuck(left: Stuck, right: Stuck) -> order.Order {
 
 /// An ask as a row lists it.
 fn ask_item(ask: Ask) -> AskItem {
+  // An ask with no question, which no tool can write, has an empty head.
   let head = case ask.questions {
     [first, ..] -> first.prompt
     [] -> ""
   }
+
   AskItem(
     id: ask.header.id,
     strand: glance.clip(ask.header.strand, strand_bytes),
@@ -243,6 +245,7 @@ fn ask_item(ask: Ask) -> AskItem {
 /// A find as a row lists it. A line is kept only with its path, and a path only
 /// when it fits whole.
 fn find_item(find: Find) -> FindItem {
+  // A path longer than the bound is left out whole, with its line.
   let place = case find.path {
     Some(path) ->
       case string.byte_size(path) <= path_bytes {
@@ -251,6 +254,7 @@ fn find_item(find: Find) -> FindItem {
       }
     None -> None
   }
+
   FindItem(
     id: find.header.id,
     strand: glance.clip(find.header.strand, strand_bytes),
@@ -295,10 +299,13 @@ fn failed_without_retry(
   last: operation.LastResult,
   states: List(#(String, Option(OpId))),
 ) -> Result(Option(Int), Nil) {
+  // A strand that is running has moved past its last failure.
   let running = case list.key_find(states, strand) {
     Ok(Some(_)) -> True
     Ok(None) | Error(Nil) -> False
   }
+
+  // Only a failed run of an idle strand is stuck; no other result is.
   case strand == primary_strand || strand == advisor_strand || running, last {
     False, operation.RunLastResult(outcome: operation.RunFailed(_), leaf:, ..)
     -> Ok(option.map(leaf, ids.entry_id_timestamp_ms))
@@ -580,6 +587,7 @@ fn answer_of(stored: List(#(String, JsonValue))) -> List(#(String, JsonValue)) {
 fn closure_of(
   stored: List(#(String, JsonValue)),
 ) -> List(#(String, JsonValue)) {
+  // A closed find carries its closure and the time it was settled.
   case list.key_find(stored, "closure"), list.key_find(stored, "settled_at") {
     Ok(closure), Ok(at) -> {
       let inner = fields_of(closure)

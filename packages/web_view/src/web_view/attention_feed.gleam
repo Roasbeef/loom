@@ -8,12 +8,13 @@
 ////
 //// ## Flow
 ////
-//// `decode_row` → `Row`
+//// `decode_row` → `section` → `ask`, `find` and `stuck_item`
 ////
 //// 1. The daemon decodes each reply row with `decode_row`. A row that is not
-////    an `ok` row, or whose counts are damaged, is no row.
-//// 2. Inside an `ok` row each item decodes alone, so one damaged item costs
-////    only itself, and the section's `count` still says how many were read.
+////    a row of a state this page knows, or whose counts are damaged, is no row.
+//// 2. `section` reads one list's count and decodes its items alone with `ask`,
+////    `find` or `stuck_item`, so one damaged item costs only itself and the
+////    count still says how many were read.
 ////
 //// ## What every field means
 ////
@@ -116,6 +117,8 @@ pub type Row {
 pub fn decode_row(value: JsonValue) -> Result(Row, Nil) {
   use fields <- result.try(object(value))
   use state <- result.try(list.key_find(fields, "state"))
+
+  // Only an `ok` row was read; any other state is no row.
   use Nil <- result.try(case state {
     json.String("ok") -> Ok(Nil)
     json.String(_)
@@ -126,6 +129,7 @@ pub fn decode_row(value: JsonValue) -> Result(Row, Nil) {
     | json.Bool(_)
     | json.Null -> Error(Nil)
   })
+
   use asks <- result.try(section(fields, "asks", ask))
   use finds <- result.try(section(fields, "finds", find))
   use stuck <- result.map(section(fields, "stuck", stuck_item))
@@ -140,10 +144,14 @@ fn section(
 ) -> Result(Section(item), Nil) {
   use inner <- result.try(list.key_find(fields, name))
   use inner <- result.try(object(inner))
+
+  // A count is a whole number of records.
   use count <- result.try(case list.key_find(inner, "count") {
     Ok(json.Int(count)) if count >= 0 -> Ok(count)
     Ok(_) | Error(Nil) -> Error(Nil)
   })
+
+  // Each item decodes alone, and one that does not is left out.
   let items = case list.key_find(inner, "items") {
     Ok(json.Array(raw)) -> list.filter_map(raw, decode)
     Ok(_) | Error(Nil) -> []
@@ -182,6 +190,7 @@ fn find(value: JsonValue) -> Result(Find, Nil) {
     Some(_) -> option_int(fields, "line")
     None -> None
   }
+
   Find(id:, strand:, kind:, created_at:, head:, path:, line:)
 }
 

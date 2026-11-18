@@ -430,6 +430,7 @@ pub type SettleFault {
 /// // attention.read(runtime, "ask-3f9c01a2b4")
 /// ```
 pub fn read(runtime: api.Runtime, id: String) -> Result(Stored, ReadFault) {
+  // The id's shape picks the prefix, so a wire value cannot address another cell.
   use cell <- result.try(
     case attention.is_ask_id(id), attention.is_find_id(id) {
       True, _ -> cell_of(runtime, attention.ask_key(id))
@@ -437,6 +438,8 @@ pub fn read(runtime: api.Runtime, id: String) -> Result(Stored, ReadFault) {
       False, False -> Error(NoSuchRecord)
     },
   )
+
+  // The same shape picks the decoder, and a cell that does not decode is no record.
   case attention.is_ask_id(id) {
     True ->
       attention.decode_ask(cell.value)
@@ -481,7 +484,44 @@ pub fn settle(
   use <- bool.guard(when: revision_of(stored) != revision, return: Error(Moved))
   let #(now, _clock) = clock.read(time)
   use #(lane, encoded) <- result.try(settled_form(stored, settlement, now))
-  use cells <- result.try(
+  use edits <- result.try(settling_edits(
+    runtime,
+    lane,
+    id,
+    revision,
+    encoded,
+    now,
+  ))
+
+  // The write is the replacement and the retirements together, so a lost race
+  // writes nothing.
+  case api.edit_reserved_facts(runtime, edits) {
+    Ok(Nil) ->
+      case read(runtime, id) {
+        Ok(after) -> Ok(revision_of(after))
+        Error(_) -> Error(Failed("the settled record could not be read back"))
+      }
+    Error(api.RaceLost) -> Error(Moved)
+    Error(error) ->
+      Error(Failed(
+        "the session store could not be used: " <> string.inspect(error),
+      ))
+  }
+}
+
+/// The edits that settle a record: its replacement, guarded by the revision the
+/// caller read, and the removal of the settled records that
+/// `core/attention.retired` names once this one counts as settled. The record
+/// itself is never among the removals.
+fn settling_edits(
+  runtime: api.Runtime,
+  lane: Lane,
+  id: String,
+  revision: Int,
+  encoded: JsonValue,
+  now: Int,
+) -> Result(List(api.ReservedFactEdit), SettleFault) {
+  use cells <- result.map(
     read_prefix(runtime, lane.prefix) |> result.map_error(Failed),
   )
   let key = lane.key(id)
@@ -496,7 +536,7 @@ pub fn settle(
   let retired =
     retiring(runtime, standings, now)
     |> list.filter(fn(edit) { edit_key(edit) != key })
-  let edits = [
+  [
     api.ReservedFactSet(api.ReservedFactChange(
       key:,
       value: encoded,
@@ -504,18 +544,6 @@ pub fn settle(
     )),
     ..retired
   ]
-  case api.edit_reserved_facts(runtime, edits) {
-    Ok(Nil) ->
-      case read(runtime, id) {
-        Ok(after) -> Ok(revision_of(after))
-        Error(_) -> Error(Failed("the settled record could not be read back"))
-      }
-    Error(api.RaceLost) -> Error(Moved)
-    Error(error) ->
-      Error(Failed(
-        "the session store could not be used: " <> string.inspect(error),
-      ))
-  }
 }
 
 /// The revision a stored record was read at.

@@ -9,12 +9,13 @@
 ////
 //// ## Flow
 ////
-//// `check` → `prompt_text`
+//// `check` → `value_of` → `prompt_text`
 ////
-//// 1. `check` reads the submitted object, requires the keys to be exactly the
-////    ask's question keys, and checks each value against its question's kind.
-////    The first failure is a `Rejection` naming the key.
-//// 2. `prompt_text` words the checked values as fixed sentence plus one fenced
+//// 1. `check` reads the submitted object and requires the keys to be exactly
+////    the ask's question keys.
+//// 2. `value_of` checks each value against its question's kind. The first
+////    failure is a `Rejection` naming the key.
+//// 3. `prompt_text` words the checked values as fixed sentence plus one fenced
 ////    JSON object, the form protocol-change/119 specifies.
 ////
 //// ## Why the prompt is checked here too
@@ -98,6 +99,8 @@ pub fn check(
     }),
   )
   use Nil <- result.try(others_belong_to_other(others, values))
+
+  // The prompt is built and measured because the bound is on the whole text.
   case
     bit_array.byte_size(<<prompt_text(ask.header.id, values):utf8>>)
     <= max_prompt_bytes
@@ -122,11 +125,13 @@ pub fn check(
 ///   == "Answer to ask-0123456789:\n\n```json\n{\"ask\":\"ask-0123456789\",\"answers\":{\"q1\":true},\"other\":{}}\n```"
 /// ```
 pub fn prompt_text(ask_id: String, values: List(#(String, Value))) -> String {
+  // The answer object is led by the ask it answers.
   let object = case attention.answer_object(values) {
     json.Object(fields) ->
       json.Object([#("ask", json.String(ask_id)), ..fields])
     other -> other
   }
+
   "Answer to "
   <> ask_id
   <> ":\n\n```json\n"
@@ -189,6 +194,8 @@ fn exactly(
   let missing =
     list.find(keys, fn(key) { list.key_find(answers, key) == Error(Nil) })
   let extra = list.find(answers, fn(entry) { !list.contains(keys, entry.0) })
+
+  // A missing key is reported before an extra one, in question order.
   case missing, extra {
     Ok(key), _ -> Error(Rejection(key, "missing"))
     Error(Nil), Ok(#(key, _)) -> Error(Rejection(key, "no such question"))
@@ -214,6 +221,8 @@ fn others_belong_to_other(
         Error(Nil) -> True
       }
     })
+
+  // A stray Other key names an answer that is not Other.
   case stray {
     Ok(#(key, _)) ->
       Error(Rejection(key, "Other text for an answer that is not Other"))
@@ -232,11 +241,14 @@ fn value_of(
   others: List(#(String, JsonValue)),
 ) -> Result(#(String, Value), Rejection) {
   let key = question.key
+
+  // A null is Other; any other value must be of the question's kind.
   use value <- result.map(case list.key_find(answers, key) {
     Ok(json.Null) -> other_text(key, others) |> result.map(Other)
     Ok(given) -> typed(question, given)
     Error(Nil) -> Error(Rejection(key, "missing"))
   })
+
   #(key, value)
 }
 
@@ -261,6 +273,8 @@ fn other_text(
 fn typed(question: Question, given: JsonValue) -> Result(Value, Rejection) {
   let key = question.key
   let wrong = Rejection(key, "not a value this question takes")
+
+  // Each kind takes only the values its table row names.
   case question.kind, given {
     Confirm, json.Bool(True) -> Ok(Yes)
     Confirm, json.Bool(False) -> Ok(No)
@@ -307,6 +321,8 @@ fn labels_of(
       }
     }),
   )
+
+  // Every label must name an option and none may repeat.
   case list.length(list.unique(labels)) == list.length(labels) {
     True -> Ok(labels)
     False -> Error(Rejection(question.key, "a label is chosen twice"))
@@ -321,6 +337,8 @@ fn within(
   max: Int,
 ) -> Result(List(String), Rejection) {
   let count = list.length(labels)
+
+  // The count of choices is held between min and max.
   case count < min, count > max {
     True, _ -> Error(Rejection(key, "too few choices"))
     False, True -> Error(Rejection(key, "too many choices"))
@@ -337,6 +355,7 @@ fn fill_text(
   format: attention.Format,
   text: String,
 ) -> Result(String, Rejection) {
+  // A value of the right shape is accepted whole and never cleaned.
   let limit = case format {
     attention.LongText -> max_long_text_bytes
     attention.ShortText
@@ -344,6 +363,7 @@ fn fill_text(
     | attention.Number
     | attention.Url -> max_fill_bytes
   }
+
   use <- bool.guard(
     when: string.trim(text) == "",
     return: Error(Rejection(key, "needs some text")),
@@ -356,6 +376,8 @@ fn fill_text(
     when: string.byte_size(text) > limit,
     return: Error(Rejection(key, "text is too long")),
   )
+
+  // Only a format whose shape the text has is accepted.
   case shaped(format, text) {
     True -> Ok(text)
     False -> Error(Rejection(key, "not of the format the question asks"))
@@ -378,10 +400,13 @@ fn shaped(format: attention.Format, text: String) -> Bool {
 
 /// Whether `text` is `-?[0-9]+(\.[0-9]+)?`.
 fn decimal(text: String) -> Bool {
+  // A sign is allowed once, in front.
   let unsigned = case string.starts_with(text, "-") {
     True -> string.drop_start(text, 1)
     False -> text
   }
+
+  // At most one point, with digits on both sides of it.
   case string.split(unsigned, ".") {
     [whole] -> digits(whole)
     [whole, fraction] -> digits(whole) && digits(fraction)
@@ -400,6 +425,7 @@ fn digits(text: String) -> Bool {
 /// Whether `text` is an absolute `http` or `https` address with something after
 /// the scheme and no whitespace.
 fn address(text: String) -> Bool {
+  // The scheme must be http or https, and something must follow it.
   let rest = case
     string.starts_with(text, "https://"),
     string.starts_with(text, "http://")
@@ -408,6 +434,8 @@ fn address(text: String) -> Bool {
     False, True -> Some(string.drop_start(text, 7))
     False, False -> None
   }
+
+  // No whitespace may appear anywhere in the address.
   case rest {
     Some(host) ->
       host != ""
