@@ -778,7 +778,8 @@ fn websocket(
             }
 
           // The gateway ended the page. The relay has already told the
-          // component, which reduces the close as it arrives and sends the
+          // component or, for a held page, the wait has (`ui_wait.announced`),
+          // and the component reduces the close as it arrives and sends the
           // patch that draws the ended state; closing now could drop that
           // patch, which reaches this socket through the component rather
           // than from the relay. `ended_grace_ms` covers the component's

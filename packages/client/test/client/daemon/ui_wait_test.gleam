@@ -163,3 +163,19 @@ pub fn a_page_is_told_the_standing_that_ended_its_wait_test() {
   assert answering() == ui_wait.Answering
   assert process.receive(told, 0) == Error(Nil)
 }
+
+// The wait tells the page before it reports, since the report is what closes
+// the socket. Both go to one subject from the same run, so the order holds.
+pub fn the_page_is_told_before_the_wait_reports_test() {
+  let order = process.new_subject()
+  let awaiting =
+    ui_wait.announced(fn() { ui_wait.Standing(ending.AccessRevoked) }, fn(_) {
+      process.send(order, "told")
+    })
+  ui_wait.start(short(), ui_wait.AskAtOnce, awaiting, fn(_) {
+    process.send(order, "done")
+  })
+
+  assert process.receive(order, patience_ms) == Ok("told")
+  assert process.receive(order, patience_ms) == Ok("done")
+}
