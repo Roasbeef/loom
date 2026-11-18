@@ -491,6 +491,37 @@ pub fn a_page_that_is_no_longer_open_ends_the_feed_with_its_own_ending_test() {
   assert process.receive(rig.ended, 1000) == Ok(ending.PageEnded)
 }
 
+// A poll is held at the box for seconds, so a page whose sign-in was revoked
+// meanwhile would have its next frame sent before the next poll found it ended.
+// The page's check runs before the piece too: the first check opens the feed, the
+// second is the one before the piece, and it ends the feed with the page's own
+// ending without the box ever seeing the piece. The box saw the first poll before
+// the frame was transmitted, so the poll is in flight when the check runs.
+pub fn a_page_that_ended_during_a_held_poll_sends_nothing_test() {
+  let seen = process.new_subject()
+  let checks = counter()
+  let open = fn() {
+    case tick(checks) {
+      0 -> Ok(Nil)
+      _ -> Error(ending.PageEnded)
+    }
+  }
+  let box =
+    host(
+      fn(polled: remote_feed.Poll) {
+        process.sleep(1500)
+        Ok(remote_feed.Answer(first: polled.after + 1, frames: [], ended: None))
+      },
+      seen,
+    )
+  let rig = start(to(serving(box)), open)
+  assert awaited(seen, "poll 0", 30)
+  ui_feed.transmit(rig.feed, "{\"cmd\":1}")
+  assert closed(rig) == Some(ending.reason(ending.PageEnded))
+  assert process.receive(rig.ended, 1000) == Ok(ending.PageEnded)
+  assert list.filter(lines(seen), string.starts_with(_, "send")) == []
+}
+
 // --- the lane's frames --------------------------------------------------------------
 
 pub fn a_lane_frame_reaches_the_box_as_a_piece_test() {

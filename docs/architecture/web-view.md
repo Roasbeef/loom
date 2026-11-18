@@ -279,7 +279,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7623`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7647`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1705,8 +1705,9 @@ the bar). The person's name in the bar is the button that opens it, inside a
 (`view/home_bar.account`); the panel opens by itself while a device link is on
 show. The centre of a home is the session list and nothing else. "This browser" marks the
 page's own, "Sign out" and "Sign out everywhere" end the principal's logins
-(`manager.revoke_login`, `revoke_logins`; the registry drops its frame memo, so
-every page the login minted ends at its next request), and a fresh home alone has
+(`manager.revoke_login`, `revoke_logins`; the registry drops its frame memo, and
+`ui_sessions.end_login` or `end_logins` then drops every page and ticket the login
+opened, so each ends at its next request or frame), and a fresh home alone has
 "Sign in another device", a ten-minute `Remembered` ticket
 (`ui_socket.device_link_for`) that costs one place of the grant allowance an
 invitation shares and is shown once in a `<loom-copy subject="device">` box. A

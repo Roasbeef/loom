@@ -1316,7 +1316,8 @@ pub fn rotate_credential(
 /// the fingerprint of the login whose device link made this one.
 ///
 /// The digest must be a `browser_digest` and unused in either kind, and the
-/// principal must exist; any of them wrong writes nothing. Whether the principal
+/// principal must exist, and an issuing login on record as revoked is refused;
+/// any of them wrong writes nothing. Whether the principal
 /// may hold a login is the daemon's decision and not made here.
 ///
 /// ## Examples
@@ -1348,6 +1349,7 @@ pub fn issue_login(
   catalogue.atomic(store, fn() {
     use _found <- result.try(get(store, principal_id))
     use Nil <- result.try(unused(store, digest))
+    use Nil <- result.try(parent_not_revoked(store, principal_id, issued_by))
     catalogue.statement(store, case issued_by {
       None ->
         sql.insert_access_login(
@@ -1366,6 +1368,35 @@ pub fn issue_login(
         )
     })
   })
+}
+
+/// Refuses a device link's child login when its issuing login is on record as
+/// revoked, so a link redeemed after its parent was revoked writes no fresh login.
+/// A parent with no row is not refused here, as before: the daemon judges the
+/// parent's expiry, and a revoked row is the one state it cannot see. A login
+/// with no parent is always allowed.
+fn parent_not_revoked(
+  store: Catalogue,
+  principal_id: String,
+  issued_by: Option(String),
+) -> Result(Nil, Error) {
+  // A login made without a parent has nothing to check; a child looks its
+  // parent's row up under the same principal.
+  case issued_by {
+    None -> Ok(Nil)
+    Some(parent) -> {
+      use rows <- result.try(catalogue.query(
+        store,
+        sql.principal_login_by_fingerprint(principal_id, parent),
+      ))
+
+      // Any revoked row for the fingerprint refuses the child.
+      case list.any(rows, fn(row) { row.state == "revoked" }) {
+        True -> Error(Invalid("the issuing login is revoked"))
+        False -> Ok(Nil)
+      }
+    }
+  }
 }
 
 /// Lists a principal's active, unexpired browser logins after the fingerprint

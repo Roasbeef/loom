@@ -1133,8 +1133,10 @@ pub fn upgrade_home(
       bookmark: option.map(seen.login, fn(issuer) {
         seen.address <> page.login_home_path(issuer.key)
       }),
-      out: fn(fingerprint) { sign_out_for(standing, epoch, open, fingerprint) },
-      all: fn() { sign_out_all_for(standing, epoch, open) },
+      out: fn(fingerprint) {
+        sign_out_for(standing, tickets, epoch, open, fingerprint)
+      },
+      all: fn() { sign_out_all_for(standing, tickets, epoch, open) },
       device: device_capability(seen.grant.origin, fn() {
         device_link_for(standing, tickets, open, seen.address)
       }),
@@ -3048,17 +3050,21 @@ fn listed_signin(row: access.Signin) -> signins.Signin {
 /// authenticates its credential and the daemon's epoch again in the same turn as
 /// the write, and finds the login among this principal's `browser` rows and no
 /// other: a fingerprint of another principal's login, or of a bearer, is
-/// `NotFound`. Revoking the row ends every page the login minted at that page's
-/// next frame. It is logged as `daemon.login_revoked`.
+/// `NotFound`. Revoking the row ends every page the login opened, however the
+/// page was reached, at that page's next frame: the registry's write is followed
+/// by `ui_sessions.end_login`, which drops those pages from `tickets`, because a
+/// page a `loom ui` exchange opened is bound to the bearer and would not notice
+/// the row. It is logged as `daemon.login_revoked`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.sign_out_for(standing, epoch, open, "9c1e0f2ab3d4e5f6")
+/// // ui_socket.sign_out_for(standing, tickets, epoch, open, "9c1e0f2ab3d4e5f6")
 /// ```
 @internal
 pub fn sign_out_for(
   standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
   epoch: String,
   open: fn() -> Result(Int, Nil),
   fingerprint: String,
@@ -3080,6 +3086,7 @@ pub fn sign_out_for(
       {
         Ok(#(principal, digest)) -> {
           ui_login.revoked(principal, digest)
+          ui_sessions.end_login(tickets, access.fingerprint(digest))
           signins.Revoked
         }
         Error(error) -> signins.Declined(sign_out_reason(error))
@@ -3088,16 +3095,19 @@ pub fn sign_out_for(
 }
 
 /// Ends every sign-in of the page's principal ("sign out everywhere"), under the
-/// rules of `sign_out_for`, and logs the count as `daemon.login_revoked`.
+/// rules of `sign_out_for`, and logs the count as `daemon.login_revoked`. Every
+/// page of the principal that has a login ends with them
+/// (`ui_sessions.end_logins`), the page that asked included.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.sign_out_all_for(standing, epoch, open)
+/// // ui_socket.sign_out_all_for(standing, tickets, epoch, open)
 /// ```
 @internal
 pub fn sign_out_all_for(
   standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
   epoch: String,
   open: fn() -> Result(Int, Nil),
 ) -> signins.Answer {
@@ -3112,6 +3122,7 @@ pub fn sign_out_all_for(
       {
         Ok(#(principal, count)) -> {
           ui_login.revoked_all(principal, count)
+          ui_sessions.end_logins(tickets, principal)
           signins.Revoked
         }
         Error(error) -> signins.Declined(sign_out_reason(error))
@@ -6867,7 +6878,13 @@ pub fn admin_for(
       grants.RevokeCredentials(principal:) ->
         reduced(standing, epoch, manager.RevokeMember(principal))
       grants.RevokeSignin(principal:, fingerprint:) ->
-        revoke_signin_for_admin(standing, epoch, principal, fingerprint)
+        revoke_signin_for_admin(
+          standing,
+          tickets,
+          epoch,
+          principal,
+          fingerprint,
+        )
       grants.Rotate(principal:) ->
         rotate_for_admin(standing, tickets, epoch, address, principal)
       grants.Rename(principal:, name:) ->
@@ -6960,11 +6977,13 @@ fn shareable_reason(refusal: shareable.Refusal) -> grants.Reason {
 
 /// One sign-in of the named principal ended, which only reduces access and costs
 /// no allowance. The registry authenticates the owner's credential and the epoch
-/// in the same turn as the write and drops its frame memo before it answers, so
-/// every page the login minted ends at its next frame. The log says which login,
-/// by fingerprint, as the control command's does.
+/// in the same turn as the write and drops its frame memo before it answers, and
+/// `ui_sessions.end_login` then drops every page the login opened, so each ends
+/// at its next frame. The log says which login, by fingerprint, as the control
+/// command's does.
 fn revoke_signin_for_admin(
   standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
   epoch: String,
   principal: String,
   fingerprint: String,
@@ -6983,6 +7002,7 @@ fn revoke_signin_for_admin(
   {
     Ok(#(revoked, digest)) -> {
       ui_login.revoked(revoked, digest)
+      ui_sessions.end_login(tickets, access.fingerprint(digest))
       Ok(grants.Changed)
     }
     Error(error) -> Error(admin_reason(error))

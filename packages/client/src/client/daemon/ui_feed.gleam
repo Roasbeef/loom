@@ -27,10 +27,12 @@
 //// transmit and shut meanwhile, so no call to the box runs in this process. Each
 //// poll and each piece is one weft run that returns its reply to a sink this
 //// process selects. One call does run here: the page's own check (`Settings.open`)
-//// before each poll is a registry call, which waits at most the registry's own
-//// five seconds, and a `Transmit` or a `Shut` that arrives meanwhile waits behind
-//// it. A run that is lost, or that outlives its deadline, is reported to
-//// the same sink as nothing heard. Each exchange has a reply subject owned by its
+//// before each poll and before each piece is sent is a registry call, which waits
+//// at most the registry's own five seconds, and a `Transmit` or a `Shut` that
+//// arrives meanwhile waits behind it. The check before a piece is what keeps a
+//// page whose sign-in was revoked from sending a frame while a poll is held. A
+//// run that is lost, or that outlives its deadline, is reported to the same sink
+//// as nothing heard. Each exchange has a reply subject owned by its
 //// own task, so an answer that arrives after the task is gone is delivered to a
 //// process that no longer exists, and a late answer can neither reorder frames
 //// nor fill this mailbox. At most one poll and one send are in flight, so this
@@ -515,7 +517,11 @@ fn queued(data: Data, frame: String) -> sm.Next(Phase, Data, Message) {
   }
 }
 
-/// Sends the piece that is due, if one is, in a task of its own.
+/// Sends the piece that is due, if one is, in a task of its own. The page's own
+/// check runs first, as it does before a poll: a poll is held at the box for up to
+/// five seconds, so a page whose sign-in was revoked meanwhile would otherwise
+/// have its next piece sent before the next poll found it ended. Nothing is sent
+/// for a page that has ended, and the check is made only when a piece is due.
 fn pump(data: Data) -> sm.Next(Phase, Data, Message) {
   let #(outbox, due) = feed_outbox.take(data.outbox)
   let data = Data(..data, outbox:)
@@ -523,31 +529,38 @@ fn pump(data: Data) -> sm.Next(Phase, Data, Message) {
   // One piece is in flight at a time, so nothing is due while one is out.
   case due {
     None -> sm.keep(data)
-    Some(feed_outbox.Due(n:, offset:, total:, text:)) -> {
-      let settings = data.settings
-      let piece =
-        remote_feed.Piece(
-          feed: settings.attached.feed,
-          n:,
-          offset:,
-          total:,
-          text:,
-        )
-      run(data.sends, fn() {
-        Ok(#(
-          n,
-          offset,
-          send_reply(top_relay.send_piece(
-            settings.relay,
-            settings.orchestrator,
-            settings.attached,
-            piece,
-          )),
-        ))
-      })
-      sm.keep(data) |> sm.cancel_timeout(name: send_timer)
-    }
+    Some(feed_outbox.Due(n:, offset:, total:, text:)) ->
+      case data.settings.open() {
+        Error(why) -> finish(data, why, Detach)
+        Ok(Nil) -> send_piece(data, n, offset, total, text)
+      }
   }
+}
+
+/// Starts the task that sends one piece the page's check has just allowed.
+fn send_piece(
+  data: Data,
+  n: Int,
+  offset: Int,
+  total: Int,
+  text: String,
+) -> sm.Next(Phase, Data, Message) {
+  let settings = data.settings
+  let piece =
+    remote_feed.Piece(feed: settings.attached.feed, n:, offset:, total:, text:)
+  run(data.sends, fn() {
+    Ok(#(
+      n,
+      offset,
+      send_reply(top_relay.send_piece(
+        settings.relay,
+        settings.orchestrator,
+        settings.attached,
+        piece,
+      )),
+    ))
+  })
+  sm.keep(data) |> sm.cancel_timeout(name: send_timer)
 }
 
 /// Sorts what a send call returned.

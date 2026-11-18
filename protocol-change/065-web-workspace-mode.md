@@ -2338,3 +2338,97 @@ question and its escaped name, the ask once, the action each residency gives, a
 stale or forged confirmation, each question in its own place, the refusal words and
 the click paths), `home_test` and `sidebar_test` (their counts), `ui_route_test`
 (`StopArchive` against a real registry and in the table of refused standings).
+
+## Addendum: revoking a sign-in ends the pages it opened (2026-11-18)
+
+**What was found.** A browser drive of a daemon's web view showed that "Sign out
+everywhere" and the admin page's revocation of a sign-in did not end the pages
+that sign-in had already opened. A page kept sending turns and the turns were
+answered. The cause is which credential a page is bound to. A page opened by a
+`loom ui` exchange is bound to the bearer that asked for the link: the grant's
+`credential` is the bearer's digest, and every later check
+(`owner_operating`) authenticates that digest. The remembered login is a second
+row, attached to the page as `Page.login` and carried as `Standing.login`, and
+nothing a page checks reads it. Only a page a login resumed is bound to the login
+row. Revoking the row (`access.revoke_login`, `revoke_logins`) therefore ended
+the pages the login resumed and left the page of its own exchange open until its
+eight hours ran out, locally and on a relayed route alike.
+
+**The earlier text.** The sentence of the eighth pull request that says a revoked
+login "ends every page it minted at that page's next frame" was true only of
+resumed pages, and its addendum on the device link ("revoking the child login does
+not end that page before its eight hours; 'the pages a login minted' means the
+pages its bookmark resumed") recorded the gap as the rule. This addendum replaces
+that rule. The earlier text is left as written.
+
+**The ruling.** The owner decided on 2026-11-18 that revoking a sign-in, and
+signing out everywhere, end every page that sign-in opened, at the page's next
+frame or poll, whichever way the page was reached and whether it is local or
+relayed.
+
+**What changed.**
+
+- `ui_sessions` gained two messages, `EndLogin(fingerprint)` and
+  `EndLogins(principal)`, behind `end_login` and `end_logins`. Each drops, in one
+  turn of the table's actor, every page whose `Page.login` is the named login (for
+  the all form, whose grant principal matches and whose login is `Some`), and every
+  unredeemed ticket minted under it, so a switch ticket the ended login's page
+  minted cannot open a page of the ended login. The call returns after the table
+  has dropped them, so a page that checks after the revoking response finds
+  nothing.
+- Every site that revokes a browser login calls one of them after the registry's
+  write: `ui_socket.sign_out_for`, `ui_socket.sign_out_all_for` (through the
+  `Signing` closures, which now pass `tickets`), the admin page's
+  `revoke_signin_for_admin`, and the control command `credentials.revoke_login` in
+  `server.gleam`, which `loom access revoke-login` reaches. `credentials.revoke`
+  and `credentials.rotate` revoke the member's bearers and logins together, so the
+  bearer check already ended every page of a member, and `revoke_all_logins` runs
+  at a daemon start, when no page exists.
+- A page whose entry is gone fails `ui_sessions.still_open`, which every
+  authorization and every poll runs. The ending is `PageEnded`, not
+  `AccessRevoked`: the page's own session ended, which is what `PageEnded` says,
+  and `AccessRevoked` stays for a page that is open whose principal no longer
+  authenticates.
+- `ui_feed.pump` makes the page's check before it sends a piece, as `poll` does
+  before it asks. The check ran only before each poll, which the box holds for up
+  to five seconds, so a relayed page that ended meanwhile could still have a queued
+  frame sent. Nothing is now sent for a page that has ended.
+- `Standing`, the gateway, the feed and the wire are unchanged, and nothing crosses
+  the node boundary: the table is the laptop daemon's, and the box learns of the
+  ending as it learns of any detach.
+
+**What stays as before.** A page opened with `loom ui --no-remember` has no login
+and stays bound to the bearer; neither call touches it, and revoking the bearer
+ends it, as it always did. Revoking a bearer ends every page bound to it. Another
+sign-in's pages, and another principal's, are left alone.
+
+**What it costs.** Each revocation makes one more call, to the table's actor, which
+waits at most a second. Signing out everywhere ends the page that asked, since
+that page is one of the logins' pages; its next frame shows the page ended and the
+person opens a fresh link. A page opened from a device link is attached to its
+own child login (its ticket is redeemed with no login and the exchange then
+attaches the child's), so revoking the parent does not end it, and revoking the
+child now does, where before it ran to its eight hours. Revoking a parent drops
+its unredeemed device tickets, and refuses a new child login under it
+(`access.issue_login` refuses an issuing login on record as revoked, and the
+table refuses a page's ticket for a login that no live page opened under the same
+credential holds, which closes the gap
+between a page's check and its mint). It does not cascade to child logins that
+already exist or to their pages, which is unchanged.
+
+The registry check before each relayed piece is a second registry call per frame
+on a relayed page while a piece is due. `still_open` maps any authenticate error,
+a registry timeout included, to `AccessRevoked`, and the per-piece check now takes
+that path per piece as well as per poll. That mapping is not changed here.
+
+**Tests.** `ui_sessions_test` (`ending_a_login_ends_its_pages_and_no_other_test`,
+`ending_every_login_of_a_principal_leaves_the_bearers_pages_test`),
+`ui_route_test` (`revoking_one_sign_in_ends_its_pages_and_leaves_the_others_test`,
+whose assertion on the exchange's page is reversed,
+`signing_out_everywhere_ends_every_page_the_logins_opened_test` and
+`the_admin_revoke_of_a_sign_in_ends_the_pages_it_opened_test`), `ui_relay_test`
+(`a_turn_sent_after_its_login_is_revoked_is_refused_test`), `ui_feed_test`
+(`a_page_that_ended_during_a_held_poll_sends_nothing_test`) and `ui_feed_box_test`
+(`a_prompt_sent_after_the_pages_login_is_revoked_never_reaches_the_box_test`, the
+relayed page against the box's real feed host). Each fails with the table's two
+messages ignored or with the check before the piece removed.

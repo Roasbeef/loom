@@ -1481,8 +1481,29 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   (protocol-change/065, PR 8): `signins_read`, `sign_out_for` and
   `sign_out_all_for` read and end the principal's own logins through
   `manager.signins`, `revoke_login` and `revoke_logins` (the registry applies the
-  own-or-owner rule, drops its frame memo and answers the digest the page logs),
-  and `device_link_for` mints the ten-minute `Remembered` device ticket for a
+  own-or-owner rule, drops its frame memo and answers the digest the page logs).
+  Each revoke site then calls `ui_sessions.end_login(tickets, fingerprint)` (or
+  `end_logins(tickets, principal)` for "sign out everywhere"): `sign_out_for`,
+  `sign_out_all_for`, the admin page's `revoke_signin_for_admin` and the control
+  command `credentials.revoke_login` in `server.gleam`. The table drops every
+  page and ticket whose `Page.login` names the login (for the all form, whose
+  principal matches and whose login is `Some`) and the call returns once it has,
+  so the page's next check finds nothing and it ends as `PageEnded`. A page's
+  own mints (`mint_in`, `mint_device`, `mint_before`, `Minter = ByPage`) are
+  refused in the table's turn when the login they carry is held by no live page
+  opened under the ticket's own credential (a page of the login bound to another
+  credential, such as a resume redeemed after the revocation, does not count),
+  so a revocation landing between a page's check and its mint leaves no ticket;
+  `mint`, `mint_carried` and `mint_resumed` (`ByLauncher`) are not held to a page.
+  `access.issue_login` also refuses a child login whose issuing login is on
+  record as revoked. A page a
+  `loom ui` exchange opened is bound to the bearer that asked for the link, so
+  the row's revocation alone would not end it; a page with no login
+  (`--no-remember`) is the bearer's and is not touched. `ui_feed.pump` also makes
+  the page's check before it sends a piece, so a relayed page that ended during a
+  held poll sends nothing (protocol-change/065, addendum of 2026-11-18). The
+  home also has `device_link_for`, which mints the ten-minute `Remembered` device ticket for a
+  `Fresh` home only, after `reserve_invite` mints the ten-minute `Remembered` device ticket for a
   `Fresh` home only, after `reserve_invite`; `device_capability` hands the control
   to a fresh home alone and the daemon refuses from a resumed one regardless.
   `home_accepts` also takes a click beneath `home.signins_path`. `Standing` carries

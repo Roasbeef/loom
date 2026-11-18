@@ -125,6 +125,25 @@ fn looked_up(sessions, cookie) -> Result(ui_sessions.Grant, Nil) {
   |> result.map(ui_sessions.grant)
 }
 
+// A page of a session that is the browser of `login`, which a page's ticket for
+// that login needs to find in the table when it is filed. It is a session page,
+// so it takes no place among the principal's homes.
+fn held_by_a_page(
+  sessions: ui_sessions.Sessions,
+  login: ui_sessions.Issuer,
+) -> Nil {
+  let assert Ok(issued) = ui_sessions.mint(sessions, grant("holder"))
+    as "the holder's ticket is minted"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(
+      sessions,
+      issued.ticket,
+      ui_sessions.SessionExchange("holder"),
+    )
+    as "the holder's ticket redeems"
+  ui_sessions.attach_login(sessions, redeemed.cookie, login)
+}
+
 fn mint(sessions, session) -> String {
   let assert Ok(issued) = ui_sessions.mint(sessions, grant(session))
     as "a ticket is minted"
@@ -1158,6 +1177,7 @@ pub fn a_device_ticket_lives_ten_minutes_and_redeems_once_test() {
 pub fn a_ticket_carries_the_login_of_its_minter_test() {
   let sessions = table(clock())
   let login = issuer("0123456789abcdef")
+  held_by_a_page(sessions, login)
   let assert Ok(issued) =
     ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(login))
     as "a switch ticket is minted"
@@ -1267,6 +1287,7 @@ pub fn homes_of_every_origin_share_one_cap_test() {
 pub fn a_ticket_of_an_ended_login_evicts_no_page_test() {
   let time = clock()
   let sessions = table(time)
+  held_by_a_page(sessions, issuer("0123456789abcdef"))
   let ticket = fn(login) {
     let assert Ok(issued) =
       ui_sessions.mint_device(
@@ -1303,7 +1324,8 @@ pub fn a_ticket_of_an_ended_login_evicts_no_page_test() {
   // The refusal spent the ticket and opened nothing.
   assert ui_sessions.redeem(sessions, late, ui_sessions.HomeExchange)
     == Error(ui_sessions.UnknownTicket)
-  assert ui_sessions.sizes(sessions) == Ok(#(0, ui_sessions.max_pages))
+  // The homes and the one session page that holds the login.
+  assert ui_sessions.sizes(sessions) == Ok(#(0, ui_sessions.max_pages + 1))
 
   // A login with time left redeems, and makes room as any redemption does.
   let live =
@@ -1331,6 +1353,7 @@ pub fn a_switch_ticket_of_an_ended_login_still_redeems_test() {
       ..issuer("0123456789abcdef"),
       expires_at_ms: wall_offset + 5000,
     )
+  held_by_a_page(sessions, ends)
   let assert Ok(issued) =
     ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(ends))
     as "a switch ticket is minted"
@@ -1353,6 +1376,7 @@ pub fn the_production_table_judges_a_login_by_the_system_clock_test() {
     )
     as "the production table starts"
   let now = bootstrap.system_time_ms()
+  held_by_a_page(sessions, issuer("0123456789abcdef"))
   let ticket = fn(expires_at_ms) {
     let assert Ok(issued) =
       ui_sessions.mint_device(
@@ -1375,4 +1399,162 @@ pub fn the_production_table_judges_a_login_by_the_system_clock_test() {
     ticket(now + 600_000),
     ui_sessions.HomeExchange,
   ))
+}
+
+// --- revoking a login ends its pages ---------------------------------------------
+
+// A remembered home for `principal`, redeemed and given `login` as the exchange
+// does once the login's row exists: the page a `loom ui` link opened, which is
+// bound to the bearer that asked for it and so needs the table's help to end.
+fn remembered_page(
+  sessions: ui_sessions.Sessions,
+  principal: String,
+  login: ui_sessions.Issuer,
+) -> ui_sessions.Redeemed {
+  let assert Ok(issued) = ui_sessions.mint(sessions, remembered_home(principal))
+    as "a remembered ticket is minted"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the ticket redeems"
+  ui_sessions.attach_login(sessions, redeemed.cookie, login)
+  redeemed
+}
+
+// A home opened with `loom ui --no-remember`: no login row and so no login on
+// the page.
+fn forgotten_page(
+  sessions: ui_sessions.Sessions,
+  principal: String,
+) -> ui_sessions.Redeemed {
+  let assert Ok(issued) = ui_sessions.mint(sessions, home_for(principal))
+    as "a forgotten ticket is minted"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the ticket redeems"
+  redeemed
+}
+
+// Ending one login drops the pages that login opened, those a `loom ui` exchange
+// attached it to and those a ticket the login's own page minted opened, and
+// leaves the principal's pages of another login and its pages with no login. The
+// call returns after the table has dropped them, so the first lookup that
+// follows it already finds them gone.
+pub fn ending_a_login_ends_its_pages_and_no_other_test() {
+  let sessions = table(clock())
+  let revoked = issuer("1111111111111111")
+  let other = issuer("2222222222222222")
+  let exchanged = remembered_page(sessions, "alice", revoked)
+  let kept = remembered_page(sessions, "alice", other)
+  let bearer = forgotten_page(sessions, "alice")
+
+  // A switch ticket the first login's page minted opens a page of that login.
+  let assert Ok(switch) =
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(revoked))
+    as "a switch ticket is minted in the login"
+  let assert Ok(switched) =
+    ui_sessions.redeem(sessions, switch.ticket, ui_sessions.HomeExchange)
+    as "the switch ticket redeems"
+  assert ui_sessions.login_of(sessions, switched.cookie) == Some(revoked)
+
+  // A second switch ticket stays unredeemed while the login ends.
+  let assert Ok(pending) =
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(revoked))
+    as "a pending switch ticket is minted in the login"
+
+  ui_sessions.end_login(sessions, revoked.fingerprint)
+  assert looked_up(sessions, exchanged.cookie) == Error(Nil)
+  assert looked_up(sessions, switched.cookie) == Error(Nil)
+  assert result.is_ok(looked_up(sessions, kept.cookie))
+  assert result.is_ok(looked_up(sessions, bearer.cookie))
+
+  // A ticket the ended login minted opens nothing.
+  assert ui_sessions.redeem(sessions, pending.ticket, ui_sessions.HomeExchange)
+    == Error(ui_sessions.UnknownTicket)
+}
+
+// A page checks that it is open, makes registry calls, and only then asks for a
+// ticket, so a revocation can land between the check and the mint. The table
+// refuses a page's ticket for a login that no page holds, which is what the
+// revocation leaves, so no ticket is filed for an ended login. A launcher's
+// resume mint is not held to a page, since a resume has no page yet, and a page
+// with no login is not held to anything.
+pub fn a_page_cannot_mint_a_ticket_for_a_login_that_has_ended_test() {
+  let sessions = table(clock())
+  let login = issuer("1111111111111111")
+  let _page = remembered_page(sessions, "alice", login)
+  let mint_in = fn() {
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(login))
+  }
+  assert result.is_ok(mint_in())
+
+  ui_sessions.end_login(sessions, login.fingerprint)
+  assert mint_in() == Error(Nil)
+  assert ui_sessions.mint_device(
+      sessions,
+      remembered_home("alice"),
+      28_800_000,
+      Some(login),
+    )
+    == Error(Nil)
+  assert result.is_ok(ui_sessions.mint_in(
+    sessions,
+    home_for("alice"),
+    28_800_000,
+    None,
+  ))
+  assert result.is_ok(ui_sessions.mint_resumed(
+    sessions,
+    ui_sessions.Grant(..home_for("alice"), origin: ui_sessions.Resumed),
+    login,
+  ))
+}
+
+// A resume verified before a revocation can be redeemed after it, which leaves a
+// page of the revoked login bound to the login's own credential. That page is not
+// the holder for a page minting under another credential, so the mint is refused
+// until a page of the login under that credential exists.
+pub fn a_page_of_the_login_under_another_credential_is_not_its_holder_test() {
+  let sessions = table(clock())
+  let login = issuer("1111111111111111")
+  let assert Ok(other) = access.credential_digest(string.repeat("d", 64))
+    as "another credential's digest is valid"
+  let assert Ok(issued) =
+    ui_sessions.mint_resumed(
+      sessions,
+      ui_sessions.Grant(
+        ..home_for("alice"),
+        credential: other,
+        origin: ui_sessions.Resumed,
+      ),
+      login,
+    )
+    as "a resume's ticket is minted"
+  let assert Ok(resumed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the resume redeems"
+  assert ui_sessions.login_of(sessions, resumed.cookie) == Some(login)
+
+  let mint = fn() {
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(login))
+  }
+  assert mint() == Error(Nil)
+  held_by_a_page(sessions, login)
+  assert result.is_ok(mint())
+}
+
+// "Sign out everywhere" ends every page of the principal that has a login, and
+// not the principal's pages with no login, which are the bearer's and which
+// signing out does not revoke, and not another principal's pages.
+pub fn ending_every_login_of_a_principal_leaves_the_bearers_pages_test() {
+  let sessions = table(clock())
+  let first = remembered_page(sessions, "alice", issuer("1111111111111111"))
+  let second = remembered_page(sessions, "alice", issuer("2222222222222222"))
+  let bearer = forgotten_page(sessions, "alice")
+  let theirs = remembered_page(sessions, "bob", issuer("3333333333333333"))
+
+  ui_sessions.end_logins(sessions, "alice")
+  assert looked_up(sessions, first.cookie) == Error(Nil)
+  assert looked_up(sessions, second.cookie) == Error(Nil)
+  assert result.is_ok(looked_up(sessions, bearer.cookie))
+  assert result.is_ok(looked_up(sessions, theirs.cookie))
 }

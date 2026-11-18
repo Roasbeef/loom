@@ -15,6 +15,7 @@
 //// the same session.
 
 import client/daemon/ui_feed
+import client/daemon/ui_sessions
 import client/protocol
 import client/remote/peer_client
 import client/remote/top_relay
@@ -24,7 +25,11 @@ import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
+import host/bootstrap
 import session_view/connection_event
+import storage/access
 import support/feed_rig.{type Rig}
 import web_view/ending
 import weft/actor
@@ -108,6 +113,15 @@ type Page {
 /// Attaches a feed on the rig's session as the laptop's page would and starts the
 /// feed client over it.
 fn open(relay: top_relay.Relay, rig: Rig) -> Page {
+  open_checked(relay, rig, fn() { Ok(Nil) })
+}
+
+/// `open` for a page whose own check is `check`.
+fn open_checked(
+  relay: top_relay.Relay,
+  rig: Rig,
+  check: fn() -> Result(Nil, ending.Ending),
+) -> Page {
   let assert Ok(attached) =
     top_relay.attach(
       relay,
@@ -127,7 +141,7 @@ fn open(relay: top_relay.Relay, rig: Rig) -> Page {
       relay:,
       orchestrator: "box",
       attached:,
-      open: fn() { Ok(Nil) },
+      open: check,
       inbox:,
       component: process.self(),
       ended: fn(why) { process.send(ended, why) },
@@ -173,6 +187,17 @@ fn until(
   }
 }
 
+/// The reason the page's inbox is closed with, skipping the frames before it.
+fn closing(page: Page) -> Option(String) {
+  case process.receive(page.inbox, 6000) {
+    Ok(connection_event.Closed(reason:)) -> Some(reason)
+    Ok(connection_event.Incoming(_)) -> closing(page)
+    Ok(connection_event.Connected)
+    | Ok(connection_event.NetworkFault(_))
+    | Error(Nil) -> None
+  }
+}
+
 /// Receives whatever the box has already pushed to the page, until the inbox has
 /// been quiet for a moment. The gateway pushes presence and the like on its own,
 /// so a test that asserts the page is quiet during a cut first lets those land.
@@ -200,6 +225,62 @@ pub fn a_frame_the_page_sends_reaches_the_session_and_its_reply_reaches_the_page
     as "the prompt is answered through the feed"
   assert list.count(frames, reply_to(2)) == 1
   assert feed_rig.prompts(rig) == ["hello"]
+}
+
+// A relayed page opened by a `loom ui` exchange is bound to the bearer that asked
+// for the link, so revoking its browser login ends it only through the table
+// (`ui_sessions.end_login`). The page's check is the table's own, as the page
+// socket builds it. A prompt sent while the page is open reaches the box session
+// and is answered, which is the barrier that it was delivered. A prompt sent after
+// the login is revoked is never sent: the feed ends as `PageEnded` and the box
+// session still holds only the first.
+pub fn a_prompt_sent_after_the_pages_login_is_revoked_never_reaches_the_box_test() {
+  let rig = feed_rig.rig("revoked", feed_rig.watching, remote_feed.lease_ms)
+  let assert Ok(sessions) =
+    ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms))
+    as "the table starts"
+  let assert Ok(digest) = access.credential_digest(string.repeat("c", 64))
+    as "the fixture digest is valid"
+  let grant =
+    ui_sessions.Grant(
+      scope: ui_sessions.Home,
+      credential: digest,
+      principal: "alice",
+      ceiling: access.Operator,
+      reach: ui_sessions.Workspace,
+      origin: ui_sessions.Fresh,
+      remember: ui_sessions.Remembered,
+    )
+  let assert Ok(issued) = ui_sessions.mint(sessions, grant) as "a ticket"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the ticket is redeemed"
+  let login =
+    ui_sessions.Issuer(
+      fingerprint: "9c1e0f2ab3d4e5f6",
+      expires_at_ms: 4_000_000_000_000,
+      key: string.repeat("a", 32),
+    )
+  ui_sessions.attach_login(sessions, redeemed.cookie, login)
+  let still_open = ui_sessions.still_open(sessions, redeemed.cookie, grant)
+  let page =
+    open_checked(relay_over(rig, link()), rig, fn() {
+      result.replace_error(still_open(), ending.PageEnded)
+    })
+
+  ui_feed.transmit(page.feed, command(1, protocol.Subscribe(rig.session, None)))
+  let assert Some(_) = until(page, reply_to(1), 6000)
+    as "the subscribe is answered through the feed"
+  ui_feed.transmit(page.feed, command(2, protocol.Prompt("main", "before")))
+  let assert Some(_) = until(page, reply_to(2), 6000)
+    as "the prompt is answered while the page is open"
+  assert feed_rig.prompts(rig) == ["before"]
+
+  ui_sessions.end_login(sessions, login.fingerprint)
+  ui_feed.transmit(page.feed, command(3, protocol.Prompt("main", "after")))
+  assert closing(page) == Some(ending.reason(ending.PageEnded))
+  assert process.receive(page.ended, 1000) == Ok(ending.PageEnded)
+  assert feed_rig.prompts(rig) == ["before"]
 }
 
 // --- the link ------------------------------------------------------------------

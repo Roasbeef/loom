@@ -1297,14 +1297,22 @@ fn signing_from_home(
   {
     Ok(fingerprint), _, _, _ ->
       case
-        ui_socket.sign_out_for(standing, attachment.epoch, open, fingerprint)
+        ui_socket.sign_out_for(
+          standing,
+          tickets,
+          attachment.epoch,
+          open,
+          fingerprint,
+        )
       {
         signins.Revoked -> stub(282, "revoked")
         signins.Linked(_) -> stub(283, "unexpected")
         signins.Declined(reason) -> stub(283, string.inspect(reason))
       }
     Error(Nil), Ok(_), _, _ ->
-      case ui_socket.sign_out_all_for(standing, attachment.epoch, open) {
+      case
+        ui_socket.sign_out_all_for(standing, tickets, attachment.epoch, open)
+      {
         signins.Revoked -> stub(282, "revoked")
         signins.Linked(_) -> stub(283, "unexpected")
         signins.Declined(reason) -> stub(283, string.inspect(reason))
@@ -6674,9 +6682,10 @@ pub fn a_narrowed_token_is_held_to_the_narrower_value_test() {
   })
 }
 
-// Revoking one sign-in ends the pages that login minted at their next request
-// and leaves the principal's other sign-ins, its bearer and the page a `loom ui`
-// exchange opened. The owner may revoke any principal's; a member only its own.
+// Revoking one sign-in ends every page that login opened at their next request,
+// the page its own `loom ui` exchange opened and the pages it minted by resuming,
+// and leaves the principal's other sign-ins with their pages, and its bearer. The
+// owner may revoke any principal's; a member only its own.
 pub fn revoking_one_sign_in_ends_its_pages_and_leaves_the_others_test() {
   fixture(fn(ready, port, credential) {
     let session = create_session(ready, "revoking", 972)
@@ -6685,6 +6694,8 @@ pub fn revoking_one_sign_in_ends_its_pages_and_leaves_the_others_test() {
     let page = entered(resume_as(port, first))
     assert home_socket(port, page, []).status == 280
     assert open_page(port, page).status == 200
+    assert open_page(port, first.page).status == 200
+    assert open_page(port, second.page).status == 200
 
     let revoked =
       control(port, credential, "credentials.revoke_login", [
@@ -6702,10 +6713,16 @@ pub fn revoking_one_sign_in_ends_its_pages_and_leaves_the_others_test() {
     assert home_socket(port, page, []).status == 401
     refused_login(resume_as(port, first), first)
 
-    // Everything else stands: the other sign-in, the bearer, and the page the
-    // exchange opened, which is bound to the bearer and not to the login.
+    // The page the login's own exchange opened is over too. It is bound to the
+    // bearer that asked for the link, which the revocation did not touch, so it
+    // ends because the table drops the pages of the login (protocol-change/065,
+    // the addendum of 2026-11-18).
+    assert open_page(port, first.page).status == 401
+    assert home_socket(port, first.page, []).status == 401
+
+    // Everything else stands: the other sign-in and the page its exchange opened.
     assert resume_as(port, second).status == 200
-    assert open_page(port, first.page).status == 200
+    assert open_page(port, second.page).status == 200
     assert fingerprints(listed_signins(port, credential))
       == [string.slice(login.row_digest(id_of(second.token)), 0, 16)]
 
@@ -7021,6 +7038,40 @@ pub fn the_pages_sign_in_asks_reach_only_the_principals_own_logins_test() {
     refused_login(resume_as(port, first), first)
     assert resume_as(port, theirs).status == 200
     assert fingerprints(listed_signins(port, credential)) == []
+  })
+}
+
+// "Sign out everywhere" ends every page the principal's logins opened, however
+// each was reached, at its next request: the pages their own exchanges opened and
+// those they minted by resuming. A page opened with `loom ui --no-remember` has no
+// login and stays, as does every page of another principal. The ended page is
+// refused its next frame as well as its keyed page.
+pub fn signing_out_everywhere_ends_every_page_the_logins_opened_test() {
+  fixture_with(Signing, fn(ready, port, credential) {
+    let session = create_session(ready, "sign-out-pages", 977)
+    let shared = member(ready, "ui-signout-pages", session, access.Operator)
+    let first = sign_in(port, credential)
+    let second = sign_in(port, credential)
+    let resumed = entered(resume_as(port, second))
+    let bearer = enter(port, forgotten_home(port, credential))
+    let theirs = sign_in_as(port, shared)
+    let live = [first.page, second.page, resumed, bearer, theirs.page]
+    assert list.all(live, fn(page) { open_page(port, page).status == 200 })
+
+    let everywhere = home_socket(port, first.page, [#("x-sign-out-all", "1")])
+    assert everywhere.status == 282
+
+    // Every page of the principal's logins is over, and a frame from one is
+    // refused as the keyed page is.
+    assert open_page(port, first.page).status == 401
+    assert open_page(port, second.page).status == 401
+    assert open_page(port, resumed).status == 401
+    assert home_socket(port, second.page, [#("x-signins", "1")]).status == 401
+
+    // The page with no login and the member's page are untouched.
+    assert open_page(port, bearer).status == 200
+    assert home_socket(port, bearer, [#("x-signins", "1")]).status == 281
+    assert open_page(port, theirs.page).status == 200
   })
 }
 
@@ -8379,6 +8430,40 @@ pub fn the_admin_page_lists_each_principals_sign_ins_and_ends_one_test() {
     let after = read()
     assert string.contains(after, "ui-admin-signins:1:" <> fingerprint(other))
     assert !string.contains(after, fingerprint(theirs))
+  })
+}
+
+// The owner's revocation of a member's sign-in on the admin page ends the pages
+// that login opened, as the member's own sign-out does, and leaves the member's
+// other login and its page with no login.
+pub fn the_admin_revoke_of_a_sign_in_ends_the_pages_it_opened_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_session(ready, "admin-ends", 1211)
+    let shared = member(ready, "ui-admin-ends", session, access.Operator)
+    let revoked = sign_in_as(port, shared)
+    let other = sign_in_as(port, shared)
+    let bearer = enter(port, forgotten_home(port, shared))
+    let page = admin_page(port, credential)
+    assert open_page(port, revoked.page).status == 200
+    assert open_page(port, other.page).status == 200
+
+    let ended =
+      admin_do(port, page, "revoke-signin", [
+        #("x-admin-principal", "ui-admin-ends"),
+        #(
+          "x-admin-fingerprint",
+          string.slice(login.row_digest(id_of(revoked.token)), 0, 16),
+        ),
+      ])
+    assert ended.status == 294
+
+    // The revoked login's page is over, the member's other login's page and its
+    // page with no login are not, and the owner's admin page goes on.
+    assert open_page(port, revoked.page).status == 401
+    assert home_socket(port, revoked.page, []).status == 401
+    assert open_page(port, other.page).status == 200
+    assert open_page(port, bearer).status == 200
+    assert open_page(port, page).status == 200
   })
 }
 
