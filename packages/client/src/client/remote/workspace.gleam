@@ -657,14 +657,20 @@ fn learn_unrecorded_close(
     // would otherwise have refused the attach for its workspace). Such a scope
     // is one the host closed as empty, as it does for an attach for an unserved
     // name that a rebound attach cannot close from here. The same question under
-    // the workspace the executor names is then a read of a closed scope, and
-    // its answer lets the attach rebind to the corrected name.
+    // the workspace the executor names is answered with the stored outcome, and
+    // that lets the attach rebind to the corrected name. A close is not a read:
+    // asked of an open scope it would close it. It is safe here because the
+    // incarnation never goes down, so a scope seen closed at `held` can be open
+    // again only at `held + 1`, and the executor then refuses the question as a
+    // stale incarnation, so the source records nothing.
     Error(CloseRefused(refusal: protocol.WorkspaceMismatch(stored: bound))) ->
       case request_close(registered.session, bound, candidate.reach, held, 2) {
         Ok(outcome) ->
           record_learned_close(registered, candidate, held, outcome)
-        Error(CloseRefused(..)) -> Error(Refused(mismatch_words(bound)))
-        Error(CloseUnanswered) -> Error(Failed(stale_words(held, registered)))
+        Error(CloseRefused(protocol.WorkspaceMismatch(..))) ->
+          Error(Refused(mismatch_words(bound)))
+        Error(CloseRefused(..)) | Error(CloseUnanswered) ->
+          Error(Failed(stale_words(held, registered)))
       }
     Error(CloseRefused(..)) | Error(CloseUnanswered) ->
       Error(Failed(stale_words(held, registered)))

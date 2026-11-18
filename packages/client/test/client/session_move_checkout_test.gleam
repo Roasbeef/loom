@@ -1356,8 +1356,7 @@ pub fn a_rebound_scope_with_a_lost_result_keeps_its_unserved_workspace_test() {
 // attach, which the host used to leave open, so the scope could not be freed and
 // the refusal's recovery went round in a circle. The host closes it now, on the
 // path that finds the name unserved, so the move ends with a closed scope, and
-// the recovery the refusal gives works: name the bound workspace again, then
-// correct the name.
+// the corrected name then lands on the same source with no operator step.
 pub fn an_open_scope_bound_to_an_unserved_workspace_is_freed_by_the_retry_test() {
   let rig = start("open-unserved", InWorktrees, 0)
   let move = begin(rig)
