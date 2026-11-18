@@ -1538,12 +1538,22 @@ release` refuses an open scope, so the way out is the one the refusal gives: set
 `checkout_workspace` back to the bound name, move again so that the move ends and closes
 the scope, then correct the name and move. A scope left open for a name the executor does
 not serve, because the source died while the attach was handled, is closed by the retry,
-which finds the name unserved, so the same recovery works for it.
+which finds the name unserved. The source's own record of that scope still shows an attach
+with no close, because the retry was a rebound attach. When the corrected name is attached
+at that incarnation the executor answers that the scope is there, the source asks how the
+close ended, and it asks again under the workspace the executor names when the first
+question is refused for the workspace, so the corrected name lands without an operator
+step. A name corrected while the scope is still open takes one round of the refusal's
+advice.
 
 A session that came from a laptop directory is not moved back to it. The checkout lives on
 the executor, the laptop's registration still names the old directory, and the return
 checkout is not built, so the laptop's activation refuses the session with a sentence that
-says its work is on the executor and that moving it back is not supported yet.
+says its work is on the executor, that moving it back is not supported yet, that nothing
+moved, and that its commits are on the executor's branch `loom/<session>`. `loom sessions
+move` does not wait for the outcome, so the refusal appears in the source's daemon log as
+`daemon.move_aborted`; neither `loom sessions list --all` nor `loom deployment status`
+reports an aborted move, and the session simply stays where it was.
 
 ### The executor fence
 
