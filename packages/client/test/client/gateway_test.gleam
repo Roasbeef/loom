@@ -8631,6 +8631,79 @@ pub fn a_prompt_past_the_queue_bound_is_a_full_queue_test() {
   release_gate(gate)
 }
 
+// A send may name a strand (protocol-change/120). A strand the session has takes
+// the prompt as its own user message, and one it does not have is the gateway's
+// `unknown_strand`, which the page words as a missing strand and not as the
+// session declining. Naming no strand sends to main, as before.
+pub fn a_send_to_a_named_strand_reaches_it_and_an_unknown_one_is_refused_test() {
+  let harness = network_harness()
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    )
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      harness.runtime,
+      "sub:main/audit",
+      configuration,
+      None,
+    )
+  let #(binding, check) =
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Operator),
+      access.Participant(access.Operator),
+    )
+
+  assert ui_socket.send_to_strand(
+      harness.hub,
+      binding,
+      check,
+      "sub:main/audit",
+      "retry the last step",
+      session_operator.Prompt,
+    )
+    == thread_send.Delivered(thread_send.Admitted)
+  assert ui_socket.send_to_strand(
+      harness.hub,
+      binding,
+      check,
+      "sub:main/gone",
+      "hello",
+      session_operator.Prompt,
+    )
+    == thread_send.Refused(thread_send.UnknownStrand)
+  assert ui_socket.send_to_strand(
+      harness.hub,
+      binding,
+      check,
+      "sub:main/gone",
+      "hello",
+      session_operator.Steer,
+    )
+    == thread_send.Refused(thread_send.UnknownStrand)
+
+  // No strand named is main: the first message path is unchanged.
+  assert ui_socket.send_message(
+      harness.hub,
+      binding,
+      check,
+      "to main",
+      session_operator.Prompt,
+    )
+    == thread_send.Delivered(thread_send.Admitted)
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case list.contains(user_prompt_texts(harness), "to main") {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the unnamed send reaches main"
+}
+
 // --- the page of a spawner that started this session (protocol-change/094) ---
 
 pub fn a_relayed_hub_commits_a_decision_inside_the_ceiling_and_once_test() {

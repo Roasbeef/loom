@@ -14,7 +14,7 @@ import session_view/operator
 import web_view/inbox_rule
 import web_view/thread_send.{
   Admitted, Delivered, NotAccepted, NotHeld, NotResident, QueueFull, Queued,
-  Refused, Unanswered,
+  Refused, Unanswered, UnknownStrand,
 }
 
 const seed = 20_261_118
@@ -113,6 +113,12 @@ pub fn the_outbox_has_fixed_words_for_each_state_test() {
       "web ui",
     )
     == "Not sent: its queue is full"
+  assert thread_send.words(
+      thread_send.Settled("A", operator.Prompt, Refused(UnknownStrand)),
+      "A",
+      "web ui",
+    )
+    == "Not sent: that strand no longer exists"
 
   assert thread_send.words(
       thread_send.Settled("A", operator.Prompt, Refused(Unanswered)),
