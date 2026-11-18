@@ -299,6 +299,58 @@ pub fn the_observations_own_limits_are_carried_test() {
   assert review.stat.files == 30
 }
 
+// One file just past each per-file bound shows the cut and counts it. These
+// fit the byte bound, so unlike the property below they cannot be emptied by it.
+fn single(hunks: Int, lines: Int, width: Int) -> review_feed.File {
+  let review =
+    board([observed("src/a.gleam", #(" ", "M"), patch_of(hunks, lines, width))])
+    |> review_feed.of_board
+  let assert [file] = review.files
+  assert review.omitted == 0
+  assert review.extent == Cut
+  assert file.extent == Cut
+  file
+}
+
+pub fn thirteen_hunks_leave_one_out_and_say_so_test() {
+  let file = single(13, 1, 10)
+
+  assert file.hunks_omitted == 1
+  assert list.length(file.hunks) == 12
+}
+
+pub fn eighty_one_lines_leave_one_out_of_the_hunk_test() {
+  let file = single(1, 81, 10)
+  let assert [hunk] = file.hunks
+
+  assert hunk.omitted == 1
+  assert list.length(hunk.lines) == 80
+}
+
+pub fn a_line_past_the_byte_bound_is_cut_and_counted_test() {
+  let file = single(1, 1, 401)
+  let assert [hunk] = file.hunks
+  let assert [line] = hunk.lines
+
+  assert hunk.shortened == 1
+  assert string.byte_size(line.text) == 400
+}
+
+// A board with more files than the bound is cut to it, and the rest counted,
+// whatever decoded the board.
+pub fn files_past_the_file_bound_are_counted_test() {
+  let files =
+    upto(30)
+    |> list.map(fn(index) {
+      observed("src/f" <> int.to_string(index) <> ".gleam", #(" ", "M"), "")
+    })
+  let review = review_feed.of_board(board(files))
+
+  assert list.length(review.files) == review_feed.max_files
+  assert review.omitted == 6
+  assert review.extent == Cut
+}
+
 // No patch, however many hunks, lines or bytes it has, makes a review past a
 // bound, and every line it cut is counted.
 pub fn every_bound_holds_and_every_cut_is_counted_test() {
@@ -329,7 +381,7 @@ pub fn every_bound_holds_and_every_cut_is_counted_test() {
     let size = json.to_string(review_feed.encode(review)) |> string.byte_size
 
     assert size <= review_feed.max_bytes
-    assert review.omitted >= 0
+    assert review.omitted == 26 - list.length(review.files)
     assert list.all(review.files, fn(file) {
       list.all(file.hunks, fn(hunk) {
         hunk.omitted == int.max(0, lines - review_feed.max_hunk_lines)

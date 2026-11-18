@@ -25,8 +25,10 @@
 //// 4. `fit` drops files from the end until the encoded review is within the
 ////    byte bound, and counts them as omitted.
 //// 5. `decode` reads an encoded review back, one damaged file at a time, and
-////    holds the same bounds, so a review that reaches a page is as bounded as
-////    one the daemon made.
+////    holds the file, hunk, line and byte-per-line bounds on what it keeps. It
+////    does not re-check the byte bound, and it drops hunks and lines past a bound
+////    without counting them, so a decoded review is bounded in shape and not
+////    guaranteed to be one the daemon made.
 ////
 //// ## What is bounded, and how a cut is said
 ////
@@ -222,8 +224,10 @@ pub type Review {
 /// // review_feed.of_board(board).stat
 /// ```
 pub fn of_board(board: worktree_view.Board) -> Review {
+  // The module's own file bound holds for any board, whatever decoded it.
+  let #(shown, past) = list.split(board.files, max_files)
   let #(kept, foreign) =
-    list.partition(board.files, fn(file) { workspace_relative(file.path) })
+    list.partition(shown, fn(file) { workspace_relative(file.path) })
   let files = list.map(kept, of_file) |> order
   let stat =
     Stat(
@@ -232,28 +236,29 @@ pub fn of_board(board: worktree_view.Board) -> Review {
       removed: list.fold(files, 0, fn(sum, file) { sum + file.removed }),
     )
 
-  // The observation's own omissions and the foreign paths are files read and
-  // not carried.
-  let omitted = board.omitted + list.length(foreign)
+  // The observation's own omissions, the files past `max_files` and the
+  // foreign paths are files read and not carried.
+  let omitted = board.omitted + list.length(past) + list.length(foreign)
   fit(Review(
     observed_at_ms: board.observed_at_ms,
     repository: repository_of(board.repository),
     stat:,
     files:,
     omitted:,
-    extent: board_extent(board.extent, omitted),
+    extent: board_extent(board.extent, omitted, files),
   ))
 }
 
-/// The review's extent: cut when the observation says it was, or when any file
-/// was read and not carried.
-fn board_extent(observed: String, omitted: Int) -> Extent {
+/// The review's extent: cut when the observation says it was, when any file
+/// was read and not carried, or when any carried file was cut.
+fn board_extent(observed: String, omitted: Int, files: List(File)) -> Extent {
+  let any_cut = list.any(files, fn(file) { file.extent == Cut })
+
   // The observation's word is `limited` or `complete`; either way a file left
-  // out is a cut.
-  case observed == "limited", omitted {
-    True, _ -> Cut
-    False, 0 -> Whole
-    False, _ -> Cut
+  // out or cut is a cut.
+  case observed == "limited" || omitted > 0 || any_cut {
+    True -> Cut
+    False -> Whole
   }
 }
 
@@ -812,6 +817,7 @@ fn parse_content(word: String) -> Result(Content, Nil) {
   }
 }
 
+/// The wire word of an extent.
 fn extent_word(extent: Extent) -> String {
   case extent {
     Whole -> "whole"
