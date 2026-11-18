@@ -78,8 +78,10 @@ pub type Pending {
   /// Nothing is out and nothing has failed since the verdict.
   NoRead
 
-  /// A read is out, begun at `since` (Unix milliseconds).
-  Reading(message: String, since: Int)
+  /// A read is out, begun at `since` (Unix milliseconds). `failed` is how many
+  /// reads of this message failed before it began, which the next failure adds
+  /// one to, so `max_attempts` counts across the restarts a read goes through.
+  Reading(message: String, since: Int, failed: Int)
 
   /// The read was failed `attempts` times in a row.
   Failed(message: String, attempts: Int)
@@ -177,7 +179,11 @@ pub fn started(
     session,
     Seen(
       verdict: verdict_of(seen, session),
-      pending: Reading(message:, since: now),
+      pending: Reading(
+        message:,
+        since: now,
+        failed: failures(seen, session, message),
+      ),
     ),
   )
 }
@@ -228,14 +234,26 @@ pub fn answered(
         session,
         Seen(
           verdict: before,
-          pending: Failed(message:, attempts: case dict.get(seen, session) {
-            Ok(Seen(pending: Failed(message: failed, attempts:), ..))
-              if failed == message
-            -> attempts + 1
-            Ok(_) | Error(Nil) -> 1
-          }),
+          pending: Failed(
+            message:,
+            attempts: failures(seen, session, message) + 1,
+          ),
         ),
       )
+  }
+}
+
+/// How many reads of `message` have failed for the session so far: the count a
+/// failed or restarted read carries, and none for any other message.
+fn failures(seen: Dict(String, Seen), session: String, message: String) -> Int {
+  case dict.get(seen, session) {
+    Ok(Seen(pending: Failed(message: failed, attempts:), ..))
+      if failed == message
+    -> attempts
+    Ok(Seen(pending: Reading(message: failed, failed: attempts, ..), ..))
+      if failed == message
+    -> attempts
+    Ok(_) | Error(Nil) -> 0
   }
 }
 

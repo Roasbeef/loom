@@ -93,12 +93,28 @@ pub fn a_verdict_survives_a_read_that_is_out_fails_or_is_refused_test() {
   assert scan.ready(candidates, failed) == ["a"]
 
   // The message that came back is already known, so it is not read again.
-  assert scan.due(candidates, reading, 10_000) == None
+  // The line is free by then, so the verdict is what says it is known.
+  assert scan.due(candidates, reading, 5 + scan.stale_ms) == None
 
   // Only a read that answers replaces the verdict.
   let empty =
     scan.answered(reading, "a", "m1", Ok(review(review_feed.Head, [], 0)))
   assert scan.ready(candidates, empty) == []
+}
+
+// A read that keeps failing is tried `max_attempts` times and then left: the
+// count survives each restart of the read.
+pub fn a_read_that_keeps_failing_stops_at_the_bound_test() {
+  let candidates = [#("a", "m")]
+  let rounds = fn(seen, attempt) {
+    assert scan.due(candidates, seen, 0) == Some(#("a", "m"))
+    scan.answered(scan.started(seen, "a", "m", attempt), "a", "m", Error("no"))
+  }
+  let once = rounds(dict.new(), 1)
+  let twice = rounds(once, 2)
+  let thrice = rounds(twice, 3)
+  assert scan.max_attempts == 3
+  assert scan.due(candidates, thrice, 0) == None
 }
 
 pub fn a_refusal_for_a_session_never_read_leaves_it_unread_test() {
