@@ -4786,27 +4786,42 @@ in the dock ↓"), and an observer's still says that the operator decides.
 The phone's sheet draws the same rows and the same forms from the same inputs.
 Its bar counts them.
 
-### The one new path: the ask's form
+### The new submit: the ask's form, in two places
 
-An ask's row holds its button and then, on a page that may answer, a form with
-the inbox's components (`view/attention_thread.answer_form`). The form's submit
-is the one new event, at exactly the path `component.rail_submit` names:
-`rail_path`, then `1\t0\t1` (the "Needs you" group's list), then the item's
-position, then `1` (the item's form, after its button). Nothing else beneath the
-rail submits. The page's own word on the last answer is the rail section's last
-child, after the groups, so no path the socket admits at the rail moves.
+An ask's row holds its button and then, on a page that may answer, a keyed `div`
+holding a form with the inbox's components
+(`view/attention_thread.answer_form`). The form's submit is the one new event.
+It is drawn in two places, because the phone has no rail and carries the same
+rows in its sheet:
 
-| Socket | The submit at that path |
+- In the rail, at `rail_path`, then `1\t0\t1` (the "Needs you" group's list),
+  then the item's position, then `1` (the keyed `div`), then the ask's
+  identifier, which is the form's key. `component.rail_submit` names that shape.
+- In the phone's sheet, a `<details>` that is the centre's last child, at a path
+  that is not beneath `rail_path`.
+
+The form is keyed by the ask. Radios and checkboxes carry no `checked` in the
+tree, so an unkeyed form would stay in place when the ask above it was answered
+and left, and the ask that moved up would be answered with the picks made for
+the one that left. A new key makes the browser build a new form. The inbox's
+pane keys its form by how many threads have been opened, for the same reason.
+
+The page's own word on the last answer is the rail section's last child, after
+the groups, so no path the socket admits at the rail moves.
+
+| Socket | A submit from either form |
 |---|---|
-| An operator's page, a member's or the owner's | admitted, as every submit beneath no owner control is |
+| An operator's page, a member's or the owner's | admitted, as every submit at any path is |
 | An observer's page | refused, as every submit is: `observer_accepts` admits only clicks |
 
-The observer's page is handed no answer capability, so it draws the rows and no
-form, and a frame that names the path finds no handler. An operator's socket
-admitted submits at any path before this change, so the predicate changes no
-operator admission. It names the shape so that a test fails if the view moves the
-form, as `rail_click` does for the press, and so that the observer's refusal is
-pinned at the one path where a form is drawn.
+No socket consults `component.rail_submit`. An operator's or owner's socket
+admits a submit at any path, which it did before this change, and an observer's
+admits none, so the sheet's form needs no entry of its own and the predicate
+changes no admission. The predicate is kept as a documented test helper:
+`rail_threads_test` fails if the view moves the rail's form, and
+`ui_socket_test` pins what each socket does at the path it names and at every
+other. The observer's page is handed no answer capability, so it draws the rows
+and no form, and a frame that names a path finds no handler.
 
 ### What the page does with a submit
 
