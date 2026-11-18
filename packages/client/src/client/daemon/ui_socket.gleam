@@ -255,6 +255,7 @@ import telemetry/log
 import telemetry/owner
 import web_view/actions
 import web_view/admin
+import web_view/approval_evidence
 import web_view/component
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
@@ -988,6 +989,11 @@ pub fn upgrade_home(
         record: fn(session, id, deliver) {
           read_task(deliver, fn() {
             record_for(attachment.attention_reach, session, id)
+          })
+        },
+        approvals: fn(session, deliver) {
+          read_task(deliver, fn() {
+            approvals_for(attachment.attention_reach, session)
           })
         },
         act: None,
@@ -2369,6 +2375,27 @@ pub fn record_for(
       Ok(item_pane.AskRecord(ask:, revision:))
     Ok(store.StoredFind(find:, revision:)) ->
       Ok(item_pane.FindRecord(find:, revision:))
+    Error(refusal) -> Error(refusal.words)
+  }
+}
+
+/// A session's pending approvals as the page reads them: the door's evidence
+/// decoded, or fixed words for why there is none. It reads and never decides.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.approvals_for(reach, "0198...")
+/// ```
+@internal
+pub fn approvals_for(
+  reach: attention_door.Reach(instance),
+  session: String,
+) -> Result(approval_evidence.Evidence, String) {
+  case attention_door.read_approvals(reach, session) {
+    Ok(reply) ->
+      approval_evidence.decode(reply)
+      |> result.replace_error("The approvals could not be read.")
     Error(refusal) -> Error(refusal.words)
   }
 }

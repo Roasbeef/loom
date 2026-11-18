@@ -141,6 +141,26 @@ pub fn read_stored(
   fetch(reach, session, id)
 }
 
+/// Reads the session's pending approvals as evidence, in the shape
+/// `approval.read` answers: for each the tool, a bounded action, what held it,
+/// the grants it wants and the revision of its record. Authority is read as
+/// `read` reads it, at any role, and nothing here decides an approval: an
+/// approval is decided on the session's own page and nowhere else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_door.read_approvals(reach, "0198...")
+/// ```
+pub fn read_approvals(
+  reach: Reach(instance),
+  session: String,
+) -> Result(JsonValue, Refusal) {
+  use _ <- result.try(held(reach, session))
+  use endpoint <- result.try(endpoint_of(reach, session))
+  call(endpoint, peer_mail.ApprovalRead)
+}
+
 // --- answer -----------------------------------------------------------------------
 
 /// Answers an open ask.

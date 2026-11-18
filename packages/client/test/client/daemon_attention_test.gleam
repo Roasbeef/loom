@@ -793,3 +793,78 @@ pub fn settling_writes_one_cell_and_the_next_insertion_prunes_test() {
     assert list.contains(ids, rig.ask)
   })
 }
+
+// Approval evidence is a read: the owner and a member at any role get it, a
+// bystander is told what an unknown session is told, and no one decides
+// anything by it (protocol-change/120, "Approval evidence").
+pub fn approval_evidence_is_read_by_authority_and_never_decides_test() {
+  with_rig(fn(_registry, port, credential, epoch, rig, _principal) {
+    let assert Ok(store) = catalogue.open(rig.state_root <> "/catalogue.db")
+      as "the catalogue opens"
+    let observer = string.repeat("4", 64)
+    let bystander = string.repeat("5", 64)
+    let assert Ok(seen) =
+      access.create_member(
+        store,
+        "ev-observer",
+        "ev-observer",
+        digest_of(observer),
+      )
+    let assert Ok(Nil) =
+      access.grant(store, seen.id, rig.session, access.Observer)
+    let assert Ok(_) =
+      access.create_member(
+        store,
+        "ev-bystander",
+        "ev-bystander",
+        digest_of(bystander),
+      )
+
+    // The in-process door answers an observer, and a bystander is not told.
+    let assert Ok(json.Object(fields)) =
+      attention_door.read_approvals(rig.reach(digest_of(observer)), rig.session)
+    assert list.key_find(fields, "approvals") |> result_is_ok
+    assert attention_door.read_approvals(
+        rig.reach(digest_of(bystander)),
+        rig.session,
+      )
+      == Error(Refusal("not_found", "no such session"))
+
+    // The control command is the same read: the owner is answered, a stale
+    // epoch is refused, and a bystander is not found.
+    let #(owner_socket, _) = connect(port, credential, "/v2/control")
+    let _ = frame(owner_socket, within_ms: 1000)
+    let ask = fn(socket, id, epoch) {
+      send(
+        socket,
+        id,
+        "approval.read",
+        json.Object([
+          #("session", json.String(rig.session)),
+          #("epoch", json.String(epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    }
+    assert body(ask(owner_socket, 1, epoch), "approvals")
+      == json.Object([
+        #("count", json.Int(0)),
+        #("items", json.Array([])),
+      ])
+    assert code(ask(owner_socket, 2, "stale")) == json.String("stale_epoch")
+    let _ = ffi_ws.tcp_close(owner_socket)
+
+    let #(by_socket, _) = connect(port, bystander, "/v2/control")
+    let _ = frame(by_socket, within_ms: 1000)
+    assert code(ask(by_socket, 1, epoch)) == json.String("not_found")
+    let _ = ffi_ws.tcp_close(by_socket)
+    Nil
+  })
+}
+
+fn result_is_ok(result: Result(a, b)) -> Bool {
+  case result {
+    Ok(_) -> True
+    Error(_) -> False
+  }
+}

@@ -37,6 +37,7 @@
 ////    would admit, through the same decision.
 //// 5. `overview` summarizes the whole session for the owner's picker.
 
+import client/approval_evidence
 import client/attention
 import client/attention_feed
 import client/internal/message_inspection
@@ -237,6 +238,12 @@ pub type Command {
   /// Reads one ask or find with the revision of its cell, in the stored
   /// shape (`protocol-change/120`). It reads and never writes.
   AttentionRead(id: String)
+
+  /// Lists the session's pending approvals as evidence: for each the tool, a
+  /// bounded rendering of the action, what held it and the grants it wants, at
+  /// the revision of its cell (`client/approval_evidence`). It reads and never
+  /// decides, claims or consumes.
+  ApprovalRead
 
   /// Settles an open record as answered or closed, expecting its cell to be at
   /// `revision` (`protocol-change/120`). The daemon has already decided who may
@@ -662,6 +669,7 @@ pub fn handle_reporting(
     Overview -> overview(runtime)
     AttentionFeed -> attention_feed.feed(runtime)
     AttentionRead(id) -> attention_read(runtime, id)
+    ApprovalRead -> approval_evidence.read(runtime)
     AttentionSettle(id, revision, settlement) -> {
       let answer = attention_settle(runtime, clock, id, revision, settlement)
 

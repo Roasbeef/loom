@@ -288,6 +288,11 @@ pub type Command {
   /// The owner, or a member that holds the session at any role.
   ReadAttention(session: String, id: String, epoch: String)
 
+  /// Reads a session's pending approvals as evidence (`protocol-change/120`,
+  /// the addendum "Approval evidence"). The owner, or a member that holds the
+  /// session at any role. It reads and never decides.
+  ReadApprovals(session: String, epoch: String)
+
   /// Closes an open find as dismissed, fixed or filed, expecting the record to
   /// be at `revision` (`protocol-change/120`). The owner, or a member that holds
   /// the session as an Operator.
@@ -834,6 +839,11 @@ fn decode_fields(
       use id <- result.try(text_field(fields, "id", 64))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       ReadAttention(session, id, epoch)
+    }
+    "approval.read" -> {
+      use session <- result.try(attention_session(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      ReadApprovals(session, epoch)
     }
     "attention.close_find" -> {
       use session <- result.try(attention_session(fields))

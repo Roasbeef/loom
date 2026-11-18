@@ -3160,6 +3160,7 @@ fn control(
             | protocol.SessionActivity(..)
             | protocol.SessionAttention(..)
             | protocol.ReadAttention(..)
+            | protocol.ReadApprovals(..)
             | protocol.CloseFind(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -3211,6 +3212,7 @@ fn control_use(command: protocol.Command) {
     | protocol.SessionActivity(..)
     | protocol.SessionAttention(..)
     | protocol.ReadAttention(..)
+    | protocol.ReadApprovals(..)
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
@@ -3404,6 +3406,19 @@ fn dispatch(
         |> result.map_error(attention_refusal),
       )
       within_frame(reply_to, "attention.read", record)
+    }
+    protocol.ReadApprovals(session, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      use evidence <- result.try(
+        attention_door.read_approvals(
+          attention_reach(config, state.registry, digest),
+          session,
+        )
+        |> result.map_error(attention_refusal),
+      )
+      within_frame(reply_to, "approval.read", evidence)
     }
     protocol.CloseFind(session, find, revision, outcome, supplied) -> {
       use Nil <- result.try(
@@ -5040,7 +5055,9 @@ fn dispatch_class(
     | protocol.PublishTicket(..) -> Error("unavailable")
 
     // The attention reads that refuse in words are served by `dispatch` too.
-    protocol.ReadAttention(..) | protocol.CloseFind(..) -> Error("unavailable")
+    protocol.ReadAttention(..)
+    | protocol.ReadApprovals(..)
+    | protocol.CloseFind(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))

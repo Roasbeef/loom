@@ -1296,6 +1296,7 @@ pub fn only_an_owners_operating_home_may_act_on_attention_test() {
       feed: fn(_, _) { Nil },
       saved: fn(_, _) { Nil },
       record: fn(_, _, _) { Nil },
+      approvals: fn(_, _) { Nil },
       act: None,
     )
   let act =

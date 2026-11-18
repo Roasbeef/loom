@@ -1557,6 +1557,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.Overview
           | peer_mail.AttentionFeed
           | peer_mail.AttentionRead(..)
+          | peer_mail.ApprovalRead
           | peer_mail.AttentionSettle(..)
           | peer_mail.Inbox(..)
           | peer_mail.InboxGet(..)
