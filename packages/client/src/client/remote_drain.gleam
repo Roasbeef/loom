@@ -16,7 +16,10 @@
 //// site already made, so the answer to the second attempt is the answer to the
 //// first. So a `Requested` stub is attempted at each pass until the orchestrator
 //// answers, and any answer settles it: `Refused` is definitive, and `Unreachable`
-//// leaves the stub where it was.
+//// leaves the stub where it was. `NotOpen`, an orchestrator that answered that
+//// the child's session is not open yet, leaves the stub where it was too, but it
+//// is an answer and not silence, so the same pass still asks that orchestrator
+//// about the children it is running.
 ////
 //// A stub has no time to live. Peer mail's rows are refused after an hour because
 //// a message nobody can deliver stops being worth sending, but a child is
@@ -217,7 +220,9 @@ fn spawn_pass(
 // One stub. A child that answered is recorded as running, and a running child is
 // owed a look, so the pass is `Owed` whether or not the store took the record.
 // A refusal is recorded and finishes the stub. Silence leaves the stub pending
-// and marks the orchestrator silent for the rest of the pass. A store that would
+// and marks the orchestrator silent for the rest of the pass. An answer that the
+// child's session is not open yet (`NotOpen`) leaves the stub pending and the
+// orchestrator not silent, so the join step still asks it. A store that would
 // not take the record leaves the stub pending too, since the answer is not lost,
 // only unrecorded, and asking again returns it.
 /// Attempt spawn keeps this client operation’s decoding or state decision in one place.
@@ -271,10 +276,12 @@ fn attempt_spawn(
             )
           #(backlog, silent)
         }
-        Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> #(owed, [
-          stub.orchestrator,
-          ..silent
-        ])
+
+        // The orchestrator answered that the child's session is not open yet,
+        // which a pool with no free scope says. It is not silent: its join in
+        // this pass is what collects a finished child and frees the room.
+        Error(peer_mail.NotOpen) -> #(owed, silent)
+        Error(peer_mail.Unreachable) -> #(owed, [stub.orchestrator, ..silent])
       }
   }
 }

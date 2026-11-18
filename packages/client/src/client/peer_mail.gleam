@@ -287,7 +287,10 @@ pub type Failure {
   /// message. Opening a session is the owner's decision and a message never
   /// causes it (protocol-change/077), so this is not a refusal: the same
   /// request succeeds once the owner opens the session. A session that no
-  /// catalogue holds is `Refused`, because nothing will ever open it.
+  /// catalogue holds is `Refused`, because nothing will ever open it. A spawn
+  /// that another orchestrator answered `NotYetOpen` is `NotOpen` as well
+  /// (`remote_spawner.spawn_answer`): the orchestrator answered, and the
+  /// child's session is not open yet, often because its pool has no free scope.
   NotOpen
 }
 
