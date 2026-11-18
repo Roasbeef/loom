@@ -149,11 +149,26 @@ fn closed(
 ) -> projects.Closing {
   case project_book.get(control.book, project) {
     Error(Nil) -> projects.NotClosed("not_found")
-    Ok(handle) ->
-      case project_host.close_ticket(handle, ticket, "owner") {
-        Ok(Nil) -> projects.Closed
-        Error(_) -> projects.NotClosed("bad_request")
-      }
+    Ok(handle) -> closing_of(project_host.close_ticket(handle, ticket, "owner"))
+  }
+}
+
+/// The page's word for a close the actor judged. Silence is not a refusal: the
+/// queued close may still commit, so a timeout is its own code and the page
+/// says to read again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_projects.closing_of(Error(project_host.not_answering))
+///   == projects.NotClosed("unanswered")
+/// ```
+pub fn closing_of(settled: Result(Nil, String)) -> projects.Closing {
+  case settled {
+    Ok(Nil) -> projects.Closed
+    Error(reason) if reason == project_host.not_answering ->
+      projects.NotClosed("unanswered")
+    Error(_) -> projects.NotClosed("bad_request")
   }
 }
 
@@ -168,16 +183,26 @@ fn acted(
 ) -> projects.Acted {
   case project_book.get(control.book, project) {
     Error(Nil) -> projects.Declined("not_found")
-    Ok(handle) ->
-      case act(handle, ticket, "owner") {
-        Ok(Nil) -> projects.Acted
+    Ok(handle) -> acted_of(act(handle, ticket, "owner"))
+  }
+}
 
-        // Silence is not a refusal: the queued act may still commit, so the
-        // page is told to read again and not that the act was refused.
-        Error(reason) if reason == project_host.not_answering ->
-          projects.Declined("unanswered")
-        Error(_) -> projects.Declined("bad_request")
-      }
+/// The page's word for a stop or a retry the actor judged. Silence is not a
+/// refusal: the queued act may still commit, so a timeout is its own code and
+/// the page says to read again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_projects.acted_of(Error(project_host.not_answering))
+///   == projects.Declined("unanswered")
+/// ```
+pub fn acted_of(settled: Result(Nil, String)) -> projects.Acted {
+  case settled {
+    Ok(Nil) -> projects.Acted
+    Error(reason) if reason == project_host.not_answering ->
+      projects.Declined("unanswered")
+    Error(_) -> projects.Declined("bad_request")
   }
 }
 
@@ -194,11 +219,29 @@ fn answered(
   case project_book.get(control.book, project) {
     Error(Nil) -> projects.Refused("not_found")
     Ok(handle) ->
-      case project_host.answer(handle, ticket, seq, text, "owner") {
-        Ok(Nil) -> projects.Recorded
-        Error(project_host.NoSuchTicket) -> projects.Refused("not_found")
-        Error(project_host.StaleQuestion) -> projects.Refused("conflict")
-        Error(project_host.NotAccepted(..)) -> projects.Refused("bad_request")
-      }
+      answer_of(project_host.answer(handle, ticket, seq, text, "owner"))
+  }
+}
+
+/// The page's word for an answer the actor judged. A timeout is its own code,
+/// since the queued answer may still be recorded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_projects.answer_of(Error(project_host.NotAccepted(project_host.not_answering)))
+///   == projects.Refused("unanswered")
+/// ```
+pub fn answer_of(
+  settled: Result(Nil, project_host.AnswerFailure),
+) -> projects.Answer {
+  case settled {
+    Ok(Nil) -> projects.Recorded
+    Error(project_host.NoSuchTicket) -> projects.Refused("not_found")
+    Error(project_host.StaleQuestion) -> projects.Refused("conflict")
+    Error(project_host.NotAccepted(reason:))
+      if reason == project_host.not_answering
+    -> projects.Refused("unanswered")
+    Error(project_host.NotAccepted(..)) -> projects.Refused("bad_request")
   }
 }

@@ -365,3 +365,24 @@ pub fn the_feed_reads_a_ticket_or_says_it_is_gone_test() {
   assert feed.ticket("p-none", "t-a") == page_projects.TicketGone
   stop(handle)
 }
+
+// Silence from a project's actor is not a refusal: the queued act may still
+// commit, so each of the page's four acts reports it as `unanswered` and not as
+// `bad_request`, and the page says to read again.
+pub fn a_timeout_is_unanswered_and_never_a_refusal_test() {
+  let silent = project_host.not_answering
+
+  assert ui_projects.acted_of(Error(silent))
+    == page_projects.Declined("unanswered")
+  assert ui_projects.acted_of(Error("some refusal"))
+    == page_projects.Declined("bad_request")
+  assert ui_projects.closing_of(Error(silent))
+    == page_projects.NotClosed("unanswered")
+  assert ui_projects.closing_of(Error("some refusal"))
+    == page_projects.NotClosed("bad_request")
+  assert ui_projects.answer_of(Error(project_host.NotAccepted(silent)))
+    == page_projects.Refused("unanswered")
+  assert ui_projects.answer_of(Error(project_host.NotAccepted("refused")))
+    == page_projects.Refused("bad_request")
+  assert ui_projects.acted_of(Ok(Nil)) == page_projects.Acted
+}
