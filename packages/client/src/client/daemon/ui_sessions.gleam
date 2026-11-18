@@ -295,6 +295,22 @@ type Life {
   Device
 }
 
+/// Who asks for a ticket, which decides whether the login it carries must still
+/// be held by a live page when the table files it.
+type Minter {
+  /// A live page of the login asks, through `mint_in`, `mint_device` or
+  /// `mint_before`. The ticket is filed only while some page still holds the
+  /// login it carries. A page's own check and its registry calls come before the
+  /// mint, so a revocation can land between them. The table serialises the mint
+  /// against `EndLogin`: either the end runs first and no page holds the login,
+  /// so the mint is refused, or the mint runs first and the end drops its ticket.
+  ByPage
+
+  /// A launcher or a login's own resume asks. No page of the login need exist:
+  /// a resume has a verified login row and no page yet.
+  ByLauncher
+}
+
 /// Which exchange a ticket is presented at. A ticket is honoured only at the
 /// exchange of its own scope, whatever origin a home ticket carries.
 pub type Exchange {
@@ -442,7 +458,8 @@ type Message {
     until: Option(Int),
     login: Option(Issuer),
     life: Life,
-    reply: Subject(Issued),
+    minter: Minter,
+    reply: Subject(Result(Issued, Nil)),
   )
   Redeem(
     ticket: String,
@@ -559,7 +576,7 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
 /// // ui_sessions.mint(sessions, grant)
 /// ```
 pub fn mint(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
-  ask_mint(sessions, grant, None, None, Brief)
+  ask_mint(sessions, grant, None, None, Brief, ByLauncher)
 }
 
 /// Mints a ticket for a grant with specified validity bounds and login association.
@@ -569,15 +586,18 @@ fn ask_mint(
   until: Option(Int),
   login: Option(Issuer),
   life: Life,
+  minter: Minter,
 ) -> Result(Issued, Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Mint(
     grant,
     until,
     login,
     life,
+    minter,
     _,
   ))
   |> result.replace_error(Nil)
+  |> result.flatten
 }
 
 /// Mints a ticket for `grant` on behalf of another page whose deadline is
@@ -595,7 +615,7 @@ pub fn mint_before(
   grant: Grant,
   until: Int,
 ) -> Result(Issued, Nil) {
-  ask_mint(sessions, grant, Some(until), None, Brief)
+  ask_mint(sessions, grant, Some(until), None, Brief, ByPage)
 }
 
 /// `mint_before` for a page that belongs to a login: the ticket carries
@@ -613,7 +633,7 @@ pub fn mint_in(
   until: Int,
   login: Option(Issuer),
 ) -> Result(Issued, Nil) {
-  ask_mint(sessions, grant, Some(until), login, Brief)
+  ask_mint(sessions, grant, Some(until), login, Brief, ByPage)
 }
 
 /// Mints a device link's ticket: a ticket that lives `device_ms` and not
@@ -631,7 +651,7 @@ pub fn mint_device(
   until: Int,
   login: Option(Issuer),
 ) -> Result(Issued, Nil) {
-  ask_mint(sessions, grant, Some(until), login, Device)
+  ask_mint(sessions, grant, Some(until), login, Device, ByPage)
 }
 
 /// Mints a device link's ticket for a launcher rather than a page: it lives
@@ -648,7 +668,7 @@ pub fn mint_device(
 /// // ui_sessions.mint_carried(sessions, grant)
 /// ```
 pub fn mint_carried(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
-  ask_mint(sessions, grant, None, None, Device)
+  ask_mint(sessions, grant, None, None, Device, ByLauncher)
 }
 
 /// Mints a ticket on behalf of a browser login that has just verified: the
@@ -665,7 +685,7 @@ pub fn mint_resumed(
   grant: Grant,
   login: Issuer,
 ) -> Result(Issued, Nil) {
-  ask_mint(sessions, grant, None, Some(login), Brief)
+  ask_mint(sessions, grant, None, Some(login), Brief, ByLauncher)
 }
 
 /// Reserves one of the credential's invitations, or refuses when it has asked
@@ -842,12 +862,13 @@ pub fn login_of(sessions: Sessions, cookie: String) -> Option(Issuer) {
 }
 
 /// Ends every page and ticket the login named by `fingerprint` opened, and
-/// returns once the table no longer holds them. A site that revokes a browser
-/// login calls it after the registry's write, so a page of that login finds
-/// nothing at its next check and ends as `PageEnded`. The call waits for the
-/// table's answer because the caller's response is what tells the browser the
-/// revocation happened, and a page that checks after that response must not find
-/// itself still open. A page with no login is not touched.
+/// returns once the table has dropped them, or after one second if the actor has
+/// not answered, in which case the message is still applied. A site that revokes
+/// a browser login calls it after the registry's write, so a page of that login
+/// finds nothing at its next check and ends as `PageEnded`. The call waits for
+/// the table's answer because the caller's response is what tells the browser
+/// the revocation happened, and a page that checks after that response must not
+/// find itself still open. A page with no login is not touched.
 ///
 /// ## Examples
 ///
@@ -1090,25 +1111,34 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
   // Dispatch on inbound session actor protocol messages.
   case message {
-    Mint(grant:, until:, login:, life:, reply:) -> {
-      let ticket = secret(state.settings)
+    // A page's ticket for a login that no page holds any more is refused, so a
+    // revocation that landed after the page's check cannot leave a ticket behind.
+    Mint(grant:, until:, login:, life:, minter:, reply:) ->
+      case refuses_mint(state, minter, login, now) {
+        True -> {
+          process.send(reply, Error(Nil))
+          actor.continue(state)
+        }
+        False -> {
+          let ticket = secret(state.settings)
 
-      // Determine ticket lifetime based on whether life is Brief or Device.
-      let lasts = case life {
-        Brief -> state.settings.ticket_ms
-        Device -> state.settings.device_ms
+          // Determine ticket lifetime based on whether life is Brief or Device.
+          let lasts = case life {
+            Brief -> state.settings.ticket_ms
+            Device -> state.settings.device_ms
+          }
+
+          let entry =
+            Entry(value: Ticket(grant, until, login), expires_at: now + lasts)
+          process.send(reply, Ok(Issued(ticket, lasts)))
+          actor.continue(
+            State(
+              ..state,
+              tickets: dict.insert(state.tickets, digest(ticket), entry),
+            ),
+          )
+        }
       }
-
-      let entry =
-        Entry(value: Ticket(grant, until, login), expires_at: now + lasts)
-      process.send(reply, Issued(ticket, lasts))
-      actor.continue(
-        State(
-          ..state,
-          tickets: dict.insert(state.tickets, digest(ticket), entry),
-        ),
-      )
-    }
 
     // The whole redemption happens in this one turn: the ticket is removed
     // whether or not it was still live, and only a live ticket for this
@@ -1470,6 +1500,32 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       )
     }
   }
+}
+
+/// Whether the table refuses to file a ticket: a page's ticket that carries a
+/// login no live page holds.
+fn refuses_mint(
+  state: State,
+  minter: Minter,
+  login: Option(Issuer),
+  now: Int,
+) -> Bool {
+  case minter, login {
+    ByPage, Some(issuer) -> !held_by_page(state, issuer, now)
+    ByPage, None | ByLauncher, _ -> False
+  }
+}
+
+/// Whether a live page holds `login`, judged by its fingerprint.
+fn held_by_page(state: State, login: Issuer, now: Int) -> Bool {
+  dict.values(state.sessions)
+  |> list.any(fn(entry) {
+    entry.expires_at > now
+    && case entry.value.login {
+      Some(held) -> held.fingerprint == login.fingerprint
+      None -> False
+    }
+  })
 }
 
 /// The state without the pages and tickets whose grant and login `ended` names.

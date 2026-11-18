@@ -30,8 +30,9 @@
 //// before each poll and before each piece is sent is a registry call, which waits
 //// at most the registry's own five seconds, and a `Transmit` or a `Shut` that
 //// arrives meanwhile waits behind it. The check before a piece is what keeps a
-//// page whose sign-in was revoked from sending a frame while a poll is held. A run that is lost, or that outlives its deadline, is reported to
-//// the same sink as nothing heard. Each exchange has a reply subject owned by its
+//// page whose sign-in was revoked from sending a frame while a poll is held. A
+//// run that is lost, or that outlives its deadline, is reported to the same sink
+//// as nothing heard. Each exchange has a reply subject owned by its
 //// own task, so an answer that arrives after the task is gone is delivered to a
 //// process that no longer exists, and a late answer can neither reorder frames
 //// nor fill this mailbox. At most one poll and one send are in flight, so this

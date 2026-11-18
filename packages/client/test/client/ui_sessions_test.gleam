@@ -125,6 +125,25 @@ fn looked_up(sessions, cookie) -> Result(ui_sessions.Grant, Nil) {
   |> result.map(ui_sessions.grant)
 }
 
+// A page of a session that is the browser of `login`, which a page's ticket for
+// that login needs to find in the table when it is filed. It is a session page,
+// so it takes no place among the principal's homes.
+fn held_by_a_page(
+  sessions: ui_sessions.Sessions,
+  login: ui_sessions.Issuer,
+) -> Nil {
+  let assert Ok(issued) = ui_sessions.mint(sessions, grant("holder"))
+    as "the holder's ticket is minted"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(
+      sessions,
+      issued.ticket,
+      ui_sessions.SessionExchange("holder"),
+    )
+    as "the holder's ticket redeems"
+  ui_sessions.attach_login(sessions, redeemed.cookie, login)
+}
+
 fn mint(sessions, session) -> String {
   let assert Ok(issued) = ui_sessions.mint(sessions, grant(session))
     as "a ticket is minted"
@@ -1158,6 +1177,7 @@ pub fn a_device_ticket_lives_ten_minutes_and_redeems_once_test() {
 pub fn a_ticket_carries_the_login_of_its_minter_test() {
   let sessions = table(clock())
   let login = issuer("0123456789abcdef")
+  held_by_a_page(sessions, login)
   let assert Ok(issued) =
     ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(login))
     as "a switch ticket is minted"
@@ -1267,6 +1287,7 @@ pub fn homes_of_every_origin_share_one_cap_test() {
 pub fn a_ticket_of_an_ended_login_evicts_no_page_test() {
   let time = clock()
   let sessions = table(time)
+  held_by_a_page(sessions, issuer("0123456789abcdef"))
   let ticket = fn(login) {
     let assert Ok(issued) =
       ui_sessions.mint_device(
@@ -1303,7 +1324,8 @@ pub fn a_ticket_of_an_ended_login_evicts_no_page_test() {
   // The refusal spent the ticket and opened nothing.
   assert ui_sessions.redeem(sessions, late, ui_sessions.HomeExchange)
     == Error(ui_sessions.UnknownTicket)
-  assert ui_sessions.sizes(sessions) == Ok(#(0, ui_sessions.max_pages))
+  // The homes and the one session page that holds the login.
+  assert ui_sessions.sizes(sessions) == Ok(#(0, ui_sessions.max_pages + 1))
 
   // A login with time left redeems, and makes room as any redemption does.
   let live =
@@ -1331,6 +1353,7 @@ pub fn a_switch_ticket_of_an_ended_login_still_redeems_test() {
       ..issuer("0123456789abcdef"),
       expires_at_ms: wall_offset + 5000,
     )
+  held_by_a_page(sessions, ends)
   let assert Ok(issued) =
     ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(ends))
     as "a switch ticket is minted"
@@ -1353,6 +1376,7 @@ pub fn the_production_table_judges_a_login_by_the_system_clock_test() {
     )
     as "the production table starts"
   let now = bootstrap.system_time_ms()
+  held_by_a_page(sessions, issuer("0123456789abcdef"))
   let ticket = fn(expires_at_ms) {
     let assert Ok(issued) =
       ui_sessions.mint_device(
@@ -1446,6 +1470,43 @@ pub fn ending_a_login_ends_its_pages_and_no_other_test() {
   // A ticket the ended login minted opens nothing.
   assert ui_sessions.redeem(sessions, pending.ticket, ui_sessions.HomeExchange)
     == Error(ui_sessions.UnknownTicket)
+}
+
+// A page checks that it is open, makes registry calls, and only then asks for a
+// ticket, so a revocation can land between the check and the mint. The table
+// refuses a page's ticket for a login that no page holds, which is what the
+// revocation leaves, so no ticket is filed for an ended login. A launcher's
+// resume mint is not held to a page, since a resume has no page yet, and a page
+// with no login is not held to anything.
+pub fn a_page_cannot_mint_a_ticket_for_a_login_that_has_ended_test() {
+  let sessions = table(clock())
+  let login = issuer("1111111111111111")
+  let _page = remembered_page(sessions, "alice", login)
+  let mint_in = fn() {
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(login))
+  }
+  assert result.is_ok(mint_in())
+
+  ui_sessions.end_login(sessions, login.fingerprint)
+  assert mint_in() == Error(Nil)
+  assert ui_sessions.mint_device(
+      sessions,
+      remembered_home("alice"),
+      28_800_000,
+      Some(login),
+    )
+    == Error(Nil)
+  assert result.is_ok(ui_sessions.mint_in(
+    sessions,
+    home_for("alice"),
+    28_800_000,
+    None,
+  ))
+  assert result.is_ok(ui_sessions.mint_resumed(
+    sessions,
+    ui_sessions.Grant(..home_for("alice"), origin: ui_sessions.Resumed),
+    login,
+  ))
 }
 
 // "Sign out everywhere" ends every page of the principal that has a login, and

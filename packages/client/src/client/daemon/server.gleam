@@ -4514,9 +4514,12 @@ fn dispatch_class(
 
       // The pages the login opened end with it. A daemon serving no web view
       // has none.
-      option.map(config.ui, fn(ui) {
-        ui_sessions.end_login(ui.sessions, access.fingerprint(revoked))
-      })
+      case config.ui {
+        Some(ui) ->
+          ui_sessions.end_login(ui.sessions, access.fingerprint(revoked))
+        None -> Nil
+      }
+
       #(
         "credentials.revoke_login",
         json.Object([
