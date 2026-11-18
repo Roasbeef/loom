@@ -885,10 +885,11 @@ pub fn no_identity_reaches_an_attribute_test() {
   assert !string.contains(html, "id=\"bob")
 
   // In the body the only keys are the people's catalogue identities, one for each row of the
-  // list, and the invitation's two fixed words (a form numbered by how many
-  // invitations were made, and its notice); no name or session is one.
+  // list, and the invitation's two (a form keyed by the session and numbered by
+  // how many invitations were made, so a typed note never carries to another
+  // session, and its notice); no name is one.
   assert count(html, "key=\"") == 7
-  assert string.contains(html, "key=\"invite-0\"")
+  assert string.contains(html, "key=\"invite-" <> session <> "-0\"")
   assert string.contains(html, "key=\"notice\"")
   assert !string.contains(html, "key=\"Bob")
   assert !string.contains(html, session <> "\"")
