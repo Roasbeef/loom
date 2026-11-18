@@ -48,6 +48,11 @@ pub fn the_mark_is_brief_and_not_a_class_test() {
   assert jump_rule.marked_attribute == "data-loom-jumped"
   assert jump_rule.marker == "data-loom-jump"
   assert jump_rule.row_marker == "data-loom-row"
+
+  // The brief mark is its own attribute, apart from the row's permanent marker
+  // and the lifted tag's class, so removing it can never strip either.
+  assert jump_rule.marked_attribute != jump_rule.row_marker
+  assert jump_rule.marked_attribute != jump_rule.marker
 }
 
 // A 100px row 400px below the top of a 400px view is moved to the middle, so
