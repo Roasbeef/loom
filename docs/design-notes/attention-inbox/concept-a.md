@@ -413,7 +413,7 @@ whose **main** failed (the only failure the row judges; a stopped delegate
 is invisible until phase 1). Project tickets with a `person/` stage appear as
 Question, Review or Stopped rows with the ticket's answer box in the pane.
 The row shows `last_message`, the one line the wire already carries and the
-page drops at `client/daemon/server.gleam:6344`; keeping it widens the return type of
+page drops at `client/daemon/server.gleam:6533`; keeping it widens the return type of
 `activity_states` through `listed_sessions` and the `Transport.sessions`
 capability, a type change across `client` and `web_view` and not a one-line
 edit. **Phase 0 has no wait times.** The row has no timestamp and an

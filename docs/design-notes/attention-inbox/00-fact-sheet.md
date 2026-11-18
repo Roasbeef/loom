@@ -14,7 +14,7 @@ and reaches the page), **PARTIAL** (some of it exists, or it exists but does not
    See Q3.
 2. **The home page and the sidebar already group sessions by "what needs you"** (Needs you / Working / Idle /
    Saved) from a polled `sessions.activity` read. But the page keeps only a four-word state and throws away
-   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:6344-6390`).
+   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:6501-6558`).
 3. **Project mode is already a coordinator.** One router session, worker sessions per ticket, a ledger, a
    board whose stages are literally "who acts next" (`person/answer`, `person/review`, `person/blocked`,
    `person/failed`), a worker question with an answer box, and GitHub PR creation and polling. The web home
@@ -122,7 +122,7 @@ words for a pending-proposal badge (`session_words(n)`), not a proposals engine.
   sidebar grouping `Failed` lands in **Idle** with its own colour (`web_view/listing.gleam:294-298`, `bucket` arm
   `sessions.Live, Ok(sessions.Failed) -> Idle`).
 - **What is dropped:** the daemon reduces each row to `#(id, state)` before the page sees it
-  (`client/daemon/server.gleam:6344-6390`, `state_of`). `last_message`, `glances`, `last_outcome`, `strands`,
+  (`client/daemon/server.gleam:6501-6558`, `state_of`). `last_message`, `glances`, `last_outcome`, `strands`,
   `working` and `approvals` (except as the failed-vs-needs test) never reach the page. The data to say
   "what each session last said" exists on the wire and is discarded at that closure. **PARTIAL.**
 - Other signals in the catalogue row: `Residency` = Live/Saved/**Blocked** ("needs attention", recovery stopped)
@@ -500,7 +500,7 @@ transcript max 780 px; below 1212 px the sidebar is an overlay drawer, below 980
 - ABSENT: PR/CI/review state outside project mode; PR "blocked/ready/waiting" as data (only `person/review` and an address).
 - ABSENT: goal milestones; goal health does not feed `sessions.activity`.
 - ABSENT: daemon-level push or subscription; seen/unseen/snooze/dismiss state for any item.
-- ABSENT: surfacing of `last_message`, `glances`, `last_outcome` on the page (they exist on the wire, dropped at `client/daemon/server.gleam:6344`).
+- ABSENT: surfacing of `last_message`, `glances`, `last_outcome` on the page (they exist on the wire, dropped at `client/daemon/server.gleam:6533`).
 - ABSENT: completion/ask signal from a child strand as a first-class state (only approvals mark `NeedsInput`); "Asked 1 question" status line is a mock only.
 - ABSENT: a delegate-fleet "waking" coordinator for ordinary sessions: no session supervises other sessions today
   except project mode (router + workers) and the peer link/`agent_*` tools, which are model-driven.

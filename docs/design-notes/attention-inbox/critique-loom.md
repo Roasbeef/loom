@@ -23,7 +23,7 @@ as claims. Where a claim was checked in code, the file is named.
   (`peer_mail.gleam` around 1519). The failure half reads **main's** last run
   only. A failed delegate strand is invisible to the activity row, so no
   poll-only phase 0 can show `sub:mockup-b` as stopped.
-- The daemon's page-side reduction (`client/daemon/server.gleam:6344-6390`, `activity_states`)
+- The daemon's page-side reduction (`client/daemon/server.gleam:6501-6558`, `activity_states`)
   is an `@internal pub` function returning `#(id, Activity)`. Carrying more
   than the state word widens that return type and every caller up through
   `listed_sessions` and the `Transport.sessions` capability. That is small,
