@@ -1476,16 +1476,26 @@ fn live_jobs(
 // --- close ----------------------------------------------------------------------
 
 // Asks the executor to close the scope and records what it reports. An answer
-// that is a refusal, or no answer, records nothing.
-/// Close scope keeps this client operation’s decoding or state decision in one place.
+// that is a refusal, or no answer, records nothing, and says so in the log: a
+// close lost while the executor was stopping leaves its scope open with no one
+// to close it, and the log is the only trace of which session and executor.
+/// Asks the executor to close the scope, records its answer, and logs a close
+/// that got none.
 fn close_scope(
   registered: Registered,
   candidate: Candidate,
   incarnation: Int,
 ) -> Nil {
-  // This match resolves ask_close(registered, candidate.reach, incarnation, 2) before the surrounding protocol step continues.
-  // This match resolves ask_close(registered, candidate.reach, incarnation, 2) before the enclosing validation continues.
-  case ask_close(registered, candidate.reach, incarnation, 2) {
+  // Two attempts: a host that went away first is reconnected and asked again.
+  case
+    request_close(
+      registered.session,
+      registered.workspace,
+      candidate.reach,
+      incarnation,
+      2,
+    )
+  {
     Ok(closed) -> {
       let _written =
         scope.write(
@@ -1494,25 +1504,25 @@ fn close_scope(
         )
       Nil
     }
-    Error(Nil) -> Nil
+
+    // Nothing is recorded, so the scope may stay open on the executor. The
+    // warning names everything an operator needs to find it.
+    Error(failure) ->
+      log.warn(registered.logger, "workspace.close_lost", [
+        field.ident(key: "session", value: registered.session),
+        field.text(key: "executor", value: candidate.executor.name),
+        field.count(key: "incarnation", value: incarnation),
+        field.text(key: "reason", value: close_failure_words(failure)),
+      ])
   }
 }
 
-/// Ask close keeps this client operation’s decoding or state decision in one place.
-fn ask_close(
-  registered: Registered,
-  reach: Reach,
-  incarnation: Int,
-  attempts: Int,
-) -> Result(protocol.CloseOutcome, Nil) {
-  request_close(
-    registered.session,
-    registered.workspace,
-    reach,
-    incarnation,
-    attempts,
-  )
-  |> result.replace_error(Nil)
+/// The words for a close that produced no outcome.
+fn close_failure_words(failure: CloseFailure) -> String {
+  case failure {
+    CloseRefused(refusal:) -> protocol.describe(refusal)
+    CloseUnanswered -> "the executor did not answer the close"
+  }
 }
 
 /// Why a close that no session is running produced no outcome.

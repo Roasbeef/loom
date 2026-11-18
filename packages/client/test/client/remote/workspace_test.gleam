@@ -41,6 +41,7 @@ import support/remote_orchestrator as rig
 import telemetry/field
 import telemetry/level
 import telemetry/log
+import telemetry/record as telemetry_record
 
 fn store() -> session.Session {
   let assert Ok(opened) = session.open_memory(clock.fixed(at: 1000))
@@ -300,6 +301,56 @@ pub fn an_open_scope_its_owner_never_closed_is_released_and_reopened_by_the_owne
   assert scope.read(opened)
     == Ok(Some(scope.Scope(2, None, Some(rig.executor_name))))
   rig.stop(second)
+}
+
+pub fn a_close_that_gets_no_answer_is_logged_with_what_names_the_scope_test() {
+  // The executor stops before the orchestrator's close reaches it, as in a
+  // shutdown of both. The close records nothing, so the log is the only trace
+  // that the scope may still be open on the executor.
+  let probe = fixtures.probe(fixtures.Open)
+  let executor = standard(probe, protocol.AllRetired)
+  let records = process.new_subject()
+  let logger = log.new(sink: log.to_subject(records), threshold: level.Debug)
+  let assert Ok(hands) =
+    workspace.attach(
+      workspace.Registered(
+        ..rig.registered(executor, store(), clock.fixed(at: 1000)),
+        logger:,
+      ),
+    )
+    as "the attach succeeds"
+  rig.stop(executor)
+  process.sleep(100)
+
+  hands.plane.close()
+
+  let assert Ok(lost) = receive_event(records, "workspace.close_lost")
+  assert lost.level == level.Warning
+  assert list.contains(
+    lost.fields,
+    field.ident(key: "session", value: "registered-session"),
+  )
+  assert list.contains(
+    lost.fields,
+    field.text(key: "executor", value: rig.executor_name),
+  )
+  assert list.contains(lost.fields, field.count(key: "incarnation", value: 1))
+  assert list.contains(
+    lost.fields,
+    field.text(key: "reason", value: "the executor did not answer the close"),
+  )
+}
+
+// The first record with this event name, skipping the others a session logs.
+fn receive_event(
+  records: process.Subject(telemetry_record.Record),
+  event: String,
+) -> Result(telemetry_record.Record, Nil) {
+  case process.receive(records, 1000) {
+    Ok(found) if found.event == event -> Ok(found)
+    Ok(_other) -> receive_event(records, event)
+    Error(Nil) -> Error(Nil)
+  }
 }
 
 pub fn a_close_the_record_never_saw_is_learned_from_the_executor_test() {
