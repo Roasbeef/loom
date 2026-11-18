@@ -558,6 +558,31 @@ msgpack inside a 32 MiB frame can hold millions of values. The bound is on JSON 
 everything a frame decodes to. A byte cap on `msgpack_of` would refuse honest
 large binary arguments, so the risk is recorded rather than closed.
 
+*Addendum, 2026-11-18 (issues #1278 and #1279).* The msgpack half of this risk
+is closed by a value bound, not a byte cap, so honest large binary arguments
+are unaffected: a `bin` is one value however long. `msgpack_of`, and the two
+sandbox policy readers that now go through it, decode with
+`msgpack.decode_bounded` under `untrusted_wire.max_msgpack_values`
+(1,048,576, the order of `max_frame_values`). A payload past it is a decode
+error, so the link closes the connection as it does for an oversized frame; the
+untrusted wire version stays 5, because this refuses input and adds no frame.
+The first value past the bound is refused as it is reached, so a payload of 24
+MiB of one-byte values is refused after about 1,048,576 values of work, not
+24 million. Measured on the development Mac under OTP 29, decoding a payload of
+exactly the bound's values takes about 0.16 s for an array of nils (1 MiB),
+about 0.23 s for an array of `uint16` integers (3 MiB), and about 1.1 s for a
+map of 524,287 four-byte string keys with nil values (3.5 MiB), the most
+expensive shape found because each key is also entered in the duplicate-key
+index; refusing a payload one past the bound costs about 0.11 s, and refusing
+24 MiB of nils about 0.12 s. Each runs in the link's process. The sender side
+is not extended: `encode_fitting` still counts JSON values only, so an honest
+executor whose capability result holds more than the bound's msgpack values
+would close the connection; no such result exists today, since tool output
+crosses as strings and `bin`. `core/json.parse_number` also refuses a run of
+more than `json.max_number_digits` (4,096) digits, which the value bound did
+not limit because a number is one value. `decode_lsp_server` parses a JSON text
+carried in a string with `gleam_json` and is not bounded by either change.
+
 ## What it costs
 
 About 1,650 lines of product code and 850 of tests: the seam (about 170, with

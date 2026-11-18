@@ -158,6 +158,19 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   On the JavaScript target the parser takes a stack frame per array item,
   so a flat array of a few thousand items exhausts the stack there; the
   tests stay below that.
+- **A number holds at most `json.max_number_digits` (4,096) digits per run.**
+  The integer part, the fraction and the exponent are each held to it, and
+  `digit_run` stops counting one past it, so a longer run is refused without
+  being read to its end. The value bound counts a number as one value, so
+  without this a number of many thousands of digits within the byte limit
+  costs more to convert than the bound pays for.
+- **`msgpack.decode_bounded` is the value-bounded decode.** It threads an
+  allowance through the walk exactly as the JSON parse does: a value is counted
+  before any of it is read, a map's keys count as values, and the first value
+  past the bound is a `CorruptionReport`. `msgpack.decode` is the same walk
+  with an allowance of the payload's byte size plus one. A caller reading
+  msgpack from an untrusted sender uses `decode_bounded` (the untrusted wire's
+  `max_msgpack_values`, protocol-change/117).
 - **Duplicate keys are corruption, in both codecs.** Decoders disagree on
   first- versus last-occurrence precedence, so a document or frame
   carrying duplicates has no single meaning; rejecting is the only rule
