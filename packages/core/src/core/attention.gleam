@@ -723,8 +723,30 @@ fn encode_alternative(choice: Alternative) -> JsonValue {
 /// question and `null` where Other was used, and `other` carries the text of
 /// each Other, with who answered beside them.
 fn encode_answer(answer: Answer) -> JsonValue {
+  case answer_object(answer.values) {
+    json.Object(fields) ->
+      json.Object(list.append(fields, [#("by", json.String(answer.by))]))
+    other -> other
+  }
+}
+
+/// The part of an answer the model reads, without who gave it: `answers` with
+/// a key per question and `null` where Other was used, and `other` with the
+/// text of each Other. The stored record and the prompt the daemon delivers
+/// (protocol-change/120) both carry this object, so the two cannot drift.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.answer_object([#("q1", attention.Yes)])
+///   == json.Object([
+///     #("answers", json.Object([#("q1", json.Bool(True))])),
+///     #("other", json.Object([])),
+///   ])
+/// ```
+pub fn answer_object(values: List(#(String, Value))) -> JsonValue {
   let others =
-    list.filter_map(answer.values, fn(entry) {
+    list.filter_map(values, fn(entry) {
       case entry.1 {
         Other(text:) -> Ok(#(entry.0, json.String(text)))
         Yes | No | Picked(..) | PickedMany(..) | Typed(..) -> Error(Nil)
@@ -734,11 +756,10 @@ fn encode_answer(answer: Answer) -> JsonValue {
     #(
       "answers",
       json.Object(
-        list.map(answer.values, fn(entry) { #(entry.0, encode_value(entry.1)) }),
+        list.map(values, fn(entry) { #(entry.0, encode_value(entry.1)) }),
       ),
     ),
     #("other", json.Object(others)),
-    #("by", json.String(answer.by)),
   ])
 }
 
