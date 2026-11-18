@@ -807,6 +807,7 @@ pub fn description(mode: CodeMode) -> String {
   <> gleam_guidance(mode.seams)
   <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
+  <> attention_guidance(mode.seams)
   <> evolution_guidance(mode.seams)
   <> lsp_sql_guidance(mode.seams)
   <> seams_text(mode.seams)
@@ -2535,6 +2536,22 @@ fn notes_guidance(seams: Seams) -> String {
     False -> ""
     True ->
       "Persist structured analysis with cap/notes.put(key, value), using report.object/list and scalar builders. Later calls read it with notes.get(\"main/analysis\") or notes.list(prefix); keys are relative to agent/, and list returns reusable keys. A put updates your own namespace; reads share this session's blackboard with agent_note/agent_notes. Notes survive execution exit and compaction, are last-write-wins, and notify nobody. Store bulky data in report.emit artifacts or workspace files and keep a small reference note. cap/kv is evictable scratch. In workspace code mode, fs.read(\"note://main/analysis\") returns JSON; note:// is read-only and is not an OS mount. "
+  }
+}
+
+// Describe the usable door, as for notes. The sentence about ending the turn is
+// the one that matters: a program's ask is recorded and returns its id, and
+// nothing in the call ends the run, so the model has to.
+/// Generates description prose describing cap/attention questions and notes.
+fn attention_guidance(seams: Seams) -> String {
+  case
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, "cap/attention")
+    })
+  {
+    False -> ""
+    True ->
+      "Ask the owner with cap/attention.ask(questions, to: None, why: None), building each question with attention.confirm, choose, choose_many, checklist or fill and giving options through attention.alternative. It records the ask and returns its id at once; it does not wait and it does not end your turn, so after the program returns, end your turn yourself and do no more work the answer decides. The answer arrives later as a message from the person holding one fenced JSON object. An ask must never request a secret: credentials go through grants and approvals. attention.notice(kind, text, path: None, line: None) records a note about something outside your task and never stops anything. "
   }
 }
 

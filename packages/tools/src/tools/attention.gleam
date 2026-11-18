@@ -930,14 +930,21 @@ pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
   tool.failure(describe(refusal))
   |> tool.with_details(
     json.Object([
-      #("error", json.String(code(refusal))),
+      #("error", json.String(refusal_code(refusal))),
       #("reason", json.String(describe(refusal))),
     ]),
   )
 }
 
-/// The stable machine code of a refusal.
-fn code(refusal: Refusal) -> String {
+/// The stable machine code of a refusal, which the code-mode door carries as
+/// its capability error code.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.refusal_code(attention.Full("asks", 32)) == "attention_full"
+/// ```
+pub fn refusal_code(refusal: Refusal) -> String {
   case refusal {
     Invalid(..) -> "attention_invalid"
     NoSuchStrand(..) -> "attention_no_such_strand"
