@@ -2382,6 +2382,30 @@ pub fn the_nonce_is_kept_per_page_and_the_bundle_assigns_the_location_test() {
   assert string.contains(bundle, "history.back()")
 }
 
+// The page's bundles are served at fixed, unversioned URLs, so a browser that
+// kept one across a daemon rebuild would run the old client against the new
+// daemon. Every asset is `no-store`, which a browser never reuses, and this
+// holds each of the ones a page loads to it.
+pub fn every_script_and_the_stylesheet_are_served_uncached_test() {
+  fixture(fn(_ready, port, _credential) {
+    list.each(
+      [
+        "web_client.mjs",
+        "web_client.css",
+        "web_view_page.js",
+        "web_view_enter.js",
+        "lustre-server-component-5.7.1.mjs",
+      ],
+      fn(name) {
+        let asset = get(port, "/ui/assets/" <> name, [host(port)])
+        assert asset.status == 200
+        assert list.key_find(asset.headers, "cache-control") == Ok("no-store")
+        assert list.key_find(asset.headers, "etag") == Error(Nil)
+      },
+    )
+  })
+}
+
 // Referrer-Policy is load-bearing: the exchange's URL carries the ticket and
 // the page's carries its key, and neither may leave in a Referer.
 pub fn every_document_and_script_withholds_the_referrer_test() {
