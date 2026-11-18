@@ -471,6 +471,23 @@ fn page(
   ui_sessions.Sessions,
   String,
 ) {
+  page_under(harness, session, access.Observer, process.new_subject())
+}
+
+// `page` at `ceiling`, with the page's frames delivered to `inbox`, for a test
+// that sends a command the ceiling lets through and waits for its answer.
+fn page_under(
+  harness: gateway_test.Harness,
+  session: String,
+  ceiling: access.Role,
+  inbox: Subject(connection_event.Message),
+) -> #(
+  ui_relay.Relay,
+  Subject(ending.Ending),
+  Subject(Clock),
+  ui_sessions.Sessions,
+  String,
+) {
   let time = clock()
   let assert Ok(tables) =
     ui_sessions.start(ui_sessions.Settings(
@@ -495,12 +512,65 @@ fn page(
   let open = ui_sessions.still_open(tables, redeemed.cookie, grant)
   let assert Ok(relay) =
     start(
-      attach(harness, ui_relay.while_open(operator, open)),
-      process.new_subject(),
+      attach_under(harness, ui_relay.while_open(operator, open), ceiling),
+      inbox,
       fn(reason) { process.send(ended, reason) },
     )
     as "the relay attaches"
   #(relay, ended, time, tables, redeemed.cookie)
+}
+
+// Whether the reply to request `id` arrives among the next `tries` frames.
+fn replied(
+  inbox: Subject(connection_event.Message),
+  id: Int,
+  tries: Int,
+) -> Bool {
+  case tries {
+    0 -> False
+    _ ->
+      case protocol.decode_event(next_text(inbox)) {
+        Ok(protocol.EventEnvelope(reply_to: Some(found), ..)) if found == id ->
+          True
+        Ok(_) | Error(_) -> replied(inbox, id, tries - 1)
+      }
+  }
+}
+
+// A page that a `loom ui` exchange opened is bound to the bearer that asked for
+// the link, so revoking the browser login it belongs to does not touch the check
+// the page's relay makes. What ends it is the table: a login's revocation drops
+// its pages (`ui_sessions.end_login`), and the next command finds the page gone.
+// The first prompt shows the rig delivers a turn while the page is open, and the
+// second, sent after the revocation, is refused and reaches no one.
+pub fn a_turn_sent_after_its_login_is_revoked_is_refused_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5130))
+  let session = ids.session_id_to_string(api.session_id(harness.runtime))
+  let inbox = process.new_subject()
+  let #(relay, ended, _, tables, cookie) =
+    page_under(harness, session, access.Operator, inbox)
+  let pid = relay_pid(relay)
+  let login =
+    ui_sessions.Issuer(
+      fingerprint: "9c1e0f2ab3d4e5f6",
+      expires_at_ms: 4_000_000_000_000,
+      key: string.repeat("a", 32),
+    )
+  ui_sessions.attach_login(tables, cookie, login)
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  let _ = subscribed(inbox)
+
+  // A turn sent while the page is open is delivered, and its reply is the
+  // barrier that says the session has it.
+  ui_relay.transmit(relay, frame(2, protocol.Prompt("main", "before")))
+  assert replied(inbox, 2, 10)
+  assert user_prompts(harness) == ["before"]
+
+  ui_sessions.end_login(tables, login.fingerprint)
+  ui_relay.transmit(relay, frame(3, protocol.Prompt("main", "after")))
+  assert process.receive(ended, 5000) == Ok(ending.PageEnded)
+  assert gone(pid)
+  assert user_prompts(harness) == ["before"]
 }
 
 pub fn an_expired_ui_session_ends_an_open_page_test() {

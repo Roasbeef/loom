@@ -1376,3 +1376,91 @@ pub fn the_production_table_judges_a_login_by_the_system_clock_test() {
     ui_sessions.HomeExchange,
   ))
 }
+
+// --- revoking a login ends its pages ---------------------------------------------
+
+// A remembered home for `principal`, redeemed and given `login` as the exchange
+// does once the login's row exists: the page a `loom ui` link opened, which is
+// bound to the bearer that asked for it and so needs the table's help to end.
+fn remembered_page(
+  sessions: ui_sessions.Sessions,
+  principal: String,
+  login: ui_sessions.Issuer,
+) -> ui_sessions.Redeemed {
+  let assert Ok(issued) = ui_sessions.mint(sessions, remembered_home(principal))
+    as "a remembered ticket is minted"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the ticket redeems"
+  ui_sessions.attach_login(sessions, redeemed.cookie, login)
+  redeemed
+}
+
+// A home opened with `loom ui --no-remember`: no login row and so no login on
+// the page.
+fn forgotten_page(
+  sessions: ui_sessions.Sessions,
+  principal: String,
+) -> ui_sessions.Redeemed {
+  let assert Ok(issued) = ui_sessions.mint(sessions, home_for(principal))
+    as "a forgotten ticket is minted"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the ticket redeems"
+  redeemed
+}
+
+// Ending one login drops the pages that login opened, those a `loom ui` exchange
+// attached it to and those a ticket the login's own page minted opened, and
+// leaves the principal's pages of another login and its pages with no login. The
+// call returns after the table has dropped them, so the first lookup that
+// follows it already finds them gone.
+pub fn ending_a_login_ends_its_pages_and_no_other_test() {
+  let sessions = table(clock())
+  let revoked = issuer("1111111111111111")
+  let other = issuer("2222222222222222")
+  let exchanged = remembered_page(sessions, "alice", revoked)
+  let kept = remembered_page(sessions, "alice", other)
+  let bearer = forgotten_page(sessions, "alice")
+
+  // A switch ticket the first login's page minted opens a page of that login.
+  let assert Ok(switch) =
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(revoked))
+    as "a switch ticket is minted in the login"
+  let assert Ok(switched) =
+    ui_sessions.redeem(sessions, switch.ticket, ui_sessions.HomeExchange)
+    as "the switch ticket redeems"
+  assert ui_sessions.login_of(sessions, switched.cookie) == Some(revoked)
+
+  // A second switch ticket stays unredeemed while the login ends.
+  let assert Ok(pending) =
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(revoked))
+    as "a pending switch ticket is minted in the login"
+
+  ui_sessions.end_login(sessions, revoked.fingerprint)
+  assert looked_up(sessions, exchanged.cookie) == Error(Nil)
+  assert looked_up(sessions, switched.cookie) == Error(Nil)
+  assert result.is_ok(looked_up(sessions, kept.cookie))
+  assert result.is_ok(looked_up(sessions, bearer.cookie))
+
+  // A ticket the ended login minted opens nothing.
+  assert ui_sessions.redeem(sessions, pending.ticket, ui_sessions.HomeExchange)
+    == Error(ui_sessions.UnknownTicket)
+}
+
+// "Sign out everywhere" ends every page of the principal that has a login, and
+// not the principal's pages with no login, which are the bearer's and which
+// signing out does not revoke, and not another principal's pages.
+pub fn ending_every_login_of_a_principal_leaves_the_bearers_pages_test() {
+  let sessions = table(clock())
+  let first = remembered_page(sessions, "alice", issuer("1111111111111111"))
+  let second = remembered_page(sessions, "alice", issuer("2222222222222222"))
+  let bearer = forgotten_page(sessions, "alice")
+  let theirs = remembered_page(sessions, "bob", issuer("3333333333333333"))
+
+  ui_sessions.end_logins(sessions, "alice")
+  assert looked_up(sessions, first.cookie) == Error(Nil)
+  assert looked_up(sessions, second.cookie) == Error(Nil)
+  assert result.is_ok(looked_up(sessions, bearer.cookie))
+  assert result.is_ok(looked_up(sessions, theirs.cookie))
+}
