@@ -565,10 +565,70 @@ pub fn a_generated_row_fits_and_never_loses_a_count_test() {
       }
       assert shed.finds.items
         == list.take(full.finds.items, list.length(shed.finds.items))
+      assert shed.stuck.items
+        == list.take(full.stuck.items, list.length(shed.stuck.items))
       assert shed.asks.items
         == list.take(full.asks.items, list.length(shed.asks.items))
+
+      // Minimality: when anything was shed, the row one item larger in the
+      // shedding order does not fit, so a shed that dropped too much fails.
+      case one_larger(full, shed) {
+        Some(larger) -> {
+          assert encoded_bytes(larger) > attention_feed.row_bytes
+        }
+        None -> Nil
+      }
     },
   )
+}
+
+/// The shed row with back the item it dropped last, or nothing when it dropped
+/// none. Items go finds first, then stuck, then asks, so the last one dropped
+/// is the newest of the last list that lost any.
+fn one_larger(
+  full: attention_feed.Row,
+  shed: attention_feed.Row,
+) -> Option(attention_feed.Row) {
+  let kept_asks = list.length(shed.asks.items)
+  let kept_stuck = list.length(shed.stuck.items)
+  let kept_finds = list.length(shed.finds.items)
+  case
+    kept_asks < list.length(full.asks.items),
+    kept_stuck < list.length(full.stuck.items),
+    kept_finds < list.length(full.finds.items)
+  {
+    True, _, _ ->
+      Some(
+        attention_feed.Row(
+          ..shed,
+          asks: attention_feed.Section(
+            ..shed.asks,
+            items: list.take(full.asks.items, kept_asks + 1),
+          ),
+        ),
+      )
+    False, True, _ ->
+      Some(
+        attention_feed.Row(
+          ..shed,
+          stuck: attention_feed.Section(
+            ..shed.stuck,
+            items: list.take(full.stuck.items, kept_stuck + 1),
+          ),
+        ),
+      )
+    False, False, True ->
+      Some(
+        attention_feed.Row(
+          ..shed,
+          finds: attention_feed.Section(
+            ..shed.finds,
+            items: list.take(full.finds.items, kept_finds + 1),
+          ),
+        ),
+      )
+    False, False, False -> None
+  }
 }
 
 pub fn a_row_that_already_fits_is_untouched_test() {

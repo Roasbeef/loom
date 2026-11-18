@@ -71,6 +71,11 @@ pub const advisor_strand = "advisor"
 /// The longest strand name a row carries, in bytes, as a glance's is.
 const strand_bytes = 96
 
+/// The most items a section holds before shedding. A session holds at most 32
+/// asks and 128 finds, and no row has room for that many, so the lists are cut
+/// here first and the shedding loop re-encodes a short list.
+const item_cap = 40
+
 /// The longest path a row carries, in bytes. A longer one is left out with its
 /// line, since a cut path is a path that does not exist.
 const path_bytes = 160
@@ -197,7 +202,7 @@ pub fn row_of(asks: List(Ask), finds: List(Find), stuck: List(Stuck)) -> Row {
     finds: section(list.map(open, find_item), fn(item) { item.created_at }),
     stuck: Section(
       count: list.length(stuck),
-      items: list.sort(stuck, newest_stuck),
+      items: list.take(list.sort(stuck, newest_stuck), item_cap),
     ),
   )
 }
@@ -206,7 +211,10 @@ pub fn row_of(asks: List(Ask), finds: List(Find), stuck: List(Stuck)) -> Row {
 fn section(items: List(item), at: fn(item) -> Int) -> Section(item) {
   Section(
     count: list.length(items),
-    items: list.sort(items, fn(left, right) { int.compare(at(right), at(left)) }),
+    items: list.take(
+      list.sort(items, fn(left, right) { int.compare(at(right), at(left)) }),
+      item_cap,
+    ),
   )
 }
 
