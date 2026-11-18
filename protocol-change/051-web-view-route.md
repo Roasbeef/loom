@@ -4596,3 +4596,69 @@ The message field adds two more (protocol-change/118):
 
 The inbox's own view tests are in `web_view/test/inbox_view_test.gleam`. A real
 drive of the inbox in a browser has not been run.
+
+## Addendum: the live rail (2026-11-18)
+
+A session page draws a rail beside the transcript, "Lifted from this session"
+(`web_view/view/lifted`). It lists what `session_view/attention` found in the
+lane and the register: a pending approval under "Needs you", and failed
+steps, failed responses, sub-agent results and peer messages under
+"Insights". This addendum records the one handler the rail adds, the client
+behaviour that goes with it, and what the rail does not do.
+
+### What it adds
+
+The rail is the last child of the Strands pane, so it sits at `0\t3\t0\t4`
+(`component.rail_path`) and no admitted path moves. The stylesheet orders it
+above the pane title. An insight is drawn whole until the reader presses it
+once, and folded to one line from then on. The press sends `RailOpened(key)`,
+where `key` is the `Lifted.key` the view drew into the handler. The page
+keeps the opened keys in its model (at most 64, newest first), and keeps
+nothing in the browser. A key that names no insight the page holds, or one
+already opened, changes nothing.
+
+`ui_socket.observer_accepts` gains one rule: a `click` at any path beneath
+`component.rail_path` followed by a separator. The operator and owner
+sockets already admit a click at any path that is not an owner control, so
+they gain nothing. A pinned row has no handler, so the rule admits the press
+of an insight and no other control.
+
+The jump from a row to its place in the stream is not an event. Each row
+carries `data-loom-jump`, whose value is a transcript row key or `dock`, and
+`<loom-follow>` hears the click on the document and scrolls the row with the
+matching `data-loom-row` into view in the browser. Nothing is sent. Below
+980px the rail is hidden and a bar above the dock opens the same rows as a
+sheet (a native `<details>`); the sheet rows carry no handler, and a jump
+closes the sheet.
+
+### What it refuses
+
+- No control in the rail decides anything. An approval entry reads "Decide
+  in the dock" and its press only scrolls the dock into view. The approval
+  card stays in the dock above the composer under the rules of the
+  addendum on the pinned composer: Deny first, arming, no autofocus. An
+  observer's page has no dock, so its approval entry says the operator
+  decides and carries no jump.
+- A row's `head` is session text. It is a text node and never an attribute,
+  a class or a key. Markers carry daemon keys only.
+- The observer's socket still drops a click on the rail's own path, on a
+  neighbour of it in the Strands pane, any other event beneath it, and a
+  batch.
+- No new wire frame, no seen cursor and no persistence.
+
+### Cost
+
+The page reads the lane three more times per render (the rail, the sheet and
+the lane's marks), each a linear pass over the pieces it already holds.
+One more admitted path for observers, a click that only changes what the
+page draws. A rail row in the stream is tagged "lifted", and one that needs
+the owner is tinted with the existing signal token.
+
+### Verification
+
+`web_view/lifted_test` pins the groups, the absence of a deciding control or
+a handler on a pinned row, folding after one open, the key-only markers, the
+tag and tint on stream rows, the phone bar's count, and (with seed
+20261118) that the handlers are exactly the unopened insights.
+`client/ui_socket_test` pins the admission above and what stays refused.
+`web_client/jump_rule_test` pins which click jumps and where.
