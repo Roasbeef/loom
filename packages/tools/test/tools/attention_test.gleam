@@ -375,6 +375,20 @@ pub fn a_note_past_its_bound_is_refused_test() {
   )
 }
 
+pub fn labels_differing_only_in_surrounding_space_are_refused_test() {
+  refused_with(
+    ask_args([choice([option("a"), option(" a ")])]),
+    "two options share a label",
+  )
+}
+
+pub fn the_path_schema_states_its_bound_in_bytes_test() {
+  assert string.contains(
+    string.inspect(notice_tool().schema),
+    "at most 512 bytes",
+  )
+}
+
 pub fn two_recommended_options_are_refused_test() {
   let recommended = fn(label) {
     json.Object([
