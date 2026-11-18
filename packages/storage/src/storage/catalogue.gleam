@@ -4315,6 +4315,8 @@ pub fn attention(
 ) -> Result(Option(AttentionSummary), Error) {
   use rows <- result.try(query(catalogue, sql.session_attention(id)))
 
+  // No row is a summary never made. One row is the answer, and a second would
+  // mean the primary key failed.
   case rows {
     [] -> Ok(None)
     [row] ->
@@ -4350,6 +4352,8 @@ pub fn attention_for(
   list.try_fold(ids, [], fn(found, id) {
     use row <- result.try(attention(catalogue, id))
 
+    // A session with a row is kept, and one without is left out rather than
+    // given zeros, so absence stays distinct from "nothing was open".
     case row {
       Some(summary) -> Ok([#(id, summary), ..found])
       None -> Ok(found)
