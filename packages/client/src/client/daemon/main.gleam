@@ -4615,6 +4615,7 @@ pub fn listen_serving(
     session_movers.idle(),
     orchestrator_port.unreported(),
     None,
+    fn(_) { None },
   )
 }
 
@@ -4627,7 +4628,7 @@ pub fn listen_serving(
 /// ## Examples
 ///
 /// ```gleam
-/// // main.listen_moving(config, daemon, upgrade, peers, Some(ui), movers, reads)
+/// // main.listen_moving(config, daemon, upgrade, peers, Some(ui), movers, reads, None, worktree)
 /// ```
 @internal
 pub fn listen_moving(
@@ -4640,6 +4641,7 @@ pub fn listen_moving(
   movers: session_movers.Control,
   reads: orchestrator_port.Reads,
   projects: Option(project_start.Control),
+  worktree: fn(instance) -> Option(fn() -> Result(JsonValue, String)),
 ) -> Result(Serving(instance), String) {
   use ready <- result.try(root.ready(daemon, within: 20_000))
   use domain_configuration <- result.try(captured_domain_configuration(
@@ -4648,6 +4650,7 @@ pub fn listen_moving(
   ))
   let routing =
     server.Config(
+      worktree:,
       daemon:,
       peer_endpoint:,
       domain_configuration:,
@@ -4906,23 +4909,26 @@ fn run(
       use ui <- result.try(web_view(config, daemon))
       use ready <- result.try(root.ready(daemon, within: 20_000))
       let projects = project_control(config, ready, logger)
-      use serving <- result.try(listen_moving(
-        config,
-        daemon,
-        fn(request, attachment) {
-          session_socket.upgrade(
-            daemon,
-            request,
-            attachment,
-            attachment.instance.gateway,
-          )
-        },
-        fn(resident: serve.Resident) { Some(resident.peer) },
-        ui,
-        movers,
-        reads,
-        projects,
-      ))
+      use serving <- result.try(
+        listen_moving(
+          config,
+          daemon,
+          fn(request, attachment) {
+            session_socket.upgrade(
+              daemon,
+              request,
+              attachment,
+              attachment.instance.gateway,
+            )
+          },
+          fn(resident: serve.Resident) { Some(resident.peer) },
+          ui,
+          movers,
+          reads,
+          projects,
+          fn(resident: serve.Resident) { Some(resident.worktree) },
+        ),
+      )
       publish_endpoint(config, serving, paths, fence)
       |> result.replace(#(serving, executor))
     }

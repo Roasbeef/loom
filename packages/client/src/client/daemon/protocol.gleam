@@ -293,6 +293,11 @@ pub type Command {
   /// session at any role. It reads and never decides.
   ReadApprovals(session: String, epoch: String)
 
+  /// Reads the session's worktree as a review: the files its workspace
+  /// changed, each file's hunks and a diff stat, bounded (`protocol-change/123`).
+  /// The owner, or a member that holds the session at any role.
+  ReviewSession(session: String, epoch: String)
+
   /// Closes an open find as dismissed, fixed or filed, expecting the record to
   /// be at `revision` (`protocol-change/120`). The owner, or a member that holds
   /// the session as an Operator.
@@ -844,6 +849,11 @@ fn decode_fields(
       use session <- result.try(attention_session(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       ReadApprovals(session, epoch)
+    }
+    "sessions.review" -> {
+      use session <- result.try(attention_session(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      ReviewSession(session, epoch)
     }
     "attention.close_find" -> {
       use session <- result.try(attention_session(fields))

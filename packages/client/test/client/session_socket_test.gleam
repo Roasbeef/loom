@@ -180,6 +180,7 @@ fn fixture_serving(
     server.Config(
       daemon,
       fn(_) { None },
+      fn(_) { None },
       "",
       roster.fixed([]),
       [],

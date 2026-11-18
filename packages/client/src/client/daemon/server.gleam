@@ -64,6 +64,7 @@ import client/daemon/project_host
 import client/daemon/project_start
 import client/daemon/project_verdict
 import client/daemon/protocol
+import client/daemon/review_door
 import client/daemon/root
 import client/daemon/ui_assets
 import client/daemon/ui_http
@@ -130,6 +131,7 @@ import web_view/machines
 import web_view/page
 import web_view/placements
 import web_view/saved_attention
+import web_view/review_feed
 import web_view/sessions as listed_sessions
 import web_view/tool_result
 import weft
@@ -141,6 +143,12 @@ pub type Config(instance) {
     daemon: root.Root(instance),
     /// Projects the address-only communication endpoint from a resident.
     peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+    /// Projects a resident's own observation of its workspace, the closure the
+    /// web view's Changes tab reads (`serve.Resident.worktree`), or nothing for
+    /// a resident that has none. It takes nothing from a request: the review
+    /// read (`review_door`, protocol-change/123) calls it and never runs Git
+    /// itself.
+    worktree: fn(instance) -> Option(fn() -> Result(JsonValue, String)),
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
     /// The `[executors.<name>]` the owner configured, read once at startup,
@@ -3173,6 +3181,7 @@ fn control(
             | protocol.SessionAttention(..)
             | protocol.ReadAttention(..)
             | protocol.ReadApprovals(..)
+            | protocol.ReviewSession(..)
             | protocol.CloseFind(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -3225,6 +3234,7 @@ fn control_use(command: protocol.Command) {
     | protocol.SessionAttention(..)
     | protocol.ReadAttention(..)
     | protocol.ReadApprovals(..)
+    | protocol.ReviewSession(..)
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
@@ -3431,6 +3441,26 @@ fn dispatch(
         |> result.map_error(attention_refusal),
       )
       within_frame(reply_to, "approval.read", evidence)
+    }
+
+    // The review is a read that refuses in words, like the attention reads, and
+    // its observation runs in a run of its own (`review_door`,
+    // protocol-change/123).
+    protocol.ReviewSession(session, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      let reach =
+        review_reach(
+          config,
+          state.registry,
+          digest,
+          control_reserve(config, digest),
+        )
+      use review <- result.try(
+        review_door.read(reach, session) |> result.map_error(attention_refusal),
+      )
+      within_frame(reply_to, "sessions.review", review_feed.encode(review))
     }
     protocol.CloseFind(session, find, revision, outcome, supplied) -> {
       use Nil <- result.try(
@@ -5069,6 +5099,7 @@ fn dispatch_class(
     // The attention reads that refuse in words are served by `dispatch` too.
     protocol.ReadAttention(..)
     | protocol.ReadApprovals(..)
+    | protocol.ReviewSession(..)
     | protocol.CloseFind(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
@@ -6761,6 +6792,59 @@ pub fn attention_reach(
   digest: access.Digest,
 ) -> attention_door.Reach(instance) {
   attention_door.Reach(registry:, digest:, endpoint: config.peer_endpoint)
+}
+
+/// The worktree read a home page is handed: one session's review, as the
+/// credential may read it (`review_door.read`). Membership is derived in the
+/// registry at the moment of each read, so a revoked credential reads nothing
+/// from the next read on. `reserve` is the caller's allowance for workspace
+/// reads, which a home page takes from its credential's count
+/// (`ui_sessions.reserve_worktree_read`). The read blocks for up to
+/// `review_door.deadline_ms`, so a page runs it off its own runtime.
+///
+/// The authority checked here is the credential's over the session. The page's
+/// own ceiling is not, so a caller does not offer this to a page whose ceiling
+/// is an observer's unless it means that page to see hunks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_review(config, registry, digest, reserve)("0198...")
+/// ```
+@internal
+pub fn home_review(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  reserve: fn() -> Result(Nil, Nil),
+) -> fn(String) -> Result(review_feed.Review, attention_door.Refusal) {
+  fn(session) {
+    review_door.read(review_reach(config, registry, digest, reserve), session)
+  }
+}
+
+/// What a review read needs to reach a session as the credential.
+fn review_reach(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  reserve: fn() -> Result(Nil, Nil),
+) -> review_door.Reach(instance) {
+  review_door.Reach(registry:, digest:, observe: config.worktree, reserve:)
+}
+
+/// The allowance the control socket's review spends from: the web view's
+/// workspace reads for the credential, when the daemon serves one, and none
+/// otherwise. A daemon with no web view has no table to count in, and its
+/// control sockets are the owner's and its members' alone.
+fn control_reserve(
+  config: Config(instance),
+  digest: access.Digest,
+) -> fn() -> Result(Nil, Nil) {
+  case config.ui {
+    Some(ui) -> fn() { ui_sessions.reserve_worktree_read(ui.sessions, digest) }
+    None -> fn() { Ok(Nil) }
+  }
 }
 
 /// The words and code of a door refusal, as the control socket sends it.

@@ -242,6 +242,42 @@ pub fn fixture_with_reload(
   executors_reload: option.Option(server.ExecutorsReload),
   run,
 ) {
+  fixture_observing(
+    connection_limits,
+    peer_endpoint,
+    fn(_) { None },
+    build,
+    asked,
+    movers,
+    reach,
+    ledger,
+    executors_reload,
+    run,
+  )
+}
+
+/// `fixture_with_reload` with the projection of a resident's own observation of
+/// its workspace, for a test of `sessions.review` (protocol-change/123). The
+/// default is a resident with none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_observing(limits.defaults, peer, worktree, build, stub, movers, reach, None, None, run)
+/// ```
+@internal
+pub fn fixture_observing(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  worktree,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  reach: deployment.Reach,
+  ledger: option.Option(ledger_control.Handle),
+  executors_reload: option.Option(server.ExecutorsReload),
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -264,6 +300,7 @@ pub fn fixture_with_reload(
     as "only the fixture receives plaintext owner credential"
   let config =
     server.Config(
+      worktree:,
       peer_endpoint:,
       daemon:,
       domain_configuration: "",
@@ -2190,6 +2227,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
       })
       let config =
         server.Config(
+          worktree: fn(_) { None },
           peer_endpoint: endpoint,
           daemon:,
           domain_configuration: "",

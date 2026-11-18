@@ -245,6 +245,7 @@ fn fixture_lasting_with_root(
     as "the fixture's remote origin parses"
   let config =
     server.Config(
+      worktree: fn(_) { None },
       peer_endpoint: fn(_) { None },
       daemon:,
       domain_configuration: "",
