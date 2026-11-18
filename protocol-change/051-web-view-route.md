@@ -4613,15 +4613,19 @@ The rail is the last child of the Strands pane, so it sits at `0\t3\t0\t4`
 above the pane title. An insight is drawn whole until the reader presses it
 once, and folded to one line from then on. The press sends `RailOpened(key)`,
 where `key` is the `Lifted.key` the view drew into the handler. The page
-keeps the opened keys in its model (at most 64, newest first), and keeps
+keeps the opened keys in its model (at most 64, newest first, cleared when
+strand focus changes, since the keys name rows of one strand's lane), and keeps
 nothing in the browser. A key that names no insight the page holds, or one
 already opened, changes nothing.
 
-`ui_socket.observer_accepts` gains one rule: a `click` at any path beneath
-`component.rail_path` followed by a separator. The operator and owner
+`ui_socket.observer_accepts` gains one rule: a `click` at exactly the path
+`component.rail_click` names, `rail_path` then `1\t1\t1\t<position>\t0`: the
+rail's groups, the "Insights" group, its list, one item and that item's
+button, with `<position>` a whole number. The operator and owner
 sockets already admit a click at any path that is not an owner control, so
-they gain nothing. A pinned row has no handler, so the rule admits the press
-of an insight and no other control.
+they gain nothing. The "Needs you" group and the rail's title draw no
+handler, so the rule admits the press of an insight and no other control, and
+a path beneath the rail with any other shape is refused.
 
 The jump from a row to its place in the stream is not an event. Each row
 carries `data-loom-jump`, whose value is a transcript row key or `dock`, and
@@ -4641,9 +4645,12 @@ closes the sheet.
   decides and carries no jump.
 - A row's `head` is session text. It is a text node and never an attribute,
   a class or a key. Markers carry daemon keys only.
-- The observer's socket still drops a click on the rail's own path, on a
-  neighbour of it in the Strands pane, any other event beneath it, and a
-  batch.
+- The observer's socket still drops a click on the rail's own path, on any
+  other path beneath it (the pinned group's, the list's, a button's children,
+  a position that is not a whole number), on a neighbour of it in the Strands
+  pane, any other event beneath it, and a batch. An earlier draft admitted
+  every path beneath the rail by prefix; the exact predicate replaced it so a
+  later control placed there is not admitted by default.
 - No new wire frame, no seen cursor and no persistence.
 
 ### Cost

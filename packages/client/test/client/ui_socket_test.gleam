@@ -434,12 +434,14 @@ pub fn an_observer_socket_drops_a_click_on_a_marker_test() {
   assert ui_socket.observer_accepts(click_at(component.strip_path <> "\t3\t0"))
 }
 
-// The live rail's one handler is an unopened insight's press, beneath
-// `component.rail_path` (protocol-change/051, the addendum on the live rail).
-// An observer's socket admits a click there and nothing else new: not the
-// rail's own path, a path that shares its digits, its neighbours in the
-// Strands pane, another event, or a batch. The operator's admits the click
-// as it admits any click that is not an owner's control.
+// The live rail's one handler is an unopened insight's button, at the exact
+// path `component.rail_click` names (protocol-change/051, the addendum on the
+// live rail). An observer's socket admits a click there and nothing else new:
+// not the rail's own path, not any other path beneath it (the pinned group's,
+// the title's, the list's), not a path with a different shape or a number that
+// is not a position, its neighbours in the Strands pane, another event, or a
+// batch. The operator's admits the click as it admits any click that is not an
+// owner's control.
 pub fn the_rail_admits_an_insights_click_and_nothing_else_test() {
   let click_at = fn(path, name) {
     "{\"kind\":1,\"path\":"
@@ -448,7 +450,8 @@ pub fn the_rail_admits_an_insights_click_and_nothing_else_test() {
     <> name
     <> "\",\"event\":{}}"
   }
-  let insight = component.rail_path <> "\t0\t1\t0\t0"
+  let insight = component.rail_path <> "\t1\t1\t1\t2\t0"
+  assert component.rail_click(insight)
   assert ui_socket.observer_accepts(click_at(insight, "click"))
   assert ui_socket.operator_accepts(click_at(insight, "click"))
   assert ui_socket.owner_accepts(click_at(insight, "click"))
@@ -456,7 +459,15 @@ pub fn the_rail_admits_an_insights_click_and_nothing_else_test() {
   list.each(
     [
       click_at(component.rail_path, "click"),
-      click_at(component.rail_path <> "0\t1", "click"),
+      click_at(component.rail_path <> "\t1", "click"),
+      click_at(component.rail_path <> "\t1\t0\t1\t2\t0", "click"),
+      click_at(component.rail_path <> "\t0", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\t2", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\t2\t0\t0", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\t-1\t0", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\tx\t0", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\t02\t0", "click"),
+      click_at(component.rail_path <> "0\t1\t1\t1\t2\t0", "click"),
       click_at("0\t3\t0\t3\t0", "click"),
       click_at("0\t3\t0\t5\t0", "click"),
       click_at(insight, "submit"),

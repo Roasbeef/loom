@@ -375,8 +375,9 @@ type Phase {
 /// handler and asks the page to draw the whole text from the entry the block
 /// already holds, so it too reads nothing and sends nothing (the addendum to
 /// protocol-change/070 on messages), and is admitted at its two exact paths.
-/// A sixth is any path beneath `component.rail_path`, the live rail, where each
-/// handler is an unopened insight's press and its message asks the page to
+/// A sixth is `component.rail_click`, the live rail's insight press, at exactly
+/// the shape that predicate names, where each handler is an unopened insight's
+/// button and its message asks the page to
 /// draw that insight folded from then on: a key the server drew into the
 /// handler, so the frame cannot name one, and a change of what the page
 /// draws that reads and sends nothing (the addendum to protocol-change/051 on
@@ -418,11 +419,11 @@ fn observer_click() -> decode.Decoder(Bool) {
 
 /// The seven places an observer's click may fire: the older button, the Home
 /// button, the context breakdown's Refresh button, a chip beneath the strip's
-/// list, an insight beneath the live rail, the divider of a settled turn's
+/// list, an insight's button on the live rail, the divider of a settled turn's
 /// work, and the button after a shortened message. The list's own path is not
-/// a chip and the rail's is not an insight, so those prefixes include the
-/// separator; a divider and a message's button are admitted only at the exact
-/// paths `fold_click` and `message_click` name.
+/// a chip, so that prefix includes the separator; an insight, a divider and a
+/// message's button are admitted only at the exact paths `rail_click`,
+/// `fold_click` and `message_click` name.
 fn observer_path(path: String) -> Bool {
   path == component.older_path
   || path == component.latest_path
@@ -430,7 +431,7 @@ fn observer_path(path: String) -> Bool {
   || path == component.context_refresh_path
   || string.starts_with(path, component.notes_path <> "\t")
   || string.starts_with(path, component.strip_path <> "\t")
-  || string.starts_with(path, component.rail_path <> "\t")
+  || component.rail_click(path)
   || component.fold_click(path)
   || component.message_click(path)
 }
