@@ -122,6 +122,25 @@ pub fn read(
   attention_feed.record_json(stored, handling(authority))
 }
 
+/// Reads one record in full as the typed stored value, for a caller in this
+/// process that draws it (the home page's pane) and has no use for the wire
+/// shape. The authority is read as `read` reads it, so a session the caller
+/// does not hold is the same refusal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_door.read_stored(reach, "0198...", "ask-3f9c01a2b4")
+/// ```
+pub fn read_stored(
+  reach: Reach(instance),
+  session: String,
+  id: String,
+) -> Result(attention.Stored, Refusal) {
+  use _ <- result.try(held(reach, session))
+  fetch(reach, session, id)
+}
+
 // --- answer -----------------------------------------------------------------------
 
 /// Answers an open ask.

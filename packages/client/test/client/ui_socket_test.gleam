@@ -1285,6 +1285,74 @@ pub fn the_inbox_message_form_needs_no_new_admission_test() {
   )
 }
 
+// The attention feed's reads belong to every page, since the daemon answers
+// only for the sessions a credential holds, and its acts (answer, close, retry
+// and a message to a strand) to the owner's operating page alone
+// (protocol-change/120): a member's home at either ceiling and the owner's at
+// the observer's keep the reads and have no act.
+pub fn only_an_owners_operating_home_may_act_on_attention_test() {
+  let reads =
+    home.Attention(
+      feed: fn(_, _) { Nil },
+      saved: fn(_, _) { Nil },
+      record: fn(_, _, _) { Nil },
+      act: None,
+    )
+  let act =
+    home.Act(
+      answer: fn(_, _, _, _, _) { Nil },
+      close: fn(_, _, _, _, _) { Nil },
+      strand: fn(_, _, _, _, _) { Nil },
+    )
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_attention_capability(owner, access.Operator, reads, act).act
+  assert ui_socket.home_attention_capability(owner, access.Observer, reads, act).act
+    == None
+  assert ui_socket.home_attention_capability(
+      member,
+      access.Operator,
+      reads,
+      act,
+    ).act
+    == None
+  assert ui_socket.home_attention_capability(
+      member,
+      access.Observer,
+      reads,
+      act,
+    ).act
+    == None
+}
+
+// The attention threads add a click for each row and for Close, Retry, Send and
+// Clear, and a submit for the ask's form and the note's, and all of them sit
+// beneath the table's region: a browsing home (a member's, an observer's)
+// admits the clicks and refuses the submits, a submitting home admits both, and
+// neither is admitted outside the region (protocol-change/051, the addendum
+// "the attention threads"). Observers can therefore read a thread and never
+// stage or send from it.
+pub fn the_attention_forms_need_no_new_admission_test() {
+  let ask_form = home.table_path <> "\t1\t0\t2\t0\t3\t1\t2\t0"
+  let note_form = home.table_path <> "\t1\t0\t2\t0\t3\t2"
+  let send = home.table_path <> "\t1\t0\t2\t0\t3\t3\t2\t0"
+
+  list.each([ask_form, note_form], fn(form) {
+    assert !ui_socket.home_accepts(submit_on(form))
+    assert ui_socket.home_owner_accepts(submit_on(form))
+  })
+  assert ui_socket.home_accepts(click_on(send))
+  assert ui_socket.home_owner_accepts(click_on(send))
+
+  // Neither a submit nor a click is admitted outside the table's region for a
+  // browsing home, and a submit is not for a submitting one either.
+  list.each([home.sidebar_path <> "\t1\t0\t2", "0\t0\t1"], fn(path) {
+    assert !ui_socket.home_accepts(submit_on(path))
+    assert !ui_socket.home_owner_accepts(submit_on(path))
+  })
+}
+
 // Only the owner's operating home is handed the recent-folders capability.
 pub fn only_an_owners_operating_home_is_handed_the_folders_capability_test() {
   let folders = home.Folders(recent: fn(_) { Nil }, forget: fn(_, _) { Nil })

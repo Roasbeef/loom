@@ -192,6 +192,7 @@
 //// `on_close`.
 
 import broker/token
+import client/attention as store
 import client/daemon/attention_door
 import client/daemon/manager
 import client/daemon/new_folder
@@ -211,6 +212,7 @@ import client/daemon/ui_top
 import client/daemon/ui_wait
 import client/daemon/upgrade_log
 import client/gateway
+import client/peer_mail
 import client/peers
 import client/project_repo
 import client/protocol as session_protocol
@@ -260,6 +262,7 @@ import web_view/ending
 import web_view/grants
 import web_view/home
 import web_view/invites
+import web_view/item_pane
 import web_view/machines
 import web_view/names
 import web_view/operator_page
@@ -967,6 +970,78 @@ pub fn upgrade_home(
       },
     )
 
+  // The attention feed's reads belong to every page, and its acts to the
+  // owner's operating page alone (protocol-change/120). The acts reach the
+  // daemon's own door, which reads authority from the registry at each press;
+  // the page's submit is admitted by the rule that admits the message form.
+  let home_attention =
+    home_attention_capability(
+      attachment.principal,
+      ceiling,
+      home.Attention(
+        feed: fn(ids, deliver) {
+          activity_task(attachment.attention, ids, deliver)
+        },
+        saved: fn(ids, deliver) {
+          read_task(deliver, fn() { attachment.saved_attention(ids) })
+        },
+        record: fn(session, id, deliver) {
+          read_task(deliver, fn() {
+            record_for(attachment.attention_reach, session, id)
+          })
+        },
+        act: None,
+      ),
+      home.Act(
+        answer: fn(session, ask, revision, form, deliver) {
+          read_task(deliver, fn() {
+            answer_ask_for(
+              standing,
+              open,
+              attachment.attention_reach.endpoint,
+              message_to_strand(attachment, gateway_of),
+              session,
+              ask,
+              revision,
+              form,
+            )
+            |> answer_outcome
+          })
+        },
+        close: fn(session, find, revision, closure, deliver) {
+          read_task(deliver, fn() {
+            close_find_for(
+              standing,
+              open,
+              attachment.attention_reach.endpoint,
+              session,
+              find,
+              revision,
+              closure,
+            )
+            |> close_outcome
+          })
+        },
+        strand: fn(session, strand, text, delivery, deliver) {
+          thread_send_within(
+            fn() {
+              strand_send_for(
+                standing,
+                open,
+                message_to_strand(attachment, gateway_of),
+                session,
+                strand,
+                text,
+                delivery,
+              )
+            },
+            thread_send_ms,
+            deliver,
+          )
+        },
+      ),
+    )
+
   // The model profiles the new-session forms offer (protocol-change/076) are the
   // owner's creation capability's own concern, so only a page that holds it is
   // told of them. The read is of the daemon's configuration file, made here in
@@ -1256,6 +1331,7 @@ pub fn upgrade_home(
           rename,
           managing,
           thread_sending,
+          home_attention,
           creating,
           profiles,
           models,
@@ -2134,13 +2210,13 @@ pub fn thread_send_task(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.answer_for(standing, open, reach, send, session, ask, revision, wire)
+/// // ui_socket.answer_ask_for(standing, open, endpoint, send, session, ask, revision, wire)
 /// ```
 @internal
 pub fn answer_ask_for(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
-  reach: attention_door.Reach(instance),
+  endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   send: fn(String, String, String, operator.Delivery) -> thread_send.Answer,
   session: String,
   ask: String,
@@ -2157,7 +2233,7 @@ pub fn answer_ask_for(
       )
     Ok(_) ->
       attention_door.answer(
-        reach,
+        reach_of(standing, endpoint),
         fn(strand, text) { send(session, strand, text, operator.Prompt) },
         session,
         ask,
@@ -2173,13 +2249,13 @@ pub fn answer_ask_for(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.close_find_for(standing, open, reach, session, find, revision, records.Filed)
+/// // ui_socket.close_find_for(standing, open, endpoint, session, find, revision, records.Filed)
 /// ```
 @internal
 pub fn close_find_for(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
-  reach: attention_door.Reach(instance),
+  endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   session: String,
   find: String,
   revision: Int,
@@ -2188,7 +2264,170 @@ pub fn close_find_for(
   case authorized_owner(standing, open) {
     Error(_) ->
       Error(attention_door.Refusal("forbidden", "this page cannot close a find"))
-    Ok(_) -> attention_door.close_find(reach, session, find, revision, outcome)
+    Ok(_) ->
+      attention_door.close_find(
+        reach_of(standing, endpoint),
+        session,
+        find,
+        revision,
+        outcome,
+      )
+  }
+}
+
+/// The door's reach for a page: the registry and credential are the page's
+/// standing and nothing else, so a pair that disagrees cannot be built. Only
+/// the resident's peer endpoint comes from outside, since the standing does
+/// not hold one.
+fn reach_of(
+  standing: Standing(instance),
+  endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+) -> attention_door.Reach(instance) {
+  attention_door.Reach(
+    registry: standing.registry,
+    digest: standing.digest,
+    endpoint:,
+  )
+}
+
+/// The attention capability a home page minted for `principal` with `ceiling`
+/// is handed (protocol-change/120): the reads for every page, since the daemon
+/// answers only for the sessions the credential holds, and the acts for the
+/// daemon's owner on a page minted to operate alone. A member's home and an
+/// observer's draw the threads and the record and no form, no staging, no
+/// outbox and no Send, and the daemon checks the owner again whenever an act
+/// runs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_attention_capability(member, access.Operator, reads, act).act == None
+/// ```
+@internal
+pub fn home_attention_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  reads: home.Attention,
+  act: home.Act,
+) -> home.Attention {
+  home.Attention(..reads, act: case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator -> Some(act)
+    access.OwnerPrincipal, access.Observer
+    | access.MemberPrincipal, access.Operator
+    | access.MemberPrincipal, access.Observer
+    -> None
+  })
+}
+
+/// Sends one message from a home page to a named strand of a session its
+/// principal holds, or says why not. It is `thread_send_for` with the strand
+/// chosen by the page's thread rather than fixed to `main`: the standing check
+/// is the same, the text is bounded as a message's is, and a strand the session
+/// does not have is the gateway's own `UnknownStrand`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.strand_send_for(standing, open, send, session, "sub:main/audit", "retry", operator.Prompt)
+/// ```
+@internal
+pub fn strand_send_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  send: fn(String, String, String, operator.Delivery) -> thread_send.Answer,
+  session: String,
+  strand: String,
+  text: String,
+  delivery: operator.Delivery,
+) -> thread_send.Answer {
+  case authorized_owner(standing, open), thread_send.sendable(text) {
+    Error(_), _ -> thread_send.Refused(thread_send.NotHeld)
+    Ok(_), False ->
+      thread_send.Refused(thread_send.NotAccepted(
+        "the message is empty or too long",
+      ))
+    Ok(_), True -> send(session, strand, text, delivery)
+  }
+}
+
+/// A record read for the pane: the ask or find and the revision it was read
+/// at, or the door's fixed words for why there is none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.record_for(reach, "0198...", "ask-3f9c01a2b4")
+/// ```
+@internal
+pub fn record_for(
+  reach: attention_door.Reach(instance),
+  session: String,
+  id: String,
+) -> Result(item_pane.Record, String) {
+  case attention_door.read_stored(reach, session, id) {
+    Ok(store.StoredAsk(ask:, revision:)) ->
+      Ok(item_pane.AskRecord(ask:, revision:))
+    Ok(store.StoredFind(find:, revision:)) ->
+      Ok(item_pane.FindRecord(find:, revision:))
+    Error(refusal) -> Error(refusal.words)
+  }
+}
+
+/// What the door's answer says to the page, in fixed words. A prompt that was
+/// delivered and not settled says so, since the ask may still be open and the
+/// person must not answer it twice without looking.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.answer_outcome(Error(attention_door.Declined(refusal)))
+/// ```
+@internal
+pub fn answer_outcome(
+  result: Result(attention_door.Answered, attention_door.AnswerFault),
+) -> home.ActOutcome {
+  case result {
+    Ok(attention_door.Answered(delivery:, ..)) ->
+      home.Succeeded(
+        "Answered. "
+        <> thread_send.answer_words(
+          thread_send.Delivered(delivery),
+          operator.Prompt,
+          "the strand",
+        ),
+      )
+    Error(attention_door.Declined(refusal)) ->
+      home.Failed("Not sent: " <> refusal.words)
+    Error(attention_door.NotSent(refusal)) ->
+      home.Failed(
+        thread_send.answer_words(
+          thread_send.Refused(refusal),
+          operator.Prompt,
+          "the strand",
+        )
+        <> ". The ask is still open.",
+      )
+    Error(attention_door.Unsettled(refusal)) ->
+      home.Failed(
+        "Delivered, but " <> refusal.words <> ". The ask may still be open.",
+      )
+  }
+}
+
+/// What the door's close says to the page, in fixed words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.close_outcome(Ok(42))
+/// ```
+@internal
+pub fn close_outcome(
+  result: Result(Int, attention_door.Refusal),
+) -> home.ActOutcome {
+  case result {
+    Ok(_) -> home.Succeeded("Closed.")
+    Error(refusal) -> home.Failed("Not closed: " <> refusal.words)
   }
 }
 
@@ -2501,6 +2740,7 @@ fn admit_home(
   thread_sending: Option(
     fn(String, String, operator.Delivery, fn(thread_send.Answer) -> Nil) -> Nil,
   ),
+  attention: home.Attention,
   creating: Option(
     fn(
       creations.Place,
@@ -2561,6 +2801,7 @@ fn admit_home(
       rename:,
       manage: managing,
       thread_send: thread_sending,
+      attention: Some(attention),
       create: creating,
       profiles:,
       models:,

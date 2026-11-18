@@ -375,6 +375,10 @@ pub type HomeAttachment(instance) {
     /// answered (`home_attention`). It blocks for up to the read's deadline, so
     /// the page never calls it from its runtime.
     attention: fn(List(String)) -> List(#(String, page_attention.Row)),
+    /// The catalogue's summary rows for the named sessions the page's credential
+    /// holds, saved or resident (`home_saved_attention`, protocol-change/122).
+    /// One registry turn, so a page may call it from a task of its own.
+    saved_attention: fn(List(String)) -> List(saved_attention.Saved),
     /// What an answer to an ask, and the closing of a find, need to reach a
     /// session as the page's credential (`attention_door`): the registry, the
     /// credential and the resident's peer endpoint. The door reads authority from
@@ -903,6 +907,10 @@ fn home_upgrade(
             registry: state.registry,
             activity: home_activity(config, state.registry, grant.credential),
             attention: home_attention(config, state.registry, grant.credential),
+            saved_attention: home_saved_attention(
+              state.registry,
+              grant.credential,
+            ),
             attention_reach: attention_reach(
               config,
               state.registry,

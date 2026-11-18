@@ -5409,12 +5409,7 @@ pub fn an_answer_is_asked_only_for_an_owners_operating_page_test() {
       process.send(asked, #(session, strand, text, delivery))
       thread_send.Delivered(thread_send.Admitted)
     }
-    let reach =
-      attention_door.Reach(
-        registry: ready.registry,
-        digest: standing.digest,
-        endpoint: fn(_) { None },
-      )
+    let endpoint = fn(_) { None }
     let declined =
       Error(
         attention_door.Declined(attention_door.Refusal(
@@ -5426,7 +5421,7 @@ pub fn an_answer_is_asked_only_for_an_owners_operating_page_test() {
     assert ui_socket.answer_ask_for(
         standing,
         fn() { Error(Nil) },
-        reach,
+        endpoint,
         send,
         "S1",
         "ask-0123456789",
@@ -5437,7 +5432,7 @@ pub fn an_answer_is_asked_only_for_an_owners_operating_page_test() {
     assert ui_socket.answer_ask_for(
         ui_socket.Standing(..standing, ceiling: access.Observer),
         page_open,
-        reach,
+        endpoint,
         send,
         "S1",
         "ask-0123456789",
@@ -5447,6 +5442,113 @@ pub fn an_answer_is_asked_only_for_an_owners_operating_page_test() {
       == declined
     assert process.receive(asked, 0) == Error(Nil)
   })
+}
+
+// A message to a named strand judges the page's standing before the gateway is
+// asked, as `thread_send_for` does, and refuses an empty text. A strand the
+// session no longer has is the gateway's own word and reaches the page as it is
+// (protocol-change/120).
+pub fn a_strand_message_is_asked_only_for_an_owners_operating_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let send = fn(session, strand, text, delivery) {
+      process.send(asked, #(session, strand, text, delivery))
+      thread_send.Refused(thread_send.UnknownStrand)
+    }
+    let refused = thread_send.Refused(thread_send.NotHeld)
+
+    // An ended page and an observer's ceiling never reach the gateway.
+    assert ui_socket.strand_send_for(
+        standing,
+        fn() { Error(Nil) },
+        send,
+        "S1",
+        "sub:main/a",
+        "retry",
+        session_operator.Prompt,
+      )
+      == refused
+    assert ui_socket.strand_send_for(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        send,
+        "S1",
+        "sub:main/a",
+        "retry",
+        session_operator.Prompt,
+      )
+      == refused
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // An empty text is refused before the gateway too.
+    let assert thread_send.Refused(thread_send.NotAccepted(_)) =
+      ui_socket.strand_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "sub:main/a",
+        "  ",
+        session_operator.Prompt,
+      )
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // The owner's operating page sends to the strand it named, and the
+    // gateway's word about an unknown strand is the answer.
+    assert ui_socket.strand_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "sub:main/a",
+        "retry",
+        session_operator.Steer,
+      )
+      == thread_send.Refused(thread_send.UnknownStrand)
+    assert process.receive(asked, 0)
+      == Ok(#("S1", "sub:main/a", "retry", session_operator.Steer))
+  })
+}
+
+// What the door says to the page is worded from constants: a prompt that was
+// delivered and not settled says the ask may still be open, a refusal that sent
+// nothing says the ask is still open, and no text of a person or a session is
+// repeated.
+pub fn the_doors_words_reach_the_page_as_fixed_words_test() {
+  assert ui_socket.answer_outcome(
+      Ok(attention_door.Answered(thread_send.Admitted, 8)),
+    )
+    == home.Succeeded("Answered. Delivered to the strand · admitted")
+  assert ui_socket.answer_outcome(
+      Error(
+        attention_door.Declined(attention_door.Refusal(
+          "conflict",
+          "that ask was already answered",
+        )),
+      ),
+    )
+    == home.Failed("Not sent: that ask was already answered")
+  assert ui_socket.answer_outcome(
+      Error(attention_door.NotSent(thread_send.QueueFull)),
+    )
+    == home.Failed("Not sent: its queue is full. The ask is still open.")
+  assert ui_socket.answer_outcome(
+      Error(
+        attention_door.Unsettled(attention_door.Refusal(
+          "conflict",
+          "delivered; the record changed",
+        )),
+      ),
+    )
+    == home.Failed(
+      "Delivered, but delivered; the record changed. The ask may still be open.",
+    )
+  assert ui_socket.close_outcome(Ok(4)) == home.Succeeded("Closed.")
+  assert ui_socket.close_outcome(
+      Error(attention_door.Refusal("conflict", "the record changed")),
+    )
+    == home.Failed("Not closed: the record changed")
 }
 
 // The task answers whether or not the send does: one that finishes is delivered
