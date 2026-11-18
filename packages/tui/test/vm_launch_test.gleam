@@ -310,6 +310,20 @@ pub fn a_failed_ensure_ends_with_its_own_status_test() {
   assert drained(script.events) == ["ensure"]
 }
 
+pub fn a_refusal_already_on_the_terminal_adds_no_line_test() {
+  // On the interactive launch the server's standard error went to the
+  // terminal, so the refusal of an old guest leaves the captured text empty,
+  // and the failure is read with no reason.
+  let script = script([#(1, "\n"), guest_answer], Ok(Nil))
+  let assert Error(vm_ensure.Failure(1, reason)) = run(script)
+    as "a refusal with nothing captured is a failure"
+  assert vm_ensure.failure_lines(reason) == []
+  assert vm_ensure.failure_lines("  \n") == []
+
+  // A reason that was captured is printed after `loom:`, as it always was.
+  assert vm_ensure.failure_lines("loomd: refused") == ["loom: loomd: refused"]
+}
+
 pub fn a_server_that_cannot_run_is_a_failure_test() {
   let assert Error(vm_ensure.Failure(1, reason)) =
     vm_ensure.ensure(

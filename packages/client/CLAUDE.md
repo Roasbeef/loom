@@ -265,132 +265,161 @@ actual startup repeats validation and can still fail on runtime resources.
 list | rm | sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
 private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
-the artifact manifest decoder and revision check, the two-node
-`distribution_plan.Plan`, the guest's `loom.toml`, the `loom-vm run` and `cp`
-argument lists, `scrub_git_config`, the pid-file codec, the `epmd -names`
-reader and the daily verbs' decisions (`printable`, the checkouts record,
-`fetch_arguments`, `bundle_arguments`, `unpushed_branches`, `read_enrolment`,
-`plan_teardown`), and, for the join of a guest into a ledger deployment,
-`deployment_state` (`NoDeployment`, `LedgerDeployment`, `StaticDeployment`,
-read with `distribution.parse`), `guest_enrollment` (the `ledger_operator.Enrollment`
-of the guest) and `bundle_deployment`, `orchestrator_membership` (the daemon's member name from its installed ledger) and `joined_teardown`. `up` decides from `deployment_state` before minting anything: no deployment mints, a ledger deployment is joined (`vm_cli.join` enrols `guest_enrollment` through `ledger_cli.enroll_member` and `ledger_cli.socket_connect` on the running default daemon, with `ledger_cli.unlock_at` on the sealed key; `rm` revokes with `revoke_member`), and a static one is refused. `up` mints in
-ledger mode with `distribution_provision.provision_ledger` and seals the
-authority key with `authority_key.keep` under `<vm home>/authority/<id>/`
-beside a generated `passphrase` file (`vm_cli.seal_authority`); `stage_ledger`
-puts the bundle's ledger at `creds/ledger.log` in the guest root only when the
-root has none; `rm` deletes the authority directory with the guest
-(`removable_authority`). The directory is under the vm home that
-`workspace_policy` masks. `client/vm_cli` performs them with `distribution_provision`,
-`distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
-`reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
-`uname`, `git` and `epmd`, `host/access` (`raw_request`, `execute`) for the
-daemon's `status` and `daemon.shutdown`, and `weft/poll`. It adds no FFI. Tests: `client/vm_cli_test`,
-which covers the pure decisions, and `daemon_shipped_microvm_test`, the live
-boot, which needs the built artifacts. The latter assembles a build tree of
-links, runs `loom-vm setup --from-build` into a private `LOOM_VM_HOME`, and
-drives `vm up`, a scripted turn through an orchestrator on the configuration
-`up` wrote, `vm down`, `vm status`, `vm up` again and a second turn. It checks
-the GitHub placeholder, that a fake token given as `LOOM_VM_GITHUB_TOKEN` is
-nowhere under the guest's files, that the guest's root is a directory and not a
-link to the export, and, with `LOOM_VM_GITHUB_LIVE=1`, that `api.github.com`
-answers `/zen` 200 and `/user` 401 through the proxy. The first `up` also gives
-`--allow deb.debian.org` and `--provision` of a script that appends a line to a
-file in the guest root: a jailed call reads it, reaches the host and is refused
-another, `up --provision` on the provisioned guest is refused naming `--fresh`,
-and the resume (no flags) keeps the allowed host and leaves one line in the file.
-The same run then drives `vm list`, `vm logs`, a commit made by a jailed call
-that arrives through `vm sync` as `refs/remotes/vm/*` (in the checkout `up`
-recorded and in a `--checkout` scratch one), a hostile `.git/config` and hook
-planted by a jailed call whose marker never appears on the host after `vm sync`
-(with a control repository showing the marker would be writable), `vm sync
---to-guest` read back by a jailed `git fetch`, a refused second guest, and `vm rm`
-of the idle and failing guests under the isolated home. Its last step boots a guest
-with `--link untrusted` (below), starts an orchestrator on the file `up` wrote,
-and checks that a jailed call settles on the guest's kernel, the root holds no
-cookie and no `[distribution]` table, the host's epmd lists no node for it, a
-jailed read of the executor's key returns nothing, and `status` names the link.
-The same step then edits a tracked file and adds one with a second jailed `bash`
-call and checks the three things the broker tunnel serves
-(protocol-change/117), each through the daemon's own session assembly: the
-session's stored `session/git-start` (`session_git.key`) is a `revision` and not
-`unavailable`; the `worktree_diff` observation on the session socket is a
-`ready` board listing both paths; and a `goal_set` with a check that tests for
-the new file records `last_check` at exit status 0 carrying the guest's output
-and workspace path. It does not wait for the goal to complete (the reviewer is
-not asked in that flow, so the advisor's provider has an empty script), and it
-clears the goal before the session stops. On a tree without the tunnel
-the baseline is `unavailable`, the board is `failed` with the broker's refusal
-and the check is refused. It does not observe that hooks stay refused, which
-needs a trust record fixture; `remote/untrusted_end_to_end_test` covers it.
+the artifact manifest decoder and revision check, the guest's `loom.toml`, the
+`loom-vm run` and `cp` argument lists, `scrub_git_config`, the pid-file codec,
+the `epmd -names` reader and the daily verbs' decisions (`printable`, the
+checkouts record, `fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
+`read_enrolment`, `plan_teardown`). `client/vm_link` holds the decisions of the
+untrusted link, which every guest `up` and `ensure` make is on
+(protocol-change/109; ADR-022, the addendum of 2026-11-17). `client/vm_cli`
+performs them with `vm_link_pki`, `distribution_install` (the table merge),
+`host/bootstrap` (`spawn_server`, `process_identity`, `reserve_loopback_port`),
+`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname`, `git` and `epmd`,
+`host/access` (`raw_request`, `execute`) for the daemon's `status`,
+`executors.reload` and `daemon.shutdown`, and `weft/poll`. It adds no FFI.
 
-`up --link untrusted` (`UpOptions.link`, `vm_spec.LinkKind`) reaches a guest over
-protocol-change/109's untrusted link instead of distribution; the default is
-still `distribution` and its code is unchanged. `bring_up` settles the kind first
-(`vm_cli.link_of` over `vm_link.settle`: the host-owned record
-`<vm home>/<name>/link`, bundles, and the flag; absent record and bundles mean
-distribution, and a guest never changes its link) and branches once, in
-`vm_cli.on_link`, to `bring_up_linked`. `client/vm_link` is the pure part: the
-`link` and `link-port` record codecs (total), `port_step`, `install` and
-`uninstall` of `[executor_link]` and the guest's row (a table that differs is
-refused; only the guest's own row at another port, identified by its pin, is
-replaced; nothing else in the file changes), the guest's `[executor_listener]`
-configuration and `staging` (no cookie, no ledger), and the daemon and status
-wording. `client/vm_link_pki` mints the authority and leaves under
-`<vm home>/link/` and `<vm home>/<name>/link-credentials/` with `ffi_pki`, each
-directory built as `<dir>.minting` and renamed whole. `bring_up_linked` chooses
-the port without recording it, works out the merge (a refusal leaves no guest),
-records the kind and port, writes the file, then runs `stage_with` and
-`launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd entry), which are
-the shared halves of `stage` and `boot`. A running default daemon
-is asked to reload (`executors.reload`, protocol-change/116): `restart_of` and
-`untrusted_restart_check` ask `vm_link.daemon_need`, send the command through
-`vm_cli.reload_daemon` and read the reply with `vm_link.reload_result` and
-`reload_report`, which prints one line for every entry that is not `unchanged`.
-Only a daemon that predates the command, refuses it, does not answer, or
-reports the guest's own link `failed`, `stopped` or absent gets the earlier path
-(`daemon_outcome`: an idle daemon is stopped, a busy one is left and named).
-`rm` sends the reload after it rewrites the file (`removal_daemon_lines`,
-`vm_link.removal_report`). `host/access.refusal_code` keeps the message of a
-`reload_invalid` refusal. `rm` plans through `linked_removal_plan`; `ensure` reads the
-console's ready line in place of epmd (`vm_link.registration`). The executor's
-jails mask the listener's key and the link's key (`executor_plane.masked_files`).
-`bring_up_linked` runs the shared part (`enroll_linked`: credentials, port, merge,
-records, file) under `with_link_lock` (`<vm home>/link.lock`, after any guest
-lock), and `rm` plans and applies under it. `vm_link_pki` checks each leaf with
-`ffi_pki.inspect` against the current authority. `vm_link.Traces` lets a guest
-directory with `link-credentials/` and no record settle as untrusted.
-`vm_link.uninstall` removes the guest's row only on its pin and reports whether
-`[executor_link]` remains (`LinkTable`), which decides whether `rm` removes the
-credentials. `restart_check` and `restart_of` ask an untrusted guest
-`vm_link.daemon_need`, from `deployment.status`'s `placements.executors`
-(`vm_link.listed_executors`), and never `daemon_lacks_distribution`. A command
-with no `--name` means the directory's guest when no guest is named `vm`
-(`vm_cli.named`, `vm_spec.default_guest`). `serve.link_secrets` masks the link
-keys in every managed session's jail.
-Tests: `vm_link_test` (codecs, merge properties against the daemon's own readers,
-a pinned handshake with the minted credentials), `vm_link_model_test` (a `statem`
-model of one home with guests of both kinds), and `executor_mask_test`.
+**The link.** `bring_up` settles the link first, before the manifest is read or
+anything is written (`vm_cli.link_of` over `vm_link.settle`, from the host-owned
+record `<vm home>/<name>/link` and `vm_link.traces` of `link-credentials/` and
+`deploy/`). A new guest, a guest recorded untrusted and one with a minted leaf
+and no record are brought up on the untrusted link; one whose record says
+`distribution`, or that has `deploy/` and no leaf and no record, was made by an
+older loom as a distribution peer and is refused naming `loom vm sync --name
+NAME` (with where uncommitted edits are), `loom vm down --name NAME` for a guest
+that still runs, `loom vm rm --name NAME --yes` and `loom vm up --name NAME`, in
+that order (`vm_link.retired_refusal`). An unreadable `link` record is named by
+its file. `settle` never answers `Distribution`, so no command makes
+a distribution guest or turns an untrusted one into one. `UpOptions` has no
+link field: `--link untrusted` is accepted and changes nothing, and `--link
+distribution` is refused by the parser (`vm_spec.link_flag`). The verbs that only
+read a guest (`status`, `list`, `rm`) ask `vm_link.made` through
+`vm_cli.recorded_kind` and `made_kind`, so an old guest is shown as
+`distribution` and removed with the distribution teardown; a directory with no
+record and no traces reads as untrusted, and `other_kinds` does not count it.
+The distribution half of `bring_up` (`deployment`, `enroll`, `stage`, `boot`,
+the mint, join and seal helpers, `vm_spec`'s deployment decisions) is still
+compiled behind `on_link` and is reached by no guest; it is deleted after one
+release.
+
+`bring_up_linked` chooses the port without recording it, works out the merge (a
+refusal leaves no guest), records the kind and port, writes the file, then runs
+`stage_with` and `launch_guest` (`vm_spec.Forward`, so `--forward` and no epmd
+entry). `client/vm_link` is the pure part: the `link` and `link-port` record
+codecs (total), `port_step`, `install` and `uninstall` of `[executor_link]` and
+the guest's row (a table that differs is refused; only the guest's own row at
+another port, identified by its pin, is replaced; nothing else in the file
+changes), the guest's `[executor_listener]` configuration and `staging` (no
+cookie, no ledger), and the daemon and status wording. `client/vm_link_pki`
+mints the authority and leaves under `<vm home>/link/` and
+`<vm home>/<name>/link-credentials/` with `ffi_pki`, each directory built as
+`<dir>.minting` and renamed whole, and checks each leaf with `ffi_pki.inspect`
+against the current authority. `bring_up_linked` runs the shared part
+(`enroll_linked`: credentials, port, merge, records, file) under
+`with_link_lock` (`<vm home>/link.lock`, after any guest lock), and `rm` plans
+and applies under it.
+
+A running default daemon is asked to reload (`executors.reload`,
+protocol-change/116): `restart_of` and `untrusted_restart_check` ask
+`vm_link.daemon_need` (from `deployment.status`'s `placements.executors`,
+`vm_link.listed_executors`), send the command through `vm_cli.reload_daemon` and
+read the reply with `vm_link.reload_result` and `reload_report`, which prints one
+line for every entry that is not `unchanged`. Only a daemon that predates the
+command, refuses it, does not answer, or reports the guest's own link `failed`,
+`stopped` or absent gets the earlier path (`daemon_outcome`: an idle daemon is
+stopped, a busy one is left and named). `rm` sends the reload after it rewrites
+the file (`removal_daemon_lines`, `vm_link.removal_report`).
+`host/access.refusal_code` keeps the message of a `reload_invalid` refusal. `rm`
+plans an untrusted guest through `linked_removal_plan`: `vm_link.uninstall`
+removes the guest's row only on its pin and reports whether `[executor_link]`
+remains (`LinkTable`), which decides whether `rm` removes the credentials.
+`ensure` reads the console's ready line in place of epmd
+(`vm_link.registration`). The executor's jails mask the listener's key and the
+link's key (`executor_plane.masked_files`), and `serve.link_secrets` masks the
+link keys in every managed session's jail. `status` prints a `link:` line for
+either kind (`vm_cli.link_lines`, `vm_link.status_lines`), and `list` a link
+column. A command with no `--name` means the directory's guest when no guest is
+named `vm` (`vm_cli.named`, `vm_spec.default_guest`).
+
+Tests: `vm_cli_test`, which covers the pure decisions and the usage;
+`vm_link_test` (the retired flag, the settled link over every record, leaf,
+bundles and flag, the refusal's wording, codecs, merge properties against the
+daemon's own readers, a pinned handshake with the minted credentials);
+`vm_link_model_test` (a `statem` model of one home with three guests, the third
+of which can start out as a distribution guest, stopped or running: `up` of it
+changes nothing, and no command makes a distribution guest); and
+`executor_mask_test`. `daemon_shipped_microvm_test` is the live boot, which
+needs the built artifacts. It assembles a build tree of links, runs `loom-vm
+setup --from-build` into a private `LOOM_VM_HOME`, and drives every step on
+guests made with no `--link`: `vm up`, which writes `[executor_link]` and the
+guest's row and no `[distribution]` table and stages no cookie, a scripted turn
+through an orchestrator started on that file with no distribution options file,
+`vm down`, `vm status` (the link and its port, no epmd line), `vm up` again with
+the port and row unchanged and a second turn through the same orchestrator. It
+checks that the first jailed call cannot read the listener's key while the
+certificate beside it is readable, the GitHub placeholder, that a fake token
+given as `LOOM_VM_GITHUB_TOKEN` is nowhere under the guest's files, that the
+guest's root is a directory and not a link to the export, and, with
+`LOOM_VM_GITHUB_LIVE=1`, that `api.github.com` answers `/zen` 200 and `/user` 401
+through the proxy. The first `up` also gives `--allow deb.debian.org` and
+`--provision` of a script that appends a line to a file in the guest root: a
+jailed call reads it, reaches the host and is refused another, `up --provision`
+on the provisioned guest is refused naming `--fresh`, and the resume (no flags)
+keeps the allowed host and leaves one line in the file. The same run then drives
+`vm list` (with the link column), `vm logs`, a commit made by a jailed call that
+arrives through `vm sync` as `refs/remotes/vm/*` (in the checkout `up` recorded
+and in a `--checkout` scratch one), a hostile `.git/config` and hook planted by a
+jailed call whose marker never appears on the host after `vm sync` (with a
+control repository showing the marker would be writable), `vm sync --to-guest`
+read back by a jailed `git fetch`, a second workspace, the upgrade in place, a
+killed launcher, and a failing `--provision` script whose guest `vm rm` then
+removes after listing its workspaces. A second guest in a configuration of its
+own serves the broker tunnel (protocol-change/117), each through the daemon's
+own session assembly: the session's stored `session/git-start`
+(`session_git.key`) is a `revision` and not `unavailable`; the `worktree_diff`
+observation on the session socket is a `ready` board listing both edited paths;
+and a `goal_set` with a check that tests for the new file records `last_check`
+at exit status 0 carrying the guest's output and workspace path. It does not
+wait for the goal to complete, and clears it before the session stops. A third
+guest is brought up beside that daemon with `--link untrusted` spelled out,
+read with `executors.reload`, and its jailed call sees its own leaf's digest. A
+migration step fabricates the host-side traces of two distribution guests
+(bundles only, and a `link` record saying `distribution`), and checks that `up`
+and `ensure` refuse them naming the three commands and change no file, that
+`status` and `list` call them distribution guests, and that `rm --yes` removes
+them, taking one's `[distribution]` table and trusted row out of a file whose
+untrusted row and other lines stay. A default-daemon step runs `vm ensure` with
+no `--config` and the default vm home (`~/.loom/vm` of the isolated home)
+beside a daemon on that home's default file with no `[executor_link]`, and
+checks the answer line, that the reload was not refused, that the same daemon
+process lists the guest after it, the fast path of a second `ensure`, and `rm`
+of that vm home's last guest, which takes `[executor_link]` and the
+credentials too, with the daemon running.
+The first guest is removed last, and takes `[executor_link]` and
+`<vm home>/link/` with it. It does not observe that hooks stay refused, which
+needs a trust record fixture; `remote/untrusted_end_to_end_test` covers it.
 
 `ensure` is what `loom --vm` runs (`tui/vm_ensure`). `vm_spec.guest_name_for`
 names the guest of a workspace from its canonical path (slug, then six hex
 digits of the SHA-256, at most `name_limit` bytes), so there is one guest per
-workspace. `vm_cli.ensure` observes the guest's process (pid record plus birth
-marker), the host epmd and the manifest, and `vm_spec.ensure_step` returns
+workspace. `vm_cli.ensure` settles the link first (`ensure_facts` calls
+`link_of`, so a distribution guest is refused with status 1 even when it
+serves), then observes the guest's process (pid record plus birth marker), the
+console's ready line and the manifest, and `vm_spec.ensure_step` returns
 `AlreadyServing`, `NeedsDaemon`, `NeedsSetup`, `Boot` or `Refuse`: a serving
-guest answers first and nothing else is read or written; a join of an existing
-ledger deployment with no daemon answers `NeedsDaemon` before any setup, as
-exit status 75 and the last stdout line `daemon=required`; a manifest from
-another release gets `loom vm setup` first (`vm_spec.manifest_action`, which
-`up` uses too); otherwise `vm_cli.bring_up`, the code `up` runs, boots it. The
-last stdout line is `executor=<guest> workspace=<registered name>`
-(`vm_spec.ensure_line`), and progress goes to stderr one line per step. After a
-boot that installed a deployment, `vm_spec.restart_refusal` turns a daemon left
-running into one error sentence; a resumed or joined guest (`Row::Resumed`,
-`Derived`) asks for no restart. `up` records `--github` in
-`<vm home>/<name>/github` (`vm_spec.effective_github`, `encode_github`,
-`decode_github`); `UpOptions.github` is an `Option`, `None` meaning not given.
-Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a `statem` model over
-the pure decisions.
+guest answers first and nothing else is read or written; `NeedsDaemon` (status
+75 and the last stdout line `daemon=required`) was for a join of a ledger
+deployment and no guest asks for it now; a manifest from another release gets
+`loom vm setup` first (`vm_spec.manifest_action`, which `up` uses too);
+otherwise `vm_cli.bring_up`, the code `up` runs, boots it. The last stdout line
+is `executor=<guest> workspace=<registered name>` (`vm_spec.ensure_line`), and
+progress goes to stderr one line per step. After a boot, `restart_check` asks a
+running daemon to reload, and `vm_spec.restart_refusal` turns a daemon that
+cannot reload and is left running into one error sentence. `up` records
+`--github` in `<vm home>/<name>/github` (`vm_spec.effective_github`,
+`encode_github`, `decode_github`); `UpOptions.github` is an `Option`, `None`
+meaning not given. Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
+`statem` model over the pure decisions with a distribution guest in some
+starting configurations.
 
 `logs`, `list`, `rm` and `sync` read the guest's root, which model-influenced code
 writes, so they treat it as untrusted: no `git` with a working directory in the
@@ -401,10 +430,19 @@ through `make_inside` and a rename, and guest text printed through
 `vm_spec.printable`. `up` records each copy's developer checkout in
 `<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
 `sync`; `--checkout PATH` overrides it and is required for a guest with no record.
-`rm` removes `[executors.<name>]`, and `[distribution]` and the home's cookie only
-when they are this guest's and no other executor remains
-(`distribution_install.without_tables`, `vm_spec.plan_teardown`), refuses a
-running guest, and without `--yes` only lists the workspaces. `sync` needs a
+`rm` removes an untrusted guest's row (above), and for a guest made over
+distribution `[executors.<name>]`, and `[distribution]` and the home's cookie only
+when they are this guest's and no other trusted executor remains
+(`distribution_install.without_tables`, `vm_spec.plan_teardown`; `read_enrolment`
+leaves untrusted rows out of `other_executors`), with its sealed authority
+directory and ledger revoke as `removal_plan` decides. The revoke is signed with
+`ledger_cli.Forced` (`signed_revoke`, `vm_spec.unchecked_revoke_line`), since a
+guest `up` refuses serves no session again, and a key or ledger copy that cannot
+be used is worded by `vm_spec.rm_revoke_failure`. `apply_removal` deletes the
+roots and `state.img` before the rest of the directory, so the marker that
+classifies a guest outlives them. `list` counts a directory as a guest when
+`made_kind` is not `Ok(None)`, as `other_kinds` does. `rm` refuses a running
+guest, and without `--yes` only lists the workspaces. `sync` needs a
 Git release with upload-pack's lazy-fetch refusal, 2.45.1 or a backport
 (`vm_spec.check_git_version`) and runs it with
 `GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach
@@ -466,32 +504,34 @@ a plain tree, then `own_repository` clones it `--no-checkout --no-local`
 into `<root>/srv/loom-node/git-staging`, moves that `.git` over the copy's,
 restores `HEAD` and `origin` from the worktree (`vm_spec.head_target`,
 `head_arguments`, `origin_arguments`), resets the index, and removes the copy if
-any copy step fails. At the end, when the deployment is in the exact default
-`loom.toml` (a first `up` or a resume), `up` asks the user's daemon how many
-sessions it holds. `vm_spec.daemon_step` decides: a count of zero means
-`daemon.shutdown` and a note that the next `loom` starts it; any session, or no
-count, means no stop and a `kill -TERM <pid>` line. `daemon_shipped_microvm_test`
-proves the idle stop on its isolated home.
+any copy step fails. When a daemon cannot reload and the row is in the exact
+default `loom.toml`, `up` asks that daemon how many sessions it holds and
+`vm_spec.daemon_step` decides: a count of zero means `daemon.shutdown` and a note
+that the next `loom` starts it; any session, or no count, means no stop and a
+`kill -TERM <pid>` line.
 
 Invariants that break things when violated:
 
-- A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `root.next/` (only during an upgrade), `root.building/` and
-  `workspace.building/` (only while `up` makes a clone or a copy), `state.img`, `allow`, `github`, `checkouts`,
-  `root-revision`, `provision`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
-  `~/.loom/vm`.
-- `up` reads the bundles in `deploy/` again instead of minting new ones, so the
-  orchestrator's installed pins keep matching the executor's certificate.
-- The install is `RefuseExisting`: a `loom.toml` that holds another
-  deployment, or a cookie that differs, is refused and never replaced.
+- A guest's files all live under `<vm home>/<name>/`: `link`, `link-port`,
+  `link-credentials/`, `root/`, `root.next/` (only during an upgrade),
+  `root.building/` and `workspace.building/` (only while `up` makes a clone or
+  a copy), `state.img`, `allow`, `github`, `checkouts`, `root-revision`,
+  `provision`, `loom-vm.pid` and `loom-vm.log`, and for a guest made over
+  distribution `deploy/` and `orch/`. The vm home's `link/` holds what every
+  guest shares. `LOOM_VM_HOME` overrides `~/.loom/vm`.
+- `up` and `ensure` never bring a guest up over distribution: `vm_link.settle`
+  refuses a guest made that way before anything is written, booted or sent,
+  and answers `Untrusted` for every other.
+- A table of the user's `loom.toml` that differs from what `up` would write is
+  refused and never replaced; only the guest's own row, identified by its pin,
+  moves to another port.
 - The manifest's revision must be `dev` or the running build's commit; a
   release build installs the right one first, and only a development build
   refuses.
-- `ensure` on a serving guest writes nothing: it reads the pid record, epmd, the
-  console log, the manifest, `loom.toml` and the daemon record, and refuses a root
-  of another release. Everything else runs under `<vm home>/<name>.lock` and
-  decides again once it holds it. `NeedsDaemon` is decided before anything is
-  written, and a cookie conflict before any bundle is.
+- `ensure` on a serving guest writes nothing: it reads the link record, the pid
+  record, the console log, the manifest, `loom.toml` and the daemon record, and
+  refuses a root of another release. Everything else runs under
+  `<vm home>/<name>.lock` and decides again once it holds it.
 - `up` never stops a daemon that holds a session, and never starts one.
 - A linked worktree's copy never keeps a `.git` file or an `origin` that names
   a host path; any failed copy step removes the copy, because a resumed `up`
