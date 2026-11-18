@@ -8,6 +8,9 @@
 #                                                web_client.css)
 #   scripts/web_client_contrast_check.sh --self-test
 #                                                prove the gate catches each one
+#   scripts/web_client_contrast_check.sh --table [css]
+#                                                print the measured values the
+#                                                rules judge, as tables
 #
 # `make lint` runs both, together with the JavaScript check, whenever the
 # browser package's sources are in the run.
@@ -495,7 +498,7 @@ self_test() {
 	fi
 
 	# A text token whose light value is the design's mark value.
-	sed 's/--color-signal-text: oklch(0.510 0.115 58);/--color-signal-text: oklch(0.660 0.145 64);/' \
+	sed 's/--color-signal-text: oklch(0.510 0.115 58);/--color-signal-text: oklch(0.645 0.145 64);/' \
 		"$default_css" >"$tmp/light-mark-as-text.css"
 
 	# A dark text token below the ratio.
@@ -553,7 +556,7 @@ self_test() {
 		"$default_css" >"$tmp/cvd.css"
 
 	# Rule 10: a light attention mark too pale to see on white.
-	awk '/--color-signal: oklch\(0.660 0.145 64\);/ { sub(/0.660 0.145 64/, "0.860 0.090 80") } { print }' \
+	awk '/--color-signal: oklch\(0.645 0.145 64\);/ { sub(/0.645 0.145 64/, "0.860 0.090 80") } { print }' \
 		"$default_css" >"$tmp/pale-mark.css"
 
 	local name
@@ -582,7 +585,48 @@ self_test() {
 	return 0
 }
 
+# table <css>: the numbers the rules judge, as Markdown tables, one per theme.
+# Each text token's row gives its WCAG ratio and APCA Lc on every surface it
+# is drawn on; each mark's row gives its ratio on `bg` and `bg-raised`. It
+# judges nothing: it is what a reviewer reads beside the gate's verdict.
+table() {
+	awk -v text="$text_tokens" -v surfaces="$surfaces" -v marks="$mark_tokens" \
+		-v tokenre="$token_line" "$colour_lib"'
+		BEGIN { theme = "dark" }
+		/prefers-color-scheme: light/ { theme = "light"; next }
+		/^[ \t]*:root\[data-theme="light"\][ \t]*\{[ \t]*$/ { theme = "manual"; next }
+		/^[ \t]*:host[ \t]*\{[ \t]*$/ { theme = "host"; next }
+		$0 ~ tokenre { value[theme, tokenname($0)] = tokenvalue($0) }
+		END {
+			nt = split(text, tokens, " "); ns = split(surfaces, surf, " ")
+			nm = split(marks, mark, " ")
+			for (mode = 1; mode <= 2; mode++) {
+				th = mode == 1 ? "dark" : "light"
+				printf "\n%s theme, text (WCAG ratio / APCA Lc)\n\n| token |", th
+				for (j = 1; j <= ns; j++) printf " %s |", surf[j]
+				printf "\n|---|"
+				for (j = 1; j <= ns; j++) printf "---|"
+				printf "\n"
+				for (i = 1; i <= nt; i++) {
+					printf "| %s |", tokens[i]
+					for (j = 1; j <= ns; j++)
+						printf " %.2f / %.0f |", ratio(value[th, tokens[i]], value[th, surf[j]]), \
+							apca(value[th, tokens[i]], value[th, surf[j]])
+					printf "\n"
+				}
+				printf "\n%s theme, marks (WCAG ratio)\n\n| mark | bg | bg-raised |\n|---|---|---|\n", th
+				for (i = 1; i <= nm; i++)
+					printf "| %s | %.2f | %.2f |\n", mark[i], ratio(value[th, mark[i]], value[th, "bg"]), \
+						ratio(value[th, mark[i]], value[th, "bg-raised"])
+			}
+		}
+	' "$1"
+}
+
 case "${1:-}" in
+--table)
+	table "${2:-$default_css}"
+	;;
 --self-test)
 	self_test
 	echo "web_client_contrast_check: self-test ok"
