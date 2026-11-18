@@ -79,6 +79,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     activity: fn(_, _) { Nil },
     rename: None,
     manage: None,
+    thread_send: None,
     create: None,
     folders: None,
     elsewhere: None,

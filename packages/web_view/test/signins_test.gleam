@@ -73,6 +73,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     activity: fn(_, _) { Nil },
     rename: None,
     manage: None,
+    thread_send: None,
     create: None,
     folders: None,
     elsewhere: None,

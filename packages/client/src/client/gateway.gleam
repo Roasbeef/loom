@@ -7036,6 +7036,12 @@ fn prompt_message(
   }
 }
 
+/// The words of the refusal a full input queue is answered with, as a
+/// `conflict` error. A caller that must tell a full queue from the other
+/// conflicts a prompt can meet (a restarting writer, a lost lease) compares
+/// against this constant, not against its own copy of the sentence.
+pub const queue_full_message = "the strand is busy and its queue is full"
+
 /// Puts one prompt at the tail of its strand's queue, or refuses the
 /// submission when the queue is full. The bound is what keeps a strand
 /// whose run never settles from accumulating unbounded hub memory, and the
@@ -7075,7 +7081,7 @@ fn hold_prompt(
         connection,
         id,
         protocol.code_conflict,
-        "the strand is busy and its queue is full",
+        queue_full_message,
       )
       state
     }

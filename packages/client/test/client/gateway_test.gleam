@@ -73,6 +73,7 @@ import session_view/advisor_pending as terminal_nudges
 import session_view/block_summary as terminal_summaries
 import session_view/btw
 import session_view/notes_view as terminal_notes
+import session_view/operator as session_operator
 import session_view/remembered as session_remembered
 import simplifile
 import storage/access
@@ -85,6 +86,7 @@ import tools/agent
 import tools/directory_access
 import tools/history
 import tools/tool
+import web_view/thread_send
 import weft
 import weft/actor
 import weft/poll
@@ -8442,7 +8444,14 @@ pub fn a_first_prompt_is_the_sessions_first_user_message_as_text_test() {
       access.Participant(access.Operator),
     )
 
-  assert ui_socket.first_prompt(harness.hub, binding, check, hostile) == Ok(Nil)
+  assert ui_socket.send_message(
+      harness.hub,
+      binding,
+      check,
+      hostile,
+      session_operator.Prompt,
+    )
+    == thread_send.Delivered(thread_send.Admitted)
 
   let assert poll.Answered(_) =
     poll.until(within: 5000, every: 10, attempt: fn() {
@@ -8465,8 +8474,14 @@ pub fn a_first_prompt_from_an_observer_is_not_accepted_test() {
       access.Participant(access.Observer),
     )
 
-  let assert Error(_) =
-    ui_socket.first_prompt(harness.hub, binding, check, "hello")
+  let assert thread_send.Refused(thread_send.NotAccepted(_)) =
+    ui_socket.send_message(
+      harness.hub,
+      binding,
+      check,
+      "hello",
+      session_operator.Prompt,
+    )
   assert user_prompt_texts(harness) == []
 }
 
@@ -8508,8 +8523,14 @@ pub fn a_first_prompt_whose_check_differs_from_its_binding_is_refused_test() {
       access.Participant(access.Operator),
       access.Owner,
     )
-  let assert Error(_) =
-    ui_socket.first_prompt(wider.hub, binding, check, "hello")
+  let assert thread_send.Refused(thread_send.NotAccepted(_)) =
+    ui_socket.send_message(
+      wider.hub,
+      binding,
+      check,
+      "hello",
+      session_operator.Prompt,
+    )
   assert user_prompt_texts(wider) == []
 
   let narrower = network_harness()
@@ -8519,9 +8540,93 @@ pub fn a_first_prompt_whose_check_differs_from_its_binding_is_refused_test() {
       access.Owner,
       access.Participant(access.Operator),
     )
-  let assert Error(_) =
-    ui_socket.first_prompt(narrower.hub, binding, check, "hello")
+  let assert thread_send.Refused(thread_send.NotAccepted(_)) =
+    ui_socket.send_message(
+      narrower.hub,
+      binding,
+      check,
+      "hello",
+      session_operator.Prompt,
+    )
   assert user_prompt_texts(narrower) == []
+}
+
+// A message from Home to a busy strand is held, and which way it is held is the
+// delivery's doing: a prompt waits for the turn to end and a steer runs first
+// (protocol-change/118, protocol-change/022). The parked provider cannot finish,
+// so the steer reaching the transcript before the gate opens proves the gateway
+// ordered it first, and the prompts it passed keep their order behind it.
+pub fn a_prompt_to_a_busy_strand_is_queued_and_a_steer_runs_first_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(binding, check) =
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Operator),
+      access.Participant(access.Operator),
+    )
+  let send = fn(text, delivery) {
+    ui_socket.send_message(harness.hub, binding, check, text, delivery)
+  }
+
+  // The first prompt opens the parked run, and a second finds the strand busy.
+  assert send("open", session_operator.Prompt)
+    == thread_send.Delivered(thread_send.Admitted)
+  assert send("after", session_operator.Prompt)
+    == thread_send.Delivered(thread_send.Queued)
+  assert send("now", session_operator.Steer)
+    == thread_send.Delivered(thread_send.Queued)
+
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) {
+        ["open", "now"] -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the steer starts without waiting for the parked provider"
+
+  release_gate(gate)
+  let assert poll.Answered(_) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case user_prompt_texts(harness) == ["open", "now", "after"] {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the prompt the steer passed still runs, after it"
+}
+
+// The gateway bounds a strand's queue at four ordinary inputs, and a send past
+// the bound is answered as a full queue, not as a refusal of any other kind, so
+// the page can say so in its own words. A steer has a queue of its own, so the
+// ordinary queue being full does not refuse it.
+pub fn a_prompt_past_the_queue_bound_is_a_full_queue_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(binding, check) =
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Operator),
+      access.Participant(access.Operator),
+    )
+  let send = fn(text, delivery) {
+    ui_socket.send_message(harness.hub, binding, check, text, delivery)
+  }
+
+  assert send("open", session_operator.Prompt)
+    == thread_send.Delivered(thread_send.Admitted)
+  list.each(["one", "two", "three", "four"], fn(text) {
+    assert send(text, session_operator.Prompt)
+      == thread_send.Delivered(thread_send.Queued)
+  })
+
+  assert send("five", session_operator.Prompt)
+    == thread_send.Refused(thread_send.QueueFull)
+  assert send("urgent", session_operator.Steer)
+    == thread_send.Delivered(thread_send.Queued)
+
+  release_gate(gate)
 }
 
 // --- the page of a spawner that started this session (protocol-change/094) ---

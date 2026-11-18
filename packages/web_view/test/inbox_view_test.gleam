@@ -14,11 +14,15 @@ import gleam/option.{None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
+import lustre/vdom/vnode
+import session_view/operator
 import web_view/home
 import web_view/sessions.{
   type Entry, type Report, Entry, Glance, Live, Report, Saved,
 }
 import web_view/signins
+import web_view/thread_send
+import web_view/view/inbox
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: Element(message)) -> List(String)
@@ -85,6 +89,7 @@ fn start(
     activity: fn(_, deliver) { deliver(answered) },
     rename: None,
     manage: None,
+    thread_send: None,
     create: None,
     folders: None,
     elsewhere: None,
@@ -289,4 +294,339 @@ fn index_of(html: String, needle: String) -> Int {
     Ok(#(before, _)) -> string.length(before)
     Error(Nil) -> -1
   }
+}
+
+// --- the message field (protocol-change/118) --------------------------------
+
+type Sent =
+  #(String, String, operator.Delivery)
+
+// A start whose page holds the capability to send. The capability records each
+// message it is asked to send and never answers, so a test decides what the
+// daemon said by dispatching the answer itself.
+fn sending(
+  asked: Subject(Sent),
+  answered: List(#(String, Report)),
+) -> home.Start {
+  home.Start(
+    ..start(home.OperatorCeiling, answered),
+    thread_send: Some(fn(session, text, delivery, _deliver) {
+      process.send(asked, #(session, text, delivery))
+    }),
+  )
+}
+
+fn received(asked: Subject(Sent)) -> List(Sent) {
+  case process.receive(asked, 0) {
+    Ok(sent) -> [sent, ..received(asked)]
+    Error(Nil) -> []
+  }
+}
+
+// Every keyed node's key in a rendered tree, so a test can say that a box was
+// replaced (its key changed) and so drawn empty, as the browser would draw it.
+fn keys(node: vnode.Element(message)) -> List(String) {
+  case node {
+    vnode.Element(key:, children:, ..) | vnode.Fragment(key:, children:, ..) ->
+      list.append([key], list.flat_map(children, keys))
+    vnode.Map(child:, ..) -> keys(child)
+    vnode.Memo(view:, ..) -> keys(view())
+    vnode.Text(..) | vnode.UnsafeInnerHtml(..) -> []
+  }
+}
+
+fn box_keys(model: home.Model) -> List(String) {
+  keys(home.view(model))
+  |> list.filter(string.contains(_, "send-"))
+}
+
+// Each state of a thread offers the buttons that fit it: an approval a Queue
+// alone with the words that say what it waits behind, an idle session one Send,
+// a working one a Queue and a Steer.
+pub fn each_state_offers_its_own_buttons_test() {
+  let model = opened(sending(process.new_subject(), reports()))
+
+  // The default thread is the approval's.
+  let approval = drawn(model)
+  assert string.contains(approval, "held behind the approval")
+  assert string.contains(approval, ">Queue</button>")
+  assert !string.contains(approval, ">Steer</button>")
+  assert !string.contains(approval, ">Send</button>")
+
+  let idle = drawn(run(model, home.InboxOpened("A")))
+  assert string.contains(idle, ">Send</button>")
+  assert !string.contains(idle, ">Queue</button>")
+  assert !string.contains(idle, ">Steer</button>")
+  assert !string.contains(idle, "held behind the approval")
+
+  let working = drawn(run(model, home.InboxOpened("C")))
+  assert string.contains(working, ">Queue</button>")
+  assert string.contains(working, ">Steer</button>")
+  assert !string.contains(working, ">Send</button>")
+}
+
+// A button names its delivery, and the box is labelled for its session, as a
+// text node of the page's own words.
+pub fn the_buttons_name_their_delivery_test() {
+  let model = opened(sending(process.new_subject(), reports()))
+  let working = drawn(run(model, home.InboxOpened("C")))
+
+  assert string.contains(working, "name=\"delivery\"")
+  assert string.contains(working, "value=\"prompt\"")
+  assert string.contains(working, "value=\"steer\"")
+  assert string.contains(working, "aria-label=\"Message to docs sweep\"")
+  assert string.contains(working, "name=\"draft\"")
+}
+
+// A page that holds no capability draws no field: a member's home, an
+// observer's, and an owner's page whose capability was withheld.
+pub fn a_page_without_the_capability_draws_no_field_test() {
+  list.each([home.OperatorCeiling, home.ObserverCeiling], fn(ceiling) {
+    let html = drawn(opened(start(ceiling, reports())))
+    assert !string.contains(html, "<textarea")
+    assert !string.contains(html, "<form")
+    assert !string.contains(html, "Not sent")
+  })
+
+  // A forged message to a page with no capability sends nothing and changes
+  // nothing.
+  let model = opened(start(home.OperatorCeiling, reports()))
+  let forged = run(model, home.ThreadSubmitted("A", "hello", operator.Prompt))
+  assert drawn(forged) == drawn(model)
+}
+
+// The outbox says "Not sent" before, "Sending…" while the daemon works, and the
+// fixed words of each answer after, for the thread the message went to.
+pub fn the_outbox_words_each_state_test() {
+  let asked = process.new_subject()
+  let model = opened(sending(asked, reports()))
+  let model = run(model, home.InboxOpened("A"))
+  assert string.contains(drawn(model), "Not sent<")
+
+  let model = run(model, home.ThreadSubmitted("A", "go on", operator.Prompt))
+  assert received(asked) == [#("A", "go on", operator.Prompt)]
+  assert string.contains(drawn(model), "Sending…")
+
+  let said = fn(answer) { drawn(run(model, home.ThreadAnswered("A", answer))) }
+  assert string.contains(
+    said(thread_send.Delivered(thread_send.Admitted)),
+    "Delivered to web ui · admitted",
+  )
+  assert string.contains(
+    said(thread_send.Delivered(thread_send.Queued)),
+    "Delivered to web ui · queued",
+  )
+  assert string.contains(
+    said(thread_send.Refused(thread_send.NotHeld)),
+    "Not sent: this home no longer holds that session",
+  )
+  assert string.contains(
+    said(thread_send.Refused(thread_send.NotResident)),
+    "Not sent: the session is not running",
+  )
+  assert string.contains(
+    said(thread_send.Refused(thread_send.NotAccepted("<b>raw</b>"))),
+    "Not sent: the session refused it",
+  )
+  assert !string.contains(
+    said(thread_send.Refused(thread_send.NotAccepted("<b>raw</b>"))),
+    "raw",
+  )
+  assert string.contains(
+    said(thread_send.Refused(thread_send.QueueFull)),
+    "Not sent: its queue is full",
+  )
+
+  // Another thread reads as unsent while this one's is out.
+  let other = drawn(run(model, home.InboxOpened("C")))
+  assert string.contains(other, "Not sent<")
+  assert !string.contains(other, "Sending…")
+}
+
+// A delivered message leaves an empty box (the box is a new element, so the
+// browser draws it empty), and a refused one keeps the draft (the box is the
+// same element).
+pub fn a_delivered_message_clears_the_box_and_a_refusal_keeps_it_test() {
+  let asked = process.new_subject()
+  let model = run(opened(sending(asked, reports())), home.InboxOpened("A"))
+  let before = box_keys(model)
+  assert before != []
+
+  let sent = run(model, home.ThreadSubmitted("A", "go on", operator.Prompt))
+  assert box_keys(sent) == before
+
+  let refused =
+    run(
+      sent,
+      home.ThreadAnswered("A", thread_send.Refused(thread_send.QueueFull)),
+    )
+  assert box_keys(refused) == before
+
+  let delivered =
+    run(
+      sent,
+      home.ThreadAnswered("A", thread_send.Delivered(thread_send.Queued)),
+    )
+  assert box_keys(delivered) != before
+}
+
+// An empty or whitespace-only draft, one over the bound, a session the page does
+// not report and a second send while one is out each ask the daemon nothing. A
+// delivered send, and a refused one, let the next go.
+pub fn only_a_sendable_draft_for_a_known_session_is_asked_test() {
+  let asked = process.new_subject()
+  let model = run(opened(sending(asked, reports())), home.InboxOpened("A"))
+  let submit = fn(model, session, text) {
+    run(model, home.ThreadSubmitted(session, text, operator.Prompt))
+  }
+
+  let _ = submit(model, "A", "")
+  let _ = submit(model, "A", "  \n ")
+  let _ = submit(model, "A", string.repeat("x", 16_385))
+  let _ = submit(model, "gone", "hello")
+  assert received(asked) == []
+
+  let out = submit(model, "A", "one")
+  let _ = submit(out, "A", "two")
+  let _ = submit(out, "C", "three")
+  assert received(asked) == [#("A", "one", operator.Prompt)]
+
+  let refused =
+    run(
+      out,
+      home.ThreadAnswered("A", thread_send.Refused(thread_send.QueueFull)),
+    )
+  let _ = submit(refused, "A", "four")
+  assert received(asked) == [#("A", "four", operator.Prompt)]
+}
+
+// A steer reaches the daemon as a steer, and the thread's own text is what is
+// sent.
+pub fn a_steer_is_sent_as_a_steer_test() {
+  let asked = process.new_subject()
+  let model = run(opened(sending(asked, reports())), home.InboxOpened("C"))
+  let _ = run(model, home.ThreadSubmitted("C", "stop that", operator.Steer))
+
+  assert received(asked) == [#("C", "stop that", operator.Steer)]
+}
+
+// The form carries a draft and at most one delivery, and nothing else: a field
+// the form does not have, a second draft or an unknown delivery refuses the
+// event.
+pub fn the_form_is_read_back_by_its_own_shape_test() {
+  assert inbox.submission([#("draft", "hi")]) == Ok(#("hi", operator.Prompt))
+  assert inbox.submission([#("draft", "hi"), #("delivery", "prompt")])
+    == Ok(#("hi", operator.Prompt))
+  assert inbox.submission([#("draft", "hi"), #("delivery", "steer")])
+    == Ok(#("hi", operator.Steer))
+
+  assert inbox.submission([]) == Error(Nil)
+  assert inbox.submission([#("delivery", "prompt")]) == Error(Nil)
+  assert inbox.submission([#("draft", "a"), #("draft", "b")]) == Error(Nil)
+  assert inbox.submission([#("draft", "a"), #("delivery", "follow_up")])
+    == Error(Nil)
+  assert inbox.submission([
+      #("draft", "a"),
+      #("delivery", "steer"),
+      #("delivery", "prompt"),
+    ])
+    == Error(Nil)
+  assert inbox.submission([#("draft", "a"), #("session", "B")]) == Error(Nil)
+}
+
+// The form's submit is beneath the table's region, which the owner's socket
+// admits for a submit and the member's refuses (`home_owner_accepts`), and every
+// other handler the inbox draws is a click beneath it.
+pub fn the_forms_handlers_are_beneath_the_table_test() {
+  let model = opened(sending(process.new_subject(), reports()))
+  let keys =
+    handlers(home.view(model))
+    |> list.filter(string.starts_with(_, home.table_path <> "\t"))
+  let submits = list.filter(keys, string.ends_with(_, "\nsubmit"))
+
+  assert submits != []
+  assert list.all(keys, fn(key) {
+    string.ends_with(key, "\nclick") || string.ends_with(key, "\nsubmit")
+  })
+
+  // And nothing the page registers is a submit outside the table, but the
+  // account panel's own forms.
+  let outside =
+    handlers(home.view(model))
+    |> list.filter(fn(key) {
+      string.ends_with(key, "\nsubmit")
+      && !string.starts_with(key, home.table_path <> "\t")
+    })
+  assert list.all(outside, fn(key) {
+    string.starts_with(key, home.signins_path <> "\t")
+  })
+}
+
+// --- the way back to the inbox ----------------------------------------------
+
+fn creating() -> home.Start {
+  home.Start(
+    ..start(home.OperatorCeiling, reports()),
+    create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+  )
+}
+
+// Once the person has chosen the list or the composer, an "Inbox" control
+// returns to the centre the page lands on. A page that is showing the inbox
+// draws none.
+pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
+  let model = opened(creating())
+  let landed = drawn(model)
+  assert string.contains(landed, "<h1>Inbox</h1>")
+  assert !string.contains(landed, "‹ Inbox")
+  assert !string.contains(landed, "Back to the inbox")
+
+  let listed = run(model, home.ShowingList)
+  assert string.contains(drawn(listed), "‹ Inbox")
+  assert !string.contains(drawn(listed), "<h1>Inbox</h1>")
+
+  let composing = run(model, home.ShowingNew)
+  assert string.contains(drawn(composing), "Back to the inbox")
+
+  // The control returns to the inbox from either, and the selection kept.
+  let pressed = run(model, home.InboxOpened("C"))
+  let back = run(run(pressed, home.ShowingList), home.ShowingInbox)
+  assert string.contains(drawn(back), "<h1>Inbox</h1>")
+  assert string.contains(drawn(back), "Update · docs sweep")
+  let back = run(run(pressed, home.ShowingNew), home.ShowingInbox)
+  assert string.contains(drawn(back), "<h1>Inbox</h1>")
+}
+
+// A page that would land on the composer or the list, because every running
+// session is quiet or none runs, has no inbox to return to and draws no
+// control.
+pub fn a_page_with_no_inbox_to_return_to_draws_no_control_test() {
+  let quiet = [#("A", Report(sessions.Idle, None, []))]
+  let model =
+    opened(
+      home.Start(
+        ..start(home.OperatorCeiling, quiet),
+        create: Some(fn(_, _, _, _, _, _, _) { Nil }),
+      ),
+    )
+
+  list.each([run(model, home.ShowingList), run(model, home.ShowingNew)], fn(m) {
+    assert !string.contains(drawn(m), "‹ Inbox")
+    assert !string.contains(drawn(m), "Back to the inbox")
+  })
+}
+
+// The control is a click beneath the table's region, which every home's socket
+// admits, so it needs no new admission.
+pub fn the_return_control_is_a_click_beneath_the_table_test() {
+  let listed = run(opened(creating()), home.ShowingList)
+  let keys =
+    handlers(home.view(listed))
+    |> list.filter(string.starts_with(_, home.table_path <> "\t"))
+
+  assert keys != []
+  assert list.all(keys, fn(key) {
+    string.ends_with(key, "\nclick") || string.ends_with(key, "\nsubmit")
+  })
+  assert string.contains(drawn(listed), "home-inbox")
 }
