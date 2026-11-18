@@ -39,6 +39,10 @@ final design the owner chose on 2026-11-16. Its section 2 describes it, and
   protocol-change/051.
 - **Not done:**
   - Nothing is built.
+  - Before phase 2, the owner rules on how `person/check` reaches `main`: re-cut
+    the pure half of `project/visible-failures`, or merge
+    `project/warm-template` first (README section 3, question 6). Until then
+    the inbox draws the raw stage word.
   - The project meta layer (router, Mandate, `observe`, verdicts and `auto`,
     publishing inferred work, the attention budget, settings proposals; see
     #1168) has no design.

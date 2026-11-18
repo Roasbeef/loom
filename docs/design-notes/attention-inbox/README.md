@@ -159,10 +159,14 @@ you · 3 insights").
 5. **What is the live monitoring mode?** A rail beside the stream (section 2.3).
    Asks, approvals and stuck strands stay pinned until answered. Finds, check
    results, sub-agent results, errors and peer messages fold once read.
-6. **How does project mode's "check failed" stage reach `main`?** The owner did
-   not rule on this. The build follows the ranking: the raw stage word in phase
-   0, then the pure half of `project/visible-failures`, re-cut onto `main`, in
-   phase 2. Neither depends on #1167's template question.
+6. **How does project mode's "check failed" stage reach `main`?** For now, it
+   does not. The inbox draws an unknown `person/…` stage as its raw word, and
+   `main` already files any `person/` stage under Needs you, so the ticket
+   appears without its check output or Recheck. The owner will come back to
+   this before phase 2. The choice then is to re-cut the pure half of
+   `project/visible-failures` onto `main` (the ranking's recommendation), or
+   to review and merge `project/warm-template` first and take
+   `visible-failures` whole.
 7. **The project meta layer is still not designed.** No concept draws the
    pieces of project mode taken from the DeepSeek super-agent prototype:
    - the router as the one agent you talk to;
@@ -218,7 +222,8 @@ approval pending.
 **Phase 2: project tickets as threads.** The ticket thread shows its stage, its
 question, its PR, its diff stat, its check result and output, and offers
 Recheck, Stop, Retry and Close, with Publish drawn disabled with the daemon's
-reason. `person/check` arrives with the pure half of `visible-failures`.
+reason. `person/check` arrives by whichever route the owner picks for
+question 6, which is due before this phase starts.
 
 **Phase 3: the project view.** Creating a project and posting a request, the
 coordinator's context card, and the meta layer's decisions as threads per

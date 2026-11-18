@@ -355,7 +355,8 @@ The owner did not take option 1. On the questions of section 6 they ruled:
 4. Reviewing a diff is part of this work, in phase 1, reading worktree hunks.
    This is (b), taken without first running section 8's test. The ranking had
    recommended (a) for the first three phases.
-5. Question 5 was not ruled on. The build follows the recommendation.
+5. Question 5 is (c) for now. The owner will choose between (a) and (b)
+   before phase 2.
 
 The owner added two things that no concept drew: a live mode that keeps the
 stream and lifts out items in a rail beside it, and a message field on every
