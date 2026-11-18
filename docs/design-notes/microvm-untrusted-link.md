@@ -153,15 +153,15 @@ census the link sets to `Uncompiled`.
 | Background jobs and their notices | works | works: `NotifyCall`, `WakeCall`, `StrandActivityCall` need only the binding; `live_jobs` reads the orchestrator's own store | nothing |
 | MCP, orchestrator-run servers | works | works: `McpPlanCall`, then capability callbacks during a program | nothing |
 | MCP, the guest's own `[mcp.<name>]` | works | works (the census's `mcp` statuses cross) | nothing |
-| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4399` (`There`)) | same | same as today |
+| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4423` (`There`)) | same | same as today |
 | Extensions' owner-bound calls | works | works (capability callbacks under `about_work`) | nothing |
 | Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:329`) | refused: every hook run is `RunError.Refused`; still refused after the tunnel (protocol-change/117, "Hooks stay refused") | a later change, after 117's preconditions |
-| Goal checks | works (`client/serve.gleam:6961` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
-| Changes tab (worktree diff) | works (`client/serve.gleam:4778` (`observe_worktree`)) | carried by the tunnel (protocol-change/117; refused before it, with the broker's refusal in the tab) | nothing |
-| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4767` (`prepare`)) | carried by the tunnel for a new session (protocol-change/117); a session that stored `Unavailable` before it keeps that (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | nothing for a new session |
+| Goal checks | works (`client/serve.gleam:6994` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
+| Changes tab (worktree diff) | works (`client/serve.gleam:4809` (`observe_worktree`)) | carried by the tunnel (protocol-change/117; refused before it, with the broker's refusal in the tab) | nothing |
+| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4798` (`prepare`)) | carried by the tunnel for a new session (protocol-change/117); a session that stored `Unavailable` before it keeps that (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | nothing for a new session |
 | Peer view of the worktree (multiplayer) | works (`worktree_diff.peer_observation`) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
 | Agent spawn, `fresh` or `my_conversation` | works (orchestrator side) | works | nothing |
-| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3526` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
+| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3533` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
 | Placed blobs, outcomes over 32 MiB (110) | works | works | nothing |
 | Remote evolution | works when the guest's census says `Compiles` | refused: the link sets `Uncompiled` | 109 slice 4 |
