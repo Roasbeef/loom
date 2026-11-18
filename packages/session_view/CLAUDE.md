@@ -69,7 +69,7 @@ pieces and the register's reviews and lifts what needs the owner.
   `FoldsOnceOpened`): the live rail's classifier, pure over `turns.Piece` and
   `approval.Review`. Pending approvals are pinned, keyed `approval:<id>`, in
   the order raised; every other row folds once opened and comes newest first,
-  keyed by its piece (a failed step by `<work key>#<item index>`). A head is
+  keyed by its piece (a turn with failed steps once, under the turn's key, from its divider's failed count). A head carries no identity, and is
   one line of at most 120 graphemes, untrusted text for a text node; a peer
   message's head never claims relevance or that it is unanswered. Stuck
   strands and asks join the pinned group in phase 1.

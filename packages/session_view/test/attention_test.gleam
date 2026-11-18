@@ -49,10 +49,10 @@ fn step(
   )
 }
 
-fn work(key: String, items: List(turns.Item)) -> turns.Piece {
+fn worked(key: String, failed: Int, items: List(turns.Item)) -> turns.Piece {
   turns.Work(
     key:,
-    worked: turns.Worked(None, 0, 0, 0, turns.Finished),
+    worked: turns.Worked(None, 0, 0, failed, turns.Finished),
     items:,
     folding: turns.Folded,
     id: None,
@@ -103,26 +103,21 @@ pub fn a_decided_approval_is_not_lifted_test() {
   assert attention.lift([], decided) == []
 }
 
-pub fn a_failed_step_lifts_once_per_step_with_an_indexed_key_test() {
-  let piece =
-    work("7.0", [
-      step(turns.Done, []),
-      step(turns.Failed, []),
-      step(turns.Pending, []),
-      step(turns.Failed, []),
-    ])
-  let rows = attention.lift([piece], [])
-  assert list.map(rows, fn(row) { row.key }) == ["7.0#3", "7.0#1"]
-  assert list.all(rows, fn(row) { row.kind == attention.FailedStep })
-  assert list.all(rows, fn(row) { row.hold == attention.FoldsOnceOpened })
-  assert list.map(rows, fn(row) { row.head })
-    == ["Run make check", "Run make check"]
+pub fn a_turn_with_failed_steps_lifts_once_under_its_own_key_test() {
+  let piece = worked("7.0", 2, [step(turns.Done, [])])
+  let assert [row] = attention.lift([piece], [])
+  assert row.key == "7.0"
+  assert row.kind == attention.FailedStep
+  assert row.hold == attention.FoldsOnceOpened
+  assert row.head == "2 steps failed"
 }
 
-pub fn a_program_failure_lifts_its_step_even_when_it_reads_as_done_test() {
-  let failure = transcript_line.Line(transcript_line.ProgramFailure, "boom")
-  let rows = attention.lift([work("8.0", [step(turns.Done, [failure])])], [])
-  assert list.map(rows, fn(row) { row.kind }) == [attention.FailedStep]
+// The divider keeps its count while the fold is closed and no step is loaded,
+// which is when the rail used to show nothing.
+pub fn a_closed_fold_with_no_steps_loaded_still_lifts_test() {
+  let assert [row] = attention.lift([worked("7.0", 1, [])], [])
+  assert row.head == "1 step failed"
+  assert attention.lift([worked("7.0", 0, [step(turns.Failed, [])])], []) == []
 }
 
 pub fn a_failed_response_is_a_failed_turn_test() {
@@ -161,17 +156,17 @@ pub fn a_refused_spawn_is_a_failed_turn_and_a_running_one_is_not_test() {
     == []
 }
 
-pub fn a_sub_agent_result_names_the_child_and_outcome_test() {
+pub fn a_sub_agent_result_says_only_its_outcome_test() {
   let assert [row] = attention.lift([returned("r1")], [])
   assert row.kind == attention.SubagentResult("sub:tests")
-  assert row.head == "sub:tests · passed"
+  assert row.head == "passed"
   assert row.hold == attention.FoldsOnceOpened
 }
 
 pub fn a_peer_message_claims_nothing_about_relevance_test() {
   let assert [row] = attention.lift([peer("p1")], [])
   assert row.kind == attention.PeerMessage("sess-9", "main")
-  assert row.head == "sess-9 · main messaged this session"
+  assert row.head == "messaged this session"
   let lower = string.lowercase(row.head)
   assert !string.contains(lower, "relevant")
   assert !string.contains(lower, "unanswered")
@@ -215,7 +210,7 @@ fn piece_for(index: Int, kind: Int) -> turns.Piece {
     1 -> peer(key)
     2 -> plain(key, transcript_line.Failure, "failed")
     3 -> plain(key, transcript_line.Assistant, "fine")
-    4 -> work(key, [step(turns.Failed, []), step(turns.Done, [])])
+    4 -> worked(key, 1, [step(turns.Done, [])])
     5 -> turns.Missed(key, "miss")
     _ -> turns.Spawned(key, None, "p", turns.Primary, turns.Failed, None)
   }

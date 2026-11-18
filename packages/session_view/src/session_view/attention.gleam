@@ -20,31 +20,32 @@
 //// ## Keys and heads
 ////
 //// A row's `key` is the identity the page jumps to in the transcript. It is
-//// always a daemon identity: a piece's own key, an approval's id with the
-//// `approval:` prefix (approvals are register rows, not lane rows), or, for
-//// a step inside a turn's fold, the turn's key and the item's index
-//// (`<work key>#<index>`), so a step stays addressable when its fold is
-//// closed and holds no step keys of its own. A row's `head` is one line of
-//// at most `head_limit` graphemes. Heads quote session text (a command, a
-//// child's outcome, a session's name), so a view must draw them as text
-//// nodes and never as markup. The head for a peer message says only that a
-//// message arrived: the daemon knows it stored the message, not that it is
-//// relevant or that anyone has answered it, and the rail must not claim
-//// either.
+//// always a daemon identity: a piece's own key, or an approval's id with the
+//// `approval:` prefix (approvals are register rows, not lane rows). A turn
+//// whose work had failed steps lifts once, under the turn's own key, from the
+//// failed count its divider carries, so the row exists while the fold is
+//// closed and its steps are not loaded, and it does not change identity as
+//// steps arrive. A row's `head` is one line of at most `head_limit`
+//// graphemes. Heads quote session text (a child's outcome, a refusal), so a
+//// view must draw them as text nodes and never as markup. A head carries no
+//// identity: a child's result says only its outcome, and the head for a peer
+//// message says only that a message arrived. The daemon knows it stored the
+//// message, not that it is relevant or that anyone has answered it, and the
+//// rail must not claim either. The view names the source from the row's
+//// `kind`.
 ////
 //// ## Order
 ////
 //// `lift` returns the pinned rows first, in the order the approvals were
 //// raised, and then the insights newest first. The lane is oldest first, so
 //// the insights are the lane's rows reversed. Each piece lifts at most once,
-//// and a turn's fold lifts once per failed step.
+//// and a turn's work lifts once for its failed steps.
 
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/approval
-import session_view/step_words
 import session_view/transcript_line
 import session_view/turns
 
@@ -176,10 +177,11 @@ fn piece_rows(piece: turns.Piece) -> List(Lifted) {
   case piece {
     turns.Plain(block:, ..) -> failed_response(block.key, block.rows)
 
-    turns.Work(key:, items:, ..) ->
-      items
-      |> list.index_map(fn(item, index) { item_rows(key, index, item) })
-      |> list.flatten
+    turns.Work(key:, worked:, items:, ..) ->
+      list.append(
+        failed_steps(key, worked.failed),
+        list.flat_map(items, narrated_failure),
+      )
 
     turns.Spawned(key:, child:, purpose:, standing: turns.Failed, refusal:, ..) -> {
       let named = option.unwrap(child, "a child")
@@ -196,15 +198,11 @@ fn piece_rows(piece: turns.Piece) -> List(Lifted) {
     }
 
     turns.Returned(key:, child:, outcome:, ..) -> [
-      insight(key, SubagentResult(child), child <> " · " <> outcome),
+      insight(key, SubagentResult(child), outcome),
     ]
 
     turns.Peer(key:, session:, strand:, ..) -> [
-      insight(
-        key,
-        PeerMessage(session, strand),
-        session <> " · " <> strand <> " messaged this session",
-      ),
+      insight(key, PeerMessage(session, strand), "messaged this session"),
     ]
 
     // The remaining pieces are the owner's own words, the harness's
@@ -221,34 +219,27 @@ fn piece_rows(piece: turns.Piece) -> List(Lifted) {
   }
 }
 
-/// The rows of one item folded under a turn's divider. `index` is the item's
-/// place among the turn's items, which with the turn's key names a step even
-/// when the fold is closed.
-fn item_rows(work_key: String, index: Int, item: turns.Item) -> List(Lifted) {
-  // Only a failed response or a failed step is lifted from a fold.
+/// One insight for a turn whose work had failed steps, or none when it had
+/// none. It is read from the turn's divider (`Worked.failed`), which the
+/// window keeps for a turn whose fold is closed and whose steps are not
+/// loaded, and it is keyed by the turn's own piece key, so the row stays the
+/// same row as steps are added and the fold is opened or closed.
+fn failed_steps(work_key: String, failed: Int) -> List(Lifted) {
+  // The count is the head: the steps themselves are in the turn's fold.
+  case failed {
+    0 -> []
+    1 -> [insight(work_key, FailedStep, "1 step failed")]
+    n -> [insight(work_key, FailedStep, int.to_string(n) <> " steps failed")]
+  }
+}
+
+/// The failed response, if any, of one item folded under a turn's divider.
+fn narrated_failure(item: turns.Item) -> List(Lifted) {
+  // Only a narrated block can hold a failed response; steps are counted by
+  // the divider and memory rows are not failures.
   case item {
     turns.Narrated(block:, ..) -> failed_response(block.key, block.rows)
-
-    turns.Step(standing:, words:, detail:, ..) -> {
-      let program_failed =
-        list.any(detail, fn(line) {
-          line.speaker == transcript_line.ProgramFailure
-        })
-
-      // A program that failed is a failed step even if its call read as done.
-      case standing, program_failed {
-        turns.Failed, _ | _, True -> [
-          insight(
-            work_key <> "#" <> int.to_string(index),
-            FailedStep,
-            step_words.text(words),
-          ),
-        ]
-        turns.Pending, False | turns.Done, False -> []
-      }
-    }
-
-    turns.Memory(..) -> []
+    turns.Step(..) | turns.Memory(..) -> []
   }
 }
 
