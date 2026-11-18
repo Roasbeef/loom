@@ -22,44 +22,56 @@
    marks do not reach 4.5:1 on the light surfaces. `--color-X-text` is the
    value for words drawn in that hue: in the dark theme it is the same colour,
    and in the light theme a darker one. `fg-faint` is a mark colour only and
-   has no text token. scripts/web_client_contrast_check.py computes the ratio
-   of every text token on every surface it is drawn on, and fails `make lint`
-   under 4.5:1. */
+   has no text token.
+
+   The values are written in OKLCH (lightness, chroma, hue), because the
+   palette is built from lightness targets and that space keeps lightness
+   perceptual. Each theme has one neutral hue for its surfaces and its text:
+   262 in the dark theme and a faint warm 85 in the light one. The surfaces
+   step by a fixed lightness (sunk, page, raised, code), so a card reads as
+   raised without a shadow. Text clears both WCAG's ratio and APCA's
+   lightness contrast, which tracks how dark themes are read. The status
+   marks are spaced in lightness as well as hue, so added and removed, the
+   current strand and a peer, and the attention colour against both stay
+   apart for a reader with deuteranopia or protanopia, where hue alone fails.
+   Every value is inside sRGB, so the browser draws what was measured.
+   scripts/web_client_contrast_check.sh holds all of that and fails
+   `make lint` when a value breaks it. */
 @theme {
   --color-*: initial;
-  --color-bg: #141517;
-  --color-bg-raised: #1b1c1f;
-  --color-bg-sunk: #111214;
-  --color-bg-user: #1b1c1f;
-  --color-code: #212226;
-  --color-fg: #e8e6e1;
-  --color-fg-quiet: #9a978f;
-  --color-fg-faint: #66645e;
-  --color-divider: #2b2d31;
-  --color-current: #7c96ff;
-  --color-signal: #f0a24f;
-  --color-signal-text: #f0a24f;
-  --color-advisor: #f0a24f;
-  --color-advisor-text: #f0a24f;
-  --color-peer: #a78bfa;
-  --color-peer-text: #a78bfa;
-  --color-danger: #f06595;
-  --color-danger-text: #f06595;
-  --color-on-danger: #141517;
-  --color-added: #51cf66;
-  --color-added-text: #51cf66;
-  --color-added-bg: #1f4d2e;
-  --color-removed-bg: #4a1a29;
-  --color-strand-2: #3cc9b4;
-  --color-strand-2-text: #3cc9b4;
-  --color-strand-3: #a3b85a;
-  --color-strand-3-text: #a3b85a;
-  --color-strand-4: #4fb3e8;
-  --color-strand-4-text: #4fb3e8;
-  --color-strand-5: #d873c8;
-  --color-strand-5-text: #d873c8;
-  --color-strand-6: #e07a5f;
-  --color-strand-6-text: #e07a5f;
+  --color-bg: oklch(0.205 0.006 262);
+  --color-bg-raised: oklch(0.238 0.007 262);
+  --color-bg-sunk: oklch(0.172 0.006 262);
+  --color-bg-user: oklch(0.238 0.007 262);
+  --color-code: oklch(0.270 0.008 262);
+  --color-fg: oklch(0.950 0.004 262);
+  --color-fg-quiet: oklch(0.785 0.010 262);
+  --color-fg-faint: oklch(0.560 0.010 262);
+  --color-divider: oklch(0.305 0.008 262);
+  --color-current: oklch(0.790 0.105 258);
+  --color-signal: oklch(0.760 0.150 68);
+  --color-signal-text: oklch(0.800 0.140 70);
+  --color-advisor: oklch(0.760 0.150 68);
+  --color-advisor-text: oklch(0.800 0.140 70);
+  --color-peer: oklch(0.640 0.180 305);
+  --color-peer-text: oklch(0.800 0.110 305);
+  --color-danger: oklch(0.650 0.190 8);
+  --color-danger-text: oklch(0.800 0.115 10);
+  --color-on-danger: oklch(0.172 0.006 262);
+  --color-added: oklch(0.890 0.180 148);
+  --color-added-text: oklch(0.850 0.170 148);
+  --color-added-bg: oklch(0.330 0.060 150);
+  --color-removed-bg: oklch(0.285 0.065 5);
+  --color-strand-2: oklch(0.810 0.120 190);
+  --color-strand-2-text: oklch(0.810 0.120 190);
+  --color-strand-3: oklch(0.820 0.140 118);
+  --color-strand-3-text: oklch(0.820 0.140 118);
+  --color-strand-4: oklch(0.800 0.110 232);
+  --color-strand-4-text: oklch(0.800 0.110 232);
+  --color-strand-5: oklch(0.800 0.125 340);
+  --color-strand-5-text: oklch(0.800 0.125 340);
+  --color-strand-6: oklch(0.790 0.120 42);
+  --color-strand-6-text: oklch(0.790 0.120 42);
   --color-pill-ok-bg: color-mix(in srgb, var(--color-added) 12%, transparent);
   --color-pill-wait-bg: color-mix(in srgb, var(--color-signal) 14%, transparent);
   --color-pill-bad-bg: color-mix(in srgb, var(--color-danger) 12%, transparent);
@@ -96,76 +108,76 @@
    after the light media query as a light value. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --color-bg: #f6f5f2;
-    --color-bg-raised: #ffffff;
-    --color-bg-sunk: #efede8;
-    --color-bg-user: #ffffff;
-    --color-code: #f1efe9;
-    --color-fg: #1d1c1a;
-    --color-fg-quiet: #6f6b63;
-    --color-fg-faint: #a29d92;
-    --color-divider: #e2dfd8;
-    --color-current: #3b5bdb;
-    --color-signal: #d9822b;
-    --color-signal-text: #975a1e;
-    --color-advisor: #d9822b;
-    --color-advisor-text: #975a1e;
-    --color-peer: #8b5cf6;
-    --color-peer-text: #764ed1;
-    --color-danger: #d6336c;
-    --color-danger-text: #c02d61;
-    --color-on-danger: #ffffff;
-    --color-added: #2f9e44;
-    --color-added-text: #237833;
-    --color-added-bg: #d3efda;
-    --color-removed-bg: #fce6ec;
-    --color-strand-2: #0f9d8a;
-    --color-strand-2-text: #0b7567;
-    --color-strand-3: #7a8a3a;
-    --color-strand-3-text: #616e2e;
-    --color-strand-4: #1a8fc4;
-    --color-strand-4-text: #14709a;
-    --color-strand-5: #b0429f;
-    --color-strand-5-text: #a73e97;
-    --color-strand-6: #c2502e;
-    --color-strand-6-text: #b04829;
+    --color-bg: oklch(0.975 0.004 85);
+    --color-bg-raised: oklch(1.000 0.000 85);
+    --color-bg-sunk: oklch(0.952 0.006 85);
+    --color-bg-user: oklch(1.000 0.000 85);
+    --color-code: oklch(0.952 0.006 85);
+    --color-fg: oklch(0.215 0.006 85);
+    --color-fg-quiet: oklch(0.500 0.012 85);
+    --color-fg-faint: oklch(0.700 0.014 85);
+    --color-divider: oklch(0.905 0.008 85);
+    --color-current: oklch(0.500 0.190 262);
+    --color-signal: oklch(0.660 0.145 64);
+    --color-signal-text: oklch(0.510 0.115 58);
+    --color-advisor: oklch(0.660 0.145 64);
+    --color-advisor-text: oklch(0.510 0.115 58);
+    --color-peer: oklch(0.660 0.170 315);
+    --color-peer-text: oklch(0.500 0.200 312);
+    --color-danger: oklch(0.570 0.195 356);
+    --color-danger-text: oklch(0.510 0.185 358);
+    --color-on-danger: oklch(1.000 0.000 85);
+    --color-added: oklch(0.470 0.130 142);
+    --color-added-text: oklch(0.470 0.120 142);
+    --color-added-bg: oklch(0.945 0.055 150);
+    --color-removed-bg: oklch(0.905 0.040 6);
+    --color-strand-2: oklch(0.600 0.100 190);
+    --color-strand-2-text: oklch(0.500 0.085 190);
+    --color-strand-3: oklch(0.600 0.110 120);
+    --color-strand-3-text: oklch(0.495 0.095 120);
+    --color-strand-4: oklch(0.600 0.120 235);
+    --color-strand-4-text: oklch(0.505 0.105 235);
+    --color-strand-5: oklch(0.580 0.170 340);
+    --color-strand-5-text: oklch(0.505 0.160 340);
+    --color-strand-6: oklch(0.600 0.150 40);
+    --color-strand-6-text: oklch(0.505 0.140 40);
     --shadow-float: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
   }
 }
 :root[data-theme="light"] {
-  --color-bg: #f6f5f2;
-  --color-bg-raised: #ffffff;
-  --color-bg-sunk: #efede8;
-  --color-bg-user: #ffffff;
-  --color-code: #f1efe9;
-  --color-fg: #1d1c1a;
-  --color-fg-quiet: #6f6b63;
-  --color-fg-faint: #a29d92;
-  --color-divider: #e2dfd8;
-  --color-current: #3b5bdb;
-  --color-signal: #d9822b;
-  --color-signal-text: #975a1e;
-  --color-advisor: #d9822b;
-  --color-advisor-text: #975a1e;
-  --color-peer: #8b5cf6;
-  --color-peer-text: #764ed1;
-  --color-danger: #d6336c;
-  --color-danger-text: #c02d61;
-  --color-on-danger: #ffffff;
-  --color-added: #2f9e44;
-  --color-added-text: #237833;
-  --color-added-bg: #d3efda;
-  --color-removed-bg: #fce6ec;
-  --color-strand-2: #0f9d8a;
-  --color-strand-2-text: #0b7567;
-  --color-strand-3: #7a8a3a;
-  --color-strand-3-text: #616e2e;
-  --color-strand-4: #1a8fc4;
-  --color-strand-4-text: #14709a;
-  --color-strand-5: #b0429f;
-  --color-strand-5-text: #a73e97;
-  --color-strand-6: #c2502e;
-  --color-strand-6-text: #b04829;
+  --color-bg: oklch(0.975 0.004 85);
+  --color-bg-raised: oklch(1.000 0.000 85);
+  --color-bg-sunk: oklch(0.952 0.006 85);
+  --color-bg-user: oklch(1.000 0.000 85);
+  --color-code: oklch(0.952 0.006 85);
+  --color-fg: oklch(0.215 0.006 85);
+  --color-fg-quiet: oklch(0.500 0.012 85);
+  --color-fg-faint: oklch(0.700 0.014 85);
+  --color-divider: oklch(0.905 0.008 85);
+  --color-current: oklch(0.500 0.190 262);
+  --color-signal: oklch(0.660 0.145 64);
+  --color-signal-text: oklch(0.510 0.115 58);
+  --color-advisor: oklch(0.660 0.145 64);
+  --color-advisor-text: oklch(0.510 0.115 58);
+  --color-peer: oklch(0.660 0.170 315);
+  --color-peer-text: oklch(0.500 0.200 312);
+  --color-danger: oklch(0.570 0.195 356);
+  --color-danger-text: oklch(0.510 0.185 358);
+  --color-on-danger: oklch(1.000 0.000 85);
+  --color-added: oklch(0.470 0.130 142);
+  --color-added-text: oklch(0.470 0.120 142);
+  --color-added-bg: oklch(0.945 0.055 150);
+  --color-removed-bg: oklch(0.905 0.040 6);
+  --color-strand-2: oklch(0.600 0.100 190);
+  --color-strand-2-text: oklch(0.500 0.085 190);
+  --color-strand-3: oklch(0.600 0.110 120);
+  --color-strand-3-text: oklch(0.495 0.095 120);
+  --color-strand-4: oklch(0.600 0.120 235);
+  --color-strand-4-text: oklch(0.505 0.105 235);
+  --color-strand-5: oklch(0.580 0.170 340);
+  --color-strand-5-text: oklch(0.505 0.160 340);
+  --color-strand-6: oklch(0.600 0.150 40);
+  --color-strand-6-text: oklch(0.505 0.140 40);
   --shadow-float: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
 }
 :host {
