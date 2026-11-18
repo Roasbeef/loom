@@ -344,3 +344,47 @@ pub fn adversarial_corpus_test() {
     let assert Error(_report) = msgpack.decode(bytes)
   })
 }
+
+// --- value bound --------------------------------------------------------
+
+/// An array32 of `count` nils: `count + 1` values in `count + 5` bytes.
+fn nil_array(count: Int) -> BitArray {
+  let nils =
+    bit_array.concat(list.map(sequence.range(1, count), fn(_) { <<0xc0>> }))
+  <<0xdd, count:size(32), nils:bits>>
+}
+
+pub fn decode_bounded_counts_every_value_test() {
+  // A scalar is one value, an array another per item, and a map counts its
+  // keys: {1: [nil]} holds four.
+  let assert Ok(_) = msgpack.decode_bounded(<<0xc0>>, max_values: 1)
+  let assert Error(_) = msgpack.decode_bounded(<<0xc0>>, max_values: 0)
+  let map = <<0x81, 0x01, 0x91, 0xc0>>
+  let assert Ok(_) = msgpack.decode_bounded(map, max_values: 4)
+  let assert Error(_) = msgpack.decode_bounded(map, max_values: 3)
+}
+
+pub fn decode_bounded_accepts_a_payload_at_its_bound_test() {
+  let payload = nil_array(10_000)
+  let assert Ok(value) = msgpack.decode_bounded(payload, max_values: 10_001)
+  assert msgpack.decode(payload) == Ok(value)
+}
+
+pub fn decode_bounded_refuses_a_payload_one_past_its_bound_test() {
+  let assert Error(_) =
+    msgpack.decode_bounded(nil_array(10_000), max_values: 10_000)
+}
+
+pub fn decode_bounded_refuses_a_wide_payload_far_past_its_bound_test() {
+  let assert Error(_) =
+    msgpack.decode_bounded(nil_array(100_000), max_values: 1000)
+}
+
+pub fn decode_bounded_spends_one_allowance_across_nesting_test() {
+  // Two sibling arrays of 50 nils: 103 values; neither array alone is over
+  // a bound of 60, but together they are.
+  let part = nil_array(50)
+  let both = <<0x92, part:bits, part:bits>>
+  let assert Ok(_) = msgpack.decode_bounded(both, max_values: 103)
+  let assert Error(_) = msgpack.decode_bounded(both, max_values: 60)
+}

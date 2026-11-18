@@ -132,8 +132,45 @@ pub fn encode(value: MsgPackValue) -> Result(BitArray, EncodeError) {
 /// ```
 ///
 pub fn decode(bytes: BitArray) -> Result(MsgPackValue, CorruptionReport) {
-  case decode_value(bytes, 0) {
-    Ok(#(value, rest)) ->
+  // Every value begins with a byte of its own, so a payload holds at most as
+  // many values as it has bytes, and an allowance of one more than its size
+  // is never spent. The plain decode is the bounded one with a bound it
+  // cannot reach, and the two share every line of the walk.
+  decode_bounded(bytes, max_values: bit_array.byte_size(bytes) + 1)
+}
+
+/// Decodes exactly one msgpack value of at most `max_values` values,
+/// refusing any other exactly as `decode` does. Each nil, bool, integer,
+/// float, str, bin, array and map counts as one value, wherever it sits; a
+/// map's keys are values and count. So `[]` holds one value, `{"a": [1, 2]}`
+/// holds five, and a bound below one refuses every payload.
+///
+/// A payload from an untrusted sender needs this form. A value can take one
+/// byte, so a payload within its byte limit can still expand to as many
+/// values as it has bytes, and the decode allocates for each. The count is
+/// enforced as the walk goes: a value is counted before any of it is read,
+/// and the first value past the bound is a `CorruptionReport` at its bytes.
+/// A hostile payload of many small values therefore costs the decoder no
+/// more than `max_values` values of work before it is refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert msgpack.decode_bounded(<<0x92, 0x01, 0x02>>, max_values: 3)
+///   == Ok(msgpack.ArrayValue([msgpack.IntValue(1), msgpack.IntValue(2)]))
+/// ```
+///
+/// ```gleam
+/// let assert Error(_report) =
+///   msgpack.decode_bounded(<<0x92, 0x01, 0x02>>, max_values: 2)
+/// ```
+///
+pub fn decode_bounded(
+  bytes: BitArray,
+  max_values max_values: Int,
+) -> Result(MsgPackValue, CorruptionReport) {
+  case decode_value(bytes, 0, max_values) {
+    Ok(#(value, rest, _left)) ->
       case bit_array.bit_size(rest) {
         0 -> Ok(value)
         _ -> Error(fail(rest, "no trailing bytes after the value"))
@@ -292,45 +329,74 @@ fn excerpt(bytes: BitArray) -> String {
   }
 }
 
-/// Decodes one MsgPack value and returns it with the remaining unparsed bytes.
+/// Decodes one MsgPack value and returns it with the remaining unparsed bytes
+/// and the value allowance left after it.
 ///
 /// `depth` counts the containers already entered; a new array or map is
 /// admitted only while `depth < max_depth`, which bounds the recursion.
+/// `budget` is the number of values the decode may still read. The value is
+/// counted before any of it is read, so a payload over its bound is refused
+/// at the first value past it, and the values inside a container are spent
+/// from the same allowance as the container's own siblings.
 fn decode_value(
   bytes: BitArray,
   depth: Int,
-) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
+  budget: Int,
+) -> Result(#(MsgPackValue, BitArray, Int), CorruptionReport) {
+  case budget >= 1 {
+    True -> decode_tagged(bytes, depth, budget - 1)
+    False -> Error(fail(bytes, "at most the allowed number of values"))
+  }
+}
+
+/// Decodes the value a tag byte begins. `left` is the allowance after this
+/// value has been counted; a leaf returns it unchanged and a container
+/// returns what its elements left.
+fn decode_tagged(
+  bytes: BitArray,
+  depth: Int,
+  left: Int,
+) -> Result(#(MsgPackValue, BitArray, Int), CorruptionReport) {
   case bytes {
-    <<0xc0, rest:bits>> -> Ok(#(NilValue, rest))
-    <<0xc2, rest:bits>> -> Ok(#(BoolValue(value: False), rest))
-    <<0xc3, rest:bits>> -> Ok(#(BoolValue(value: True), rest))
-    <<0xcb, value:float, rest:bits>> -> Ok(#(FloatValue(value:), rest))
-    <<0xcc, value:size(8), rest:bits>> -> Ok(#(IntValue(value:), rest))
-    <<0xcd, value:size(16), rest:bits>> -> Ok(#(IntValue(value:), rest))
-    <<0xce, value:size(32), rest:bits>> -> Ok(#(IntValue(value:), rest))
-    <<0xcf, value:size(64), rest:bits>> -> Ok(#(IntValue(value:), rest))
-    <<0xd0, value:signed-size(8), rest:bits>> -> Ok(#(IntValue(value:), rest))
-    <<0xd1, value:signed-size(16), rest:bits>> -> Ok(#(IntValue(value:), rest))
-    <<0xd2, value:signed-size(32), rest:bits>> -> Ok(#(IntValue(value:), rest))
-    <<0xd3, value:signed-size(64), rest:bits>> -> Ok(#(IntValue(value:), rest))
-    <<0xd9, length:size(8), rest:bits>> -> decode_string(length, rest)
-    <<0xda, length:size(16), rest:bits>> -> decode_string(length, rest)
-    <<0xdb, length:size(32), rest:bits>> -> decode_string(length, rest)
-    <<0xc4, length:size(8), rest:bits>> -> decode_binary(length, rest)
-    <<0xc5, length:size(16), rest:bits>> -> decode_binary(length, rest)
-    <<0xc6, length:size(32), rest:bits>> -> decode_binary(length, rest)
-    <<0xdc, length:size(16), rest:bits>> -> decode_array(length, rest, depth)
-    <<0xdd, length:size(32), rest:bits>> -> decode_array(length, rest, depth)
-    <<0xde, length:size(16), rest:bits>> -> decode_map(length, rest, depth)
-    <<0xdf, length:size(32), rest:bits>> -> decode_map(length, rest, depth)
-    <<tag, rest:bits>> if tag <= 0x7f -> Ok(#(IntValue(value: tag), rest))
-    <<tag, rest:bits>> if tag >= 0xe0 -> Ok(#(IntValue(value: tag - 256), rest))
+    <<0xc0, rest:bits>> -> Ok(#(NilValue, rest, left))
+    <<0xc2, rest:bits>> -> Ok(#(BoolValue(value: False), rest, left))
+    <<0xc3, rest:bits>> -> Ok(#(BoolValue(value: True), rest, left))
+    <<0xcb, value:float, rest:bits>> -> Ok(#(FloatValue(value:), rest, left))
+    <<0xcc, value:size(8), rest:bits>> -> Ok(#(IntValue(value:), rest, left))
+    <<0xcd, value:size(16), rest:bits>> -> Ok(#(IntValue(value:), rest, left))
+    <<0xce, value:size(32), rest:bits>> -> Ok(#(IntValue(value:), rest, left))
+    <<0xcf, value:size(64), rest:bits>> -> Ok(#(IntValue(value:), rest, left))
+    <<0xd0, value:signed-size(8), rest:bits>> ->
+      Ok(#(IntValue(value:), rest, left))
+    <<0xd1, value:signed-size(16), rest:bits>> ->
+      Ok(#(IntValue(value:), rest, left))
+    <<0xd2, value:signed-size(32), rest:bits>> ->
+      Ok(#(IntValue(value:), rest, left))
+    <<0xd3, value:signed-size(64), rest:bits>> ->
+      Ok(#(IntValue(value:), rest, left))
+    <<0xd9, length:size(8), rest:bits>> -> decode_string(length, rest, left)
+    <<0xda, length:size(16), rest:bits>> -> decode_string(length, rest, left)
+    <<0xdb, length:size(32), rest:bits>> -> decode_string(length, rest, left)
+    <<0xc4, length:size(8), rest:bits>> -> decode_binary(length, rest, left)
+    <<0xc5, length:size(16), rest:bits>> -> decode_binary(length, rest, left)
+    <<0xc6, length:size(32), rest:bits>> -> decode_binary(length, rest, left)
+    <<0xdc, length:size(16), rest:bits>> ->
+      decode_array(length, rest, depth, left)
+    <<0xdd, length:size(32), rest:bits>> ->
+      decode_array(length, rest, depth, left)
+    <<0xde, length:size(16), rest:bits>> ->
+      decode_map(length, rest, depth, left)
+    <<0xdf, length:size(32), rest:bits>> ->
+      decode_map(length, rest, depth, left)
+    <<tag, rest:bits>> if tag <= 0x7f -> Ok(#(IntValue(value: tag), rest, left))
+    <<tag, rest:bits>> if tag >= 0xe0 ->
+      Ok(#(IntValue(value: tag - 256), rest, left))
     <<tag, rest:bits>> if tag >= 0x80 && tag <= 0x8f ->
-      decode_map(tag - 0x80, rest, depth)
+      decode_map(tag - 0x80, rest, depth, left)
     <<tag, rest:bits>> if tag >= 0x90 && tag <= 0x9f ->
-      decode_array(tag - 0x90, rest, depth)
+      decode_array(tag - 0x90, rest, depth, left)
     <<tag, rest:bits>> if tag >= 0xa0 && tag <= 0xbf ->
-      decode_string(tag - 0xa0, rest)
+      decode_string(tag - 0xa0, rest, left)
     <<tag, _rest:bits>> -> Error(tag_error(bytes, tag))
     _ -> Error(fail(bytes, "a byte-aligned msgpack value"))
   }
@@ -365,12 +431,13 @@ fn tag_name(tag: Int) -> String {
 fn decode_string(
   length: Int,
   bytes: BitArray,
-) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
+  left: Int,
+) -> Result(#(MsgPackValue, BitArray, Int), CorruptionReport) {
   use #(payload, rest) <- result.try(take_bytes(length, bytes, "str"))
 
   // Verify that the decoded payload is valid UTF-8.
   case bit_array.to_string(payload) {
-    Ok(value) -> Ok(#(StringValue(value:), rest))
+    Ok(value) -> Ok(#(StringValue(value:), rest, left))
     Error(Nil) -> Error(fail(payload, "valid utf-8 in a str payload"))
   }
 }
@@ -379,9 +446,10 @@ fn decode_string(
 fn decode_binary(
   length: Int,
   bytes: BitArray,
-) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
+  left: Int,
+) -> Result(#(MsgPackValue, BitArray, Int), CorruptionReport) {
   use #(payload, rest) <- result.map(take_bytes(length, bytes, "bin"))
-  #(BinaryValue(bytes: payload), rest)
+  #(BinaryValue(bytes: payload), rest, left)
 }
 
 /// Slices off a prefix of `length` bytes from the input bit array.
@@ -413,15 +481,17 @@ fn decode_array(
   length: Int,
   bytes: BitArray,
   depth: Int,
-) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
+  left: Int,
+) -> Result(#(MsgPackValue, BitArray, Int), CorruptionReport) {
   use Nil <- result.try(check_depth(bytes, depth))
-  use #(items, rest) <- result.map(decode_array_loop(
+  use #(items, rest, left) <- result.map(decode_array_loop(
     length,
     bytes,
     [],
     depth + 1,
+    left,
   ))
-  #(ArrayValue(items:), rest)
+  #(ArrayValue(items:), rest, left)
 }
 
 /// Loop decoding remaining array elements.
@@ -430,13 +500,14 @@ fn decode_array_loop(
   bytes: BitArray,
   accumulator: List(MsgPackValue),
   depth: Int,
-) -> Result(#(List(MsgPackValue), BitArray), CorruptionReport) {
+  left: Int,
+) -> Result(#(List(MsgPackValue), BitArray, Int), CorruptionReport) {
   // Check if all array elements have been decoded.
   case remaining {
-    0 -> Ok(#(list.reverse(accumulator), bytes))
+    0 -> Ok(#(list.reverse(accumulator), bytes, left))
     _ -> {
-      use #(item, rest) <- result.try(decode_value(bytes, depth))
-      decode_array_loop(remaining - 1, rest, [item, ..accumulator], depth)
+      use #(item, rest, left) <- result.try(decode_value(bytes, depth, left))
+      decode_array_loop(remaining - 1, rest, [item, ..accumulator], depth, left)
     }
   }
 }
@@ -446,16 +517,18 @@ fn decode_map(
   length: Int,
   bytes: BitArray,
   depth: Int,
-) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
+  left: Int,
+) -> Result(#(MsgPackValue, BitArray, Int), CorruptionReport) {
   use Nil <- result.try(check_depth(bytes, depth))
-  use #(entries, rest) <- result.map(decode_map_loop(
+  use #(entries, rest, left) <- result.map(decode_map_loop(
     length,
     bytes,
     [],
     dict.new(),
     depth + 1,
+    left,
   ))
-  #(MapValue(entries:), rest)
+  #(MapValue(entries:), rest, left)
 }
 
 /// Loop decoding map key-value pairs while verifying uniqueness of keys.
@@ -469,12 +542,16 @@ fn decode_map_loop(
   accumulator: List(#(MsgPackValue, MsgPackValue)),
   seen: Dict(MsgPackValue, Nil),
   depth: Int,
-) -> Result(#(List(#(MsgPackValue, MsgPackValue)), BitArray), CorruptionReport) {
+  left: Int,
+) -> Result(
+  #(List(#(MsgPackValue, MsgPackValue)), BitArray, Int),
+  CorruptionReport,
+) {
   // Check if all map pairs have been decoded.
   case remaining {
-    0 -> Ok(#(list.reverse(accumulator), bytes))
+    0 -> Ok(#(list.reverse(accumulator), bytes, left))
     _ -> {
-      use #(key, rest) <- result.try(decode_value(bytes, depth))
+      use #(key, rest, left) <- result.try(decode_value(bytes, depth, left))
 
       // Ensure that this key has not already been seen in the map.
       use Nil <- result.try(case dict.has_key(seen, key) {
@@ -482,13 +559,14 @@ fn decode_map_loop(
         True -> Error(fail(bytes, "unique map keys (a key repeats)"))
       })
 
-      use #(value, rest) <- result.try(decode_value(rest, depth))
+      use #(value, rest, left) <- result.try(decode_value(rest, depth, left))
       decode_map_loop(
         remaining - 1,
         rest,
         [#(key, value), ..accumulator],
         dict.insert(seen, key, Nil),
         depth,
+        left,
       )
     }
   }
