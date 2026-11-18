@@ -348,6 +348,7 @@ on the source's request compares tokens.
 | `exBranch`, `applied` | The tip of the branch `loom/<session>` on the executor, and the tip of the last apply. `-1` is none. |
 | `tok`, `tokAtt` | The scope's attach token, and the attempt that minted it. |
 | `cfgWs`, `bound`, `reb` | The configured `checkout_workspace`: `good` (a `worktree` workspace the executor serves), `shared` (served in `shared` mode, which refuses a state) or `unknown` (a name the executor does not serve). And the workspace the executor's ledger has bound the session's scope to, or `none`. History: an attach changed the workspace of an open scope. |
+| `srec` | The source's own record of the scope in its session file: `open` is an attach whose close it never recorded, `closed` is anything else. It is `open` after `CkAttachUnknownDies` and stays so through the retry that frees the scope, because a rebound attach does not record the close. The model gave every attach the executor's incarnation before this variable, as if the source knew it. |
 | `net`, `answers` | `StateApply` requests in flight to the executor, and replies in flight to the source. |
 | `aliveX`, `lastLand` | The executor is up; how the last apply that changed the tree was admitted. |
 | `pc`, `mtip`, `mtipAtt`, `mreq`, `minc`, `mtok` | The mover's memory: its place in the step, the state it carries, the attempt that captured it, the request it waits on, and the scope it attached. Lost by a crash. |
@@ -370,6 +371,7 @@ The mover's `pc` takes the values `idle`, `start`, `captured`, `recorded`,
 | `CkAttach` | The source attaches a scope for the landing. An open scope accepts a rebind at its own incarnation; a closed one reopens at the next. The first attach branches the executor's tree from the workspace's base, and a reopen recreates the tree from `loom/<session>`. |
 | `CkAttachUnknown`, `FixConfig` | An attach that names a workspace the executor does not serve: the ledger binds the scope to the name and the plane cannot be built, so the attach fails. With `CloseFailedAttach` the host closes a scope that the attach created or reopened, in the same turn, and the move is refused. With `CloseReboundUnserved` it closes a scope that was open too, when the scope holds no tree record; a scope with a tree is a session's own and is left open. The operator corrects the configuration and restarts the daemon (the mover's memory is lost; no crash is spent), once the move has settled or is stalled at the attach and not while a landing is under way. |
 | `CkAttachUnknownDies` | The same attach, when the source dies while the executor handles it and the build fails at the owner link (`OwnerDiesInAttach`): the ledger holds an open scope bound to the name and no plane, and the mover's memory is lost. The retry is `CkAttachUnknown` and frees the scope when `CloseReboundUnserved` holds. With the rule on, `FixConfig` waits for the scope to be freed, so the model assumes the name is corrected after the retry. |
+| `StaleOpen`, `LearnOk` (inside `AttachAllowed`) | A source whose record is `open` attaches at the recorded incarnation, finds the executor's scope closed there, and learns the close by asking how it ended. The executor judges that question by workspace first, so under the corrected name it is refused for the workspace the scope is bound to. With `LearnsUnderBound` the source asks again under the workspace the refusal names, which the executor answers with the stored outcome of the closed scope. Without it the corrected name is refused for a scope that is closed and holds no tree. |
 | `AbandonMismatch` | An attach that the ledger refuses for its workspace, which only an open scope or one with a tree does under the ruled rules, is a final refusal (`MismatchRefused`) and the move is abandoned. |
 | `CkAsk`, `CkResend` | One `StateApply` under the scope's incarnation and token, put in the network; the same request again when no reply came. |
 | `ExApply`, `ExRefuse`, `LoseAnswer` | The executor takes a request. It judges the fence first, then `holds_tip`, and moves the branch with `checkout -B` only when the rule says the tree does not hold the tip. Or it refuses the apply for good. A reply is lost. |
@@ -436,6 +438,7 @@ when its HEAD is the tip or the last apply for the session was of this tip.
 | `LaptopUntouched` | The directory is as the operator last left it: `<<head, wt>> = opView`. The step never writes it. |
 | `NoApplyOutsideFence` | An apply that changed the tree was admitted by the fence, and the scope it was admitted under was minted by the current attempt. |
 | `AbandonRestores` | After an abandon the laptop owns the session alone (`a = active => b = absent`), the mover never holds a state that another attempt captured, and a corrected configuration is not blocked: once `cfgWs = good` an attach is allowed, unless the scope is open, so no closed scope that a failed attempt left stays bound to the workspace it named. |
+| `ClosedEmptyScopeTakesTheNextName` | After the retry that closes an unserved, empty scope, the next move with a served name is accepted with no further operator step: a closed scope with no tree record and a good name is never refused for its bound workspace, whatever the source's record says. |
 | `OpenScopeKeepsWorkspace` | An attach never changes the workspace of a scope that is open. A live session in a `shared` workspace has an open scope and no tree record, and must not find it moved. |
 | `NoLeak` | A settled move leaves no scope that the source attached: not after an abandon, and not after the hand-over. |
 | `CheckoutSettles` | `a = moving ~> a \in {moved, active}`, under weak fairness of every protocol step and restart of the step and of Move, and of the operator's correction of a wrong configuration (`FixConfig`). Operator edits of the directory, refusals, lost replies, reruns and abandons are not fair. |
@@ -515,8 +518,9 @@ scope's; and the cell naming a finished attempt. Dropping weak fairness of
 | The same, with a name the executor does not serve | the same three, `InitWs = {unknown}` | The attach binds the scope and fails, and the corrected attach is refused. The move never settles, so `CheckoutSettles` breaks (exit 13). |
 | An attach also rebinds an open scope | `RebindOpen = TRUE`, `CloseFailedAttach = FALSE`, `InitWs = {unknown}` | The scope a failed attach left open is rebound to the corrected workspace, so an open scope changes workspace. `OpenScopeKeepsWorkspace` breaks. |
 | A source that dies in the attach for an unserved name leaves an open scope, and the retry does not free it | `OwnerDiesInAttach = TRUE`, `CloseReboundUnserved = FALSE`, `InitWs = {unknown}` | The host before this rule. The retry is a rebound attach and the open scope stays; the corrected name is refused for it and the move is abandoned with the scope open. `NoLeak` breaks. |
+| The source cannot learn the close of a scope the host closed as empty | `LearnsUnderBound = FALSE`, `CloseReboundUnserved = TRUE`, `OwnerDiesInAttach = TRUE`, `InitWs = {unknown}` | `MoveCheckoutMutantSourceKeepsOpenRecord.cfg`, the source before the fix. The retry frees the scope on the executor and the source's record stays `open`. The corrected name is attached at that incarnation, the executor answers that the scope is there, and the source's question about the close under the corrected name is refused for the bound workspace. `ClosedEmptyScopeTakesTheNextName` breaks. It is the trace of the live re-drive of 2026-11-17: the executor row closed with no tree and the corrected name refused. |
 | What the ruled rules leave | the ruled rules, `InitWs = {shared}`, `MaxCrashes = 1` | Not a rule turned off. The source dies in the landing after the attach and before it closes the scope, the operator corrects the name, and the move is refused for the open scope's workspace and abandoned with the scope still open. `NoLeak` breaks. `MoveCheckoutAlsoWorkspaces.cfg` has `MaxCrashes = 0` for this reason and violates `NoLeak` with 1. |
-| The operator corrects the name before the dead source's retry | the ruled rules, `InitWs = {unknown}`, `OwnerDiesInAttach = TRUE` | Not a rule turned off, and not run: the `FixConfig` guard is keyed on `CloseReboundUnserved`, so the model assumes the name is corrected only after the scope is freed. The code takes the other order. The attach under the new name is `WorkspaceMismatch`, the move is abandoned and the scope stays open (`an_attach_refused_for_the_scopes_workspace_abandons_the_move_test` pins `Open`), and the refusal's advice is then followed twice. |
+| The operator corrects the name before the dead source's retry | the ruled rules, `InitWs = {unknown}`, `OwnerDiesInAttach = TRUE` | Not a rule turned off, and not run: the `FixConfig` guard is keyed on `CloseReboundUnserved`, so the model assumes the name is corrected only after the scope is freed. The code takes the other order. The attach under the new name is `WorkspaceMismatch`, the move is abandoned and the scope stays open (`an_attach_refused_for_the_scopes_workspace_abandons_the_move_test` pins `Open`), and the refusal's advice is then followed once, because the rule `LearnsUnderBound` lets the corrected name land after that round (`a_name_corrected_before_the_retry_needs_one_round_of_the_advice_test`). |
 
 ### Finding: `holds_tip` takes a stale tree for the state that was asked for (lines read at 024afdadf)
 
@@ -708,3 +712,35 @@ corrected before the retry, and setting the name back records the close. `FixCon
 modelled as waiting for the scope to be freed. That encodes the assumption that the
 operator does not correct the name before the dead source's retry; the guard is keyed on
 `CloseReboundUnserved`, the same constant as the freeing rule.
+
+The rule above left one state that the model could not see, and the live re-drive of
+2026-11-17 found it. After the retry freed the scope on the executor the corrected name was
+still refused once, with the text for an open scope. The cause is the source's own record of
+the scope. The retry is a rebound attach, `workspace.close_if_opened` records a close only
+for an attach that created or reopened the scope, so the record still read `open` at
+incarnation 1 and the corrected name was attached there. The executor answered
+`StaleIncarnation`, the source asked how that close ended under the corrected name, and the
+executor judged the question by workspace first (`exec_ledger.scope_at`) and refused it for
+the workspace the scope was bound to. The model missed it because it chose every attach's
+incarnation from the executor's ledger, as if the source always knew it, so a stale record
+could not arise. `srec`, `StaleOpen` and `LearnOk` add the record. `LearnsUnderBound` is the
+rule: on that refusal the source asks again under the workspace the executor names. The scope
+is closed cleanly with no tree, which is the only state in which the attach could have
+reported the stale incarnation for another workspace. A close is not a read, but the ask
+cannot close a live scope: the incarnation never goes down, so a scope seen closed can be
+open again only at the next incarnation, where the executor refuses the ask as stale and the
+source records nothing. The source learns the close and the attach rebinds to the corrected
+name. `ClosedEmptyScopeTakesTheNextName` states the property and restates the third conjunct
+of `AbandonRestores` for this trace, so that a violation names it. `MoveCheckoutAlsoWorkspaces.cfg`
+and `MoveCheckout.cfg` check it, and
+`MoveCheckoutMutantSourceKeepsOpenRecord.cfg` removes the rule and breaks it.
+
+The model does not run the order in which the name is corrected before the retry. Its
+operator only moves `cfgWs` to `good`, and it never names the bound workspace again, so the
+second round of the advice is outside it. By the code the order takes one round and the same
+rule: the refusal is true (the scope is open), naming the bound workspace is a rebound
+attach that the host closes as empty, and the corrected name then lands. The Gleam test
+`a_name_corrected_before_the_retry_needs_one_round_of_the_advice_test` runs that sequence on
+one source. Before the fix the corrected name was refused again after that round, which is
+why the advice took two rounds. One state is outside both: the crash inside a landing leaves
+the record `open` and the scope held, which `MoveCheckoutMutantCrashInLanding.cfg` records.

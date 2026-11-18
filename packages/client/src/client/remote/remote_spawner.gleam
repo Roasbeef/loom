@@ -614,7 +614,9 @@ fn reached(
 /// Records a definitive spawn refusal before `answer` turns it into prose.
 /// The call site and resolved node identify the attempt without copying request
 /// or refusal text. A retryable answer has no final diagnostic, and an unknown
-/// destination never puts the model-supplied name in the log.
+/// destination never puts the model-supplied name in the log. A `NotYetOpen`
+/// answer is `peer_mail.NotOpen`, which every asker retries as it does silence,
+/// and which the drain does not count as silence (`remote_drain.attempt_spawn`).
 ///
 /// ## Examples
 ///
@@ -662,8 +664,12 @@ pub fn spawn_answer(
   }
 
   // Logging precedes conversion of the typed remote refusal into peer prose;
-  // a failure before reaching the port keeps its original meaning.
+  // a failure before reaching the port keeps its original meaning. A spawn the
+  // receiver answered `NotYetOpen` is `NotOpen` and not silence: the receiver
+  // answered, so the drain still asks it after its other children in the same
+  // pass, and the join that frees a full pool's room is not skipped.
   case heard {
+    Ok(Error(remote_spawn.NotYetOpen(..))) -> Error(peer_mail.NotOpen)
     Ok(reply) -> answer(Ok(reply))
     Error(failure) -> Error(failure)
   }
