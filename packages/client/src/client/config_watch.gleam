@@ -11,7 +11,7 @@
 ////
 //// ## Flow
 ////
-//// `start` → `observe` → `read` → `settle`
+//// `start` → `observe` → `read` → `session_view` → `settle`
 ////
 //// 1. `start` runs one weft actor per session, in the session's restartable
 ////    service tier, which observes the file once a tick.
@@ -33,15 +33,20 @@
 //// not needed; the opposite order could miss a save forever. The race is closed
 //// toward the reopen.
 
+import client/untrusted_config
 import gleam/bit_array
 import gleam/bool
 import gleam/crypto
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import simplifile
 import telemetry/field
 import telemetry/log.{type Logger}
+import tom
 import weft/actor
 
 /// The largest configuration file the watcher reads; a larger one is treated
@@ -138,9 +143,9 @@ pub fn tick(watcher: Subject(Message)) -> Nil {
   process.call(watcher, 5000, Probe)
 }
 
-/// The fingerprint a watcher compares: the SHA-256 of the file's text, in hex,
-/// or `Error(Nil)` for a file that is missing, not a regular file, larger than
-/// `max_file_bytes`, or not text.
+/// The fingerprint a watcher compares: the SHA-256, in hex, of what a session
+/// reads from the file (`session_view`), or `Error(Nil)` for a file that is
+/// missing, not a regular file, larger than `max_file_bytes`, or not text.
 ///
 /// ## Examples
 ///
@@ -242,7 +247,88 @@ fn read(path: String) -> Result(#(String, String), Nil) {
   )
   use text <- result.try(simplifile.read(path) |> result.replace_error(Nil))
   let digest =
-    crypto.hash(crypto.Sha256, bit_array.from_string(text))
+    crypto.hash(crypto.Sha256, bit_array.from_string(session_view(text)))
     |> bit_array.base16_encode
   Ok(#(digest, text))
+}
+
+/// The text a fingerprint is taken of: the parsed document in a fixed order,
+/// without the tables only the daemon reads.
+///
+/// Two texts with the same view open a session identically, which is what lets
+/// the watcher ignore the difference. A text that does not parse is returned as
+/// it is, so the old rule (the whole text, settled by two reads, then checked)
+/// applies to it unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // config_watch.session_view("[executors.a]\nnode = \"x@h\"\n")
+/// //   == config_watch.session_view("")
+/// ```
+///
+@internal
+pub fn session_view(text: String) -> String {
+  // A text that is not a TOML document has no tables to leave out, so it stands
+  // for itself; a document is rendered without the daemon's tables.
+  case tom.parse(text) {
+    Error(_) -> text
+    Ok(document) -> {
+      // A session reads the key paths of the two untrusted-link tables and
+      // nothing else in them; a table the reader refuses names none, exactly as
+      // `serve.link_secrets` would find.
+      let masked =
+        untrusted_config.from_document(document)
+        |> result.map(untrusted_config.secret_files)
+        |> result.unwrap([])
+
+      document
+      |> dict.drop(daemon_tables)
+      |> render_fields
+      |> string.append("\nmasked keys: " <> string.inspect(masked))
+    }
+  }
+}
+
+/// The top-level tables a session never reads a value from. `executor_link` and
+/// `executor_listener` are here because the view carries their one read, the
+/// key paths, apart from the tables themselves.
+const daemon_tables = [
+  "executors", "distribution", "executor_link", "executor_listener",
+]
+
+/// Renders a table's entries ordered by key, so two documents that hold the
+/// same values render the same whatever order the file wrote them in.
+fn render_fields(fields: Dict(String, tom.Toml)) -> String {
+  fields
+  |> dict.to_list
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> list.map(fn(entry) { string.inspect(entry.0) <> "=" <> render(entry.1) })
+  |> string.join(";")
+}
+
+/// Renders one value. Containers recurse; every scalar is its own `inspect`,
+/// which is exact for each of them.
+fn render(value: tom.Toml) -> String {
+  case value {
+    tom.Table(fields) -> "table{" <> render_fields(fields) <> "}"
+    tom.InlineTable(fields) -> "inline{" <> render_fields(fields) <> "}"
+    tom.Array(items) -> "[" <> string.join(list.map(items, render), ",") <> "]"
+    tom.ArrayOfTables(rows) ->
+      "tables["
+      <> string.join(
+        list.map(rows, fn(row) { "{" <> render_fields(row) <> "}" }),
+        ",",
+      )
+      <> "]"
+    tom.Int(_)
+    | tom.Float(_)
+    | tom.Infinity(_)
+    | tom.Nan(_)
+    | tom.Bool(_)
+    | tom.String(_)
+    | tom.Date(_)
+    | tom.Time(_)
+    | tom.DateTime(..) -> string.inspect(value)
+  }
 }

@@ -61,7 +61,16 @@ daemon session also watches the file it loaded
 has settled (two reads a second apart agree) and the new text loads under the
 session's profile and model, the session reopens as soon as no strand is
 running, which rebuilds everything the file configures. A save that does not load
-is logged as `config.refused` and changes nothing. The reopen closes the session's
+is logged as `config.refused` and changes nothing. The watcher compares what a
+session reads, not the bytes: a save that only moves comments or the order of
+keys, or that adds, removes or changes an `[executors.<name>]` row or the
+`[distribution]` table, does not reopen a session, because a session validates
+those tables when it opens and never takes a value from them (the daemon takes
+rows through `executors.reload`, or when it starts). `[executor_link]` and
+`[executor_listener]` count only by the private key file each names, which a
+session masks in its jail, so the first guest `loom vm up` adds, or a table that
+names another key, reopens a session once, and a further guest, a moved
+certificate or a new listen address does not. The reopen closes the session's
 attachments (the terminal reattaches, a web page needs a reload) and ends its
 background jobs. An agent can suggest an edit with `propose` and `target:
 "config"`; the owner approves it in the proposals review, and the approval

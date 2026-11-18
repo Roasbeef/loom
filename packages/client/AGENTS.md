@@ -10945,6 +10945,18 @@ own path. A session with no file, or no daemon, runs no watcher. A reopen ends
 attachments (the terminal reattaches, a web page needs a reload) and the
 session's background jobs.
 
+The fingerprint is of `config_watch.session_view`, not of the bytes: the parsed
+document, keys ordered, without `[executors.*]`, `[distribution]`,
+`[executor_link]` and `[executor_listener]`, plus the key paths those last two
+name (`untrusted_config.secret_files`, the reader `serve.link_secrets` uses to
+mask them in the session's jail). A session open validates the daemon tables
+(`catalog.parse_with_document`, which `Source.check` also runs) and reads a value
+from none of them, so `loom vm up`, `rm` and `--vm` rewriting `[executors.NAME]`
+rows do not reopen open sessions; the first `[executor_link]` (a new key to mask)
+still does, once. Text that does not parse is its own view. Do not drop a table
+from `daemon_tables` without finding its session-open reader first: the key mask
+was the one read found in these.
+
 `serve.check_config(path, text, profile, model)` is `load_config`'s parse over a
 text, with no secret resolved: `load_config` is the read and `parse_config`, and
 the eleven-field result is the alias `Loaded`.
