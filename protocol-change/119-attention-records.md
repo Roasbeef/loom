@@ -1,7 +1,9 @@
 # protocol-change/119: the `ask` and `notice` tools and their records
 
 **Status**: ACCEPTED 2026-11-18. The owner accepted autonomous protocol
-changes for the attention inbox build on 2026-11-17. Not built.
+changes for the attention inbox build on 2026-11-17. Built through phase 1a
+(the two tools, both records, the capabilities and the prompt sentence); the
+answer's delivery is phase 1b. See "As built" at the end.
 **Affects**: two new built-in tools (`ask`, `notice`); two new reserved
 `fact.custom` prefixes in the session store (`attention/ask/`,
 `attention/find/`); one new capability module (`cap/attention`) with its
@@ -16,9 +18,9 @@ protocol-change/120, and the send that carries an answer is
 host closure of a tool), [086](086-memory-proposals.md) (a tool that files a
 durable record and never blocks), [106](106-project-mode.md)
 (`project_report`) and [118](118-inbox-thread-send.md) (a person's message to
-a session from Home). **Implemented**: not yet. Expected: `tools/ask`,
-`tools/notice`, `client/attention`, `client/contributions`, `client/serve`,
-`client/codemode`, `client/cap_placement`, `runtime/api`, `cap/attention`,
+a session from Home). **Implemented**: phase 1a. `core/attention`, `tools/attention`,
+`client/attention`, `client/contributions`, `client/serve`, `client/codemode`,
+`client/cap_placement`, `client/project_jail`, `runtime/api`, `cap/attention`,
 `codemode/attention`, `codemode/tool_gate`, `codemode/vet/policy`,
 `tools/prelude`, `prompt/default`.
 
@@ -403,3 +405,48 @@ either.
 - The answer object: `client/test/client` tests that a submission is validated
   against the stored record, that a refused prompt leaves the record `open`, and
   that the fenced object round trips to the types in the table.
+
+## As built
+
+Phase 1a follows the decision above, with these differences, each forced by
+what the code does.
+
+- **The codec is `core/attention`, not `client/attention`.** The tools package
+  may not depend on `client`, so a record type kept there would have left the
+  tools' seam speaking untyped JSON, and the feed's readers in `session_view`
+  and `web_view` need the same decoder. `core` holds no `@external`, so the
+  codec also compiles for the JavaScript target the page runs on.
+  `client/attention` is the writer.
+- **A guard cell serializes insertion.** The bound has to hold between two
+  concurrent calls, and the writer expects only the keys a transaction names,
+  so two inserts that each counted 31 open asks would both commit. Each
+  insertion therefore also replaces `attention/ask/guard` or
+  `attention/find/guard`, guarded by the seq it read before counting, and the
+  second of two racers loses with `RaceLost` and re-reads. The cell sits under
+  a reserved prefix, and its suffix is not an id, so no scan counts it. This
+  is "read inside the same commit" as the code can state it: the count and the
+  write are one decision, with no process of ours between the store and the
+  caller.
+- **`cap/attention` is on `harness_only_cap_modules`, not
+  `program_cap_modules`.** The door is host-installed, and a static entry would
+  render the module into the `code_mode` description of a host that cannot
+  answer it. `client/codemode.seam_allowlist` admits it where the door is
+  wired, on the workspace and orchestration seams, as it admits `cap/notes`.
+- **The worker ceiling names `ask` exactly.** `project_jail.ToolCeiling` gains
+  `refused_names`, since a prefix would also refuse any extension tool named
+  after it.
+- **The router and worker prompt packs drop the new sentence.** They are
+  derived from the default pack, and neither holds a usable `ask`.
+- **Pruning runs at insertion.** Nothing settles a record until the feed
+  exists, so `client/attention` applies `core/attention.retired` with the scan
+  an insertion already holds. The settling commit of protocol-change/120 will
+  call the same rule.
+- **Strictness the tool adds.** A question or an option with a field outside
+  the schema is refused by name, which is how "no schema field accepts markup
+  or a question identifier" is held against a model that sends one anyway.
+  A find kind `question` is `Wondering` in the type, since `Question` is the
+  type of an ask's questions.
+- **The `owner` routing.** A strand cannot be named `owner`: a spawned strand's
+  name begins with `sub:` and the primary is `main`, so the stored routing
+  string is unambiguous.
+
