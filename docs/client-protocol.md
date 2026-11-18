@@ -1080,7 +1080,7 @@ it (section 3.27).
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `attention.read`, `approval.read`,
+`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `attention.read`, `approval.read`, `sessions.review`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
 `control_use` (`client/daemon/server.gleam:3114-1130`).
 
@@ -2122,6 +2122,47 @@ which is decided on the session's own page.
 
 All four are reads or settle one record, and the three reads remain available
 during a drain.
+
+### 3.35 `sessions.review`
+
+A session's worktree as a review: the files its workspace changed, each file's
+hunks and a diff stat, in the order a reviewer reads them. It takes `session` (a
+canonical identity) and the current `epoch`, and is refused `stale_epoch` when
+it is old. The owner, and a member holding the session at any role (observers
+included), are answered. See [Protocol 123](../protocol-change/123-review-hunks.md).
+
+The daemon does not run Git. It calls the resident session's own observation of
+its workspace, which clears a fixed set of Git calls through the session's
+broker inside its sandbox, and reads the answer into hunks. Reply:
+
+```json
+{"v":2,"reply_to":1,"event":"sessions.review","body":{"observed_at_ms":1763400000000,"repository":"head","stat":{"files":3,"added":41,"removed":9},"omitted":0,"extent":"whole","files":[{"path":"src/retry.gleam","change":"modified","section":"source","content":"text","added":30,"removed":9,"hunks_omitted":0,"extent":"whole","hunks":[{"header":"@@ -80,6 +80,9 @@ pub fn retry(","omitted":0,"shortened":0,"lines":[{"k":" ","o":80,"n":80,"t":"let wait = base"},{"k":"-","o":81,"t":"loop(base)"},{"k":"+","n":81,"t":"loop(base * 2)"}]}]}]}}
+```
+
+`repository` is `head`, `unborn` or `not_repository`. `files` is ordered source,
+then tests, then docs, and by path inside each; every `path` is relative to the
+workspace. A file's `change` is `added`, `modified` or `deleted` (the observation
+does not detect renames, so a moved file is a removal and an addition),
+`content` is `text`, `binary`, `no_net_change` or `metadata_only` (a binary file
+carries no hunks), and `extent` is `whole` or `cut`. A line's `k` is `+`, `-`, a
+space or `\`; `o` and `n` are its line numbers in the old and new file when the
+hunk header gave them; `t` is its text, which is the repository's own and is
+drawn as text.
+
+Everything is bounded and every cut is counted: at most 24 files (`omitted` is
+the files read and not carried), 12 hunks a file (`hunks_omitted`), 80 lines a
+hunk (a hunk's `omitted`), 400 bytes a line (`shortened`), and 48,000 encoded
+bytes, whose last files go first. `stat.files` counts every file the observation
+read; line counts are lower bounds on a `cut` file. Commits made since the
+session began are not shown.
+
+Refusals: `stale_epoch`; `bad_request` (not a canonical identity); `not_found` (an
+unknown session, or one the credential does not hold); `not_resident` (the
+session is saved, opening, stopping or has no observation); `unavailable` (the
+credential's workspace reads, counted with the web view's Changes tab, were
+spent, or the observation failed or ran past its deadline, in fixed words that
+never carry the repository's own). The read waits up to 14 s. The home page
+reads the same review in process (`server.home_review`).
 
 ## 4. The session endpoint
 

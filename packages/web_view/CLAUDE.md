@@ -1152,6 +1152,17 @@ page keys and nonces, and the relay into the session's gateway.
   text nodes, a state's class is one of three literals chosen from the closed
   `State`, there is no handler, and the pane is memoized on the trace. With
   no program it is the heading and one line saying so.
+- `web_view/review_feed` is the review pane's typed read of a worktree
+  (protocol-change/123), drawn by no page yet. `of_board` turns a
+  `worktree_view.Board` into a `Review`: files with hunks (read by
+  `session_view/diff_view`), a `Stat`, the files ordered source, tests, docs
+  (`order`, `section_of`), and every cut counted (`max_files` 24, `max_hunks` 12,
+  `max_hunk_lines` 80, `max_line_bytes` 400, `max_bytes` 48,000; `omitted`,
+  `hunks_omitted`, `Hunk.omitted`, `Hunk.shortened`, `Extent`). A path that is not
+  workspace-relative is left out. `encode` and `decode` are the one wire shape, the
+  decoder is total and holds the same bounds; the daemon's `sessions.review` and the
+  home's `server.home_review` both answer it. Every string is repository text, drawn
+  as a text node only.
 - The Changes pane reads the workspace for an owner's or an operator's page
   (protocol-change/051, the addendum of 2026-10-05). `Transport.worktree` is
   `None` on an observer's page and otherwise a capability that returns at once

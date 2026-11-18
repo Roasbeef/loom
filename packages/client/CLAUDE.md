@@ -7274,6 +7274,20 @@ gateway; `ui_socket.answer_ask_for` and `close_find_for` are the home's acts, an
 take a strand; `send_message` and `message_to` stay the main-strand defaults, and
 the gateway's `unknown_strand` is `thread_send.UnknownStrand`.
 
+`daemon/review_door` is the walk of `sessions.review` (protocol-change/123): the
+registry's authority at the call (owner or any membership, observers included;
+`not_found` for a non-holder), residency (`not_resident` for a saved session or a
+resident with no observation), one `Reach.reserve` from the credential's workspace
+reads (the Changes tab's count, `ui_sessions.reserve_worktree_read`), then the
+resident's own observation (`server.Config.worktree` projects `Resident.worktree`,
+the `worktree_diff.capture_since` closure, which clears its Git calls through the
+session's broker in its sandbox) in a weft run with a 14 s deadline. The board is
+decoded with `worktree_view.decode` and built into a `web_view/review_feed.Review`;
+a failure is `unavailable` in fixed words, never the observation's text. The daemon
+runs no Git and reads no workspace byte itself (Rule Zero). `server.home_review` is
+the home's in-process read; the control socket spends from the web view's allowance
+when `config.ui` is set and from none when it is not.
+
 Epoch-checked `sessions.activity` (`protocol.SessionActivity`)
 takes 1 to 24 distinct canonical ids and reports what each resident is doing.
 The owner is answered for any id; a member only for ids its credential holds a
