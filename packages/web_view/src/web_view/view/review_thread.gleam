@@ -203,7 +203,7 @@ fn file(
       ]),
       staged_mark(each.path, pins, offer),
     ]),
-    case review_pin_rule.loose(pins) {
+    case pins.loose {
       [] -> element.none()
       ids ->
         html.div(
@@ -356,7 +356,7 @@ fn find_action(
             ])
           Error(Nil) -> element.none()
         },
-        case dict_get(offer.state, find.id) {
+        case option.from_result(dict.get(offer.state.revisions, find.id)) {
           Some(review_pane.Revision(_)) -> find_form(find.id, acting, offer)
           Some(review_pane.Unread(words:)) ->
             html.p([attribute.class("inbox-hold")], [html.text(words)])
@@ -557,7 +557,7 @@ fn outbox(offer: Offer(message)) -> Element(message) {
 
       // A Send that is out disables the buttons.
       let sending = case state.progress {
-        review_pane.Sending(_) -> True
+        review_pane.Sending(..) -> True
         review_pane.Resting | review_pane.Settled(_) -> False
       }
 
@@ -649,7 +649,7 @@ fn staged_lines(state: State) -> List(Element(message)) {
 fn receipt(state: State) -> Element(message) {
   case state.progress {
     review_pane.Resting -> element.none()
-    review_pane.Sending(_) ->
+    review_pane.Sending(..) ->
       html.p([attribute.class("inbox-outbox"), attribute.role("status")], [
         html.text("Sending…"),
       ])
@@ -765,12 +765,4 @@ fn key_of(offer: Offer(message), control: String, index: Int) -> String {
   <> control
   <> "-"
   <> int.to_string(index)
-}
-
-/// The revision the page holds for a find, if it read one.
-fn dict_get(state: State, id: String) -> Option(review_pane.Revision) {
-  case dict.get(state.revisions, id) {
-    Ok(revision) -> Some(revision)
-    Error(Nil) -> None
-  }
 }

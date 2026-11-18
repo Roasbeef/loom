@@ -153,9 +153,9 @@ pub fn refusal_words(refusal: Refusal) -> String {
     FileMissing -> "A comment names a file this review no longer holds."
     TooLong(bytes:) ->
       "This review is "
-      <> int_text(bytes)
+      <> int.to_string(bytes)
       <> " bytes, over the "
-      <> int_text(composer.prompt_limit)
+      <> int.to_string(composer.prompt_limit)
       <> " byte limit. Shorten a comment or a note."
   }
 }
@@ -200,9 +200,4 @@ fn find_line(action: FindAction) -> String {
     Some(note) -> base <> " " <> note
     None -> base
   }
-}
-
-/// A count as text.
-fn int_text(count: Int) -> String {
-  int.to_string(count)
 }

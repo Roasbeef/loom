@@ -149,17 +149,6 @@ pub fn at_line(pins: FilePins, hunk: Int, line: Int) -> List(String) {
   |> list.map(fn(anchor) { anchor.find })
 }
 
-/// The finds a file draws at its top.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert review_pin_rule.loose(review_pin_rule.FilePins("a", [], ["f"])) == ["f"]
-/// ```
-pub fn loose(pins: FilePins) -> List(String) {
-  pins.loose
-}
-
 /// Whether a find names a path. A leading `./` on the find's path is dropped.
 fn names(pin: Pin, path: String) -> Bool {
   case pin.path {

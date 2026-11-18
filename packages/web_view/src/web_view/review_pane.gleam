@@ -41,7 +41,6 @@ import core/attention.{type Closure}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import session_view/operator
 import web_view/review_feed.{type Review}
 import web_view/review_outbox_rule
@@ -105,8 +104,11 @@ pub type Progress {
   /// No send is out and no receipt is held.
   Resting
 
-  /// A send is out. `done` are the closes already answered.
-  Sending(done: List(CloseResult))
+  /// A send is out. `done` are the closes already answered, and `prompt` is the
+  /// text that was composed, and checked against the composer's bound, before
+  /// the first close was asked. Staging is refused while a send is out, so the
+  /// text is the one that was checked.
+  Sending(done: List(CloseResult), prompt: String)
 
   /// The send ended, and this is what it did.
   Settled(receipt: Receipt)
@@ -273,12 +275,17 @@ pub fn files(state: State) -> List(String) {
 ///   == Some(review_stage_rule.Approve)
 /// ```
 pub fn verdict(state: State, chosen: Verdict) -> State {
-  State(
-    ..state,
-    staging: review_stage_rule.verdict(state.staging, chosen),
-    problem: None,
-    progress: rested(state.progress),
-  )
+  // A send that is out has checked what it carries, so nothing changes it.
+  case state.progress {
+    Sending(..) -> state
+    Resting | Settled(_) ->
+      State(
+        ..state,
+        staging: review_stage_rule.verdict(state.staging, chosen),
+        problem: None,
+        progress: Resting,
+      )
+  }
 }
 
 /// Stages a file's comment, or records why it was refused.
@@ -289,11 +296,19 @@ pub fn verdict(state: State, chosen: Verdict) -> State {
 /// assert review_pane.comment(review_pane.closed(), "x", "t").problem != None
 /// ```
 pub fn comment(state: State, path: String, text: String) -> State {
-  case review_stage_rule.comment(state.staging, files(state), path, text) {
-    Ok(staging) ->
-      State(..state, staging:, problem: None, progress: rested(state.progress))
-    Error(problem) ->
-      State(..state, problem: Some(review_stage_rule.problem_words(problem)))
+  // A send that is out has checked what it carries, so nothing changes it.
+  case state.progress {
+    Sending(..) -> state
+    Resting | Settled(_) ->
+      case review_stage_rule.comment(state.staging, files(state), path, text) {
+        Ok(staging) ->
+          State(..state, staging:, problem: None, progress: Resting)
+        Error(problem) ->
+          State(
+            ..state,
+            problem: Some(review_stage_rule.problem_words(problem)),
+          )
+      }
   }
 }
 
@@ -311,6 +326,21 @@ pub fn find_action(
   closure: Closure,
   note: String,
 ) -> State {
+  // A send that is out has checked what it carries, so nothing changes it.
+  case state.progress {
+    Sending(..) -> state
+    Resting | Settled(_) -> staged_find(state, find, closure, note)
+  }
+}
+
+/// Stages the close of a find whose revision was read, or says why not.
+fn staged_find(
+  state: State,
+  find: String,
+  closure: Closure,
+  note: String,
+) -> State {
+  // The close names the revision the page read, so a find not yet read waits.
   case dict.get(state.revisions, find) {
     Ok(Revision(number:)) ->
       case
@@ -323,12 +353,7 @@ pub fn find_action(
         )
       {
         Ok(staging) ->
-          State(
-            ..state,
-            staging:,
-            problem: None,
-            progress: rested(state.progress),
-          )
+          State(..state, staging:, problem: None, progress: Resting)
         Error(problem) ->
           State(
             ..state,
@@ -353,12 +378,17 @@ pub fn find_action(
 /// assert review_pane.cleared(review_pane.closed()) == review_pane.closed()
 /// ```
 pub fn cleared(state: State) -> State {
-  State(
-    ..state,
-    staging: review_stage_rule.cleared(state.staging),
-    problem: None,
-    progress: Resting,
-  )
+  // A send that is out has checked what it carries, so nothing changes it.
+  case state.progress {
+    Sending(..) -> state
+    Resting | Settled(_) ->
+      State(
+        ..state,
+        staging: review_stage_rule.empty(),
+        problem: None,
+        progress: Resting,
+      )
+  }
 }
 
 /// Begins a Send and says what to ask first. A send already out, an unread
@@ -372,10 +402,17 @@ pub fn cleared(state: State) -> State {
 /// ```
 pub fn send(state: State) -> #(State, Step) {
   case state.progress, state.loaded {
-    Sending(_), _ -> #(state, Halted)
+    Sending(..), _ -> #(state, Halted)
     Resting, Read(_) | Settled(_), Read(_) ->
       case review_outbox_rule.compose(files(state), state.staging) {
-        Ok(_) -> step(State(..state, progress: Sending([]), problem: None))
+        Ok(text) ->
+          step(
+            State(
+              ..state,
+              progress: Sending(done: [], prompt: text),
+              problem: None,
+            ),
+          )
         Error(refusal) -> #(
           State(
             ..state,
@@ -412,7 +449,7 @@ pub fn closed_with(
 ) -> #(State, Step) {
   // A close answers only while a Send is out.
   case state.progress {
-    Sending(done:) -> {
+    Sending(done:, prompt:) -> {
       let result = CloseResult(find:, closure:, outcome:)
 
       // A close that was done is applied and the Send goes on, and one refused halts it.
@@ -422,12 +459,17 @@ pub fn closed_with(
             State(
               ..state,
               staging: review_stage_rule.applied(state.staging, find),
-              progress: Sending(list.append(done, [result])),
+              progress: Sending(done: list.append(done, [result]), prompt:),
             ),
           )
+        // A refused close is dropped with the revision it named, so the next
+        // pass over the feed reads the find afresh and the owner stages it
+        // again against what is there now. The receipt keeps the refusal.
         Refused(_) -> #(
           State(
             ..state,
+            staging: review_stage_rule.dropped(state.staging, find),
+            revisions: dict.delete(state.revisions, find),
             progress: Settled(Receipt(
               closes: list.append(done, [result]),
               prompt: NotSent("Nothing was sent to the agent."),
@@ -451,11 +493,11 @@ pub fn closed_with(
 /// ```
 pub fn prompted(state: State, answer: thread_send.Answer) -> State {
   case state.progress {
-    Sending(done:) ->
+    Sending(done:, ..) ->
       State(
         ..state,
         staging: case answer {
-          thread_send.Delivered(_) -> review_stage_rule.cleared(state.staging)
+          thread_send.Delivered(_) -> review_stage_rule.empty()
           thread_send.Refused(_) -> state.staging
         },
         progress: Settled(Receipt(closes: done, prompt: Answered(answer))),
@@ -504,10 +546,11 @@ pub fn has_staged(state: State) -> Bool {
   !review_stage_rule.is_empty(state.staging)
 }
 
-/// What a send asks next: the first close not yet applied, else the prompt.
+/// What a send asks next: the first close not yet applied, else the prompt that
+/// was composed when the send began.
 fn step(state: State) -> #(State, Step) {
-  case review_stage_rule.pending_close(state.staging) {
-    Some(action) -> #(
+  case review_stage_rule.pending_close(state.staging), state.progress {
+    Some(action), _ -> #(
       state,
       CloseStep(
         find: action.id,
@@ -515,36 +558,7 @@ fn step(state: State) -> #(State, Step) {
         closure: action.closure,
       ),
     )
-    None ->
-      case
-        review_outbox_rule.compose(files(state), state.staging)
-        |> result.map_error(review_outbox_rule.refusal_words)
-      {
-        Ok(text) -> #(state, PromptStep(text))
-        Error(words) -> {
-          // The prompt is composed again, and a refusal ends the Send with nothing delivered.
-          let done = case state.progress {
-            Sending(done:) -> done
-            Resting | Settled(_) -> []
-          }
-
-          #(
-            State(
-              ..state,
-              progress: Settled(Receipt(closes: done, prompt: NotSent(words))),
-            ),
-            Halted,
-          )
-        }
-      }
-  }
-}
-
-/// A new edit ends a settled receipt, since the receipt belongs to the staging
-/// it sent.
-fn rested(progress: Progress) -> Progress {
-  case progress {
-    Sending(_) -> progress
-    Resting | Settled(_) -> Resting
+    None, Sending(prompt:, ..) -> #(state, PromptStep(prompt))
+    None, Resting | None, Settled(_) -> #(state, Halted)
   }
 }

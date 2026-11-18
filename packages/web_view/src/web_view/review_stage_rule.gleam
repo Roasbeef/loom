@@ -23,13 +23,13 @@
 //// ## Flow
 ////
 //// `empty` → `verdict` / `comment` / `find_action` → `pending_close` →
-//// `applied` → `cleared`
+//// `applied` / `dropped`
 ////
 //// 1. `verdict`, `comment` and `find_action` each stage one item, replacing
 ////    what was staged for the same thing.
 //// 2. `pending_close` is the first find action Send has yet to apply.
-//// 3. `applied` marks one applied, and `cleared` empties the staging when a
-////    prompt was delivered.
+//// 3. `applied` marks one applied, and `dropped` takes back one the daemon
+////    refused.
 
 import core/attention.{type Closure}
 import gleam/bit_array
@@ -290,15 +290,18 @@ pub fn applied(staging: Staging, id: String) -> Staging {
   )
 }
 
-/// The staging after a prompt was delivered: nothing is staged.
+/// The staging without a find's action, for a close the daemon refused.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert review_stage_rule.cleared(review_stage_rule.empty()) == review_stage_rule.empty()
+/// assert review_stage_rule.dropped(review_stage_rule.empty(), "find-1") == review_stage_rule.empty()
 /// ```
-pub fn cleared(_staging: Staging) -> Staging {
-  empty()
+pub fn dropped(staging: Staging, id: String) -> Staging {
+  Staging(
+    ..staging,
+    finds: list.filter(staging.finds, fn(each) { each.id != id }),
+  )
 }
 
 /// The words for a refused stage.

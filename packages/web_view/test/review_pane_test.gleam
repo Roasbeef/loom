@@ -168,9 +168,33 @@ pub fn a_refused_close_halts_the_send_and_is_not_applied_twice_test() {
   assert pane.receipt_lines(receipt)
     == ["f1 (fixed): ok", "f2 (fixed): moved", "Nothing was sent to the agent."]
 
-  // The next Send skips the close that was applied.
+  // The refused action and the revision it named are dropped, so the find is
+  // read afresh, and the next Send neither repeats the applied close nor the
+  // refused one.
+  assert !dict.has_key(halted.revisions, "f2")
+  assert list.map(halted.staging.finds, fn(each) { each.id }) == ["f1"]
   let #(_, again) = pane.send(halted)
-  assert again == pane.CloseStep("f2", 5, attention.Fixed)
+  let assert pane.PromptStep(_) = again
+
+  // The next pass over the feed asks for the refused find's record again.
+  let #(_, asked) = pane.ask_revisions(halted, ["f1", "f2"])
+  assert asked == ["f2"]
+}
+
+pub fn staging_is_refused_while_a_send_is_out_test() {
+  let state =
+    opened_with(["a"])
+    |> pane.revision_read("f1", Ok(3))
+    |> pane.find_action("f1", attention.Fixed, "")
+    |> pane.verdict(stage.Approve)
+
+  let #(sending, _) = pane.send(state)
+
+  // Nothing a person does while it is out changes what it checked.
+  assert pane.verdict(sending, stage.RequestChanges) == sending
+  assert pane.comment(sending, "a", "late") == sending
+  assert pane.find_action(sending, "f1", attention.Dismissed, "late") == sending
+  assert pane.cleared(sending) == sending
 }
 
 pub fn a_refused_prompt_keeps_the_staging_for_another_send_test() {

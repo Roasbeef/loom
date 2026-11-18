@@ -5569,7 +5569,7 @@ fn opening_review(model: Model) -> #(Model, Effect(Msg)) {
 
   // A Send that is out keeps its review where it is.
   let sending = case model.review.progress {
-    review_pane.Sending(_) -> True
+    review_pane.Sending(..) -> True
     review_pane.Resting | review_pane.Settled(_) -> False
   }
 

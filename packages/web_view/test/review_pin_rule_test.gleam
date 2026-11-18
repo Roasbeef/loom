@@ -62,7 +62,7 @@ pub fn a_find_off_the_shown_lines_is_loose_in_its_file_test() {
     ])
   let assert [one] = placed.files
   assert one.anchored == []
-  assert pins.loose(one) == ["cut", "noline"]
+  assert one.loose == ["cut", "noline"]
 }
 
 pub fn a_removed_line_has_no_new_number_to_pin_to_test() {
