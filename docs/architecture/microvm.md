@@ -106,14 +106,14 @@ The steps that need root run before the drop, in this order:
 
 1. **State root.** `loom-guest-executor` mounts the state device on
    `NODE_DIR/state` as ext4, formatting it on the first boot
-   (`packages/vmm/guest/loom-guest-executor:108`). `vm_spec.launch_arguments`
+   (`packages/vmm/guest/loom-guest-executor:101`). `vm_spec.launch_arguments`
    passes `--state-device /dev/vda`, the `state.img` that `loom vm up` keeps, so
    the state survives `down` and `up`. Only with no device does the script mount
-   a 512 MiB tmpfs (`:111`) that starts empty on every boot. The guest root is a
+   a 512 MiB tmpfs (`:104`) that starts empty on every boot. The guest root is a
    virtio-fs share, and the executor's SQLite ledger and code mode's AF_UNIX
    socket need a local filesystem.
 2. **Ownership.** It gives `NODE_DIR` and every `/srv/workspaces/*` to `loom`
-   (`packages/vmm/guest/loom-guest-executor:115`). Staged files arrive owned by
+   (`packages/vmm/guest/loom-guest-executor:108`). Staged files arrive owned by
    root, and the daemon's credential checks require a 0600 file it can read.
 3. **Network.** `loom-guest-init` sets `192.168.127.2/24` with a default route
    via `192.168.127.1` (`packages/vmm/guest/loom-guest-init:70`). go-microvm
@@ -165,7 +165,7 @@ flowchart TB
     out["tool result<br/>to orchestrator"]
 
     toolcall --> policy --> helper --> kernel --> out
-    policy -- "node key or cookie" --> masked["masked path,<br/>read fails"]
+    policy -- "node key" --> masked["masked path,<br/>read fails"]
     helper -- "layer missing" --> refuse["FullEnforcement refuses<br/>(stock kernel: no landlock)"]
     kernel -- "connect" --> net
     net -- "host loopback, unlisted name" --> nx["refused or NXDOMAIN"]
@@ -178,10 +178,11 @@ filesystem layout is not.
    workspace's read scope and adds the state-root, blob and evolution masks,
    and `workspace_policy.protecting_node_credentials`
    (`packages/client/src/client/executor_plane.gleam:606`). The node's TLS key
-   and cookie come from the executor's own `[distribution]` table, read by
-   `node_credentials` (`packages/client/src/client/executor_plane.gleam:323`).
+   comes from the executor's own `[executor_listener]` table, read by
+   `untrusted_config.secret_files` through `masked_files`
+   (`packages/client/src/client/executor_plane.gleam:322`).
    Under the default `host` read scope the jail sees the whole guest, `/srv`
-   included, so this mask is what keeps model code from printing either file.
+   included, so this mask is what keeps model code from printing the file.
    An absent path is skipped, as for every conditional mask
    (`packages/client/src/client/workspace_policy.gleam:1612`), because the jail
    refuses to mask a missing file.
@@ -459,8 +460,8 @@ guest the paths are these:
 | --- | --- | --- |
 | `/opt/loom` | the server release, bundled ERTS, `loom-exec` | image, read by everyone |
 | `/srv/loom-node/loom.toml` | the executor's configuration, with guest paths | staged per boot, readable by model code (no secrets) |
-| `/srv/loom-node/creds/key.pem`, `home/.erlang.cookie` | the node's TLS key and cookie | staged per boot, 0600 `loom`, masked from jails |
-| `/srv/loom-node/state` | the state disk (`state.img`, ext4): the state root, `dist.options`, `loomd.log`; a tmpfs only when no device is given | kept across `down` and `up`, replaced by `--fresh` |
+| `/srv/loom-node/creds/key.pem` | the node's TLS key | staged per boot, 0600 `loom`, masked from jails |
+| `/srv/loom-node/state` | the state disk (`state.img`, ext4): the state root and `loomd.log`; a tmpfs only when no device is given | kept across `down` and `up`, replaced by `--fresh` |
 | `/srv/workspaces/<name>` | the checkout the executor serves | staged per boot, owned by `loom` |
 | `/sys/fs/cgroup/loom/{init,work,exec}` | the delegated cgroup subtree | built by `loom-guest-init` each boot |
 
@@ -1303,7 +1304,7 @@ installs from other registries allows their hosts, and a client that honours
 The root is a directory the guest's `loom` user can write into, so a jail
 escape during one boot can leave a link where a directory belongs. `up` runs
 with the guest stopped, so this is a stale link and not a race, but a write
-through it would put the executor's TLS key and cookie, or the script, in a host
+through it would put the executor's TLS key, or the script, in a host
 directory. `vm_cli.make_inside` creates each directory under the root one
 component at a time and checks after each that its canonical path is the
 canonical root plus the same suffix, refusing with one line that names the path
@@ -1502,7 +1503,7 @@ the host are not in it.
   placement of #1137, which does not exist. Another machine uses the guest by
   spawning on the orchestrator of this host.
 - There is no `loom vm shell`. A guest has no exec channel: its executor serves
-  the orchestrator over the distribution link and nothing else, so a command in
+  the orchestrator over the untrusted link and nothing else, so a command in
   the guest runs only through a session's tools.
 - macOS with Hypervisor.framework and Linux x86_64 with KVM have booted a
   guest. Linux arm64 has not, and the Linux x86_64 runs were rootless on one

@@ -21,8 +21,7 @@
 # guest's init: it mounts the state root on DEV, formatting it as ext4 on
 # its first boot, or on a tmpfs when no device is given. Either way the
 # executor's SQLite ledger and code mode's AF_UNIX socket get a real local
-# filesystem
-# and the guest root is a virtio-fs share; it gives NODE_DIR to the `loom`
+# filesystem, because the guest root is a virtio-fs share; it gives NODE_DIR to the `loom`
 # user, since staged files arrive owned by root; and it hands over to
 # loom-guest-init, which configures networking and the delegated cgroup and
 # runs the second phase as `loom`. The second phase starts the daemon and
@@ -33,11 +32,11 @@
 # info would hide those lines, and the guest sets none.
 #
 # What keeps the node's key from model code, which runs as the same user, is
-# the daemon's own mask (protecting_node_credentials), not the location. /srv lies outside the jail's minimal base view, but under the
-# default host read scope the jail sees the whole guest, /srv included. The
-# other files here are readable to model code and hold no secret: loom.toml
-# names paths and models, and state/loomd.log is the daemon's standard
-# output.
+# the daemon's own mask (protecting_node_credentials), not the location. /srv
+# lies outside the jail's minimal base view, but under the default host read
+# scope the jail sees the whole guest, /srv included. The other files here are
+# readable to model code and hold no secret: loom.toml names paths and models,
+# and state/loomd.log is the daemon's standard output.
 set -eu
 
 loom_home=${LOOM_HOME:-/opt/loom}

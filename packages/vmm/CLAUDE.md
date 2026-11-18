@@ -166,9 +166,9 @@ An executor in a guest serves the untrusted executor link
 (protocol-change/109). The host's `loom vm` link dials a loopback port that
 `--forward` forwards, and the hosted stack carries the connection to the
 guest's listener; no epmd and no cookie are involved on either side. The
-guest's console is a host file (`<data dir>/console.log`) the runner writes. The guest's network is a
-virtio-net device whose other end is go-microvm's hosted gVisor stack in the
-launcher process: guest 192.168.127.2/24, gateway and DNS 192.168.127.1. The
+guest's console is a host file (`<data dir>/console.log`) the runner writes.
+The guest's network is a virtio-net device whose other end is go-microvm's
+hosted gVisor stack in the launcher process: guest 192.168.127.2/24, gateway and DNS 192.168.127.1. The
 guest configures that statically; go-microvm v0.0.43 serves no DHCP lease.
 
 With `--github-token-from`, git, gh and curl in the guest send `CONNECT
