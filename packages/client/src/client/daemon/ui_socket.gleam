@@ -389,7 +389,11 @@ type Phase {
 /// draw that insight folded from then on: a key the server drew into the
 /// handler, so the frame cannot name one, and a change of what the page
 /// draws that reads and sends nothing (the addendum to protocol-change/051 on
-/// the live rail). Every other message is dropped here, a batch included, so
+/// the live rail). The buttons beneath a stuck strand's or a find's card on that
+/// rail (`component.rail_retry`, `component.rail_close`) retry and close, so
+/// they are an operator's alone: an observer's page draws none and this list
+/// names none of their paths (the addendum on the live rail's actions). Every
+/// other message is dropped here, a batch included, so
 /// it costs the component no render; the gateway refuses any mutation from an
 /// observer's binding on its own, whatever reaches it. A click beneath
 /// `component.sidebar_path`, where an operator's page has its session
@@ -2565,6 +2569,89 @@ pub fn rail_answer_capability(role: Role, answer: answer) -> Option(answer) {
   }
 }
 
+/// The capability to close a find or retry a stuck strand from the live rail
+/// that a session page of `role` is handed (protocol-change/051, the addendum on
+/// the live rail's actions): `act` for an operator's page (a member operator or
+/// the owner) and none for an observer's, which then draws no button and whose
+/// socket admits no event at a button's path. It is `rail_answer_capability`'s
+/// rule applied to the second capability, so the two cannot differ. The daemon
+/// reads authority again whenever either runs (`attention_door.close_find`, the
+/// gateway's own check of a prompt), whatever this page was handed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.rail_act_capability(Observing, act) == None
+/// ```
+@internal
+pub fn rail_act_capability(role: Role, act: act) -> Option(act) {
+  case role {
+    Operating | Owning -> Some(act)
+    Observing -> None
+  }
+}
+
+/// Closes a find from a session's own page, or says why not. The page must
+/// still be open, and the door reads the caller's authority from the registry,
+/// so only the owner and an Operator member close one. The find must be the
+/// session's own: the page names no session, so a find of another session
+/// cannot be reached from it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.page_close_for(reach, open, session, find, 52, records.Filed)
+/// ```
+@internal
+pub fn page_close_for(
+  reach: attention_door.Reach(instance),
+  open: fn() -> Result(Int, Nil),
+  session: String,
+  find: String,
+  revision: Int,
+  closure: attention.Closure,
+) -> Result(Int, attention_door.Refusal) {
+  case open() {
+    Error(_) ->
+      Error(attention_door.Refusal("forbidden", "this page cannot close a find"))
+    Ok(_) -> attention_door.close_find(reach, session, find, revision, closure)
+  }
+}
+
+/// Asks a stuck strand of a session's own page to retry, by sending it the
+/// fixed retry prompt, or says why not. The page must still be open, and `send`
+/// delivers over the page's own gateway attachment, which refuses a prompt from
+/// a binding that may not give one. The words are the home's own for the same
+/// act, so the two pages word a retry alike.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.page_retry_for(open, send, "main")
+/// ```
+@internal
+pub fn page_retry_for(
+  open: fn() -> Result(Int, Nil),
+  send: fn(String, String) -> thread_send.Answer,
+  strand: String,
+) -> home.ActOutcome {
+  // An ended page sends nothing; an open one sends and words the gateway's answer.
+  case open() {
+    Error(_) -> home.Failed("Not sent: this page cannot act")
+    Ok(_) -> {
+      let answer = send(strand, thread_send.retry_prompt)
+      let words =
+        thread_send.answer_words(answer, operator.Prompt, "the strand")
+
+      // A delivery is a success and every refusal a failure, in the same words.
+      case answer {
+        thread_send.Delivered(_) -> home.Succeeded(words)
+        thread_send.Refused(_) -> home.Failed(words)
+      }
+    }
+  }
+}
+
 /// Answers an ask from a session's own page, or says why not
 /// (protocol-change/120). The page must still be open, and the door reads the
 /// caller's authority from the registry, so only the owner and an Operator
@@ -3285,6 +3372,31 @@ fn admit(
           |> rail_outcome
         })
       }),
+      act: rail_act_capability(
+        role,
+        component.Act(
+          close: fn(find, revision, closure, deliver) {
+            read_task(deliver, fn() {
+              page_close_for(
+                reach_of(standing, attachment.attention_reach.endpoint),
+                open,
+                attachment.session_id,
+                find,
+                revision,
+                closure,
+              )
+              |> close_outcome
+              |> rail_outcome
+            })
+          },
+          retry: fn(strand, deliver) {
+            read_task(deliver, fn() {
+              page_retry_for(open, page_strand_send(attach), strand)
+              |> rail_outcome
+            })
+          },
+        ),
+      ),
     )
   let transport =
     component.Transport(

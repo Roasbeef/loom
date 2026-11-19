@@ -437,13 +437,17 @@ pub const evolution_path = "0\t3\t6"
 /// The Lustre event path of the live rail, "Lifted from this session": the
 /// Strands pane's fifth and last child, after the title, the strip, the strand
 /// detail and the advisor's commentary (`view/panel`), so that placing it
-/// there moved no path the socket admits. Every handler beneath it is one
+/// there moved no path the socket admits. Most handlers beneath it are one
 /// insight's press, which asks the page to draw that insight folded from now on
-/// (`RailOpened`). It reads nothing and sends no command, so an observer's
-/// socket admits a `click` at any path beneath it and nowhere else new
-/// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the
-/// addendum on the live rail). The jump to a transcript row is the browser's
-/// and fires no event. `lifted_test` fails if the view moves the rail.
+/// (`RailOpened`). That reads nothing and sends no command, so an observer's
+/// socket admits a `click` at exactly `rail_click`'s shape and nowhere else
+/// beneath the rail (`client/daemon/ui_socket.observer_accepts`,
+/// protocol-change/051, the addendum on the live rail). The others are an ask's
+/// form and the buttons of a stuck strand's or a find's card (`rail_submit`,
+/// `rail_retry` and `rail_close`), which send, and which only an operator's page
+/// draws and only an operator's or an owner's socket admits. The jump to a
+/// transcript row is the browser's and fires no event. `lifted_test` fails if
+/// the view moves the rail.
 pub const rail_path = "0\t3\t0\t4"
 
 /// How soon after the present the page wakes for an evolution read or poll
@@ -680,6 +684,27 @@ pub type Attention {
     /// is `Some` only for an operator's page, and the daemon reads authority
     /// again when it runs, whatever this page said.
     answer: Option(fn(String, Int, JsonValue, fn(AnswerOutcome) -> Nil) -> Nil),
+    /// How the page acts on a find or a stuck strand from the rail's cards
+    /// (protocol-change/051, the addendum on the live rail's actions). It is
+    /// `Some` only for an operator's page, as `answer` is, and the daemon reads
+    /// authority again when either function runs.
+    act: Option(Act),
+  )
+}
+
+/// What an operator's session page may do to the session's own open records
+/// besides answering an ask. Each function returns at once and answers from
+/// the daemon's own task, with the daemon's fixed words.
+pub type Act {
+  Act(
+    /// Closes a find: the find's identifier, the revision the page read it
+    /// at, the way it is closed and the function the daemon's word goes to.
+    close: fn(String, Int, core_attention.Closure, fn(AnswerOutcome) -> Nil) ->
+      Nil,
+    /// Asks a stuck strand to retry, by sending it the fixed retry prompt
+    /// (`thread_send.retry_prompt`). The page names the strand and never the
+    /// words.
+    retry: fn(String, fn(AnswerOutcome) -> Nil) -> Nil,
   )
 }
 
@@ -1450,8 +1475,19 @@ pub type Msg(socket) {
   /// full; the daemon decides whether this page may answer.
   RailAnswered(id: String, fields: List(#(String, String)))
 
-  /// The daemon's word on an answer sent from the rail.
+  /// The daemon's word on an answer, a close or a retry sent from the rail.
   RailAnswerDone(id: String, outcome: AnswerOutcome)
+
+  /// "File issue" or "Dismiss" was pressed on a find's card. The find is the
+  /// row's own key, fixed when the tree was drawn, and the page honours it only
+  /// for a find the feed row holds and that it has read in full; the daemon
+  /// decides whether this page may close it, at the revision the page read.
+  RailClosed(key: String, closure: core_attention.Closure)
+
+  /// "Retry the last step" was pressed on a stuck strand's card. The strand is
+  /// the one the row was drawn for, and the page honours it only while the feed
+  /// row still holds it stuck. The words sent are the daemon's own.
+  RailRetried(strand: String)
 
   /// A chip of the agent strip was pressed: show this strand and address it.
   /// The strand is the name the strip was drawn with, never text the browser
@@ -1931,6 +1967,10 @@ pub fn update(
     RailAnswered(id:, fields:) -> rail_answered(model, id, fields)
 
     RailAnswerDone(id:, outcome:) -> rail_answer_done(model, id, outcome)
+
+    RailClosed(key:, closure:) -> rail_closed(model, key, closure)
+
+    RailRetried(strand:) -> rail_retried(model, strand)
 
     FocusRequested(strand:) -> focus_at(model, strand, at) |> peers_due(at)
 
@@ -7443,6 +7483,7 @@ fn lifted_rail(
     names: fn(id) { session_name(model, id) },
     open:,
     under: fn(key) { rail_form(model, key, observed) },
+    offer: fn(row) { rail_offer(model, row, observed) },
     status: model.view.watching.words,
   )
 }
@@ -7577,16 +7618,27 @@ fn rail_heard(
   // A row is kept only by a page that reads the feed and has not ended.
   case read, model.view.transport.attention, model.view.status {
     Ok(row), Some(reads), Connecting | Ok(row), Some(reads), Connected -> {
-      let held = list.map(row.asks.items, fn(ask) { ask.id })
+      let asks = list.map(row.asks.items, fn(ask) { ask.id })
+      let finds = list.map(row.finds.items, fn(find) { find.id })
+      let held = list.append(asks, finds)
       let kept =
         dict.filter(watching.records, fn(id, _) { list.contains(held, id) })
 
       // Only a page that may answer draws an ask's form, so only it reads the
-      // asks in full.
-      let missing = case reads.answer {
-        Some(_) -> list.filter(held, fn(id) { !dict.has_key(kept, id) })
-        None -> []
-      }
+      // asks in full. A find is read in full only by a page that may close it,
+      // because the close names the revision the page read.
+      let wanted =
+        list.append(
+          case reads.answer {
+            Some(_) -> asks
+            None -> []
+          },
+          case reads.act {
+            Some(_) -> finds
+            None -> []
+          },
+        )
+      let missing = list.filter(wanted, fn(id) { !dict.has_key(kept, id) })
 
       #(
         Model(
@@ -7608,7 +7660,8 @@ fn rail_heard(
   }
 }
 
-/// Keeps an ask read in full, when the row still holds it.
+/// Keeps an ask or a find read in full, when the row still holds it. A find's
+/// record is the revision a close names.
 fn rail_recorded(
   model: Model(socket),
   id: String,
@@ -7616,9 +7669,9 @@ fn rail_recorded(
 ) -> Model(socket) {
   let watching = model.view.watching
 
-  // Only an ask's record is kept for the rail.
-  case read {
-    Ok(item_pane.AskRecord(..) as record) ->
+  // A record is kept only for an id the feed row still holds.
+  case read, rail_holds(watching, id) {
+    Ok(record), True ->
       Model(
         ..model,
         view: View(
@@ -7629,7 +7682,17 @@ fn rail_recorded(
           ),
         ),
       )
-    Ok(item_pane.FindRecord(..)) | Error(_) -> model
+    Ok(_), False | Error(_), _ -> model
+  }
+}
+
+/// Whether the feed row holds an ask or a find with this identifier.
+fn rail_holds(watching: Watch, id: String) -> Bool {
+  case watching.row {
+    Some(row) ->
+      list.any(row.asks.items, fn(ask) { ask.id == id })
+      || list.any(row.finds.items, fn(find) { find.id == id })
+    None -> False
   }
 }
 
@@ -7747,9 +7810,165 @@ fn rail_answered(
   }
 }
 
-/// Takes the daemon's word on an answer. It is said in the rail whatever it is,
-/// and a settled ask is read again at once so it leaves the rail rather than
-/// waiting for the next tick.
+/// What a card offers beneath its button: "Retry the last step" on a stuck
+/// strand and "File issue" and "Dismiss" on a find, for a page that may act
+/// (`Attention.act`) and has not ended. A find offers nothing until the page has
+/// read it in full, because a close names the revision read. The card of the
+/// action that is out says so and offers nothing, and every other row offers
+/// nothing.
+fn rail_offer(
+  model: Model(socket),
+  row: attention.Lifted,
+  observed: fn(Msg(socket)) -> message,
+) -> lifted_view.Offer(message) {
+  let watching = model.view.watching
+
+  // An offer needs an act capability and a page that has not ended.
+  case rail_acting(model), row.kind {
+    Ok(_), attention.StuckStrand(strand:) ->
+      case watching.sending == Some(attention.stuck_key(strand)) {
+        True -> lifted_view.OfferSent
+        False -> lifted_view.RetryOffer(observed(RailRetried(strand)))
+      }
+    Ok(_), attention.FindOpen(..) ->
+      rail_find_offer(watching, row.key, observed)
+    Error(Nil), _
+    | Ok(_), attention.ApprovalPending(..)
+    | Ok(_), attention.FailedStep
+    | Ok(_), attention.FailedTurn
+    | Ok(_), attention.SubagentResult(..)
+    | Ok(_), attention.PeerMessage(..)
+    | Ok(_), attention.AskPending
+    -> lifted_view.NoOffer
+  }
+}
+
+/// The offer of a find's card: the two ways to close it once the page holds the
+/// find's record, and nothing before. Both messages name the row's own key.
+fn rail_find_offer(
+  watching: Watch,
+  key: String,
+  observed: fn(Msg(socket)) -> message,
+) -> lifted_view.Offer(message) {
+  // The record is what holds the revision, so no record means no close.
+  case rail_find(watching, key) {
+    Ok(find) ->
+      case dict.get(watching.records, find.id) {
+        Ok(item_pane.FindRecord(..)) ->
+          case watching.sending == Some(find.id) {
+            True -> lifted_view.OfferSent
+            False ->
+              lifted_view.CloseOffer(
+                file: observed(RailClosed(key, core_attention.Filed)),
+                dismiss: observed(RailClosed(key, core_attention.Dismissed)),
+              )
+          }
+        Ok(item_pane.AskRecord(..)) | Error(Nil) -> lifted_view.NoOffer
+      }
+    Error(Nil) -> lifted_view.NoOffer
+  }
+}
+
+/// The find the feed row holds under a lifted key.
+fn rail_find(watching: Watch, key: String) -> Result(attention_feed.Find, Nil) {
+  case watching.row {
+    Some(row) ->
+      list.find(row.finds.items, fn(find) { attention.find_key(find.id) == key })
+    None -> Error(Nil)
+  }
+}
+
+/// What the page may act with: the capability, on a page that has not ended.
+/// A page with none, and a page that ended, may not.
+fn rail_acting(model: Model(socket)) -> Result(Act, Nil) {
+  case model.view.transport.attention, model.view.status {
+    Some(Attention(act: Some(act), ..)), Connecting
+    | Some(Attention(act: Some(act), ..)), Connected
+    -> Ok(act)
+    Some(_), _ | None, _ -> Error(Nil)
+  }
+}
+
+/// Closes a find in the daemon, at the revision the page read it at. A page
+/// that may not act, a key that names no find the feed row holds, a find the
+/// page has not read in full, an action already out and a page that ended ask
+/// nothing. The daemon refuses a find that moved since, and it reads authority
+/// again.
+fn rail_closed(
+  model: Model(socket),
+  key: String,
+  closure: core_attention.Closure,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+  let begun = {
+    use act <- result.try(rail_acting(model))
+    use find <- result.try(rail_find(watching, key))
+
+    // Only a find read in full has the revision a close must name.
+    case dict.get(watching.records, find.id) {
+      Ok(item_pane.FindRecord(revision:, ..)) -> Ok(#(act, find.id, revision))
+      Ok(item_pane.AskRecord(..)) | Error(Nil) -> Error(Nil)
+    }
+  }
+
+  // One action is out at a time, whichever card it was pressed on.
+  case begun, watching.sending {
+    Ok(#(act, id, revision)), None -> #(rail_sent(model, id), {
+      use dispatch <- effect.from
+      act.close(id, revision, closure, fn(outcome) {
+        dispatch(RailAnswerDone(id, outcome))
+      })
+    })
+    Ok(_), Some(_) | Error(Nil), _ -> #(model, effect.none())
+  }
+}
+
+/// Asks a stuck strand to retry. A page that may not act, a strand the feed row
+/// does not hold stuck, an action already out and a page that ended ask nothing.
+/// The words the strand receives are the daemon's own.
+fn rail_retried(
+  model: Model(socket),
+  strand: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+  let id = attention.stuck_key(strand)
+
+  // Whether the last feed row names this strand among the stuck ones.
+  let held = case watching.row {
+    Some(row) -> list.any(row.stuck.items, fn(stuck) { stuck.strand == strand })
+    None -> False
+  }
+
+  // The strand is retried only while the row still holds it stuck.
+  case rail_acting(model), held, watching.sending {
+    Ok(act), True, None -> #(rail_sent(model, id), {
+      use dispatch <- effect.from
+      act.retry(strand, fn(outcome) { dispatch(RailAnswerDone(id, outcome)) })
+    })
+    Ok(_), True, Some(_) | Ok(_), False, _ | Error(Nil), _, _ -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
+/// The page with an action out for this identifier, and no word on the last
+/// one.
+fn rail_sent(model: Model(socket), id: String) -> Model(socket) {
+  let watching = model.view.watching
+
+  Model(
+    ..model,
+    view: View(
+      ..model.view,
+      watching: Watch(..watching, sending: Some(id), words: ""),
+    ),
+  )
+}
+
+/// Takes the daemon's word on an answer, a close or a retry. It is said in the
+/// rail whatever it is, and a settled one is read again at once so the row
+/// leaves the rail rather than waiting for the next tick.
 fn rail_answer_done(
   model: Model(socket),
   id: String,
@@ -7883,6 +8102,60 @@ pub fn message_click(path: String) -> Bool {
 pub fn rail_click(path: String) -> Bool {
   case string.split(path, "\t") {
     ["0", "3", "0", "4", "1", "1", "1", position, "0"] -> is_counter(position)
+    _ -> False
+  }
+}
+
+/// Whether a Lustre event path is the "Retry the last step" button of a stuck
+/// strand's card in the live rail. A stuck strand is a pinned row, so its card
+/// is an item of the "Needs you" group (the groups' first child), whose list is
+/// that group's second child. The card holds its own button, the ask's place
+/// (empty for any row but an ask) and then the actions, so the actions are the
+/// item's third child, and Retry is their first and only button: a click is at
+/// `rail_path`, then `1\t0\t1`, then the item's position, then `2\t0`.
+///
+/// No socket consults this predicate: an operator's or an owner's socket admits
+/// a click at any path, and an observer's admits `rail_click` and the other
+/// exact places only, none of which has this shape
+/// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the addendum
+/// on the live rail's actions). It is a test helper: `rail_actions_test` fails if
+/// the view moves the button, and `ui_socket_test` pins what each socket does at
+/// this path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_retry("0\t3\t0\t4\t1\t0\t1\t1\t2\t0")
+/// assert !component.rail_retry("0\t3\t0\t4\t1\t1\t1\t1\t2\t0")
+/// ```
+pub fn rail_retry(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "0", "1", position, "2", "0"] ->
+      is_counter(position)
+    _ -> False
+  }
+}
+
+/// Whether a Lustre event path is a button that closes a find in the live rail:
+/// "File issue", the actions' first button, or "Dismiss", their second. A find
+/// is an insight, so its card is an item of the "Insights" group (the groups'
+/// second child), whose list is that group's second child, and the actions are
+/// the item's third child, so a click is at `rail_path`, then `1\t1\t1`, then
+/// the item's position, then `2`, then the button's place. The socket
+/// admissions are those of `rail_retry`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_close("0\t3\t0\t4\t1\t1\t1\t2\t2\t0")
+/// assert component.rail_close("0\t3\t0\t4\t1\t1\t1\t2\t2\t1")
+/// assert !component.rail_close("0\t3\t0\t4\t1\t1\t1\t2\t2\t2")
+/// ```
+pub fn rail_close(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "1", "1", position, "2", "0"]
+    | ["0", "3", "0", "4", "1", "1", "1", position, "2", "1"] ->
+      is_counter(position)
     _ -> False
   }
 }

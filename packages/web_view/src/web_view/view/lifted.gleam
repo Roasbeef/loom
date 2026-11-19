@@ -22,7 +22,7 @@
 //// (`Item.at`); no lifted row carries one yet, so it is `None` and the
 //// header says the strand alone.
 ////
-//// A pinned row never folds and never carries a handler. An approval is
+//// A pinned row never folds, and its own button carries no handler. An approval is
 //// decided in the dock, above the composer, under the rules of
 //// protocol-change/051 (Deny first, arming, no autofocus), and a second
 //// control here would be a second place those rules had to hold. The row says
@@ -35,8 +35,20 @@
 //// one line for the rest of the page's life afterwards. The opened keys are
 //// the server model's (`component.RailOpened`); nothing is stored in the
 //// browser and nothing records what the reader has seen. The press that opens
-//// an insight is the one handler this module draws, and it asks the server
+//// an insight is the first handler this module draws, and it asks the server
 //// to remember a key the server drew into the handler.
+////
+//// ## Actions
+////
+//// A page that may act on the session's records draws buttons under a card's
+//// own button, as the card's last child (protocol-change/051, the addendum on
+//// the live rail's actions). A stuck strand's card offers "Retry the last
+//// step", and a find's card offers "File issue" and "Dismiss". The buttons are
+//// not inside the card's button, since a button cannot hold a button, and the
+//// card's button and the ask's form keep the child positions the socket
+//// admits presses at. What a button sends is the page's choice (`Offer`): this
+//// module draws the offer it is handed and decides nothing, so a page that may
+//// not act is handed `NoOffer` for every row and draws no button at all.
 ////
 //// ## Jumps
 ////
@@ -112,6 +124,24 @@ pub type Lift {
   )
 }
 
+/// What a card offers beneath its own button. The page decides it from what the
+/// page may do and what it has read, and the view draws exactly that.
+pub type Offer(message) {
+  /// Nothing: the row has no action, or the page may not act on it, or the
+  /// page has not read what the action needs.
+  NoOffer
+
+  /// A stuck strand's "Retry the last step". The message names the strand.
+  RetryOffer(press: message)
+
+  /// A find's two ways to close it: "File issue" and "Dismiss".
+  CloseOffer(file: message, dismiss: message)
+
+  /// An action is with the daemon. The card says so and offers nothing else,
+  /// so a second press cannot be made.
+  OfferSent
+}
+
 /// What a rail needs to be drawn.
 pub type Rail(message) {
   Rail(
@@ -133,6 +163,9 @@ pub type Rail(message) {
     /// page that may answer, and nothing for every other row. The sheet draws
     /// the same, so the phone answers as the rail does.
     under: fn(String) -> Element(message),
+    /// What the page offers beneath a row. The sheet draws the same offers, so
+    /// the phone acts as the rail does.
+    offer: fn(Lifted) -> Offer(message),
     /// The page's word on the last answer, or empty. It is drawn after the
     /// groups, so no path of the rail moves, and it keeps the rail on screen
     /// after the last row it describes has left.
@@ -509,7 +542,42 @@ fn row(item: Item, rail: Rail(message)) -> Element(message) {
         ],
       ),
       rail.under(lifted.key),
+      acts(rail.offer(lifted)),
     ],
+  )
+}
+
+/// The card's actions, or nothing when the page offers none. Each button's
+/// message was fixed when the page drew it, so a press names no key of its own.
+fn acts(offer: Offer(message)) -> Element(message) {
+  // The card's last child is always drawn, so its place in the list is fixed.
+  case offer {
+    NoOffer -> element.none()
+    RetryOffer(press:) ->
+      html.div([attribute.class("lift-acts")], [
+        act("Retry the last step", press),
+      ])
+    CloseOffer(file:, dismiss:) ->
+      html.div([attribute.class("lift-acts")], [
+        act("File issue", file),
+        act("Dismiss", dismiss),
+      ])
+    OfferSent ->
+      html.div([attribute.class("lift-acts")], [
+        html.span([attribute.class("lift-sending")], [html.text("Sending…")]),
+      ])
+  }
+}
+
+/// One action's button.
+fn act(label: String, press: message) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("lift-act"),
+      event.on_click(press),
+    ],
+    [html.text(label)],
   )
 }
 

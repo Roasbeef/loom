@@ -123,6 +123,7 @@ pub fn an_empty_group_draws_nothing_test() {
       names: fn(_) { None },
       open: None,
       under: fn(_) { element.none() },
+      offer: fn(_) { lifted.NoOffer },
       status: "",
     )
   let html = element.to_string(lifted.view(only_insights))
@@ -391,6 +392,7 @@ pub fn handlers_are_the_unopened_insights_and_pins_never_fold_test() {
           names: fn(_) { None },
           open: Some(fn(key) { key }),
           under: fn(_) { element.none() },
+          offer: fn(_) { lifted.NoOffer },
           status: "",
         ))
       let html = element.to_string(view)

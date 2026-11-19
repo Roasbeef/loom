@@ -1389,6 +1389,71 @@ pub fn only_an_operators_rail_answers_an_ask_test() {
   assert ui_socket.rail_answer_capability(ui_socket.Owning, 1) == Some(1)
 }
 
+// The live rail's actions are an operator's page's alone (protocol-change/051,
+// the addendum "the live rail's actions"). Retry is at `component.rail_retry`'s
+// path and File issue and Dismiss at `component.rail_close`'s. An operator's
+// and an owner's socket admit a click at each. An observer's socket refuses it
+// at each, alone and inside a batch, and at every neighbouring path, so its
+// list of admitted places is the one it had, and the capability to act is
+// handed to an observer's page never.
+pub fn only_an_operators_rail_retries_and_closes_test() {
+  let retry = component.rail_path <> "\t1\t0\t1\t1\t2\t0"
+  let file = component.rail_path <> "\t1\t1\t1\t0\t2\t0"
+  let dismiss = component.rail_path <> "\t1\t1\t1\t0\t2\t1"
+
+  // The paths are the ones the predicates name, and none is an insight's press.
+  assert component.rail_retry(retry)
+  assert component.rail_close(file)
+  assert component.rail_close(dismiss)
+  assert !component.rail_click(retry)
+  assert !component.rail_click(file)
+  assert !component.rail_click(dismiss)
+
+  list.each([retry, file, dismiss], fn(path) {
+    // An operator's page and the owner's admit the click.
+    assert ui_socket.operator_accepts(click_on(path))
+    assert ui_socket.owner_accepts(click_on(path))
+
+    // An observer's refuses it, as a click, as any other event and in a batch.
+    assert !ui_socket.observer_accepts(click_on(path))
+    assert !ui_socket.observer_accepts(submit_on(path))
+    assert !ui_socket.observer_accepts(
+      "{\"kind\":3,\"messages\":[" <> click_on(path) <> "]}",
+    )
+    assert !ui_socket.observer_accepts(
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.rail_path <> "\t1\t1\t1\t0\t0")
+      <> ","
+      <> click_on(path)
+      <> "]}",
+    )
+  })
+
+  // Nor does an observer's socket admit a neighbour of either shape: the
+  // button's place beyond the second, the card's other children, a path that
+  // is deeper or shorter, or a position that is not a counter.
+  list.each(
+    [
+      component.rail_path <> "\t1\t1\t1\t0\t2\t2",
+      component.rail_path <> "\t1\t1\t1\t0\t2",
+      component.rail_path <> "\t1\t1\t1\t0\t1",
+      component.rail_path <> "\t1\t1\t1\t0\t2\t0\t0",
+      component.rail_path <> "\t1\t0\t1\t1\t2",
+      component.rail_path <> "\t1\t0\t1\t1\t2\t1",
+      component.rail_path <> "\t1\t1\t1\tx\t2\t0",
+      component.rail_path <> "\t1\t2\t1\t0\t2\t0",
+    ],
+    fn(path) {
+      assert !ui_socket.observer_accepts(click_on(path))
+    },
+  )
+
+  // The capability itself is withheld from an observer.
+  assert ui_socket.rail_act_capability(ui_socket.Observing, 1) == None
+  assert ui_socket.rail_act_capability(ui_socket.Operating, 1) == Some(1)
+  assert ui_socket.rail_act_capability(ui_socket.Owning, 1) == Some(1)
+}
+
 // Only the owner's operating home is handed the recent-folders capability.
 pub fn only_an_owners_operating_home_is_handed_the_folders_capability_test() {
   let folders = home.Folders(recent: fn(_) { Nil }, forget: fn(_, _) { Nil })

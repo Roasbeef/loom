@@ -45,6 +45,7 @@ import client/session_directory
 import client/session_movers
 import client/ui_result_test
 import core/agency_limits
+import core/attention
 import core/clock
 import core/ids
 import core/json
@@ -5641,6 +5642,73 @@ pub fn a_rail_answer_needs_an_open_page_and_the_doors_authority_test() {
       )
     assert process.receive(asked, 0) == Error(Nil)
   })
+}
+
+// A rail's close needs the page open and then the door's own authority, as an
+// answer does: an ended page is refused as `forbidden` before the door is read,
+// and a session the credential does not hold is told no such session
+// (protocol-change/051, the addendum on the live rail's actions).
+pub fn a_rail_close_needs_an_open_page_and_the_doors_authority_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let reach =
+      attention_door.Reach(
+        registry: ready.registry,
+        digest: standing.digest,
+        endpoint: fn(_) { None },
+      )
+
+    assert ui_socket.page_close_for(
+        reach,
+        fn() { Error(Nil) },
+        "S1",
+        "find-0123456789",
+        1,
+        attention.Filed,
+      )
+      == Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot close a find",
+      ))
+
+    let assert Error(attention_door.Refusal(code: "not_found", ..)) =
+      ui_socket.page_close_for(
+        reach,
+        page_open,
+        "S1",
+        "find-0123456789",
+        1,
+        attention.Dismissed,
+      )
+
+    Nil
+  })
+}
+
+// A rail's retry needs the page open, sends the one fixed prompt to the strand
+// it names and words the gateway's answer as the home words the same act.
+pub fn a_rail_retry_sends_the_fixed_prompt_from_an_open_page_test() {
+  let asked = process.new_subject()
+  let send = fn(strand, text) {
+    process.send(asked, #(strand, text))
+
+    case strand {
+      "gone" -> thread_send.Refused(thread_send.UnknownStrand)
+      _ -> thread_send.Delivered(thread_send.Admitted)
+    }
+  }
+
+  assert ui_socket.page_retry_for(fn() { Error(Nil) }, send, "sub:a")
+    == home.Failed("Not sent: this page cannot act")
+  assert process.receive(asked, 0) == Error(Nil)
+
+  assert ui_socket.page_retry_for(page_open, send, "sub:a")
+    == home.Succeeded("Delivered to the strand · admitted")
+  assert process.receive(asked, 0)
+    == Ok(#("sub:a", "The last run of this strand failed. Please retry it."))
+
+  assert ui_socket.page_retry_for(page_open, send, "gone")
+    == home.Failed("Not sent: that strand no longer exists")
 }
 
 // The task answers whether or not the send does: one that finishes is delivered

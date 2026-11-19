@@ -110,22 +110,21 @@ fn start(
     ..start,
     transport: component.Transport(
       ..start.transport,
-      attention: Some(
-        component.Attention(
-          read: fn(deliver) { deliver(Ok(row())) },
-          record: fn(_id, deliver) {
-            deliver(Ok(item_pane.AskRecord(ask: the_ask(), revision: 7)))
-          },
-          answer: case answering {
-            True ->
-              Some(fn(ask, revision, form, deliver) {
-                process.send(sent, Sent(ask, revision, form))
-                deliver(component.AnswerSent("Answered."))
-              })
-            False -> None
-          },
-        ),
-      ),
+      attention: Some(component.Attention(
+        read: fn(deliver) { deliver(Ok(row())) },
+        record: fn(_id, deliver) {
+          deliver(Ok(item_pane.AskRecord(ask: the_ask(), revision: 7)))
+        },
+        answer: case answering {
+          True ->
+            Some(fn(ask, revision, form, deliver) {
+              process.send(sent, Sent(ask, revision, form))
+              deliver(component.AnswerSent("Answered."))
+            })
+          False -> None
+        },
+        act: None,
+      )),
     ),
   )
 }
