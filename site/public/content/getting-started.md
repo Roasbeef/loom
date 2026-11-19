@@ -135,6 +135,17 @@ It prints `ENFORCED`, `SKIPPED` or `FAILED` for each probe.
 
 To update a source build, run `make update` from a clean, committed checkout. It builds and smoke-tests its release artifacts, installs them and gracefully restarts the shared daemon. To package the archives that a release carries, run `make dist`. It writes the server tarball, the self-contained client tarball, the slim client tarball, a manifest and `SHA256SUMS`.
 
+## Platforms
+
+A release is built for one platform, because it carries a BEAM runtime and a native SQLite library built on that platform. The sources are `docs/distribution.md` and ADR-006 in the repository.
+
+| Platform | Release archives | Sandbox | State |
+|---|---|---|---|
+| Linux x86_64 | Built twice on separate runners and compared byte for byte. | bubblewrap and Landlock, seccomp when the network is off, cgroup v2 limits where a cgroup is delegated. | Built and smoke-tested in CI. |
+| macOS arm64 | Built twice on native macOS runners and compared byte for byte. | Seatbelt, with enforcement gaps that the helper reports. | The release lane is new, and its first hosted comparison has not run. |
+| Linux arm64 | None. The release workflow does not build it. | The sandbox code targets arm64. It has never been run. | The release build has never been run. |
+| Windows | None. | None. | Not supported. The design lists it as a later milestone. |
+
 ## Where to go next
 
 - [Configuration](#/docs/configuration) for models, roles and limits.
