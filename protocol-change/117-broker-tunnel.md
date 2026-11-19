@@ -509,6 +509,11 @@ the trust command, which decides what trusting a guest's project file means.
    it.
 7. **A stdin frame.** A hook reads its payload on stdin, which the tunnel does
    not carry.
+8. **A bounded TOML form.** The TOML form of a hook file (`hookcompat.parse_loom`)
+   is parsed by `tom.parse` with no byte cap, and `tom.parse` is quadratic in an
+   integer's digits. Before any change makes a TOML location reachable from
+   executor bytes, the text must be capped by bytes ahead of `tom.parse`
+   (added 2026-11-19).
 
 ### Compatibility
 
