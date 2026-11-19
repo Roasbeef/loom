@@ -371,20 +371,29 @@ pub fn home_advised(ending: Ending) -> Advice {
 
 /// The advice for a page of a session on another orchestrator. Its session
 /// identity is not one this daemon holds, so a command naming it would mint
-/// nothing: it is the home's advice, except for the endings the browser retries by
-/// itself, which say so. A failed connection on a relayed page is reached by a lapse
-/// after the laptop slept, a box that restarted or a broken answer, and the page
-/// reconnects from each, so its words are not "reload this page".
+/// nothing: it is the home's advice, except for the endings the page waits out
+/// by itself, which say what it is doing.
+///
+/// A relayed page whose ending may clear holds its socket open and asks the
+/// orchestrator again at growing pauses, then reconnects when the orchestrator
+/// answers (`client/daemon/ui_wait`). That is the same behavior for both
+/// endings a dropped link reaches: `PeerUnreachable`, where the page's own
+/// request timed out, and `ConnectionFailed`, where the feed ended, as it does
+/// after the laptop slept, a box restarted or an answer was broken. The page
+/// does the same in each, so the sentence is the same in each, and it says only
+/// what the page does. It is not the advice text of a local `ConnectionFailed`,
+/// which is about a browser reconnecting to this daemon.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert ending.relayed_advice(ending.PeerUnreachable) == "This page will reconnect."
+/// assert ending.relayed_advice(ending.PeerUnreachable)
+///   == ending.relayed_advice(ending.ConnectionFailed)
 /// ```
 pub fn relayed_advice(ending: Ending) -> String {
   case ending {
-    PeerUnreachable -> "This page will reconnect."
-    PeerCrowded | ConnectionFailed -> sentence(advised(ending, ""))
+    PeerUnreachable | ConnectionFailed -> relayed_wait_advice
+    PeerCrowded -> sentence(advised(ending, ""))
     PageEnded
     | AccessRevoked
     | SessionStopped
@@ -393,6 +402,10 @@ pub fn relayed_advice(ending: Ending) -> String {
     | LinkExpired -> home_advice(ending)
   }
 }
+
+/// What a relayed page says while it waits for its orchestrator.
+const relayed_wait_advice =
+  "This page keeps asking the orchestrator and reconnects by itself when it answers. Commands whose outcome is unknown will not be sent again."
 
 /// `headline` for the admin page (protocol-change/065, the fifth pull
 /// request). It is the home's, with the words for an ending only the admin page

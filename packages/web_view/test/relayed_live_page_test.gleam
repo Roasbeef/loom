@@ -289,7 +289,7 @@ pub fn a_relayed_page_that_opens_while_the_box_is_down_says_so_test() {
 
   let html = drawn(model)
   assert string.contains(html, ended.content_unavailable_words)
-  assert string.contains(html, "This page will reconnect.")
+  assert string.contains(html, "reconnects by itself when it answers")
   assert string.contains(html, "disconnected")
   assert !string.contains(html, "Beginning of this conversation.")
   assert !string.contains(html, "No edits yet")
