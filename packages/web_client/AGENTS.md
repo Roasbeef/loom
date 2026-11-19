@@ -458,7 +458,7 @@ time builds anything.
   lets the reader widen the panel to read a Changes diff: drag left to widen,
   right to narrow, arrow keys by `fine_step` (24 px), with Shift by
   `coarse_step` (96 px), Home and End to the narrowest and widest, a double click
-  to go back to `default_width` (340). `grip_rule` imports neither Lustre nor the
+  to go back to `default_width` (344). `grip_rule` imports neither Lustre nor the
   DOM and holds the decisions: `Room(panel, centre)` (the two columns' rendered
   widths, which the shell measures from the event: `room_of`), `ceiling` (what
   the pair shares less `centre_floor`, 360, which the stylesheet also gives the

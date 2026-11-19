@@ -252,7 +252,7 @@
      padding: the dock carries its own, so it sits flush with the edge it is
      pinned to.
 
-     The widths: the sidebar is 232px, the panel 340px until the reader drags
+     The widths: the sidebar is 232px, the panel 344px until the reader drags
      its grip (280px at least, and never so wide that the transcript falls under
      360px, see .shell-centre), and the transcript at most 780px. Each side column is dropped where it would leave the
      transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
@@ -313,7 +313,7 @@
   .session-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   .ctx-panel{position:fixed;z-index:40;top:48px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
   /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is as wide as --panel-width, which <loom-shell> sets on its frame (340px until the reader drags the grip, 0px while the panel is closed) but never so wide that the 360px transcript floor is crossed, since the column shrinks to that floor where the window cannot hold the saved width, with the page's 12px margin beyond it. */
-  @media (min-width:980px){.ctx-panel{right:calc(min(var(--panel-width,340px),100vw - 372px) + 12px);width:min(420px,calc(100vw - min(var(--panel-width,340px),100vw - 372px) - 24px));}}
+  @media (min-width:980px){.ctx-panel{right:calc(min(var(--panel-width,344px),100vw - 372px) + 12px);width:min(420px,calc(100vw - min(var(--panel-width,344px),100vw - 372px) - 24px));}}
   .ctx-actions{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px 0;}
   .ctx-button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;}
   .ctx-button:hover{background:var(--color-bg-sunk);}
@@ -359,7 +359,7 @@
   .region-sidebar{width:288px;}
   /* The panel's column holds the tab bar above the slot. It carries the
      column's border and background, so the bar and the panes share them. */
-  .region-panel{flex:0 1 auto;width:var(--panel-width,340px);min-width:280px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg);border-left:1px solid var(--color-divider);}
+  .region-panel{flex:0 1 auto;width:var(--panel-width,344px);min-width:280px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg-sunk);border-left:1px solid var(--color-divider);}
   .panel-body{flex:1 1 0;min-height:0;}
   /* The tab bar (web_client/shell): one real button per tab, the shown one
      underlined. The Strands tab's badge counts the strands that wait on a
@@ -410,6 +410,19 @@
   .shell-toggle[aria-expanded="false"] .toggle-icon::after{opacity:.2;}
   main.centre{flex:1 1 0;display:flex;flex-direction:column;reading-flow:flex-visual;min-width:0;min-height:0;box-sizing:border-box;padding:16px 16px 0;overflow:hidden;}
   main.centre > :not(loom-follow){width:100%;max-width:780px;margin-left:auto;margin-right:auto;box-sizing:border-box;}
+  /* The session page's stream (web_view/view/stream_head, view/lane): the
+     centre has no padding and no column width, so the strip, the rows and the
+     dock run the stream's full width with the 24px gutter the final design
+     draws. The home, the admin pages and the new-session view have no
+     scroller and keep the padded column. */
+  main.centre:has(> loom-follow){padding:0;}
+  main.centre:has(> loom-follow) > :not(loom-follow){max-width:none;margin-left:0;margin-right:0;}
+  main.centre > .stream-head{order:-2;flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:baseline;gap:0 10px;padding:10px 24px;border-bottom:1px solid var(--color-divider);color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);}
+  .stream-dot{align-self:center;flex:none;width:8px;height:8px;border-radius:50%;background:var(--color-fg-faint);}
+  .stream-dot.stream-run{background:var(--color-current);}
+  .stream-dot.stream-wait{background:var(--color-signal);}
+  .stream-name{color:var(--color-fg);font-weight:600;font-size:13.5px;}
+  .stream-sep::before{content:"\00b7\00a0";}
   /* A strand's hue as a mark (--hue: a dot, a bar, a border) and as words
      (--hue-text: a name or a heading), which is a darker colour in the light
      theme. */
@@ -428,7 +441,7 @@
      rules below hide the others. A browser without custom states drops
      the rules and shows every pane. Below 980px the Strands pane is a row of
      cards under the bar instead, scrolling sideways. */
-  aside.panel{width:100%;height:100%;box-sizing:border-box;min-height:0;padding:14px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  aside.panel{width:100%;height:100%;box-sizing:border-box;min-height:0;padding:12px 12px 20px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   loom-shell:state(tab-strands) .pane:not(.pane-strands){display:none;}
   loom-shell:state(tab-changes) .pane:not(.pane-changes){display:none;}
   loom-shell:state(tab-session) .pane:not(.pane-session){display:none;}
@@ -491,13 +504,13 @@
   .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:left;}
   .detail-recent .panel-title{margin:0 0 6px 0;}
   .detail-answer{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
   /* A peek at a remote child's transcript (web_view/view/peek), in the same
      place as a strand's own view. The framing lines are quiet, and the page
      sits on a tinted ground inside a hairline border, with no accent bar and
      no shadow. Every word is a text node, kept as written with pre-wrap. */
   .chip-seen{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
-  .peek-frame{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  .peek-frame{margin:0;color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
   .peek-body{display:flex;flex-direction:column;gap:10px;min-width:0;padding:8px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);}
   .peek-entry{display:grid;row-gap:2px;min-width:0;}
   .peek-speaker{color:var(--color-fg-quiet);font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;}
@@ -1185,26 +1198,23 @@
      squeezing rows. The scroller fills the centre, so its scrollbar is at
      the column's edge, and its children are the transcript's 780px column,
      centred. */
-  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;padding-bottom:56px;container-type:inline-size;}
-  loom-follow.follow > *{flex-shrink:0;width:100%;max-width:780px;align-self:center;box-sizing:border-box;padding-right:clamp(0px,calc((876px - 100cqw) / 2),48px);}
+  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;padding-top:10px;padding-bottom:56px;container-type:inline-size;}
+  loom-follow.follow > *{flex-shrink:0;width:100%;max-width:none;align-self:stretch;box-sizing:border-box;padding-left:24px;padding-right:24px;}
   /* The scroller ends in room for the "Jump to latest" button below (56px: its
      12px off the bottom edge, its height and a gap), so the last row of the
      transcript is never under it when the reader has scrolled to the end. */
   /* The "Jump to latest" button, drawn inside the client component while
      the reader is away from the bottom. Its wrapper has no height and
      sticks to the bottom edge of the scroller, so the button floats and the
-     content's size does not change when it appears. A button over the column
+     content's size does not change when it appears. A button over the stream
      covers a line of whatever the reader stopped at, a code block's included,
-     so it is never over the column: it is a 32px disc at the scroller's right
-     edge, in a zone 48px wide that no row reaches. Where the scroller is wider
-     than the column by 48px a side the zone is the gutter. Where it is not
-     (the strands panel open at 1440 leaves 44px, a window of 800px none) the
-     column keeps a right padding of what is missing, so the zone is 48px at
-     every width and nothing is drawn in it (the 876px is the 780px column and
-     the zone on both sides). */
+     so it is never over a row: it is a 24px disc at the scroller's right edge,
+     in the 24px gutter the stream keeps on that side (`loom-follow.follow > *`),
+     which no row reaches. The stream fills the scroller at every width, so the
+     gutter is the same at every width. */
   .jump-anchor{position:sticky;bottom:0;z-index:1;flex:0 0 0;height:0;display:flex;justify-content:flex-end;padding-right:8px;}
-  loom-follow.follow > .jump-anchor{align-self:stretch;max-width:none;padding-right:8px;}
-  .jump-latest{position:absolute;bottom:12px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:1px solid var(--color-divider);border-radius:50%;background:var(--color-bg-raised);color:var(--color-fg);font:16px/1 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-float);}
+  loom-follow.follow > .jump-anchor{align-self:stretch;max-width:none;padding:0;}
+  .jump-latest{position:absolute;bottom:12px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;height:24px;padding:0;border:1px solid var(--color-divider);border-radius:50%;background:var(--color-bg-raised);color:var(--color-fg);font:14px/1 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-float);}
   /* The line above the lane's oldest row: the "Load older" button, or
      words saying why there is none. Each fits the same minimum height, so
      the change from one to the other does not move the rows below. */
@@ -1220,37 +1230,41 @@
      through the shell's relay. The row's own padding is the space between
      pieces, so the line runs unbroken. The live answer has no dot and
      is indented to line up with the rows. */
-  .tl-row{position:relative;min-width:0;padding:0 0 10px 22px;}
-  .tl-row::before{content:"";position:absolute;left:7px;top:0;bottom:0;border-left:1px solid var(--color-divider);}
-  .tl-row:first-child::before{top:8px;}
+  /* The stream of the final design: a 44px gutter and a 10px gap before the
+     row, so the row's time (when the page has one, `.tl-time`) sits in the
+     gutter in quiet mono and a row with no time leaves it empty. The dot keeps
+     the strand's hue at the gutter's inner edge and has no line to join it. */
+  .tl-row{position:relative;min-width:0;padding:5px 0 5px 54px;border-radius:8px;}
   .tl-body{min-width:0;}
-  .dot{position:absolute;left:3px;top:6px;width:9px;height:9px;margin:-2px;box-sizing:content-box;border:2px solid var(--color-bg);border-radius:50%;background:var(--hue,var(--color-current));transition:box-shadow 120ms;}
+  .tl-time{position:absolute;left:0;top:8px;width:44px;color:var(--color-fg-quiet);font:11.5px/1.45 var(--font-mono);}
+  .dot{position:absolute;left:34px;top:11px;width:6px;height:6px;margin:0;box-sizing:border-box;border:0;border-radius:50%;background:var(--hue,var(--color-current));transition:box-shadow 120ms;}
   .dot[data-loom-focus]{cursor:pointer;}
   .dot.pulse{animation:pulse 1.4s infinite;}
   .dot[data-loom-focus]::after{content:"";position:absolute;inset:-6px;}
   .dot[data-loom-focus]:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--hue,var(--color-current)) 28%,transparent);}
-  .transcript.lane > .block.live{padding-left:22px;}
+  .transcript.lane > .block.live{padding-left:54px;}
   button.tag{margin:0;padding:0 5px;border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;background:transparent;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);cursor:pointer;transition:background-color 120ms;}
   button.tag:hover{background:color-mix(in srgb,var(--hue,var(--color-fg-quiet)) 10%,transparent);}
   /* The breadcrumb above the transcript while a strand other than main is in
      focus (web_view/view/crumb), in the centre column's 780px width. */
-  nav.crumb{display:flex;align-items:center;gap:8px;min-width:0;padding:0 0 8px 22px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  nav.crumb{display:flex;align-items:center;gap:8px;min-width:0;padding:8px 24px;order:-1;border-bottom:1px solid var(--color-divider);color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .crumb-session{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .crumb-strand{color:var(--color-fg);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .crumb-spacer{flex:1 1 auto;}
   kbd.crumb-hint{margin:0;padding:0 4px;border:1px solid var(--color-divider);border-radius:4px;color:var(--color-fg-quiet);font:11px/1.5 var(--font-sans);}
   .block{min-width:0;}
-  .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
+  .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13.5px/1.45 var(--font-sans);}
   /* A person's message (web_view/view/lane): who sent it on a line of its
-     own, and the words in a bubble no wider than nine tenths of the lane. */
-  .who{margin:0 0 2px 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+     own, and the words in a raised bubble the width of the stream. An answer
+     is headed by the strand that wrote it, in the same small quiet line. */
+  .who{display:block;margin:0;color:var(--color-fg-quiet);font:11.5px/1.45 var(--font-sans);}
   .who-name{color:var(--color-fg);font-weight:600;}
-  .line.user{display:inline-block;box-sizing:border-box;max-width:90%;background:var(--color-bg-user);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
+  .line.user{display:block;box-sizing:border-box;background:var(--color-bg-raised);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
   /* Tool output is code, so it keeps the monospace face. The selector names
      the kind and not `.line`: scripts/web_client_css_check.sh keeps the face
      off the page's own rows. */
   pre.tool-detail,pre.tool-result,pre.tool-patch{font:12px/1.5 var(--font-mono);}
-  .line.assistant{padding:0 2px;}
+  .line.assistant{padding:0;}
   .line.system,.line.reasoning,.line.reasoning-digest,.line.summarized-reasoning, .line.tool-detail,.line.tool-result{color:var(--color-fg-quiet);}
   .line.failure,.line.tool-failure{color:var(--color-danger-text);}
   .line.failure .failure-label{font-weight:600;}
@@ -1355,24 +1369,44 @@
      lane): its glyph is the stylesheet's, from the state the server renders, so
      the button holds only the words and every click lands on it. A divider with
      no number to open it by is plain words in the same column. */
-  .work-toggle{display:flex;align-items:baseline;width:100%;min-width:0;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);text-align:left;overflow-wrap:anywhere;}
+  .work-toggle{display:flex;align-items:baseline;width:100%;min-width:0;box-sizing:border-box;margin:0;padding:4px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);text-align:left;overflow-wrap:anywhere;}
+  .work-toggle::after{margin-left:auto;padding-left:12px;white-space:nowrap;}
+  .work-ok::after{content:"ok";color:var(--color-added-text);}
+  .work-failed::after{content:"failed";color:var(--color-danger-text);}
+  .work-stopped::after{content:"interrupted";color:var(--color-signal-text);}
   button.work-toggle{cursor:pointer;}
   button.work-toggle::before{content:"▸";display:inline-block;width:1.2em;flex:0 0 auto;font-size:11px;}
   button.work-toggle[aria-expanded="true"]::before{content:"▾";}
   button.work-toggle:hover{color:var(--color-fg);}
-  span.work-toggle{padding-left:1.2em;}
+  span.work-toggle{padding-left:10px;}
   .work-hidden{margin:0;padding:2px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
-  .work-items{display:flex;flex-direction:column;gap:1px;padding:2px 0 6px 1.2em;}
-  .work.open{display:flex;flex-direction:column;gap:1px;}
+  .work-items{display:flex;flex-direction:column;gap:4px;padding:4px 0 6px 0;}
+  .work.open{display:flex;flex-direction:column;gap:4px;}
   .step{min-width:0;}
   .step.flat{padding:2px 0 2px 1.2em;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  /* A tool call is one bordered line in the code face, as the final design
+     draws it, with its outcome as a word at the right edge: `ok`, `failed` or
+     `running`, in the colour of the outcome. The line is the call's host
+     (`tool-line`, so no rule names `.step` and sets the code face): a call with
+     a body is a <loom-expand>, whose own button takes the box in its shadow
+     root, and one without is a plain div. The glyph the call used to lead with
+     is left out, since the word says the same. */
+  loom-expand.tool-line,div.tool-line{font:12px/1.2 var(--font-mono);color:var(--color-fg-quiet);}
+  div.tool-line.flat{padding:4px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  :host(.tool-line) .expand-toggle{box-sizing:border-box;padding:4px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:inherit;}
+  .tool-line .row-head{flex:1 1 auto;}
+  .tool-line .row-head .mono,.tool-line .row-head .change{line-height:1.2;}
+  .tool-line .row-head .glyph{display:none;}
+  .tool-line .row-head::after{margin-left:auto;padding-left:12px;white-space:nowrap;}
+  .tool-line.done .row-head::after{content:"ok";color:var(--color-added-text);}
+  .tool-line.failed .row-head::after{content:"failed";color:var(--color-danger-text);}
+  .tool-line.pending .row-head::after{content:"running";color:var(--color-fg-quiet);}
   .row-head{display:flex;align-items:baseline;gap:6px;min-width:0;}
   .row-head .glyph{flex:0 0 auto;width:1em;text-align:center;font-size:12px;}
   .step.done .glyph{color:var(--color-added-text);}
   .step.failed .glyph{color:var(--color-danger-text);}
   .step.pending .glyph{color:var(--color-current);animation:pulse 1.4s infinite;}
   .row-head .running-time{flex:0 0 auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
-  .busy-dot{display:inline-block;margin-right:6px;color:var(--color-current);animation:pulse 1.4s infinite;}
   .row-head .verb{flex:0 0 auto;}
   .row-head .subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .row-head .mono{font:12px/1.5 var(--font-mono);}
@@ -1401,10 +1435,15 @@
   .row-body .line{padding-left:0;}
   /* A spawn and a result are lines of the timeline, not cards: who did what,
      and for a result the first line of the report, opened to the rest. */
-  .who.spawn{display:block;margin:0;}
-  .spawn-purpose{color:var(--color-fg);overflow-wrap:anywhere;}
+  .who.spawn,.result > .who{display:flex;align-items:baseline;gap:6px;min-width:0;box-sizing:border-box;margin:0;padding:4px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
+  .who.spawn::after,.result > .who::after{margin-left:auto;padding-left:12px;white-space:nowrap;}
+  .spawn-started::after{content:"started";}
+  .spawn-failed::after{content:"failed";color:var(--color-danger-text);}
+  .result > .who::after{content:"settled";color:var(--color-added-text);}
+  .who.spawn button.tag,.result > .who button.tag{padding:0;border:0;background:none;font:inherit;}
+  .spawn-purpose{color:inherit;overflow-wrap:anywhere;}
   .result{min-width:0;}
-  .result-line{margin:0;color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .result-line{margin:2px 0 0 0;color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);overflow-wrap:anywhere;}
   .step.reading .subject{color:var(--color-fg);}
   .result-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   /* A one-line Markdown preview (markdown_view.line): the finished row's line
@@ -1459,7 +1498,7 @@
   .pc-caret .pc-t{color:var(--color-danger-text);}
   .pc-note .pc-t{color:var(--color-fg-quiet);white-space:pre-wrap;}
   .pc-errh{margin:0 0 2px 0;color:var(--color-danger-text);font:13px/1.5 var(--font-mono);overflow-wrap:anywhere;}
-  .pc-loc{margin:0 0 6px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  .pc-loc{margin:0 0 6px 0;color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
   .pc-all{margin-top:6px;}
   summary.pc-button{display:inline-block;cursor:pointer;list-style:none;border:1px solid var(--color-divider);border-radius:5px;padding:2px 8px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   summary.pc-button:hover{color:var(--color-fg);}
@@ -1659,7 +1698,7 @@
   .session-rename .rename-status{flex:1 0 100%;margin:0;}
   .session-rename .rename-status:empty{display:none;}
   .session-group p,.session-group ul{margin:0;}
-  .session-workspace{color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  .session-workspace{color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
   ul.session-jobs,ul.session-viewers{list-style:none;padding:0;}
   .session-quiet{color:var(--color-fg-quiet);}
   /* The operator's list of remembered permissions, the Session pane's last
@@ -1919,14 +1958,14 @@
   /* The approvals sit in the dock above the composer. Their height is
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */
-  section.approvals{margin:0 0 6px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-signal);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
+  section.approvals{margin:0 24px 8px 24px;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
+  article.approval-card{background:color-mix(in srgb,var(--color-signal) 5%,var(--color-bg-raised));border:1px solid color-mix(in srgb,var(--color-signal) 55%,var(--color-divider));border-radius:10px;padding:10px 14px;margin:0 0 6px 0;}
   article.approval-card:last-child{margin-bottom:0;}
-  .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.4 var(--font-sans);}
+  .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.45 var(--font-sans);}
   .approval-strand{font-weight:600;}
   .approval-question{margin:0 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
-  pre.approval-action{margin:0 0 6px 0;padding:6px 8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
-  ul.approval-authority{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
+  pre.approval-action{margin:6px 0;padding:6px 10px;border-radius:6px;background:var(--color-code);white-space:pre-wrap; overflow-wrap:anywhere;font:12px/1.45 var(--font-mono);}
+  ul.approval-authority{margin:4px 0 8px 0;padding-left:18px;color:var(--color-fg-quiet);font:12px/1.6 var(--font-mono);}
   /* Grants a child's request asked for that its spawner's approval ceiling does
      not admit: listed with the reason, greyed, and not part of what Allow carries. */
   ul.approval-outside{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);opacity:.6;}
@@ -1957,7 +1996,7 @@
   .nudge-more{margin:4px 0 0 0;color:var(--color-fg-quiet);font-size:12px;}
   /* The operator's session controls, in the dock above the approvals: the
      goal's buttons and the fork form. Stop and Set goal left the page. */
-  section.controls{flex:0 0 auto;margin:12px 0 0 0;padding-top:10px;border-top:1px solid var(--color-divider);font-size:13px;}
+  section.controls{flex:0 0 auto;margin:12px 24px 0 24px;padding-top:10px;border-top:1px solid var(--color-divider);font-size:13px;}
   .control-row{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
   button.control-clear{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.control-pause,button.control-resume{border-color:var(--color-signal);color:var(--color-signal-text);}
@@ -1976,10 +2015,10 @@
      the frame. It is the last item of the page's column and the transcript
      takes what is left above it, so a card appearing or the editor growing
      shrinks the transcript and never covers its last row. */
-  footer.dock{flex:0 0 auto;margin-top:8px;padding:8px 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
-  form.composer{position:relative;margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:12px;padding:0;}
-  .to{display:flex;gap:8px;align-items:center;padding:8px 12px 0;font-size:12px;color:var(--color-fg-quiet);}
-  .to-tag{border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;padding:0 5px;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);}
+  footer.dock{flex:0 0 auto;margin-top:0;padding:0 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
+  form.composer{position:relative;margin:0;background:transparent;border:0;border-top:1px solid var(--color-divider);border-radius:0;padding:10px 24px 0 24px;}
+  .to{display:flex;gap:4px;align-items:baseline;padding:0;margin:0 0 3px 0;font-size:12px;color:var(--color-fg-quiet);}
+  .to-tag{border:0;padding:0;color:var(--color-fg);font:600 12px/1.45 var(--font-sans);}
   .outlook{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--color-divider);border-radius:999px; padding:0 8px;color:var(--color-fg-quiet);font:11px/1.6 var(--font-sans);}
   .outlook::before{content:"";width:9px;height:9px;border-radius:50%;border:2px solid var(--color-divider);}
   .outlook.ring-head::before{border-color:var(--color-current);}
@@ -1987,7 +2026,8 @@
   .outlook.ring-tail::before{border-color:var(--color-divider);border-top-color:var(--color-signal);}
   .outlook.ring-idle::before{border-color:var(--color-fg-faint);}
   .outlook.ring-elapsed::before{border-style:dashed;border-color:var(--color-fg-quiet);}
-  .editor textarea{field-sizing:content;min-height:3em;max-height:30vh;width:100%;box-sizing:border-box;background:transparent;color:var(--color-fg);border:0;border-radius:0;padding:6px 12px 8px;font:14px/1.5 var(--font-sans);resize:none;}
+  .editor{border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);}
+  .editor textarea{field-sizing:content;min-height:52px;max-height:30vh;width:100%;box-sizing:border-box;background:transparent;color:var(--color-fg);border:0;border-radius:0;padding:8px 10px;font:14px/1.45 var(--font-sans);resize:none;}
   .editor textarea:focus-visible{outline:none;}
   form.composer:has(textarea:focus-visible){border-color:var(--color-fg-quiet);}
   /* The composer's element and its list of commands. The list is drawn in
@@ -2025,7 +2065,8 @@
   .attachment-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   button.attachment-remove{padding:0 8px;border-radius:999px;font-size:12px;border-color:transparent;color:var(--color-fg-quiet);}
   button.attachment-remove:hover{color:var(--color-danger-text);}
-  .composer-actions{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:6px 10px;border-top:1px solid var(--color-divider);color:var(--color-fg-quiet);font-size:12px;}
+  .composer-actions{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;padding:12px 0 0 0;border-top:0;color:var(--color-fg-quiet);font-size:12px;}
+  .composer-actions .hint{font-size:12.5px;}
   /* The attach element and the notice flow in the footer as its own
      children: their hosts draw no box, so the button, the chips and the
      notice are items of the footer row. The chips go first, on a row of
@@ -2048,7 +2089,7 @@
   .notice:not(.warned){animation:loom-fade 4s forwards;}
   @keyframes loom-fade{0%,75%{opacity:1;}100%{opacity:0;}}
   /* One line of the goal in the dock, while a goal is active or paused. */
-  section.dock-goal{flex:0 0 auto;margin:0 0 8px 0;padding:0 4px;font-size:13px;}
+  section.dock-goal{flex:0 0 auto;margin:0 24px 8px 24px;padding:0;font-size:13px;}
   /* An approval decision in the lane, as a who line. */
   p.decided{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   .decided-who{color:var(--color-fg);font-weight:500;}
@@ -2056,19 +2097,20 @@
   p.decided-allowed .decided-tool{color:var(--color-added-text);}
   button{font:13px/1.4 var(--font-sans);border-radius:6px;padding:4px 10px;cursor:pointer; border:1px solid var(--color-divider);background:var(--color-bg);color:var(--color-fg);}
   /* One filled primary per region, the rest quiet outlines. */
-  button.send,button.queue{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
-  button.send:hover:not(:disabled),button.queue:hover:not(:disabled){background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  button.send{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
+  button.send,button.queue,button.steer{padding:6px 12px;font-weight:550;}
+  button.queue,button.steer{background:var(--color-bg-raised);border-color:var(--color-divider);color:var(--color-fg);}
+  button.queue:hover:not(:disabled),button.steer:hover:not(:disabled){border-color:var(--color-fg-faint);}
+  button.send:hover:not(:disabled){background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
   form.composer button[type="submit"]:disabled{opacity:.45;cursor:default;}
-  button.steer{border-color:var(--color-signal);color:var(--color-signal-text);}
-  button.steer:hover{background:color-mix(in srgb,var(--color-signal) 10%,transparent);}
   /* A status pill (the connected state in the bar). */
   .pill{display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:999px;font:12px/1.6 var(--font-sans);white-space:nowrap;}
   .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto;}
   .pill.online{background:var(--color-pill-ok-bg);color:var(--color-added-text);}
   .pill.pending{background:var(--color-pill-wait-bg);color:var(--color-signal-text);}
   .pill.ended{background:var(--color-pill-bad-bg);color:var(--color-danger-text);}
-  button.approval-deny{border-color:var(--color-danger);color:var(--color-danger-text);}
-  button.approval-allow{border-color:var(--color-added);color:var(--color-added-text);}
+  button.approval-deny{padding:3px 9px;border-color:color-mix(in srgb,var(--color-danger) 55%,var(--color-divider));background:var(--color-bg-raised);color:var(--color-danger-text);font:550 12px/1.4 var(--font-sans);}
+  button.approval-allow{padding:3px 9px;border-color:color-mix(in srgb,var(--color-added) 55%,var(--color-divider));background:var(--color-bg-raised);color:var(--color-added-text);font:550 12px/1.4 var(--font-sans);}
   button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   /* The new-session view (web_view/view/new_session): a centred composer, the
      places a session worked in, three chips and a sentence. It fills the centre
@@ -2293,56 +2335,101 @@
   /* The live rail, "Lifted from this session" (web_view/view/lifted). It is the
      Strands pane's last child, so the paths the socket admits do not move, and
      it is ordered first on screen: the pane is a flex column read in visual
-     order, as the Session pane is. A needs-you row takes the waiting pill's
-     tint and an insight the raised surface. Neither has an accent bar or a
-     shadow. An insight is open (wrapped, with its jump hint) until pressed
-     once, then folded to one line. */
+     order, as the Session pane is. The final design draws it as the right
+     column: a "Needs you" group whose cards carry the owner's border, then an
+     "Insights" group, each card a raised surface with a kind chip, the strand,
+     and a "in stream" link on one line, then the row's words. A needs-you card
+     has the signal border only. An insight is whole until pressed once, then
+     folded to a line on the page's background. Neither has an accent bar or a
+     shadow. The pane's title stays for assistive technology. */
   .pane-strands{display:flex;flex-direction:column;reading-flow:flex-visual;}
   .pane-strands > section.lifted{order:-1;margin:0 0 16px 0;min-width:0;font:12px/1.45 var(--font-sans);}
-  .lift-groups{display:flex;flex-direction:column;gap:10px;min-width:0;}
+  .pane-strands > section.lifted > .panel-title{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+  .lift-groups{display:flex;flex-direction:column;gap:0;min-width:0;}
   .lift-status{margin:8px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  .lift .inbox-questions{margin:6px 0 0 0;}
-  .lift .inbox-questions .place-send{align-self:flex-start;}
-  .lift-group-title{margin:0 0 4px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  .lift-group-title{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:6px 4px 8px 4px;font:600 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  .lift-group-title .lift-gloss{font-weight:400;letter-spacing:0;text-transform:none;}
   .lift-needs .lift-group-title{color:var(--color-signal-text);}
-  ul.lift-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;min-width:0;}
-  li.lift{min-width:0;}
-  .lift-press{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 8px;width:100%;box-sizing:border-box;margin:0;padding:6px 8px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:inherit;text-align:left;cursor:pointer;}
+  ul.lift-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;min-width:0;}
+  .lift-group + .lift-group .lift-group-title{margin-top:10px;}
+  li.lift{min-width:0;padding:9px 12px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);}
+  li.lift-pinned{border-color:color-mix(in srgb,var(--color-signal) 45%,var(--color-divider));}
+  li.lift-folded{background:transparent;}
+  .lift-press{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;width:100%;box-sizing:border-box;margin:0;padding:0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);text-align:left;cursor:pointer;}
   .lift-press:not([data-loom-jump]){cursor:default;}
-  .lift-press:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
-  .lift-pinned .lift-press{border-color:color-mix(in srgb,var(--color-signal) 35%,transparent);background:var(--color-pill-wait-bg);}
-  .lift-kind{font-weight:600;}
-  .lift-source{min-width:0;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
-  .lift-head{grid-column:1 / -1;min-width:0;overflow-wrap:anywhere;}
-  .lift-go{grid-column:1 / -1;color:var(--color-signal-text);font-weight:500;}
-  .lift-open .lift-press[data-loom-jump]::after{content:"\2191  in stream";grid-column:1 / -1;color:var(--color-fg-quiet);font-size:11px;}
-  .lift-folded .lift-press{display:flex;align-items:baseline;gap:6px;}
-  .lift-folded .lift-source{flex:0 1 auto;max-width:40%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
-  .lift-folded .lift-head{flex:1 1 0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+  .lift-press:focus-visible{outline:2px solid var(--color-current);outline-offset:3px;}
+  .lift-kind{grid-column:1;grid-row:1;padding:0 6px;border:1px solid var(--color-divider);border-radius:6px;color:var(--color-fg-quiet);font:600 11px/18px var(--font-sans);white-space:nowrap;}
+  .lift-source{grid-column:2;grid-row:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);}
+  .lift-press[data-loom-jump]::after{content:"\2191  in stream";grid-column:3;grid-row:1;color:var(--color-current);white-space:nowrap;}
+  .lift-head{grid-column:1 / -1;grid-row:2;min-width:0;margin:4px 0 0 0;color:var(--color-fg);font:13px/1.45 var(--font-sans);overflow-wrap:anywhere;}
+  .lift-ask .lift-head{margin:4px 0 8px 0;font-weight:550;font-size:13.5px;}
+  .lift-go{grid-column:1 / -1;margin-top:6px;color:var(--color-signal-text);font-weight:500;}
+  .lift-dock{justify-self:start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
+  .lift-approval .lift-press[data-loom-jump]::after{content:none;}
+  .lift-folded .lift-kind,.lift-folded .lift-source{color:var(--color-fg-quiet);}
+  .lift-folded .lift-head{color:var(--color-fg-quiet);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .lift-note{margin:14px 4px 0 4px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
 
-  /* A lifted row in the stream is tagged, and tinted only when it needs the
-     owner. A row a jump lands on is marked for a moment (web_client/follow). */
-  .lift-tag{position:absolute;top:0;right:0;font:500 10px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
-  .tl-row.needs-you > .tl-body{border-radius:6px;background:var(--color-pill-wait-bg);}
+  /* An ask's form inside its card (view/attention_thread draws it; the rail
+     only dresses it). An option is a raised block: its number in the code
+     face, its label in semibold, its note beneath and, where the ask marks one,
+     the "recommended" pill at the right. The radio fills the block, hidden but
+     still the control, so the block is the target and the keyboard focus ring
+     is the block's. A question's legend repeats the card's words when it is
+     the only one, so it is kept for assistive technology and not drawn. */
+  .lift .inbox-questions{gap:6px;margin:0;}
+  .lift fieldset.inbox-question{gap:6px;margin:0;padding:0;border:0;counter-reset:opt;}
+  .lift fieldset.inbox-question:only-of-type > legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
+  .lift fieldset.inbox-question > legend{padding:0;font:550 13px/1.4 var(--font-sans);}
+  .lift label.inbox-option{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;min-height:0;margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);counter-increment:opt;cursor:pointer;}
+  .lift label.inbox-option::before{content:counter(opt);grid-column:1;grid-row:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
+  .lift label.inbox-option > input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
+  .lift label.inbox-option > span{grid-column:2;grid-row:1;font:600 13.5px/1.45 var(--font-sans);}
+  .lift label.inbox-option .inbox-mark{grid-column:3;grid-row:1;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);}
+  .lift label.inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .lift label.inbox-option:hover{border-color:var(--color-fg-faint);}
+  .lift label.inbox-option:has(> input:checked){border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));}
+  .lift label.inbox-option:has(> input:focus-visible){outline:2px solid var(--color-current);outline-offset:1px;}
+  .lift .inbox-questions .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:13px/1.45 var(--font-sans);}
+  .lift .inbox-questions .place-send{align-self:flex-start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-bg-raised);color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
+
+  /* A lifted row in the stream is tagged `lifted · Kind` under its words, and
+     tinted across the row only when it needs the owner, with the tint and the
+     row's gutter running 8px past the stream's edge as the final design draws
+     it. A row a jump lands on is marked for a moment (web_client/follow). */
+  .lift-tag{display:block;margin-top:2px;color:var(--color-fg-quiet);font:600 10.5px/1.4 var(--font-sans);}
+  .tl-row.needs-you{margin:0 -8px;padding-left:62px;padding-right:8px;background:color-mix(in srgb,var(--color-signal) 9%,transparent);}
+  .tl-row.needs-you > .tl-time{left:8px;}
+  .tl-row.needs-you > .dot{left:42px;}
   .tl-row.needs-you > .lift-tag{color:var(--color-signal-text);}
-  .tl-row[data-loom-jumped] > .tl-body{border-radius:6px;background:color-mix(in srgb,var(--color-current) 14%,transparent);outline:1px solid color-mix(in srgb,var(--color-current) 60%,transparent);outline-offset:0;}
+  .tl-row[data-loom-jumped]{background:color-mix(in srgb,var(--color-current) 14%,transparent);outline:1px solid color-mix(in srgb,var(--color-current) 60%,transparent);outline-offset:0;}
 
   /* The phone's bar and sheet. Wide frames draw the rail in the panel and hide
      these; below 980px the panel is a row of cards, the rail is hidden, and the
-     bar sits above the dock and opens the same rows as a sheet. The sheet is
-     in the column's flow, below the bar and above the dock, so the transcript
-     gives up the room and the sheet's top edge is never clipped by the column.
-     It is a native details element, so opening it is the browser's. */
+     bar sits above the dock as one line, "2 need you · 3 insights" and "Lifted
+     ▴" at its right, on a tint of the signal colour. It opens the same rows as
+     a sheet that rises from the bar over the stream and ends in rounded top
+     corners, so the dock and the bar stay in place and the bar closes it. It
+     is a native details element, so opening it is the browser's. */
   details.lift-sheet{display:none;}
   @media (max-width:979px){
     .pane-strands > section.lifted{display:none;}
-    details.lift-sheet{display:block;order:1;flex:0 0 auto;margin:8px 0 0 0;font:12px/1.45 var(--font-sans);}
+    details.lift-sheet{position:relative;display:block;order:1;flex:0 0 auto;margin:0;font:13px/1.45 var(--font-sans);}
     main.centre > footer.dock,main.centre > .observer-bar{order:2;}
-    summary.lift-bar{list-style:none;cursor:pointer;box-sizing:border-box;min-height:44px;display:flex;align-items:center;padding:8px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg);font-weight:500;}
+    summary.lift-bar{list-style:none;cursor:pointer;box-sizing:border-box;min-height:44px;display:flex;align-items:center;gap:8px;width:100%;padding:8px 14px;border-top:1px solid var(--color-divider);background:color-mix(in srgb,var(--color-signal) 10%,var(--color-bg));color:var(--color-fg-quiet);font-size:13px;}
     summary.lift-bar::-webkit-details-marker{display:none;}
-    summary.lift-bar:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
-    details.lift-sheet[open] > .lift-sheet-body{max-height:40dvh;overflow-y:auto;box-sizing:border-box;margin:6px 0 0 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
-    .lift-sheet .lift-press{min-height:44px;}
+    summary.lift-bar:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+    .lift-bar-need{color:var(--color-signal-text);font-weight:600;}
+    .lift-bar-more{margin-left:auto;color:var(--color-current);}
+    details.lift-sheet[open] > .lift-sheet-body{position:absolute;left:0;right:0;bottom:100%;z-index:6;box-sizing:border-box;max-height:min(60dvh,28rem);overflow-y:auto;padding:12px 12px 20px 12px;border-top:1px solid var(--color-divider);border-radius:14px 14px 0 0;background:var(--color-bg-sunk);}
+    .lift-sheet .lift-press{min-height:0;}
+  }
+  /* The phone keeps the stream's gutter and narrows its margins to 14px. */
+  @media (max-width:640px){
+    main.centre > .stream-head{padding-left:14px;padding-right:14px;}
+    loom-follow.follow > *{padding-left:14px;padding-right:14px;}
+    section.approvals,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
+    form.composer{padding-left:14px;padding-right:14px;}
   }
 }
 
