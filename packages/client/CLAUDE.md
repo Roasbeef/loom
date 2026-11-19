@@ -416,7 +416,13 @@ running daemon to reload, and `vm_spec.restart_refusal` turns a daemon that
 cannot reload and is left running into one error sentence. `up` records
 `--github` in `<vm home>/<name>/github` (`vm_spec.effective_github`,
 `encode_github`, `decode_github`); `UpOptions.github` is an `Option`, `None`
-meaning not given. Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
+meaning not given. `--workspace-mode shared|worktree` is recorded the same way in
+`<vm home>/<name>/workspace-mode` (`vm_spec.GuestWorkspaceMode`,
+`effective_workspace_mode`, `encode_workspace_mode`, `decode_workspace_mode`;
+`UpOptions.workspace_mode` is an `Option`), and `vm_spec.guest_config_with`
+writes `mode = "worktree"` and `base = "HEAD"` into each `[workspaces.NAME]` for
+`GuestWorktree` and nothing more for `GuestShared`, so a seeded child can be
+placed on the guest (`remote/workspace.state_fitness`). Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
 `statem` model over the pure decisions with a distribution guest in some
 starting configurations.
 
@@ -515,7 +521,7 @@ Invariants that break things when violated:
   `link-credentials/`, `root/`, `root.next/` (only during an upgrade),
   `root.building/` and `workspace.building/` (only while `up` makes a clone or
   a copy), `state.img`, `allow`, `github`, `checkouts`, `root-revision`,
-  `provision`, `loom-vm.pid` and `loom-vm.log`, and for a guest made over
+  `workspace-mode`, `provision`, `loom-vm.pid` and `loom-vm.log`, and for a guest made over
   distribution `deploy/` and `orch/`. The vm home's `link/` holds what every
   guest shares. `LOOM_VM_HOME` overrides `~/.loom/vm`.
 - `up` and `ensure` never bring a guest up over distribution: `vm_link.settle`

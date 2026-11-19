@@ -624,6 +624,7 @@ fn drive(run: Run) -> Nil {
   assert_upgrade_results(requests)
 
   failing_script_fails_up(run)
+  worktree_mode_is_staged_and_kept(run)
   guests_are_removed(run)
   old_guests_are_refused(run)
   untrusted_guest(run)
@@ -1534,6 +1535,62 @@ fn failing_script_fails_up(run: Run) -> Nil {
       run.vm_home <> "/" <> run.failing_name <> "/loom-vm.pid",
     )
     == Ok(False)
+  Nil
+}
+
+// The workspace mode a guest was given is written into its executor's
+// configuration and survives a later `up` with no flag. The failing-script
+// guest is used because `up` stages the configuration before it boots and then
+// stops at the failing script, so the step reads the staged files without a
+// second boot to wait for. A seeded child on a guest is not driven here: it
+// needs a spawner row and a state transfer.
+fn worktree_mode_is_staged_and_kept(run: Run) -> Nil {
+  let up_with = fn(flags: List(String)) {
+    vm(
+      run,
+      list.append(
+        [
+          "up",
+          "--name",
+          run.failing_name,
+          "--workspace",
+          run.repository,
+          "--config",
+          run.directory <> "/fail.toml",
+          "--github",
+          "off",
+        ],
+        flags,
+      ),
+    )
+  }
+  let staged =
+    run.vm_home <> "/" <> run.failing_name <> "/root/srv/loom-node/loom.toml"
+  let workspace = "[workspaces." <> remote_pair.workspace_name <> "]"
+
+  // The script still fails, so `up` ends non-zero after it has staged.
+  let first = up_with(["--workspace-mode", "worktree"])
+  assert first.status != 0
+  assert string.contains(read_file(staged), "mode = \"worktree\"")
+    as { "the worktree mode is staged:\n" <> read_file(staged) }
+  assert string.contains(read_file(staged), "base = \"HEAD\"")
+  assert string.contains(read_file(staged), workspace)
+  let status = vm(run, ["status", "--name", run.failing_name])
+  assert string.contains(status.output, "ws mode:    worktree")
+    as { "status names the mode:\n" <> status.output }
+
+  // No flag: the recorded mode is kept and staged again.
+  let _second = up_with([])
+  assert string.contains(read_file(staged), "mode = \"worktree\"")
+    as { "a resume keeps the mode:\n" <> read_file(staged) }
+
+  // An unknown mode is refused before anything is touched.
+  let refused = up_with(["--workspace-mode", "tree"])
+  assert refused.status != 0
+  assert string.contains(
+    refused.output,
+    "--workspace-mode must be shared or worktree",
+  )
   Nil
 }
 

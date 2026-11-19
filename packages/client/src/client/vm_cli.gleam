@@ -134,9 +134,10 @@ pub const usage =
   "usage: loom vm setup [--release TAG | --from-build DIR]
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
+                  [--workspace-mode shared|worktree]
                   [--allow HOST]... [--provision SCRIPT]
        loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
-                      [--config PATH]
+                      [--workspace-mode shared|worktree] [--config PATH]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -192,6 +193,14 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             the --allow hosts. The guest holds only a placeholder, never the
             token. The choice is recorded and a later up with no --github
             keeps it; --fresh returns to gh.
+            --workspace-mode chooses how the guest's executor serves its
+            workspaces: shared (the default) runs every session in the guest's
+            checkout, and worktree gives each session a Git worktree of it,
+            which a seeded child (seed = workspace in a spawner) needs. The
+            choice is written into the guest's loom.toml as mode = worktree
+            and base = HEAD, recorded, and kept by a later up with no flag;
+            --fresh returns to shared. It changes what `loom --vm` shows: each
+            session works in a worktree, not in the checkout.
             --allow HOST adds a host to the guest's egress allowlist, on top
             of the GitHub hosts, so a build can reach a package registry. HOST
             is a hostname or *.domain.tld; repeat the flag for more. The list
@@ -211,10 +220,10 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             left alone and the command ends at once. Otherwise it installs the
             microVM artifacts when they are missing or from another release,
             then boots the guest as up does, resuming one that ran before.
-            --github, --allow and --config mean what they mean for up, and a
-            resume keeps the access and hosts the guest was started with. A
-            guest that already serves ignores --github and --allow, and says
-            so. A guest whose root came from another release, whose executor
+            --github, --allow, --workspace-mode and --config mean what they
+            mean for up, and a resume keeps the access, hosts and workspace
+            mode the guest was started with. A guest that already serves
+            ignores --github, --allow and --workspace-mode, and says so. A guest whose root came from another release, whose executor
             is still booting, or that an older loom made as a distribution
             peer, is refused with the commands to run.
             Progress goes to standard error. The last line of standard output
@@ -414,6 +423,7 @@ type Instance {
     log: String,
     allow_file: String,
     github_file: String,
+    workspace_mode_file: String,
     checkouts_file: String,
     root_revision_file: String,
     provision_file: String,
@@ -453,6 +463,7 @@ fn instance(vm_home: String, name: String) -> Instance {
     log: directory <> "/loom-vm.log",
     allow_file: directory <> "/" <> vm_spec.allow_file,
     github_file: directory <> "/" <> vm_spec.github_file,
+    workspace_mode_file: directory <> "/" <> vm_spec.workspace_mode_file,
     checkouts_file: directory <> "/" <> vm_spec.checkouts_file,
     root_revision_file: directory <> "/" <> vm_spec.root_revision_file,
     provision_file: directory <> "/" <> vm_spec.provision_copy_file,
@@ -755,6 +766,7 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   use plan <- result.try(provisioning(guest, options, step))
   use allow <- result.try(allowed_hosts(guest, options))
   use github <- result.try(github_access(guest, options))
+  use workspace_mode <- result.try(workspace_mode_of(guest, options))
   let options = UpOptions(..options, allow:)
 
   bring_up_linked(LinkedUp(
@@ -765,6 +777,7 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
     workspace:,
     options:,
     github:,
+    workspace_mode:,
     plan:,
     step:,
   ))
@@ -847,12 +860,13 @@ fn serving(
 
   // The fast path writes nothing, so a flag that would change the guest cannot
   // take effect, and saying so is better than ignoring it silently.
-  case options.github, options.allow {
-    None, [] -> Nil
-    _, _ ->
+  case options.github, options.allow, options.workspace_mode {
+    None, [], None -> Nil
+    _, _, _ ->
       progress(
         name,
-        "--github and --allow are ignored while the guest serves; stop it with "
+        "--github, --allow and --workspace-mode are ignored while the guest "
+          <> "serves; stop it with "
           <> "`loom vm down --name "
           <> name
           <> "` and run this again to change them",
@@ -1180,6 +1194,60 @@ fn record_github(
   write_private(guest.github_file, vm_spec.encode_github(access))
 }
 
+/// The workspace mode this `up` launches the guest with: the flag, or the one
+/// an earlier `up` recorded, or the default for `--fresh`. It is read before
+/// anything is written, so a damaged record refuses `up` and changes nothing.
+fn workspace_mode_of(
+  guest: Instance,
+  options: UpOptions,
+) -> Result(vm_spec.GuestWorkspaceMode, String) {
+  // The record is read only when it decides the answer, so a damaged one is
+  // replaced by `--workspace-mode` and ignored by `--fresh`.
+  use recorded <- result.try(case options.workspace_mode, options.freshness {
+    None, vm_spec.Resume -> recorded_workspace_mode(guest)
+    _, _ -> Ok(None)
+  })
+
+  Ok(vm_spec.effective_workspace_mode(
+    options.workspace_mode,
+    recorded,
+    options.freshness,
+  ))
+}
+
+/// The mode the guest's workspace-mode file records, or `None` when it has no
+/// file.
+fn recorded_workspace_mode(
+  guest: Instance,
+) -> Result(option.Option(vm_spec.GuestWorkspaceMode), String) {
+  case simplifile.read(guest.workspace_mode_file) {
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) ->
+      Error(
+        guest.workspace_mode_file
+        <> " is unreadable: "
+        <> simplifile.describe_error(error),
+      )
+    Ok(text) ->
+      vm_spec.decode_workspace_mode(text)
+      |> result.map(Some)
+      |> result.map_error(fn(reason) {
+        guest.workspace_mode_file
+        <> ", "
+        <> reason
+        <> ". Fix or remove the file, or give --workspace-mode to replace it."
+      })
+  }
+}
+
+/// Records the mode the guest launches with, so `down` and `up` keep it.
+fn record_workspace_mode(
+  guest: Instance,
+  mode: vm_spec.GuestWorkspaceMode,
+) -> Result(Nil, String) {
+  write_private(guest.workspace_mode_file, vm_spec.encode_workspace_mode(mode))
+}
+
 /// What `--provision` and the guest root's history decide. The script must be
 /// a file the developer named, and only this flag can name one: the workspace
 /// is untrusted input and is never searched for a script.
@@ -1497,6 +1565,7 @@ type LinkedUp {
     workspace: Workspace,
     options: UpOptions,
     github: vm_spec.GitHubAccess,
+    workspace_mode: vm_spec.GuestWorkspaceMode,
     plan: vm_spec.ProvisionPlan,
     step: vm_spec.RootStep,
   )
@@ -1580,6 +1649,7 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
     workspace:,
     options:,
     github:,
+    workspace_mode:,
     plan:,
     step:,
   ) = linked
@@ -1601,10 +1671,19 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
   use Nil <- result.try(stage_with(
     manifest,
     guest,
-    stage_linked_node(guest, home, leaf, _, github, options.allow),
+    stage_linked_node(
+      guest,
+      home,
+      leaf,
+      _,
+      workspace_mode,
+      github,
+      options.allow,
+    ),
     workspace,
     options,
     github,
+    workspace_mode,
     plan,
     step,
   ))
@@ -1832,6 +1911,7 @@ fn stage_linked_node(
   home: vm_link_pki.Home,
   leaf: vm_link_pki.Leaf,
   workspaces: List(String),
+  workspace_mode: vm_spec.GuestWorkspaceMode,
   github: vm_spec.GitHubAccess,
   allow: List(String),
 ) -> Result(Nil, String) {
@@ -1841,6 +1921,7 @@ fn stage_linked_node(
       vm_spec.guest_files(),
       home.pin,
       workspaces,
+      workspace_mode,
       github,
       allow,
     )
@@ -2003,6 +2084,7 @@ fn stage_with(
   workspace: Workspace,
   options: UpOptions,
   github: vm_spec.GitHubAccess,
+  workspace_mode: vm_spec.GuestWorkspaceMode,
   plan: vm_spec.ProvisionPlan,
   step: vm_spec.RootStep,
 ) -> Result(Nil, String) {
@@ -2012,6 +2094,7 @@ fn stage_with(
   use Nil <- result.try(prepare_root(manifest, guest, platform, options, step))
   use Nil <- result.try(record_allow(guest, options.allow))
   use Nil <- result.try(record_github(guest, github))
+  use Nil <- result.try(record_workspace_mode(guest, workspace_mode))
   use Nil <- result.try(write_node(registered_workspaces(guest, workspace)))
   use Nil <- result.try(stage_script(guest.root, plan))
 
@@ -3453,6 +3536,7 @@ fn status(name: String) -> Result(String, String) {
         "workspaces: " <> workspace_line(guest),
         "allowed:    " <> allow_line(guest),
         "github:     " <> github_line(guest),
+        "ws mode:    " <> workspace_mode_line(guest),
         "provision:  " <> provision_line(guest),
       ],
       stranded_line(guest, state, vm_home),
@@ -3559,6 +3643,16 @@ fn github_line(guest: Instance) -> String {
   case recorded_github(guest) {
     Ok(Some(access)) -> string.trim(vm_spec.encode_github(access))
     Ok(None) -> "not recorded (the default, gh, applies)"
+    Error(reason) -> "unknown (" <> reason <> ")"
+  }
+}
+
+/// The workspace mode the guest's record names, or the default when it has
+/// none.
+fn workspace_mode_line(guest: Instance) -> String {
+  case recorded_workspace_mode(guest) {
+    Ok(Some(mode)) -> string.trim(vm_spec.encode_workspace_mode(mode))
+    Ok(None) -> "not recorded (the default, shared, applies)"
     Error(reason) -> "unknown (" <> reason <> ")"
   }
 }

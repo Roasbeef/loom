@@ -57,7 +57,8 @@
 //// - `guest_name_for` names the guest of a workspace, `ensure_step` decides what
 ////   the ensure command does from the facts about it (`guest_state`, `manifest_action`),
 ////   `restart_refusal` says when a daemon must restart, and `effective_github`
-////   keeps the guest's GitHub access across resumes.
+////   and `effective_workspace_mode` keep the guest's GitHub access and
+////   workspace mode across resumes.
 //// - `printable`, `decode_checkouts`, `only_workspace`, `fetch_arguments`,
 ////   `bundle_arguments` and `check_git_version` serve the commands that read a
 ////   guest's root and sync it; `read_enrolment` and `plan_teardown` decide what
@@ -204,6 +205,11 @@ pub type UpOptions {
     /// same as `gh`: a resume keeps what the guest was started with
     /// (`effective_github`).
     github: Option(GitHubAccess),
+    /// The mode of the workspaces the guest serves, when `--workspace-mode`
+    /// said. `None` means the flag was not given, which is not the same as
+    /// `shared`: a resume keeps what the guest was started with
+    /// (`effective_workspace_mode`).
+    workspace_mode: Option(GuestWorkspaceMode),
     /// Whether `up` keeps the guest's root and state disk or starts both
     /// again.
     freshness: Freshness,
@@ -245,6 +251,21 @@ pub type GitHubAccess {
   /// No GitHub access: the guest's egress allowlist is empty and its jailed
   /// tools have no network.
   GitHubOff
+}
+
+/// How the guest's executor serves its workspaces, which is the `mode` key of
+/// each `[workspaces.NAME]` in the guest's `loom.toml`. A seeded spawn needs
+/// the executor's workspace in `worktree` mode, because the child's checkout
+/// is a worktree of its own (`seed = "workspace"`, protocol-change/107).
+pub type GuestWorkspaceMode {
+  /// Every session runs in the guest's checkout. The table names no `mode`,
+  /// which the executor reads as `shared`; this is what every guest had
+  /// before the option existed.
+  GuestShared
+
+  /// Each session gets its own Git worktree of the guest's checkout, so the
+  /// executor can place a seeded child there.
+  GuestWorktree
 }
 
 /// Whether `up` resumes a guest's earlier root and state or starts again.
@@ -389,6 +410,7 @@ fn only_ensure_flags(arguments: List(String)) -> Result(Nil, String) {
       if flag == "--workspace"
       || flag == "--config"
       || flag == "--github"
+      || flag == "--workspace-mode"
       || flag == "--allow"
       || flag == "--link"
     -> only_ensure_flags(rest)
@@ -618,6 +640,7 @@ fn default_up() -> UpOptions {
     cpus: 4,
     config: None,
     github: None,
+    workspace_mode: None,
     freshness: Resume,
     allow: [],
     provision: None,
@@ -664,6 +687,10 @@ fn up_flags(
     ["--github", value, ..rest] -> {
       use github <- result.try(github_access(value))
       up_flags(rest, UpOptions(..options, github: Some(github)))
+    }
+    ["--workspace-mode", value, ..rest] -> {
+      use mode <- result.try(workspace_mode_flag(value))
+      up_flags(rest, UpOptions(..options, workspace_mode: Some(mode)))
     }
     ["--link", value, ..rest] -> {
       use Nil <- result.try(link_flag(value))
@@ -727,6 +754,97 @@ fn github_access(value: String) -> Result(GitHubAccess, String) {
     "env" -> Ok(GitHubFromEnv)
     "off" -> Ok(GitHubOff)
     _ -> Error("--github must be gh, env or off, got " <> value)
+  }
+}
+
+/// Reads `--workspace-mode`'s value.
+fn workspace_mode_flag(value: String) -> Result(GuestWorkspaceMode, String) {
+  case decode_workspace_mode(value) {
+    Ok(mode) -> Ok(mode)
+    Error(_) ->
+      Error("--workspace-mode must be shared or worktree, got " <> value)
+  }
+}
+
+// --- the workspace mode a guest keeps ----------------------------------------
+
+/// The name of the file in a guest's directory that records its workspace
+/// mode: the word `shared` or `worktree`, then a newline.
+pub const workspace_mode_file = "workspace-mode"
+
+/// The mode a guest has when nothing was ever chosen.
+pub const default_workspace_mode = GuestShared
+
+/// The text of a guest's workspace-mode file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.encode_workspace_mode(vm_spec.GuestWorktree) == "worktree\n"
+/// ```
+pub fn encode_workspace_mode(mode: GuestWorkspaceMode) -> String {
+  case mode {
+    GuestShared -> "shared\n"
+    GuestWorktree -> "worktree\n"
+  }
+}
+
+/// Reads a workspace-mode file. Only one of the two words, with whitespace
+/// around it ignored, is a record; anything else is refused whole, so a
+/// hand-edited file is never half-read into a different mode.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.decode_workspace_mode("worktree\n")
+///   == Ok(vm_spec.GuestWorktree)
+/// assert result.is_error(vm_spec.decode_workspace_mode("tree\n"))
+/// ```
+pub fn decode_workspace_mode(
+  text: String,
+) -> Result(GuestWorkspaceMode, String) {
+  case string.trim(text) {
+    "shared" -> Ok(GuestShared)
+    "worktree" -> Ok(GuestWorktree)
+    _ -> Error("it must hold one word, shared or worktree")
+  }
+}
+
+/// The workspace mode a guest is launched with. A flag given replaces whatever
+/// was recorded. With none given, a resume keeps the recorded mode and
+/// `--fresh` starts from the default, as they do for the GitHub access.
+///
+/// The record exists because the mode is part of the executor's
+/// configuration, which every `up` writes again: a guest first started with
+/// `--workspace-mode worktree` and resumed with no flag must not come back
+/// `shared` and refuse the seeded children it was made to take. A guest with
+/// no record (one started before the option existed) takes the default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.effective_workspace_mode(
+///     None,
+///     Some(vm_spec.GuestWorktree),
+///     vm_spec.Resume,
+///   )
+///   == vm_spec.GuestWorktree
+/// assert vm_spec.effective_workspace_mode(
+///     None,
+///     Some(vm_spec.GuestWorktree),
+///     vm_spec.Fresh,
+///   )
+///   == vm_spec.GuestShared
+/// ```
+pub fn effective_workspace_mode(
+  given: Option(GuestWorkspaceMode),
+  recorded: Option(GuestWorkspaceMode),
+  freshness: Freshness,
+) -> GuestWorkspaceMode {
+  case given, freshness {
+    Some(mode), _ -> mode
+    None, Resume -> option.unwrap(recorded, default_workspace_mode)
+    None, Fresh -> default_workspace_mode
   }
 }
 
@@ -2260,12 +2378,26 @@ pub fn registered_workspaces(
 /// ## Examples
 ///
 /// ```gleam
-/// let text = vm_spec.guest_config_with([], ["proj"], vm_spec.GitHubOff, [])
+/// let text =
+///   vm_spec.guest_config_with(
+///     [],
+///     ["proj"],
+///     vm_spec.GuestShared,
+///     vm_spec.GitHubOff,
+///     [],
+///   )
 /// assert string.contains(text, "[workspaces.proj]")
 /// ```
+///
+/// A `GuestShared` workspace row is `root` alone, byte for byte what it was
+/// before the mode could be chosen. A `GuestWorktree` row adds `mode` and the
+/// `base` the worktree starts from. `HEAD` is the executor's own default
+/// written out, and is right on a guest because the copy of the workspace is a
+/// primary checkout with a `.git` directory of its own.
 pub fn guest_config_with(
   tables: List(String),
   workspaces: List(String),
+  mode: GuestWorkspaceMode,
   github: GitHubAccess,
   allow: List(String),
 ) -> String {
@@ -2279,11 +2411,21 @@ pub fn guest_config_with(
         <> "]\nroot = "
         <> distribution_bundle.toml_string(workspaces_dir <> "/" <> workspace)
         <> "\n"
+        <> mode_keys(mode)
       }),
       tools_table(github, allow),
     ]),
     "\n",
   )
+}
+
+/// The lines a workspace row adds for its mode: none for `shared`, so the
+/// row stays what it was.
+fn mode_keys(mode: GuestWorkspaceMode) -> String {
+  case mode {
+    GuestShared -> ""
+    GuestWorktree -> "mode = \"worktree\"\nbase = \"HEAD\"\n"
+  }
 }
 
 /// The executor's `[tools]` table. With GitHub access or an allowed host the

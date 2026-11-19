@@ -404,3 +404,79 @@ pub fn a_runner_in_the_cache_is_stranded_whichever_release_it_came_from_test() {
     )
     == []
 }
+
+// --- the workspace mode a resume keeps ------------------------------------------
+
+fn modes() -> List(vm_spec.GuestWorkspaceMode) {
+  [vm_spec.GuestShared, vm_spec.GuestWorktree]
+}
+
+pub fn workspace_mode_flag_reads_the_two_modes_test() {
+  let assert Ok(vm_spec.Up(shared)) =
+    vm_spec.parse(["up", "--workspace-mode", "shared"])
+  assert shared.workspace_mode == Some(vm_spec.GuestShared)
+
+  let assert Ok(vm_spec.Up(worktree)) =
+    vm_spec.parse(["up", "--workspace-mode", "worktree"])
+  assert worktree.workspace_mode == Some(vm_spec.GuestWorktree)
+
+  // Nothing given is not `shared`: a resume keeps what the guest has.
+  let assert Ok(vm_spec.Up(bare)) = vm_spec.parse(["up"])
+  assert bare.workspace_mode == None
+}
+
+pub fn workspace_mode_flag_refuses_an_unknown_mode_test() {
+  let assert Error(reason) = vm_spec.parse(["up", "--workspace-mode", "tree"])
+  assert reason == "--workspace-mode must be shared or worktree, got tree"
+
+  // The same refusal comes from `ensure`, and a missing value is refused.
+  assert result.is_error(
+    vm_spec.parse(["ensure", "--workspace-mode", "Worktree"]),
+  )
+  assert result.is_error(vm_spec.parse(["up", "--workspace-mode"]))
+}
+
+pub fn ensure_takes_the_workspace_mode_test() {
+  let assert Ok(vm_spec.Ensure(options)) =
+    vm_spec.parse(["ensure", "--workspace-mode", "worktree"])
+  assert options.workspace_mode == Some(vm_spec.GuestWorktree)
+}
+
+pub fn workspace_mode_record_round_trips_test() {
+  assert list.all(modes(), fn(mode) {
+    vm_spec.decode_workspace_mode(vm_spec.encode_workspace_mode(mode))
+    == Ok(mode)
+  })
+}
+
+pub fn workspace_mode_record_is_read_strictly_test() {
+  assert vm_spec.decode_workspace_mode("  worktree \n")
+    == Ok(vm_spec.GuestWorktree)
+  assert result.is_error(vm_spec.decode_workspace_mode(""))
+  assert result.is_error(vm_spec.decode_workspace_mode("tree\n"))
+  assert result.is_error(vm_spec.decode_workspace_mode("shared\nworktree\n"))
+  assert result.is_error(vm_spec.decode_workspace_mode("Worktree\n"))
+}
+
+// Every combination of given, recorded and freshness, as a table.
+pub fn effective_workspace_mode_table_test() {
+  let none = None
+  let worktree = Some(vm_spec.GuestWorktree)
+  let shared = Some(vm_spec.GuestShared)
+
+  // A flag given wins over the record, whatever the freshness.
+  assert vm_spec.effective_workspace_mode(shared, worktree, vm_spec.Resume)
+    == vm_spec.GuestShared
+  assert vm_spec.effective_workspace_mode(worktree, shared, vm_spec.Fresh)
+    == vm_spec.GuestWorktree
+
+  // With no flag a resume keeps the record, and a guest with none is shared.
+  assert vm_spec.effective_workspace_mode(none, worktree, vm_spec.Resume)
+    == vm_spec.GuestWorktree
+  assert vm_spec.effective_workspace_mode(none, none, vm_spec.Resume)
+    == vm_spec.GuestShared
+
+  // `--fresh` forgets the record.
+  assert vm_spec.effective_workspace_mode(none, worktree, vm_spec.Fresh)
+    == vm_spec.GuestShared
+}

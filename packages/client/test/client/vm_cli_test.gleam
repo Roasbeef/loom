@@ -306,6 +306,7 @@ fn guest_config(
     vm_spec.guest_files(),
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     workspaces,
+    vm_spec.GuestShared,
     github,
     allow,
   )
@@ -2231,4 +2232,70 @@ pub fn down_and_status_say_a_runner_holds_the_files_test() {
     vm_spec.stranded_note([42], vm_spec.Possible),
     "may be",
   )
+}
+
+// The configuration of a guest with the mode chosen, around the same listener
+// and tools tables the other helper builds.
+fn guest_config_in(
+  workspaces: List(String),
+  mode: vm_spec.GuestWorkspaceMode,
+) -> String {
+  vm_link.guest_config(
+    vm_spec.guest_files(),
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    workspaces,
+    mode,
+    vm_spec.GitHubOff,
+    [],
+  )
+}
+
+pub fn a_shared_guest_config_is_what_it_was_before_the_mode_existed_test() {
+  // The workspace row is `root` alone, with no `mode` and no `base`, as every
+  // guest has been staged until now, so an existing guest's configuration
+  // does not change by one byte when it is staged again.
+  let before =
+    "[models.unused]
+dialect = \"anthropic\"
+api_key_env = \"LOOM_VM_UNUSED_KEY\"
+base_url = \"http://127.0.0.1:9\"
+model_id = \"unused\"
+context_window = 100000
+max_output_tokens = 4096
+
+[roles]
+main = [\"unused\"]
+
+[workspaces.a]
+root = \"/srv/workspaces/a\"
+
+[workspaces.b]
+root = \"/srv/workspaces/b\"
+"
+  let text =
+    vm_spec.guest_config_with(
+      [],
+      ["a", "b"],
+      vm_spec.GuestShared,
+      vm_spec.GitHubOff,
+      [],
+    )
+  assert text == before
+
+  let assert Ok(document) =
+    tom.parse(guest_config_in(["a"], vm_spec.GuestShared))
+  assert result.is_error(tom.get_string(document, ["workspaces", "a", "mode"]))
+  assert result.is_error(tom.get_string(document, ["workspaces", "a", "base"]))
+}
+
+pub fn a_worktree_guest_config_names_the_mode_and_base_test() {
+  let assert Ok(document) =
+    tom.parse(guest_config_in(["a", "b"], vm_spec.GuestWorktree))
+
+  // Every workspace the guest registers is a worktree workspace.
+  assert tom.get_string(document, ["workspaces", "a", "mode"]) == Ok("worktree")
+  assert tom.get_string(document, ["workspaces", "a", "base"]) == Ok("HEAD")
+  assert tom.get_string(document, ["workspaces", "b", "mode"]) == Ok("worktree")
+  assert tom.get_string(document, ["workspaces", "b", "root"])
+    == Ok("/srv/workspaces/b")
 }

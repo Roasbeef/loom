@@ -3709,9 +3709,10 @@ fn vm_usage() -> String {
   "usage: loom vm setup [--release TAG | --from-build DIR]
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
+                  [--workspace-mode shared|worktree]
                   [--allow HOST]... [--provision SCRIPT]
        loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
-                      [--config PATH]
+                      [--workspace-mode shared|worktree] [--config PATH]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -3767,6 +3768,14 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             the --allow hosts. The guest holds only a placeholder, never the
             token. The choice is recorded and a later up with no --github
             keeps it; --fresh returns to gh.
+            --workspace-mode chooses how the guest's executor serves its
+            workspaces: shared (the default) runs every session in the guest's
+            checkout, and worktree gives each session a Git worktree of it,
+            which a seeded child (seed = workspace in a spawner) needs. The
+            choice is written into the guest's loom.toml as mode = worktree
+            and base = HEAD, recorded, and kept by a later up with no flag;
+            --fresh returns to shared. It changes what `loom --vm` shows: each
+            session works in a worktree, not in the checkout.
             --allow HOST adds a host to the guest's egress allowlist, on top
             of the GitHub hosts, so a build can reach a package registry. HOST
             is a hostname or *.domain.tld; repeat the flag for more. The list
@@ -3786,10 +3795,10 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             left alone and the command ends at once. Otherwise it installs the
             microVM artifacts when they are missing or from another release,
             then boots the guest as up does, resuming one that ran before.
-            --github, --allow and --config mean what they mean for up, and a
-            resume keeps the access and hosts the guest was started with. A
-            guest that already serves ignores --github and --allow, and says
-            so. A guest whose root came from another release, whose executor
+            --github, --allow, --workspace-mode and --config mean what they
+            mean for up, and a resume keeps the access, hosts and workspace
+            mode the guest was started with. A guest that already serves
+            ignores --github, --allow and --workspace-mode, and says so. A guest whose root came from another release, whose executor
             is still booting, or that an older loom made as a distribution
             peer, is refused with the commands to run.
             Progress goes to standard error. The last line of standard output
