@@ -258,7 +258,7 @@ What the daemon needs, read from the code:
 ### The guest side
 
 `vm_spec.guest_config` stops calling `distribution_bundle.config_tables`
-(the function is deleted; `client/vm_spec.gleam:2089` (`guest_config_with`) takes
+(the function is deleted; `client/vm_spec.gleam:2252` (`guest_config_with`) takes
 the link's tables) and writes instead:
 
 ```toml
@@ -327,7 +327,7 @@ the next `reload`.
 `up` and `ensure` write the file first, then send `reload` if a daemon is
 running. When none is, the next `loom` starts one that reads the file. Either
 way no daemon is stopped, which removes `vm_spec.daemon_step` and the stop
-step (`client/vm_spec.gleam:2715` (`daemon_step`)).
+step (`client/vm_spec.gleam:2900` (`daemon_step`)).
 
 A new control command is a change to the client control protocol, so this
 needs **protocol-change/116**.
@@ -335,7 +335,7 @@ needs **protocol-change/116**.
 ### (b) A stable address
 
 The row names `host:port`, and `boot` reserves a fresh loopback port on every
-boot today (`client/vm_cli.gleam:1630` (`reserve_loopback_port`)), which epmd
+boot today (`client/vm_cli.gleam:1826` (`reserve_loopback_port`)), which epmd
 made harmless.
 
 | Option | Daemon restart | Port taken while the guest is down | Cost |

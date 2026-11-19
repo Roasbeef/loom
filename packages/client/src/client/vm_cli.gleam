@@ -126,9 +126,10 @@ pub const usage =
   "usage: loom vm setup [--release TAG | --from-build DIR]
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
+                  [--workspace-mode shared|worktree]
                   [--allow HOST]... [--provision SCRIPT]
        loom vm ensure [--workspace DIR] [--github gh|env|off] [--allow HOST]...
-                      [--config PATH]
+                      [--workspace-mode shared|worktree] [--config PATH]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
        loom vm logs [--name NAME] [--lines N]
@@ -184,6 +185,18 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             the --allow hosts. The guest holds only a placeholder, never the
             token. The choice is recorded and a later up with no --github
             keeps it; --fresh returns to gh.
+            --workspace-mode chooses how the guest's executor serves its
+            workspaces: shared (the default) runs every session in the guest's
+            checkout, and worktree gives each session a Git worktree of it,
+            which a seeded child (seed = workspace in a spawner) needs. The
+            choice is written into the guest's loom.toml as mode = worktree
+            and base = HEAD, recorded, and kept by a later up with no flag;
+            --fresh returns to shared. It changes what `loom --vm` shows: each
+            session works in a worktree, not in the checkout, and starts from
+            HEAD, so commit first. up refuses worktree for a workspace that
+            is not a Git checkout with a commit. Switching the mode of a
+            resumed guest moves a reopened session between the checkout and
+            a tree, so commit or run `loom vm sync` first.
             --allow HOST adds a host to the guest's egress allowlist, on top
             of the GitHub hosts, so a build can reach a package registry. HOST
             is a hostname or *.domain.tld; repeat the flag for more. The list
@@ -203,10 +216,11 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             left alone and the command ends at once. Otherwise it installs the
             microVM artifacts when they are missing or from another release,
             then boots the guest as up does, resuming one that ran before.
-            --github, --allow and --config mean what they mean for up, and a
-            resume keeps the access and hosts the guest was started with. A
-            guest that already serves ignores --github and --allow, and says
-            so. A guest whose root came from another release, whose executor
+            --github, --allow, --workspace-mode and --config mean what they
+            mean for up, and a resume keeps the access, hosts and workspace
+            mode the guest was started with. A guest that already serves
+            ignores --github, --allow and --workspace-mode, and says so. A
+            guest whose root came from another release, whose executor
             is still booting, or that an older loom made as a distribution
             peer, is refused with the commands to run.
             Progress goes to standard error. The last line of standard output
@@ -404,6 +418,7 @@ type Instance {
     log: String,
     allow_file: String,
     github_file: String,
+    workspace_mode_file: String,
     checkouts_file: String,
     root_revision_file: String,
     provision_file: String,
@@ -443,6 +458,7 @@ fn instance(vm_home: String, name: String) -> Instance {
     log: directory <> "/loom-vm.log",
     allow_file: directory <> "/" <> vm_spec.allow_file,
     github_file: directory <> "/" <> vm_spec.github_file,
+    workspace_mode_file: directory <> "/" <> vm_spec.workspace_mode_file,
     checkouts_file: directory <> "/" <> vm_spec.checkouts_file,
     root_revision_file: directory <> "/" <> vm_spec.root_revision_file,
     provision_file: directory <> "/" <> vm_spec.provision_copy_file,
@@ -745,6 +761,13 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
   use plan <- result.try(provisioning(guest, options, step))
   use allow <- result.try(allowed_hosts(guest, options))
   use github <- result.try(github_access(guest, options))
+  use workspace_mode <- result.try(workspace_mode_of(guest, options))
+  use Nil <- result.try(worktree_preflight(
+    guest,
+    workspace,
+    workspace_mode,
+    options.freshness,
+  ))
   let options = UpOptions(..options, allow:)
 
   bring_up_linked(LinkedUp(
@@ -755,6 +778,7 @@ fn bring_up(options: UpOptions) -> Result(Upped, String) {
     workspace:,
     options:,
     github:,
+    workspace_mode:,
     plan:,
     step:,
   ))
@@ -837,12 +861,13 @@ fn serving(
 
   // The fast path writes nothing, so a flag that would change the guest cannot
   // take effect, and saying so is better than ignoring it silently.
-  case options.github, options.allow {
-    None, [] -> Nil
-    _, _ ->
+  case options.github, options.allow, options.workspace_mode {
+    None, [], None -> Nil
+    _, _, _ ->
       progress(
         name,
-        "--github and --allow are ignored while the guest serves; stop it with "
+        "--github, --allow and --workspace-mode are ignored while the guest "
+          <> "serves; stop it with "
           <> "`loom vm down --name "
           <> name
           <> "` and run this again to change them",
@@ -1170,6 +1195,169 @@ fn record_github(
   write_private(guest.github_file, vm_spec.encode_github(access))
 }
 
+/// The workspace mode this `up` launches the guest with: the flag, or the one
+/// an earlier `up` recorded, or the default for `--fresh`. It is read before
+/// anything is written, so a damaged record refuses `up` and changes nothing.
+fn workspace_mode_of(
+  guest: Instance,
+  options: UpOptions,
+) -> Result(vm_spec.GuestWorkspaceMode, String) {
+  resolve_workspace_mode(
+    guest.workspace_mode_file,
+    options.workspace_mode,
+    options.freshness,
+  )
+}
+
+/// `workspace_mode_of` over the record file's path, which is what the tests
+/// reach. The record is read only when it decides the answer, so a damaged one
+/// is replaced by `--workspace-mode` and ignored by `--fresh`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(vm_spec.GuestShared) =
+///   vm_cli.resolve_workspace_mode("/no/such/file", None, vm_spec.Resume)
+/// ```
+@internal
+pub fn resolve_workspace_mode(
+  file: String,
+  given: option.Option(vm_spec.GuestWorkspaceMode),
+  freshness: vm_spec.Freshness,
+) -> Result(vm_spec.GuestWorkspaceMode, String) {
+  // Only a resume with no flag lets the record decide, so only that case
+  // reads it and can be refused by a damaged one.
+  use recorded <- result.try(case given, freshness {
+    None, vm_spec.Resume -> recorded_workspace_mode(file)
+    _, _ -> Ok(None)
+  })
+
+  Ok(vm_spec.effective_workspace_mode(given, recorded, freshness))
+}
+
+/// The mode the record file holds, or `None` when there is no file.
+fn recorded_workspace_mode(
+  file: String,
+) -> Result(option.Option(vm_spec.GuestWorkspaceMode), String) {
+  case simplifile.read(file) {
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) ->
+      Error(file <> " is unreadable: " <> simplifile.describe_error(error))
+    Ok(text) ->
+      vm_spec.decode_workspace_mode(text)
+      |> result.map(Some)
+      |> result.map_error(fn(reason) {
+        file
+        <> ", "
+        <> reason
+        <> ". Fix or remove the file, or give --workspace-mode to replace it."
+      })
+  }
+}
+
+/// Records the mode the guest launches with in `file`, so `down` and `up` keep
+/// it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(Nil) =
+///   vm_cli.record_workspace_mode("/vm/g/workspace-mode", vm_spec.GuestWorktree)
+/// ```
+@internal
+pub fn record_workspace_mode(
+  file: String,
+  mode: vm_spec.GuestWorkspaceMode,
+) -> Result(Nil, String) {
+  write_private(file, vm_spec.encode_workspace_mode(mode))
+}
+
+/// Refuses a `worktree` guest whose workspaces the executor could not serve:
+/// the directory `up` copies, and on a resume every copy already registered.
+/// The executor refuses to start when any registered workspace is not the top
+/// of a Git checkout or has a name its worktree directory cannot take, so
+/// without this the guest would be written, booted and fail late, and a
+/// recorded `worktree` would fail every later `up` too. A `shared` guest has
+/// no such condition. `--fresh` drops the earlier copies, so only the copy
+/// this `up` makes is checked then.
+fn worktree_preflight(
+  guest: Instance,
+  workspace: Workspace,
+  mode: vm_spec.GuestWorkspaceMode,
+  freshness: vm_spec.Freshness,
+) -> Result(Nil, String) {
+  // Only worktree mode has conditions on the workspaces; a shared guest takes
+  // any directory.
+  case mode {
+    vm_spec.GuestShared -> Ok(Nil)
+    vm_spec.GuestWorktree -> {
+      // A linked worktree's `.git` is a file and its copy is given a
+      // repository of its own, so either kind of entry is accepted here.
+      use Nil <- result.try(vm_spec.worktree_refusal(
+        workspace.name,
+        workspace.path,
+        git_presence(workspace.path <> "/.git"),
+      ))
+      use Nil <- result.try(committed_head(workspace))
+
+      // A fresh `up` drops the earlier copies, so only a resume has any left
+      // to check.
+      case freshness {
+        vm_spec.Fresh -> Ok(Nil)
+        vm_spec.Resume -> registered_copies_fit(guest, workspace)
+      }
+    }
+  }
+}
+
+/// Whether the host has an entry at the `.git` path.
+fn git_presence(path: String) -> vm_spec.Presence {
+  case bootstrap.path_kind(path) {
+    bootstrap.NoEntry -> vm_spec.Absent
+    bootstrap.RegularFile | bootstrap.OtherEntry -> vm_spec.Present
+  }
+}
+
+/// Refuses a repository whose `HEAD` names no commit, because a worktree is
+/// made from `HEAD` and every attach would fail.
+fn committed_head(workspace: Workspace) -> Result(Nil, String) {
+  tool(
+    "git",
+    ["-C", workspace.path, "rev-parse", "--verify", "--quiet", "HEAD"],
+    within: quick_ms,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(fn(_) {
+    "--workspace-mode worktree cannot serve "
+    <> workspace.path
+    <> ": its HEAD names no commit, and a worktree is made from HEAD. Make a "
+    <> "commit, or use --workspace-mode shared."
+  })
+}
+
+/// Checks the copies an earlier `up` registered in the guest's root: each must
+/// still be the top of a Git checkout, which is read through `is_plain_directory`
+/// and never by running Git in the guest's files.
+fn registered_copies_fit(
+  guest: Instance,
+  workspace: Workspace,
+) -> Result(Nil, String) {
+  registered_workspaces(guest, workspace)
+  |> list.filter(fn(name) { name != workspace.name })
+  |> list.try_each(fn(name) {
+    let directory = guest.root <> vm_spec.workspaces_dir <> "/" <> name
+
+    // A copy's `.git` is a directory the copy step made, so a link or a file
+    // there is not the top of a checkout.
+    let git = case is_plain_directory(directory <> "/.git") {
+      True -> vm_spec.Present
+      False -> vm_spec.Absent
+    }
+
+    vm_spec.worktree_refusal(name, directory, git)
+  })
+}
+
 /// What `--provision` and the guest root's history decide. The script must be
 /// a file the developer named, and only this flag can name one: the workspace
 /// is untrusted input and is never searched for a script.
@@ -1377,6 +1565,7 @@ type LinkedUp {
     workspace: Workspace,
     options: UpOptions,
     github: vm_spec.GitHubAccess,
+    workspace_mode: vm_spec.GuestWorkspaceMode,
     plan: vm_spec.ProvisionPlan,
     step: vm_spec.RootStep,
   )
@@ -1460,6 +1649,7 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
     workspace:,
     options:,
     github:,
+    workspace_mode:,
     plan:,
     step:,
   ) = linked
@@ -1481,10 +1671,19 @@ fn bring_up_linked(linked: LinkedUp) -> Result(Upped, String) {
   use Nil <- result.try(stage_with(
     manifest,
     guest,
-    stage_linked_node(guest, home, leaf, _, github, options.allow),
+    stage_linked_node(
+      guest,
+      home,
+      leaf,
+      _,
+      workspace_mode,
+      github,
+      options.allow,
+    ),
     workspace,
     options,
     github,
+    workspace_mode,
     plan,
     step,
   ))
@@ -1712,6 +1911,7 @@ fn stage_linked_node(
   home: vm_link_pki.Home,
   leaf: vm_link_pki.Leaf,
   workspaces: List(String),
+  workspace_mode: vm_spec.GuestWorkspaceMode,
   github: vm_spec.GitHubAccess,
   allow: List(String),
 ) -> Result(Nil, String) {
@@ -1721,6 +1921,7 @@ fn stage_linked_node(
       vm_spec.guest_files(),
       home.pin,
       workspaces,
+      workspace_mode,
       github,
       allow,
     )
@@ -1878,6 +2079,7 @@ fn stage_with(
   workspace: Workspace,
   options: UpOptions,
   github: vm_spec.GitHubAccess,
+  workspace_mode: vm_spec.GuestWorkspaceMode,
   plan: vm_spec.ProvisionPlan,
   step: vm_spec.RootStep,
 ) -> Result(Nil, String) {
@@ -1887,6 +2089,10 @@ fn stage_with(
   use Nil <- result.try(prepare_root(manifest, guest, platform, options, step))
   use Nil <- result.try(record_allow(guest, options.allow))
   use Nil <- result.try(record_github(guest, github))
+  use Nil <- result.try(record_workspace_mode(
+    guest.workspace_mode_file,
+    workspace_mode,
+  ))
   use Nil <- result.try(write_node(registered_workspaces(guest, workspace)))
   use Nil <- result.try(stage_script(guest.root, plan))
 
@@ -3327,6 +3533,7 @@ fn status(name: String) -> Result(String, String) {
         "workspaces: " <> workspace_line(guest),
         "allowed:    " <> allow_line(guest),
         "github:     " <> github_line(guest),
+        "ws mode:    " <> workspace_mode_line(guest),
         "provision:  " <> provision_line(guest),
       ],
       stranded_line(guest, state, vm_home),
@@ -3415,6 +3622,16 @@ fn github_line(guest: Instance) -> String {
   case recorded_github(guest) {
     Ok(Some(access)) -> string.trim(vm_spec.encode_github(access))
     Ok(None) -> "not recorded (the default, gh, applies)"
+    Error(reason) -> "unknown (" <> reason <> ")"
+  }
+}
+
+/// The workspace mode the guest's record names, or the default when it has
+/// none.
+fn workspace_mode_line(guest: Instance) -> String {
+  case recorded_workspace_mode(guest.workspace_mode_file) {
+    Ok(Some(mode)) -> string.trim(vm_spec.encode_workspace_mode(mode))
+    Ok(None) -> "not recorded (the default, shared, applies)"
     Error(reason) -> "unknown (" <> reason <> ")"
   }
 }
