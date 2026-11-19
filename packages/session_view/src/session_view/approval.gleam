@@ -95,6 +95,11 @@ pub type Review {
     /// Where the question comes from when it is a child's on another
     /// orchestrator, or `None` for this session's own.
     remote: Option(Remote),
+    /// Unix milliseconds at which the question was put to a person, or `None`
+    /// for a row written before protocol-change/124 and for a child's request
+    /// on another orchestrator, which carries no time. A page that has no
+    /// time draws none.
+    raised_at: Option(Int),
   )
 }
 
@@ -321,6 +326,7 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
     permission,
     None,
     Some(Remote(orchestrator:, child:, outside:)),
+    None,
   ))
 }
 
@@ -360,6 +366,12 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     |> result.replace_error("invalid escalation decision origin"),
   )
 
+  use raised_at <- result.try(case list.key_find(fields, "raised_at") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(json.Int(at)) if at >= 0 -> Ok(Some(at))
+    Ok(_) -> Error("invalid escalation raise time")
+  })
+
   // Handle the `decode_local` branch dispatch.
   let permission = case exact(fields) {
     Ok(permission) -> permission
@@ -386,6 +398,7 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     permission,
     strand,
     None,
+    raised_at,
   ))
 }
 

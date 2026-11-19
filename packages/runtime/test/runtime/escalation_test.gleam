@@ -728,7 +728,13 @@ pub fn exact_decision_origin_survives_consumption_and_clears_on_reopen_test() {
 
 pub fn escalation_origin_decoder_preserves_history_and_refuses_corruption_test() {
   let record =
-    escalation.raised("origin-codec", denial(), action: None, scope: None)
+    escalation.raised(
+      "origin-codec",
+      denial(),
+      action: None,
+      scope: None,
+      at: 1,
+    )
   let assert json.Object(fields) = escalation.encode(record)
     as "escalation encodes as one payload"
   let historical =
@@ -741,6 +747,77 @@ pub fn escalation_origin_decoder_preserves_history_and_refuses_corruption_test()
       Some(message.Origin("bad principal", "Name")),
     )
   assert result.is_error(escalation.decode(escalation.encode(malformed)))
+}
+
+// A record written before protocol-change/124 has no `raised_at` key. It must
+// decode with no time rather than as corruption, and the time must survive an
+// encode and decode when it is present.
+pub fn escalation_raised_at_decodes_absent_on_an_old_record_test() {
+  let record =
+    escalation.raised("time-codec", denial(), action: None, scope: None, at: 42)
+  assert record.raised_at == Some(42)
+  assert escalation.decode(escalation.encode(record)) == Ok(record)
+
+  let assert json.Object(fields) = escalation.encode(record)
+    as "escalation encodes as one payload"
+  let old =
+    json.Object(list.filter(fields, fn(field) { field.0 != "raised_at" }))
+  let assert Ok(decoded) = escalation.decode(old)
+    as "a pre-124 record is not corruption"
+  assert decoded.raised_at == None
+  assert decoded == escalation.Escalation(..record, raised_at: None)
+
+  let null =
+    json.Object(
+      list.map(fields, fn(field) {
+        case field.0 {
+          "raised_at" -> #("raised_at", json.Null)
+          _ -> field
+        }
+      }),
+    )
+  assert escalation.decode(null) == Ok(decoded)
+
+  let wrong =
+    json.Object(
+      list.map(fields, fn(field) {
+        case field.0 {
+          "raised_at" -> #("raised_at", json.String("noon"))
+          _ -> field
+        }
+      }),
+    )
+  assert result.is_error(escalation.decode(wrong))
+}
+
+// A claim that moves a pending record keeps the time the question was first
+// put, and a claim that re-opens a decided record stamps a new one.
+pub fn escalation_raised_at_follows_the_question_test() {
+  let record =
+    escalation.raised("claim-time", denial(), action: None, scope: None, at: 10)
+  let assert escalation.Claimed(moved) =
+    escalation.claimed(
+      record,
+      denial(),
+      action("one"),
+      scope_for("c1"),
+      max_asks: 3,
+      at: 20,
+    )
+  assert moved.raised_at == Some(10)
+
+  let rejected = escalation.reject(moved, None)
+  let assert escalation.Claimed(reopened) =
+    escalation.claimed(
+      rejected,
+      denial(),
+      action("two"),
+      scope_for("c2"),
+      max_asks: 3,
+      at: 30,
+    )
+  assert reopened.raised_at == Some(30)
+  assert reopened.asked == 2
 }
 
 // The claim door as this suite calls it: the labels spelled once.

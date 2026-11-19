@@ -1027,6 +1027,7 @@ pub fn a_denied_approval_leaves_a_who_line_in_the_lane_test() {
       approval.Unavailable("this decision is already resolved"),
       strand: None,
       remote: option.None,
+      raised_at: None,
     )
   }
   let model =
@@ -1065,6 +1066,7 @@ fn decided_record(id, seq, status, tool, strand) {
     approval.Unavailable("this decision is already resolved"),
     strand:,
     remote: option.None,
+    raised_at: None,
   )
 }
 
