@@ -1069,9 +1069,7 @@ pub fn exclude_untracked(
       "--untracked-files=normal",
     ]),
   )
-  let entries =
-    string.split(listing, "\u{0}")
-    |> list.filter(fn(entry) { entry != "" })
+  let entries = status_entries(string.split(listing, "\u{0}"))
   let #(untracked, changed) =
     list.partition(entries, string.starts_with(_, "?? "))
   let patterns =
@@ -1086,7 +1084,7 @@ pub fn exclude_untracked(
     [] -> Ok(Nil)
     _ ->
       Error(
-        "setup changed tracked files: "
+        "tracked files read as changed after setup and the base check: "
         <> string.join(list.map(changed, string.drop_start(_, 3)), ", "),
       )
   })
@@ -1118,6 +1116,25 @@ pub fn exclude_untracked(
             )
         }
       })
+  }
+}
+
+/// The status entries of a `-z` listing, each with its two status characters.
+/// A rename or a copy is followed by one more entry, its old path, which has no
+/// status prefix of its own, so that entry is skipped and not read as one.
+fn status_entries(raw: List(String)) -> List(String) {
+  case raw {
+    [] -> []
+    ["", ..rest] -> status_entries(rest)
+    [entry, ..rest] ->
+      case string.slice(entry, 0, 1), string.slice(entry, 1, 1) {
+        "R", _ | "C", _ | _, "R" | _, "C" ->
+          case rest {
+            [_old, ..after] -> [entry, ..status_entries(after)]
+            [] -> [entry]
+          }
+        _, _ -> [entry, ..status_entries(rest)]
+      }
   }
 }
 

@@ -759,9 +759,33 @@ pub fn a_setup_that_changes_a_tracked_file_fails_the_build_test() {
       )) = outcome
         as "the build fails when setup changes a tracked file"
       assert stage == project_template.Cutting
-      assert string.contains(output, "setup changed tracked files")
+      assert string.contains(output, "tracked files read as changed")
       assert string.contains(output, ".gitignore")
       assert !worktree_rig.exists(project_repo.template_path(scene.layout))
+    }
+  }
+}
+
+// A staged rename lists its old path as an entry of its own, with no status
+// prefix, and the failure names the new path whole and does not read the old one as an entry.
+pub fn a_staged_rename_is_named_whole_in_the_failure_test() {
+  let scene = scene("tpl-rename")
+  let outcome =
+    project_template.build(
+      scene.trees,
+      scene.layout,
+      request("git mv .gitignore .gitignore-moved", None),
+    )
+  case degraded(outcome) {
+    True -> skip("the sandbox could not run the setup command")
+    False -> {
+      let assert project_template.Failed(project_template.Failure(
+        stage:,
+        output:,
+      )) = outcome
+        as "the build fails when setup renames a tracked file"
+      assert stage == project_template.Cutting
+      assert string.contains(output, "base check: .gitignore-moved")
     }
   }
 }
