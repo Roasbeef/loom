@@ -5058,3 +5058,85 @@ pins `a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test`, and
 drives the page: controls match the listed actions, an answer sends, a refusal
 shows, Stop and Close confirm, and an observer has no controls. A real drive in
 a browser has not been run.
+
+## Addendum: the inbox's rail folders and layout (2026-11-19)
+
+The owner asked that Home's inbox look like the final design
+(`docs/design-notes/attention-inbox/final/mockup.html`) and approved one
+feature the design adds: filter folders at the top of the left rail. When the
+centre is the inbox, the page draws "Everything, by need" and one folder for
+each group that holds a thread ("Needs you", "To review", "Finds", "Updates",
+"Projects"), each with its count. A press narrows the inbox's list to that
+group, and "Everything, by need" clears it. The centre becomes a full-height
+split of a 388px thread list and a reading pane, and a narrow screen gains a
+back control on the pane that returns to the list.
+
+### What the page may do
+
+Every new handler is beneath a path the socket already admits, so no frame,
+path constant or rule is added.
+
+| Control | Event | Path | Admitted for |
+|---|---|---|---|
+| A folder in the rail | click | beneath `home.sidebar_path` | every home |
+| The pane's back control | click | beneath `home.table_path` | every home |
+
+A folder's press sends `FolderPicked(folder)`. The folder is the one the server
+drew the button for, and the page honours it only for a folder it lists now
+(`home.folder_counts`): a press for any other changes nothing. The filter is a
+field of the home component's model. It is not saved, it is not sent to the
+daemon, and it changes what the page draws and nothing a session, the catalogue
+or a project holds. A folder whose group has emptied draws as "Everything, by
+need", so the list is never blank under a filter the rail no longer offers.
+
+The back control sends `InboxClosed`, which drops the open thread's state as a
+press on another thread does and returns the default thread behind the list. It
+is drawn on every thread's pane and shown only below 768px.
+
+The message form's buttons moved from inside the form to the pane's outbox bar.
+They name the form in a `form` attribute, so the browser submits the same form
+with the pressed button as its submitter, and the handler is still the form's
+`submit` event beneath `home.table_path`. The decoder is unchanged: exactly one
+`draft` and at most one `delivery`.
+
+### What the page draws and what it does not
+
+- Every word a session, a strand or a ticket wrote is still a text node. The
+  folders' names and the bands' glosses are the page's own fixed words, and no
+  folder, band or row carries session text in a class, attribute or key.
+- The top bar draws the number of threads that wait on the owner as a pill. The
+  pill is the bar's seventh child, after the owner's control, so
+  `home.admin_path` does not move.
+- An approval draws no age and no "waiting since". The escalation record has no
+  raise time (README section 7.2). Each place the design draws a time that the
+  page lacks is an `Option` that draws nothing while it is `None`
+  (`inbox.Offer.waited`, the `since` of `inbox_parts.eyebrow`).
+- An approval's thread keeps one action, "Decide on the session's page". No
+  control on Home decides an approval.
+
+### What was considered
+
+- **A new daemon command for the filter.** Ruled out: the filter changes what
+  the page draws and nothing the daemon holds, so a command would carry state
+  the daemon has no use for.
+- **Keeping the filter in the browser.** Ruled out: the page is a server
+  component and the list is drawn on the server, so the filter has to be in its
+  model for the server to draw it.
+- **Moving the folders into their own region.** Ruled out: the sidebar is the
+  second child of the frame (`home.sidebar_path`) and already admitted, and a
+  new region would need a new admission rule for the same click.
+
+### Cost
+
+One message on `home.Msg` for each of the two controls, one field on the
+model, a `Folders` offer on the sidebar and one pure module of shared parts
+(`web_view/view/inbox_parts`). No new route, frame or admitted path.
+
+### Verification
+
+`home_test` and `inbox_view_test` fail if the view moves `table_path`,
+`sidebar_path` or `admin_path`. `inbox_folders_test` pins that a folder's count
+equals the rows its band draws, that a press for a folder the page does not list
+changes nothing, and that an emptied folder draws as "Everything, by need". The
+client's `ui_socket_test`, `ui_route_test` and `daemon_server_test` are run
+unchanged.
