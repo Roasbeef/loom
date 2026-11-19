@@ -3,14 +3,13 @@
 ////
 //// A row written before the field existed has no `raised_at` key and must
 //// decode with no time, not as corruption, because the page then draws no age
-//// for it. A wrong type is corruption: a half-readable time is not one to
-//// print.
+//// for it. A wrong type or a negative number is no time either, and the review
+//// survives it.
 
 import core/json
 import core/register
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import session_view/approval
 import session_view/snapshot_view
 
@@ -47,9 +46,15 @@ pub fn a_record_before_the_field_has_no_time_test() {
   assert review.raised_at == None
 }
 
-pub fn a_malformed_raise_time_is_refused_test() {
-  assert result.is_error(
-    approval.decode(row([#("raised_at", json.String("noon"))])),
-  )
-  assert result.is_error(approval.decode(row([#("raised_at", json.Int(-1))])))
+// A time that cannot be read is no time. It must not cost the whole review,
+// because a pending approval whose card cannot be drawn cannot be decided.
+pub fn a_malformed_raise_time_is_no_time_and_keeps_the_review_test() {
+  let assert Ok(review) =
+    approval.decode(row([#("raised_at", json.String("noon"))]))
+  assert review.raised_at == None
+  assert review.id == "esc-1"
+
+  let assert Ok(review) = approval.decode(row([#("raised_at", json.Int(-1))]))
+  assert review.raised_at == None
+  assert review.tool == "bash"
 }

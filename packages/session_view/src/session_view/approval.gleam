@@ -96,9 +96,9 @@ pub type Review {
     /// orchestrator, or `None` for this session's own.
     remote: Option(Remote),
     /// Unix milliseconds at which the question was put to a person, or `None`
-    /// for a row written before protocol-change/124 and for a child's request
-    /// on another orchestrator, which carries no time. A page that has no
-    /// time draws none.
+    /// for a row written before protocol-change/124, for a value that is not a
+    /// non-negative number, and for a child's request on another orchestrator,
+    /// which carries no time. A page that has no time draws none.
     raised_at: Option(Int),
   )
 }
@@ -366,12 +366,13 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     |> result.replace_error("invalid escalation decision origin"),
   )
 
-  // A missing or null time is an older record, and a mistyped one is refused.
-  use raised_at <- result.try(case list.key_find(fields, "raised_at") {
-    Error(Nil) | Ok(json.Null) -> Ok(None)
-    Ok(json.Int(at)) if at >= 0 -> Ok(Some(at))
-    Ok(_) -> Error("invalid escalation raise time")
-  })
+  // A missing or null time is an older record. A negative or mistyped one is no
+  // time, and it does not cost the review: a time only words an age, and a card
+  // that cannot be drawn leaves a pending approval nobody can decide.
+  let raised_at = case list.key_find(fields, "raised_at") {
+    Ok(json.Int(at)) if at >= 0 -> Some(at)
+    Ok(_) | Error(Nil) -> None
+  }
 
   // Handle the `decode_local` branch dispatch.
   let permission = case exact(fields) {

@@ -444,7 +444,7 @@ pieces and the register's reviews and lifts what needs the owner.
   a full transcript traversal on every render.
 - `approval.Review.raised_at` (protocol-change/124): `Option(Int)` Unix ms from
   the local record's `raised_at`; `None` for an older record and for a remote
-  child's request, and a negative or mistyped value is refused.
+  child's request, and a negative or mistyped value is `None` and does not fail the review.
 - `approval.wants(tool)`: the fixed words for what a request asks to do
   (`run a command`), shared by the cards.
 - `approval.Review.remote`: a child's request on another orchestrator
