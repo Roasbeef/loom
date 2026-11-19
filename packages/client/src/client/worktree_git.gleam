@@ -451,7 +451,7 @@ fn run_in(
       waiting: within_ms,
     )
     |> result.map_error(fn(refusal) {
-      "the sandbox refused the Git call: " <> string.inspect(refusal)
+      "the sandbox refused the program: " <> string.inspect(refusal)
     }),
   )
 

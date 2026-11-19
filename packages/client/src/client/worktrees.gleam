@@ -449,7 +449,7 @@ pub fn prepare_home(
 /// ## Examples
 ///
 /// ```gleam
-/// // worktrees.run_program(worktrees, "/usr/bin/cp", "/s/projects/p-1", [tickets], ["-Rp", template, dest], 600_000)
+/// // worktrees.run_program(worktrees, "/bin/cp", "/s/projects/p-1", [tickets], ["-RPp", template, dest], 600_000)
 /// ```
 pub fn run_program(
   worktrees: Worktrees,

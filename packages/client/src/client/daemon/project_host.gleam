@@ -2347,8 +2347,8 @@ fn template_settled(host: Host, outcome: project_template.Outcome) -> Host {
 }
 
 /// A finished build whose record the ledger would not take. The template is on
-/// disk, and the build runs again, finds the base where it stands and records
-/// it then.
+/// disk, but no record says so, so the build is deferred and runs again, setup
+/// and base check in full, and records its outcome then.
 fn template_unrecorded(host: Host, reason: String) -> Host {
   log.warn(host.ports.logger, "project.template_unrecorded", [
     field.text(key: "reason", value: reason),
