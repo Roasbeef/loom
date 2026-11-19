@@ -2119,9 +2119,9 @@ denial's, at most 300 bytes), `wanted` (at most six `{kind, detail}` grants, the
 detail at most 160 bytes) and `asked`. An item also carries, when it has them:
 `raised_at` (Unix milliseconds, [Protocol 124](../protocol-change/124-escalation-raise-time.md);
 absent for a record written before the field), `network` (`on` or `off`, the
-network the call would have), `policy` (`{sandbox, network}`, the session's base
-policy in words at the moment of the read), and for a `code_mode` program `call`
-(`proc.run`) and `command` (the argv's literals on one line), as the addendum to
+network the call would have), `policy` (`{sandbox, network}`, the assembled base policy with the remembered
+grants folded in, at the moment of the read; each of the two is left out when it
+cannot be exact), as the addendum to
 [Protocol 120](../protocol-change/120-attention-feed.md) words them. The owner and a member at any role
 read; `not_found` is a session the credential does not hold and `not_resident` a
 session that is not running. It never decides, claims or consumes an approval,

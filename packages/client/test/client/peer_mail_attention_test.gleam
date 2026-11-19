@@ -6,12 +6,15 @@
 //// through `peer_mail.handle`, the call the Agency actor makes, and pin the
 //// bounds over generated record sets from a fixed qcheck seed.
 
+import broker/policy
 import client/advisor
 import client/approval_evidence
 import client/attention
 import client/attention_feed
+import client/grants
 import client/internal/ffi_os
 import client/peer_mail
+import client/permissions
 import core/accounting
 import core/attention as records
 import core/clock
@@ -988,69 +991,125 @@ fn raise_program(runtime: api.Runtime, id: String, preview: String) -> Nil {
   Nil
 }
 
+fn items_of(runtime: api.Runtime, today: Option(approval_evidence.Today)) {
+  let assert Ok(row) = approval_evidence.read(runtime, today)
+  let assert json.Array(items) = field(field(row, "approvals"), "items")
+  items
+}
+
+fn today(network: String) -> Option(approval_evidence.Today) {
+  Some(approval_evidence.Today(sandbox: "workspace-write", network:))
+}
+
 // The words a person weighs the grant against are read when the item is read:
-// the policy the host lends, the network the call would have, and for a
-// `code_mode` program the call and command its source names.
-pub fn an_item_carries_the_policy_the_network_and_the_program_call_test() {
+// the policy the host lends and the network the call would have.
+pub fn an_item_carries_the_policy_and_the_network_test() {
   let runtime = open()
-  let program =
-    "import cap/proc\npub fn main() { proc.command([\"sqlite3\", \"store.db\"]) |> proc.run }"
-  let preview =
-    json.to_string(json.Object([#("program", json.String(program))]))
-  raise_program(runtime, "esc-p", preview)
-  let today =
-    approval_evidence.Today(sandbox: "workspace-write", network: "off")
-  let assert Ok(row) = approval_evidence.read(runtime, Some(today))
-  let assert json.Array([item]) = field(field(row, "approvals"), "items")
+  raise_program(runtime, "esc-p", "{}")
+  let assert [item] = items_of(runtime, today("off"))
   assert field(item, "network") == json.String("off")
   assert field(item, "policy")
     == json.Object([
       #("sandbox", json.String("workspace-write")),
       #("network", json.String("off")),
     ])
-  assert field(item, "call") == json.String("proc.run")
-  assert field(item, "command") == json.String("sqlite3 store.db")
   let assert Ok(Nil) = api.close(runtime)
 }
 
-pub fn the_policy_network_word_follows_the_policy_test() {
+// The call and the command inside a `code_mode` program are never read from the
+// program's source, which a model wrote: the escalation records no such call,
+// and a parse would show a command the program may never run. Each program here
+// would have misled the parse that was removed, and each item names neither.
+pub fn a_programs_source_is_never_read_for_a_call_or_a_command_test() {
+  let programs = [
+    // A decoy in a comment, ahead of the real call.
+    "// proc.command([\"echo\", \"harmless\"])\nproc.command([\"rm\", \"-rf\", \"x\"]) |> proc.run",
+    // A decoy in a string literal.
+    "let note = \"proc.command([\\\"ls\\\"])\"\nproc.command(argv) |> proc.run",
+    // A spread argv, which silently dropped its tail.
+    "proc.command([\"git\", ..rest]) |> proc.run",
+    // A bracket inside a literal, and two calls.
+    "proc.command([\"echo\", \"]\"]) |> proc.run\nproc.command([\"curl\", \"x\"]) |> proc.run",
+  ]
+  list.each(programs, fn(program) {
+    let runtime = open()
+    let preview =
+      json.to_string(json.Object([#("program", json.String(program))]))
+    raise_program(runtime, "esc-p", preview)
+    let assert [item] = items_of(runtime, today("off"))
+    assert absent(item, "call")
+    assert absent(item, "command")
+    let assert Ok(Nil) = api.close(runtime)
+  })
+}
+
+// Loopback is not the network and not nothing, so the item says neither, and
+// the policy word stays the harness's own.
+pub fn the_network_word_is_left_out_when_it_cannot_be_exact_test() {
   let runtime = open()
   raise_program(runtime, "esc-p", "{}")
-  let read = fn(network) {
-    let today = approval_evidence.Today(sandbox: "workspace-write", network:)
-    let assert Ok(row) = approval_evidence.read(runtime, Some(today))
-    let assert json.Array([item]) = field(field(row, "approvals"), "items")
-    field(item, "network")
+  let word = fn(network) {
+    let assert [item] = items_of(runtime, today(network))
+    case absent(item, "network") {
+      True -> json.Null
+      False -> field(item, "network")
+    }
   }
-  assert read("off") == json.String("off")
-  assert read("loopback") == json.String("off")
-  assert read("proxy") == json.String("on")
-  assert read("on") == json.String("on")
+  assert word("off") == json.String("off")
+  assert word("loopback") == json.Null
+  assert word("proxy") == json.String("on")
+  assert word("on") == json.String("on")
+
+  // A host with no policy to lend gives no network word and no policy.
+  let assert [bare] = items_of(runtime, None)
+  assert absent(bare, "network")
+  assert absent(bare, "policy")
   let assert Ok(Nil) = api.close(runtime)
 }
 
-// A source with no recognisable call, a cut preview, and an argv with an escape
-// each give no call and no command, and any tool but `code_mode` gives none.
-pub fn a_program_call_that_cannot_be_read_gives_none_test() {
-  let none = #(None, None)
-  assert approval_evidence.code_call("code_mode", None) == none
-  assert approval_evidence.code_call("code_mode", Some("{\"program\":\"x"))
-    == none
-  assert approval_evidence.code_call(
-      "code_mode",
-      Some("{\"program\":\"fs.read()\"}"),
-    )
-    == none
-  assert approval_evidence.code_call(
-      "code_mode",
-      Some("{\"program\":\"proc.command([\\\"a\\\\b\\\"])\"}"),
-    )
-    == none
-  assert approval_evidence.code_call(
-      "bash",
-      Some("{\"program\":\"proc.command([\\\"ls\\\"])\"}"),
-    )
-    == none
+fn remember(runtime: api.Runtime, payload: JsonValue) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(runtime, approval_evidence.remembered_key, payload)
+    as "the remembered grants are written"
+  Nil
+}
+
+// A session that remembered full network runs the call with network whatever the
+// base says, so the item reads `on`, which is the direction that must not be
+// understated. Grants that cannot be read leave the words out.
+pub fn a_remembered_network_grant_makes_the_item_read_on_test() {
+  assert approval_evidence.remembered_key == permissions.key
+
+  let runtime = open()
+  raise_program(runtime, "esc-p", "{}")
+  remember(
+    runtime,
+    json.Object([
+      #(
+        "grants",
+        json.Array([grants.encode(policy.GrantNetwork(policy.NetworkFull))]),
+      ),
+    ]),
+  )
+  let assert [item] = items_of(runtime, today("off"))
+  assert field(item, "network") == json.String("on")
+  assert field(item, "policy")
+    == json.Object([
+      #("sandbox", json.String("workspace-write")),
+      #("network", json.String("on")),
+    ])
+
+  // The same with no policy lent: the remembered grant alone says `on`.
+  let assert [bare] = items_of(runtime, None)
+  assert field(bare, "network") == json.String("on")
+  assert absent(bare, "policy")
+
+  // Remembered grants that do not decode are not known, so nothing is claimed.
+  remember(runtime, json.Object([#("grants", json.String("garbled"))]))
+  let assert [unknown] = items_of(runtime, today("off"))
+  assert absent(unknown, "network")
+  assert absent(unknown, "policy")
+  let assert Ok(Nil) = api.close(runtime)
 }
 
 pub fn only_four_pending_approvals_are_listed_and_all_are_counted_test() {

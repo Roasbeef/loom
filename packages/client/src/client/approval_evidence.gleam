@@ -16,9 +16,14 @@
 ////
 //// An item also says what a person weighs the grant against, all read when the
 //// read is made and never stored (protocol-change/120, the addendum on
-//// approval words): the network the call would have, the session's sandbox
-//// and network policy today, and for a `code_mode` program the capability call
-//// and command that the program's source names.
+//// approval words): the network the call would have and the session's sandbox
+//// and network policy today. Each word is the one dispatch would apply: the
+//// assembled base policy with the session's remembered grants folded in. When
+//// either is not known the word is left out, and no word ever claims `off` on a
+//// guess, because evidence that understates what a call gets is the dangerous
+//// direction. The call and command inside a `code_mode` program are not read
+//// from the program's source, which a model wrote and which can show a command
+//// the program never runs, and the escalation records no such call.
 ////
 //// ## Flow
 ////
@@ -27,7 +32,7 @@
 //// 1. `read` lists the escalation records and keeps the pending ones in id
 ////    order, a few of them, with the total as a count.
 //// 2. `item` words one record at the revision of its cell, with the network
-////    word, the policy and, for a program, what `code_call` reads from it.
+////    word and the policy.
 //// 3. `wanted_line` turns one wanted grant, in the escalation vocabulary, into a
 ////    kind and a short detail.
 ////
@@ -40,6 +45,7 @@
 //// the model, so the page draws them as text nodes and nowhere else.
 
 import broker/policy
+import client/grants
 import core/glance
 import core/json.{type JsonValue}
 import gleam/list
@@ -67,9 +73,6 @@ pub const reason_bytes = 300
 
 /// The longest detail of one wanted grant, in bytes.
 pub const detail_bytes = 160
-
-/// The longest command a `code_mode` item names, in bytes.
-pub const command_bytes = 400
 
 /// The sandbox and network a session runs its tools under today, in the words
 /// a page draws. The session's host works them out from its base policy
@@ -112,9 +115,11 @@ pub fn today_of(base: policy.SandboxPolicy) -> Today {
 /// `{"approvals": {"count", "items": [...]}}`. A record that cannot be read at
 /// its cell is left out of the items and still counted.
 ///
-/// `today` is the session's policy in words, or nothing for a host that has
-/// none to lend, in which case an item carries neither the policy nor a network
-/// word it cannot know.
+/// `today` is the assembled base policy in words, or nothing for a host that has
+/// none to lend. The session's remembered grants are read here, at the moment of
+/// the read, and folded in: a remembered full network makes the item `on`. A
+/// host with no policy, and a store whose remembered grants cannot be read, leave
+/// out the words that need them.
 ///
 /// ## Examples
 ///
@@ -128,6 +133,7 @@ pub fn read(
   use records <- result.map(
     api.escalations(runtime) |> result.map_error(string.inspect),
   )
+  let remembered = remembered_network(runtime)
 
   // Only a record that still awaits a decision is evidence for a person.
   let pending =
@@ -137,7 +143,7 @@ pub fn read(
   let items =
     pending
     |> list.take(max_items)
-    |> list.filter_map(fn(record) { item(runtime, record, today) })
+    |> list.filter_map(fn(record) { item(runtime, record, today, remembered) })
 
   json.Object([
     #(
@@ -157,12 +163,12 @@ fn item(
   runtime: api.Runtime,
   record: Escalation,
   today: Option(Today),
+  remembered: Remembered,
 ) -> Result(JsonValue, Nil) {
   use cell <- result.map(
     api.escalation_cell(runtime, record.id) |> result.replace_error(Nil),
   )
   let record = cell.record
-  let #(call, command) = code_call(tool_of(record), record.preview)
 
   json.Object(
     list.flatten([
@@ -185,11 +191,12 @@ fn item(
       optional("raised_at", option.map(record.raised_at, json.Int)),
       optional(
         "network",
-        option.map(network_word(today, record.denial), json.String),
+        option.map(network_word(today, remembered, record.denial), json.String),
       ),
-      optional("policy", option.map(today, policy_json)),
-      optional("call", option.map(call, json.String)),
-      optional("command", option.map(command, json.String)),
+      optional(
+        "policy",
+        option.map(policy_words(today, remembered), policy_json),
+      ),
     ]),
   )
 }
@@ -213,21 +220,81 @@ fn policy_json(today: Today) -> JsonValue {
   ])
 }
 
-/// The network the call would have if it were approved: `on` when the policy
-/// lets tools out today or when the denial wants a network grant that is not
-/// `off`, and `off` otherwise. Nothing when the host lent no policy and the
-/// denial asks for no network, since the answer would then be a guess.
-fn network_word(today: Option(Today), denial: JsonValue) -> Option(String) {
+/// What the session remembers about the network, read from the store at the
+/// moment of the read.
+type Remembered {
+  /// A full network grant is remembered, so tools reach the network whatever the
+  /// base policy says.
+  NetworkRemembered
+
+  /// The remembered grants were read and hold no full network.
+  NothingRemembered
+
+  /// The remembered grants could not be read, so nothing is known.
+  Unknown
+}
+
+/// The cell the session's remembered grants are stored in. It is
+/// `permissions.key`, spelled here because `client/permissions` reaches this
+/// module through `client/escalate`, and a test pins the two together.
+pub const remembered_key = "client/permission_grants"
+
+/// The session's remembered grants, as far as the network is concerned. A cell
+/// that is absent holds nothing, and one that does not decode is not known.
+fn remembered_network(runtime: api.Runtime) -> Remembered {
+  case api.fact(runtime, remembered_key) {
+    Ok(None) -> NothingRemembered
+    Ok(Some(json.Object(fields))) ->
+      case list.key_find(fields, "grants") {
+        Ok(json.Array(encoded)) ->
+          case grants.decode_all(encoded) {
+            Ok(held) ->
+              case
+                list.contains(held, policy.GrantNetwork(policy.NetworkFull))
+              {
+                True -> NetworkRemembered
+                False -> NothingRemembered
+              }
+            Error(_) -> Unknown
+          }
+        Ok(_) | Error(Nil) -> Unknown
+      }
+    Ok(Some(_)) | Error(_) -> Unknown
+  }
+}
+
+/// The session's policy today: the assembled base with the remembered grants
+/// folded in. Nothing when the host lent no base or the remembered grants are
+/// not known, so a word is never a guess.
+fn policy_words(today: Option(Today), remembered: Remembered) -> Option(Today) {
+  case today, remembered {
+    Some(base), NetworkRemembered -> Some(Today(..base, network: "on"))
+    Some(base), NothingRemembered -> Some(base)
+    Some(_), Unknown | None, _ -> None
+  }
+}
+
+/// The network the call would have if it were approved. `on` when the denial
+/// wants a network grant that is not `off`, when a full network is remembered, or
+/// when the policy today lets tools out. `off` only when the policy today is
+/// off and nothing remembered or wanted adds a network. Nothing in every other
+/// case, loopback included, since a word that cannot be exact is left out.
+fn network_word(
+  today: Option(Today),
+  remembered: Remembered,
+  denial: JsonValue,
+) -> Option(String) {
   let wants_network = list.any(wanted_list(denial), wants_network_on)
 
-  // A network grant that is on, or a policy that lets tools out, gives the call a network.
-  case wants_network, today {
-    True, _ -> Some("on")
-    False, Some(Today(network: "proxy", ..))
-    | False, Some(Today(network: "on", ..))
+  // Anything that adds a network makes the call `on`, and `off` needs the whole
+  // of the policy to be known.
+  case wants_network, remembered, policy_words(today, remembered) {
+    True, _, _ | False, NetworkRemembered, _ -> Some("on")
+    False, _, Some(Today(network: "off", ..)) -> Some("off")
+    False, _, Some(Today(network: "proxy", ..))
+    | False, _, Some(Today(network: "on", ..))
     -> Some("on")
-    False, Some(_) -> Some("off")
-    False, None -> None
+    False, _, Some(Today(network: _, ..)) | False, _, None -> None
   }
 }
 
@@ -238,83 +305,6 @@ fn wants_network_on(grant: JsonValue) -> Bool {
   && network_mode(grant) != ""
 }
 
-/// The call a `code_mode` program makes and the command it runs, when the
-/// program's source names one. The preview of a `code_mode` call is the
-/// canonical JSON of its arguments, so the program is its `program` string.
-/// The capability that runs a command is `proc.run`, and its argv is the list
-/// of string literals in the first `proc.command([...])`. A preview that was
-/// cut, a program that is not inline, a source with no such call, or an argv
-/// with an escape in it gives neither: a command read wrongly is worse than
-/// none, and a page then draws only the tool.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert approval_evidence.code_call("bash", Some("{}")) == #(None, None)
-/// ```
-pub fn code_call(
-  tool: String,
-  preview: Option(String),
-) -> #(Option(String), Option(String)) {
-  // Only a `code_mode` call that has a preview has a program to read.
-  let argv = case tool, preview {
-    "code_mode", Some(text) -> proc_argv(text)
-    _, _ -> Error(Nil)
-  }
-
-  // A readable program names the call and the command, and any other names neither.
-  case argv {
-    Ok(command) -> #(
-      Some("proc.run"),
-      Some(glance.clip(command, command_bytes)),
-    )
-    Error(Nil) -> #(None, None)
-  }
-}
-
-/// The first `proc.command` argv of the program in a `code_mode` preview, as
-/// one line.
-fn proc_argv(preview: String) -> Result(String, Nil) {
-  use parsed <- result.try(json.parse(preview) |> result.replace_error(Nil))
-
-  // The preview of a `code_mode` call is an object whose `program` is the source.
-  use program <- result.try(case parsed {
-    json.Object(fields) ->
-      case list.key_find(fields, "program") {
-        Ok(json.String(program)) -> Ok(program)
-        Ok(_) | Error(Nil) -> Error(Nil)
-      }
-    json.Array(_)
-    | json.String(_)
-    | json.Int(_)
-    | json.Float(_)
-    | json.Bool(_)
-    | json.Null -> Error(Nil)
-  })
-
-  use #(_, after) <- result.try(string.split_once(program, "proc.command(["))
-  use #(inside, _) <- result.try(string.split_once(after, "]"))
-
-  // Between the quotes of a list of strings the odd pieces are the literals. A
-  // backslash means an escape this reader does not decode, so it refuses.
-  let literals =
-    string.split(inside, "\"")
-    |> list.index_map(fn(piece, index) { #(index, piece) })
-    |> list.filter_map(fn(pair) {
-      case pair.0 % 2 {
-        1 -> Ok(pair.1)
-        _ -> Error(Nil)
-      }
-    })
-
-  // An escape in the argv, or no literal at all, is not a command this reader trusts.
-  case string.contains(inside, "\\"), literals {
-    True, _ | False, [] -> Error(Nil)
-    False, [_, ..] -> Ok(string.join(literals, " "))
-  }
-}
-
-/// The tool the record was raised for. A record raised through a door that
 /// names no action has none, which the page words as unknown.
 fn tool_of(record: Escalation) -> String {
   option.unwrap(record.tool, "")

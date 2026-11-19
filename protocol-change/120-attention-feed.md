@@ -714,19 +714,16 @@ each new member as optional, so a row from an older daemon decodes with none.
 | Member | Meaning |
 |---|---|
 | `raised_at` | [124](124-escalation-raise-time.md). |
-| `network` | `on` or `off`: the network the call would have if approved. `on` when the session's policy lets tools out (`proxy` or unrestricted) or the denial wants a network grant whose mode is not `off`, and `off` otherwise. Absent when the host lent no policy and the denial asks for none, since the word would be a guess. |
-| `policy` | `{"sandbox", "network"}`, the words for the session's base policy at the moment of the read: `workspace-write` when the jail may write under a root and `read-only` when it may not, and `off`, `loopback`, `proxy` or `on`. Computed from the policy the session was opened with and never stored. |
-| `call`, `command` | For a `code_mode` item whose preview parses and whose program calls `proc.command([...])`: `proc.run` and the argv's string literals joined by spaces, cut to 400 bytes. Absent for every other tool, for a preview that was cut, and for an argv with an escape, because a command read wrongly is worse than none. |
+| `network` | `on` or `off`: the network the call would have if approved. `on` when the denial wants a network grant that is not `off`, when the session remembers a full network (`client/permission_grants`, read at the moment of the read), or when the policy today lets tools out (`proxy` or unrestricted). `off` only when the policy today is `off` and nothing remembered or wanted adds a network. Absent in every other case: no policy lent, remembered grants that do not decode, and loopback, which is neither. A word that cannot be exact is left out, because evidence that understates what a call gets is the dangerous direction. |
+| `policy` | `{"sandbox", "network"}`, the words for the assembled base policy of the session (`plane.census.base_policy`, which the host passes to the Agency when it starts it) with the remembered grants folded in: `workspace-write` when the jail may write under a root and `read-only` when it may not, and `off`, `loopback`, `proxy` or `on`. Absent when the host lent no base or the remembered grants are not known. Computed at the read and never stored. |
 
-These words are model-influenced where they come from a program's source (`call`,
-`command`) and are drawn as text nodes. The policy and network words are the
-harness's own.
+`call` and `command` (the capability and argv of a `code_mode` program) are not emitted. An earlier draft read them from the program's source. That is text a model wrote, and a decoy in a comment or a string, a spread argv or a second call would make the item show a command the program never runs, in the evidence a person reads before approving. The escalation of a program is raised for the program's launch requirements and records its arguments and denial, not the argv of any `proc.run` it makes, so there is nothing true to read. The members stay in the decoder for the day a record carries them and are absent until then.
 
 ### What it costs
 
 A stuck row is a few dozen bytes larger, and the shed order is unchanged. An
-`approval.read` takes the policy words from the Agency's configuration and
-parses at most four previews. The command's authority and admission are
+`approval.read` takes the policy words from the Agency's configuration and reads
+the remembered-grants cell once. The command's authority and admission are
 unchanged: any role, never a decision.
 
 ### Verification
@@ -734,7 +731,9 @@ unchanged: any role, never a decision.
 `client/test/client/peer_mail_attention_test.gleam` pins the stuck items (an
 exact time from the failed response, no time for another leaf, the reason word
 and the hostile-code fallback) and the approval words (policy and network
-words, the `code_mode` split and each case that gives none).
+words, a remembered network grant making the item read `on`, loopback and
+unreadable grants leaving the word out, and four programs with a decoy, a spread,
+a bracket in a literal and two calls, none of which names a call or command).
 `web_view/test/attention_feed_stuck_test.gleam` and
 `web_view/test/approval_evidence_fields_test.gleam` pin the decoders, old rows
 included.
