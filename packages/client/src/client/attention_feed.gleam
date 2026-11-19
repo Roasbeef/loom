@@ -225,7 +225,7 @@ pub fn feed(runtime: api.Runtime) -> Result(JsonValue, String) {
   // items are listed without it.
   let evidence =
     evidence_for(runtime, states, results)
-    |> result.unwrap(no_evidence())
+    |> result.lazy_unwrap(fn() { no_evidence() })
   row_of(asks, finds, stuck_strands(states, results, evidence))
   |> shed
   |> encode

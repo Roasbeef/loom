@@ -200,6 +200,7 @@ fn step(call: tool_activity.Call) -> session_brief.Step {
     Some(message.ToolResultMessage(is_error: False, ..)) ->
       session_brief.Succeeded
     Some(message.ToolResultMessage(is_error: True, ..)) -> session_brief.Failed
+
     // A result that is not a tool result cannot answer a call, so the call still
     // has none.
     Some(_) -> session_brief.Running
