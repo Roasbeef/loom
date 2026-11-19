@@ -678,3 +678,63 @@ observer reads, a bystander is `not_found`) and the control command's epoch and
 reply. `web_view/test/approval_evidence_test.gleam` pins the decoder, and
 `web_view/test/attention_threads_test.gleam` pins the thread: the evidence as
 escaped text, no time, no deciding word, and the one link to the session's page.
+
+## Addendum: stuck strands and approval words (2026-11-19)
+
+**Status**: IMPLEMENTED with the data layer of the final inbox mockup. It
+amends two statements above: that `failed_at` is a lower bound, and that an
+`approval.read` item names the tool, the preview, what held the call and the
+grants, and nothing of a time.
+
+### The problem
+
+A stuck strand's row says that a strand failed and gives a time that is only a
+lower bound, so a page cannot say why it failed, when, whether the provider
+named a wait, or whose strand it is. The approval thread draws a network word,
+the policy the call runs under, and for a `code_mode` program the call and the
+command, and the item carries none of them.
+
+### The decision
+
+**Stuck items.** Each item of `stuck.items` gains, beside `strand`:
+
+| Member | Meaning |
+|---|---|
+| `failed_at` | Now the exact time, Unix milliseconds, of the failed response entry the run ended on: an assistant entry that records an error. It is absent when the result's leaf is not such an entry (a run that failed before any request), because then the only time available is the lower bound this addendum retires. |
+| `reason` | The run's error code, which is a fixed word of the harness (`provider_error`, `context_overflow`, ...). A code that is not a lower-case word of at most 40 bytes is `failed`. Never model text and never a provider's message. |
+| `retry_after_ms` | The provider's minimum wait before a retry, read from the failed response's diagnostics. Absent when there is none. |
+| `parent` | The strand that spawned this one, from the lineage ledger, cut to 96 bytes. Absent when the ledger has no cell for the strand. |
+
+The leaf entries are read in one batch and the ledger in one listing, only for a
+session that has a stuck strand. The decoder in `web_view/attention_feed` reads
+each new member as optional, so a row from an older daemon decodes with none.
+
+**Approval items.** Each item of `approval.read` gains, when it has them:
+
+| Member | Meaning |
+|---|---|
+| `raised_at` | [124](124-escalation-raise-time.md). |
+| `network` | `on` or `off`: the network the call would have if approved. `on` when the session's policy lets tools out (`proxy` or unrestricted) or the denial wants a network grant whose mode is not `off`, and `off` otherwise. Absent when the host lent no policy and the denial asks for none, since the word would be a guess. |
+| `policy` | `{"sandbox", "network"}`, the words for the session's base policy at the moment of the read: `workspace-write` when the jail may write under a root and `read-only` when it may not, and `off`, `loopback`, `proxy` or `on`. Computed from the policy the session was opened with and never stored. |
+| `call`, `command` | For a `code_mode` item whose preview parses and whose program calls `proc.command([...])`: `proc.run` and the argv's string literals joined by spaces, cut to 400 bytes. Absent for every other tool, for a preview that was cut, and for an argv with an escape, because a command read wrongly is worse than none. |
+
+These words are model-influenced where they come from a program's source (`call`,
+`command`) and are drawn as text nodes. The policy and network words are the
+harness's own.
+
+### What it costs
+
+A stuck row is a few dozen bytes larger, and the shed order is unchanged. An
+`approval.read` takes the policy words from the Agency's configuration and
+parses at most four previews. The command's authority and admission are
+unchanged: any role, never a decision.
+
+### Verification
+
+`client/test/client/peer_mail_attention_test.gleam` pins the stuck items (an
+exact time from the failed response, no time for another leaf, the reason word
+and the hostile-code fallback) and the approval words (policy and network
+words, the `code_mode` split and each case that gives none).
+`web_view/test/attention_feed_stuck_test.gleam` and
+`web_view/test/approval_evidence_fields_test.gleam` pin the decoders, old rows
+included.
