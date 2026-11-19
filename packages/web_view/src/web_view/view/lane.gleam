@@ -1,14 +1,22 @@
 //// The transcript lane: the page strand's turns, drawn above the page's
-//// bottom bar or dock on both pages, as a timeline with a dot in the hue of
-//// the strand each piece belongs to.
+//// bottom bar or dock on both pages, as the stream of the attention inbox's
+//// live mode: a gutter that holds a row's time when the page has one, a dot
+//// in the hue of the strand each piece belongs to, and the piece beside them.
 ////
 //// The component projects a capture once into `turns.Piece`s
 //// (`component.relaned`), and this module only draws them. How the lines
 //// fold into turns, which rows a capture becomes and what each line says
 //// are `session_view`'s. Nothing here decides anything about the session.
 ////
-//// Each piece is a row of the timeline: a dot, and the piece beside it. The
-//// dot is a decoration hidden from assistive technology. Where the piece
+//// Each piece is a row of the stream: the gutter, a dot, and the piece beside
+//// them. The row's time (`Marks.times`) is drawn in the gutter only for a row
+//// that has one, since no record the page reads carries a time for a row. A
+//// prose answer is headed by the strand that wrote it. A tool call, a spawn, a
+//// result and a turn's folded work are each one bordered line in the code face
+//// with the outcome as a word at its right edge (`ok`, `failed`, `started`,
+//// `settled`), drawn by the stylesheet from the classes this module sets
+//// (`outcome_class`, `spawn-started`, `spawn-failed`) and `view/fold_row`'s.
+//// The dot is a decoration hidden from assistive technology. Where the piece
 //// belongs to another strand the page lists (a spawn, a result, a nudge), the
 //// dot and the strand's tag in the piece carry `data-loom-focus`, the
 //// position of that strand's card, and no handler: `<loom-shell>` hears the
@@ -245,6 +253,18 @@ pub fn navigable(
   )
 }
 
+/// How the live rail holds a row of the lane: whether it needs the owner, and
+/// the word its kind goes by on the rail's chip. The row carries both in its
+/// tag, `lifted · Result`.
+pub type Lifting {
+  Lifting(
+    /// Whether the row needs the owner, which tints it.
+    hold: attention.Hold,
+    /// The kind's fixed word (`lifted.kind_word`), never session text.
+    word: String,
+  )
+}
+
 /// What the lane needs to mark a piece as belonging to a strand: which strand
 /// is on screen and its hue, and the position of each strand the panel lists.
 ///
@@ -265,7 +285,13 @@ pub type Marks {
     /// The rows the live rail lifted, by the key each is drawn under
     /// (`row_attribute`), with whether the row needs the owner. A row here
     /// carries a small "lifted" tag, and one that needs the owner is tinted.
-    lifted: Dict(String, attention.Hold),
+    lifted: Dict(String, Lifting),
+    /// The time of a row, worded for the stream's gutter (`13:40`), by the key
+    /// the row is drawn under. The records the page reads carry no time for a
+    /// row, so every page passes an empty dictionary today; a row that has an
+    /// entry draws it in quiet mono in the gutter, and a row without one
+    /// draws nothing there, so no time is ever invented.
+    times: Dict(String, String),
   )
 }
 
@@ -284,6 +310,7 @@ pub fn no_marks() -> Marks {
     positions: dict.new(),
     key: 1,
     lifted: dict.new(),
+    times: dict.new(),
   )
 }
 
@@ -687,11 +714,13 @@ fn timeline_row(
         attribute.attribute(row_attribute, key),
       ],
       case mark {
-        Ok(attention.PinnedUntilAnswered) -> [
+        Ok(Lifting(hold: attention.PinnedUntilAnswered, ..)) -> [
           attribute.class("lifted-row"),
           attribute.class("needs-you"),
         ]
-        Ok(attention.FoldsOnceOpened) -> [attribute.class("lifted-row")]
+        Ok(Lifting(hold: attention.FoldsOnceOpened, ..)) -> [
+          attribute.class("lifted-row"),
+        ]
         Error(Nil) -> []
       },
     ]),
@@ -713,7 +742,17 @@ fn timeline_row(
         ),
       ]),
       case mark {
-        Ok(_) -> html.span([attribute.class("lift-tag")], [html.text("lifted")])
+        Ok(Lifting(word:, ..)) ->
+          html.span([attribute.class("lift-tag")], [
+            html.text("lifted · " <> word),
+          ])
+        Error(Nil) -> element.none()
+      },
+
+      // The row's time, when the page has one, is the last child, so no
+      // admitted path moves; the stylesheet puts it in the gutter.
+      case dict.get(marks.times, key) {
+        Ok(time) -> html.span([attribute.class("tl-time")], [html.text(time)])
         Error(Nil) -> element.none()
       },
     ],
@@ -797,8 +836,39 @@ fn piece_element(
   newest: String,
 ) -> Element(message) {
   case piece {
+    // An answer is headed by the strand that wrote it, in the small quiet
+    // line the stream puts above prose. Any other plain block (harness
+    // speech, a notice) has no speaker to name and keeps no heading.
     turns.Plain(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, folds, session, links, newest)
+      case speaks(block) {
+        True ->
+          html.div([attribute.class("speech")], [
+            html.p([attribute.class("who")], [
+              html.text(agent_roster.short_name(marks.active)),
+            ]),
+            block_element(
+              block,
+              thoughts,
+              took,
+              draw,
+              folds,
+              session,
+              links,
+              newest,
+            ),
+          ])
+        False ->
+          block_element(
+            block,
+            thoughts,
+            took,
+            draw,
+            folds,
+            session,
+            links,
+            newest,
+          )
+      }
 
     // A person's message: who sent it on a line of its own, and the words in
     // a bubble beneath. The sender's name is session text, a text node. The
@@ -886,7 +956,15 @@ fn piece_element(
     // the line says how it failed, and why when the result recorded a reason.
     turns.Spawned(child:, purpose:, hue:, standing:, refusal:, ..) ->
       html.p(
-        [attribute.class("who"), attribute.class("spawn"), strip.hue_class(hue)],
+        [
+          attribute.class("who"),
+          attribute.class("spawn"),
+          attribute.class(case standing {
+            turns.Failed -> "spawn-failed"
+            turns.Pending | turns.Done -> "spawn-started"
+          }),
+          strip.hue_class(hue),
+        ],
         [
           html.text("Spawned"),
           ..list.append(
@@ -1019,6 +1097,12 @@ fn piece_element(
     // arm is the closed case's other half and is never drawn.
     turns.Commentary(..) -> element.none()
   }
+}
+
+/// Whether a block holds an assistant's answer, which is what a speaker line
+/// is drawn above. Reasoning and tool rows have their own lines.
+fn speaks(block: transcript_lines.Block) -> Bool {
+  list.any(block.rows, fn(row) { row.1.speaker == transcript_line.Assistant })
 }
 
 /// What a peer card's head calls the session that wrote to this one: the
@@ -1171,6 +1255,7 @@ fn divider(
         [
           attribute.type_("button"),
           attribute.class("work-toggle"),
+          attribute.class(outcome_class(worked)),
           attribute.aria_expanded(shown == Opened),
           attribute.data(fold_marker, "fold"),
           event.on_click(toggle(id)),
@@ -1178,7 +1263,22 @@ fn divider(
         [words],
       )
     Some(_), NoFolds | None, Folds(..) | None, NoFolds ->
-      html.span([attribute.class("work-toggle")], [words])
+      html.span(
+        [attribute.class("work-toggle"), attribute.class(outcome_class(worked))],
+        [words],
+      )
+  }
+}
+
+/// The class that says how a turn's work ended, from the divider's own
+/// figures: a failed call wins over an interruption, and neither means `ok`.
+/// The stylesheet draws the status word at the line's right edge from the
+/// class, so the button still holds one text node.
+fn outcome_class(worked: turns.Worked) -> String {
+  case worked.failed, worked.ending {
+    0, turns.Finished -> "work-ok"
+    0, turns.Interrupted -> "work-stopped"
+    _, _ -> "work-failed"
   }
 }
 

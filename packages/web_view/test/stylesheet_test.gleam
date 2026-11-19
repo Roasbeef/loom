@@ -117,22 +117,21 @@ pub fn the_transcript_ends_in_room_for_the_jump_button_test() {
   assert string.contains(css, "padding-bottom:56px")
 }
 
-// F163: the "Jump to latest" button is over no row at any width. It is a disc in
-// a 48px strip at the scroller's right edge, and the column keeps a right
-// padding of whatever the gutter lacks, so the strip is clear with the strands
-// panel open (a 44px gutter at 1440) and at 800px (none).
+// F163: the "Jump to latest" button is over no row at any width. The stream
+// fills the scroller and keeps a 24px gutter on each side, and the button is
+// a 24px disc at the scroller's right edge, so it sits in the gutter that no
+// row reaches, at every width.
 pub fn the_jump_button_has_a_strip_no_row_reaches_test() {
   let css = stylesheet()
   assert string.contains(css, "container-type:inline-size")
-  assert string.contains(css, "padding-right:clamp(0px,438px - 50cqw,48px)")
-  // The anchor's own padding is set in the rule that also names the scroller,
-  // which outranks `loom-follow.follow > *` and its clamp.
+  assert string.contains(css, "padding-left:24px;padding-right:24px")
+  // The anchor takes no padding of its own, so the disc is at the edge.
   assert string.contains(
     css,
-    "loom-follow.follow>.jump-anchor{align-self:stretch;max-width:none;padding-right:8px}",
+    "loom-follow.follow>.jump-anchor{align-self:stretch;max-width:none;padding:0}",
   )
   assert string.contains(css, ".jump-latest{")
-  assert string.contains(css, "width:32px;height:32px;")
+  assert string.contains(css, "width:24px;height:24px;")
 }
 
 // The body of the first rule that begins with `selector{`, or empty.
@@ -188,13 +187,12 @@ pub fn the_machines_have_no_accent_bar_and_no_shadow_test() {
 
 // A pulsing mark is a motion, so the stylesheet stops every animation under
 // reduced motion and leaves the marks and the ticking text standing: the
-// running call's dot and the composer's busy dot both stay, still.
+// running call's dot stays, still.
 pub fn reduced_motion_stills_the_working_marks_test() {
   let css = stylesheet()
   assert string.contains(css, "@media (prefers-reduced-motion:reduce)")
   assert string.contains(css, "animation:none!important")
   assert string.contains(css, ".step.pending .glyph{")
-  assert string.contains(css, ".busy-dot{")
   assert string.contains(css, ".running-time{")
 }
 

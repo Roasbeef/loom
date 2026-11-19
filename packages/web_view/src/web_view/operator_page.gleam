@@ -48,8 +48,8 @@
 //// 3. `view` lays the page out: the heading, the lane, the approval cards
 ////    (`approvals`), the dock, and the panel whose controls (invitation,
 ////    rename, remembered permissions, peer links) each have a fixed place.
-//// 4. `composer` draws the draft, with `busy_mark` and `hint` saying that a
-////    turn is running, and the buttons `actions` offers.
+//// 4. `composer` draws the draft, with `hint` saying what Queue and Steer do
+////    while a turn is running, and the buttons `actions` offers.
 //// 5. `composition` decodes the one submit a browser sends, totally.
 
 import core/json
@@ -483,6 +483,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       // The phone's sheet comes last so no admitted path moves; the
       // stylesheet orders it above the dock.
       component.sheet(model, lift, Observed),
+
+      // The strip above the stream is drawn last and ordered first by the
+      // stylesheet, for the same reason.
+      component.stream_head(model),
     ],
     component.panel(
       model,
@@ -934,8 +938,10 @@ fn button(
   )
 }
 
-/// The composer, as a card of three rows: whom it addresses, the editor, and
-/// a footer holding the hint, the attach button, who the page acts as and the
+/// The composer, as three parts: the line above the editor that says whom it
+/// addresses (`To <session> · <strand>`, then `running` or `waiting on the
+/// approval` when that is so), the editor in a bordered box of its own, and a
+/// footer holding the hint, the attach button, who the page acts as and the
 /// actions. The editor is uncontrolled and keyed by how many drafts have been
 /// sent, so a sent draft is replaced by an empty editor and a refused one
 /// stays as the operator left it. The attach element is keyed the same way, so
@@ -959,12 +965,9 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
         keyed.div([attribute.class("attach-slot")], [
           #("attach-" <> sent, attach()),
         ]),
-        html.span(
-          [attribute.class("hint")],
-          list.append(busy_mark(component.activity(model)), [
-            html.text(hint(component.activity(model))),
-          ]),
-        ),
+        html.span([attribute.class("hint")], [
+          html.text(hint(component.activity(model))),
+        ]),
         keyed.div([attribute.class("notice-slot")], [
           #(
             int.to_string(component.notice_serial(model)),
@@ -980,28 +983,14 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
   )
 }
 
-/// A pulsing dot before the hint while a turn runs, so a long turn between
-/// tool calls, or one waiting on the model, never looks stuck. It says nothing
-/// about which of the two it is, since the page does not know, and the hint's own
-/// words are the plain word. The dot is decoration, hidden from assistive
-/// technology, and the stylesheet stills it under reduced motion.
-fn busy_mark(activity: component.Activity) -> List(Element(Msg(socket))) {
-  case activity {
-    component.Idle -> []
-    component.Busy -> [
-      html.span([attribute.class("busy-dot"), attribute.aria_hidden(True)], [
-        html.text("●"),
-      ]),
-    ]
-  }
-}
-
-// The footer's hint: the key that sends, and that the turn is busy when it
-// is.
+/// The footer's hint: the key that sends while the strand is idle, and what the
+/// two buttons of a busy strand do (protocol-change/022). The line above the
+/// editor says that the turn is running, so the hint does not repeat it.
 fn hint(activity: component.Activity) -> String {
   case activity {
     component.Idle -> "Cmd+Enter to send"
-    component.Busy -> "Turn is busy · Cmd+Enter to send"
+    component.Busy ->
+      "Queue waits for this turn to end. Steer stops the current turn and runs first."
   }
 }
 
@@ -1109,8 +1098,19 @@ fn addressing(model: component.Model(socket)) -> Element(Msg(socket)) {
         attribute.class("to-tag"),
         strip.hue_class(hue(model)),
       ],
-      [html.text(addressee(model))],
+      [html.text(component.session_title(model) <> " · " <> addressee(model))],
     ),
+    ..case component.pending(model), component.activity(model) {
+      [_, ..], _ -> [
+        html.span([attribute.class("to-state")], [
+          html.text("· waiting on the approval"),
+        ]),
+      ]
+      [], component.Busy -> [
+        html.span([attribute.class("to-state")], [html.text("· running")]),
+      ]
+      [], component.Idle -> []
+    }
   ])
 }
 

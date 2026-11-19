@@ -938,21 +938,21 @@ pub fn the_composer_is_a_to_line_an_editor_and_a_footer_test() {
   ])
   assert !string.contains(form, "identity")
   assert !string.contains(form, "role-badge")
-  assert !string.contains(form, "Turn is busy")
-  assert !string.contains(form, "busy-dot")
+  assert !string.contains(form, "Queue waits")
+  assert !string.contains(form, "to-state")
 }
 
-pub fn a_busy_turn_says_so_in_the_footer_and_offers_queue_and_steer_test() {
+pub fn a_busy_turn_says_what_queue_and_steer_do_and_offers_queue_and_steer_test() {
   let #(model, _) = running("operator")
   let form = composer_of(element.to_string(operator_page.view(model)))
-  assert string.contains(form, "Turn is busy · Cmd+Enter to send")
-
-  // A pulsing dot stands before the words, decoration only, so a long turn
-  // never looks stuck.
   assert string.contains(
     form,
-    "<span aria-hidden=\"true\" class=\"busy-dot\">●</span>Turn is busy",
+    "Queue waits for this turn to end. Steer stops the current turn and runs first.",
   )
+
+  // The line above the editor says the turn is running.
+  assert string.contains(form, "<span class=\"to-state\">· running</span>")
+  assert !string.contains(form, "Cmd+Enter to send")
   assert in_order(form, ["class=\"queue\"", "class=\"steer\""])
   assert !string.contains(form, "class=\"send\"")
 }

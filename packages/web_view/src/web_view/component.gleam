@@ -256,6 +256,7 @@ import web_view/view/rename as rename_view
 import web_view/view/session_tab
 import web_view/view/shell
 import web_view/view/strand_detail
+import web_view/view/stream_head as stream_head_view
 import web_view/view/strip
 import web_view/view/switch
 import web_view/view/todo_panel
@@ -7671,7 +7672,7 @@ fn rail_filled(
         option.from_result(dict.get(watching.problems, id)),
         case watching.sending == Some(id) {
           True -> "Sending…"
-          False -> "Send the answer"
+          False -> "Send answer"
         },
         fn(fields) { observed(RailAnswered(id, fields)) },
       )
@@ -8824,6 +8825,10 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       // The phone's sheet is the centre's last child, so no admitted path
       // moves with it; the stylesheet orders it above the bar.
       sheet(model, lift, fn(message) { message }),
+
+      // The strip above the stream is drawn last and ordered first by the
+      // stylesheet, for the same reason.
+      stream_head(model),
     ],
     panel(
       model,
@@ -9061,6 +9066,7 @@ pub fn marks(model: Model(socket)) -> lane.Marks {
     key: dict.get(model.view.strand_keys, model.shared.active_strand)
       |> result.unwrap(0),
     lifted: dict.new(),
+    times: dict.new(),
   )
 }
 
@@ -9079,16 +9085,23 @@ pub fn marked(model: Model(socket), lift: lifted_view.Lift) -> lane.Marks {
 /// The rows of the lane the rail lifted, by the key the lane draws each under.
 /// A row that needs the owner wins over an insight in the same row, and an
 /// approval names no lane row, since it lives in the dock.
-fn lifted_rows(lift: lifted_view.Lift) -> Dict(String, attention.Hold) {
+fn lifted_rows(lift: lifted_view.Lift) -> Dict(String, lane.Lifting) {
   lift.items
   |> list.fold(dict.new(), fn(rows, item) {
     // A pinned mark is kept; any other mark is written or replaced.
     case item.target, dict.get(rows, item.target) {
       "", _ -> rows
       target, _ if target == lifted_view.dock_target -> rows
-      _, Ok(attention.PinnedUntilAnswered) -> rows
-      target, Ok(attention.FoldsOnceOpened) | target, Error(Nil) ->
-        dict.insert(rows, target, item.lifted.hold)
+      _, Ok(lane.Lifting(hold: attention.PinnedUntilAnswered, ..)) -> rows
+      target, Ok(_) | target, Error(Nil) ->
+        dict.insert(
+          rows,
+          target,
+          lane.Lifting(
+            hold: item.lifted.hold,
+            word: lifted_view.kind_word(item.lifted),
+          ),
+        )
     }
   })
 }
@@ -9266,6 +9279,105 @@ pub fn heading(
     },
     placement: placement.view(model.view.machine, current_code(model)),
   )
+}
+
+/// The strip above the stream (`view/stream_head`): the session's name, the
+/// strand on screen with the workspace's last segment, what the strand is
+/// doing, the pinned goal when there is one, and the context figure. Every
+/// field is one the page already holds. It is drawn as the centre column's
+/// last child and ordered first by the stylesheet, so no path the socket
+/// admits moves.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.stream_head(model)
+/// ```
+pub fn stream_head(model: Model(socket)) -> Element(message) {
+  let waiting = pending(model) != []
+  let label = model.view.label
+  let name = session_title(model)
+
+  // The workspace is drawn as its last path segment, as the sidebar does, and
+  // a page whose label was not read names no folder.
+  let folder = case option.map(label, fn(label) { label.workspace }) {
+    Some(path) -> list.last(string.split(path, "/")) |> result.unwrap("")
+    None -> ""
+  }
+
+  let strand = agent_roster.short_name(model.shared.active_strand)
+
+  stream_head_view.view(stream_head_view.Head(
+    name:,
+    place: case folder {
+      "" -> strand
+      folder -> strand <> " · " <> folder
+    },
+    tone: case waiting, activity(model) {
+      True, _ -> stream_head_view.Waiting
+      False, Busy -> stream_head_view.Running
+      False, Idle -> stream_head_view.Quiet
+    },
+    state: case waiting, activity(model) {
+      True, _ -> "waiting for a decision"
+      False, Busy -> "running"
+      False, Idle -> "idle"
+    },
+    turn: None,
+    goal: goal_words(goal(model)),
+    context: context_figure(model),
+  ))
+}
+
+/// The page's name for its session: the catalogue's label, or the identity's
+/// first eight characters when the label has none, as the top bar draws it.
+/// Both are text the catalogue or the daemon wrote.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_title(model)
+/// ```
+pub fn session_title(model: Model(socket)) -> String {
+  case option.map(model.view.label, fn(label) { label.name }) {
+    Some(name) if name != "" -> name
+    Some(_) | None -> string.slice(model.shared.session, 0, 8)
+  }
+}
+
+/// The pinned goal in one line for the strip: its objective, its status and
+/// the accounted spend against its budget. A page with no goal, or one that
+/// has not read it yet, has none.
+fn goal_words(board: Option(goal_view.Board)) -> Option(String) {
+  case board {
+    Some(goal_view.Pinned(status:, objective:, token_budget:, tokens_used:, ..)) ->
+      Some(
+        "goal: "
+        <> text_hygiene.single_line(objective)
+        <> " · "
+        <> goal_view.status_word(status)
+        <> " · "
+        <> tokens_words(tokens_used)
+        <> " of "
+        <> tokens_words(token_budget)
+        <> " tokens",
+      )
+    Some(goal_view.NoGoal(..)) | None -> None
+  }
+}
+
+/// A token count in the short form the strip uses: `412k`, `1.2M`, or the
+/// number itself below a thousand.
+fn tokens_words(count: Int) -> String {
+  case count {
+    n if n >= 1_000_000 ->
+      int.to_string(n / 1_000_000)
+      <> "."
+      <> int.to_string(n % 1_000_000 / 100_000)
+      <> "M"
+    n if n >= 1000 -> int.to_string(n / 1000) <> "k"
+    n -> int.to_string(n)
+  }
 }
 
 /// Where the page's own session keeps its code. A local page reads it from the

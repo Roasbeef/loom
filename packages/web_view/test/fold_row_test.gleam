@@ -179,7 +179,7 @@ pub fn a_step_with_nothing_behind_it_is_its_line_alone_test() {
         step(Words("Read", Mono("calc.py"), None), turns.Done, []),
       ]),
     ])
-  assert string.contains(html, "class=\"flat step done\">")
+  assert string.contains(html, "class=\"flat step tool-line done\">")
   assert string.contains(html, "<span class=\"verb\">Read</span>")
   assert !string.contains(html, "loom-expand")
   assert !string.contains(html, "slot=\"body\"")
@@ -540,7 +540,10 @@ pub fn a_spawn_and_a_one_line_result_are_lines_not_cards_test() {
         turns.Sub(0),
       ),
     ])
-  assert string.contains(html, "<p class=\"who spawn hue-2\">Spawned scan")
+  assert string.contains(
+    html,
+    "<p class=\"who spawn spawn-started hue-2\">Spawned scan",
+  )
   assert string.contains(
     html,
     "<span class=\"spawn-purpose\"> · scan the repo</span>",

@@ -236,7 +236,11 @@ pub fn an_observer_page_has_no_action_card_test() {
     |> simulate.message(component.Ticked)
   let html = element.to_string(simulate.view(page))
   assert string.contains(html, "Observer · read-only")
-  assert !string.contains(html, "approval")
+  // The rail's note and the kind's class say the word, so the check is for
+  // the card and its buttons, which are what an observer must not have.
+  assert !string.contains(html, "approval-card")
+  assert !string.contains(html, "approval-actions")
+  assert !string.contains(html, "approval-allow")
   assert !string.contains(html, "<form")
   assert !string.contains(html, "<textarea")
 

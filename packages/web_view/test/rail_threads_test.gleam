@@ -206,7 +206,7 @@ pub fn the_rail_pins_an_ask_and_a_stuck_strand_and_folds_a_find_test() {
   assert string.contains(html, "name=\"q1\"")
   assert string.contains(html, "type=\"radio\"")
   assert string.contains(html, "value=\"0\"")
-  assert string.contains(html, "Send the answer")
+  assert string.contains(html, "Send answer")
   assert !string.contains(html, "<b>")
   assert !string.contains(html, "value=\"alpha")
   assert !string.contains(html, "\" onclick=\"")
@@ -252,7 +252,7 @@ pub fn an_observers_rail_has_no_form_and_sends_nothing_test() {
   assert string.contains(html, "&lt;b&gt;Which&lt;/b&gt; branch?")
   assert !string.contains(html, "name=\"q1\"")
   assert !string.contains(html, "type=\"radio\"")
-  assert !string.contains(html, "Send the answer")
+  assert !string.contains(html, "Send answer")
 
   let _ = second(model, component.RailAnswered(ask_id, [#("q1", "1")]))
   assert received(sent) == []
@@ -299,7 +299,7 @@ pub fn the_phone_sheet_shows_the_same_ask_test() {
 
   assert string.contains(html, "lift-sheet")
   assert string.contains(html, "2 need you")
-  assert list.length(string.split(html, "Send the answer")) == 3
+  assert list.length(string.split(html, "Send answer")) == 3
 }
 
 fn index_of(html: String, needle: String) -> Int {

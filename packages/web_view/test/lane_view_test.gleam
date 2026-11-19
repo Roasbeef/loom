@@ -362,7 +362,7 @@ pub fn a_running_turn_is_drawn_open_test() {
 pub fn a_spawn_and_its_result_wear_the_childs_hue_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
-    "class=\"who spawn hue-2\">Spawned ",
+    "class=\"who spawn spawn-started hue-2\">Spawned ",
     ">&lt;b&gt;review</button>",
     " · review &lt;the&gt; patch",
     "class=\"result hue-2\">",

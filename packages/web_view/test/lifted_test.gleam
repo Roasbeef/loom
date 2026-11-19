@@ -58,8 +58,7 @@ fn rail_of(html: String) -> String {
   let assert Ok(#(_, from)) =
     string.split_once(html, "<section aria-label=\"Lifted from this session\"")
     as "the page draws the rail"
-  let assert Ok(#(rail, _)) =
-    string.split_once(from, "</section></div></section>")
+  let assert Ok(#(rail, _)) = string.split_once(from, "</p></div></section>")
     as "the rail is closed"
   rail
 }
@@ -115,6 +114,7 @@ pub fn an_empty_group_draws_nothing_test() {
             "boom",
           ),
           "9.0",
+          None,
         ),
       ],
       opened: [],
@@ -259,7 +259,7 @@ pub fn rows_carry_their_key_and_lifted_rows_a_tag_test() {
   let html = operator(lifting())
   assert string.contains(html, "data-loom-row=\"9.0\"")
   assert string.contains(html, "data-loom-row=\"6.0/0/0\"")
-  assert count(html, "<span class=\"lift-tag\">lifted</span>") == 2
+  assert count(html, "<span class=\"lift-tag\">lifted · ") == 2
 
   // The insights are not tinted: only a row that needs the owner is.
   assert !string.contains(html, "needs-you\"")
@@ -270,8 +270,13 @@ pub fn the_marks_carry_the_lifted_rows_test() {
   let pieces = component.pieces(model)
   let marks =
     component.marked(model, component.lift(model, pieces, lifted.InDock))
-  assert dict.get(marks.lifted, "9.0") == Ok(attention.FoldsOnceOpened)
-  assert dict.get(marks.lifted, "6.0/0/0") == Ok(attention.FoldsOnceOpened)
+  let assert Ok(turn) = dict.get(marks.lifted, "9.0")
+    as "the failed turn is marked"
+  let assert Ok(block) = dict.get(marks.lifted, "6.0/0/0")
+    as "the failed response is marked"
+  assert turn.hold == attention.FoldsOnceOpened
+  assert block.hold == attention.FoldsOnceOpened
+  assert turn.word == "Peer"
   assert dict.size(marks.lifted) == 2
 }
 
@@ -282,8 +287,8 @@ pub fn only_a_row_that_needs_the_owner_is_tinted_test() {
     lane.Marks(
       ..component.marks(model),
       lifted: dict.from_list([
-        #("9.0", attention.PinnedUntilAnswered),
-        #("6.0/0/0", attention.FoldsOnceOpened),
+        #("9.0", lane.Lifting(attention.PinnedUntilAnswered, "Failed")),
+        #("6.0/0/0", lane.Lifting(attention.FoldsOnceOpened, "Result")),
       ]),
     )
   let html =
@@ -306,9 +311,12 @@ pub fn the_phone_bar_counts_what_needs_you_and_the_insights_test() {
   let html = operator(lifting())
   assert string.contains(
     html,
-    "<summary class=\"lift-bar\">1 needs you · 2 insights ▴</summary>",
+    "<summary class=\"lift-bar\"><span class=\"lift-bar-need\">1 needs you</span><span>· 2 insights</span><span class=\"lift-bar-more\">Lifted ▴</span></summary>",
   )
-  assert string.contains(observer(lifting()), "1 needs you · 2 insights ▴")
+  assert string.contains(
+    observer(lifting()),
+    "<span class=\"lift-bar-need\">1 needs you</span>",
+  )
 }
 
 pub fn the_sheet_rows_are_not_handlers_and_close_on_a_jump_marker_test() {
@@ -343,6 +351,7 @@ pub fn handlers_are_the_unopened_insights_and_pins_never_fold_test() {
         "head " <> key,
       ),
       key,
+      None,
     )
   }
   let pin =
@@ -354,6 +363,7 @@ pub fn handlers_are_the_unopened_insights_and_pins_never_fold_test() {
         "wants",
       ),
       "dock",
+      None,
     )
   let keys = ["a", "b", "c", "d"]
 

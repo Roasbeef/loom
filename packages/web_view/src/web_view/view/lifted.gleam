@@ -9,9 +9,18 @@
 ////
 //// ## Two groups
 ////
-//// "Needs you" holds the pinned rows, an approval that has no decision yet.
-//// "Insights" holds the rest. An empty group draws nothing, and a rail with
-//// no rows draws nothing at all, so a quiet session has no rail.
+//// "Needs you" holds the pinned rows: an approval that has no decision yet, an
+//// open ask and a stuck strand. "Insights" holds the rest. Each group's title
+//// carries its count and a fixed gloss (`pinned until answered`, `fold once
+//// read`), and a note at the foot says how the rows are held. An empty group
+//// draws nothing, and a rail with no rows draws nothing at all, so a quiet
+//// session has no rail.
+////
+//// A row is a card: a chip with the kind's word, the strand or tool it came
+//// from, and a link to its place in the stream on the first line, then the
+//// row's words. The time the row was raised belongs before the strand
+//// (`Item.at`); no lifted row carries one yet, so it is `None` and the
+//// header says the strand alone.
 ////
 //// A pinned row never folds and never carries a handler. An approval is
 //// decided in the dock, above the composer, under the rules of
@@ -42,8 +51,8 @@
 ////
 //// Below 980px the strip is a row of cards, and there is no room for a rail
 //// in it. The stylesheet hides the rail there, and `sheet` draws a bar above
-//// the dock, "N need you · M insights ▴", that opens the same rows as a
-//// sheet over the transcript. It is a native `<details>`, so opening it costs
+//// the dock, "N need you · M insights" with "Lifted ▴" at its right, that
+//// opens the same rows as a sheet that rises from the bar over the transcript. It is a native `<details>`, so opening it costs
 //// the server nothing, and the sheet's rows carry no handler: it shows
 //// insights as the page's opened set says, and a jump closes it
 //// (`web_client/follow`).
@@ -83,6 +92,12 @@ pub type Item {
     /// The value of the row's `data-loom-jump`: a transcript row's key, or
     /// `dock_target`. Empty when the row has nowhere to go.
     target: String,
+    /// The time the row was raised, worded for the card's header (`13:40`).
+    /// No lifted row carries a time today, so `items` leaves it `None` and
+    /// the header draws the strand alone; a later layer that reads the time
+    /// from the daemon fills it, and the header draws it before the strand
+    /// without any other change.
+    at: Option(String),
   )
 }
 
@@ -144,7 +159,7 @@ pub fn items(
   dock: Dock,
 ) -> List(Item) {
   list.map(lifted, fn(row) {
-    Item(lifted: row, target: target(pieces, row, dock))
+    Item(lifted: row, target: target(pieces, row, dock), at: None)
   })
 }
 
@@ -318,9 +333,7 @@ pub fn sheet(rail: Rail(message)) -> Element(message) {
       html.details(
         [attribute.class("lift-sheet"), attribute.data("loom-sheet", "lifted")],
         [
-          html.summary([attribute.class("lift-bar")], [
-            html.text(bar_words(items)),
-          ]),
+          html.summary([attribute.class("lift-bar")], bar(items)),
           html.div([attribute.class("lift-sheet-body")], [
             groups(Rail(..rail, open: None), items),
           ]),
@@ -357,11 +370,29 @@ fn plural(count: Int, one: String, many: String) -> List(String) {
   }
 }
 
-/// The sheet bar's words for the rows, with the arrow that says it opens up.
-fn bar_words(items: List(Item)) -> String {
+/// The sheet bar's children: the count of rows that need the owner, set apart
+/// so the stylesheet can colour it, the count of insights after it, and the
+/// word and arrow at the right that say the bar opens upward. Each count is
+/// left out when it is zero, as `count_words` leaves it.
+fn bar(items: List(Item)) -> List(Element(message)) {
   let #(pinned, rest) = split(items)
+  let need = plural(list.length(pinned), "1 needs you", " need you")
+  let known = plural(list.length(rest), "1 insight", " insights")
 
-  count_words(list.length(pinned), list.length(rest)) <> " ▴"
+  list.flatten([
+    list.map(need, fn(words) {
+      html.span([attribute.class("lift-bar-need")], [html.text(words)])
+    }),
+    list.map(known, fn(words) {
+      html.span([], [
+        html.text(case need {
+          [] -> words
+          [_, ..] -> "· " <> words
+        }),
+      ])
+    }),
+    [html.span([attribute.class("lift-bar-more")], [html.text("Lifted ▴")])],
+  ])
 }
 
 /// The rows that need the owner, and the rest, each in their given order.
@@ -371,19 +402,62 @@ fn split(items: List(Item)) -> #(List(Item), List(Item)) {
   })
 }
 
-/// The two groups, each drawn only when it holds a row.
+/// The two groups, each drawn only when it holds a row, and the closing note
+/// that says how the rows are held.
 fn groups(rail: Rail(message), items: List(Item)) -> Element(message) {
   let #(pinned, rest) = split(items)
 
   html.div([attribute.class("lift-groups")], [
-    group("Needs you", "lift-needs", pinned, rail),
-    group("Insights", "lift-insights", rest, rail),
+    group("Needs you", "pinned until answered", "lift-needs", pinned, rail),
+    group("Insights", "fold once read", "lift-insights", rest, rail),
+    note(items, rail.dock),
   ])
 }
 
-/// One titled group of rows, or nothing when it has none.
+/// The note at the foot of the rail: what stays pinned and what folds. It
+/// says only what the page does for every row, and on a page with an approval
+/// in the rail it adds where that approval is decided. It is the groups'
+/// last sibling, so no group's position moves. A rail with no rows has none.
+fn note(items: List(Item), dock: Dock) -> Element(message) {
+  let approving =
+    list.any(items, fn(item) {
+      case item.lifted.kind {
+        attention.ApprovalPending(..) -> True
+        attention.FailedStep
+        | attention.FailedTurn
+        | attention.SubagentResult(..)
+        | attention.PeerMessage(..)
+        | attention.AskPending
+        | attention.StuckStrand(..)
+        | attention.FindOpen(..) -> False
+      }
+    })
+
+  // A rail with no rows has nothing to explain.
+  case items {
+    [] -> element.none()
+    [_, ..] ->
+      html.p([attribute.class("lift-note")], [
+        html.text(
+          "Asks, approvals and stuck strands stay pinned here until they are "
+          <> "answered. Finds, failed calls and turns, sub-agent results and "
+          <> "peer messages fold to one line once opened."
+          <> case approving, dock {
+            True, InDock ->
+              " An approval is decided only from the dock on this page. The "
+              <> "rail points at it and never decides."
+            True, NoDock | False, _ -> ""
+          },
+        ),
+      ])
+  }
+}
+
+/// One titled group of rows, or nothing when it has none. The title carries
+/// the count and a gloss on how the group's rows are held, both fixed words.
 fn group(
   title: String,
+  gloss: String,
   class: String,
   items: List(Item),
   rail: Rail(message),
@@ -393,34 +467,74 @@ fn group(
     [] -> element.none()
     items ->
       html.section([attribute.class("lift-group"), attribute.class(class)], [
-        html.h3([attribute.class("lift-group-title")], [html.text(title)]),
+        html.h3([attribute.class("lift-group-title")], [
+          html.span([], [
+            html.text(title <> " · " <> int.to_string(list.length(items))),
+          ]),
+          html.small([attribute.class("lift-gloss")], [html.text(gloss)]),
+        ]),
         html.ul([attribute.class("lift-list")], list.map(items, row(_, rail))),
       ])
   }
 }
 
-/// One row: a button that jumps, and for an unopened insight that has a
-/// handler, also asks the server to remember that it was opened.
+/// One row: a card whose button jumps, and for an unopened insight that has a
+/// handler, also asks the server to remember that it was opened. The card is
+/// the list item, so an ask's form, which cannot sit inside a button, is drawn
+/// inside the same border under the button.
 fn row(item: Item, rail: Rail(message)) -> Element(message) {
   let lifted = item.lifted
   let folded = list.contains(rail.opened, lifted.key)
 
-  html.li([attribute.class("lift"), attribute.class(state(lifted, folded))], [
-    html.button(
-      list.flatten([
-        [attribute.type_("button"), attribute.class("lift-press")],
-        jump(item.target),
-        press(lifted, folded, rail.open),
-      ]),
-      [
-        html.span([attribute.class("lift-kind")], [html.text(kind_word(lifted))]),
-        source(source_words(rail, lifted)),
-        html.span([attribute.class("lift-head")], [html.text(lifted.head)]),
-        decide(lifted, rail.dock),
-      ],
-    ),
-    rail.under(lifted.key),
-  ])
+  html.li(
+    [
+      attribute.class("lift"),
+      attribute.class(state(lifted, folded)),
+      attribute.class(kind_class(lifted)),
+    ],
+    [
+      html.button(
+        list.flatten([
+          [attribute.type_("button"), attribute.class("lift-press")],
+          jump(item.target),
+          press(lifted, folded, rail.open),
+        ]),
+        [
+          html.span([attribute.class("lift-kind")], [
+            html.text(kind_word(lifted)),
+          ]),
+          source(header_words(item.at, source_words(rail, lifted))),
+          html.span([attribute.class("lift-head")], [html.text(lifted.head)]),
+          decide(lifted, rail.dock),
+        ],
+      ),
+      rail.under(lifted.key),
+    ],
+  )
+}
+
+/// The header's words after the kind chip: the time and the source joined by
+/// a dot where the row has both, and whichever it has otherwise.
+fn header_words(at: Option(String), from: String) -> String {
+  case at, from {
+    Some(at), "" -> at
+    Some(at), from -> at <> " · " <> from
+    None, from -> from
+  }
+}
+
+/// The class that names a row's kind, from the closed type and never from
+/// session text, so the stylesheet can set an ask's question apart.
+fn kind_class(row: Lifted) -> String {
+  case row.kind {
+    attention.ApprovalPending(..) -> "lift-approval"
+    attention.FailedStep | attention.FailedTurn -> "lift-failed"
+    attention.SubagentResult(..) -> "lift-result"
+    attention.PeerMessage(..) -> "lift-peer"
+    attention.AskPending -> "lift-ask"
+    attention.StuckStrand(..) -> "lift-stuck"
+    attention.FindOpen(..) -> "lift-find"
+  }
 }
 
 /// The class that says how a row is drawn: pinned, whole, or folded to a line.
@@ -476,7 +590,7 @@ fn decide(row: Lifted, dock: Dock) -> Element(message) {
   // An observer's page has no dock, and says who decides instead.
   case row.kind, dock {
     attention.ApprovalPending(..), InDock ->
-      html.span([attribute.class("lift-go")], [
+      html.span([attribute.class("lift-go"), attribute.class("lift-dock")], [
         html.text("Decide in the dock ↓"),
       ])
     attention.ApprovalPending(..), NoDock ->
@@ -494,11 +608,18 @@ fn decide(row: Lifted, dock: Dock) -> Element(message) {
   }
 }
 
-/// The word a row's kind is named by.
-fn kind_word(row: Lifted) -> String {
+/// The word a row's kind is named by, on its chip in the rail and in the tag
+/// of its row in the stream.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lifted.kind_word(row) == "Ask"
+/// ```
+pub fn kind_word(row: Lifted) -> String {
   case row.kind {
     attention.ApprovalPending(..) -> "Approval"
-    attention.FailedStep -> "Failed step"
+    attention.FailedStep -> "Failed"
     attention.FailedTurn -> "Failed"
     attention.SubagentResult(..) -> "Result"
     attention.PeerMessage(..) -> "Peer"
