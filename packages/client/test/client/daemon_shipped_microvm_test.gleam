@@ -2533,6 +2533,14 @@ fn untrusted_guest(run: Run) -> Nil {
   assert !string.contains(placed, digests.other)
     as { "the further guest's call saw the first guest's leaf:\n" <> placed }
 
+  // That guest serves its workspace in worktree mode: the session ran in a
+  // tree of its own on a `loom/<session>` branch, not in the copy under
+  // `/srv/workspaces`.
+  assert string.contains(placed, "branch=loom/")
+    as { "the worktree guest's session is on its own branch:\n" <> placed }
+  assert !string.contains(placed, "tree=/srv/workspaces/")
+    as { "the worktree guest's session ran in the shared copy:\n" <> placed }
+
   let result = remote_daemons.result_text(requests, "untrusted-call")
   io.println_error(label <> " untrusted tool result:\n" <> result)
   assert_untrusted_turn(key, result)
@@ -2571,10 +2579,20 @@ fn second_guest_after_reload(
         False -> flag
       }
     })
+  // The further guest is also the one that boots in worktree mode, so an
+  // executor really starts with `mode = "worktree"` and a session gets a tree
+  // of its own: a seeded child needs exactly that of a guest.
   let output =
     expect_ok(
-      vm(run, ["up", "--link", "untrusted", ..second_flags]),
-      "loom vm up --link untrusted (second guest)",
+      vm(run, [
+        "up",
+        "--link",
+        "untrusted",
+        "--workspace-mode",
+        "worktree",
+        ..second_flags
+      ]),
+      "loom vm up --link untrusted --workspace-mode worktree (second guest)",
     )
   io.println_error(label <> " vm up (second untrusted guest):\n" <> output)
 
@@ -2661,9 +2679,13 @@ const placed_answer = "the further guest"
 
 // The SHA-256 of the certificate the executor presents, as `sha256sum` prints
 // it in the guest. The file is public; it names the guest because each guest
-// has its own leaf.
+// has its own leaf. The further guest runs in worktree mode, so the same call
+// also prints the branch its session's tree is on and where that tree is.
 fn leaf_digest_command() -> String {
-  "sha256sum " <> node_dir <> "/creds/cert.pem; true"
+  "sha256sum "
+  <> node_dir
+  <> "/creds/cert.pem; echo \"branch=$(git branch --show-current)\"; "
+  <> "echo \"tree=$PWD\"; true"
 }
 
 // The leaf digests of the guest a session was placed on and of another guest.
