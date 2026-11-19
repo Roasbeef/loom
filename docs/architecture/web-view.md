@@ -1079,17 +1079,32 @@ and the home draws it only as text nodes.
 #### The attention inbox
 
 The home's centre lands on an inbox when something waits or runs
-(`web_view/inbox_rule.landing`): a grouped thread list beside a reading pane
+(`web_view/inbox_rule.landing`): a full-height split of a 388px thread list and
+a reading pane, each scrolling on its own, with no card and no maximum width
 (`view/inbox`, drawn into the centre's body, so it sits at `home.table_path`).
+The frame carries the class `loom-inbox` while it shows (`shell.Inbox`), which
+gives it a 44px bar and a 184px rail; every other page of the home keeps its
+frame. A group's band is sticky across the list, with its name and count at the
+left and a gloss at the right (`inbox_rule.gloss`), and a row is two lines: a dot,
+the name and an age when the data has one, then a kind chip and the head. Rows,
+bands, the pane's frame and the outbox bar pinned to its foot are one module
+(`view/inbox_parts`), which `view/attention_thread`, `view/ticket_thread`,
+`view/review_thread` and the session threads all call.
 The groups are `Needs you` (an approval is pending, or the last run failed),
 `Waiting` (idle with a last message, phase 0's stand-in for asks and review: the
 page words it as the last thing said and never claims a question), `Updates`
 (working) and `Quiet` (idle and silent, folded to one line of names). A thread
-is ordered by session name, because phase 0 has no times and prints no age. The
-headline says what it read: "2 need you · in 6 running sessions; saved sessions
-not checked". The reading pane shows the kind's word, the session and its
-workspace, the last message under the label "The agent's last finished turn,
-untrusted text", and the strands' glances. A pending approval is named and
+is ordered by session name, because phase 0 has no times and prints no age. What
+the counts read is the note under the rail's folders ("Counts read 6 running
+sessions. Saved sessions are not checked."), and the number that wait on the
+owner is the pill in the top bar. The rail's folders ("Everything, by need" and
+one for each group that holds a thread) narrow the list to a group through
+`FolderPicked`; the filter is the page's own and the daemon is told nothing
+(protocol-change/051, the addendum on the rail's folders). The reading pane shows
+the kind's chip, the session and its workspace and state, the last message under
+the label "The agent's last finished turn, untrusted text", and the strands'
+glances. On a screen under 768px the list is the page and the pane covers it
+with a back control (`InboxClosed`). A pending approval is named and
 sent to the session's own page; nothing of the approval, and no deciding
 control, is drawn on Home.
 
@@ -1117,7 +1132,9 @@ thread is `InboxOpened`; "Open session" and "Decide on the session's page" send
 adds no admission rule and no frame.
 
 Each thread of the owner's operating home ends in a message field
-(protocol-change/118): one box and the buttons the session's state offers (Send
+(protocol-change/118): one box in the pane, and in the outbox bar at the pane's
+foot the buttons the session's state offers, which belong to the form through
+their `form` attribute (Send
 for idle or failed, Queue and Steer for working, Send with a note that a message
 starts a new turn and does not decide it for a pending approval, since the
 approval parks and the strand is idle). The press is a submit beneath
@@ -1126,7 +1143,7 @@ approval parks and the strand is idle). The press is a submit beneath
 the socket would drop the event. The daemon re-derives the page's standing and
 the 16,384-byte bound at the press, resolves the session as the page's principal,
 and sends a `Prompt` or a `Steer` on strand `main` as a message typed on the
-session's own page. The outbox says nothing before a send, then "Sending…", "Delivered to
+session's own page. The bar says "Not sent." before a send, then "Sending…", "Delivered to
 (session) · admitted", "· queued" or "· steering: …", or one of five fixed refusals; none
 carries text from the session or the gateway. Once the person has chosen the
 list or the composer, an "Inbox" control returns to the landing centre while the

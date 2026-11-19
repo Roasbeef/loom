@@ -375,6 +375,22 @@ Section 4 planned four phases. Phase 1 was split across several PRs.
   the person's clicks do (`web_view/landing_rule`). Section 2.1 said only that
   the inbox replaces the form when something waits or runs.
 
+- **Where the page departs from the mockup's pixels (the fidelity pass,
+  2026-11-19).** The layout, measurements, type, colours and wording are the
+  mockup's. What differs is data the page lacks or a rule: an approval's age and
+  "waiting since" (no raise time, `inbox.Offer.waited` and `inbox_parts.eyebrow`'s
+  `since` wait for it); a ticket's check output and Recheck
+  (`ticket_thread.Offer.check`); a ticket sits under "Needs you" (the 051 addendum
+  on project tickets) and not under "To review"; the title of an approval is "An
+  approval is pending." because the page does not compose a sentence from the
+  call's arguments; "In this session since it asked" is not drawn, because no
+  peer message is read; "Last few steps" is "What its strands are doing", because
+  the page has glances and no steps; an approval's message sends now and is not
+  queued behind the approval (`thread_send.hold_note`); Queue and Steer send at
+  once from the bar and do not stage a choice for Send; the review's Send has no
+  "& next"; the live-session names in the rail's "Watch live" have no "lifted"
+  count and carry the machine as their second line.
+
 Known gaps carried forward:
 
 - `person/check` is drawn as its raw stage word, pending question 6.
