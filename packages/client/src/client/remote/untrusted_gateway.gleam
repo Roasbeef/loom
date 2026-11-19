@@ -18,13 +18,13 @@
 ////   host cancels the call. A dropped connection kills no waiter: each waits
 ////   for its answer and exits, so a partition never cancels a call.
 ////   A `clear_call` (protocol-change/117) gets a **tunnel waiter** instead,
-////   which is the reverse: linked to its connection, it clears the call on the
-////   plane's broker with `broker.over`, closes the child's stdin, and sends
-////   `cleared` and then every non-empty chunk and the settlement as frames.
-////   A tunnelled call is never re-sent, so its child must not outlive the
-////   connection: a crash takes the waiters with it, every normal stop unlinks
-////   and kills them first (`stopped`), and a `cancel` unlinks one before
-////   killing it so the connection survives.
+////   which is the reverse: a weft run watching its connection, it clears the
+////   call on the plane's broker with `broker.over`, closes the child's stdin,
+////   and sends `cleared` and then every non-empty chunk and the settlement as
+////   frames. A tunnelled call is never re-sent, so its child must not outlive
+////   the connection: the run's scope monitors the connection and kills the
+////   waiter when it stops, normally or by a crash, and a `cancel` cancels the
+////   one run.
 //// - **A proxy** per binding stands in for the session's owner port. Its
 ////   subject is the `owner_port` the host is given at attach, so the plane is
 ////   built exactly as for a trusted orchestrator. It sends each owner request
@@ -82,6 +82,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import telemetry/field
 import telemetry/log.{type Logger}
+import weft
 import weft/actor
 import weft/state_machine as sm
 
@@ -247,9 +248,9 @@ type Connection {
     blobs: Option(blob_service.Service),
     /// The waiters of requests not yet answered, by request id.
     waiters: Dict(Int, Pid),
-    /// The tunnel waiters of calls not yet settled, by request id. Each is
-    /// linked to this connection (protocol-change/117).
-    tunnels: Dict(Int, Pid),
+    /// The tunnel waiters of calls not yet settled, by request id, each held
+    /// as the weft run that owns it (protocol-change/117).
+    tunnels: Dict(Int, weft.Witnessed),
     /// The enforcement a tunnelled call is cleared with.
     demand: exec.EnforcementDemand,
     /// Where things are logged.
@@ -605,7 +606,7 @@ fn framed(
           )
         Error(report) -> closed(stream, data, corruption.describe(report))
       }
-    ffi_tls_stream.Ended | ffi_tls_stream.Broken -> stopped(data)
+    ffi_tls_stream.Ended | ffi_tls_stream.Broken -> sm.stop()
   }
 }
 
@@ -802,10 +803,9 @@ fn closed_scope(
 }
 
 /// Cancels request `id` by killing its waiter, which the host reads as the
-/// asker dying and so as an abort. A tunnelled call's waiter is killed the
-/// same way, and the broker's relay reads its death as the caller's, but it
-/// is linked to this connection, which does not trap exits, so it is unlinked
-/// first or its death would end the connection too.
+/// asker dying and so as an abort. A tunnelled call's run is cancelled
+/// instead: its scope kills the waiter, and the broker's relay reads that
+/// death as the caller's.
 fn cancelled(data: Connection, id: Int) -> Connection {
   // A request already answered has no waiter left to kill.
   case dict.get(data.waiters, id), dict.get(data.tunnels, id) {
@@ -814,8 +814,7 @@ fn cancelled(data: Connection, id: Int) -> Connection {
       Connection(..data, waiters: dict.delete(data.waiters, id))
     }
     Error(Nil), Ok(tunnel) -> {
-      process.unlink(tunnel)
-      process.kill(tunnel)
+      weft.cancel_witnessed(tunnel)
       Connection(..data, tunnels: dict.delete(data.tunnels, id))
     }
     Error(Nil), Error(Nil) -> data
@@ -848,21 +847,28 @@ fn recorded(
   }
 }
 
-/// Starts the waiter of one tunnelled call (protocol-change/117), linked to
-/// this connection. A waiter killed with its connection may be inside
-/// `broker.clear_call`, waiting out a full pool in its own process: it dies at
-/// once, and a call the broker dispatches afterwards still names it as the
-/// caller, so the relay's monitor on it cancels the child as it starts. This
-/// is the reverse of a `run`'s waiter, which outlives its connection so the
-/// call's outcome reaches the ledger for the orchestrator's re-send; a
-/// tunnelled call is never re-sent.
+/// Starts the waiter of one tunnelled call (protocol-change/117), as a weft
+/// run that cancels itself when this connection exits. A waiter killed with
+/// its connection may be inside `broker.clear_call`, waiting out a full pool
+/// in its own process: the scope kills it at once, and a call the broker
+/// dispatches afterwards still names it as the caller, so the relay's monitor
+/// on it cancels the child as it starts. This is the reverse of a `run`'s
+/// waiter, which outlives its connection so the call's outcome reaches the
+/// ledger for the orchestrator's re-send; a tunnelled call is never re-sent.
 ///
-/// The waiter is hand-rolled (a linked spawn, its pid in `tunnels`, unlink
-/// before kill in `cancelled` and `stopped`) rather than a weft run, and
-/// `docs/weft.md` lists it as a port to make. Its lifetime rule is that every
-/// way a connection stops ends its tunnel waiters: a crash through the link,
-/// and every normal stop through `stopped`. The two plain `sm.stop()` calls
-/// in `handshaken` and `hello` come before `Serving`, when no waiter exists.
+/// The per-id map holds weft handles, not pids: there is no unlink before a
+/// kill and no loop over the waiters when the connection stops, because the
+/// scope's monitor on the connection fires on a normal stop as well as a
+/// crash, and the scope kills a running task with `process.kill`. A `cancel`
+/// frame calls `weft.cancel_witnessed` for its id. That cancellation is a
+/// message to the scope, so it is asynchronous; a waiter's frame could
+/// already race a `cancel` before this change, because `FromTunnel` is
+/// forwarded whether or not the id is still in `tunnels`, so no new ordering
+/// is claimed. A waiter crash no longer takes the connection down, since
+/// weft absorbs it, and none is reachable: `clear_call` and the book call
+/// use `try_call` and no source here panics. A broker that dies after
+/// clearance still leaves the waiter parked, as before. Each tunnelled call
+/// now costs two processes, the scope and the waiter, instead of one.
 fn tunnelled(
   data: Connection,
   pin: BitArray,
@@ -898,18 +904,23 @@ fn tunnelled(
     }
     Ok(Nil) -> {
       let waiter =
-        process.spawn(fn() {
-          tunnel_waiter(
-            book,
-            pin,
-            binding,
-            spec,
-            waiting_ms,
-            demand,
-            id,
-            report,
-          )
-        })
+        weft.new([
+          fn() {
+            tunnel_waiter(
+              book,
+              pin,
+              binding,
+              spec,
+              waiting_ms,
+              demand,
+              id,
+              report,
+            )
+            Ok(Nil)
+          },
+        ])
+        |> weft.cancel_when_exits(process.self())
+        |> weft.start_witnessed
       Connection(..data, tunnels: dict.insert(data.tunnels, id, waiter))
     }
   }
@@ -1044,18 +1055,6 @@ fn tunnel_ended(data: Connection, id: Int, end: TunnelEnd) -> Connection {
   }
 }
 
-/// Stops the connection normally. A normal stop does not propagate through a
-/// link, so the tunnel waiters are unlinked and killed first: the executor
-/// must not keep a child running for an orchestrator whose connection is gone.
-/// The other waiters run on.
-fn stopped(data: Connection) -> sm.Next(Phase, Connection, ConnectionMessage) {
-  dict.each(data.tunnels, fn(_id, tunnel) {
-    process.unlink(tunnel)
-    process.kill(tunnel)
-  })
-  sm.stop()
-}
-
 /// Hands an answer to the proxy of the binding it names, if this
 /// orchestrator holds one.
 fn routed(
@@ -1147,7 +1146,7 @@ fn armed(
 }
 
 /// Logs why, closes the socket and stops. The request waiters run on; the
-/// tunnel waiters are killed (`stopped`).
+/// tunnel waiters die with it, through their scopes' monitors.
 fn closed(
   stream: Stream,
   data: Connection,
@@ -1157,7 +1156,7 @@ fn closed(
     field.text("reason", reason),
   ])
   ffi_tls_stream.close(stream)
-  stopped(data)
+  sm.stop()
 }
 
 /// Starts the book, linked to the caller.

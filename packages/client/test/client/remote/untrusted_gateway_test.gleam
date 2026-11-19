@@ -1046,9 +1046,8 @@ pub fn a_dropped_connection_cancels_the_tunnelled_children_test() {
   echoes(real, second, 4)
 }
 
-// `cancel` kills the waiter, which is unlinked first: a linked waiter killed
-// by its own connection would take the connection with it, and the next
-// request would find no one to serve it.
+// `cancel` cancels the waiter's run and the connection serves on: the next
+// request clears only once the cancelled call has let the pool's one helper go.
 pub fn a_cancel_kills_the_tunnel_waiter_and_the_connection_serves_on_test() {
   use real, stream <- with_real_plane("cancel", readable_workspace)
   send_clear(
@@ -1060,6 +1059,31 @@ pub fn a_cancel_kills_the_tunnel_waiter_and_the_connection_serves_on_test() {
   assert cleared_within(stream, 2, 20_000) == Ok(Nil)
   rig.send(stream, untrusted_wire.Cancel(2))
   echoes(real, stream, 3)
+}
+
+// A `cancel` for a waiter still waiting out the full pool kills it too. Both
+// calls are cancelled, the running one last; the pool has one helper, and a
+// surviving parked waiter would take it first and run its sleep, so the echo
+// clears only if the parked waiter is dead.
+pub fn a_cancel_kills_a_tunnel_waiter_parked_in_the_pool_test() {
+  use real, stream <- with_real_plane("cancel-parked", readable_workspace)
+  send_clear(
+    stream,
+    2,
+    real_spec(real, "sleep-a", ["/bin/sleep", "60"], 4096),
+    15_000,
+  )
+  assert cleared_within(stream, 2, 20_000) == Ok(Nil)
+  send_clear(
+    stream,
+    3,
+    real_spec(real, "sleep-b", ["/bin/sleep", "60"], 4096),
+    15_000,
+  )
+  assert rig.next_raw(stream, 500) == Error("silent")
+  rig.send(stream, untrusted_wire.Cancel(3))
+  rig.send(stream, untrusted_wire.Cancel(2))
+  echoes(real, stream, 4)
 }
 
 // A command that prints past its cap settles with `stdout_truncated`, and the
