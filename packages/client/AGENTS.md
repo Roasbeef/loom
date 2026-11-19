@@ -267,14 +267,14 @@ private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
 the artifact manifest decoder and revision check, the guest's `loom.toml`, the
 `loom-vm run` and `cp` argument lists, `scrub_git_config`, the pid-file codec,
-the `epmd -names` reader and the daily verbs' decisions (`printable`, the
-checkouts record, `fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
-`read_enrolment`, `plan_teardown`). `client/vm_link` holds the decisions of the
+the daily verbs' decisions (`printable`, the checkouts record,
+`fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
+`retired_leftovers`). `client/vm_link` holds the decisions of the
 untrusted link, which every guest `up` and `ensure` make is on
 (protocol-change/109; ADR-022, the addendum of 2026-11-17). `client/vm_cli`
 performs them with `vm_link_pki`, `distribution_install` (the table merge),
 `host/bootstrap` (`spawn_server`, `process_identity`, `reserve_loopback_port`),
-`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname`, `git` and `epmd`,
+`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname` and `git`,
 `host/access` (`raw_request`, `execute`) for the daemon's `status`,
 `executors.reload` and `daemon.shutdown`, and `weft/poll`. It adds no FFI.
 
@@ -294,13 +294,13 @@ link field: `--link untrusted` is accepted and changes nothing, and `--link
 distribution` is refused by the parser (`vm_spec.link_flag`). The verbs that only
 read a guest (`status`, `list`, `rm`) ask `vm_link.made` through
 `vm_cli.recorded_kind` and `made_kind`, so an old guest is shown as
-`distribution` and removed with the distribution teardown; a directory with no
+`distribution` and removed without undoing its enrolment; a directory with no
 record and no traces reads as untrusted, and `other_kinds` does not count it.
 `bring_up` calls `bring_up_linked` directly. The distribution half it once had
 (`deployment`, `enroll`, `stage`, `boot`, the mint, join and seal helpers,
 `vm_spec`'s `deployment_plan`, join decisions and `with_loopback_listener`) was
-deleted on 2026-11-18; what remains of that path is the teardown `rm` runs for an
-old guest and the classifier that refuses one.
+deleted on 2026-11-18, and the teardown `rm` ran for an old guest on 2026-11-19;
+what remains of that path is the classifier that refuses one.
 
 `bring_up_linked` chooses the port without recording it, works out the merge (a
 refusal leaves no guest), records the kind and port, writes the file, then runs
@@ -386,9 +386,9 @@ read with `executors.reload`, and its jailed call sees its own leaf's digest. A
 migration step fabricates the host-side traces of two distribution guests
 (bundles only, and a `link` record saying `distribution`), and checks that `up`
 and `ensure` refuse them naming the three commands and change no file, that
-`status` and `list` call them distribution guests, and that `rm --yes` removes
-them, taking one's `[distribution]` table and trusted row out of a file whose
-untrusted row and other lines stay. A default-daemon step runs `vm ensure` with
+`status` and `list` call them distribution guests, and that `rm --yes` deletes
+their directories, leaves the configuration byte-identical and names the
+leftovers. A default-daemon step runs `vm ensure` with
 no `--config` and the default vm home (`~/.loom/vm` of the isolated home)
 beside a daemon on that home's default file with no `[executor_link]`, and
 checks the answer line, that the reload was not refused, that the same daemon
@@ -429,15 +429,12 @@ through `make_inside` and a rename, and guest text printed through
 `vm_spec.printable`. `up` records each copy's developer checkout in
 `<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
 `sync`; `--checkout PATH` overrides it and is required for a guest with no record.
-`rm` removes an untrusted guest's row (above), and for a guest made over
-distribution `[executors.<name>]`, and `[distribution]` and the home's cookie only
-when they are this guest's and no other trusted executor remains
-(`distribution_install.without_tables`, `vm_spec.plan_teardown`; `read_enrolment`
-leaves untrusted rows out of `other_executors`), with its sealed authority
-directory and ledger revoke as `removal_plan` decides. The revoke is signed with
-`ledger_cli.Forced` (`signed_revoke`, `vm_spec.unchecked_revoke_line`), since a
-guest `up` refuses serves no session again, and a key or ledger copy that cannot
-be used is worded by `vm_spec.rm_revoke_failure`. `apply_removal` deletes the
+`rm` removes an untrusted guest's row (above). For a guest made over
+distribution `planned_removal` makes a plan that rewrites nothing, and
+`apply_removal` prints `vm_spec.retired_leftovers`, the fixed lines naming what
+the operator removes by hand (the row and an unused `[distribution]` table, the
+cookie, `<vm home>/authority/`, `loom distribution revoke NAME`) and saying that
+`up` refuses the name until the row is gone. `apply_removal` deletes the
 roots and `state.img` before the rest of the directory, so the marker that
 classifies a guest outlives them. `list` counts a directory as a guest when
 `made_kind` is not `Ok(None)`, as `other_kinds` does. `rm` refuses a running

@@ -25,17 +25,14 @@
 ////   (`scrub_git_config`);
 //// - what to tell the user about a daemon that read its configuration before
 ////   `up` changed it (`occupied_sessions`, `daemon_note_about`);
-//// - how to read the two small records the command leaves behind and consults
-////   later: its pid file (`encode_pid`, `decode_pid`) and the host epmd's
-////   listing (`registered_port`);
-//// - what kind of deployment a `loom.toml` holds, which `rm` reads to undo an
-////   old guest's enrolment (`deployment_state`);
+//// - how to read the small record the command leaves behind and consults
+////   later: its pid file (`encode_pid`, `decode_pid`);
 //// - the daily verbs: what may be printed of text a guest wrote (`printable`),
 ////   the record of each workspace's developer checkout (`encode_checkouts`,
 ////   `decode_checkouts`), the Git command lines of `sync` (`fetch_arguments`,
 ////   `bundle_arguments`), the Git version `sync` requires (`git_version`,
-////   `check_git_version`) and what `rm` undoes in the user's `loom.toml`
-////   (`read_enrolment`, `plan_teardown`).
+////   `check_git_version`) and what `rm` leaves for the operator of a guest
+////   made over the retired link (`retired_leftovers`).
 ////
 //// ## Flow
 ////
@@ -47,9 +44,6 @@
 //// - `names` derives a guest's names, and `guest_config_with` the executor's
 ////   configuration file around the tables of its link, with the tools table that
 ////   GitHub access needs.
-//// - `deployment_state` says which deployment a configuration file belongs to.
-////   `bundle_deployment` and `authority_directory` find the key that
-////   removing an old guest unseals.
 //// - `launch_arguments` builds the `loom-vm run` command line.
 //// - `valid_host`, `encode_allow`, `decode_allow` and `effective_allow` keep
 ////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
@@ -60,8 +54,8 @@
 ////   keeps the guest's GitHub access across resumes.
 //// - `printable`, `decode_checkouts`, `only_workspace`, `fetch_arguments`,
 ////   `bundle_arguments` and `check_git_version` serve the commands that read a
-////   guest's root and sync it; `read_enrolment` and `plan_teardown` decide what
-////   removing a guest takes out of the user's configuration.
+////   guest's root and sync it; `retired_leftovers` says what removing an old
+////   guest leaves for the operator.
 ////
 //// ## The link
 ////
@@ -74,15 +68,12 @@
 //// clock, the environment or a file.
 
 import client/distribution.{type CredentialFiles, CredentialFiles}
-import client/distribution_bundle.{type Bundle}
+import client/distribution_bundle
 import client/distribution_plan
-import client/membership_ledger
-import client/membership_signing
 import core/json as core_json
 import gleam/bit_array
 import gleam/bool
 import gleam/crypto
-import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -91,7 +82,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import storage/catalogue
-import tom
 
 /// The name a standing guest has unless `--name` says another.
 pub const default_name = "vm"
@@ -169,10 +159,6 @@ pub const authority_dir = "authority"
 /// the orchestrator's leaf (`client/vm_link_pki`). A guest cannot be called
 /// this either, because its directory would be the credentials'.
 pub const link_dir = "link"
-
-/// The file inside a deployment's authority directory that holds the
-/// passphrase `up` sealed its key under.
-pub const passphrase_file = "passphrase"
 
 /// The longest `--name`. The orchestrator's plan name adds `-host`, and a plan
 /// name is at most 32 bytes.
@@ -2055,169 +2041,6 @@ pub fn names(name: String) -> Names {
   )
 }
 
-// --- what the configuration already holds ------------------------------------
-
-/// The deployment a daemon's `loom.toml` already belongs to, which decides
-/// whether a guest can be enrolled into it or has to bring its own.
-pub type DeploymentState {
-  /// The file has no `[distribution]` table, so the daemon is on no deployment
-  /// and a guest may mint one for it.
-  NoDeployment
-
-  /// The table names a membership ledger (protocol-change/086). The ledger's
-  /// authority can enrol a guest as a member without a restart.
-  LedgerDeployment(
-    /// The ledger file the `ledger` key names.
-    ledger: String,
-  )
-
-  /// The table lists `[[distribution.peers]]` (protocol-change/078). No key
-  /// remains that could admit a third node.
-  StaticDeployment
-}
-
-/// Reads which deployment `text`, the contents of a `loom.toml`, belongs to,
-/// with the parser the daemon itself reads the table with, so a table the
-/// daemon would refuse is refused here and is not guessed at.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.deployment_state("") == Ok(vm_spec.NoDeployment)
-/// ```
-pub fn deployment_state(text: String) -> Result(DeploymentState, String) {
-  use found <- result.try(distribution.parse(text))
-
-  // Only a table can name a ledger, so the absence of a table is decided
-  // first and the `ledger` key then tells the two modes apart.
-  case found {
-    None -> Ok(NoDeployment)
-    Some(config) ->
-      // The daemon enters ledger mode by this key and no other.
-      case distribution.ledger_path(config) {
-        Some(ledger) -> Ok(LedgerDeployment(ledger:))
-        None -> Ok(StaticDeployment)
-      }
-  }
-}
-
-/// The deployment id a ledger bundle's genesis entry carries, or `Nil` for a
-/// static bundle and for a ledger that does not replay against the bundle's
-/// own certificate authority. `rm` uses it to find the authority directory
-/// `up` sealed the key in.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.bundle_deployment(static_bundle) == Error(Nil)
-/// ```
-pub fn bundle_deployment(bundle: Bundle) -> Result(String, Nil) {
-  // A static bundle lists peers and has no ledger to carry an id.
-  case bundle.trust {
-    distribution_bundle.StaticPeers(_) -> Error(Nil)
-    distribution_bundle.SignedLedger(lines) ->
-      replayed(bundle.ca, lines)
-      |> result.map(membership_ledger.deployment)
-  }
-}
-
-/// The ledger a list of lines replays to against a certificate authority, or
-/// `Nil` when the authority is not a certificate or a line does not verify.
-fn replayed(
-  ca: String,
-  lines: List(String),
-) -> Result(membership_ledger.Ledger, Nil) {
-  use verifier <- result.try(
-    membership_signing.verifier(ca) |> result.replace_error(Nil),
-  )
-  membership_ledger.replay(list.map(lines, bit_array.from_string), verifier)
-  |> result.replace_error(Nil)
-}
-
-/// Where a guest stands in the ledger text of a daemon's configuration, read
-/// against the certificate authority `ca`. `Error(Nil)` means the ledger does
-/// not replay against that authority, which says nothing about the guest.
-///
-/// ## Examples
-///
-/// ```gleam
-/// vm_spec.standing(ca, ledger_text, "vm2") // -> Ok(membership_ledger.Revoked)
-/// ```
-pub fn standing(
-  ca: String,
-  ledger_text: String,
-  name: String,
-) -> Result(membership_ledger.Enrollment, Nil) {
-  let lines =
-    string.split(ledger_text, "\n")
-    |> list.filter(fn(line) { string.trim(line) != "" })
-  replayed(ca, lines)
-  |> result.map(membership_ledger.enrollment(_, name))
-}
-
-/// The line `rm` prints about the checks its revoke skipped. `rm` signs the
-/// revoke of a guest made over distribution without the placement check,
-/// because `up` refuses such a guest and `rm` acts only on a stopped one, so no
-/// session can be served on it again; the line says so in place of the revoke
-/// command's own text, which names a `--force` that `rm` does not have.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert string.contains(vm_spec.unchecked_revoke_line("vm2"), "can no longer be started")
-/// ```
-pub fn unchecked_revoke_line(name: String) -> String {
-  "Not checked: the link graph, whether "
-  <> name
-  <> " owns sessions or has sessions placed on it, and the directory's voters, "
-  <> "because a guest made over distribution can no longer be started. "
-  <> "Sessions placed on it stay in the catalogue, and a new guest of the same "
-  <> "name takes them when they are opened again, from its own copy of the "
-  <> "workspace."
-}
-
-/// The refusal `rm` gives when the revoke of a guest made over distribution
-/// cannot be signed at all (the key does not open, its ledger copy is locked
-/// by another command or disagrees with the daemon's, say): the reason, that
-/// nothing was removed, where the key and its copy are, and the command to run
-/// once that is fixed. A placement on the guest or a daemon that does not
-/// answer is not such a reason, since `rm` signs without that check.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert string.contains(
-///   vm_spec.rm_revoke_failure("vm2", "/h/vm/authority/3f", "locked"),
-///   "loom vm rm --name vm2 --yes",
-/// )
-/// ```
-pub fn rm_revoke_failure(
-  name: String,
-  directory: String,
-  reason: String,
-) -> String {
-  "the revoke of "
-  <> name
-  <> " could not be signed: "
-  <> reason
-  <> ". Nothing was removed. The key and its copy of the ledger are in "
-  <> directory
-  <> "; fix that and run `loom vm rm --name "
-  <> name
-  <> " --yes` again."
-}
-
-/// The authority directory of a deployment under the vm home.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.authority_directory("/h/vm", "3f9c") == "/h/vm/authority/3f9c"
-/// ```
-pub fn authority_directory(vm_home: String, deployment: String) -> String {
-  vm_home <> "/" <> authority_dir <> "/" <> deployment
-}
-
 /// Where the executor's credentials sit inside the guest.
 ///
 /// ## Examples
@@ -3312,27 +3135,6 @@ pub fn decode_pid(text: String) -> Result(PidRecord, String) {
   }
 }
 
-/// The host port a node name is registered at in `epmd -names` output, or
-/// `None` when it is not listed.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.registered_port("name a at port 4370\n", "a") == Some(4370)
-/// ```
-pub fn registered_port(listing: String, short: String) -> Option(Int) {
-  let prefix = "name " <> short <> " at port "
-  string.split(listing, "\n")
-  |> list.find_map(fn(line) {
-    case string.starts_with(line, prefix) {
-      True ->
-        int.parse(string.trim(string.drop_start(line, string.length(prefix))))
-      False -> Error(Nil)
-    }
-  })
-  |> option.from_result
-}
-
 /// The tail of a log, at most `limit` characters, for an error that shows why a
 /// guest did not start.
 ///
@@ -3805,231 +3607,132 @@ pub fn removal_refusal(
 
 // --- undoing an enrolment ----------------------------------------------------
 
-/// What a `loom.toml` says about one guest's enrolment.
-pub type Enrolment {
-  Enrolment(
-    /// The `node` of the `[executors.<name>]` table, when there is one.
-    executor_node: Option(String),
-    /// The `node` of the `[distribution]` table, when there is one.
-    distribution_node: Option(String),
-    /// The names of the other `[executors.*]` tables that may need
-    /// `[distribution]`: every one whose `trust` is not `"untrusted"`.
-    other_executors: List(String),
-  )
-}
-
-/// Reads the enrolment of the guest called `name` out of a `loom.toml`. Empty
-/// text is a file with nothing in it. Text that is not valid TOML is the error,
-/// and `rm` then touches nothing.
-///
-/// An untrusted row is reached over `[executor_link]` and never through
-/// `[distribution]`, so it is not counted among the executors that keep that
-/// table and the cookie. Counting it kept `[distribution]` after the guest whose
-/// `orch/` credentials it names was deleted, and the next daemon start failed.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let assert Ok(found) = vm_spec.read_enrolment("[executors.vm]\nnode = \"a@b\"\n", "vm")
-/// assert found.executor_node == Some("a@b")
-/// ```
-pub fn read_enrolment(text: String, name: String) -> Result(Enrolment, String) {
-  use document <- result.try(
-    tom.parse(text)
-    |> result.map_error(fn(error) {
-      "is not valid TOML: " <> string.inspect(error)
-    }),
-  )
-  let others =
-    tom.get_table(document, ["executors"])
-    |> result.lazy_unwrap(dict.new)
-    |> dict.to_list
-    |> list.filter(fn(entry) { entry.0 != name && !untrusted_row(entry.1) })
-    |> list.map(fn(entry) { entry.0 })
-    |> list.sort(string.compare)
-
-  Ok(Enrolment(
-    executor_node: tom.get_string(document, ["executors", name, "node"])
-      |> option.from_result,
-    distribution_node: tom.get_string(document, ["distribution", "node"])
-      |> option.from_result,
-    other_executors: others,
-  ))
-}
-
-/// Whether an `[executors.*]` table says `trust = "untrusted"`.
-fn untrusted_row(row: tom.Toml) -> Bool {
-  case row {
-    tom.Table(fields) | tom.InlineTable(fields) ->
-      dict.get(fields, "trust") == Ok(tom.String("untrusted"))
-    _ -> False
-  }
-}
-
-/// What the home's `.erlang.cookie` is, compared with the cookie in the
-/// guest's `deploy/` bundle.
-pub type CookieState {
-  /// There is no cookie file.
-  CookieAbsent
-
-  /// The file holds this guest's deployment's cookie.
-  CookieOurs
-
-  /// The file holds another cookie, or the guest's bundle is not there to
-  /// compare with.
-  CookieOther
-}
-
-/// Compares the cookie file's contents with the deployment's.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.cookie_state(Some("c"), Some("c")) == vm_spec.CookieOurs
-/// assert vm_spec.cookie_state(Some("c"), None) == vm_spec.CookieOther
-/// ```
-pub fn cookie_state(
-  found: Option(String),
-  deployed: Option(String),
-) -> CookieState {
-  case found, deployed {
-    None, _ -> CookieAbsent
-    Some(have), Some(want) if have == want -> CookieOurs
-    Some(_), _ -> CookieOther
-  }
-}
-
-/// What `rm` does with the cookie file.
-pub type CookieAction {
-  RemoveCookie
-  KeepCookie
-}
-
 /// What `rm` takes out of the user's configuration, and what it leaves with
 /// the reason.
 pub type Teardown {
   Teardown(
     /// The table paths to remove, such as `["executors", "vm"]`.
     tables: List(List(String)),
-    /// Whether the home's cookie file goes.
-    cookie: CookieAction,
     /// One line for each thing left in place, with its reason.
     left: List(String),
   )
 }
 
-/// Decides what undoing a guest's enrolment may remove.
+/// The things the operator removes by hand after `rm --yes` of a guest made over
+/// the retired distribution link, one sentence each, in the order to do them.
+/// This release no longer edits the configuration, the cookie or the ledger for
+/// such a guest, and a guest has one of two shapes that need different words.
 ///
-/// The `[executors.<name>]` table goes when it names this guest's executor
-/// node. The `[distribution]` table and the home's cookie are shared by every
-/// executor of the daemon, so they go only when they are this guest's
-/// deployment's (the table names the guest's orchestrator node, the cookie
-/// equals the one in `deploy/`) and no other `[executors.*]` table remains.
-/// Anything else is left and named.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let found = vm_spec.Enrolment(Some("loom_vm_vm_exec@127.0.0.1"), Some("loom_vm_vm_orch@127.0.0.1"), [])
-/// let plan = vm_spec.plan_teardown(vm_spec.names("vm"), found, vm_spec.CookieOurs)
-/// assert plan.tables == [["executors", "vm"], ["distribution"]]
-/// ```
-pub fn plan_teardown(
-  names: Names,
-  found: Enrolment,
-  cookie: CookieState,
-) -> Teardown {
-  let row = "[executors." <> names.name <> "]"
-
-  // The row goes only when it names this guest's executor; another node under
-  // the same key is the user's own and keeps the deployment in use.
-  let #(rows, row_left, own) = case found.executor_node {
-    Some(node) if node == names.executor_node -> #(
-      [["executors", names.name]],
-      [],
-      [],
-    )
-    Some(node) -> #(
-      [],
-      [row <> " names the node " <> node <> ", not this guest's, so it stays"],
-      [names.name],
-    )
-    None -> #([], [], [])
-  }
-
-  let remaining = list.append(found.other_executors, own)
-  let shared_present = found.distribution_node != None || cookie != CookieAbsent
-
-  // An executor that remains is a reason to leave the shared tables, and the
-  // line says which one.
-  let still_used = case remaining {
-    [] -> []
-    _ -> [
-      "[distribution] and the cookie stay because "
-      <> string.join(
-        list.map(remaining, fn(other) { "[executors." <> other <> "]" }),
-        ", ",
-      )
-      <> " still need them",
-    ]
-  }
-
-  // The shared tables are judged together: another deployment's table, or an
-  // executor that still needs it, keeps both the table and the cookie.
-  case found.distribution_node, still_used {
-    Some(node), _ if node != names.orchestrator_node ->
-      Teardown(rows, KeepCookie, [
-        "[distribution] names the node "
-          <> node
-          <> ", which is another deployment's, so it and the cookie stay",
-        ..row_left
-      ])
-    _, [line] if shared_present -> Teardown(rows, KeepCookie, [line, ..row_left])
-    _, _ -> own_shared(found, rows, row_left, cookie)
-  }
-}
-
-/// What `rm` takes out of the configuration for a guest that joined its
-/// daemon's deployment: nothing. The guest has no `[executors.<name>]` row,
-/// since the daemon derives it from the ledger, and the `[distribution]` table
-/// and the cookie are the deployment's, shared with every member.
+/// A guest that minted its own deployment installed `[distribution]` pointing at
+/// `<vm home>/NAME/orch/`, which `rm` has just deleted, so the daemon will not
+/// start until the table is removed; removing it retires that deployment and no
+/// revoke is needed. A guest that joined an operator's deployment has no
+/// `[executors.NAME]` row, because the daemon derives it from the ledger, and its
+/// membership stays until it is revoked. `loom distribution revoke` looks for the
+/// key under `DIR/.loom/authority`, and a key `up` sealed is under
+/// `<vm home>/authority/<id>/`, which no flag reaches, so the item says to put a
+/// copy where the command looks. The revoke comes before the item that deletes
+/// that directory, since the directory holds the only key that can sign it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.joined_teardown().tables == []
+/// let items = vm_spec.retired_leftovers("dev", "/h/loom.toml", "/h/vm")
+/// assert list.any(items, string.contains(_, "[executors.dev]"))
 /// ```
-pub fn joined_teardown() -> Teardown {
-  Teardown(tables: [], cookie: KeepCookie, left: [
-    "[distribution] and the cookie belong to the deployment the guest joined, "
-    <> "so they stay",
-  ])
+pub fn retired_leftovers(
+  name: String,
+  config: String,
+  vm_home: String,
+) -> List(String) {
+  let orch = vm_home <> "/" <> name <> "/orch/"
+  let authority = vm_home <> "/" <> authority_dir <> "/"
+  [
+    "Remove the [distribution] table from "
+      <> config
+      <> ". If it names files under "
+      <> orch
+      <> " (the guest made its own deployment), `rm` has deleted them and the "
+      <> "daemon will not start until the table is removed, together with the "
+      <> "[executors."
+      <> name
+      <> "] table; that retires the deployment and no revoke is needed. "
+      <> "Otherwise (the guest joined a deployment) remove the table only if "
+      <> "nothing else uses it.",
+    "For a guest that joined an operator's deployment, revoke it before "
+      <> "deleting "
+      <> authority
+      <> ": `loom distribution revoke "
+      <> name
+      <> " --force --passphrase-file FILE`, where --force is needed because "
+      <> "sessions may be placed on the guest. The command finds the key under "
+      <> "DIR/.loom/authority/<id>, so copy the directory "
+      <> authority
+      <> "<id> there and pass --home DIR; its passphrase is the file `passphrase` "
+      <> "inside it.",
+    "Remove ~/.erlang.cookie, or rotate it: the guest held that cookie, so "
+      <> "anything that read its files could have copied it.",
+    "Delete "
+      <> authority
+      <> ", the sealed authority key of a deployment the guest minted, once no "
+      <> "revoke above needs it.",
+    "While [executors."
+      <> name
+      <> "] is in "
+      <> config
+      <> ", `loom vm up --name "
+      <> name
+      <> "` refuses. A guest that joined a ledger has no such row; there `up` "
+      <> "writes an untrusted row, and the daemon refuses executors.reload "
+      <> "(\"untrusted executor "
+      <> name
+      <> " has the name of an executor the ledger enrols\") until the revoke "
+      <> "lands.",
+  ]
 }
 
-/// What goes of the shared tables when no executor needs them and they are not
-/// another deployment's: the `[distribution]` table when there is one, and the
-/// cookie when it is this guest's deployment's.
-fn own_shared(
-  found: Enrolment,
-  rows: List(List(String)),
-  row_left: List(String),
-  cookie: CookieState,
-) -> Teardown {
-  // A missing `[distribution]` table leaves only the executor row to go.
-  let tables = case found.distribution_node {
-    Some(_) -> list.append(rows, [["distribution"]])
-    None -> rows
-  }
+/// What `rm --yes` prints once it has deleted a guest made over the retired
+/// link: a heading in the past tense, then each item of `retired_leftovers`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lines = vm_spec.retired_removal_lines("/h/loom.toml", ["Remove x."])
+/// assert lines == [
+///   "`rm` left /h/loom.toml, the cookie and every ledger as they were. Remove by hand:",
+///   "  - Remove x.",
+/// ]
+/// ```
+pub fn retired_removal_lines(
+  config: String,
+  items: List(String),
+) -> List(String) {
+  [
+    "`rm` left "
+      <> config
+      <> ", the cookie and every ledger as they were. Remove by hand:",
+    ..list.map(items, fn(item) { "  - " <> item })
+  ]
+}
 
-  // A cookie that is not the deployment's belongs to someone else and stays.
-  case cookie {
-    CookieOurs -> Teardown(tables, RemoveCookie, row_left)
-    CookieOther ->
-      Teardown(tables, KeepCookie, [
-        "the home's .erlang.cookie is not this guest's deployment's, so it "
-          <> "stays",
-        ..row_left
-      ])
-    CookieAbsent -> Teardown(tables, KeepCookie, row_left)
-  }
+/// What `rm` without `--yes` prints for such a guest: a heading in the future
+/// tense, then each item of `retired_leftovers`, so the preview reads as what
+/// will be left to do and not as something already done.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lines = vm_spec.retired_preview_lines("/h/loom.toml", ["Remove x."])
+/// assert list.first(lines) == Ok("`--yes` removes the guest and changes nothing in /h/loom.toml, the cookie or any ledger. Afterwards, remove by hand:")
+/// ```
+pub fn retired_preview_lines(
+  config: String,
+  items: List(String),
+) -> List(String) {
+  [
+    "`--yes` removes the guest and changes nothing in "
+      <> config
+      <> ", the cookie or any ledger. Afterwards, remove by hand:",
+    ..list.map(items, fn(item) { "  - " <> item })
+  ]
 }

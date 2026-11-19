@@ -31,11 +31,11 @@
 ////   through `bring_up`, the same code `up` runs. Its last line of standard
 ////   output names the executor and workspace (`ensure`).
 //// - `down` signals the recorded process and waits for it (`down`).
-//// - `status` reports what the pid file, the process table and the host epmd
-////   say (`status`).
+//// - `status` reports what the pid file, the process table and the guest's
+////   records say (`status`).
 //// - logs prints the end of the console log (`logs`), and list prints one line
 ////   per guest directory (`guests`).
-//// - rm deletes a stopped guest and undoes its enrolment (`remove`).
+//// - rm deletes a stopped guest and undoes its untrusted enrolment (`remove`).
 //// - sync fetches a copy's committed work into the developer's checkout, or
 ////   bundles the checkout's commits for the guest (`sync`).
 ////
@@ -82,10 +82,9 @@
 //// and a deployment it minted has its authority key sealed under
 //// `<vm home>/authority/<deployment id>/` beside a generated `passphrase`. `up`
 //// and `ensure` refuse such a guest (`vm_link.settle`), and `status`, `list`,
-//// `logs`, `down`, `sync` and `rm` treat it as they always did; `rm` undoes
-//// its `[distribution]` and `[executors.<name>]` tables, its cookie, its
-//// sealed key and its ledger membership as `vm_spec.plan_teardown` and
-//// `removal_plan` decide.
+//// `logs`, `down`, `sync` and `rm` accept it; `rm` deletes its directory and
+//// prints what the operator removes by hand (`vm_spec.retired_leftovers`),
+//// because it no longer edits the configuration, the cookie or the ledger.
 ////
 //// ## Why the process is signalled by birth marker
 ////
@@ -96,16 +95,9 @@
 //// still there. A pid file left by a machine that rebooted therefore names no
 //// process, and a recycled pid is never signalled.
 
-import client/authority_home
-import client/authority_key
-import client/daemon/admin
-import client/daemon/ledger_cli
-import client/distribution_bundle.{type Bundle}
 import client/distribution_install
-import client/distribution_provision
 import client/install
 import client/internal/ffi_os
-import client/membership_ledger
 import client/vm_link
 import client/vm_link_pki
 import client/vm_spec.{
@@ -235,13 +227,11 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             (--config PATH, default ~/.loom/loom.toml). For a guest on the
             untrusted link it removes [executors.NAME], and [executor_link]
             with the vm home's link credentials when no other untrusted guest
-            remains. A guest an older loom made as a distribution peer loses
-            its [executors.NAME], and the [distribution] table and the home's
-            .erlang.cookie only when they are this guest's deployment's and no
-            other trusted [executors.*] table remains; otherwise rm leaves them and
-            says so. Such a guest that joined a ledger deployment is revoked
-            with the key, when it is on this machine, and otherwise rm prints
-            the revoke to run; one that others joined is removed last. Every
+            remains. A guest an older loom made as a distribution peer is
+            deleted and nothing else changes: rm prints what you remove by
+            hand (the [distribution] table and [executors.NAME] row,
+            ~/.erlang.cookie, the authority directory and the ledger revoke),
+            and `loom vm up` refuses the name until the row is gone. Every
             other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
@@ -1309,83 +1299,7 @@ fn refuse_running(guest: Instance, name: String) -> Result(Nil, String) {
   }
 }
 
-// --- the deployment ----------------------------------------------------------
-
-/// Where the sealed key of a deployment is on this machine and the passphrase
-/// file to open it with, when there is one. The key `up` sealed for a
-/// deployment it minted has its passphrase beside it. A key the operator kept
-/// with `loom distribution provision` is under the home's `.loom/authority`, or
-/// in the home recorded beside the installed ledger (`authority_home`), and its
-/// passphrase is asked for on the terminal.
-fn sealed_authority(
-  vm_home: String,
-  deployment: String,
-  ledger: option.Option(String),
-) -> Result(#(String, option.Option(String)), String) {
-  let ours = vm_spec.authority_directory(vm_home, deployment)
-  let passphrase = ours <> "/" <> vm_spec.passphrase_file
-
-  // Without a ledger path there is no home recorded beside it to consult.
-  let hinted =
-    option.to_result(ledger, Nil)
-    |> result.try(fn(path) {
-      authority_home.hinted_home(filepath.directory_name(path))
-    })
-    |> result.map(authority_key.default_directory(_, deployment))
-  let homed =
-    home()
-    |> result.map(authority_key.default_directory(_, deployment))
-
-  // The key sealed under the vm home is the first choice, then the others.
-  case authority_key.is_kept(ours), homed, hinted {
-    True, _, _ -> Ok(#(ours, Some(passphrase)))
-    _, Ok(directory), _ ->
-      case authority_key.is_kept(directory) {
-        True -> Ok(#(directory, None))
-        False -> hinted_key(hinted)
-      }
-    _, _, _ -> hinted_key(hinted)
-  }
-}
-
-/// The ledger file a configuration names, when it holds a ledger deployment and
-/// can be read. Anything else is `None`: the caller falls back to what it has.
-fn config_ledger(config: String) -> option.Option(String) {
-  simplifile.read(config)
-  |> result.replace_error(Nil)
-  |> result.try(fn(text) {
-    vm_spec.deployment_state(text) |> result.replace_error(Nil)
-  })
-  |> result.try(fn(state) {
-    case state {
-      vm_spec.LedgerDeployment(ledger:) -> Ok(ledger)
-      vm_spec.NoDeployment | vm_spec.StaticDeployment -> Error(Nil)
-    }
-  })
-  |> option.from_result
-}
-
-/// The text of the ledger the daemon of `config` has installed, when there is
-/// one and it can be read.
-fn installed_ledger(config: String) -> option.Option(String) {
-  config_ledger(config)
-  |> option.then(fn(path) { simplifile.read(path) |> option.from_result })
-}
-
-/// The key in the home recorded beside the ledger, if it is really there. The
-/// recorded home is only a hint, so the key must be in the directory it names.
-fn hinted_key(
-  hinted: Result(String, Nil),
-) -> Result(#(String, option.Option(String)), String) {
-  case hinted {
-    Ok(directory) ->
-      case authority_key.is_kept(directory) {
-        True -> Ok(#(directory, None))
-        False -> Error("no authority key is kept in " <> directory)
-      }
-    Error(Nil) -> Error("no authority key is kept")
-  }
-}
+// --- credential files --------------------------------------------------------
 
 /// Reads a file of the daemon's credentials, naming it when it cannot be read.
 fn read_text(path: String) -> Result(String, String) {
@@ -1393,40 +1307,6 @@ fn read_text(path: String) -> Result(String, String) {
   |> result.map_error(fn(error) {
     path <> " is unreadable: " <> simplifile.describe_error(error)
   })
-}
-
-/// Where a plan node's bundle is in `deploy/`.
-fn bundle_file(guest: Instance, plan_name: String) -> String {
-  guest.deploy <> "/" <> plan_name <> distribution_provision.bundle_extension
-}
-
-/// Reads one bundle and checks that it is the node this guest's name implies.
-fn read_bundle(path: String, node: String) -> Result(Bundle, String) {
-  use text <- result.try(
-    simplifile.read(path)
-    |> result.map_error(fn(error) {
-      path <> " is unreadable: " <> simplifile.describe_error(error)
-    }),
-  )
-  use bundle <- result.try(
-    distribution_bundle.decode(text)
-    |> result.map_error(fn(reason) { path <> ": " <> reason }),
-  )
-
-  // A directory left by another name or another host's naming would install
-  // pins for a node this guest does not run.
-  case bundle.erlang_node == node {
-    True -> Ok(bundle)
-    False ->
-      Error(
-        path
-        <> " is the bundle of "
-        <> bundle.erlang_node
-        <> ", not "
-        <> node
-        <> ". Remove its directory and run `loom vm up` again.",
-      )
-  }
 }
 
 // --- enrolling the orchestrator ----------------------------------------------
@@ -1962,22 +1842,17 @@ fn reloaded(name: String) -> Restart {
   }
 }
 
-/// The `status` lines about how the guest is reached: the link, then the node
-/// and the host's epmd entry for a distribution guest, and the address and
-/// the guest's pin for an untrusted one. The first line names the link either
-/// way, so a developer can tell an old guest that `up` refuses.
-fn link_lines(
-  guest: Instance,
-  names: vm_spec.Names,
-  kind: vm_spec.LinkKind,
-) -> List(String) {
-  // The two links leave different evidence: a node in the host's epmd, or a
-  // port and a pin recorded beside the guest.
+/// The `status` lines about how the guest is reached: the link, then the address
+/// and the guest's pin for an untrusted one. The first line names the link
+/// either way, so a developer can tell an old guest that `up` refuses. An old
+/// guest gets that one line only, because its node and epmd entry belong to a
+/// path this release no longer inspects.
+fn link_lines(guest: Instance, kind: vm_spec.LinkKind) -> List(String) {
+  // The two links leave different evidence: nothing this release reads for a
+  // retired guest, or a port and a pin recorded beside the guest.
   case kind {
     vm_spec.Distribution -> [
       "link:       distribution, retired: `loom vm up` refuses this guest",
-      "node:       " <> names.executor_node,
-      "epmd:       " <> epmd_line(names),
     ]
     vm_spec.Untrusted -> {
       let port = recorded_port(guest)
@@ -3436,7 +3311,6 @@ fn is_loom_vm(record: PidRecord) -> Result(Nil, String) {
 fn status(name: String) -> Result(String, String) {
   use vm_home <- result.try(vm_home())
   let guest = instance(vm_home, name)
-  let names = vm_spec.names(name)
   use state <- result.try(process_state(guest))
   use kind <- result.try(recorded_kind(guest))
   Ok(string.join(
@@ -3445,7 +3319,7 @@ fn status(name: String) -> Result(String, String) {
         "guest:      " <> name,
         "process:    " <> process_line(state),
       ],
-      link_lines(guest, names, kind),
+      link_lines(guest, kind),
       [
         "revision:   " <> revision_line(vm_home),
         "root:       " <> root_line(guest),
@@ -3486,24 +3360,6 @@ fn process_line(state: ProcessState) -> String {
   case state {
     Alive(record) -> "running (process " <> int.to_string(record.pid) <> ")"
     NotRunning -> "not running"
-  }
-}
-
-/// The host port the executor's node name is registered at, from the host's own
-/// epmd. `loom-vm` holds the registration for the guest's life, so a name that
-/// is listed is a guest that is up and reachable.
-fn epmd_line(names: vm_spec.Names) -> String {
-  let listing = tool("epmd", ["-names"], within: quick_ms)
-
-  // Without `epmd` on PATH the answer is unknown, which is not the same as the
-  // guest being absent.
-  case listing {
-    Error(reason) -> "unknown (" <> reason <> ")"
-    Ok(listing) ->
-      case vm_spec.registered_port(listing, names.executor_short) {
-        Some(port) -> "registered, host port " <> int.to_string(port)
-        None -> "not registered"
-      }
   }
 }
 
@@ -3772,8 +3628,8 @@ fn guest_line(vm_home: String, name: String, width: Int) -> String {
 
 // --- rm ----------------------------------------------------------------------
 
-// What `rm` will do to the user's configuration and cookie, decided before
-// anything is written so a file that cannot be edited refuses the whole command.
+// What `rm` will do to the user's configuration, decided before anything is
+// written so a file that cannot be edited refuses the whole command.
 type RemovalPlan {
   RemovalPlan(
     config: String,
@@ -3781,11 +3637,10 @@ type RemovalPlan {
     // The configuration text after the tables go, or `None` when it is
     // unchanged.
     rewritten: option.Option(String),
-    // The sealed authority key's directory, when this guest minted one and no
-    // other guest's deployment uses it.
-    authority: option.Option(String),
-    // What happens to the guest's membership of a ledger it joined.
-    revocation: Revocation,
+    // What the operator removes by hand, one sentence each, because this
+    // release no longer undoes it. Only a guest made over the retired
+    // distribution link has any.
+    by_hand: List(String),
     // The vm home's link credentials, when this is the last untrusted guest
     // and nothing needs them any more.
     link_home: option.Option(String),
@@ -3803,20 +3658,6 @@ type AfterRemoval {
   // An untrusted guest's row left the default file, so a running daemon is
   // asked to stop its link (protocol-change/116).
   ReloadDaemon
-}
-
-// A guest that joined its daemon's deployment is a member of the ledger, and
-// removing the guest leaves that entry unless it is revoked.
-type Revocation {
-  // The guest minted its deployment, or is static: there is no member to
-  // revoke, because the whole deployment goes with it.
-  NoRevocation
-
-  // The key is on this machine, so `rm` signs the revoke.
-  RevokeWith(directory: String, passphrase: option.Option(String))
-
-  // The key is elsewhere, and the operator who holds it runs the revoke.
-  RevokeByOperator(deployment: String)
 }
 
 /// Deletes a stopped guest and undoes its enrolment.
@@ -3875,85 +3716,17 @@ fn remove(
         Error(
           vm_spec.removal_refusal(name, held_workspaces(guest))
           <> "\n"
-          <> removal_preview(plan, name, home),
+          <> removal_preview(plan),
         )
-      vm_spec.Confirmed -> apply_removal(guest, name, home, plan)
+      vm_spec.Confirmed -> apply_removal(guest, name, plan)
     }
   })
 }
 
-/// Reads the configuration and the cookie and decides what undoing the guest's
-/// enrolment removes. A configuration that cannot be parsed, or whose tables
-/// cannot be removed line by line, refuses here with one line.
-fn removal_plan(
-  vm_home: String,
-  guest: Instance,
-  name: String,
-  config: String,
-  home: String,
-) -> Result(RemovalPlan, String) {
-  let names = vm_spec.names(name)
-  let id = deployment_of(vm_home, name)
-  let minter = bootstrap.path_exists(bundle_file(guest, names.orchestrator))
-
-  // A guest that minted a deployment other guests joined holds the `[executors]`
-  // row, the `[distribution]` table, the cookie and the key they need, so it
-  // goes last.
-  use Nil <- result.try(case id, minter {
-    Ok(deployment), True ->
-      case sharing_guests(vm_home, name, deployment) {
-        [] -> Ok(Nil)
-        joined ->
-          Error(
-            "the guests "
-            <> string.join(joined, ", ")
-            <> " joined the deployment "
-            <> name
-            <> " minted, and the deployment's tables, cookie and key are "
-            <> "theirs too. Remove them first with `loom vm rm --name NAME`, "
-            <> "then this one."
-            <> " Nothing was removed.",
-          )
-      }
-    _, _ -> Ok(Nil)
-  })
-
-  // A guest that joined has no row, table or cookie of its own to undo.
-  let joiner = result.is_ok(id) && !minter
-
-  // A joined guest touches no file; any other undoes its tables.
-  use #(teardown, rewritten) <- result.try(case joiner {
-    True -> Ok(#(vm_spec.joined_teardown(), None))
-    False -> configured_teardown(guest, names, config, home)
-  })
-
-  // Only a guest that joined has a ledger entry of its own to revoke, and
-  // whether it can be revoked here depends on the key being on this machine.
-  let revocation = case id, joiner {
-    Ok(deployment), True ->
-      // The vm home is searched, then the operator's homes.
-      case sealed_authority(vm_home, deployment, config_ledger(config)) {
-        Ok(#(directory, passphrase)) -> RevokeWith(directory, passphrase)
-        Error(_) -> RevokeByOperator(deployment)
-      }
-    _, _ -> NoRevocation
-  }
-
-  Ok(RemovalPlan(
-    config:,
-    teardown:,
-    rewritten:,
-    authority: removable_authority(vm_home, name),
-    revocation:,
-    link_home: None,
-    daemon: LeaveDaemon,
-  ))
-}
-
 /// What `rm` undoes for a guest on the untrusted link: its row, and
 /// `[executor_link]` with the vm home's link credentials when it is the last
-/// untrusted guest. There is no cookie to compare, no sealed key and no ledger
-/// entry to revoke, because the guest was never a member of anything.
+/// untrusted guest. There is no cookie, no sealed key and no ledger entry to
+/// leave behind, because the guest was never a member of anything.
 fn linked_removal_plan(
   vm_home: String,
   guest: Instance,
@@ -4012,14 +3785,9 @@ fn linked_removal_plan(
 
   Ok(RemovalPlan(
     config:,
-    teardown: vm_spec.Teardown(
-      tables: removal.removed,
-      cookie: vm_spec.KeepCookie,
-      left: removal.left,
-    ),
+    teardown: vm_spec.Teardown(tables: removal.removed, left: removal.left),
     rewritten:,
-    authority: None,
-    revocation: NoRevocation,
+    by_hand: [],
     link_home:,
     daemon:,
   ))
@@ -4055,7 +3823,10 @@ fn other_kinds(
   )
 }
 
-/// The plan for the guest's own link: `removal_plan` for a distribution guest.
+/// The plan for the guest's own link. A guest made over the retired
+/// distribution link gets a plan that rewrites nothing: its enrolment, cookie,
+/// sealed key and ledger entry are the operator's to undo, and the plan carries
+/// the lines that say how.
 fn planned_removal(
   vm_home: String,
   guest: Instance,
@@ -4068,343 +3839,60 @@ fn planned_removal(
   // The guest's own link says what undoing it means.
   case kind {
     vm_spec.Untrusted -> linked_removal_plan(vm_home, guest, name, config, home)
-    vm_spec.Distribution -> removal_plan(vm_home, guest, name, config, home)
+    vm_spec.Distribution ->
+      Ok(RemovalPlan(
+        config:,
+        teardown: vm_spec.Teardown(tables: [], left: []),
+        rewritten: None,
+        by_hand: vm_spec.retired_leftovers(name, config, vm_home),
+        link_home: None,
+        daemon: LeaveDaemon,
+      ))
   }
-}
-
-/// What undoing the guest's enrolment takes out of `config` and the cookie.
-fn configured_teardown(
-  guest: Instance,
-  names: vm_spec.Names,
-  config: String,
-  home: String,
-) -> Result(#(vm_spec.Teardown, option.Option(String)), String) {
-  // A configuration that does not exist has no enrolment to undo.
-  use text <- result.try(case simplifile.read(config) {
-    Ok(text) -> Ok(text)
-    Error(simplifile.Enoent) -> Ok("")
-    Error(error) ->
-      Error(config <> " is unreadable: " <> simplifile.describe_error(error))
-  })
-
-  use found <- result.try(
-    vm_spec.read_enrolment(text, names.name)
-    |> result.map_error(fn(reason) {
-      config <> " " <> reason <> ". Nothing was removed."
-    }),
-  )
-  use cookie <- result.try(cookie_state(guest, names, home))
-  let teardown = vm_spec.plan_teardown(names, found, cookie)
-  use edited <- result.try(
-    distribution_install.without_tables(text, teardown.tables, config)
-    |> result.map_error(fn(reason) { reason <> ". Nothing was removed." }),
-  )
-
-  // Text that is unchanged needs no write, so a guest that never enrolled
-  // leaves the user's file untouched.
-  let rewritten = case edited == text {
-    True -> None
-    False -> Some(edited)
-  }
-
-  Ok(#(teardown, rewritten))
-}
-
-/// The authority directory `up` sealed for the guest called `name`, when it
-/// is still there and no other guest's executor bundle names the same
-/// deployment. The id is read from the guest's own executor bundle, which `up`
-/// wrote, never from the guest root. A static guest, a bundle that is gone and
-/// a deployment whose key was sealed somewhere else (a guest that joined an
-/// operator's deployment) each have nothing here to remove.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // vm_cli.removable_authority("/h/vm", "dev") -> Some("/h/vm/authority/3f9c")
-/// ```
-@internal
-pub fn removable_authority(
-  vm_home: String,
-  name: String,
-) -> option.Option(String) {
-  // A guest whose bundle names no deployment, or no bundle at all, sealed
-  // nothing.
-  case deployment_of(vm_home, name) {
-    Error(Nil) -> None
-    Ok(id) -> {
-      let directory = vm_spec.authority_directory(vm_home, id)
-      let shared = sharing_guests(vm_home, name, id) != []
-
-      // The key is deleted only when it is still there and no other guest's
-      // deployment depends on it.
-      case is_plain_directory(directory), shared {
-        True, False -> Some(directory)
-        _, _ -> None
-      }
-    }
-  }
-}
-
-/// The deployment id in the executor bundle of the guest called `name`.
-fn deployment_of(vm_home: String, name: String) -> Result(String, Nil) {
-  let names = vm_spec.names(name)
-  use bundle <- result.try(
-    read_bundle(
-      bundle_file(instance(vm_home, name), names.name),
-      names.executor_node,
-    )
-    |> result.replace_error(Nil),
-  )
-  vm_spec.bundle_deployment(bundle)
-}
-
-/// The guests other than `name` whose executor bundle names the deployment
-/// `id`, sorted: the members that joined it, or the one that minted it.
-fn sharing_guests(vm_home: String, name: String, id: String) -> List(String) {
-  simplifile.read_directory(vm_home)
-  |> result.unwrap([])
-  |> list.filter(fn(entry) {
-    entry != name
-    && result.is_ok(vm_spec.valid_existing_name(entry))
-    && deployment_of(vm_home, entry) == Ok(id)
-  })
-  |> list.sort(string.compare)
-}
-
-/// Compares the home's cookie with the one in the guest's deployment. A bundle
-/// that is missing or unreadable cannot be compared, so the cookie counts as
-/// another's and stays.
-fn cookie_state(
-  guest: Instance,
-  names: vm_spec.Names,
-  home: String,
-) -> Result(vm_spec.CookieState, String) {
-  let path = home <> "/.erlang.cookie"
-
-  // No cookie file is a state of its own, not a failure.
-  use found <- result.try(case simplifile.read(path) {
-    Ok(text) -> Ok(Some(text))
-    Error(simplifile.Enoent) -> Ok(None)
-    Error(error) ->
-      Error(path <> " is unreadable: " <> simplifile.describe_error(error))
-  })
-
-  // The bundle is the record of what `up` installed, so it is what the file
-  // is compared with.
-  let deployed =
-    read_bundle(bundle_file(guest, names.orchestrator), names.orchestrator_node)
-    |> result.map(fn(bundle) { bundle.cookie })
-    |> option.from_result
-
-  Ok(vm_spec.cookie_state(found, deployed))
 }
 
 /// What `--yes` would remove and leave in the configuration, for the refusal.
-fn removal_preview(plan: RemovalPlan, name: String, home: String) -> String {
-  string.join(
-    list.flatten([
-      [preview_header(plan)],
-      list.map(removed_things(plan, home), fn(thing) { "  removes " <> thing }),
-      list.map(revocation_line(plan, name), fn(line) {
-        case plan.revocation {
-          RevokeWith(..) -> "  revokes " <> line
-          _ -> "  leaves " <> line
-        }
-      }),
-      list.map(plan.teardown.left, fn(line) { "  leaves " <> line }),
-    ]),
-    "\n",
-  )
-}
-
-/// The first line of the preview: a guest that joined has no entry in the
-/// configuration to undo, and its revoke goes through the daemon of the default
-/// configuration.
-fn preview_header(plan: RemovalPlan) -> String {
-  case plan.revocation {
-    NoRevocation ->
-      "`--yes` also undoes the enrolment in " <> plan.config <> ":"
-    RevokeWith(..) ->
-      "`--yes` also revokes the guest through the default daemon and leaves "
-      <> plan.config
-      <> " as it is:"
-    RevokeByOperator(..) ->
-      "`--yes` removes the guest and leaves " <> plan.config <> " as it is:"
-  }
-}
-
-/// The sentence about the ledger entry of a guest that joined, for the preview
-/// and the report. The guest's own name is `name`.
-fn revocation_line(plan: RemovalPlan, name: String) -> List(String) {
-  case plan.revocation {
-    NoRevocation -> []
-    RevokeWith(directory:, ..) -> [
-      "the membership of "
-      <> name
-      <> " in the ledger, revoked with the key in "
-      <> directory,
-    ]
-    RevokeByOperator(deployment:) -> [
-      "the membership of "
-      <> name
-      <> " in the ledger: the key of deployment "
-      <> deployment
-      <> " is not on this machine, so run `loom distribution revoke "
-      <> name
-      <> "` where it is kept",
-    ]
-  }
-}
-
-/// Signs the revoke of a guest that joined, with the key on this machine, and
-/// answers the lines that say what happened. The placement check of `loom
-/// distribution revoke` is skipped (`signed_revoke` says why), so only a key or
-/// ledger copy that cannot be used refuses here, and then nothing is removed.
-fn revoke_membership(
-  plan: RemovalPlan,
-  name: String,
-) -> Result(List(String), String) {
-  // Only a key on this machine can sign; the operator's case is reported.
-  case plan.revocation {
-    NoRevocation -> Ok([])
-    RevokeByOperator(..) -> Ok([])
-    RevokeWith(directory:, passphrase:) -> {
-      use authority <- result.try(
-        ledger_cli.unlock_at(directory, passphrase)
-        |> result.map_error(vm_spec.rm_revoke_failure(name, directory, _)),
+fn removal_preview(plan: RemovalPlan) -> String {
+  // A guest made over the retired link edits nothing, so its preview is the
+  // list of what the operator removes afterwards and not a list of edits.
+  case plan.by_hand {
+    [] ->
+      string.join(
+        list.flatten([
+          ["`--yes` also undoes the enrolment in " <> plan.config <> ":"],
+          list.map(removed_things(plan), fn(thing) { "  removes " <> thing }),
+          list.map(plan.teardown.left, fn(line) { "  leaves " <> line }),
+        ]),
+        "\n",
       )
-
-      // A guest the operator's copy already records as revoked is done: the
-      // fold would refuse the entry, and the removal must not be stuck on it.
-      case revoked_already(plan.config, directory, authority, name) {
-        True ->
-          Ok([name <> " is already revoked in the ledger; nothing signed."])
-        False -> signed_revoke(authority, directory, name)
-      }
-    }
+    items ->
+      string.join(vm_spec.retired_preview_lines(plan.config, items), "\n")
   }
 }
 
-/// Whether `name` is already revoked, in the operator's copy of the ledger or
-/// in the installed ledger of the daemon, which may hold a revoke the copy has
-/// not yet caught up with.
-fn revoked_already(
-  config: String,
-  directory: String,
-  authority: ledger_cli.Authority,
-  name: String,
-) -> Bool {
-  // The daemon's ledger is read against the authority's own certificate.
-  let in_daemon = case
-    installed_ledger(config),
-    read_text(directory <> "/ca.pem")
-  {
-    Some(text), Ok(ca) ->
-      vm_spec.standing(ca, text, name) == Ok(membership_ledger.Revoked)
-    _, _ -> False
-  }
-
-  in_daemon || ledger_cli.is_revoked(authority, name)
-}
-
-/// Signs the revoke of `name` and words what happened.
-///
-/// Only a guest made over distribution has a membership to revoke, `up` and
-/// `ensure` refuse such a guest, and `rm` acts only on one that is stopped, so
-/// the guest can never serve a session again. The revoke is therefore signed
-/// without the placement check: a session still placed on the guest, or a
-/// daemon that cannot be asked, would otherwise refuse the only command that
-/// moves the developer off the guest, with no way on. The output says the
-/// check was skipped and why. A daemon that does not answer leaves the entry in
-/// the operator's copy, and the second line names the import that carries it.
-fn signed_revoke(
-  authority: ledger_cli.Authority,
-  directory: String,
-  name: String,
-) -> Result(List(String), String) {
-  use #(signed, _unchecked) <- result.map(
-    ledger_cli.revoke_member(
-      authority,
-      name,
-      "removed with loom vm rm",
-      ledger_cli.Forced,
-      admin.ThisHost(""),
-      ledger_cli.socket_connect(),
-    )
-    |> result.map_error(vm_spec.rm_revoke_failure(name, directory, _)),
-  )
-  let checked = vm_spec.unchecked_revoke_line(name)
-
-  // An entry no daemon took is in the operator's copy, which is reported with
-  // what waiting costs: a daemon whose ledger still enrols the name refuses
-  // every reload while an untrusted row of that name exists (`unshadowed` in
-  // `daemon/main`), so each later guest falls back to the stop-or-name path.
-  let took = case ledger_cli.delivered(signed) {
-    Ok(where_) -> "Handed to " <> where_ <> "."
-    Error(reason) ->
-      "Not handed to a daemon: "
-      <> reason
-      <> " Until it is imported the daemon's ledger still enrols "
-      <> name
-      <> ", so once a new guest "
-      <> name
-      <> " exists the daemon refuses every executors.reload and each new "
-      <> "guest stops an idle daemon or asks for its restart."
-  }
-
-  [
-    "Revoked "
-      <> name
-      <> " as entry "
-      <> int.to_string(ledger_cli.entry_seq(signed))
-      <> ". "
-      <> checked,
-    took,
-  ]
-}
-
-/// The tables and the cookie the plan removes, each as the name a person
-/// would use for it.
-fn removed_things(plan: RemovalPlan, home: String) -> List(String) {
+/// The tables the plan removes, each as the name a person would use for it,
+/// then the link credentials, which go last.
+fn removed_things(plan: RemovalPlan) -> List(String) {
   let tables =
     list.map(plan.teardown.tables, fn(path) {
       "[" <> string.join(path, ".") <> "]"
     })
 
-  // The cookie is listed only when the plan removes it.
-  let with_cookie = case plan.teardown.cookie {
-    vm_spec.RemoveCookie -> list.append(tables, [home <> "/.erlang.cookie"])
-    vm_spec.KeepCookie -> tables
-  }
-
-  // The sealed key is listed after them, since it goes after them.
-  let with_key = case plan.authority {
-    Some(directory) ->
-      list.append(with_cookie, ["the sealed authority key in " <> directory])
-    None -> with_cookie
-  }
-
   // The link credentials are the last thing listed, since they go last.
   case plan.link_home {
     Some(directory) ->
-      list.append(with_key, ["the link credentials in " <> directory])
-    None -> with_key
+      list.append(tables, ["the link credentials in " <> directory])
+    None -> tables
   }
 }
 
-/// Removes the tables and the cookie the plan names, then the guest's
-/// directory, and reports what it did and what it left.
+/// Removes the tables the plan names, then the guest's directory, and reports
+/// what it did and what it left for the operator.
 fn apply_removal(
   guest: Instance,
   name: String,
-  home: String,
   plan: RemovalPlan,
 ) -> Result(String, String) {
-  // The ledger entry of a guest that joined is revoked first, because the
-  // revoke can still fail (a key that does not open, a locked ledger copy) and
-  // then nothing has been removed.
-  use revoked <- result.try(revoke_membership(plan, name))
-
   // The enrolment is undone before the files go, so a failure part way leaves
   // a guest that can be removed again and no configuration naming a missing one.
   use Nil <- result.try(case plan.rewritten {
@@ -4415,19 +3903,6 @@ fn apply_removal(
   // A running daemon is asked to drop the link as soon as the row is gone, so
   // the file and the daemon disagree for as short a time as the command allows.
   let daemon_lines = removal_daemon_lines(plan, name)
-
-  // The cookie goes after the tables that name it, and only when the plan
-  // found it to be this guest's deployment's.
-  use Nil <- result.try(case plan.teardown.cookie {
-    vm_spec.RemoveCookie ->
-      simplifile.delete(home <> "/.erlang.cookie")
-      |> result.map_error(fn(error) {
-        home
-        <> "/.erlang.cookie cannot be removed: "
-        <> simplifile.describe_error(error)
-      })
-    vm_spec.KeepCookie -> Ok(Nil)
-  })
 
   // The roots and the state disk go before the rest of the directory, so the
   // `link` record and `deploy/` that say which link a guest has outlive what
@@ -4442,13 +3917,6 @@ fn apply_removal(
   // The tree is made writable and removed without following a link.
   use Nil <- result.try(remove_tree(guest.directory))
 
-  // The key goes after the guest it was minted for, so a failure part way
-  // leaves a guest that still names its key and can be removed again.
-  use Nil <- result.try(case plan.authority {
-    Some(directory) -> remove_tree(directory)
-    None -> Ok(Nil)
-  })
-
   // The link credentials go after the guest and its row, so a failure part way
   // leaves a guest that can be removed again, never a row naming files that
   // are gone.
@@ -4460,16 +3928,10 @@ fn apply_removal(
   Ok(string.join(
     list.flatten([
       ["Removed the guest " <> name <> ": deleted " <> guest.directory <> "."],
-      list.map(removed_things(plan, home), fn(thing) {
-        "Removed " <> thing <> "."
-      }),
-      revoked,
-      case plan.revocation {
-        RevokeByOperator(..) ->
-          list.map(revocation_line(plan, name), fn(line) {
-            "Left in place: " <> line
-          })
-        _ -> []
+      list.map(removed_things(plan), fn(thing) { "Removed " <> thing <> "." }),
+      case plan.by_hand {
+        [] -> []
+        items -> vm_spec.retired_removal_lines(plan.config, items)
       },
       list.map(plan.teardown.left, fn(line) { "Left in place: " <> line }),
       daemon_lines,

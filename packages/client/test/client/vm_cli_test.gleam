@@ -6,18 +6,11 @@
 
 import broker/token
 import client
-import client/authority_key
-import client/daemon/admin
-import client/daemon/ledger_cli
 import client/distribution
 import client/distribution_bundle
 import client/distribution_install
 import client/distribution_plan
 import client/distribution_provision
-import client/ledger_sync
-import client/membership_entry
-import client/membership_ledger
-import client/membership_signing
 import client/vm_cli
 import client/vm_link
 import client/vm_spec.{Launch, Manifest, PidRecord}
@@ -282,17 +275,6 @@ fn plan_of(name: String) -> distribution_plan.Plan {
       ),
     )
   plan
-}
-
-fn bundles(
-  name: String,
-) -> #(distribution_bundle.Bundle, distribution_bundle.Bundle) {
-  let assert Ok(deployment) = distribution_provision.provision(plan_of(name))
-  let assert Ok(orchestrator) =
-    list.find(deployment.bundles, fn(bundle) { bundle.name == name <> "-host" })
-  let assert Ok(executor) =
-    list.find(deployment.bundles, fn(bundle) { bundle.name == name })
-  #(orchestrator, executor)
 }
 
 // The executor's configuration as an untrusted guest is staged with it: the
@@ -648,17 +630,6 @@ pub fn a_damaged_pid_file_names_no_process_test() {
   assert result.is_error(vm_spec.decode_pid("abc\nbirth\n"))
   assert result.is_error(vm_spec.decode_pid("1\nbirth\n"))
   assert result.is_error(vm_spec.decode_pid("4242\nbirth\nextra\n"))
-}
-
-pub fn the_epmd_listing_names_the_host_port_test() {
-  let listing =
-    "epmd: up and running on port 4369 with data:\n"
-    <> "name loom_vm_dev_orch at port 50123\n"
-    <> "name loom_vm_dev_exec at port 47011\n"
-  assert vm_spec.registered_port(listing, "loom_vm_dev_exec") == Some(47_011)
-  assert vm_spec.registered_port(listing, "loom_vm_dev_orch") == Some(50_123)
-  assert vm_spec.registered_port(listing, "loom_vm_dev") == None
-  assert vm_spec.registered_port("epmd: nothing\n", "x") == None
 }
 
 pub fn a_log_tail_keeps_the_end_test() {
@@ -1232,46 +1203,6 @@ fn installed_files(directory: String) -> distribution.CredentialFiles {
   )
 }
 
-pub fn no_distribution_table_is_no_deployment_test() {
-  assert vm_spec.deployment_state("") == Ok(vm_spec.NoDeployment)
-  assert vm_spec.deployment_state("[models.m]\nmodel_id = \"x\"\n")
-    == Ok(vm_spec.NoDeployment)
-
-  // A commented header is not a table, which a substring match would miss.
-  assert vm_spec.deployment_state("# [distribution]\nledger = \"/x\"\n")
-    == Ok(vm_spec.NoDeployment)
-}
-
-pub fn a_ledger_key_makes_a_ledger_deployment_test() {
-  let made = minted_ledger("dev")
-  let orchestrator = bundle_of(made, "dev-host")
-  let text =
-    distribution_bundle.config_text(
-      orchestrator,
-      installed_files("/vm/dev/orch"),
-    )
-  assert vm_spec.deployment_state(text)
-    == Ok(vm_spec.LedgerDeployment("/vm/dev/orch/ledger.log"))
-}
-
-pub fn listed_peers_make_a_static_deployment_test() {
-  let #(orchestrator, _) = bundles("dev")
-  let text =
-    distribution_bundle.config_text(
-      orchestrator,
-      installed_files("/vm/dev/orch"),
-    )
-  assert string.contains(text, "[[distribution.peers]]")
-  assert vm_spec.deployment_state(text) == Ok(vm_spec.StaticDeployment)
-}
-
-pub fn a_table_the_daemon_would_refuse_is_an_error_test() {
-  assert result.is_error(vm_spec.deployment_state("[distribution\n"))
-  assert result.is_error(vm_spec.deployment_state(
-    "[distribution]\nnode = \"not a node\"\n",
-  ))
-}
-
 pub fn a_ledger_deployment_installs_a_ledger_table_test() {
   let made = minted_ledger("dev")
   let orchestrator = bundle_of(made, "dev-host")
@@ -1291,10 +1222,6 @@ pub fn a_ledger_deployment_installs_a_ledger_table_test() {
   let assert Ok(document) = tom.parse(text)
   assert tom.get_string(document, ["executors", "dev", "node"])
     == Ok("loom_vm_dev_exec@127.0.0.1")
-
-  // The daemon reads it as a ledger table.
-  assert vm_spec.deployment_state(text)
-    == Ok(vm_spec.LedgerDeployment("/vm/dev/orch/ledger.log"))
 }
 
 pub fn no_bundle_holds_the_authority_key_test() {
@@ -1307,179 +1234,12 @@ pub fn no_bundle_holds_the_authority_key_test() {
   })
 }
 
-pub fn a_bundle_names_its_deployment_only_in_ledger_mode_test() {
-  let made = minted_ledger("dev")
-  assert vm_spec.bundle_deployment(bundle_of(made, "dev"))
-    == Ok(made.authority.deployment)
-  let #(_, static) = bundles("dev")
-  assert vm_spec.bundle_deployment(static) == Error(Nil)
-}
-
 pub fn a_guest_cannot_be_called_authority_test() {
   assert result.is_error(vm_spec.valid_name(vm_spec.authority_dir))
   assert result.is_error(vm_spec.parse(["up", "--name", "authority"]))
-  assert vm_spec.authority_directory("/h/vm", "3f9c") == "/h/vm/authority/3f9c"
-}
-
-// A scratch vm home below /var/tmp, which no jail replaces.
-fn scratch_home() -> String {
-  let name =
-    token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
-  let home = "/var/tmp/loom-vm-home-" <> name
-  let assert Ok(Nil) = simplifile.create_directory_all(home)
-  home
-}
-
-// Seals the authority key of a provisioned deployment under a passphrase file,
-// as an `up` that minted a deployment left it, so the `rm` tests have a key to
-// find and open.
-fn seal_authority(
-  directory: String,
-  made: distribution_provision.Provisioned,
-) -> Result(Nil, String) {
-  let text = bit_array.base64_url_encode(token.production_entropy()(32), False)
-  let assert Ok(passphrase) = authority_key.passphrase(text)
-  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
-  let assert Ok(Nil) =
-    bootstrap.atomic_write_private(
-      directory <> "/" <> vm_spec.passphrase_file,
-      text <> "\n",
-    )
-  let authority = made.authority
-  let assert Ok(_) =
-    authority_key.keep(
-      directory,
-      authority_key.Kept(
-        deployment: authority.deployment,
-        key: authority.key,
-        certificate: authority.certificate,
-        ledger: made.ledger,
-        cookie: authority.cookie,
-      ),
-      passphrase,
-    )
-  Ok(Nil)
-}
-
-fn write_guest(
-  home: String,
-  name: String,
-  deployment: distribution_provision.Deployment,
-) -> Nil {
-  let assert Ok(_) =
-    distribution_provision.write(
-      deployment,
-      home <> "/" <> name <> "/deploy",
-      distribution_provision.RefuseExisting,
-    )
-  Nil
-}
-
-pub fn removing_a_guest_finds_the_key_it_sealed_test() {
-  let home = scratch_home()
-  let made = minted_ledger("dev")
-  let directory = vm_spec.authority_directory(home, made.authority.deployment)
-  write_guest(home, "dev", made.deployment)
-  assert vm_cli.removable_authority(home, "dev") == None
-  assert seal_authority(directory, made) == Ok(Nil)
-  assert vm_cli.removable_authority(home, "dev") == Some(directory)
-
-  // Another guest with its own deployment does not hold it, and a guest with
-  // no bundles has nothing.
-  let other = minted_ledger("other")
-  write_guest(home, "other", other.deployment)
-  assert vm_cli.removable_authority(home, "dev") == Some(directory)
-  assert vm_cli.removable_authority(home, "absent") == None
-  let assert Ok(Nil) = simplifile.delete_all([home])
-}
-
-pub fn a_guest_minted_statically_has_no_key_to_remove_test() {
-  let home = scratch_home()
-  let assert Ok(static) = distribution_provision.provision(plan_of("dev"))
-  write_guest(home, "dev", static)
-  assert vm_cli.removable_authority(home, "dev") == None
-  let assert Ok(Nil) = simplifile.delete_all([home])
 }
 
 // --- joining a deployment ----------------------------------------------------
-
-pub fn a_joined_guest_takes_nothing_from_the_configuration_test() {
-  let teardown = vm_spec.joined_teardown()
-  assert teardown.tables == []
-  assert teardown.cookie == vm_spec.KeepCookie
-  let assert [line] = teardown.left
-  assert string.contains(line, "[distribution] and the cookie")
-}
-
-// A deployment with two executors, `dev` (which also minted it) and `other`,
-// both written under the vm home the way a mint and a join leave them.
-fn two_guest_deployment() -> distribution_provision.Provisioned {
-  let dev = vm_spec.names("dev")
-  let other = vm_spec.names("other")
-  let node = fn(name, role, erlang_node, port, uses) {
-    distribution_plan.Node(
-      name:,
-      role:,
-      erlang_node:,
-      host: "127.0.0.1",
-      listen_port: port,
-      bundle_dir: None,
-      executors: uses,
-      workspaces: [],
-    )
-  }
-  let assert Ok(plan) =
-    distribution_plan.validate(
-      distribution_plan.Plan(
-        nodes: [
-          node(
-            dev.orchestrator,
-            distribution_plan.Orchestrator,
-            dev.orchestrator_node,
-            None,
-            ["dev", "other"],
-          ),
-          node(
-            "dev",
-            distribution_plan.Executor,
-            dev.executor_node,
-            Some(4370),
-            [],
-          ),
-          node(
-            "other",
-            distribution_plan.Executor,
-            other.executor_node,
-            Some(4371),
-            [],
-          ),
-        ],
-        directory: [],
-      ),
-    )
-  let assert Ok(made) =
-    distribution_provision.provision_ledger(plan, timestamp.system_time())
-  made
-}
-
-pub fn the_key_stays_while_a_guest_of_its_deployment_remains_test() {
-  let home = scratch_home()
-  let made = two_guest_deployment()
-  let directory = vm_spec.authority_directory(home, made.authority.deployment)
-  write_guest(home, "dev", made.deployment)
-  write_guest(home, "other", made.deployment)
-  assert seal_authority(directory, made) == Ok(Nil)
-
-  // Each guest's executor bundle names the same deployment, so neither takes
-  // the key with it while the other is there.
-  assert vm_cli.removable_authority(home, "dev") == None
-  assert vm_cli.removable_authority(home, "other") == None
-
-  // The last one takes it.
-  let assert Ok(Nil) = simplifile.delete_all([home <> "/dev"])
-  assert vm_cli.removable_authority(home, "other") == Some(directory)
-  let assert Ok(Nil) = simplifile.delete_all([home])
-}
 
 // Runs the first `count` steps of an upgrade in a scratch directory whose old
 // root holds the real workspace and whose clone holds a shipped one, and says
@@ -1633,92 +1393,56 @@ pub fn a_host_copy_with_no_staged_script_is_staged_again_test() {
     == Ok(vm_spec.NoScript)
 }
 
-pub fn a_guests_standing_is_read_from_a_ledger_test() {
-  let made = minted_ledger("dev")
-  let ca = made.authority.certificate
-  assert vm_spec.standing(ca, made.ledger, "dev")
-    == Ok(membership_ledger.Enrolled(member_of(made, "dev")))
-  assert vm_spec.standing(ca, made.ledger, "nobody")
-    == Ok(membership_ledger.NotEnrolled)
-  let other = minted_ledger("dev")
-  assert vm_spec.standing(other.authority.certificate, made.ledger, "dev")
-    == Error(Nil)
+pub fn an_old_guests_leftovers_are_named_for_the_operator_test() {
+  let items = vm_spec.retired_leftovers("dev", "/h/loom.toml", "/h/vm")
+  let text = string.join(items, "\n")
+
+  // The table is named with the file, and both shapes of guest are covered:
+  // one that minted its deployment lost the files the table names.
+  assert string.contains(text, "[distribution] table from /h/loom.toml")
+  assert string.contains(text, "/h/vm/dev/orch/")
+  assert string.contains(text, "the daemon will not start until the table")
+  assert string.contains(text, "no revoke is needed")
+  assert string.contains(text, "the guest joined a deployment")
+
+  // The revoke names its flags and comes before the key is deleted.
+  assert string.contains(text, "loom distribution revoke dev --force")
+  assert string.contains(text, "--passphrase-file")
+  let assert [before_delete, _] = string.split(text, "Delete /h/vm/authority/")
+  assert string.contains(before_delete, "loom distribution revoke dev")
+
+  // The cookie's reason is given, and the last item says why `up` refuses and
+  // what a guest that joined a ledger sees instead.
+  assert string.contains(text, "~/.erlang.cookie")
+  assert string.contains(text, "the guest held that cookie")
+  assert string.contains(text, "`loom vm up --name dev` refuses.")
+  assert string.contains(
+    text,
+    "untrusted executor dev has the name of an executor",
+  )
 }
 
-fn member_of(
-  made: distribution_provision.Provisioned,
-  name: String,
-) -> membership_entry.Member {
-  let assert Ok(verifier) =
-    membership_signing.verifier(made.authority.certificate)
-  let lines =
-    string.split(made.ledger, "\n")
-    |> list.filter(fn(line) { line != "" })
-    |> list.map(bit_array.from_string)
-  let assert Ok(ledger) = membership_ledger.replay(lines, verifier)
-  let assert Ok(member) = membership_ledger.member(ledger, name)
-  member
-}
+pub fn the_old_guest_report_and_preview_read_in_the_right_tense_test() {
+  let items = ["Remove x.", "Remove y."]
 
-pub fn removal_words_its_revoke_without_force_test() {
-  // `rm` signs without the placement check, and its line says why in place of
-  // the revoke command's text, which names a `--force` that `rm` lacks.
-  let line = vm_spec.unchecked_revoke_line("x")
-  assert !string.contains(line, "--force")
-  assert string.contains(line, "has sessions placed on it")
-  assert string.contains(line, "can no longer be started")
-  assert string.contains(line, "stay in the catalogue")
-  assert string.contains(line, "when they are opened again")
+  // After the deletion the heading says what was left as it was.
+  assert vm_spec.retired_removal_lines("/h/loom.toml", items)
+    == [
+      "`rm` left /h/loom.toml, the cookie and every ledger as they were. Remove by hand:",
+      "  - Remove x.",
+      "  - Remove y.",
+    ]
 
-  // A revoke that cannot be signed at all names the key's directory and the
-  // command to run again, and says nothing was removed.
-  let failure =
-    vm_spec.rm_revoke_failure("x", "/h/vm/authority/3f", "the copy is locked")
-  assert string.contains(failure, "the copy is locked")
-  assert string.contains(failure, "Nothing was removed.")
-  assert string.contains(failure, "/h/vm/authority/3f")
-  assert string.ends_with(failure, "run `loom vm rm --name x --yes` again.")
-  assert !string.contains(failure, "--force")
-}
-
-pub fn a_member_the_copy_records_as_revoked_is_done_test() {
-  let home = scratch_home()
-  let made = two_guest_deployment()
-  let directory = vm_spec.authority_directory(home, made.authority.deployment)
-  assert seal_authority(directory, made) == Ok(Nil)
-  let assert Ok(authority) =
-    ledger_cli.unlock_at(directory, Some(directory <> "/passphrase"))
-  assert !ledger_cli.is_revoked(authority, "other")
-
-  // A daemon that answers nothing: the entry goes to the copy alone.
-  let silent = fn(_) {
-    ledger_sync.Daemon(
-      status: fn() { Error("no daemon") },
-      entries: fn(_, _) { Error("no daemon") },
-      append: fn(_) { Error("no daemon") },
-      holdings: fn() { Error("no daemon") },
-    )
-  }
-  let assert Ok(_) =
-    ledger_cli.revoke_member(
-      authority,
-      "other",
-      "test",
-      ledger_cli.Forced,
-      admin.ThisHost(""),
-      silent,
-    )
-  assert ledger_cli.is_revoked(authority, "other")
-  assert !ledger_cli.is_revoked(authority, "dev")
-
-  // The copy's text, read the way the daemon's installed ledger is, says the
-  // same: revoked for the one, enrolled for the other.
-  let assert Ok(text) = simplifile.read(directory <> "/ledger.log")
-  assert vm_spec.standing(made.authority.certificate, text, "other")
-    == Ok(membership_ledger.Revoked)
-  let assert Ok(membership_ledger.Enrolled(..)) =
-    vm_spec.standing(made.authority.certificate, text, "dev")
-  let assert Ok(Nil) = simplifile.delete_all([home])
+  // Before it, the preview says what `--yes` will do and then what is left,
+  // and no line is prefixed as if it were an edit.
+  let preview = vm_spec.retired_preview_lines("/h/loom.toml", items)
+  assert preview
+    == [
+      "`--yes` removes the guest and changes nothing in /h/loom.toml, the cookie or any ledger. Afterwards, remove by hand:",
+      "  - Remove x.",
+      "  - Remove y.",
+    ]
+  assert !list.any(preview, string.contains(_, "leaves"))
 }
 
 // --- undoing an enrolment ----------------------------------------------------
@@ -1736,116 +1460,6 @@ fn enrolled_text(extra: String) -> String {
   <> exec_node
   <> "\"\n"
   <> extra
-}
-
-pub fn the_guests_enrolment_is_read_from_the_configuration_test() {
-  let assert Ok(found) =
-    vm_spec.read_enrolment(
-      enrolled_text("\n[executors.other]\nnode = \"o@h\"\n"),
-      "dev",
-    )
-  assert found.executor_node == Some(exec_node)
-  assert found.distribution_node == Some(orch_node)
-  assert found.other_executors == ["other"]
-
-  let assert Ok(empty) = vm_spec.read_enrolment("", "dev")
-  assert empty == vm_spec.Enrolment(None, None, [])
-  assert result.is_error(vm_spec.read_enrolment("[executors\n", "dev"))
-}
-
-pub fn a_lone_guest_takes_its_tables_and_cookie_with_it_test() {
-  let assert Ok(found) = vm_spec.read_enrolment(enrolled_text(""), "dev")
-  let plan =
-    vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOurs)
-  assert plan.tables == [["executors", "dev"], ["distribution"]]
-  assert plan.cookie == vm_spec.RemoveCookie
-  assert plan.left == []
-}
-
-pub fn another_executor_keeps_the_shared_tables_and_cookie_test() {
-  let assert Ok(found) =
-    vm_spec.read_enrolment(
-      enrolled_text("\n[executors.other]\nnode = \"o@h\"\n"),
-      "dev",
-    )
-  let plan =
-    vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOurs)
-  assert plan.tables == [["executors", "dev"]]
-  assert plan.cookie == vm_spec.KeepCookie
-  let assert [line] = plan.left
-  assert string.contains(line, "[executors.other]")
-  assert string.contains(line, "[distribution] and the cookie stay")
-}
-
-pub fn untrusted_rows_do_not_keep_the_distribution_table_test() {
-  // An old guest's teardown beside untrusted rows: only a row reached over
-  // distribution keeps `[distribution]` and the cookie, whatever else the file
-  // holds. Each case is the extra text, the other executors counted, and
-  // whether the shared tables go.
-  let untrusted =
-    "\n[executors.new]\ntrust = \"untrusted\"\naddress = \"127.0.0.1:41000\"\npin = \"ab\"\n"
-  let inline =
-    "\n[executors]\nflat = { trust = \"untrusted\", address = \"x\" }\n"
-  let trusted = "\n[executors.other]\nnode = \"o@h\"\n"
-  let marked = "\n[executors.marked]\nnode = \"m@h\"\ntrust = \"trusted\"\n"
-  let cases = [
-    #(untrusted, [], vm_spec.RemoveCookie),
-    #(untrusted <> trusted, ["other"], vm_spec.KeepCookie),
-    #(marked, ["marked"], vm_spec.KeepCookie),
-    #("", [], vm_spec.RemoveCookie),
-  ]
-  list.each(cases, fn(case_) {
-    let #(extra, others, cookie) = case_
-    let assert Ok(found) = vm_spec.read_enrolment(enrolled_text(extra), "dev")
-      as { "the enrolment beside " <> extra <> " reads" }
-    assert found.other_executors == others
-      as { "beside " <> extra <> " counted " <> string.inspect(found) }
-    let plan =
-      vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOurs)
-    assert plan.cookie == cookie
-    assert list.contains(plan.tables, ["distribution"])
-      == { cookie == vm_spec.RemoveCookie }
-      as { "beside " <> extra <> " planned " <> string.inspect(plan) }
-  })
-
-  // An inline table of untrusted rows is read the same way. It cannot share
-  // the file with `[executors.dev]`, so it stands alone.
-  let assert Ok(found) =
-    vm_spec.read_enrolment("[distribution]\nnode = \"n\"\n" <> inline, "dev")
-    as "an inline untrusted row reads"
-  assert found.other_executors == []
-}
-
-pub fn a_deployment_that_is_not_the_guests_is_left_test() {
-  let text =
-    "[distribution]\nnode = \"mine@host\"\n\n[executors.dev]\nnode = \"mine-exec@host\"\n"
-  let assert Ok(found) = vm_spec.read_enrolment(text, "dev")
-  let plan =
-    vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOther)
-
-  // Neither table is this guest's, so nothing goes and each is named.
-  assert plan.tables == []
-  assert plan.cookie == vm_spec.KeepCookie
-  assert list.length(plan.left) == 2
-}
-
-pub fn a_cookie_that_differs_stays_when_the_tables_go_test() {
-  let assert Ok(found) = vm_spec.read_enrolment(enrolled_text(""), "dev")
-  let plan =
-    vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOther)
-  assert plan.tables == [["executors", "dev"], ["distribution"]]
-  assert plan.cookie == vm_spec.KeepCookie
-  let assert [line] = plan.left
-  assert string.contains(line, ".erlang.cookie")
-}
-
-pub fn the_cookie_is_compared_with_the_deployments_test() {
-  assert vm_spec.cookie_state(None, Some("c")) == vm_spec.CookieAbsent
-  assert vm_spec.cookie_state(Some("c"), Some("c")) == vm_spec.CookieOurs
-  assert vm_spec.cookie_state(Some("c"), Some("d")) == vm_spec.CookieOther
-
-  // Without the bundle there is nothing to compare with.
-  assert vm_spec.cookie_state(Some("c"), None) == vm_spec.CookieOther
 }
 
 pub fn removing_tables_keeps_every_other_byte_test() {

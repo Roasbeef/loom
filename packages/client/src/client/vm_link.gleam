@@ -587,9 +587,7 @@ fn row_refusal(file: String, row: Row) -> String {
   <> " already has [executors."
   <> row.name
   <> "] with other values. `loom vm up` never replaces it. "
-  <> "If an earlier guest wrote it, `loom vm rm --name "
-  <> row.name
-  <> " --yes` removes it; otherwise remove it from the file, or give "
+  <> "Remove it from the file if it is a leftover, or give "
   <> "`--config` another file. Its address for this guest is "
   <> address(row.port)
   <> "."
