@@ -2,7 +2,7 @@
 
 This directory is a separate Gleam project. It compiles to JavaScript and runs in the browser as a single-page [Lustre](https://hexdocs.pm/lustre/) application. It is not part of Loom's daemon, and nothing in `packages/` depends on it.
 
-The landing page opens with what Loom is, then a recorded session in a terminal panel, then four stories. Each story has a few paragraphs and a step-through figure that advances with the scroll position. A sticky sidebar lists the sections and marks the one in view. The documentation pages are Markdown files that the app fetches and renders.
+The landing page is short on purpose. It says what Loom is, plays a recorded session in a terminal panel, and then makes four claims, each with one paragraph, a link to its documentation page and a figure that steps with its buttons. The explanation of every step is in the documentation, which embeds the same figures. The documentation pages are Markdown files that the app fetches and renders. `test/page_test.gleam` holds the landing page to a word budget, so a new section has to replace an old one.
 
 Loom is released under the MIT License, and the site's footer says so.
 
@@ -52,7 +52,7 @@ Routes live in the URL fragment, so a deep link loads the single file that GitHu
 | Path | What it holds |
 |---|---|
 | `src/loom_site.gleam` | The application: model, update, view. |
-| `src/loom_site_ffi.mjs` | The only JavaScript: hash, timers, `fetch`, scrolling, the clipboard and the two scroll spies. |
+| `src/loom_site_ffi.mjs` | The only JavaScript: hash, timers, `fetch`, scrolling, the clipboard and the observer that starts the replay. |
 | `src/site/release.gleam` | The release tag, the URLs and the archive names. |
 | `src/site/landing.gleam`, `docs.gleam`, `ui.gleam` | Pages and shared chrome. |
 | `src/site/replay.gleam`, `replay_view.gleam` | The recorded session: the script, and the terminal that plays it. |
@@ -63,7 +63,7 @@ Routes live in the URL fragment, so a deep link loads the single file that GitHu
 | `public/site.css`, `figures.css`, `replay.css` | All styling, with a light theme and a dark theme from `prefers-color-scheme`. |
 | `public/content/*.md` | The documentation pages. |
 | `test/` | The gleeunit tests. |
-| `scripts/copy-check.sh` | Fails on banned words, the em dash and source links to any branch but `main`. |
+| `scripts/copy-check.sh` | Fails on banned words, the em dash, source links to any branch but `main`, and an install page that lost its platform table. |
 
 To add a documentation page, write `public/content/<slug>.md` and add a `Page` to `pages()` in `src/site/docs.gleam`. A line `::figure crash` embeds a figure (`crash`, `approval`, `code-mode`, `migration` or `evolution`). Pages may use `{{tag}}` and `{{version}}`.
 
