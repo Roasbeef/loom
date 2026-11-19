@@ -157,13 +157,13 @@ wait is the caller's less one second. **The gateway**: at attach,
 and the attach's waiter records `Plane(broker, base_policy)` on the binding's
 proxy with the book's `Recorded` call before replying; `PlaneOf` answers it, and
 nothing for a binding not held or retired. Each `clear_call` runs in a **tunnel
-waiter** linked to its connection (`tunnelled`, `tunnel_waiter`): it clears
+waiter** run by weft under a scope linked to its connection (`tunnelled`, `tunnel_waiter`): it clears
 with `broker.over` under `cleared_spec` (the meet of the plane's base, writable
 roots also readable, with the spec's base; no grants; `Config.demand`), closes
 stdin, sends `cleared` first, and forwards each non-empty chunk and the
-settlement as `FromTunnel` messages. `cancelled` unlinks a tunnel waiter before
-killing it, and `stopped` unlinks and kills every tunnel waiter on each normal
-stop. **Tests**: `remote/tunnel_calls_model_test` (statem, hostile frames and
+settlement as `FromTunnel` messages. `tunnels` holds the `weft.Witnessed` of each; `cancelled`
+cancels the one run, and a stopped connection's exit reaches every linked scope, which kills
+its waiter, so no stop loop exists. **Tests**: `remote/tunnel_calls_model_test` (statem, hostile frames and
 both bounds), `remote/untrusted_link_test` (hand-driven hostile executor over
 TLS), `remote/untrusted_gateway_test` (production broker and helper),
 `remote/untrusted_end_to_end_test` (goal check, baseline, diff after a jailed
