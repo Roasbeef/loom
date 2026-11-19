@@ -34,7 +34,7 @@ fn review() -> approval.Review {
     ]),
     strand: None,
     remote: option.None,
-    None,
+    raised_at: None,
   )
 }
 
