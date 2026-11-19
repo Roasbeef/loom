@@ -3078,7 +3078,17 @@ fn tell_worker(
     False, _ -> host
     True, None -> host
     True, Some(assignment) -> {
-      let id = "check~" <> found.id.value <> "~" <> string.slice(commit, 0, 12)
+      // The id carries the check run's own recorded time, so a second failure
+      // at the same commit (after a person's re-run) is a trigger of its own.
+      // An id that repeated would be answered as already admitted, and the
+      // worker would never be woken.
+      let id =
+        "check~"
+        <> found.id.value
+        <> "~"
+        <> string.slice(commit, 0, 12)
+        <> "~"
+        <> int.to_string(result.ran_at_ms)
       let written =
         project_records.TriggerText(
           id,

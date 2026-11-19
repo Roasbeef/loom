@@ -29,7 +29,7 @@ type Work {
   Read(ticket: String)
   Checked(command: String, commit: String)
   Published(request: project_host.PublishRequest)
-  Told(session: String, source: String, text: String)
+  Told(session: String, source: String, text: String, id: String)
 }
 
 type Rig {
@@ -100,8 +100,8 @@ fn rig(
         Ok(
           peer_mail.Endpoint(session, fn(command) {
             case command {
-              peer_mail.Trigger(from:, text:, ..) ->
-                process.send(work, Told(session, from.source, text))
+              peer_mail.Trigger(from:, text:, message_id:, ..) ->
+                process.send(work, Told(session, from.source, text, message_id))
               _ -> Nil
             }
             Ok(json.Null)
@@ -405,7 +405,7 @@ pub fn a_failing_check_is_told_to_the_worker_and_publishes_nothing_test() {
   let told =
     list.filter_map(work, fn(each) {
       case each {
-        Told(session, "check", text) if session == worker -> Ok(text)
+        Told(session, "check", text, _) if session == worker -> Ok(text)
         _ -> Error(Nil)
       }
     })
@@ -503,7 +503,7 @@ pub fn a_check_that_ends_after_a_newer_commit_is_not_told_to_the_worker_test() {
   let told =
     list.filter(seen(rig), fn(each) {
       case each {
-        Told(_, "check", _) -> True
+        Told(_, "check", _, _) -> True
         Told(..) | Read(_) | Checked(..) | Published(_) -> False
       }
     })
@@ -586,7 +586,18 @@ pub fn a_publish_that_cannot_happen_says_why_and_does_not_crash_test() {
 fn notes(work: List(Work), session: String) -> List(String) {
   list.filter_map(work, fn(each) {
     case each {
-      Told(found, "check", text) if found == session -> Ok(text)
+      Told(found, "check", text, _) if found == session -> Ok(text)
+      Told(..) | Read(_) | Checked(..) | Published(_) -> Error(Nil)
+    }
+  })
+}
+
+// The trigger ids of the check notes a session was told. The real peer mail
+// admits an id once, so two notes that share an id are one note.
+fn note_ids(work: List(Work), session: String) -> List(String) {
+  list.filter_map(work, fn(each) {
+    case each {
+      Told(found, "check", _, id) if found == session -> Ok(id)
       Told(..) | Read(_) | Checked(..) | Published(_) -> Error(Nil)
     }
   })
@@ -796,6 +807,42 @@ pub fn a_person_may_run_the_check_again_on_the_same_commit_test() {
   // With nothing failed, there is nothing to run again, and the refusal says so.
   let assert Error(refusal) = project_host.recheck(handle, "t-a", "owner")
   assert string.contains(refusal, "no check to run again")
+}
+
+// A test failure is told to the worker. After a person's re-run fails again at
+// the same commit, the worker is told again under an id of its own, since the
+// peer mail admits an id once and a repeated one would wake nobody, leaving the
+// stage on `working` with no worker acting on it.
+pub fn a_failure_after_a_rerun_at_the_same_commit_is_told_again_test() {
+  let rig =
+    rig(
+      "recheck-twice",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      failing_with(1, "--- FAIL: TestSum"),
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+  assert board_says(handle, "\"stage\":\"working\"")
+  let first = seen(rig)
+  assert checks(first) == ["aaaaaaa"]
+  assert list.length(notes(first, worker)) == 1
+
+  // The worker comes back idle, so the failure is a person's, who runs it
+  // again. It fails the same way at the same commit.
+  idle(handle, worker)
+  assert board_says(handle, "\"stage\":\"person/check\"")
+  let _quiet = seen(rig)
+  let assert Ok(Nil) = project_host.recheck(handle, "t-a", "owner")
+  let second = seen(rig)
+  assert checks(second) == ["aaaaaaa"]
+  assert list.length(notes(second, worker)) == 1
+
+  // The two notes carry different ids, so both are admitted, and the ticket
+  // reads as the worker's again.
+  let assert [one] = note_ids(first, worker)
+  let assert [two] = note_ids(second, worker)
+  assert one != two
+  assert string.contains(board(handle), "\"stage\":\"working\"")
 }
 
 // Publishing past a failed check is the person's, and the project's setting
