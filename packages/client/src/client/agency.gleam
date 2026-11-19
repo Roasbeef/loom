@@ -311,6 +311,7 @@
 //// rather than claimed shut.
 
 import broker/internal/call
+import client/approval_evidence
 import client/attention
 import client/child_usage
 import client/delegate_outbox
@@ -441,6 +442,12 @@ pub type Config {
     /// (protocol-change/077). `peer_mail.no_defaults` links nothing
     /// implicitly, which is every embedded host.
     peer_defaults: peer_mail.Defaults,
+    /// The session's sandbox and network policy in words, which an
+    /// `approval.read` item reports as the policy today (protocol-change/120,
+    /// the addendum on approval words). The host works it out from the base
+    /// policy the session was opened with. `None` is every embedded host with no
+    /// policy to lend, and an item then carries no policy.
+    approval_today: Option(approval_evidence.Today),
     /// Called with the session's runtime after a peer command settles an ask
     /// or closes a find, so the catalogue's open counts drop with the record
     /// (protocol-change/122). An embedded host with no catalogue passes
@@ -555,6 +562,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     subagent_model: fn() { Error(Nil) },
     models: [],
     peer_defaults: peer_mail.no_defaults,
+    approval_today: None,
     attention_report: attention.silent(),
     outbox_queued: fn() { Nil },
     remote: remote_reach.none(""),
@@ -697,14 +705,20 @@ pub fn start(
         actor.continue(state)
       }
       PeerRequest(command:, reply:) -> {
-        let answer =
-          peer_mail.handle_reporting(
-            state,
-            config.clock,
-            config.peer_defaults,
-            config.attention_report,
-            command,
-          )
+        // The approval read is the one command that needs a fact of the
+        // session's host rather than of its stores, so it is answered here.
+        let answer = case command {
+          peer_mail.ApprovalRead ->
+            approval_evidence.read(state, config.approval_today)
+          _ ->
+            peer_mail.handle_reporting(
+              state,
+              config.clock,
+              config.peer_defaults,
+              config.attention_report,
+              command,
+            )
+        }
 
         // The doorbell rings after the row is durable, so a drainer that
         // wakes at once finds the message it was told about.

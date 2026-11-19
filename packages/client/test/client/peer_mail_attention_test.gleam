@@ -7,14 +7,19 @@
 //// bounds over generated record sets from a fixed qcheck seed.
 
 import client/advisor
+import client/approval_evidence
 import client/attention
 import client/attention_feed
 import client/internal/ffi_os
 import client/peer_mail
+import core/accounting
 import core/attention as records
 import core/clock
+import core/entry
 import core/ids
 import core/json.{type JsonValue}
+import core/message
+import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -390,22 +395,162 @@ fn failed(leaf: Option(ids.EntryId)) -> operation.LastResult {
   )
 }
 
-pub fn a_failed_idle_strand_is_stuck_with_the_time_of_its_leaf_test() {
-  let results = [
-    #("sub:main/audit-1a2b", failed(Some(entry(1_790_000_002_000)))),
-  ]
-  assert attention_feed.stuck_strands([], results)
+// A failed provider response as the run's leaf entry: an assistant message that
+// records an error, written at `at`, with the diagnostics `settle_failure`
+// writes for a rate limit.
+fn failed_response(
+  id: ids.EntryId,
+  at: Int,
+  diagnostics: Option(JsonValue),
+) -> entry.Entry {
+  entry.MessageEntry(
+    id:,
+    parent: None,
+    seq: 1,
+    ts: at,
+    message: message.AssistantMessage(
+      content: [],
+      api: "unknown",
+      provider: "acme",
+      model: "m",
+      response_model: None,
+      response_id: None,
+      diagnostics:,
+      usage: accounting.zero_usage(),
+      stop_reason: message.Errored,
+      deferred: None,
+      error_message: Some("429"),
+      raw_stop_reason: Some("terminal"),
+      end_turn: None,
+      timestamp: at,
+    ),
+    terminate: False,
+  )
+}
+
+fn evidence_of(
+  entries: List(#(ids.EntryId, entry.Entry)),
+  parents: List(#(String, String)),
+) -> attention_feed.Evidence {
+  attention_feed.Evidence(
+    entries: dict.from_list(entries),
+    parents: dict.from_list(parents),
+  )
+}
+
+pub fn a_failed_idle_strand_is_stuck_with_the_exact_time_of_its_failure_test() {
+  let leaf = entry(1_790_000_002_000)
+  let diagnostics = Some(json.Object([#("retry_after_ms", json.Int(30_000))]))
+  let evidence =
+    evidence_of(
+      [#(leaf, failed_response(leaf, 1_790_000_002_500, diagnostics))],
+      [#("sub:main/audit-1a2b", "main")],
+    )
+  let results = [#("sub:main/audit-1a2b", failed(Some(leaf)))]
+
+  // The time is the response entry's own, not the mint time of its id.
+  assert attention_feed.stuck_strands([], results, evidence)
     == [
       attention_feed.Stuck(
         strand: "sub:main/audit-1a2b",
-        failed_at: Some(1_790_000_002_000),
+        failed_at: Some(1_790_000_002_500),
+        reason: "provider",
+        retry_after_ms: Some(30_000),
+        parent: Some("main"),
+      ),
+    ]
+}
+
+pub fn a_leaf_that_is_not_a_failed_response_gives_no_time_test() {
+  let leaf = entry(1_790_000_002_000)
+  let ordinary =
+    entry.MessageEntry(
+      id: leaf,
+      parent: None,
+      seq: 1,
+      ts: 5,
+      message: message.AssistantMessage(
+        content: [],
+        api: "unknown",
+        provider: "acme",
+        model: "m",
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: accounting.zero_usage(),
+        stop_reason: message.Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 5,
+      ),
+      terminate: False,
+    )
+  let evidence = evidence_of([#(leaf, ordinary)], [])
+
+  // A run that failed before a request was made ends on an earlier entry. Its
+  // time would be a lower bound, so the item has none.
+  assert attention_feed.stuck_strands(
+      [],
+      [#("sub:main/a", failed(Some(leaf)))],
+      evidence,
+    )
+    == [
+      attention_feed.Stuck(
+        strand: "sub:main/a",
+        failed_at: None,
+        reason: "provider",
+        retry_after_ms: None,
+        parent: None,
       ),
     ]
 }
 
 pub fn a_result_with_no_leaf_gives_no_failed_at_test() {
-  assert attention_feed.stuck_strands([], [#("sub:main/a", failed(None))])
-    == [attention_feed.Stuck(strand: "sub:main/a", failed_at: None)]
+  assert attention_feed.stuck_strands(
+      [],
+      [#("sub:main/a", failed(None))],
+      attention_feed.no_evidence(),
+    )
+    == [
+      attention_feed.Stuck(
+        strand: "sub:main/a",
+        failed_at: None,
+        reason: "provider",
+        retry_after_ms: None,
+        parent: None,
+      ),
+    ]
+}
+
+// The reason is a fixed word. An error code that is not a short lower-case
+// word is reported as `failed`, so no text of a provider's can ride in it.
+pub fn the_reason_is_a_fixed_word_or_failed_test() {
+  let hostile = operation.OperationError("Rate limit: <b>now</b>", "x", None)
+  let long = operation.OperationError(string.repeat("a", 41), "x", None)
+  let empty = operation.OperationError("", "x", None)
+  let stuck = fn(error) {
+    let last =
+      operation.RunLastResult(
+        operation: operation_id(),
+        leaf: None,
+        outcome: operation.RunFailed(error),
+        final_assistant: None,
+      )
+    let assert [item] =
+      attention_feed.stuck_strands(
+        [],
+        [#("sub:main/a", last)],
+        attention_feed.no_evidence(),
+      )
+    item.reason
+  }
+  assert stuck(hostile) == "failed"
+  assert stuck(long) == "failed"
+  assert stuck(empty) == "failed"
+  assert stuck(operation.OperationError("context_overflow", "x", None))
+    == "context_overflow"
 }
 
 pub fn only_a_failed_run_of_a_non_main_idle_strand_is_stuck_test() {
@@ -447,7 +592,7 @@ pub fn only_a_failed_run_of_a_non_main_idle_strand_is_stuck_test() {
   ]
   let states = [#("sub:main/running", Some(operation_id()))]
   let assert [attention_feed.Stuck(strand: "sub:main/stuck", ..)] =
-    attention_feed.stuck_strands(states, results)
+    attention_feed.stuck_strands(states, results, attention_feed.no_evidence())
 }
 
 pub fn the_reserved_strand_names_are_the_advisors_test() {
@@ -498,6 +643,9 @@ fn stuck_of(index: Int) -> attention_feed.Stuck {
       0 -> None
       _ -> Some(3000 + index)
     },
+    reason: "provider_error",
+    retry_after_ms: Some(30_000),
+    parent: Some("sub:main/" <> string.repeat("日", 40)),
   )
 }
 
@@ -789,11 +937,120 @@ pub fn pending_approvals_are_listed_as_bounded_evidence_test() {
       ]),
     ])
 
-  // The record carries no raise time, so the item names none.
-  assert absent(item, "raised_at")
+  // The raise stamps the runtime's clock (protocol-change/124), and the denial
+  // wants a network grant, so the call would have the network.
+  assert field(item, "raised_at") == json.Int(now)
+  assert field(item, "network") == json.String("on")
+
+  // This host lent no policy, so the item names none and no call.
+  assert absent(item, "policy")
+  assert absent(item, "call")
+  assert absent(item, "command")
   let assert json.Int(revision) = field(item, "revision")
   assert revision > 0
   let assert Ok(Nil) = api.close(runtime)
+}
+
+fn offline_denial() -> JsonValue {
+  json.Object([
+    #("reason", json.String("the program wants a write grant")),
+    #("source", json.String("policy")),
+    #(
+      "wanted",
+      json.Array([
+        json.Object([
+          #("grant", json.String("writable_root")),
+          #("path", json.String("/home/o/.loom")),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+fn raise_program(runtime: api.Runtime, id: String, preview: String) -> Nil {
+  let #(operation, _) = ids.mint_op(ids.generator(clock.fixed(at: 5), seed: 3))
+  let assert Ok(_) =
+    api.claim_escalation(
+      runtime,
+      id,
+      offline_denial(),
+      action: escalation.Action(tool: "code_mode", digest: "d-" <> id, preview:),
+      scope: escalation.CallScope(
+        operation:,
+        strand: "main",
+        step_id: "step-1",
+        source_index: 0,
+        call_id: "call-" <> id,
+      ),
+      max_asks: 3,
+    )
+    as "the escalation is raised"
+  Nil
+}
+
+// The words a person weighs the grant against are read when the item is read:
+// the policy the host lends, the network the call would have, and for a
+// `code_mode` program the call and command its source names.
+pub fn an_item_carries_the_policy_the_network_and_the_program_call_test() {
+  let runtime = open()
+  let program =
+    "import cap/proc\npub fn main() { proc.command([\"sqlite3\", \"store.db\"]) |> proc.run }"
+  let preview =
+    json.to_string(json.Object([#("program", json.String(program))]))
+  raise_program(runtime, "esc-p", preview)
+  let today =
+    approval_evidence.Today(sandbox: "workspace-write", network: "off")
+  let assert Ok(row) = approval_evidence.read(runtime, Some(today))
+  let assert json.Array([item]) = field(field(row, "approvals"), "items")
+  assert field(item, "network") == json.String("off")
+  assert field(item, "policy")
+    == json.Object([
+      #("sandbox", json.String("workspace-write")),
+      #("network", json.String("off")),
+    ])
+  assert field(item, "call") == json.String("proc.run")
+  assert field(item, "command") == json.String("sqlite3 store.db")
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn the_policy_network_word_follows_the_policy_test() {
+  let runtime = open()
+  raise_program(runtime, "esc-p", "{}")
+  let read = fn(network) {
+    let today = approval_evidence.Today(sandbox: "workspace-write", network:)
+    let assert Ok(row) = approval_evidence.read(runtime, Some(today))
+    let assert json.Array([item]) = field(field(row, "approvals"), "items")
+    field(item, "network")
+  }
+  assert read("off") == json.String("off")
+  assert read("loopback") == json.String("off")
+  assert read("proxy") == json.String("on")
+  assert read("on") == json.String("on")
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+// A source with no recognisable call, a cut preview, and an argv with an escape
+// each give no call and no command, and any tool but `code_mode` gives none.
+pub fn a_program_call_that_cannot_be_read_gives_none_test() {
+  let none = #(None, None)
+  assert approval_evidence.code_call("code_mode", None) == none
+  assert approval_evidence.code_call("code_mode", Some("{\"program\":\"x"))
+    == none
+  assert approval_evidence.code_call(
+      "code_mode",
+      Some("{\"program\":\"fs.read()\"}"),
+    )
+    == none
+  assert approval_evidence.code_call(
+      "code_mode",
+      Some("{\"program\":\"proc.command([\\\"a\\\\b\\\"])\"}"),
+    )
+    == none
+  assert approval_evidence.code_call(
+      "bash",
+      Some("{\"program\":\"proc.command([\\\"ls\\\"])\"}"),
+    )
+    == none
 }
 
 pub fn only_four_pending_approvals_are_listed_and_all_are_counted_test() {

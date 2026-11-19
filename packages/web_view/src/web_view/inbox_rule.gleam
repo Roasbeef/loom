@@ -123,7 +123,7 @@ pub type Thread {
 /// ## Examples
 ///
 /// ```gleam
-/// let report = sessions.Report(sessions.Idle, option.Some("Done."), [])
+/// let report = sessions.Report(sessions.Idle, option.Some("Done."), [], None, None)
 /// assert inbox_rule.kind(report) == inbox_rule.Idle
 /// ```
 pub fn kind(report: Report) -> Kind {
@@ -161,7 +161,7 @@ pub fn words(kind: Kind) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// let report = sessions.Report(sessions.Working, option.None, [])
+/// let report = sessions.Report(sessions.Working, option.None, [], None, None)
 /// assert inbox_rule.group(report) == inbox_rule.Updates
 /// ```
 pub fn group(report: Report) -> Group {
@@ -296,7 +296,7 @@ pub fn selection(
 /// ## Examples
 ///
 /// ```gleam
-/// let report = sessions.Report(sessions.Idle, option.Some("Done.\nMore."), [])
+/// let report = sessions.Report(sessions.Idle, option.Some("Done.\nMore."), [], None, None)
 /// assert inbox_rule.head(report) == "Done."
 /// ```
 pub fn head(report: Report) -> String {
@@ -321,7 +321,7 @@ pub fn head(report: Report) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// let report = sessions.Report(sessions.Idle, option.None, [])
+/// let report = sessions.Report(sessions.Idle, option.None, [], None, None)
 /// let thread = inbox_rule.Thread("abcdef012345", " ", "", report)
 /// assert inbox_rule.shown_name(thread) == "Session abcdef01"
 /// ```
@@ -339,7 +339,7 @@ pub fn shown_name(thread: Thread) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// let report = sessions.Report(sessions.Working, option.None, [])
+/// let report = sessions.Report(sessions.Working, option.None, [], None, None)
 /// let thread = inbox_rule.Thread("abcdef012345", "build", "", report)
 /// assert inbox_rule.thread_head(thread) == "build"
 /// ```

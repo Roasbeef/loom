@@ -56,6 +56,11 @@ pub fn a_fresh_session_is_idle_with_no_last_run_test() {
   assert field(row, "approvals") == json.Int(0)
   assert field(row, "last_outcome") == json.Null
   assert field(row, "last_message") == json.Null
+
+  // Neither time exists before the first turn (protocol-change/050, the
+  // addendum on times).
+  assert field(row, "last_message_at") == json.Null
+  assert field(row, "turn_started_at") == json.Null
   assert field(row, "model") == json.String("loom-1")
   assert field(row, "glances") == json.Array([])
 }
@@ -71,6 +76,12 @@ pub fn a_finished_run_reports_its_outcome_and_final_text_test() {
   assert field(row, "strands") == json.Int(1)
   assert field(row, "last_outcome") == json.String("completed")
   assert field(row, "last_message") == json.String("ok")
+
+  // The message is dated, the turn is over, and so no turn has a start time.
+  let assert json.Int(written) = field(row, "last_message_at")
+    as "the message carries the time of its entry"
+  assert written > 0
+  assert field(row, "turn_started_at") == json.Null
 }
 
 pub fn a_pending_approval_needs_the_operator_test() {
@@ -109,6 +120,11 @@ pub fn a_running_strand_is_working_and_shows_only_its_current_glance_test() {
     })
     as "the open operation is observed"
   assert field(row, "working") == json.Int(1)
+
+  // The turn began when its operation was minted, and nothing has finished.
+  assert field(row, "turn_started_at")
+    == json.Int(ids.op_id_timestamp_ms(operation))
+  assert field(row, "last_message_at") == json.Null
   assert field(row, "glances")
     == json.Array([
       json.Object([

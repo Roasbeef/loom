@@ -8,9 +8,14 @@
 //// decided on the session's own page, from the card that page draws, and this
 //// evidence is only what a person reads on the way there.
 ////
-//// The record carries no raise time, so no item here has one and no page words
-//// an age for an approval. The tool, the preview and the reason were written by
-//// the harness and the model, so a page draws them as text nodes only.
+//// An item carries the time its question was put to a person when the record has
+//// one (protocol-change/124), the network the call would have and the session's
+//// policy today, and for a `code_mode` program the capability call and command
+//// its source names (protocol-change/120, the addendum on approval words). A
+//// record from before the raise time was stored has none, and no page words an
+//// age for it. The tool, the preview, the reason, the call and the command were
+//// written by the harness and the model, so a page draws them as text nodes
+//// only.
 ////
 //// ## Flow
 ////
@@ -38,6 +43,26 @@ pub type Wanted {
   )
 }
 
+/// The network a call would have if it were approved.
+pub type Network {
+  /// The session's policy lets tools out, or the call wants a network grant.
+  NetworkOn
+
+  /// Tools have no network and the call asks for none.
+  NetworkOff
+}
+
+/// The sandbox and network the session runs its tools under today, in the
+/// daemon's words.
+pub type Policy {
+  Policy(
+    /// `workspace-write` or `read-only`.
+    sandbox: String,
+    /// `off`, `loopback`, `proxy` or `on`.
+    network: String,
+  )
+}
+
 /// One pending approval.
 pub type Item {
   Item(
@@ -58,6 +83,19 @@ pub type Item {
     wanted: List(Wanted),
     /// How many times the record has put its question to a person.
     asked: Int,
+    /// When the question was put to a person, in Unix milliseconds. Absent for
+    /// a record written before the field existed, and a page then draws no age.
+    raised_at: Option(Int),
+    /// The network the call would have, when the daemon could tell.
+    network: Option(Network),
+    /// The session's sandbox and network policy at the moment of the read.
+    policy: Option(Policy),
+    /// The capability a `code_mode` program calls, such as `proc.run`. Text
+    /// taken from a program's source.
+    call: Option(String),
+    /// The command that program runs, one line. Text taken from a program's
+    /// source, drawn as a text node.
+    command: Option(String),
   )
 }
 
@@ -125,7 +163,29 @@ fn item(value: JsonValue) -> Result(Item, Nil) {
       Ok(_) | Error(Nil) -> []
     },
     asked: option.unwrap(option.from_result(number(fields, "asked")), 0),
+    raised_at: case number(fields, "raised_at") {
+      Ok(at) if at >= 0 -> option.Some(at)
+      Ok(_) | Error(Nil) -> option.None
+    },
+    network: case text(fields, "network") {
+      Ok("on") -> option.Some(NetworkOn)
+      Ok("off") -> option.Some(NetworkOff)
+      Ok(_) | Error(Nil) -> option.None
+    },
+    policy: option.from_result(policy(fields)),
+    call: option.from_result(text(fields, "call")),
+    command: option.from_result(text(fields, "command")),
   ))
+}
+
+/// The policy object of an item, or nothing for a member that is not one with
+/// both words.
+fn policy(fields: List(#(String, JsonValue))) -> Result(Policy, Nil) {
+  use inner <- result.try(list.key_find(fields, "policy"))
+  use inner <- result.try(object(inner))
+  use sandbox <- result.try(text(inner, "sandbox"))
+  use network <- result.map(text(inner, "network"))
+  Policy(sandbox:, network:)
 }
 
 /// One wanted grant, or nothing for one with no kind.

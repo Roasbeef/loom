@@ -57,6 +57,7 @@
 
 import broker/token
 import client/daemon/attention_door
+import client/daemon/brief_door
 import client/daemon/manager
 import client/daemon/profiles
 import client/daemon/project_book
@@ -132,6 +133,7 @@ import web_view/page
 import web_view/placements
 import web_view/review_feed
 import web_view/saved_attention
+import web_view/session_brief
 import web_view/sessions as listed_sessions
 import web_view/tool_result
 import weft
@@ -399,6 +401,12 @@ pub type HomeAttachment(instance) {
     /// (`ui_socket.review_for`) and only for a page whose ceiling is not an
     /// observer's.
     review: fn(String) -> Result(review_feed.Review, attention_door.Refusal),
+    /// One session's brief as the page's credential may read it
+    /// (`home_brief`, protocol-change/125). It spends the credential's brief
+    /// allowance and asks the resident's own Agency actor, so a page runs it in
+    /// a task of its own.
+    brief: fn(String, Int) ->
+      Result(session_brief.Brief, attention_door.Refusal),
     /// The daemon's own sessions directory, which deleting a session removes
     /// the database family from (`manager.delete_session`). It is the daemon's
     /// value and never a page's, and only the owner's fresh home may reach it
@@ -947,6 +955,7 @@ fn home_upgrade(
               grant.credential,
               control_reserve(config, grant.credential),
             ),
+            brief: home_brief(config, state.registry, grant.credential),
             sessions_directory: state.sessions_directory,
             state_root: state.state_root,
             create: fn(principal, request, scope) {
@@ -3194,6 +3203,7 @@ fn control(
             | protocol.SessionAttention(..)
             | protocol.ReadAttention(..)
             | protocol.ReadApprovals(..)
+            | protocol.SessionBrief(..)
             | protocol.ReviewSession(..)
             | protocol.CloseFind(..)
             | protocol.ListArchivedSessions(..)
@@ -3247,6 +3257,7 @@ fn control_use(command: protocol.Command) {
     | protocol.SessionAttention(..)
     | protocol.ReadAttention(..)
     | protocol.ReadApprovals(..)
+    | protocol.SessionBrief(..)
     | protocol.ReviewSession(..)
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
@@ -3454,6 +3465,24 @@ fn dispatch(
         |> result.map_error(attention_refusal),
       )
       within_frame(reply_to, "approval.read", evidence)
+    }
+
+    // The brief is a read that refuses in words and spends the credential's brief
+    // allowance (`brief_door`, protocol-change/125).
+    protocol.SessionBrief(session, since, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      use brief <- result.try(
+        brief_door.read(
+          attention_reach(config, state.registry, digest),
+          brief_allowance(config, digest),
+          session,
+          since,
+        )
+        |> result.map_error(attention_refusal),
+      )
+      within_frame(reply_to, "session.brief", brief)
     }
 
     // The review is a read that refuses in words, like the attention reads, and
@@ -5112,6 +5141,7 @@ fn dispatch_class(
     // The attention reads that refuse in words are served by `dispatch` too.
     protocol.ReadAttention(..)
     | protocol.ReadApprovals(..)
+    | protocol.SessionBrief(..)
     | protocol.ReviewSession(..)
     | protocol.CloseFind(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
@@ -6846,6 +6876,48 @@ fn review_reach(
   review_door.Reach(registry:, digest:, observe: config.worktree, reserve:)
 }
 
+/// The allowance a brief read spends: the credential's brief reads in the web
+/// view's table when the daemon serves one, and none otherwise. A daemon with no
+/// web view has no table to count in, and its control sockets are the owner's
+/// and its members' alone.
+@internal
+pub fn brief_allowance(
+  config: Config(instance),
+  digest: access.Digest,
+) -> brief_door.Allowance {
+  case config.ui {
+    Some(ui) ->
+      brief_door.Allowance(reserve: fn() {
+        ui_sessions.reserve_brief_read(ui.sessions, digest)
+      })
+    None -> brief_door.Allowance(reserve: fn() { Ok(Nil) })
+  }
+}
+
+/// One session's brief as the credential may read it, for a home page
+/// (`brief_door.read_typed`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_brief(config, registry, digest)("0198...", 0)
+/// ```
+@internal
+pub fn home_brief(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(String, Int) -> Result(session_brief.Brief, attention_door.Refusal) {
+  fn(session, since) {
+    brief_door.read_typed(
+      attention_reach(config, registry, digest),
+      brief_allowance(config, digest),
+      session,
+      since,
+    )
+  }
+}
+
 /// The allowance the control socket's review spends from: the web view's
 /// workspace reads for the credential, when the daemon serves one, and none
 /// otherwise. A daemon with no web view has no table to count in, and its
@@ -7003,7 +7075,7 @@ pub fn activity_reports(
 /// ## Examples
 ///
 /// ```gleam
-/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [])))
+/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [], None, None)))
 /// ```
 @internal
 pub fn report_of(
@@ -7026,7 +7098,18 @@ pub fn report_of(
         Ok(_) | Error(Nil) -> []
       }
 
-      Ok(#(id, listed_sessions.Report(doing, last_message, glances)))
+      Ok(#(
+        id,
+        listed_sessions.Report(
+          doing,
+          last_message,
+          glances,
+          // A time of any type but a whole non-negative number is no time,
+          // and an old daemon's row has neither.
+          time_field(fields, "last_message_at"),
+          time_field(fields, "turn_started_at"),
+        ),
+      ))
     }
     json.Array(_)
     | json.String(_)
@@ -7034,6 +7117,15 @@ pub fn report_of(
     | json.Float(_)
     | json.Bool(_)
     | json.Null -> Error(Nil)
+  }
+}
+
+/// A Unix-millisecond time of a row, or nothing for a member that is missing,
+/// null, not a whole number or negative.
+fn time_field(fields: List(#(String, JsonValue)), name: String) -> Option(Int) {
+  case list.key_find(fields, name) {
+    Ok(json.Int(at)) if at >= 0 -> Some(at)
+    Ok(_) | Error(Nil) -> None
   }
 }
 

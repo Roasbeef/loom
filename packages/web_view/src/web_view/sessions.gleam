@@ -236,6 +236,10 @@ pub type Glance {
 /// the page never claims it is a question, only that it is the last thing said.
 /// `glances` are the per-strand summaries the harness writes, newest first, at
 /// most four. Both are untrusted model text, drawn only as text nodes.
+///
+/// `last_message_at` and `turn_started_at` are the two times the row carries
+/// (protocol-change/050, the addendum on times), in Unix milliseconds. The page
+/// formats them; the daemon never does.
 pub type Report {
   Report(
     /// What the session is doing, as the sidebar's dots say it.
@@ -245,6 +249,14 @@ pub type Report {
     last_message: Option(String),
     /// What the session's strands say they are doing, which may be empty.
     glances: List(Glance),
+    /// When the entry behind `last_message` was written, or nothing when there
+    /// is no message or the daemon predates the field. It dates the words, so it
+    /// is never present without them.
+    last_message_at: Option(Int),
+    /// When the turn now running began, from the mint time of its operation, or
+    /// nothing while the main strand is idle. It is the start of the current
+    /// turn and never the end of the last one.
+    turn_started_at: Option(Int),
   )
 }
 

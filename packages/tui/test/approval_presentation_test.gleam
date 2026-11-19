@@ -33,7 +33,8 @@ fn review(path) {
       ]),
     ]),
     strand: None,
-    remote: option.None, None,
+    remote: option.None,
+    None,
   )
 }
 
@@ -350,7 +351,8 @@ pub fn unavailable_approval_can_only_select_deny_test() {
       None,
       approval.Unavailable("unsupported requested grant kind"),
       strand: None,
-      remote: option.None, None,
+      remote: option.None,
+      None,
     )
   let panel = approval_panel.new(record)
   let assert approval_panel.Continue(selected) =

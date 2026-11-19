@@ -56,20 +56,38 @@ fn reports() -> List(#(String, Report)) {
   [
     #(
       "B",
-      Report(sessions.NeedsYou, Some("Approve the push?\nIt is ready."), []),
+      Report(
+        sessions.NeedsYou,
+        Some("Approve the push?\nIt is ready."),
+        [],
+        None,
+        None,
+      ),
     ),
     #(
       "A",
-      Report(sessions.Idle, Some("<script>alert(1)</script> finished"), [
-        Glance("s1", "Lint", "all green"),
-      ]),
+      Report(
+        sessions.Idle,
+        Some("<script>alert(1)</script> finished"),
+        [
+          Glance("s1", "Lint", "all green"),
+        ],
+        None,
+        None,
+      ),
     ),
     #(
       "C",
-      Report(sessions.Working, None, [
-        Glance("s2", "", "reading the spec"),
-        Glance("s3", "Tests", "waiting on CI"),
-      ]),
+      Report(
+        sessions.Working,
+        None,
+        [
+          Glance("s2", "", "reading the spec"),
+          Glance("s3", "Tests", "waiting on CI"),
+        ],
+        None,
+        None,
+      ),
     ),
   ]
 }
@@ -232,7 +250,9 @@ pub fn an_approval_is_named_and_never_decided_here_test() {
 
 // A failed run is named as failed, and nothing is offered but the session.
 pub fn a_failed_run_is_named_test() {
-  let failed = [#("A", Report(sessions.Failed, Some("It broke."), []))]
+  let failed = [
+    #("A", Report(sessions.Failed, Some("It broke."), [], None, None)),
+  ]
   let html = drawn(opened(start(home.OperatorCeiling, failed)))
 
   assert string.contains(html, "<span class=\"inbox-kind\">Failed</span>")
@@ -243,9 +263,9 @@ pub fn a_failed_run_is_named_test() {
 // The quiet sessions are one line of names and are not rows.
 pub fn quiet_sessions_fold_to_one_line_test() {
   let quiet = [
-    #("A", Report(sessions.Idle, None, [])),
-    #("B", Report(sessions.Idle, None, [])),
-    #("C", Report(sessions.Working, None, [])),
+    #("A", Report(sessions.Idle, None, [], None, None)),
+    #("B", Report(sessions.Idle, None, [], None, None)),
+    #("C", Report(sessions.Working, None, [], None, None)),
   ]
   let html = drawn(opened(start(home.OperatorCeiling, quiet)))
 
@@ -260,7 +280,7 @@ pub fn quiet_sessions_fold_to_one_line_test() {
 // With nothing waiting or running the page keeps the list, and an owner
 // with no capability to create sees the old page.
 pub fn nothing_to_read_leaves_the_list_test() {
-  let quiet = [#("A", Report(sessions.Idle, None, []))]
+  let quiet = [#("A", Report(sessions.Idle, None, [], None, None))]
   let html = drawn(opened(start(home.OperatorCeiling, quiet)))
 
   assert !string.contains(html, "<h1>Inbox</h1>")
@@ -640,7 +660,10 @@ pub fn the_return_control_is_a_click_beneath_the_table_test() {
 // typing.
 pub fn the_default_thread_is_sticky_test() {
   let only_working = [
-    #("C", Report(sessions.Working, None, [Glance("s2", "", "reading")])),
+    #(
+      "C",
+      Report(sessions.Working, None, [Glance("s2", "", "reading")], None, None),
+    ),
   ]
   let model = opened(start(home.OperatorCeiling, only_working))
   assert string.contains(drawn(model), "docs sweep · /src/loom · working")
@@ -796,7 +819,7 @@ fn saved_only() -> List(Entry) {
 // landed on the composer keeps it when a session starts working later, and
 // offers the "Inbox" control, which is the way back.
 pub fn a_session_starting_later_does_not_change_the_centre_test() {
-  let quiet = [#("A", Report(sessions.Idle, None, []))]
+  let quiet = [#("A", Report(sessions.Idle, None, [], None, None))]
   let model =
     opened(
       home.Start(
@@ -827,7 +850,7 @@ pub fn a_missed_read_does_not_change_the_centre_test() {
     "<span class=\"inbox-name\">vetting lint</span>",
   )
 
-  let quiet = [#("A", Report(sessions.Idle, None, []))]
+  let quiet = [#("A", Report(sessions.Idle, None, [], None, None))]
   let calm = run(model, home.Observed(quiet))
   assert string.contains(drawn(calm), "<h1>Inbox</h1>")
 }

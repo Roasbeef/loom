@@ -366,6 +366,7 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     |> result.replace_error("invalid escalation decision origin"),
   )
 
+  // A missing or null time is an older record, and a mistyped one is refused.
   use raised_at <- result.try(case list.key_find(fields, "raised_at") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(json.Int(at)) if at >= 0 -> Ok(Some(at))

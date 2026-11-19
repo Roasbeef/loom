@@ -11,6 +11,7 @@ import client/attention
 import client/daemon/attention_door.{
   Declined, NotSent, Reach, Refusal, Unsettled,
 }
+import client/daemon/brief_door
 import client/daemon/limits
 import client/daemon/manager
 import client/daemon_server_test.{connect, fixture_building, frame, send}
@@ -34,6 +35,7 @@ import storage/catalogue
 import support/internal/ffi_ws
 import tools/agent
 import tools/attention as tool_attention
+import web_view/session_brief
 import web_view/thread_send
 import weft/poll
 
@@ -857,6 +859,99 @@ pub fn approval_evidence_is_read_by_authority_and_never_decides_test() {
     let #(by_socket, _) = connect(port, bystander, "/v2/control")
     let _ = frame(by_socket, within_ms: 1000)
     assert code(ask(by_socket, 1, epoch)) == json.String("not_found")
+    let _ = ffi_ws.tcp_close(by_socket)
+    Nil
+  })
+}
+
+// The session brief is a read admitted exactly as `attention.read` is
+// (protocol-change/125): the owner and a member at any role are answered, a
+// bystander is told what an unknown session is told, a stale epoch is refused,
+// a saved session is not resident, and the credential's allowance bounds how
+// often it may be asked. It never writes.
+pub fn the_session_brief_is_read_by_authority_and_never_writes_test() {
+  with_rig(fn(_registry, port, credential, epoch, rig, _principal) {
+    let assert Ok(store) = catalogue.open(rig.state_root <> "/catalogue.db")
+      as "the catalogue opens"
+    let observer = string.repeat("6", 64)
+    let bystander = string.repeat("7", 64)
+    let assert Ok(seen) =
+      access.create_member(
+        store,
+        "br-observer",
+        "br-observer",
+        digest_of(observer),
+      )
+    let assert Ok(Nil) =
+      access.grant(store, seen.id, rig.session, access.Observer)
+    let assert Ok(_) =
+      access.create_member(
+        store,
+        "br-bystander",
+        "br-bystander",
+        digest_of(bystander),
+      )
+    let open = brief_door.Allowance(reserve: fn() { Ok(Nil) })
+
+    // The in-process door answers an observer with a brief and a bystander
+    // with nothing.
+    let assert Ok(brief) =
+      brief_door.read_typed(
+        rig.reach(digest_of(observer)),
+        open,
+        rig.session,
+        0,
+      )
+    assert brief.strands != []
+    assert brief_door.read_typed(
+        rig.reach(digest_of(bystander)),
+        open,
+        rig.session,
+        0,
+      )
+      == Error(Refusal("not_found", "no such session"))
+
+    // A refused allowance is `unavailable` and asks the session nothing.
+    let spent = brief_door.Allowance(reserve: fn() { Error(Nil) })
+    assert brief_door.read(
+        rig.reach(digest_of(observer)),
+        spent,
+        rig.session,
+        0,
+      )
+      == Error(Refusal("unavailable", brief_door.busy_words))
+
+    // A saved session is not running.
+    assert brief_door.read(rig.reach(rig.owner), open, rig.saved, 0)
+      == Error(Refusal("not_resident", "the session is not running"))
+
+    // The control command is the same read.
+    let #(owner_socket, _) = connect(port, credential, "/v2/control")
+    let _ = frame(owner_socket, within_ms: 1000)
+    let ask = fn(socket, id, epoch, extra) {
+      send(
+        socket,
+        id,
+        "session.brief",
+        json.Object([
+          #("session", json.String(rig.session)),
+          #("epoch", json.String(epoch)),
+          ..extra
+        ]),
+        within_ms: 1000,
+      )
+    }
+    let answered = ask(owner_socket, 1, epoch, [#("since", json.Int(0))])
+    assert field(answered, "event") == json.String("session.brief")
+    assert result_is_ok(session_brief.decode(field(answered, "body")))
+    assert code(ask(owner_socket, 2, "stale", [])) == json.String("stale_epoch")
+    assert code(ask(owner_socket, 3, epoch, [#("since", json.Int(-1))]))
+      == json.String("bad_request")
+    let _ = ffi_ws.tcp_close(owner_socket)
+
+    let #(by_socket, _) = connect(port, bystander, "/v2/control")
+    let _ = frame(by_socket, within_ms: 1000)
+    assert code(ask(by_socket, 1, epoch, [])) == json.String("not_found")
     let _ = ffi_ws.tcp_close(by_socket)
     Nil
   })

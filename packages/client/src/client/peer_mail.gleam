@@ -43,6 +43,7 @@ import client/attention_feed
 import client/internal/message_inspection
 import client/internal/peer_outbox_store
 import client/peer_outbox
+import client/session_brief
 import core/attention as records
 import core/clock
 import core/entry
@@ -244,6 +245,12 @@ pub type Command {
   /// the revision of its cell (`client/approval_evidence`). It reads and never
   /// decides, claims or consumes.
   ApprovalRead
+
+  /// Reports the session's recent work as a bounded brief: the latest assistant
+  /// text, a few tool steps, the strands, the goal's spend, the peer messages
+  /// recorded after `since` (Unix milliseconds) and the last shell command
+  /// (`protocol-change/125`). It reads and never writes.
+  SessionBrief(since: Int)
 
   /// Settles an open record as answered or closed, expecting its cell to be at
   /// `revision` (`protocol-change/120`). The daemon has already decided who may
@@ -669,7 +676,8 @@ pub fn handle_reporting(
     Overview -> overview(runtime)
     AttentionFeed -> attention_feed.feed(runtime)
     AttentionRead(id) -> attention_read(runtime, id)
-    ApprovalRead -> approval_evidence.read(runtime)
+    ApprovalRead -> approval_evidence.read(runtime, None)
+    SessionBrief(since) -> session_brief.read(runtime, since)
     AttentionSettle(id, revision, settlement) -> {
       let answer = attention_settle(runtime, clock, id, revision, settlement)
 
@@ -1507,8 +1515,10 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
     #("approvals", json.Int(approvals)),
     #("last_outcome", last_outcome(last)),
     #("model", model),
+    #("turn_started_at", turn_started_at(states)),
   ]
-  Ok(fit_overview(base, final_message(runtime, last), glances))
+  let #(message, message_at) = final_message(runtime, last)
+  Ok(fit_overview(base, message, message_at, glances))
 }
 
 /// One record in the stored shape beside its revision. A record that is not
@@ -1737,48 +1747,71 @@ fn last_outcome(last: Option(operation.LastResult)) -> JsonValue {
   }
 }
 
-// The final assistant text of main's last run. `LastResult` holds only the
-// entry id, so this is one point read of that entry; a run with no final
-// answer, or an entry with no text, reports null.
-/// Selects the final assistant message from the materialized history.
-fn final_message(
-  runtime: api.Runtime,
-  last: Option(operation.LastResult),
-) -> JsonValue {
-  case last {
-    Some(operation.RunLastResult(final_assistant: Some(id), ..)) ->
-      // Clipping collapses whitespace first, so a message of only
-      // whitespace is null here rather than an empty string.
-      case glance.clip(assistant_text(runtime, id), overview_message_bytes) {
-        "" -> json.Null
-        text -> json.String(text)
-      }
-    Some(operation.RunLastResult(final_assistant: None, ..))
-    | Some(operation.CompactionLastResult(..))
-    | Some(operation.NavigationLastResult(..))
-    | None -> json.Null
+// The time main's current turn began, as the mint time of its current
+// operation's id, in Unix milliseconds (protocol-change/050, the addendum on
+// times). It is null when main is not running a turn, so a page reads a
+// number as "a turn is running and began then" and never as the time of the
+// last one.
+/// The mint time of main's current operation, or null when it has none.
+fn turn_started_at(states: List(#(String, Option(OpId)))) -> JsonValue {
+  case list.key_find(states, default_strand) {
+    Ok(Some(operation)) -> json.Int(ids.op_id_timestamp_ms(operation))
+    Ok(None) | Error(Nil) -> json.Null
   }
 }
 
-/// Extracts assistant text from a materialized peer entry.
-fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
+// The final assistant text of main's last run and the time of its entry.
+// `LastResult` holds only the entry id, so this is one point read of that
+// entry; a run with no final answer, or an entry with no text, reports null
+// for both, so a time is never present without the words it dates.
+/// Selects the final assistant message, and when it was written, from the
+/// materialized history.
+fn final_message(
+  runtime: api.Runtime,
+  last: Option(operation.LastResult),
+) -> #(JsonValue, JsonValue) {
+  // A run with a final answer reports its text and the time of its entry.
+  case last {
+    Some(operation.RunLastResult(final_assistant: Some(id), ..)) -> {
+      let #(text, at) = assistant_text(runtime, id)
+
+      // Clipping collapses whitespace first, so a message of only
+      // whitespace is null here rather than an empty string.
+      case glance.clip(text, overview_message_bytes) {
+        "" -> #(json.Null, json.Null)
+        text -> #(json.String(text), json.Int(at))
+      }
+    }
+    Some(operation.RunLastResult(final_assistant: None, ..))
+    | Some(operation.CompactionLastResult(..))
+    | Some(operation.NavigationLastResult(..))
+    | None -> #(json.Null, json.Null)
+  }
+}
+
+/// Extracts assistant text and its entry's time from a materialized peer
+/// entry.
+fn assistant_text(runtime: api.Runtime, id: EntryId) -> #(String, Int) {
   case writer.get_entries(runtime.tree.writer, [id]) {
-    Error(_) -> ""
+    Error(_) -> #("", 0)
     Ok(found) ->
       case dict.get(found, id) {
         Ok(entry.MessageEntry(
           message: message.AssistantMessage(content:, ..),
+          ts:,
           ..,
-        )) ->
+        )) -> #(
           content
-          |> list.filter_map(fn(block) {
-            case block {
-              message.AssistantText(text:, ..) -> Ok(text)
-              _ -> Error(Nil)
-            }
-          })
-          |> string.join(" ")
-        _ -> ""
+            |> list.filter_map(fn(block) {
+              case block {
+                message.AssistantText(text:, ..) -> Ok(text)
+                _ -> Error(Nil)
+              }
+            })
+            |> string.join(" "),
+          ts,
+        )
+        _ -> #("", 0)
       }
   }
 }
@@ -1792,12 +1825,14 @@ fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
 fn fit_overview(
   base: List(#(String, JsonValue)),
   message: JsonValue,
+  message_at: JsonValue,
   glances: List(JsonValue),
 ) -> JsonValue {
   let row =
     json.Object(
       list.append(base, [
         #("last_message", message),
+        #("last_message_at", message_at),
         #("glances", json.Array(glances)),
       ]),
     )
@@ -1807,9 +1842,14 @@ fn fit_overview(
   case fits, glances, message {
     True, _, _ -> row
     False, [_, ..], _ ->
-      fit_overview(base, message, list.take(glances, list.length(glances) - 1))
+      fit_overview(
+        base,
+        message,
+        message_at,
+        list.take(glances, list.length(glances) - 1),
+      )
     False, [], json.Null -> row
-    False, [], _ -> fit_overview(base, json.Null, [])
+    False, [], _ -> fit_overview(base, json.Null, json.Null, [])
   }
 }
 

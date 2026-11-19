@@ -293,6 +293,19 @@ pub type Command {
   /// session at any role. It reads and never decides.
   ReadApprovals(session: String, epoch: String)
 
+  /// Reads a running session's recent work as a bounded brief
+  /// (`protocol-change/125`): the latest assistant text, a few tool steps, the
+  /// strands, the goal's spend, the peer messages recorded after `since` and the
+  /// last shell command. The owner, or a member that holds the session at any
+  /// role, as `ReadAttention` is. It reads and never writes.
+  SessionBrief(
+    session: String,
+    /// Unix milliseconds; peer messages recorded after it are listed. Zero when
+    /// the request names none.
+    since: Int,
+    epoch: String,
+  )
+
   /// Reads the session's worktree as a review: the files its workspace
   /// changed, each file's hunks and a diff stat, bounded (`protocol-change/123`).
   /// The owner, or a member that holds the session as an Operator.
@@ -849,6 +862,19 @@ fn decode_fields(
       use session <- result.try(attention_session(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       ReadApprovals(session, epoch)
+    }
+    "session.brief" -> {
+      use session <- result.try(attention_session(fields))
+
+      // An absent `since` lists the latest, and a negative or mistyped one is refused.
+      use since <- result.try(case list.key_find(fields, "since") {
+        Error(Nil) -> Ok(0)
+        Ok(json.Int(since)) if since >= 0 -> Ok(since)
+        Ok(_) -> Error("expected a nonnegative since")
+      })
+
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SessionBrief(session, since, epoch)
     }
     "sessions.review" -> {
       use session <- result.try(attention_session(fields))

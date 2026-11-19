@@ -348,9 +348,9 @@ pub fn a_running_row_says_what_it_is_doing_test() {
       home.Start(..start(), activity: fn(ids, deliver) {
         process.send(asked, ids)
         deliver([
-          #("B", sessions.Report(sessions.Working, None, [])),
-          #("A", sessions.Report(sessions.NeedsYou, None, [])),
-          #("C", sessions.Report(sessions.Idle, None, [])),
+          #("B", sessions.Report(sessions.Working, None, [], None, None)),
+          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+          #("C", sessions.Report(sessions.Idle, None, [], None, None)),
         ])
       }),
     )
@@ -390,8 +390,8 @@ pub fn an_activity_answer_replaces_the_last_test() {
     run(
       model,
       home.Observed([
-        #("B", sessions.Report(sessions.Working, None, [])),
-        #("A", sessions.Report(sessions.Idle, None, [])),
+        #("B", sessions.Report(sessions.Working, None, [], None, None)),
+        #("A", sessions.Report(sessions.Idle, None, [], None, None)),
       ]),
     )
   assert string.contains(
@@ -401,7 +401,9 @@ pub fn an_activity_answer_replaces_the_last_test() {
   let model =
     run(
       model,
-      home.Observed([#("B", sessions.Report(sessions.Idle, None, []))]),
+      home.Observed([
+        #("B", sessions.Report(sessions.Idle, None, [], None, None)),
+      ]),
     )
   assert !string.contains(drawn(model), "working")
 
@@ -425,7 +427,9 @@ pub fn the_activity_word_is_its_own_span_test() {
   let model =
     run(
       model,
-      home.Observed([#("A", sessions.Report(sessions.NeedsYou, None, []))]),
+      home.Observed([
+        #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+      ]),
     )
   let html = drawn(model)
   assert string.contains(
@@ -489,7 +493,9 @@ pub fn an_ended_page_asks_for_no_activity_test() {
   let ended =
     run(
       ended,
-      home.Observed([#("B", sessions.Report(sessions.Working, None, []))]),
+      home.Observed([
+        #("B", sessions.Report(sessions.Working, None, [], None, None)),
+      ]),
     )
   assert process.receive(asked, 0) == Error(Nil)
   assert !string.contains(drawn(ended), "working")
@@ -1768,8 +1774,8 @@ pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
     opened(
       home.Start(..start(), activity: fn(_, deliver) {
         deliver([
-          #("B", sessions.Report(sessions.Working, None, [])),
-          #("A", sessions.Report(sessions.NeedsYou, None, [])),
+          #("B", sessions.Report(sessions.Working, None, [], None, None)),
+          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
         ])
       }),
     )
@@ -2015,8 +2021,8 @@ fn busy_owner(asked: Subject(#(actions.Action, String))) -> home.Model {
     opened(
       home.Start(..start(), manage: Some(ask), activity: fn(_, deliver) {
         deliver([
-          #("B", sessions.Report(sessions.Working, None, [])),
-          #("A", sessions.Report(sessions.NeedsYou, None, [])),
+          #("B", sessions.Report(sessions.Working, None, [], None, None)),
+          #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
         ])
       }),
     )
@@ -2065,7 +2071,7 @@ pub fn a_stop_on_an_idle_row_acts_at_once_test() {
   let #(owner, _) =
     opened(
       home.Start(..start(), manage: Some(ask), activity: fn(_, deliver) {
-        deliver([#("A", sessions.Report(sessions.Idle, None, []))])
+        deliver([#("A", sessions.Report(sessions.Idle, None, [], None, None))])
       }),
     )
   let model = run(owner, home.StopRequested("A"))
@@ -2274,8 +2280,8 @@ pub fn the_sidebar_dot_class_follows_the_activity_test() {
     run(
       model,
       home.Observed([
-        #("B", sessions.Report(sessions.Working, None, [])),
-        #("A", sessions.Report(sessions.Idle, None, [])),
+        #("B", sessions.Report(sessions.Working, None, [], None, None)),
+        #("A", sessions.Report(sessions.Idle, None, [], None, None)),
       ]),
     )
   let html = drawn(model)
@@ -2285,7 +2291,9 @@ pub fn the_sidebar_dot_class_follows_the_activity_test() {
   let model =
     run(
       model,
-      home.Observed([#("A", sessions.Report(sessions.NeedsYou, None, []))]),
+      home.Observed([
+        #("A", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+      ]),
     )
   assert string.contains(drawn(model), "residency live needs-you")
 }

@@ -65,6 +65,7 @@ import broker/token
 import client/advisor
 import client/agency
 import client/approval_ceiling
+import client/approval_evidence
 import client/async_codemode
 import client/async_runs
 import client/attention
@@ -4133,6 +4134,7 @@ fn assemble_in(
         settings.peer_defaults,
         peer_mail.no_defaults,
       ),
+      approval_today: Some(approval_evidence.today_of(settings.base_policy)),
       attention_report: attention_report,
       outbox_queued: fn() { peer_outbox_drain.poke(outbox_drain_name) },
       remote: option.lazy_unwrap(settings.remote_reach, fn() {

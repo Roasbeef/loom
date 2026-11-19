@@ -53,7 +53,13 @@ fn row() -> attention_feed.Row {
       ),
     ]),
     stuck: Section(count: 1, items: [
-      Stuck(strand: "sub:main/audit", failed_at: Some(3)),
+      Stuck(
+        strand: "sub:main/audit",
+        failed_at: Some(3),
+        reason: None,
+        retry_after_ms: None,
+        parent: None,
+      ),
     ]),
   )
 }

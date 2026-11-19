@@ -17,7 +17,13 @@ import web_view/sessions.{type Activity, type Report, Glance, Report}
 const seed = 20_261_118
 
 fn report(activity: Activity, message: option.Option(String)) -> Report {
-  Report(activity:, last_message: message, glances: [])
+  Report(
+    activity:,
+    last_message: message,
+    glances: [],
+    last_message_at: None,
+    turn_started_at: None,
+  )
 }
 
 fn thread(id: String, name: String, report: Report) -> inbox_rule.Thread {
@@ -113,15 +119,28 @@ pub fn the_head_falls_back_in_order_test() {
   assert inbox_rule.head(report(sessions.Idle, Some("\n  First line  \nSecond")))
     == "First line"
 
-  assert inbox_rule.head(Report(sessions.Working, None, glances)) == "newest"
-  assert inbox_rule.head(Report(sessions.Working, Some(" \n "), glances))
+  assert inbox_rule.head(Report(sessions.Working, None, glances, None, None))
+    == "newest"
+  assert inbox_rule.head(Report(
+      sessions.Working,
+      Some(" \n "),
+      glances,
+      None,
+      None,
+    ))
     == "newest"
 
   assert inbox_rule.head(report(sessions.Working, None)) == "Update"
   assert inbox_rule.head(report(sessions.NeedsYou, None)) == "Approval"
   assert inbox_rule.head(report(sessions.Failed, None)) == "Failed"
   assert inbox_rule.head(report(sessions.Idle, None)) == "Quiet"
-  assert inbox_rule.head(Report(sessions.Idle, None, [Glance("s", "t", "  ")]))
+  assert inbox_rule.head(Report(
+      sessions.Idle,
+      None,
+      [Glance("s", "t", "  ")],
+      None,
+      None,
+    ))
     == "Quiet"
 }
 
