@@ -1175,6 +1175,7 @@ pub fn view(model: Model) -> Element(Msg) {
       tone: status_tone(model.status),
       notice: ended.admin(ended_ending(model.status)),
       trailing: back_home(),
+      needing: 0,
     ),
     sidebar_place(model),
     [element.none(), body(model)],

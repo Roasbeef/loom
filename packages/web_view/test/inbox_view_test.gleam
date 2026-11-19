@@ -153,13 +153,17 @@ pub fn the_inbox_groups_the_threads_and_counts_what_it_read_test() {
   let html = drawn(opened(start(home.OperatorCeiling, reports())))
 
   assert string.contains(html, "<h1>Inbox</h1>")
+  assert string.contains(html, "1 need you</span>")
   assert string.contains(
     html,
-    "1 needs you · in 3 running sessions; saved sessions not checked",
+    "Counts read 3 running sessions. Saved sessions are not checked.",
   )
-  assert string.contains(html, "Needs you<span class=\"inbox-count\">1</span>")
-  assert string.contains(html, "Waiting<span class=\"inbox-count\">1</span>")
-  assert string.contains(html, "Updates<span class=\"inbox-count\">1</span>")
+  assert string.contains(
+    html,
+    "Needs you<span class=\"inbox-count\"> · 1</span>",
+  )
+  assert string.contains(html, "Waiting<span class=\"inbox-count\"> · 1</span>")
+  assert string.contains(html, "Updates<span class=\"inbox-count\"> · 1</span>")
 
   let needs = index_of(html, "Needs you<span")
   let waiting = index_of(html, "Waiting<span")
@@ -167,9 +171,11 @@ pub fn the_inbox_groups_the_threads_and_counts_what_it_read_test() {
   assert needs < waiting && waiting < updates
 
   // A thread's row says its kind, its session and one line of what was said.
-  assert string.contains(html, "Approval · vetting lint")
+  assert string.contains(html, "<span class=\"inbox-name\">vetting lint</span>")
+  assert string.contains(html, "<span class=\"inbox-kind\">Approval</span>")
   assert string.contains(html, "Approve the push?")
-  assert string.contains(html, "Update · docs sweep")
+  assert string.contains(html, "<span class=\"inbox-name\">docs sweep</span>")
+  assert string.contains(html, "<span class=\"inbox-kind\">Update</span>")
   assert string.contains(html, "reading the spec")
   assert !string.contains(html, "ago")
 }
@@ -180,13 +186,11 @@ pub fn the_reading_pane_shows_the_first_thread_and_labels_its_words_test() {
   let html = drawn(opened(start(home.OperatorCeiling, reports())))
 
   assert string.contains(html, "inbox-reading-default")
-  assert string.contains(html, "Approval · vetting lint · /src/loom</p>")
   assert string.contains(
     html,
-    "The agent&#39;s last finished turn, untrusted text",
+    "vetting lint · /src/loom · waiting on an approval",
   )
-  assert string.contains(html, "It is ready.")
-  assert string.contains(html, "Open session ›")
+  assert string.contains(html, "Decide on the session&#39;s page ›")
 }
 
 // A press on a thread selects it, and its message is drawn as escaped text, so
@@ -231,7 +235,7 @@ pub fn a_failed_run_is_named_test() {
   let failed = [#("A", Report(sessions.Failed, Some("It broke."), []))]
   let html = drawn(opened(start(home.OperatorCeiling, failed)))
 
-  assert string.contains(html, "Failed · web ui")
+  assert string.contains(html, "<span class=\"inbox-kind\">Failed</span>")
   assert string.contains(html, "Its last run failed, and nothing is running.")
   assert !string.contains(html, "An approval is pending.")
 }
@@ -245,7 +249,10 @@ pub fn quiet_sessions_fold_to_one_line_test() {
   ]
   let html = drawn(opened(start(home.OperatorCeiling, quiet)))
 
-  assert string.contains(html, "Quiet: vetting lint, web ui")
+  assert string.contains(
+    html,
+    "<span class=\"inbox-folded-names\">vetting lint, web ui</span>",
+  )
   assert !string.contains(html, "Quiet · web ui")
   assert !string.contains(html, "Quiet<span")
 }
@@ -406,7 +413,7 @@ pub fn the_outbox_words_each_state_test() {
   let asked = process.new_subject()
   let model = opened(sending(asked, reports()))
   let model = run(model, home.InboxOpened("A"))
-  assert !string.contains(drawn(model), "Not sent")
+  assert string.contains(drawn(model), "Not sent.")
 
   let model = run(model, home.ThreadSubmitted("A", "go on", operator.Prompt))
   assert received(asked) == [#("A", "go on", operator.Prompt)]
@@ -449,7 +456,7 @@ pub fn the_outbox_words_each_state_test() {
 
   // Another thread says nothing while this one's is out.
   let other = drawn(run(model, home.InboxOpened("C")))
-  assert !string.contains(other, "Not sent")
+  assert !string.contains(other, "Not sent:")
   assert !string.contains(other, "Sending…")
 }
 
@@ -588,11 +595,11 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   let model = opened(creating())
   let landed = drawn(model)
   assert string.contains(landed, "<h1>Inbox</h1>")
-  assert !string.contains(landed, "‹ Inbox")
+  assert !string.contains(landed, "home-new home-inbox")
   assert !string.contains(landed, "Back to the inbox")
 
   let listed = run(model, home.ShowingList)
-  assert string.contains(drawn(listed), "‹ Inbox")
+  assert string.contains(drawn(listed), "home-new home-inbox")
   assert !string.contains(drawn(listed), "<h1>Inbox</h1>")
 
   let composing = run(model, home.ShowingNew)
@@ -602,7 +609,10 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   let pressed = run(model, home.InboxOpened("C"))
   let back = run(run(pressed, home.ShowingList), home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
-  assert string.contains(drawn(back), "Update · docs sweep")
+  assert string.contains(
+    drawn(back),
+    "<span class=\"inbox-name\">docs sweep</span>",
+  )
   let back = run(run(pressed, home.ShowingNew), home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
 }
@@ -632,15 +642,15 @@ pub fn the_default_thread_is_sticky_test() {
     #("C", Report(sessions.Working, None, [Glance("s2", "", "reading")])),
   ]
   let model = opened(start(home.OperatorCeiling, only_working))
-  assert string.contains(drawn(model), "Update · docs sweep · /src/loom</p>")
+  assert string.contains(drawn(model), "docs sweep · /src/loom · working")
 
   // An approval now outranks it, and the pane still shows the working thread.
   let later = run(model, home.Observed(reports()))
   assert string.contains(drawn(later), "Needs you<span")
-  assert string.contains(drawn(later), "Update · docs sweep · /src/loom</p>")
+  assert string.contains(drawn(later), "docs sweep · /src/loom · working")
   assert !string.contains(
     drawn(later),
-    "Approval · vetting lint · /src/loom</p>",
+    "vetting lint · /src/loom · waiting on an approval",
   )
 }
 
@@ -652,7 +662,7 @@ pub fn a_slow_session_keeps_its_last_report_test() {
   let without_c = list.filter(reports(), fn(row) { row.0 != "C" })
   let later = run(pressed, home.Observed(without_c))
 
-  assert string.contains(drawn(later), "Update · docs sweep · /src/loom</p>")
+  assert string.contains(drawn(later), "docs sweep · /src/loom · working")
   assert string.contains(drawn(later), "reading the spec")
 }
 
@@ -683,7 +693,7 @@ pub fn a_page_with_nothing_running_settles_on_the_composer_test() {
 // headline counts what the fresh answer holds.
 pub fn a_kept_report_is_not_counted_as_fresh_test() {
   let headline = fn(html) {
-    let assert Ok(#(_, rest)) = string.split_once(html, "inbox-headline\">")
+    let assert Ok(#(_, rest)) = string.split_once(html, "rail-note\">")
     let assert Ok(#(words, _)) = string.split_once(rest, "</p>")
     words
   }
@@ -811,7 +821,10 @@ pub fn a_missed_read_does_not_change_the_centre_test() {
 
   let missed = run(model, home.Observed([]))
   assert string.contains(drawn(missed), "<h1>Inbox</h1>")
-  assert string.contains(drawn(missed), "Approval · vetting lint")
+  assert string.contains(
+    drawn(missed),
+    "<span class=\"inbox-name\">vetting lint</span>",
+  )
 
   let quiet = [#("A", Report(sessions.Idle, None, []))]
   let calm = run(model, home.Observed(quiet))

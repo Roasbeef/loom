@@ -373,13 +373,13 @@ pub fn the_open_panes_read_settles_the_classification_test() {
   let model = settled_owner(process.new_subject(), home.Succeeded("ok"))
   assert string.contains(
     drawn(model),
-    "To review<span class=\"inbox-count\">1</span>",
+    "To review<span class=\"inbox-count\"> · 1</span>",
   )
 
   let failed = run(model, home.ReviewRead("A", Error("boom")))
   assert string.contains(
     drawn(failed),
-    "To review<span class=\"inbox-count\">1</span>",
+    "To review<span class=\"inbox-count\"> · 1</span>",
   )
 
   let cleaned = run(model, home.ReviewRead("A", Ok(clean())))
@@ -390,11 +390,14 @@ pub fn the_open_panes_read_settles_the_classification_test() {
 pub fn a_changed_idle_session_is_under_to_review_test() {
   let html = drawn(settled_owner(process.new_subject(), home.Succeeded("ok")))
 
-  assert string.contains(html, "To review<span class=\"inbox-count\">1</span>")
-  assert string.contains(html, "Waiting<span class=\"inbox-count\">1</span>")
-  let review_at = index_of(html, "Review · web ui")
+  assert string.contains(
+    html,
+    "To review<span class=\"inbox-count\"> · 1</span>",
+  )
+  assert string.contains(html, "Waiting<span class=\"inbox-count\"> · 1</span>")
+  let review_at = index_of(html, "<span class=\"inbox-kind\">Review</span>")
   assert review_at > 0
-  assert string.contains(html, "Waiting · lint")
+  assert string.contains(html, "<span class=\"inbox-name\">lint</span>")
 }
 
 // The pane says the message is untrusted, counts and cuts plainly, and draws
@@ -408,7 +411,7 @@ pub fn the_pane_says_what_it_cut_and_draws_text_only_test() {
     )
     || string.contains(html, "The agent's last finished turn, untrusted text")
   assert string.contains(html, "Done &lt;b&gt;it&lt;/b&gt;.")
-  assert string.contains(html, "5 files · +41 −9")
+  assert string.contains(html, "Ready to review: +41 −9 across 5 files")
   assert string.contains(html, "3 files not shown")
   assert string.contains(html, "12 more lines not shown")
   assert string.contains(html, "2 lines shortened to 400 bytes")
@@ -431,7 +434,7 @@ pub fn the_pane_says_what_it_cut_and_draws_text_only_test() {
 pub fn finds_are_pinned_at_their_lines_or_listed_at_the_top_test() {
   // The finds' own rows in the list also carry their text, so only the pane counts.
   let page = drawn(settled_owner(process.new_subject(), home.Succeeded("ok")))
-  let assert Ok(#(_, html)) = string.split_once(page, "Changes to review")
+  let assert Ok(#(_, html)) = string.split_once(page, "<div class=\"review\">")
 
   let added = index_of(html, "loop(base * 2)")
   let pinned = index_of(html, "No backoff in &lt;i&gt;retry&lt;/i&gt;.")
@@ -496,7 +499,7 @@ pub fn staging_sends_nothing_until_one_send_carries_it_all_test() {
   let html = drawn(sent)
   assert string.contains(html, find_id <> " (fixed): Closed as fixed.")
   assert string.contains(html, "Delivered to the session · queued")
-  assert string.contains(html, "Nothing is staged.")
+  assert string.contains(html, "Sent.")
 }
 
 // A close the daemon refuses halts the Send, and no prompt reaches the agent.
@@ -547,7 +550,6 @@ pub fn a_comment_on_a_file_not_in_the_review_is_refused_test() {
     |> run(home.ReviewCommented("other.gleam", "x"))
   let html = drawn(model)
   assert string.contains(html, "That file is not in this review.")
-  assert string.contains(html, "Nothing is staged.")
 }
 
 // A page that may only read draws the files and the finds, and no control.
@@ -557,8 +559,8 @@ pub fn a_page_that_may_not_act_draws_no_controls_test() {
   let model = scanned(scanned(model))
   let html = drawn(model)
 
-  assert string.contains(html, "Review · web ui")
-  assert string.contains(html, "5 files · +41 −9")
+  assert string.contains(html, "<span class=\"inbox-kind\">Review</span>")
+  assert string.contains(html, "Ready to review: +41 −9 across 5 files")
   assert string.contains(
       html,
       "Only the owner&#39;s operating page can send a review.",
@@ -584,7 +586,10 @@ pub fn an_unread_session_is_under_to_review_and_says_it_is_being_checked_test() 
   let model = opened(start(Some(silent), None))
   let html = drawn(model)
 
-  assert string.contains(html, "To review<span class=\"inbox-count\">2</span>")
+  assert string.contains(
+    html,
+    "To review<span class=\"inbox-count\"> · 2</span>",
+  )
   assert string.contains(html, "Checking for changes…")
   assert !string.contains(html, "Waiting<span")
 
@@ -592,7 +597,7 @@ pub fn an_unread_session_is_under_to_review_and_says_it_is_being_checked_test() 
   let refused = opened(start(Some(refusing), None))
   assert string.contains(
     drawn(refused),
-    "To review<span class=\"inbox-count\">2</span>",
+    "To review<span class=\"inbox-count\"> · 2</span>",
   )
 }
 
@@ -605,7 +610,7 @@ pub fn an_observer_sees_no_review_test() {
 
   assert !string.contains(html, "To review")
   assert !string.contains(html, "Changes to review")
-  assert string.contains(html, "Waiting<span class=\"inbox-count\">2</span>")
+  assert string.contains(html, "Waiting<span class=\"inbox-count\"> · 2</span>")
   assert string.contains(html, "Done &lt;b&gt;it&lt;/b&gt;.")
 }
 
@@ -694,7 +699,7 @@ pub fn the_receipt_goes_when_the_agent_next_speaks_test() {
     )
   let html = drawn(working)
   assert !string.contains(html, "To review<span")
-  assert string.contains(html, "Changes to review")
+  assert string.contains(html, "class=\"review\"")
   assert string.contains(html, "Delivered to the session · queued")
 
   // The turn ends with a new message: the hunks and the receipt were for what
@@ -747,7 +752,7 @@ pub fn a_refusal_schedules_exactly_one_rearm_test() {
   let model = run(model, home.Observed(answered))
   assert string.contains(
     drawn(model),
-    "To review<span class=\"inbox-count\">2</span>",
+    "To review<span class=\"inbox-count\"> · 2</span>",
   )
 }
 
@@ -864,7 +869,7 @@ pub fn a_refusing_reader_still_reaches_every_session_test() {
   assert process.call(allowance, 1000, Count) == 1
   assert string.contains(
     drawn(model),
-    "To review<span class=\"inbox-count\">5</span>",
+    "To review<span class=\"inbox-count\"> · 5</span>",
   )
 
   // Each later read of the page's activity finds the allowance refilled.
@@ -875,7 +880,7 @@ pub fn a_refusing_reader_still_reaches_every_session_test() {
     })
   assert string.contains(
     drawn(rounds),
-    "To review<span class=\"inbox-count\">5</span>",
+    "To review<span class=\"inbox-count\"> · 5</span>",
   )
 
   // One open read, which also answers for its session, four scans for the other

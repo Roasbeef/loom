@@ -1,7 +1,9 @@
 //// The inbox's review pane: a finished session's changed files, each with its
 //// hunks, the finds pinned at their lines, a verdict, a comment for each file
-//// and one outbox whose Send carries all of it (the attention inbox,
-//// `docs/design-notes/attention-inbox/README.md` section 2.1).
+//// and one outbox bar, at the foot of the pane, whose Send carries all of it
+//// (the attention inbox, `docs/design-notes/attention-inbox/README.md` section
+//// 2.1). `pane` returns the body, which the reading pane places under the
+//// thread's own title and message, and the bar, which it pins to its foot.
 ////
 //// The pane draws what `web_view/review_pane` holds. The review is the
 //// daemon's bounded reading of the worktree (`web_view/review_feed`), and every
@@ -28,14 +30,15 @@
 ////
 //// ## Flow
 ////
-//// `pane` → `body` → `file` → `hunk` / `find_card` → `outbox`
+//// `pane` → `body` → `file` → `hunk` / `find_card`, and `pane` → `outbox`
 ////
-//// 1. `pane` says why there is no review yet, or draws `body`.
+//// 1. `pane` says why there is no review yet, or draws `body`, and draws the
+////    `outbox` bar.
 //// 2. `body` draws the stat, the finds placed at no file, the verdict and the
-////    files, then the outbox.
+////    files.
 //// 3. `file` is one `<details>`: its finds, its hunks and its comment form.
 //// 4. `hunk` draws one hunk's lines and the finds anchored under them.
-//// 5. `outbox` lists what is staged and the Send that delivers it.
+//// 5. `outbox` draws the bar of what is staged and the Send that delivers it.
 
 import core/attention.{type Closure}
 import gleam/dict
@@ -44,6 +47,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -57,6 +61,7 @@ import web_view/review_pane.{type State}
 import web_view/review_pin_rule
 import web_view/review_stage_rule.{type Verdict}
 import web_view/view/diff
+import web_view/view/inbox_parts as parts
 
 /// The messages a page that may act sends from the pane.
 pub type Acting(message) {
@@ -94,32 +99,61 @@ pub type Offer(message) {
   )
 }
 
+/// A review pane drawn in two parts: the body, which scrolls with the thread,
+/// and the bar, which stays at the pane's foot.
+pub type Drawn(message) {
+  Drawn(
+    /// The thread's title when the review has been read: the final design's
+    /// "Ready to review: +412 −88 across 7 files". Nothing before that, and the
+    /// reading pane then keeps the thread's own head.
+    title: Option(String),
+    /// The review's sections.
+    body: Element(message),
+    /// The outbox bar.
+    bar: Element(message),
+  )
+}
+
 /// The review pane for the open session.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // review_thread.pane(review_thread.Offer(state:, finds: [], presses: 1, acting: None))
+/// // review_thread.pane(review_thread.Offer(state:, name: "build", finds: [], presses: 1, acting: None))
 /// ```
-pub fn pane(offer: Offer(message)) -> Element(message) {
-  html.section([attribute.class("inbox-section review")], [
-    html.h4([attribute.class("inbox-label")], [html.text("Changes to review")]),
-    case offer.state.loaded {
-      review_pane.Reading ->
-        html.p([attribute.class("inbox-hold")], [
-          html.text("Reading the worktree…"),
-        ])
-      review_pane.Unavailable(words:) ->
-        html.p([attribute.class("inbox-hold"), attribute.role("status")], [
-          html.text(words),
-        ])
-      review_pane.Read(review:) -> body(review, offer)
+pub fn pane(offer: Offer(message)) -> Drawn(message) {
+  Drawn(
+    title: case offer.state.loaded {
+      review_pane.Read(review:) ->
+        Some(
+          "Ready to review: +"
+          <> int.to_string(review.stat.added)
+          <> " −"
+          <> int.to_string(review.stat.removed)
+          <> " across "
+          <> int.to_string(review.stat.files)
+          <> plural(review.stat.files, " file", " files"),
+        )
+      review_pane.Reading | review_pane.Unavailable(_) -> None
     },
-  ])
+    body: html.div([attribute.class("review")], [
+      case offer.state.loaded {
+        review_pane.Reading ->
+          html.p([attribute.class("inbox-meta")], [
+            html.text("Reading the worktree…"),
+          ])
+        review_pane.Unavailable(words:) ->
+          html.p([attribute.class("inbox-meta"), attribute.role("status")], [
+            html.text(words),
+          ])
+        review_pane.Read(review:) -> body(review, offer)
+      },
+    ]),
+    bar: outbox(offer),
+  )
 }
 
-/// The stat, the finds that name no shown file, the verdict, the files and the
-/// outbox.
+/// The stat, the finds that name no shown file, the verdict and the files.
 fn body(review: Review, offer: Offer(message)) -> Element(message) {
   let pins =
     list.map(offer.finds, fn(find) {
@@ -129,44 +163,58 @@ fn body(review: Review, offer: Offer(message)) -> Element(message) {
 
   html.div([attribute.class("review-body")], [
     stat(review),
+    verdict_control(offer),
     case placed.unplaced {
       [] -> element.none()
       ids ->
-        html.div(
-          [attribute.class("review-finds")],
-          list.filter_map(ids, fn(id) { find_of(id, offer) }),
+        parts.section(
+          "Noticed along the way · " <> int.to_string(list.length(ids)),
+          [
+            parts.card([
+              html.div(
+                [attribute.class("review-finds")],
+                list.filter_map(ids, fn(id) { find_of(id, offer) }),
+              ),
+            ]),
+          ],
         )
     },
-    verdict_control(offer),
     case review.files {
       [] -> element.none()
       files ->
-        keyed.ul(
-          [attribute.class("review-files")],
-          list.index_map(list.zip(files, placed.files), fn(entry, index) {
-            let #(each, file_pins) = entry
-            let key = key_of(offer, "file", index)
+        parts.section("Files · source, then tests, then docs", [
+          html.div([attribute.class("inbox-card review-files-card")], [
+            keyed.ul(
+              [attribute.class("review-files")],
+              list.index_map(list.zip(files, placed.files), fn(entry, index) {
+                let #(each, file_pins) = entry
+                let key = key_of(offer, "file", index)
 
-            #(key, html.li([], [file(each, file_pins, index, offer)]))
-          }),
-        )
+                #(key, html.li([], [file(each, file_pins, index, offer)]))
+              }),
+            ),
+          ]),
+        ])
     },
-    outbox(offer),
   ])
 }
 
-/// The count line and every statement of what was not shown.
+/// The count pills and every statement of what was not shown.
 fn stat(review: Review) -> Element(message) {
   html.div([attribute.class("review-stat")], [
-    html.p([], [
-      html.text(
-        int.to_string(review.stat.files)
-        <> plural(review.stat.files, " file", " files")
-        <> " · +"
-        <> int.to_string(review.stat.added)
-        <> " −"
-        <> int.to_string(review.stat.removed),
-      ),
+    html.p([attribute.class("inbox-pills")], [
+      html.span([attribute.class("inbox-pill inbox-pill-ok")], [
+        html.text("+" <> int.to_string(review.stat.added)),
+      ]),
+      html.span([attribute.class("inbox-pill inbox-pill-bad")], [
+        html.text("−" <> int.to_string(review.stat.removed)),
+      ]),
+      html.span([attribute.class("inbox-pill")], [
+        html.text(
+          int.to_string(review.stat.files)
+          <> plural(review.stat.files, " file", " files"),
+        ),
+      ]),
     ]),
     case review.repository {
       review_feed.Unborn ->
@@ -201,10 +249,10 @@ fn file(
   html.details([attribute.class("review-file")], [
     html.summary([attribute.class("review-file-head")], [
       html.span([attribute.class("review-path")], [html.text(each.path)]),
+      staged_mark(each.path, pins, offer),
       html.span([attribute.class("review-change")], [
         html.text(change_words(each) <> counts(each)),
       ]),
-      staged_mark(each.path, pins, offer),
     ]),
     case pins.loose {
       [] -> element.none()
@@ -309,14 +357,12 @@ fn find_card(
   offer: Offer(message),
 ) -> Element(message) {
   html.div([attribute.class("review-find")], [
-    html.p([attribute.class("inbox-label")], [
-      html.text(
-        "The agent noticed ("
+    parts.quote(
+      "The agent noticed ("
         <> attention.find_kind_name(find.kind)
         <> "), untrusted text",
-      ),
-    ]),
-    html.p([attribute.class("inbox-message")], [html.text(find.head)]),
+      find.head,
+    ),
     case find.path {
       Some(path) ->
         html.p([attribute.class("inbox-place")], [
@@ -385,7 +431,7 @@ fn find_form(
       key_of(offer, "find", 0) <> "-" <> id,
       html.form(
         [
-          attribute.class("place-composer inbox-form"),
+          attribute.class("inbox-form"),
           event.on("submit", find_submitted(id, acting.find))
             |> event.prevent_default,
         ],
@@ -393,7 +439,7 @@ fn find_form(
           html.textarea(
             [
               attribute.name("note"),
-              attribute.class("composer-name"),
+              attribute.class("inbox-ta"),
               attribute.aria_label("A note for the agent about this find"),
               attribute.placeholder("A note for the agent (optional)"),
               attribute.attribute("rows", "2"),
@@ -404,7 +450,7 @@ fn find_form(
             ],
             "",
           ),
-          html.div([attribute.class("cbar")], [
+          html.div([attribute.class("inbox-acts")], [
             closure_button("Close as Fixed", "fixed"),
             closure_button("Filed", "filed"),
             closure_button("Dismiss", "dismissed"),
@@ -422,31 +468,36 @@ fn closure_button(label: String, word: String) -> Element(message) {
       attribute.type_("submit"),
       attribute.name("closure"),
       attribute.value(word),
-      attribute.class("place-send"),
+      attribute.class("inbox-btn inbox-sm"),
     ],
     [html.text(label)],
   )
 }
 
-/// The verdict control: three buttons, one pressed when it is staged. A page
-/// that may not act has none.
+/// The verdict control: three buttons under "Your verdict", one pressed when it
+/// is staged. A page that may not act has none.
 fn verdict_control(offer: Offer(message)) -> Element(message) {
   case offer.acting {
     None -> element.none()
     Some(acting) ->
-      html.div(
-        [attribute.class("review-verdict cbar"), attribute.role("group")],
-        [
-          verdict_button("Approve", review_stage_rule.Approve, acting, offer),
-          verdict_button(
-            "Request changes",
-            review_stage_rule.RequestChanges,
-            acting,
-            offer,
-          ),
-          verdict_button("Comment", review_stage_rule.Comment, acting, offer),
-        ],
-      )
+      parts.section("Your verdict", [
+        html.div(
+          [
+            attribute.class("inbox-acts review-verdict"),
+            attribute.role("group"),
+          ],
+          [
+            verdict_button("Approve", review_stage_rule.Approve, acting, offer),
+            verdict_button(
+              "Request changes",
+              review_stage_rule.RequestChanges,
+              acting,
+              offer,
+            ),
+            verdict_button("Comment", review_stage_rule.Comment, acting, offer),
+          ],
+        ),
+      ])
   }
 }
 
@@ -462,7 +513,7 @@ fn verdict_button(
   html.button(
     [
       attribute.type_("button"),
-      attribute.class("place-send"),
+      attribute.class("inbox-btn"),
       attribute.attribute("aria-pressed", case pressed {
         True -> "true"
         False -> "false"
@@ -489,7 +540,7 @@ fn comment_form(
           key_of(offer, "comment", index),
           html.form(
             [
-              attribute.class("place-composer inbox-form"),
+              attribute.class("inbox-form"),
               event.on("submit", comment_submitted(path, acting.comment))
                 |> event.prevent_default,
             ],
@@ -497,7 +548,7 @@ fn comment_form(
               html.textarea(
                 [
                   attribute.name("comment"),
-                  attribute.class("composer-name"),
+                  attribute.class("inbox-ta"),
                   attribute.aria_label("Comment on this file"),
                   attribute.placeholder("Comment on this file"),
                   attribute.attribute("rows", "2"),
@@ -508,9 +559,12 @@ fn comment_form(
                 ],
                 "",
               ),
-              html.div([attribute.class("cbar")], [
+              html.div([attribute.class("inbox-acts")], [
                 html.button(
-                  [attribute.type_("submit"), attribute.class("place-send")],
+                  [
+                    attribute.type_("submit"),
+                    attribute.class("inbox-btn inbox-sm"),
+                  ],
                   [html.text("Stage the comment")],
                 ),
               ]),
@@ -546,17 +600,22 @@ fn staged_mark(
   ])
 }
 
-/// The outbox: what is staged, why a stage was refused, what the last Send did
-/// and the buttons. A page that may not act draws a line that says so.
+/// The outbox bar: what is staged and to whom, why a stage was refused, what
+/// the last Send did and the buttons. A page that may not act draws a line that
+/// says so, in the bar's place.
 fn outbox(offer: Offer(message)) -> Element(message) {
   // A page that may not act draws a line that says so, and no outbox.
   case offer.acting {
     None ->
-      html.p([attribute.class("inbox-hold")], [
-        html.text("Only the owner's operating page can send a review."),
-      ])
+      parts.outbox_bar(
+        "",
+        "Only the owner's operating page can send a review.",
+        [],
+        element.none(),
+      )
     Some(acting) -> {
       let state = offer.state
+      let chips = staged_lines(state)
 
       // A Send that is out disables the buttons.
       let sending = case state.progress {
@@ -564,116 +623,93 @@ fn outbox(offer: Offer(message)) -> Element(message) {
         review_pane.Resting | review_pane.Settled(_) -> False
       }
 
-      html.section([attribute.class("inbox-section inbox-outbox-list")], [
-        html.h4([attribute.class("inbox-label")], [html.text("Outbox")]),
-        case review_pane.has_staged(state) {
-          False ->
-            html.p([attribute.class("inbox-hold")], [
-              html.text(
-                "Nothing is staged. Nothing is sent until you press Send.",
-              ),
-            ])
-          True ->
-            html.div([], [
-              html.ul([], staged_lines(state)),
-              html.p([attribute.class("inbox-hold")], [
-                html.text(
-                  "Staged items for "
-                  <> offer.name
-                  <> " are discarded if you open another review.",
-                ),
-              ]),
-            ])
+      parts.outbox_bar(
+        case state.progress, review_pane.has_staged(state) {
+          review_pane.Settled(_), _ -> "Sent."
+          _, True ->
+            "To "
+            <> offer.name
+            <> " · "
+            <> int.to_string(list.length(chips))
+            <> " staged."
+          _, False -> "Not sent."
         },
-        case state.problem {
-          Some(words) ->
-            html.p(
-              [attribute.class("inbox-standing"), attribute.role("alert")],
-              [
-                html.text(words),
-              ],
-            )
-          None -> element.none()
-        },
-        receipt(state),
-        html.div([attribute.class("cbar")], [
+        bar_words(state, offer.name),
+        chips,
+        html.div([attribute.class("inbox-outbox-buttons")], [
           html.button(
             [
               attribute.type_("button"),
-              attribute.class("place-send"),
-              attribute.disabled(!review_pane.has_staged(state) || sending),
-              event.on_click(acting.send),
-            ],
-            [html.text("Send")],
-          ),
-          html.button(
-            [
-              attribute.type_("button"),
-              attribute.class("inbox-open"),
+              attribute.class("inbox-btn"),
               attribute.disabled(!review_pane.has_staged(state) || sending),
               event.on_click(acting.unstage),
             ],
             [html.text("Clear")],
           ),
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("inbox-primary"),
+              attribute.disabled(!review_pane.has_staged(state) || sending),
+              event.on_click(acting.send),
+            ],
+            [html.text("Send")],
+          ),
         ]),
-      ])
+      )
     }
   }
 }
 
-/// The staged items as the lines the outbox lists.
-fn staged_lines(state: State) -> List(Element(message)) {
+/// What the bar says after its first words: the refusal of the last stage, the
+/// outcome of the last Send in the daemon's fixed words, or what happens to the
+/// staged items.
+fn bar_words(state: State, name: String) -> String {
+  case state.problem, state.progress {
+    Some(words), _ -> words
+    None, review_pane.Sending(..) -> "Sending…"
+    None, review_pane.Settled(receipt:) ->
+      string.join(review_pane.receipt_lines(receipt), " ")
+    None, review_pane.Resting ->
+      case review_pane.has_staged(state) {
+        True ->
+          "Staged items for "
+          <> name
+          <> " are discarded if you open another review."
+        False -> "Nothing is staged. Nothing is sent until you press Send."
+      }
+  }
+}
+
+/// The staged items as the chips the outbox bar lists.
+fn staged_lines(state: State) -> List(String) {
   let staging = state.staging
 
   list.flatten([
     case staging.verdict {
       Some(verdict) -> [
-        html.li([], [
-          html.text("Verdict: " <> review_outbox_rule.verdict_words(verdict)),
-        ]),
+        "Verdict: " <> review_outbox_rule.verdict_words(verdict),
       ]
       None -> []
     },
     list.map(staging.comments, fn(each) {
-      html.li([], [html.text("Comment on " <> each.path <> ": " <> each.text)])
+      "Comment on " <> each.path <> ": " <> each.text
     }),
     list.map(staging.finds, fn(action) {
-      html.li([], [
-        html.text(
-          "Close "
-          <> action.id
-          <> " as "
-          <> review_outbox_rule.closure_words(action.closure)
-          <> case action.note {
-            Some(note) -> ": " <> note
-            None -> ""
-          }
-          <> case action.standing {
-            review_stage_rule.Applied -> " (applied)"
-            review_stage_rule.Pending -> ""
-          },
-        ),
-      ])
+      "Close "
+      <> action.id
+      <> " as "
+      <> review_outbox_rule.closure_words(action.closure)
+      <> case action.note {
+        Some(note) -> ": " <> note
+        None -> ""
+      }
+      <> case action.standing {
+        review_stage_rule.Applied -> " (applied)"
+        review_stage_rule.Pending -> ""
+      }
     }),
   ])
-}
-
-/// What the Send did, in the daemon's fixed words: each close and the prompt.
-fn receipt(state: State) -> Element(message) {
-  case state.progress {
-    review_pane.Resting -> element.none()
-    review_pane.Sending(..) ->
-      html.p([attribute.class("inbox-outbox"), attribute.role("status")], [
-        html.text("Sending…"),
-      ])
-    review_pane.Settled(receipt:) ->
-      html.ul(
-        [attribute.class("inbox-outbox"), attribute.role("status")],
-        list.map(review_pane.receipt_lines(receipt), fn(line) {
-          html.li([], [html.text(line)])
-        }),
-      )
-  }
 }
 
 /// A find form's submit: exactly a `note` and a `closure` that is one of the

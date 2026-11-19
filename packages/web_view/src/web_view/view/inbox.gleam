@@ -1,56 +1,63 @@
-//// The home page's attention inbox: the owner's running sessions as a list of
-//// threads grouped by what they need, with a reading pane for the thread the
-//// owner selected.
+//// The home page's attention inbox: a full-height split of a thread list and a
+//// reading pane, each scrolling on its own, as the final design draws it
+//// (`docs/design-notes/attention-inbox/final/mockup.html`).
 ////
 //// It answers one question on landing, "what is waiting for me?", from what
-//// the daemon's activity read already says (`web_view/sessions.Report`) and
-//// from nothing else. `web_view/inbox_rule` decides the groups, the kinds, the
-//// heads and the headline, and this module draws them. The list has a group
-//// header with its count over the group's threads, each a button that shows
-//// the thread in the reading pane. The quiet group is folded to one line of
-//// names, since a session with nothing to say has nothing to open.
+//// the daemon's activity read already says (`web_view/sessions.Report`), the
+//// attention feed, the review scan and the project boards. `web_view/inbox_rule`
+//// decides the groups, the kinds and the heads, and this module draws them. The
+//// list is a column of groups. Each group has a band across the column, its name
+//// and count at the left and a gloss at the right, over its rows, and each row
+//// is a button that shows the thread in the reading pane. The quiet group is
+//// folded to one line of names, since a session with nothing to say has nothing
+//// to open. A rail folder (`Offer.folder`) narrows the list to one group; it is
+//// the page's own state and the daemon is told nothing.
 ////
-//// The reading pane names the thread (the kind's word, the session's name and
-//// its workspace) and shows the main strand's last finished message and what
-//// its other strands are doing. Both are model text, so each is drawn as a
-//// text node under a label that says whose words they are: the message is "the
-//// agent's last finished turn, untrusted text", which says in the label that
-//// it is not current work and not a question the page has verified. A session
-//// with an approval pending shows only the words "An approval is pending" and
-//// a button to the session's own page. The approval's content and its deciding
-//// control never appear on Home: the decision is made where the approval's
-//// digest is shown, on the session's page.
+//// The reading pane names the thread (a kind chip, then the session, its
+//// workspace and its state in quiet words, then the head as a title) and shows
+//// the main strand's last finished message and what its other strands are
+//// doing. Both are model text, so each is drawn as a text node under a label
+//// that says whose words they are: the message is "the agent's last finished
+//// turn, untrusted text", which says in the label that it is not current work
+//// and not a question the page has verified. A session with an approval pending
+//// shows what the approval asks for, as a card, and a button to the session's
+//// own page. The approval's deciding control never appears on Home: the
+//// decision is made where the approval's digest is shown, on the session's
+//// page.
 ////
 //// The module draws inside the home's table region (`home.table_path`) and its
-//// only handlers are clicks, so the socket admits it without a new rule: a
-//// click beneath `table_path` is already a row's press. "Open session" and
-//// "Decide on the session's page" send the same message a list row's press
-//// sends (`Offer.open`), so there is one way to open a session from Home.
+//// only handlers are clicks and the message form's submit, so the socket admits
+//// it without a new rule: an event beneath `table_path` is already a row's
+//// press. "Open session" and "Decide on the session's page" send the same
+//// message a list row's press sends (`Offer.open`), so there is one way to open
+//// a session from Home.
 ////
 //// A thread ends in a message field when the page holds the capability to send
-//// (`Offer.field`, protocol-change/118). The field is one box and the buttons
-//// the thread's kind offers (`thread_send.choices`): Send for an idle session,
-//// Queue and Steer for a working one, and Queue alone, with the words "held
-//// behind the approval", for one that waits on an approval. Each button is a
-//// submit button that names its delivery, so the one pressed travels with the
-//// form, as the operator page's composer does. The handler carries the
-//// session's identity, drawn into it, and the browser supplies the draft and
-//// the delivery and nothing else. Under the field the outbox says in fixed
+//// (`Offer.field`, protocol-change/118). The field is a box in the pane and the
+//// buttons the thread's kind offers (`thread_send.choices`) are in the outbox
+//// bar at the pane's foot, as submit buttons that name their delivery and
+//// belong to the form through its `form` attribute: Send for an idle session,
+//// Queue and Steer for a working one, and Send alone, with the words that say a
+//// message does not decide the approval, for one that waits on an approval. The
+//// handler carries the session's identity, drawn into it, and the browser
+//// supplies the draft and the delivery and nothing else. The bar says in fixed
 //// words what was sent and to whom.
 ////
-//// The classes are complete literals, so Tailwind finds them.
+//// The classes are complete literals, so Tailwind finds them. Rows, bands and
+//// the pane's frame are `view/inbox_parts`.
 ////
 //// ## Flow
 ////
-//// `view` → `threads_list` → `group` → `row` → `reading`
+//// `view` → `threads_list` → `band_group` / `quiet_group` → `row` → `reading`
 ////
-//// 1. `view` draws the headline, the list and the reading pane side by side.
-//// 2. `threads_list` draws each group the rule found, and `quiet_line` folds the
-////    quiet one.
+//// 1. `view` draws the list and the reading pane side by side.
+//// 2. `threads_list` draws each group the folder shows, in the final design's
+////    order, and `quiet_group` folds the quiet one.
 //// 3. `row` draws one row, a button that selects its session.
-//// 4. `reading` draws the selected thread: its eyebrow, the approval notice or
-////    the failure line, the last message, the glances and the open button.
-//// 5. `message_field` draws the thread's form and its outbox, and `submission`
+//// 4. `reading` draws the selected thread: its eyebrow, title, the approval
+////    card or the failure line, the last message, the glances and the open
+////    button.
+//// 5. `compose` draws the thread's form and its outbox bar, and `submission`
 ////    reads the form's fields back into a draft and a delivery.
 
 import gleam/dynamic/decode
@@ -65,10 +72,11 @@ import lustre/element/keyed
 import lustre/event
 import session_view/operator.{type Delivery}
 import web_view/composer
-import web_view/inbox_rule.{type Group, type Kind, type Thread}
+import web_view/inbox_rule.{type Folder, type Group, type Kind, type Thread}
 import web_view/sessions.{type Glance}
 import web_view/thread_send.{type Outbox}
 import web_view/view/heading
+import web_view/view/inbox_parts as parts
 
 /// The thread the reading pane shows, and how it came to.
 pub type Pick {
@@ -83,8 +91,8 @@ pub type Pick {
 /// What the inbox draws from, and the messages its buttons send.
 pub type Offer(message) {
   Offer(
-    /// What the headline over the list says (`inbox_rule.headline`).
-    headline: String,
+    /// The rail folder the list is narrowed to. `Everything` draws every group.
+    folder: Folder,
     /// The threads in their groups, in the order they are drawn
     /// (`inbox_rule.grouped`).
     groups: List(#(Group, List(Thread))),
@@ -99,6 +107,8 @@ pub type Offer(message) {
     /// What "Open session" and "Decide on the session's page" send, given the
     /// session: the message a list row's press sends.
     open: fn(String) -> message,
+    /// What the pane's back control sends on a narrow screen: show the list.
+    back: message,
     /// What "All sessions" sends: show the page's full list.
     all_sessions: message,
     /// What "New session" sends, on a page that may create one, and nothing on
@@ -121,14 +131,27 @@ pub type Offer(message) {
     /// The sessions listed under "To review" whose tree has not been read yet:
     /// their rows say they are being checked in place of a count of changes.
     checking: List(String),
+    /// How long a session's thread has waited, in the page's words, by session.
+    /// The activity read carries no raise time for an approval, so the page
+    /// passes none today and a row draws no age; a later layer that reads one
+    /// fills this and the row and the pane's eyebrow draw it as the final design
+    /// does ("1h 22m", "waiting since 12:58").
+    waited: List(#(String, String)),
   )
 }
 
-/// A review pane and the session it belongs to. The reading pane draws it for
-/// that session's thread in place of the one-box message field, since the
-/// review's own outbox carries what the owner has to say.
+/// A review pane and the session it belongs to. The reading pane draws its body
+/// for that session's thread and its outbox bar at the pane's foot, in place of
+/// the one-box message field, since the review's own outbox carries what the
+/// owner has to say.
 pub type Reviewed(message) {
-  Reviewed(session: String, pane: Element(message))
+  Reviewed(
+    session: String,
+    /// The thread's title once the review is read, which replaces the head.
+    title: Option(String),
+    body: Element(message),
+    bar: Element(message),
+  )
 }
 
 /// The attention threads, drawn by `web_view/view/attention_thread`: the rows
@@ -138,6 +161,9 @@ pub type Threads(message) {
     /// One row for each ask and stuck strand, longest wait first. They sit at
     /// the head of "Needs you".
     needs: List(Element(message)),
+    /// One row for each project ticket that waits on a person. They follow the
+    /// asks in "Needs you", and are the "Projects" folder.
+    tickets: List(Element(message)),
     /// One row for each open find, under their own heading.
     finds: List(Element(message)),
     /// The pane of the open item thread, which replaces the session's reading
@@ -165,34 +191,47 @@ pub type Field(message) {
   )
 }
 
-/// The inbox: the headline, the grouped list and the reading pane, with a way
-/// to the full list.
+/// The id of the message form. The outbox bar's buttons name it in their `form`
+/// attribute, so they submit it from outside its element. Only one thread's form
+/// is on the page at a time.
+const form_id = "inbox-message-form"
+
+/// How a button is drawn: the one action the thread leads to, or any other.
+type Emphasis {
+  /// The thread's main action, in the current colour.
+  Primary
+
+  /// An ordinary button.
+  Plain
+}
+
+/// What a thread's parts are in the list's order, so a folder can show some and
+/// hide the rest.
+type Part {
+  NeedsPart
+  ProjectsPart
+  ReviewPart
+  WaitingPart
+  FindsPart
+  UpdatesPart
+  QuietPart
+}
+
+/// The inbox: the grouped list and the reading pane, side by side, each
+/// scrolling on its own.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // inbox.view(inbox.Offer(headline:, groups:, selected: None, opening: None, pick:, open:, all_sessions:, new_session: None))
+/// // inbox.view(inbox.Offer(folder: inbox_rule.Everything, groups:, selected: None, opening: None, pick:, open:, back:, all_sessions:, new_session: None, presses: 0, field: None, attention: None, review: None, checking: [], waited: []))
 /// ```
 pub fn view(offer: Offer(message)) -> Element(message) {
-  html.section([attribute.class("home-sessions inbox")], [
-    html.h2([attribute.class("home-heading")], [html.text("Inbox")]),
-    html.p([attribute.class("inbox-headline")], [html.text(offer.headline)]),
-    nothing_waits(offer),
-    html.div([attribute.class("inbox-body")], [
-      threads_list(offer),
-      case offer.attention {
-        Some(Threads(pane: Some(open), ..)) -> open
-        Some(Threads(pane: None, ..)) | None -> reading_pane(offer)
-      },
-    ]),
-    html.button(
-      [
-        attribute.type_("button"),
-        attribute.class("home-new"),
-        event.on_click(offer.all_sessions),
-      ],
-      [html.text("All sessions ›")],
-    ),
+  html.section([attribute.class("inbox")], [
+    threads_list(offer),
+    case offer.attention {
+      Some(Threads(pane: Some(open), ..)) -> open
+      Some(Threads(pane: None, ..)) | None -> reading_pane(offer)
+    },
   ])
 }
 
@@ -203,7 +242,10 @@ fn nothing_waits(offer: Offer(message)) -> Element(message) {
   // The attention rows are threads too: a page that draws an ask, a find or a
   // saved session's row never says that nothing waits.
   let rows = case offer.attention {
-    Some(threads) -> list.length(threads.needs) + list.length(threads.finds)
+    Some(threads) ->
+      list.length(threads.needs)
+      + list.length(threads.tickets)
+      + list.length(threads.finds)
     None -> 0
   }
 
@@ -229,97 +271,170 @@ fn nothing_waits(offer: Offer(message)) -> Element(message) {
   }
 }
 
-/// The grouped list: a section for each group that holds threads and has
-/// something to open, and one folded line for the quiet ones.
-fn threads_list(offer: Offer(message)) -> Element(message) {
-  // The attention rows lead the group that waits on the owner.
-  let needs = case offer.attention {
-    Some(threads) -> threads.needs
-    None -> []
+/// Whether the folder shows a part. "Needs you" includes the tickets that wait
+/// on a person, which is why "Projects" is a narrower view of the same rows.
+fn visible(folder: Folder, part: Part) -> Bool {
+  case folder, part {
+    inbox_rule.Everything, _ -> True
+    inbox_rule.Needing, NeedsPart -> True
+    inbox_rule.Reviewing, ReviewPart -> True
+    inbox_rule.Finding, FindsPart -> True
+    inbox_rule.Updating, UpdatesPart -> True
+    inbox_rule.Projecting, ProjectsPart -> True
+    _, _ -> False
   }
-
-  // The finds follow the groups under a heading of their own.
-  let finds = case offer.attention {
-    Some(threads) -> threads.finds
-    None -> []
-  }
-
-  let has_needs_group =
-    list.any(offer.groups, fn(entry) { entry.0 == inbox_rule.NeedsYou })
-
-  // The attention rows sit in Needs you, which is drawn when only they fill it.
-  let groups = case has_needs_group, needs {
-    False, [_, ..] -> [#(inbox_rule.NeedsYou, []), ..offer.groups]
-    True, _ | False, [] -> offer.groups
-  }
-
-  html.div(
-    [attribute.class("inbox-list")],
-    list.append(
-      list.map(groups, fn(entry) {
-        case entry.0 {
-          inbox_rule.Quiet -> quiet_line(entry.1)
-          inbox_rule.NeedsYou -> group(entry.0, entry.1, needs, offer)
-          inbox_rule.ToReview | inbox_rule.Waiting | inbox_rule.Updates ->
-            group(entry.0, entry.1, [], offer)
-        }
-      }),
-      [finds_group(finds)],
-    ),
-  )
 }
 
-/// The finds under their heading, or nothing when there are none.
+/// The grouped list: a band and its rows for each group that holds threads and
+/// the folder shows, in the final design's order, then the folded quiet line and
+/// the way to the full list.
+fn threads_list(offer: Offer(message)) -> Element(message) {
+  // A page with no feed has no attention threads, which is an empty set of them.
+  let attention = case offer.attention {
+    Some(threads) -> threads
+    None -> Threads(needs: [], tickets: [], finds: [], pane: None, evidence: [])
+  }
+
+  let groups = offer.groups
+  let sessions_in = fn(which) {
+    case list.key_find(groups, which) {
+      Ok(found) -> found
+      Error(Nil) -> []
+    }
+  }
+  let draw = fn(part, which, extra) {
+    case visible(offer.folder, part) {
+      True -> band_group(which, extra, sessions_in(which), offer)
+      False -> element.none()
+    }
+  }
+
+  html.div([attribute.class("inbox-list")], [
+    nothing_waits(offer),
+    case offer.folder {
+      inbox_rule.Projecting -> projects_group(attention.tickets)
+      _ ->
+        draw(
+          NeedsPart,
+          inbox_rule.NeedsYou,
+          list.append(attention.needs, attention.tickets),
+        )
+    },
+    draw(ReviewPart, inbox_rule.ToReview, []),
+    draw(WaitingPart, inbox_rule.Waiting, []),
+    case visible(offer.folder, FindsPart) {
+      True -> finds_group(attention.finds)
+      False -> element.none()
+    },
+    draw(UpdatesPart, inbox_rule.Updates, []),
+    case visible(offer.folder, QuietPart) {
+      True -> quiet_group(sessions_in(inbox_rule.Quiet))
+      False -> element.none()
+    },
+    all_sessions(offer),
+  ])
+}
+
+/// The tickets alone, when the "Projects" folder is chosen.
+fn projects_group(rows: List(Element(message))) -> Element(message) {
+  case rows {
+    [] -> element.none()
+    [_, ..] ->
+      parts.group(
+        parts.band(
+          "Projects",
+          Some(list.length(rows)),
+          "tickets waiting on a person",
+          parts.Plain,
+        ),
+        rows,
+      )
+  }
+}
+
+/// The finds under their band, or nothing when there are none.
 fn finds_group(rows: List(Element(message))) -> Element(message) {
   case rows {
     [] -> element.none()
     [_, ..] ->
+      parts.group(
+        parts.band(
+          "Finds",
+          Some(list.length(rows)),
+          "noticed outside the task",
+          parts.Plain,
+        ),
+        rows,
+      )
+  }
+}
+
+/// One group's band, with its count, over its rows: `extra` first, which are
+/// rows another module drew for the group, then the sessions'. A group with
+/// nothing in it draws nothing, except "Needs you" when only `extra` fills it.
+fn band_group(
+  which: Group,
+  extra: List(Element(message)),
+  threads: List(Thread),
+  offer: Offer(message),
+) -> Element(message) {
+  let rows = list.append(extra, list.map(threads, row(_, which, offer)))
+
+  // A group with no row has no band.
+  case rows {
+    [] -> element.none()
+    [_, ..] ->
+      parts.group(
+        parts.band(
+          inbox_rule.group_words(which),
+          Some(list.length(rows)),
+          inbox_rule.gloss(which),
+          case which {
+            inbox_rule.NeedsYou -> parts.Signal
+            inbox_rule.ToReview
+            | inbox_rule.Waiting
+            | inbox_rule.Updates
+            | inbox_rule.Quiet -> parts.Plain
+          },
+        ),
+        rows,
+      )
+  }
+}
+
+/// The quiet sessions folded to a band and one line of names. They have nothing
+/// to read, so the line is text and not a row of buttons.
+fn quiet_group(threads: List(Thread)) -> Element(message) {
+  case threads {
+    [] -> element.none()
+    [_, ..] ->
       html.section([attribute.class("inbox-group")], [
-        html.h3([attribute.class("inbox-group-head")], [
-          html.text("Finds"),
-          html.span([attribute.class("inbox-count")], [
-            html.text(int.to_string(list.length(rows))),
-          ]),
-        ]),
-        html.ul([attribute.class("inbox-threads")], rows),
+        parts.band(
+          "Folded",
+          None,
+          inbox_rule.gloss(inbox_rule.Quiet),
+          parts.Plain,
+        ),
+        parts.folded("Quiet", list.map(threads, inbox_rule.shown_name)),
       ])
   }
 }
 
-/// One group's header, with its count, over its threads.
-fn group(
-  which: Group,
-  threads: List(Thread),
-  extra: List(Element(message)),
-  offer: Offer(message),
-) -> Element(message) {
-  html.section([attribute.class("inbox-group")], [
-    html.h3([attribute.class("inbox-group-head")], [
-      html.text(inbox_rule.group_words(which)),
-      html.span([attribute.class("inbox-count")], [
-        html.text(int.to_string(list.length(threads) + list.length(extra))),
-      ]),
-    ]),
-    html.ul(
-      [attribute.class("inbox-threads")],
-      list.append(extra, list.map(threads, row(_, which, offer))),
-    ),
-  ])
-}
-
-/// The quiet sessions folded to a line of names. They have nothing to read, so
-/// the line is text and not a row of buttons.
-fn quiet_line(threads: List(Thread)) -> Element(message) {
-  let names = list.map(threads, fn(each) { each.name })
-
-  html.p([attribute.class("inbox-quiet")], [
-    html.text("Quiet: " <> string.join(names, ", ")),
-  ])
+/// The way to the page's full list, at the foot of the list's column.
+fn all_sessions(offer: Offer(message)) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("home-new inbox-all"),
+      event.on_click(offer.all_sessions),
+    ],
+    [html.text("All sessions ›")],
+  )
 }
 
 /// One thread's row: a button that shows the thread in the reading pane. Its
-/// eyebrow is the kind's word and the session's name, and its head is the one
-/// line the rule words from the report.
+/// first line is the session's name, and its chip is the kind's word, then the
+/// one line the rule words from the report.
 fn row(
   thread: Thread,
   which: Group,
@@ -327,38 +442,52 @@ fn row(
 ) -> Element(message) {
   let kind = inbox_rule.kind(thread.report)
 
-  html.li([], [
-    html.button(
-      [
-        attribute.type_("button"),
-        attribute.class("inbox-thread"),
-        attribute.class(kind_class(kind)),
-        selection_class(thread.id, offer.selected),
-        event.on_click(offer.pick(thread.id)),
-      ],
-      [
-        html.span([attribute.class("inbox-eyebrow")], [
-          html.text(
-            row_word(kind, which) <> " · " <> inbox_rule.shown_name(thread),
-          ),
-        ]),
-        html.span([attribute.class("inbox-head")], [
-          html.text(inbox_rule.thread_head(thread)),
-        ]),
-        case which, list.contains(offer.checking, thread.id) {
-          inbox_rule.ToReview, True ->
-            html.span([attribute.class("inbox-age")], [
-              html.text("Checking for changes…"),
-            ])
-          _, _ -> element.none()
-        },
-      ],
+  parts.row(
+    parts.Facts(
+      dot: dot_of(kind),
+      name: inbox_rule.shown_name(thread),
+      age: case which, list.contains(offer.checking, thread.id) {
+        inbox_rule.ToReview, True ->
+          Some(parts.Age("Checking for changes…", parts.Ordinary))
+        _, _ ->
+          list.key_find(offer.waited, thread.id)
+          |> option.from_result
+          |> option.map(parts.Age(_, parts.Ordinary))
+      },
+      kind: row_word(kind, which),
+      head: inbox_rule.thread_head(thread),
+      selection: case offer.selected, item_open(offer) {
+        Some(pick), False if pick.session == thread.id -> parts.Selected
+        Some(_), _ | None, _ -> parts.Unselected
+      },
     ),
-  ])
+    offer.pick(thread.id),
+  )
 }
 
-/// The word a row's eyebrow says: the kind's, except for a finished session
-/// whose tree holds changes, which is a review.
+/// Whether an attention item's or a ticket's pane is open, which takes the
+/// reading pane, so no session's row is the one shown.
+fn item_open(offer: Offer(message)) -> Bool {
+  case offer.attention {
+    Some(Threads(pane: Some(_), ..)) -> True
+    Some(Threads(pane: None, ..)) | None -> False
+  }
+}
+
+/// The dot a kind draws: the owner is waited on, a finished session is open to
+/// read, a failure is marked, and a session that works or has nothing to say
+/// waits on no one.
+fn dot_of(kind: Kind) -> parts.Dot {
+  case kind {
+    inbox_rule.ApprovalPending -> parts.Waiting
+    inbox_rule.Failed -> parts.Failing
+    inbox_rule.Idle -> parts.Running
+    inbox_rule.Working | inbox_rule.Settled -> parts.Resting
+  }
+}
+
+/// The word a row's chip says: the kind's, except for a finished session whose
+/// tree holds changes, which is a review.
 fn row_word(kind: Kind, which: Group) -> String {
   case which {
     inbox_rule.ToReview -> "Review"
@@ -384,48 +513,70 @@ fn reading_pane(offer: Offer(message)) -> Element(message) {
   }
 }
 
-/// The reading pane for one thread: its eyebrow, what its standing needs said,
-/// its last message and strands, and the button that opens the session.
+/// The reading pane for one thread: its eyebrow and title, what its standing
+/// needs said, its last message and strands, the button that opens the session
+/// and, at the foot, the outbox bar.
 fn reading(
   thread: Thread,
   pick: Pick,
   offer: Offer(message),
 ) -> Element(message) {
   let kind = inbox_rule.kind(thread.report)
+  let #(compose_body, bar) = compose(thread, kind, offer)
+  let review = review_of(thread, offer)
 
-  html.section(
-    [
-      attribute.class("inbox-reading"),
-      attribute.class(case pick {
-        Default(_) -> "inbox-reading-default"
-        Pressed(_) -> "inbox-reading-pressed"
-      }),
-    ],
-    [
-      reveal(pick, offer.presses),
-      html.p([attribute.class("inbox-eyebrow")], [
-        html.text(eyebrow(thread, kind)),
-      ]),
-      standing(thread, kind, offer),
-      said(thread),
-      strands(thread.report.glances),
-      reviewed(thread, offer),
-      open_button("Open session ›", thread.id, offer),
-      message_field(thread, kind, offer),
-    ],
+  parts.pane(
+    case pick {
+      Default(_) -> parts.ByDefault
+      Pressed(_) -> parts.ByPress
+    },
+    offer.back,
+    list.flatten([
+      [
+        reveal(pick, offer.presses),
+        parts.eyebrow(
+          case review {
+            Some(_) -> "Review"
+            None -> inbox_rule.words(kind)
+          },
+          eyebrow(thread, kind),
+          option.from_result(list.key_find(offer.waited, thread.id)),
+        ),
+        parts.title(case review {
+          Some(Reviewed(title: Some(words), ..)) -> words
+          Some(_) | None -> title(kind, thread)
+        }),
+      ],
+      [standing(thread, kind, offer), said(thread, kind)],
+      [strands(thread.report.glances), reviewed(thread, offer)],
+      [acts(thread, kind, offer)],
+      compose_body,
+    ]),
+    bar,
   )
 }
 
 /// The thread's review pane, when the page holds one for this session.
-fn reviewed(thread: Thread, offer: Offer(message)) -> Element(message) {
+fn review_of(
+  thread: Thread,
+  offer: Offer(message),
+) -> Option(Reviewed(message)) {
   case offer.review {
-    Some(Reviewed(session:, pane:)) if session == thread.id -> pane
-    Some(_) | None -> element.none()
+    Some(Reviewed(session:, ..) as held) if session == thread.id -> Some(held)
+    Some(_) | None -> None
+  }
+}
+
+/// The body of the thread's review pane, or nothing.
+fn reviewed(thread: Thread, offer: Offer(message)) -> Element(message) {
+  case review_of(thread, offer) {
+    Some(Reviewed(body:, ..)) -> body
+    None -> element.none()
   }
 }
 
 /// The element that scrolls the pane into view, drawn only for a thread the
-/// person pressed. On a narrow screen the pane sits below the list, so a press
+/// person pressed. On a narrow screen the pane sits over the list, so a press
 /// would change what is off screen. `<loom-reveal>` scrolls its nearest section
 /// into view when it is inserted, so it is keyed by the press count to be
 /// inserted again each time. A default thread draws nothing, since the page
@@ -443,51 +594,51 @@ fn reveal(pick: Pick, presses: Int) -> Element(message) {
   }
 }
 
-/// The thread's message field and its outbox, or nothing when the page holds no
-/// capability to send. The box is keyed by the thread and by how many messages
-/// have been delivered, so a delivered message leaves an empty box, and moving
-/// to another thread shows that thread's own empty one.
-fn message_field(
+/// The thread's message field and its outbox bar. The field is a form with one
+/// box, in the pane, under the label "Message" and the thread's name. The bar is
+/// at the pane's foot and holds the buttons the kind offers, which submit the
+/// form from outside it. A page with no capability to send has neither, and a
+/// reviewed thread has the review's own bar. The box is keyed by the thread and
+/// by how many messages have been delivered, so a delivered message leaves an
+/// empty box, and moving to another thread shows that thread's own empty one.
+fn compose(
   thread: Thread,
   kind: Kind,
   offer: Offer(message),
-) -> Element(message) {
+) -> #(List(Element(message)), Element(message)) {
   case offer.field, offer.review {
-    _, Some(Reviewed(session:, ..)) if session == thread.id -> element.none()
-    None, _ -> element.none()
-    Some(field), _ ->
-      keyed.div([attribute.class("inbox-send")], [
-        #(
-          "send-" <> thread.id <> "-" <> int.to_string(field.delivered),
-          html.div([], [
-            message_form(thread, kind, field),
-            html.p([attribute.class("inbox-outbox"), attribute.role("status")], [
-              html.text(thread_send.words(field.outbox, thread.id, thread.name)),
-            ]),
+    _, Some(Reviewed(session:, bar:, ..)) if session == thread.id -> #([], bar)
+    None, _ -> #([], element.none())
+    Some(field), _ -> #(
+      [
+        html.section([attribute.class("inbox-section inbox-msg")], [
+          html.h2([attribute.class("inbox-label")], [
+            html.text("Message " <> inbox_rule.shown_name(thread)),
           ]),
-        ),
-      ])
+          keyed.div([attribute.class("inbox-send")], [
+            #(
+              "send-" <> thread.id <> "-" <> int.to_string(field.delivered),
+              message_form(thread, kind, field),
+            ),
+          ]),
+          delivery_hint(kind),
+        ]),
+      ],
+      bar(thread, kind, field),
+    )
   }
 }
 
-/// The form: one box, the buttons the kind offers and the note that says what
-/// a message waits behind. The buttons are disabled while a send is out, so a
-/// second press sends nothing.
+/// The form: one box and nothing else. Its submit buttons are in the outbox bar.
 fn message_form(
   thread: Thread,
-  kind: Kind,
+  _kind: Kind,
   field: Field(message),
 ) -> Element(message) {
-  // A send that is out, for any thread, disables every button: there is one
-  // outbox, and a second press would be refused by the page anyway.
-  let out = case field.outbox {
-    thread_send.Sending(..) -> True
-    thread_send.Unsent | thread_send.Settled(..) -> False
-  }
-
   html.form(
     [
-      attribute.class("place-composer inbox-form"),
+      attribute.id(form_id),
+      attribute.class("inbox-form"),
       event.on("submit", submitted(thread.id, field.submit))
         |> event.prevent_default,
     ],
@@ -495,38 +646,86 @@ fn message_form(
       html.textarea(
         [
           attribute.name("draft"),
-          attribute.class("composer-name"),
+          attribute.class("inbox-ta"),
           attribute.aria_label("Message this session"),
-          attribute.placeholder("Message this session"),
+          attribute.placeholder("Talk to it directly…"),
           attribute.attribute("rows", "3"),
           attribute.attribute("maxlength", int.to_string(composer.prompt_limit)),
         ],
         "",
       ),
-      html.div([attribute.class("cbar")], [
-        case thread_send.hold_note(kind) {
-          Some(note) ->
-            html.span([attribute.class("inbox-hold")], [html.text(note)])
-          None -> element.none()
-        },
-        ..list.map(thread_send.choices(kind), send_button(_, out))
-      ]),
     ],
   )
 }
 
-/// One button of the form: a submit button that names its delivery.
-fn send_button(choice: thread_send.Choice, out: Bool) -> Element(message) {
+/// What Queue and Steer do, under the box of a working session's thread. No
+/// other kind offers the choice.
+fn delivery_hint(kind: Kind) -> Element(message) {
+  case thread_send.choices(kind) {
+    [thread_send.Queue, thread_send.Steer] ->
+      html.p([attribute.class("inbox-hint")], [
+        html.text(
+          "Queue waits for this turn to end. Steer stops the current turn and runs first.",
+        ),
+      ])
+    _ -> element.none()
+  }
+}
+
+/// The outbox bar: what has been sent to whom in fixed words, or that nothing has
+/// and what a message here does, and the buttons the kind offers at the right.
+/// The buttons are disabled while a send is out, so a second press sends nothing.
+fn bar(thread: Thread, kind: Kind, field: Field(message)) -> Element(message) {
+  let said = thread_send.words(field.outbox, thread.id, thread.name)
+  let choices = thread_send.choices(kind)
+
+  parts.outbox_bar(
+    case said {
+      "" -> "Not sent."
+      words -> words
+    },
+    case said {
+      "" ->
+        case thread_send.hold_note(kind) {
+          Some(note) -> note
+          None -> "Nothing is sent until you press a button."
+        }
+      _ -> ""
+    },
+    [],
+    html.div(
+      [attribute.class("inbox-outbox-buttons")],
+      list.map(choices, send_button(_, field.outbox, list.length(choices))),
+    ),
+  )
+}
+
+/// One button of the bar: a submit button that names its delivery and belongs to
+/// the message form. When the kind offers two, the second is the primary one.
+fn send_button(
+  choice: thread_send.Choice,
+  outbox: Outbox,
+  offered: Int,
+) -> Element(message) {
   html.button(
     [
       attribute.type_("submit"),
+      attribute.attribute("form", form_id),
       attribute.name("delivery"),
       attribute.value(case thread_send.delivery(choice) {
         operator.Prompt -> "prompt"
         operator.Steer -> "steer"
       }),
-      attribute.class("place-send"),
-      attribute.disabled(out),
+      attribute.class(case choice, offered {
+        thread_send.Queue, 2 -> "inbox-btn"
+        _, _ -> "inbox-primary"
+      }),
+      // A send that is out, for any thread, disables every button: there is one
+      // outbox, and a second press would be refused by the page anyway.
+      attribute.disabled(case outbox {
+        thread_send.Sending(..) -> True
+        thread_send.Unsent | thread_send.Settled(..) -> False
+      }),
     ],
     [html.text(thread_send.label(choice))],
   )
@@ -590,21 +789,49 @@ fn form_field() -> decode.Decoder(#(String, String)) {
   decode.success(#(name, value))
 }
 
-/// The eyebrow: the kind's word, the session's name and, when the row has one,
-/// its workspace as the host's text with the home directory shortened.
+/// The eyebrow's quiet words: the session's name, its workspace as the host's
+/// text with the home directory shortened when the row has one, and what the
+/// session is doing in the page's own word.
 fn eyebrow(thread: Thread, kind: Kind) -> String {
-  let base = inbox_rule.words(kind) <> " · " <> thread.name
+  let base = inbox_rule.shown_name(thread)
 
   // A row with no workspace has no third part.
-  case thread.workspace {
+  let placed = case thread.workspace {
     "" -> base
     workspace -> base <> " · " <> heading.shorten_path(workspace)
+  }
+
+  placed <> " · " <> state_words(kind)
+}
+
+/// What a kind says about the session's state, in the eyebrow.
+fn state_words(kind: Kind) -> String {
+  case kind {
+    inbox_rule.ApprovalPending -> "waiting on an approval"
+    inbox_rule.Failed -> "its last run failed"
+    inbox_rule.Idle -> "idle, finished"
+    inbox_rule.Working -> "working"
+    inbox_rule.Settled -> "quiet"
+  }
+}
+
+/// The thread's title. An approval's is the page's own sentence, since the
+/// approval's content is drawn as evidence below it; any other is the head the
+/// rule words from the report.
+fn title(kind: Kind, thread: Thread) -> String {
+  case kind {
+    inbox_rule.ApprovalPending -> "An approval is pending."
+    inbox_rule.Failed
+    | inbox_rule.Idle
+    | inbox_rule.Working
+    | inbox_rule.Settled -> inbox_rule.thread_head(thread)
   }
 }
 
 /// What the pane says about the thread's standing in the page's own words. An
-/// approval is named and sent to the session's page and nothing of it is drawn
-/// here; a failed run is named, since nothing waits on the owner but a fix.
+/// approval is named, its evidence drawn and the session's page offered, and
+/// nothing decides it here; a failed run is named, since nothing waits on the
+/// owner but a fix.
 fn standing(
   thread: Thread,
   kind: Kind,
@@ -613,12 +840,20 @@ fn standing(
   case kind {
     inbox_rule.ApprovalPending ->
       html.div([attribute.class("inbox-standing")], [
-        html.p([], [html.text("An approval is pending.")]),
         evidence_of(thread.id, offer),
-        open_button("Decide on the session's page ›", thread.id, offer),
+        parts.section("Decide", [
+          html.div([attribute.class("inbox-acts")], [
+            open_button(
+              "Decide on the session's page ›",
+              thread.id,
+              offer,
+              Primary,
+            ),
+          ]),
+        ]),
       ])
     inbox_rule.Failed ->
-      html.p([attribute.class("inbox-standing")], [
+      html.p([attribute.class("inbox-meta")], [
         html.text("Its last run failed, and nothing is running."),
       ])
     inbox_rule.Idle | inbox_rule.Working | inbox_rule.Settled -> element.none()
@@ -640,21 +875,20 @@ fn evidence_of(session: String, offer: Offer(message)) -> Element(message) {
 
 /// The main strand's last finished message under a label that says it is not
 /// current work and not the page's words. It is a text node: the message is
-/// model text.
-fn said(thread: Thread) -> Element(message) {
-  case thread.report.last_message {
-    Some(text) ->
+/// model text. An approval's thread leaves it out, as the approval is what the
+/// thread is about.
+fn said(thread: Thread, kind: Kind) -> Element(message) {
+  case kind, thread.report.last_message {
+    inbox_rule.ApprovalPending, _ -> element.none()
+    _, Some(text) ->
       case string.trim(text) {
         "" -> element.none()
         _ ->
-          html.section([attribute.class("inbox-section")], [
-            html.h4([attribute.class("inbox-label")], [
-              html.text("The agent's last finished turn, untrusted text"),
-            ]),
-            html.p([attribute.class("inbox-message")], [html.text(text)]),
+          html.div([attribute.class("inbox-said")], [
+            parts.quote("The agent's last finished turn, untrusted text", text),
           ])
       }
-    None -> element.none()
+    _, None -> element.none()
   }
 }
 
@@ -663,16 +897,15 @@ fn strands(glances: List(Glance)) -> Element(message) {
   case glances {
     [] -> element.none()
     [_, ..] ->
-      html.section([attribute.class("inbox-section")], [
-        html.h4([attribute.class("inbox-label")], [
-          html.text("What its strands are doing"),
+      parts.section("What its strands are doing", [
+        parts.card([
+          html.ul(
+            [attribute.class("inbox-glances")],
+            list.map(glances, fn(each) {
+              html.li([], [html.text(glance_line(each))])
+            }),
+          ),
         ]),
-        html.ul(
-          [attribute.class("inbox-glances")],
-          list.map(glances, fn(each) {
-            html.li([], [html.text(glance_line(each))])
-          }),
-        ),
       ])
   }
 }
@@ -686,12 +919,28 @@ fn glance_line(glance: Glance) -> String {
   }
 }
 
+/// The row of buttons under the thread's facts: the one that opens its session.
+/// An approval's thread has the same press under "Decide", so it draws none here.
+fn acts(thread: Thread, kind: Kind, offer: Offer(message)) -> Element(message) {
+  case kind {
+    inbox_rule.ApprovalPending -> element.none()
+    inbox_rule.Failed
+    | inbox_rule.Idle
+    | inbox_rule.Working
+    | inbox_rule.Settled ->
+      html.div([attribute.class("inbox-acts")], [
+        open_button("Open session ›", thread.id, offer, Plain),
+      ])
+  }
+}
+
 /// A button that sends the page's open message for the thread's session. It is
 /// disabled while an open for the same session is out.
 fn open_button(
   label: String,
   session: String,
   offer: Offer(message),
+  emphasis: Emphasis,
 ) -> Element(message) {
   let pending = offer.opening == Some(session)
 
@@ -699,6 +948,10 @@ fn open_button(
     [
       attribute.type_("button"),
       attribute.class("inbox-open"),
+      case emphasis {
+        Primary -> attribute.class("inbox-open-primary")
+        Plain -> attribute.none()
+      },
       attribute.disabled(pending),
       event.on_click(offer.open(session)),
     ],
@@ -720,26 +973,4 @@ fn selected_thread(
   |> list.flat_map(fn(entry) { entry.1 })
   |> list.find(fn(each) { each.id == pick.session })
   |> option.from_result
-}
-
-/// The class that says which kind a row is, so the stylesheet tints its eyebrow.
-fn kind_class(kind: Kind) -> String {
-  case kind {
-    inbox_rule.ApprovalPending -> "inbox-approval"
-    inbox_rule.Failed -> "inbox-failed"
-    inbox_rule.Idle -> "inbox-waiting"
-    inbox_rule.Working -> "inbox-update"
-    inbox_rule.Settled -> "inbox-settled"
-  }
-}
-
-/// Marks the row whose thread the reading pane shows.
-fn selection_class(
-  session: String,
-  selected: Option(Pick),
-) -> attribute.Attribute(message) {
-  case selected {
-    Some(pick) if pick.session == session -> attribute.class("inbox-selected")
-    Some(_) | None -> attribute.none()
-  }
 }

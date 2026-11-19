@@ -307,10 +307,13 @@ pub fn waiting_tickets_are_rows_under_needs_you_test() {
   let html = drawn(model)
 
   assert string.contains(html, "Needs you")
-  assert string.contains(html, "Ticket · answer")
-  assert string.contains(html, "Ticket · review")
-  assert string.contains(html, "Ticket · person/check")
-  assert string.contains(html, "4 tickets need you")
+  assert string.contains(html, "<span class=\"inbox-kind\">Ticket</span>")
+  assert string.contains(html, " · review</span>")
+  assert string.contains(html, "person/check")
+  assert string.contains(
+    html,
+    "<span class=\"nm\">Projects</span><span class=\"n\">4</span>",
+  )
   assert !string.contains(html, "building")
 }
 
@@ -320,7 +323,7 @@ pub fn person_check_is_its_raw_word_with_only_what_is_listed_test() {
   let #(model, _) = owner(accepting())
   let html = drawn(picked(model, "t-check"))
 
-  assert string.contains(html, "Ticket · person/check")
+  assert string.contains(html, "person/check")
   assert string.contains(html, "Retry")
   assert !string.contains(html, "Recheck")
   assert !string.contains(html, "Close ticket")
@@ -703,8 +706,8 @@ pub fn a_ticket_only_page_lands_on_the_inbox_test() {
   let model = run(home.new(start), home.TimerReady(process.new_subject()))
   let html = drawn(model)
 
-  assert string.contains(html, "Ticket · answer")
-  assert string.contains(html, "4 tickets need you")
+  assert string.contains(html, "<span class=\"inbox-kind\">Ticket</span>")
+  assert string.contains(html, "<span class=\"need-pill\">4 need you</span>")
 }
 
 // A page whose first board read held nothing settles on the composer, and a
@@ -748,7 +751,10 @@ pub fn a_ticket_that_came_before_the_summary_lands_the_inbox_test() {
   let decided = run(model, home.SavedRead([]))
   let html = drawn(decided)
   assert string.contains(html, "<h1>Inbox</h1>")
-  assert string.contains(html, "4 tickets need you")
+  assert string.contains(
+    html,
+    "<span class=\"nm\">Projects</span><span class=\"n\">4</span>",
+  )
 }
 
 // An empty first summary and then a board with no ticket settle the centre at

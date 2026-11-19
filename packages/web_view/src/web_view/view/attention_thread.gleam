@@ -1,11 +1,13 @@
 //// The inbox's threads for asks, finds and stuck strands, and the pane that
 //// reads one (protocol-change/120, the attention inbox's phase 1).
 ////
-//// A row is a button whose eyebrow names the kind and the session and whose
-//// head is the model's own words, cut by the daemon. The pane draws the
-//// record: an ask as one fixed component for each question's kind, a find as
-//// its kind, text and place, a stuck strand as the strand's name, each with
-//// the age the record's time gives (`web_view/attention_rule`).
+//// A row is `view/inbox_parts`' two-line row: a dot, the session's name and the
+//// age the record's time gives, then a chip with the kind and the model's own
+//// words as the head, cut by the daemon. The pane is the same module's frame: an
+//// eyebrow, the head as a title, the record's body and an outbox bar at its foot.
+//// The pane draws the record: an ask as one fixed component for each question's
+//// kind, a find as its kind, text and place, a stuck strand as the strand's name
+//// (`web_view/attention_rule`).
 ////
 //// Everything a session wrote, a question, an option's label and note, a
 //// find's text and path, a strand's name, is drawn as a text node and nowhere
@@ -26,10 +28,11 @@
 //// `row` → `pane` → `ask_form` / `find_body` / `stuck_body` → `outbox`
 ////
 //// 1. `row` draws one thread in the list.
-//// 2. `pane` draws the open thread's eyebrow, its record by sort and, for a
-////    page that may act, the note field and the outbox.
+//// 2. `pane` draws the open thread's eyebrow and title, its record by sort and,
+////    for a page that may act, the note field.
 //// 3. `ask_form` draws an ask's questions, and `question` one component each.
-//// 4. `outbox` lists what is staged and the Send that delivers it.
+//// 4. `outbox` draws the bar at the pane's foot: what is staged and the Send
+////    that delivers it.
 
 import core/attention.{type Closure, type Question}
 import gleam/dynamic/decode
@@ -47,6 +50,7 @@ import web_view/approval_evidence.{type Seen}
 import web_view/attention_feed
 import web_view/attention_rule.{type Item, type Key}
 import web_view/item_pane.{type State}
+import web_view/view/inbox_parts as parts
 
 /// The messages a page that may act sends from the pane.
 pub type Acting(message) {
@@ -83,49 +87,80 @@ pub type Offer(message) {
     /// What "Decide on the session's page" and "Open session" send, given the
     /// session.
     open: fn(String) -> message,
+    /// What the pane's back control sends on a narrow screen: show the list.
+    back: message,
+    /// The session's name in the page's own words, for the eyebrow.
+    session_name: String,
   )
 }
 
 /// One thread's row: a button that opens the thread. `selected` marks the row
-/// whose pane is open.
+/// whose pane is open, and `name_of` words a session's name, which the feed's
+/// rows do not carry.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // attention_thread.row(item, now, selected, pick)
+/// // attention_thread.row(item, now, selected, pick, name_of)
 /// ```
 pub fn row(
   item: Item,
   now: Int,
   selected: Option(Key),
   pick: fn(Key) -> message,
+  name_of: fn(String) -> String,
 ) -> Element(message) {
   let key = attention_rule.key_of(item)
 
-  html.li([], [
-    html.button(
-      [
-        attribute.type_("button"),
-        attribute.class("inbox-thread inbox-item"),
-        attribute.class(case selected == Some(key) {
-          True -> "inbox-selected"
-          False -> ""
-        }),
-        event.on_click(pick(key)),
-      ],
-      [
-        html.span([attribute.class("inbox-eyebrow")], [
-          html.text(eyebrow(item)),
-        ]),
-        html.span([attribute.class("inbox-head")], [html.text(head(item))]),
-        case attention_rule.age_line(item, now) {
-          Some(age) ->
-            html.span([attribute.class("inbox-age")], [html.text(age)])
-          None -> element.none()
-        },
-      ],
+  parts.row(
+    parts.Facts(
+      dot: dot_of(item),
+      name: name_of(attention_rule.session_of(item)),
+      age: aged(item, now),
+      kind: kind_word(item),
+      head: head(item),
+      selection: case selected == Some(key) {
+        True -> parts.Selected
+        False -> parts.Unselected
+      },
     ),
-  ])
+    pick(key),
+  )
+}
+
+/// The age a row draws, marked when an ask or a stuck strand has waited on the
+/// owner for an hour or more. A find waits on no one, so its age is never marked.
+fn aged(item: Item, now: Int) -> Option(parts.Age) {
+  case attention_rule.row_age(item, now), attention_rule.row_wait(item, now) {
+    Some(words), Some(wait) ->
+      Some(
+        parts.Age(words:, standing: case item, wait >= 3_600_000 {
+          attention_rule.FindItem(..), _ | _, False -> parts.Ordinary
+          _, True -> parts.Overdue
+        }),
+      )
+    _, _ -> None
+  }
+}
+
+/// The dot a record draws: an ask waits on the owner, a stuck strand failed, and
+/// a find waits on no one.
+fn dot_of(item: Item) -> parts.Dot {
+  case item {
+    attention_rule.AskItem(..) -> parts.Waiting
+    attention_rule.StuckItem(..) -> parts.Failing
+    attention_rule.FindItem(..) -> parts.Resting
+  }
+}
+
+/// The word of the row's chip: the kind, and for a find the find's own kind.
+fn kind_word(item: Item) -> String {
+  case item {
+    attention_rule.AskItem(..) -> "Ask"
+    attention_rule.StuckItem(..) -> "Stuck"
+    attention_rule.FindItem(find:, ..) ->
+      string.capitalise(attention.find_kind_name(find.kind))
+  }
 }
 
 /// Which of a saved session's two counts a row draws.
@@ -179,16 +214,22 @@ pub fn saved_row(
     SavedFinding -> attention_rule.finding_words(thread.saved)
   }
 
-  html.li([], [
-    html.div([attribute.class("inbox-saved")], [
-      html.span([attribute.class("inbox-eyebrow")], [
-        html.text("Saved · " <> thread.name),
-      ]),
-      html.span([attribute.class("inbox-head")], [html.text(words)]),
-      case attention_rule.saved_age(thread.saved, now) {
-        Some(age) -> html.span([attribute.class("inbox-age")], [html.text(age)])
-        None -> element.none()
+  parts.static_row(
+    parts.Facts(
+      dot: case side {
+        SavedNeeding -> parts.Waiting
+        SavedFinding -> parts.Resting
       },
+      name: thread.name,
+      age: None,
+      kind: "Saved",
+      head: case attention_rule.saved_age(thread.saved, now) {
+        Some(age) -> words <> " · " <> age
+        None -> words
+      },
+      selection: parts.Unselected,
+    ),
+    [
       // An observer's page has nothing to press, and a press out waits.
       case offer.resume {
         Some(press) -> {
@@ -212,8 +253,8 @@ pub fn saved_row(
         None -> element.none()
       },
       option.lazy_unwrap(offer.said(thread.session), element.none),
-    ]),
-  ])
+    ],
+  )
 }
 
 /// The pane of the open thread, or nothing when the last read no longer holds
@@ -233,52 +274,65 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
     // told and not left with a blank.
     None ->
       case offer.state.progress, item_pane.has_staged(offer.state) {
-        _, True ->
-          html.section(
-            [attribute.class("inbox-reading inbox-reading-pressed")],
-            [outbox(offer)],
-          )
+        _, True -> parts.pane(parts.ByPress, offer.back, [], outbox(offer))
         item_pane.Settled(words:), False ->
-          html.section(
-            [attribute.class("inbox-reading inbox-reading-pressed")],
+          parts.pane(
+            parts.ByPress,
+            offer.back,
             [
               html.p(
                 [attribute.class("inbox-outbox"), attribute.role("status")],
-                [html.text(words)],
+                [
+                  html.text(words),
+                ],
               ),
             ],
+            element.none(),
           )
         item_pane.Resting, False | item_pane.Sending, False -> element.none()
       }
     Some(item) ->
-      html.section([attribute.class("inbox-reading inbox-reading-pressed")], [
-        html.p([attribute.class("inbox-eyebrow")], [html.text(eyebrow(item))]),
-        case attention_rule.age_line(item, offer.now) {
-          Some(age) -> html.p([attribute.class("inbox-age")], [html.text(age)])
-          None -> element.none()
-        },
-        body(item, offer),
-        message_field(offer),
+      parts.pane(
+        parts.ByPress,
+        offer.back,
+        [
+          parts.eyebrow(
+            kind_word(item),
+            eyebrow(item, offer.session_name),
+            None,
+          ),
+          parts.title(head(item)),
+          case attention_rule.age_line(item, offer.now) {
+            Some(age) ->
+              html.p([attribute.class("inbox-meta")], [html.text(age)])
+            None -> element.none()
+          },
+          body(item, offer),
+          message_field(offer),
+          html.div([attribute.class("inbox-acts")], [
+            html.button(
+              [
+                attribute.type_("button"),
+                attribute.class("inbox-open"),
+                event.on_click(offer.open(attention_rule.session_of(item))),
+              ],
+              [html.text("Open session ›")],
+            ),
+          ]),
+        ],
         outbox(offer),
-        html.button(
-          [
-            attribute.type_("button"),
-            attribute.class("inbox-open"),
-            event.on_click(offer.open(attention_rule.session_of(item))),
-          ],
-          [html.text("Open session ›")],
-        ),
-      ])
+      )
   }
 }
 
-/// The words of a row's eyebrow: the kind, then the strand the record is about.
-fn eyebrow(item: Item) -> String {
+/// The quiet words of a pane's eyebrow: the session's name and the strand the
+/// record is about.
+fn eyebrow(item: Item, session_name: String) -> String {
   case item {
-    attention_rule.AskItem(ask:, ..) -> "Ask · " <> ask.strand
-    attention_rule.FindItem(find:, ..) ->
-      "Find · " <> attention.find_kind_name(find.kind) <> " · " <> find.strand
-    attention_rule.StuckItem(stuck:, ..) -> "Stuck · " <> stuck.strand
+    attention_rule.AskItem(ask:, ..) -> session_name <> " · " <> ask.strand
+    attention_rule.FindItem(find:, ..) -> session_name <> " · " <> find.strand
+    attention_rule.StuckItem(stuck:, ..) ->
+      session_name <> " · " <> stuck.strand
   }
 }
 
@@ -304,13 +358,9 @@ fn body(item: Item, offer: Offer(message)) -> Element(message) {
 fn ask_body(offer: Offer(message)) -> Element(message) {
   case offer.state.loaded {
     item_pane.Loaded(item_pane.AskRecord(ask:, revision: _)) ->
-      html.section([attribute.class("inbox-section")], [
-        html.h4([attribute.class("inbox-label")], [
-          html.text("The agent asks, untrusted text"),
-        ]),
+      parts.section("What it asks for", [
         case ask.why {
-          Some(why) ->
-            html.p([attribute.class("inbox-message")], [html.text(why)])
+          Some(why) -> parts.quote("The agent asks, untrusted text", why)
           None -> element.none()
         },
         ask_form(ask, offer),
@@ -568,15 +618,13 @@ fn find_body(
     | item_pane.Unavailable(_) -> find.head
   }
 
-  html.section([attribute.class("inbox-section")], [
-    html.h4([attribute.class("inbox-label")], [
-      html.text(
-        "The agent noticed ("
+  parts.section("Noticed along the way", [
+    parts.quote(
+      "The agent noticed ("
         <> attention.find_kind_name(find.kind)
         <> "), untrusted text",
-      ),
-    ]),
-    html.p([attribute.class("inbox-message")], [html.text(text)]),
+      text,
+    ),
     case find.path {
       Some(path) ->
         html.p([attribute.class("inbox-place")], [
@@ -589,7 +637,7 @@ fn find_body(
     },
     case offer.acting {
       Some(acting) ->
-        html.div([attribute.class("cbar")], [
+        html.div([attribute.class("inbox-acts")], [
           close_button("Fixed", attention.Fixed, acting),
           close_button("Filed", attention.Filed, acting),
           close_button("Dismiss", attention.Dismissed, acting),
@@ -611,7 +659,7 @@ fn close_button(
   html.button(
     [
       attribute.type_("button"),
-      attribute.class("place-send"),
+      attribute.class("inbox-btn"),
       event.on_click(acting.close(closure)),
     ],
     [html.text(label)],
@@ -620,20 +668,22 @@ fn close_button(
 
 /// A stuck strand's body: what stopped, and Retry.
 fn stuck_body(offer: Offer(message)) -> Element(message) {
-  html.section([attribute.class("inbox-section")], [
-    html.p([attribute.class("inbox-standing")], [
+  parts.section("Decide", [
+    html.p([attribute.class("inbox-meta")], [
       html.text("This strand's last run failed and nothing has run since."),
     ]),
     case offer.acting {
       Some(acting) ->
-        html.button(
-          [
-            attribute.type_("button"),
-            attribute.class("place-send"),
-            event.on_click(acting.retry),
-          ],
-          [html.text("Retry")],
-        )
+        html.div([attribute.class("inbox-acts")], [
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("inbox-btn"),
+              event.on_click(acting.retry),
+            ],
+            [html.text("Retry")],
+          ),
+        ])
       None ->
         html.p([attribute.class("inbox-hold")], [
           html.text("Only the owner's operating page can retry."),
@@ -648,37 +698,40 @@ fn message_field(offer: Offer(message)) -> Element(message) {
   case offer.acting {
     None -> element.none()
     Some(acting) ->
-      html.form(
-        [
-          attribute.class("place-composer inbox-form"),
-          event.on("submit", note_of(acting.note)) |> event.prevent_default,
-        ],
-        [
-          html.textarea(
-            [
-              attribute.name("draft"),
-              attribute.class("composer-name"),
-              attribute.aria_label("Message this strand"),
-              // The strand is in the eyebrow as text, and no attribute carries
-              // a name a session chose.
-              attribute.placeholder("Message this strand"),
-              attribute.attribute("rows", "3"),
-            ],
-            "",
-          ),
-          html.div([attribute.class("cbar")], [
-            html.button(
-              [attribute.type_("submit"), attribute.class("place-send")],
-              [html.text("Stage the message")],
+      parts.section("Message " <> offer.session_name, [
+        html.form(
+          [
+            attribute.class("inbox-form"),
+            event.on("submit", note_of(acting.note)) |> event.prevent_default,
+          ],
+          [
+            html.textarea(
+              [
+                attribute.name("draft"),
+                attribute.class("inbox-ta"),
+                attribute.aria_label("Message this strand"),
+                // The strand is in the eyebrow as text, and no attribute carries
+                // a name a session chose.
+                attribute.placeholder("Message this strand"),
+                attribute.attribute("rows", "3"),
+              ],
+              "",
             ),
-          ]),
-        ],
-      )
+            html.div([attribute.class("inbox-acts")], [
+              html.button(
+                [attribute.type_("submit"), attribute.class("inbox-btn")],
+                [html.text("Stage the message")],
+              ),
+            ]),
+          ],
+        ),
+      ])
   }
 }
 
-/// The outbox: what is staged, the refusal or the outcome in fixed words, and
-/// the buttons. A page that may not act draws nothing.
+/// The outbox bar at the pane's foot: what is staged and to whom, the refusal or
+/// the outcome in fixed words, and the buttons. A page that may not act draws
+/// nothing.
 fn outbox(offer: Offer(message)) -> Element(message) {
   // A page that may not act has no outbox.
   case offer.acting {
@@ -686,39 +739,50 @@ fn outbox(offer: Offer(message)) -> Element(message) {
     Some(acting) -> {
       let state = offer.state
 
-      html.section([attribute.class("inbox-section inbox-outbox-list")], [
-        html.h4([attribute.class("inbox-label")], [html.text("Outbox")]),
-        case item_pane.has_staged(state) {
-          False ->
-            html.p([attribute.class("inbox-hold")], [
-              html.text(
-                "Nothing is staged. Nothing is sent until you press Send.",
-              ),
-            ])
-          True ->
-            html.ul(
-              [],
-              list.flatten([
-                staged_answer(state),
-                case state.outbox.note {
-                  Some(text) -> [html.li([], [html.text("Message: " <> text)])]
-                  None -> []
-                },
-              ]),
-            )
+      // The staged answer's lines come first and the staged note follows.
+      let chips =
+        list.append(staged_answer(state), case state.outbox.note {
+          Some(text) -> ["Message: " <> text]
+          None -> []
+        })
+
+      // The bar says what the send is doing, or what the daemon answered.
+      let said = case state.progress {
+        item_pane.Resting -> ""
+        item_pane.Sending -> "Sending…"
+        item_pane.Settled(words:) -> words
+      }
+
+      parts.outbox_bar(
+        case state.progress, chips {
+          item_pane.Settled(_), _ -> "Sent."
+          _, [] -> "Not sent."
+          _, _ ->
+            "To "
+            <> offer.session_name
+            <> " · "
+            <> int.to_string(list.length(chips))
+            <> " staged."
         },
-        html.p([attribute.class("inbox-outbox"), attribute.role("status")], [
-          html.text(case state.progress {
-            item_pane.Resting -> ""
-            item_pane.Sending -> "Sending…"
-            item_pane.Settled(words:) -> words
-          }),
-        ]),
-        html.div([attribute.class("cbar")], [
+        case chips, said {
+          [], "" -> "Nothing is staged. Nothing is sent until you press Send."
+          _, words -> words
+        },
+        chips,
+        html.div([attribute.class("inbox-outbox-buttons")], [
           html.button(
             [
               attribute.type_("button"),
-              attribute.class("place-send"),
+              attribute.class("inbox-btn"),
+              attribute.disabled(!item_pane.has_staged(state)),
+              event.on_click(acting.unstage),
+            ],
+            [html.text("Clear")],
+          ),
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("inbox-primary"),
               attribute.disabled(
                 !item_pane.has_staged(state)
                 || state.progress == item_pane.Sending,
@@ -727,26 +791,16 @@ fn outbox(offer: Offer(message)) -> Element(message) {
             ],
             [html.text("Send")],
           ),
-          html.button(
-            [
-              attribute.type_("button"),
-              attribute.class("inbox-open"),
-              attribute.disabled(!item_pane.has_staged(state)),
-              event.on_click(acting.unstage),
-            ],
-            [html.text("Clear")],
-          ),
         ]),
-      ])
+      )
     }
   }
 }
 
 /// The staged answer's lines.
-fn staged_answer(state: State) -> List(Element(message)) {
+fn staged_answer(state: State) -> List(String) {
   case state.outbox.answer {
-    Some(staged) ->
-      list.map(staged.lines, fn(line) { html.li([], [html.text(line)]) })
+    Some(staged) -> staged.lines
     None -> []
   }
 }
@@ -796,9 +850,10 @@ fn form_field() -> decode.Decoder(#(String, String)) {
 }
 
 /// A session's approval evidence: the tool, the call's action, what held it and
-/// what it wants. It decides nothing and carries no handler. Every word of it
-/// is a text node, since the preview is the call's own arguments and the reason
-/// and details come from a policy a model's call tripped.
+/// what it wants, as a raised card of keys and values under the label "What it
+/// asks for". It decides nothing and carries no handler. Every word of it is a
+/// text node, since the preview is the call's own arguments and the reason and
+/// details come from a policy a model's call tripped.
 ///
 /// ## Examples
 ///
@@ -808,20 +863,15 @@ fn form_field() -> decode.Decoder(#(String, String)) {
 pub fn evidence(seen: Seen) -> Element(message) {
   case seen {
     approval_evidence.Unseen(words:) ->
-      html.p([attribute.class("inbox-hold")], [html.text(words)])
+      html.p([attribute.class("inbox-meta")], [html.text(words)])
     approval_evidence.Seen(evidence: read) ->
-      html.section(
-        [attribute.class("inbox-section inbox-evidence")],
+      parts.section(
+        "What it asks for",
         list.flatten([
-          [
-            html.h4([attribute.class("inbox-label")], [
-              html.text("What it asks for, untrusted text"),
-            ]),
-          ],
           list.map(read.items, approval_item),
           [more_pending(read)],
           [
-            html.p([attribute.class("inbox-hold")], [
+            html.p([attribute.class("inbox-meta")], [
               html.text(
                 "The record carries no time, so no age is shown. It is decided on the session's page.",
               ),
@@ -832,35 +882,33 @@ pub fn evidence(seen: Seen) -> Element(message) {
   }
 }
 
-/// One pending approval's lines.
+/// One pending approval's rows: the tool, the action, what held the call and
+/// what it wants.
 fn approval_item(item: approval_evidence.Item) -> Element(message) {
-  html.dl(
-    [attribute.class("inbox-evidence-item")],
+  parts.facts(
     list.flatten([
       [
-        html.dt([], [html.text("Tool")]),
-        html.dd([], [
-          html.text(case item.tool {
-            "" -> "not recorded"
-            tool -> tool
-          }),
-        ]),
+        #(
+          "Tool",
+          html.code([], [
+            html.text(case item.tool {
+              "" -> "not recorded"
+              tool -> tool
+            }),
+          ]),
+        ),
       ],
       case item.preview {
-        Some(preview) -> [
-          html.dt([], [html.text("Action")]),
-          html.dd([attribute.class("inbox-message")], [html.text(preview)]),
-        ]
+        Some(preview) -> [#("Command", html.code([], [html.text(preview)]))]
         None -> []
       },
       case item.reason {
         "" -> []
         reason -> [
-          html.dt([], [html.text("Held by")]),
-          html.dd([], [html.text(held_by(item.source) <> ": " <> reason)]),
+          #("Held by", html.text(held_by(item.source) <> ": " <> reason)),
         ]
       },
-      wanted_lines(item.wanted),
+      wanted_rows(item.wanted),
     ]),
   )
 }
@@ -876,9 +924,9 @@ fn held_by(source: String) -> String {
 
 /// The grants a call wants: the network first, under its own label, then every
 /// other grant.
-fn wanted_lines(
+fn wanted_rows(
   wanted: List(approval_evidence.Wanted),
-) -> List(Element(message)) {
+) -> List(#(String, Element(message))) {
   let #(networks, others) =
     list.partition(wanted, fn(grant) { grant.kind == "network" })
 
@@ -886,24 +934,26 @@ fn wanted_lines(
     case networks {
       [] -> []
       [_, ..] -> [
-        html.dt([], [html.text("Network")]),
-        html.dd([], [
+        #(
+          "Network",
           html.text(string.join(
             list.map(networks, fn(grant) { grant.detail }),
             ", ",
           )),
-        ]),
+        ),
       ]
     },
     case others {
       [] -> []
       [_, ..] -> [
-        html.dt([], [html.text("Wants")]),
-        html.dd(
-          [],
-          list.map(others, fn(grant) {
-            html.div([], [html.text(grant.kind <> " " <> grant.detail)])
-          }),
+        #(
+          "Wants",
+          html.div(
+            [],
+            list.map(others, fn(grant) {
+              html.div([], [html.text(grant.kind <> " " <> grant.detail)])
+            }),
+          ),
         ),
       ]
     },
@@ -914,7 +964,7 @@ fn wanted_lines(
 fn more_pending(read: approval_evidence.Evidence) -> Element(message) {
   case read.count - list.length(read.items) {
     left if left > 0 ->
-      html.p([attribute.class("inbox-hold")], [
+      html.p([attribute.class("inbox-meta")], [
         html.text(int.to_string(left) <> " more pending, decided on the page."),
       ])
     _ -> element.none()

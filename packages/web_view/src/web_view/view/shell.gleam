@@ -75,6 +75,12 @@ pub type Audience {
   /// panel. Its class tells the stylesheet to leave the panel's column and
   /// its button out, since the home has no panel to show.
   Home
+
+  /// The home page while its centre is the attention inbox: the home's frame
+  /// with a third class, `loom-inbox`, which the stylesheet reads to give the
+  /// frame the inbox's measurements (a narrow rail and a bar 44px tall) and to
+  /// leave every other page of the home as it was.
+  Inbox
 }
 
 /// The frame's left column: the sessions' sidebar, or the absence of one.
@@ -182,6 +188,12 @@ fn frame_attributes(
     Home -> [
       attribute.class("loom-session"),
       attribute.class("loom-home"),
+      ..facts
+    ]
+    Inbox -> [
+      attribute.class("loom-session"),
+      attribute.class("loom-home"),
+      attribute.class("loom-inbox"),
       ..facts
     ]
   }

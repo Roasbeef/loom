@@ -2,12 +2,15 @@
 //// pane that reads it (protocol-change/051, the addendum on project tickets on
 //// Home; `docs/design-notes/attention-inbox/README.md`, phase 2).
 ////
-//// A row is a button whose eyebrow names the kind and the ticket's stage and
-//// whose head is the ticket's title. The pane shows the stage, the title, how
-//// long ago the ticket opened, why it was allowed, the worker's question and
-//// the ticket's pull request. The board carries no branch and no diff stat, so
-//// none is drawn, and it carries no check result, so a `person/check` ticket
-//// shows its stage word and nothing more.
+//// A row is `view/inbox_parts`' two-line row: a dot, the ticket's id and stage
+//// and how long ago it opened, then a chip and the ticket's title as the head.
+//// The pane shows the stage, the title, why the ticket was allowed, the worker's
+//// question and the ticket's pull request, with the answer's Send in the outbox
+//// bar at the pane's foot. The board carries no branch and no diff stat, so none
+//// is drawn, and it carries no check result, so a `person/check` ticket shows
+//// its stage word and nothing more. `Offer.check` is where a later layer's
+//// check output goes: drawn as the final design does when it is `Some`, and
+//// absent when it is `None`.
 ////
 //// Everything a ticket holds, its title, its stage word, its question and
 //// options, its pull request and the daemon's reason for a failure, is drawn
@@ -45,6 +48,7 @@ import lustre/element/keyed
 import lustre/event
 import session_view/project_board as board
 import web_view/ticket_rule.{type Control, type Key, type Opened, type Waiting}
+import web_view/view/inbox_parts as parts
 
 /// The most characters of an answer the box takes, which is the ticket page's.
 pub const answer_limit = 8192
@@ -73,11 +77,18 @@ pub type Offer(message) {
     confirm: fn(Key, Control) -> message,
     /// What the confirmation's "Keep" sends.
     keep: message,
+    /// What the pane's back control sends on a narrow screen: show the list.
+    back: message,
+    /// The output of the ticket's last check, when the board carries one. It
+    /// does not today, so the page passes `None` and the pane draws no section.
+    check: Option(String),
   )
 }
 
-/// One ticket's row: a button that opens its thread. The eyebrow is the kind
-/// and the stage word, and the head is the title.
+/// One ticket's row: a button that opens its thread. The name is the ticket's
+/// id and stage word, the chip says "Ticket" and the head is the title. The age
+/// is how long ago the opening message arrived, and none when the board did not
+/// say.
 ///
 /// ## Examples
 ///
@@ -92,30 +103,22 @@ pub fn row(
 ) -> Element(message) {
   let ticket = waiting.ticket
 
-  html.li([], [
-    html.button(
-      [
-        attribute.type_("button"),
-        attribute.class("inbox-thread inbox-item"),
-        attribute.class(case selected == Some(waiting.key) {
-          True -> "inbox-selected"
-          False -> ""
-        }),
-        event.on_click(pick(waiting.key)),
-      ],
-      [
-        html.span([attribute.class("inbox-eyebrow")], [
-          html.text("Ticket · " <> board.stage_word(ticket.stage)),
-        ]),
-        html.span([attribute.class("inbox-head")], [
-          html.text(board.title_words(ticket)),
-        ]),
-        html.span([attribute.class("inbox-age")], [
-          html.text(board.opened_words(ticket.opened_ms, now)),
-        ]),
-      ],
+  parts.row(
+    parts.Facts(
+      dot: parts.Waiting,
+      name: ticket.id <> " · " <> board.stage_word(ticket.stage),
+      age: option.map(ticket.opened_ms, fn(_) {
+        parts.Age(board.age_words(ticket.opened_ms, now), parts.Ordinary)
+      }),
+      kind: "Ticket",
+      head: board.title_words(ticket),
+      selection: case selected == Some(waiting.key) {
+        True -> parts.Selected
+        False -> parts.Unselected
+      },
     ),
-  ])
+    pick(waiting.key),
+  )
 }
 
 /// The pane of the open ticket thread.
@@ -128,32 +131,111 @@ pub fn row(
 pub fn pane(offer: Offer(message)) -> Element(message) {
   let ticket = offer.ticket
 
-  html.section([attribute.class("inbox-reading inbox-reading-pressed")], [
-    html.p([attribute.class("inbox-eyebrow")], [
-      html.text("Ticket · " <> board.stage_word(ticket.stage)),
-    ]),
-    html.p([attribute.class("inbox-head")], [
-      html.text(board.title_words(ticket)),
-    ]),
-    html.p([attribute.class("inbox-age")], [
-      html.text(board.opened_words(ticket.opened_ms, offer.now)),
-    ]),
-    html.p([attribute.class("inbox-standing")], [
-      html.text(board.mandate_words(ticket.mandate)),
-    ]),
-    failure(ticket),
-    pull_request(ticket),
-    question(offer),
-    controls(offer),
-    noticed(offer.opened.notice),
-  ])
+  parts.pane(
+    parts.ByPress,
+    offer.back,
+    [
+      parts.eyebrow(
+        "Ticket",
+        ticket.id <> " · " <> board.stage_word(ticket.stage),
+        None,
+      ),
+      parts.title(board.title_words(ticket)),
+      html.p([attribute.class("inbox-meta")], [
+        html.text(
+          board.opened_words(ticket.opened_ms, offer.now)
+          <> ". "
+          <> board.mandate_words(ticket.mandate),
+        ),
+      ]),
+      failure(ticket),
+      pull_request(ticket),
+      checked(offer.check),
+      question(offer),
+      controls(offer),
+    ],
+    outbox(offer),
+  )
 }
+
+/// The ticket's check output under its own label, when the board carries one.
+/// The text is the check's own output, so it is a text node.
+fn checked(check: Option(String)) -> Element(message) {
+  case check {
+    Some(output) ->
+      parts.section("Check output", [
+        html.pre([attribute.class("inbox-out")], [html.text(output)]),
+      ])
+    None -> element.none()
+  }
+}
+
+/// The bar at the pane's foot: the answer's Send when the page holds an Answer
+/// control for the open question, and what the page last said about an act.
+fn outbox(offer: Offer(message)) -> Element(message) {
+  let sending = offer.opened.progress == ticket_rule.Sending
+
+  // The answer's Send is drawn only for a question the daemon lists an Answer
+  // control for.
+  let answering = case offer.ticket.question {
+    Some(asked) -> list.contains(offer.controls, ticket_rule.Answer(asked.seq))
+    None -> False
+  }
+
+  // With nothing to answer the bar shows only what the page said about an act.
+  case answering, offer.opened.notice {
+    False, None -> element.none()
+    False, Some(_) ->
+      parts.outbox_bar(
+        "",
+        notice_words(offer.opened.notice),
+        [],
+        element.none(),
+      )
+    True, _ ->
+      parts.outbox_bar(
+        "Not sent.",
+        case notice_words(offer.opened.notice) {
+          "" -> "Nothing is sent until you press Send answer."
+          words -> words
+        },
+        [],
+        html.button(
+          [
+            attribute.type_("submit"),
+            attribute.attribute("form", answer_form_id),
+            attribute.class("inbox-primary"),
+            attribute.disabled(sending),
+          ],
+          [
+            html.text(case offer.opened.progress {
+              ticket_rule.Sending -> "Sending"
+              ticket_rule.Resting -> "Send answer"
+            }),
+          ],
+        ),
+      )
+  }
+}
+
+/// The words of the page's last statement about an act, or none.
+fn notice_words(notice: Option(ticket_rule.Notice)) -> String {
+  case notice {
+    None -> ""
+    Some(ticket_rule.Told(words)) -> words
+    Some(ticket_rule.Refused(words)) -> words
+  }
+}
+
+/// The id of the answer form, which the bar's Send names in its `form`
+/// attribute. Only one ticket's thread is open at a time.
+const answer_form_id = "inbox-answer-form"
 
 /// The daemon's reason for a worker that never reported, when it gave one.
 fn failure(ticket: board.Ticket) -> Element(message) {
   case ticket.failure {
     Some(why) ->
-      html.p([attribute.class("inbox-standing")], [
+      html.p([attribute.class("inbox-meta")], [
         html.text("The worker failed: " <> why),
       ])
     None -> element.none()
@@ -165,7 +247,7 @@ fn failure(ticket: board.Ticket) -> Element(message) {
 fn pull_request(ticket: board.Ticket) -> Element(message) {
   case ticket.pull_request {
     Some(address) ->
-      html.p([attribute.class("inbox-standing")], [
+      html.p([attribute.class("inbox-meta")], [
         html.text("Pull request: " <> address),
       ])
     None -> element.none()
@@ -177,17 +259,14 @@ fn pull_request(ticket: board.Ticket) -> Element(message) {
 fn question(offer: Offer(message)) -> Element(message) {
   case offer.ticket.question {
     None ->
-      html.p([attribute.class("inbox-hold")], [html.text("No open question.")])
+      html.p([attribute.class("inbox-meta")], [html.text("No open question.")])
     Some(asked) ->
-      html.section([attribute.class("inbox-section")], [
-        html.p([attribute.class("inbox-eyebrow")], [
-          html.text("Question " <> int.to_string(asked.seq)),
-        ]),
-        html.p([attribute.class("inbox-standing")], [html.text(asked.text)]),
+      parts.section("Question " <> int.to_string(asked.seq), [
+        parts.quote("The worker asks, untrusted text", asked.text),
         case asked.options {
           [] -> element.none()
           found ->
-            html.p([attribute.class("inbox-hold")], [
+            html.p([attribute.class("inbox-meta")], [
               html.text("Options: " <> string.join(found, " · ")),
             ])
         },
@@ -215,7 +294,8 @@ fn answer_form(offer: Offer(message), seq: Int) -> Element(message) {
             <> int.to_string(offer.opened.answered),
           html.form(
             [
-              attribute.class("place-composer inbox-form"),
+              attribute.id(answer_form_id),
+              attribute.class("inbox-form"),
               event.on("submit", submitted(seq, offer.answer))
                 |> event.prevent_default,
             ],
@@ -223,7 +303,7 @@ fn answer_form(offer: Offer(message), seq: Int) -> Element(message) {
               html.textarea(
                 [
                   attribute.name("answer"),
-                  attribute.class("composer-name"),
+                  attribute.class("inbox-ta"),
                   attribute.aria_label("Answer"),
                   attribute.placeholder("Answer the worker"),
                   attribute.attribute("rows", "3"),
@@ -231,23 +311,6 @@ fn answer_form(offer: Offer(message), seq: Int) -> Element(message) {
                 ],
                 "",
               ),
-              html.div([attribute.class("cbar")], [
-                html.button(
-                  [
-                    attribute.type_("submit"),
-                    attribute.class("place-send"),
-                    attribute.disabled(
-                      offer.opened.progress == ticket_rule.Sending,
-                    ),
-                  ],
-                  [
-                    html.text(case offer.opened.progress {
-                      ticket_rule.Sending -> "Sending"
-                      ticket_rule.Resting -> "Send answer"
-                    }),
-                  ],
-                ),
-              ]),
             ],
           ),
         ),
@@ -297,7 +360,7 @@ fn controls(offer: Offer(message)) -> Element(message) {
   // each control left.
   case offer.standing, offer.opened.confirm, buttons {
     ticket_rule.Watching, _, _ ->
-      html.p([attribute.class("inbox-hold")], [
+      html.p([attribute.class("inbox-meta")], [
         html.text("Only the owner's operating page can act on a ticket."),
       ])
     ticket_rule.Operating, ticket_rule.Asked(control), _ ->
@@ -318,12 +381,12 @@ fn buttons_row(
     [] -> element.none()
     [_, ..] ->
       html.div(
-        [attribute.class("cbar")],
+        [attribute.class("inbox-acts")],
         list.map(buttons, fn(control) {
           html.button(
             [
               attribute.type_("button"),
-              attribute.class("place-send"),
+              attribute.class("inbox-btn"),
               attribute.disabled(offer.opened.progress == ticket_rule.Sending),
               event.on_click(offer.press(control)),
             ],
@@ -338,14 +401,14 @@ fn buttons_row(
 /// cannot be undone, and offers a button that does it and one that does not.
 fn confirmation(offer: Offer(message), control: Control) -> Element(message) {
   html.div([attribute.class("inbox-section")], [
-    html.p([attribute.class("inbox-standing"), attribute.role("alert")], [
+    html.p([attribute.class("inbox-meta"), attribute.role("alert")], [
       html.text(ticket_rule.confirm_words(control)),
     ]),
-    html.div([attribute.class("cbar")], [
+    html.div([attribute.class("inbox-acts")], [
       html.button(
         [
           attribute.type_("button"),
-          attribute.class("place-send"),
+          attribute.class("inbox-btn"),
           attribute.disabled(offer.opened.progress == ticket_rule.Sending),
           event.on_click(offer.confirm(offer.opened.key, control)),
         ],
@@ -354,31 +417,11 @@ fn confirmation(offer: Offer(message), control: Control) -> Element(message) {
       html.button(
         [
           attribute.type_("button"),
-          attribute.class("place-send"),
+          attribute.class("inbox-btn"),
           event.on_click(offer.keep),
         ],
         [html.text("Keep")],
       ),
     ]),
   ])
-}
-
-/// The last thing the page said about an act, as the daemon's word turned into
-/// fixed sentences.
-fn noticed(notice: Option(ticket_rule.Notice)) -> Element(message) {
-  case notice {
-    None -> element.none()
-    Some(ticket_rule.Told(words)) ->
-      html.p([attribute.class("inbox-outbox"), attribute.role("status")], [
-        html.text(words),
-      ])
-    Some(ticket_rule.Refused(words)) ->
-      html.p(
-        [
-          attribute.class("inbox-outbox refused"),
-          attribute.role("status"),
-        ],
-        [html.text(words)],
-      )
-  }
 }
