@@ -1073,15 +1073,30 @@ fn check_sentence(check: Check, when: String) -> String {
     CheckOverridden ->
       "A person published " <> at <> " past the check" <> when <> "."
     CheckUnfinished ->
-      "The check gave no result at "
-      <> at
-      <> ". "
-      <> option.unwrap(check.note, "")
+      followed(
+        "The check gave no result at " <> at <> ".",
+        option.unwrap(check.note, ""),
+      )
     CheckWaiting ->
-      "The check has not run at " <> at <> ". " <> option.unwrap(check.note, "")
+      followed(
+        "The check has not run at " <> at <> ".",
+        option.unwrap(check.note, ""),
+      )
     CheckFailed ->
-      "The check failed at " <> at <> when <> ". " <> handling_words(check)
+      followed(
+        "The check failed at " <> at <> when <> ".",
+        handling_words(check),
+      )
     CheckUnknown(word) -> "The check reported " <> word <> " at " <> at <> "."
+  }
+}
+
+/// A sentence and what follows it, with one space between them, or the
+/// sentence alone when nothing follows, so no sentence ends in a stray space.
+fn followed(sentence: String, rest: String) -> String {
+  case rest {
+    "" -> sentence
+    _ -> sentence <> " " <> rest
   }
 }
 

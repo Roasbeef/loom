@@ -771,3 +771,22 @@ pub fn a_waiting_check_carries_the_daemons_reason_test() {
   assert board.check_words(check, 0)
     == "The check has not run at abc. The project's setup failed."
 }
+
+// A check with no note ends at its own sentence, with no space left after it.
+pub fn a_check_without_a_note_ends_at_its_sentence_test() {
+  let bare = fn(outcome: String) {
+    let shown =
+      with_check(
+        json.Object([
+          #("commit", json.String("abc")),
+          #("outcome", json.String(outcome)),
+        ]),
+      )
+    let assert Some(check) = shown.check
+      as "a check with a commit and an outcome decodes"
+    board.check_words(check, 0)
+  }
+  assert bare("waiting") == "The check has not run at abc."
+  assert bare("unfinished") == "The check gave no result at abc."
+  assert bare("failed") == "The check failed at abc."
+}
