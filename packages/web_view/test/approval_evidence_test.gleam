@@ -50,6 +50,11 @@ pub fn a_record_decodes_with_its_wanted_grants_test() {
           reason: "no",
           wanted: [Wanted(kind: "network", detail: "full")],
           asked: 2,
+          raised_at: None,
+          network: None,
+          policy: None,
+          call: None,
+          command: None,
         ),
       ]),
     )
@@ -87,6 +92,11 @@ pub fn a_reply_that_is_not_one_is_no_evidence_test() {
         reason: "",
         wanted: [],
         asked: 0,
+        raised_at: None,
+        network: None,
+        policy: None,
+        call: None,
+        command: None,
       ),
     ]
 }

@@ -667,15 +667,18 @@ fn with_summary(
   home.Start(
     ..start_with(home.OperatorCeiling, Some(projects)),
     sessions: fn(deliver) { deliver(home.Listed([saved_entry()])) },
-    attention: Some(home.Attention(
-      feed: fn(_, deliver) { deliver([]) },
-      saved: fn(_, deliver) { summary(deliver) },
-      record: fn(_, _, deliver) { deliver(Error("none")) },
-      approvals: fn(_, deliver) { deliver(Error("none")) },
-      review: None,
-      review_pause_ms: 0,
-      act: None,
-    )),
+    attention: Some(
+      home.Attention(
+        feed: fn(_, deliver) { deliver([]) },
+        saved: fn(_, deliver) { summary(deliver) },
+        record: fn(_, _, deliver) { deliver(Error("none")) },
+        approvals: fn(_, deliver) { deliver(Error("none")) },
+        review: None,
+        review_pause_ms: 0,
+        act: None,
+        brief: fn(_, _, _) { Nil },
+      ),
+    ),
   )
 }
 

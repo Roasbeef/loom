@@ -265,7 +265,8 @@ fn hostile_review() -> approval.Review {
       ]),
     ]),
     strand: None,
-    remote: option.None, raised_at: None,
+    remote: option.None,
+    raised_at: None,
   )
 }
 

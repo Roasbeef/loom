@@ -1595,6 +1595,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.AttentionFeed
           | peer_mail.AttentionRead(..)
           | peer_mail.ApprovalRead
+          | peer_mail.SessionBrief(..)
           | peer_mail.AttentionSettle(..)
           | peer_mail.Inbox(..)
           | peer_mail.InboxGet(..)
@@ -2283,21 +2284,25 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
       let read =
         server.home_activity(config, ready.registry, digest_of(credential))
       assert read(asked)
-        == [#(idle_id, sessions.Report(sessions.Idle, None, []))]
+        == [#(idle_id, sessions.Report(sessions.Idle, None, [], None, None))]
 
       // A pending approval moves it to needs you.
       let assert Ok(Nil) =
         api.raise_escalation(runtime, "esc-1", json.Object([]))
         as "an approval is pending"
       assert read([idle_id])
-        == [#(idle_id, sessions.Report(sessions.NeedsYou, None, []))]
+        == [
+          #(idle_id, sessions.Report(sessions.NeedsYou, None, [], None, None)),
+        ]
 
       // A member holding the session, at any role, is answered for it, and for
       // nothing else it was asked about.
       let held =
         server.home_activity(config, ready.registry, digest_of("holder-token"))
       assert held(asked)
-        == [#(idle_id, sessions.Report(sessions.NeedsYou, None, []))]
+        == [
+          #(idle_id, sessions.Report(sessions.NeedsYou, None, [], None, None)),
+        ]
 
       // A member holding nothing gets exactly what an unknown identity gets: no
       // row, so a reply cannot tell "not yours" from "not running".
@@ -2339,7 +2344,7 @@ fn glance(strand: String, title: String, summary: String) -> json.JsonValue {
 // they are well-formed and are no message and no glances when they are not.
 pub fn a_row_decodes_into_a_report_with_or_without_its_extras_test() {
   assert server.report_of(row([]))
-    == Ok(#("S", sessions.Report(sessions.Idle, None, [])))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
 
   assert server.report_of(
       row([
@@ -2352,17 +2357,23 @@ pub fn a_row_decodes_into_a_report_with_or_without_its_extras_test() {
     )
     == Ok(#(
       "S",
-      sessions.Report(sessions.Idle, Some("All done."), [
-        sessions.Glance("s1", "Lint", "green"),
-        sessions.Glance("s2", "", "idle"),
-      ]),
+      sessions.Report(
+        sessions.Idle,
+        Some("All done."),
+        [
+          sessions.Glance("s1", "Lint", "green"),
+          sessions.Glance("s2", "", "idle"),
+        ],
+        None,
+        None,
+      ),
     ))
 
   // A null message is none, and so is one of the wrong type.
   assert server.report_of(row([#("last_message", json.Null)]))
-    == Ok(#("S", sessions.Report(sessions.Idle, None, [])))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
   assert server.report_of(row([#("last_message", json.Int(3))]))
-    == Ok(#("S", sessions.Report(sessions.Idle, None, [])))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
 }
 
 // A malformed glance is dropped alone: its neighbours and the row's state and
@@ -2393,13 +2404,19 @@ pub fn a_malformed_glance_is_dropped_and_never_fails_the_row_test() {
     )
     == Ok(#(
       "S",
-      sessions.Report(sessions.Idle, Some("Hi"), [
-        sessions.Glance("s1", "T", "ok"),
-      ]),
+      sessions.Report(
+        sessions.Idle,
+        Some("Hi"),
+        [
+          sessions.Glance("s1", "T", "ok"),
+        ],
+        None,
+        None,
+      ),
     ))
 
   assert server.report_of(row([#("glances", json.String("nope"))]))
-    == Ok(#("S", sessions.Report(sessions.Idle, None, [])))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
 }
 
 // A row the page cannot read at all, an unknown state or no session, is no
@@ -2429,9 +2446,9 @@ pub fn a_reports_activity_follows_the_approvals_count_test() {
   }
 
   assert server.report_of(needs(0))
-    == Ok(#("S", sessions.Report(sessions.Failed, None, [])))
+    == Ok(#("S", sessions.Report(sessions.Failed, None, [], None, None)))
   assert server.report_of(needs(2))
-    == Ok(#("S", sessions.Report(sessions.NeedsYou, None, [])))
+    == Ok(#("S", sessions.Report(sessions.NeedsYou, None, [], None, None)))
 }
 
 fn sha256_hex(text: String) -> String {

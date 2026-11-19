@@ -52,8 +52,8 @@ fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
 
 fn reports() -> List(#(String, sessions.Report)) {
   [
-    #("A", Report(sessions.Idle, Some("Done."), [])),
-    #("B", Report(sessions.Idle, None, [])),
+    #("A", Report(sessions.Idle, Some("Done."), [], None, None)),
+    #("B", Report(sessions.Idle, None, [], None, None)),
   ]
 }
 
@@ -93,7 +93,13 @@ fn feed_rows() -> List(#(String, attention_feed.Row)) {
         asks: Section(count: 0, items: []),
         finds: Section(count: 0, items: []),
         stuck: Section(count: 1, items: [
-          Stuck(strand:, failed_at: Some(6_800_000)),
+          Stuck(
+            strand:,
+            failed_at: Some(6_800_000),
+            reason: None,
+            retry_after_ms: None,
+            parent: None,
+          ),
         ]),
       ),
     ),
@@ -185,6 +191,11 @@ fn evidence() -> approval_evidence.Evidence {
         approval_evidence.Wanted(kind: "writable_root", detail: "/srv/data"),
       ],
       asked: 1,
+      raised_at: None,
+      network: None,
+      policy: None,
+      call: None,
+      command: None,
     ),
   ])
 }
@@ -225,15 +236,18 @@ fn start(
     rename: None,
     manage: None,
     thread_send: None,
-    attention: Some(home.Attention(
-      feed: fn(_, deliver) { deliver(feed_rows()) },
-      saved: fn(_, deliver) { deliver(saved) },
-      record: fn(_session, id, deliver) { deliver(read_of(id)) },
-      approvals: fn(_session, deliver) { deliver(Ok(evidence())) },
-      review: None,
-      review_pause_ms: 0,
-      act:,
-    )),
+    attention: Some(
+      home.Attention(
+        feed: fn(_, deliver) { deliver(feed_rows()) },
+        saved: fn(_, deliver) { deliver(saved) },
+        record: fn(_session, id, deliver) { deliver(read_of(id)) },
+        approvals: fn(_session, deliver) { deliver(Ok(evidence())) },
+        review: None,
+        review_pause_ms: 0,
+        act:,
+        brief: fn(_, _, _) { Nil },
+      ),
+    ),
     create: None,
     folders: None,
     elsewhere: None,
@@ -782,7 +796,7 @@ pub fn an_approval_thread_lists_its_evidence_and_still_only_points_away_test() {
   let model =
     opened(start(
       listing(),
-      [#("A", Report(sessions.NeedsYou, None, []))],
+      [#("A", Report(sessions.NeedsYou, None, [], None, None))],
       [],
       None,
     ))
@@ -829,7 +843,13 @@ pub fn a_hostile_strand_name_is_in_no_attribute_test() {
         ]),
         finds: Section(count: 0, items: []),
         stuck: Section(count: 1, items: [
-          Stuck(strand: hostile, failed_at: Some(6_800_000)),
+          Stuck(
+            strand: hostile,
+            failed_at: Some(6_800_000),
+            reason: None,
+            retry_after_ms: None,
+            parent: None,
+          ),
         ]),
       ),
     ),
@@ -862,6 +882,7 @@ pub fn a_hostile_strand_name_is_in_no_attribute_test() {
               Some(reads) -> reads.act
               None -> None
             },
+            brief: fn(_, _, _) { Nil },
           ),
         ),
       ),
@@ -957,15 +978,18 @@ fn composing(
     ..base,
     create: Some(fn(_, _, _, _, _, _, _) { Nil }),
     activity: fn(_, deliver) { activity(deliver) },
-    attention: Some(home.Attention(
-      feed: fn(_, deliver) { deliver([]) },
-      saved: fn(_, deliver) { saved(deliver) },
-      record: fn(_session, id, deliver) { deliver(read_of(id)) },
-      approvals: fn(_session, deliver) { deliver(Ok(evidence())) },
-      review: None,
-      review_pause_ms: 0,
-      act: None,
-    )),
+    attention: Some(
+      home.Attention(
+        feed: fn(_, deliver) { deliver([]) },
+        saved: fn(_, deliver) { saved(deliver) },
+        record: fn(_session, id, deliver) { deliver(read_of(id)) },
+        approvals: fn(_session, deliver) { deliver(Ok(evidence())) },
+        review: None,
+        review_pause_ms: 0,
+        act: None,
+        brief: fn(_, _, _) { Nil },
+      ),
+    ),
   )
 }
 
@@ -978,7 +1002,7 @@ fn quiet_and_saved() -> List(Entry) {
 }
 
 fn quiet_report() -> List(#(String, sessions.Report)) {
-  [#("A", Report(sessions.Idle, None, []))]
+  [#("A", Report(sessions.Idle, None, [], None, None))]
 }
 
 // A saved session with nothing pending lands the composer once its summary has
@@ -1060,7 +1084,9 @@ pub fn a_decided_composer_is_never_covered_by_a_later_read_test() {
     model
     |> run(home.FeedRead(feed_rows()))
     |> run(home.SavedRead([approval_waiting()]))
-    |> run(home.Observed([#("A", Report(sessions.Working, None, []))]))
+    |> run(
+      home.Observed([#("A", Report(sessions.Working, None, [], None, None))]),
+    )
   let html = drawn(later)
 
   assert string.contains(html, "<h1>New session</h1>")

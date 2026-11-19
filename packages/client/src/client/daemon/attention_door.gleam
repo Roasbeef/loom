@@ -308,7 +308,13 @@ fn open_find(stored: attention.Stored, revision: Int) -> Result(Nil, Refusal) {
 /// The caller's authority over the session, read from the registry now. A
 /// session the caller does not hold is `not_found`, the word an unknown one
 /// gets.
-fn held(
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_door.held(reach, "0198...")
+/// ```
+pub fn held(
   reach: Reach(instance),
   session: String,
 ) -> Result(access.Authority, Refusal) {
@@ -348,7 +354,13 @@ fn handling(authority: access.Authority) -> attention_feed.Handling {
 /// The resident session's peer endpoint, or `not_resident`. A saved session, one
 /// that is opening or stopping, and one with no endpoint are all the same to a
 /// caller: nothing is running that could read its store.
-fn endpoint_of(
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_door.endpoint_of(reach, "0198...")
+/// ```
+pub fn endpoint_of(
   reach: Reach(instance),
   session: String,
 ) -> Result(peer_mail.Endpoint, Refusal) {
@@ -446,7 +458,13 @@ fn settle(
 /// One call to the session's endpoint. The words an Agency answers with for a
 /// refusal of its own, `not_found`, `conflict` and `bad_request`, become the
 /// daemon's codes; every other reason is the store's and is `unavailable`.
-fn call(
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_door.call(endpoint, peer_mail.Overview)
+/// ```
+pub fn call(
   endpoint: peer_mail.Endpoint,
   command: peer_mail.Command,
 ) -> Result(JsonValue, Refusal) {

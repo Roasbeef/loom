@@ -1545,6 +1545,7 @@ fn served(command: peer_mail.Command) -> Bool {
     | peer_mail.AttentionFeed
     | peer_mail.AttentionRead(..)
     | peer_mail.ApprovalRead
+    | peer_mail.SessionBrief(..)
     | peer_mail.AttentionSettle(..)
     | peer_mail.OutboxClaim(..)
     | peer_mail.OutboxSettle(..)

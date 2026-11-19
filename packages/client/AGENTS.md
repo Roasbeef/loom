@@ -7274,6 +7274,25 @@ gateway; `ui_socket.answer_ask_for` and `close_find_for` are the home's acts, an
 take a strand; `send_message` and `message_to` stay the main-strand defaults, and
 the gateway's `unknown_strand` is `thread_send.UnknownStrand`.
 
+Stuck items (addendum to 120) carry `reason` (the run's error code if it is a short
+lower-case word, else `failed`), `retry_after_ms` and `failed_at` from the failed
+response entry the run's leaf names (an assistant entry with `Errored`; any other
+leaf gives no time), and `parent` from the `runtime/lineage` ledger; `Evidence` is
+read once per row, only when a strand is stuck. `approval_evidence.read(runtime,
+today)` adds `raised_at`, `network`, `policy` (`today_of` the session's base policy,
+lent through `agency.Config.approval_today`; the Agency answers `ApprovalRead`
+itself for that reason) and, for `code_mode`, `code_call` (`proc.run` and the argv of
+the first `proc.command([...])`, nothing when unparsable). `Overview` adds
+`last_message_at` and `turn_started_at` (050 addendum).
+
+`session.brief` (protocol-change/125): `client/session_brief` is the resident side
+(`peer_mail.SessionBrief(since)`): one scan of main's last 80 message entries
+(`of_window`), the roster from the strand-state and last-result registers, the goal
+cell, shed to 12,000 bytes. `daemon/brief_door` is the walk: authority at any role
+(`attention_door.held`), one `Allowance.reserve` from `ui_sessions.reserve_brief_read`
+(six per four seconds per credential; `server.brief_allowance`), then the resident's
+endpoint. `server.home_brief` is the home's typed read, `HomeAttachment.brief`.
+
 `daemon/review_door` is the walk of `sessions.review` (protocol-change/123): the
 registry's authority at the call (owner or an Operator member; `forbidden` for an
 observer, as the Changes tab refuses one; `not_found` for a non-holder), residency (`not_resident` for a saved session or a

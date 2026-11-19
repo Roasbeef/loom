@@ -79,7 +79,7 @@ pub fn a_full_row_decodes_test() {
           Some(3),
         ),
       ]),
-      stuck: Section(1, [Stuck("sub:main/b", None)]),
+      stuck: Section(1, [Stuck("sub:main/b", None, None, None, None)]),
     ))
 }
 

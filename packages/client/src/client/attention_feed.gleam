@@ -10,8 +10,9 @@
 ////    last-result listing, one listing each, so a row costs a fixed number of
 ////    store calls whatever the session holds.
 //// 2. `stuck_strands` names the strands that stopped on a failed run and were
-////    not run again. `row_of` reduces the three kinds to counts and short
-////    items.
+////    not run again, with what the failure entry and the lineage ledger say
+////    about each (`Evidence`). `row_of` reduces the three kinds to counts and
+////    short items.
 //// 3. `shed` removes items until the encoded row fits the row bound, and
 ////    `encode` words it. A count is never reduced.
 //// 4. `record_json` words one record for `attention.read`, from the typed
@@ -34,10 +35,13 @@
 
 import client/attention as store
 import core/attention.{type Ask, type Find}
+import core/entry.{type Entry}
 import core/glance
-import core/ids.{type OpId}
+import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
+import core/message
 import core/register
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -47,6 +51,7 @@ import gleam/string
 import machine/codec
 import machine/operation
 import runtime/api
+import runtime/lineage
 import runtime/writer
 import storage/storage
 
@@ -115,17 +120,55 @@ pub type FindItem {
   )
 }
 
-/// One strand that stopped on a failed run and has not run since.
+/// One strand that stopped on a failed run and has not run since
+/// (protocol-change/120, the addendum on stuck strands).
 pub type Stuck {
   Stuck(
     /// The strand, cut to `strand_bytes`.
     strand: String,
-    /// The mint time of the leaf entry of the failed result: when the strand's
-    /// last entry was written, so the run failed at or after it. Absent when the
-    /// result has no leaf.
+    /// The time of the failed response entry the run ended on, in Unix
+    /// milliseconds, which is when the failure was recorded. Absent when the
+    /// result's leaf is not a failed response, as when the run failed before a
+    /// request was made, so no time is ever a guess.
     failed_at: Option(Int),
+    /// The run's error code, a fixed word of the harness (`provider_error`,
+    /// `context_overflow`, ...) and never model text. A code that is not a short
+    /// lower-case word is `failed`.
+    reason: String,
+    /// The provider's minimum wait before a retry, in milliseconds, when the
+    /// failed response carries one.
+    retry_after_ms: Option(Int),
+    /// The strand that spawned this one, from the lineage ledger and cut to
+    /// `strand_bytes`. Absent for a strand with no ledger cell.
+    parent: Option(String),
   )
 }
+
+/// What a row reads beside the two registers to say more about a stuck strand:
+/// the entries its failed runs ended on and the lineage ledger's parents. Both
+/// are read once for the whole row, so the cost does not grow with the strands.
+pub type Evidence {
+  Evidence(
+    /// The leaf entries of the failed results, by identifier.
+    entries: Dict(EntryId, Entry),
+    /// Each strand's parent, from the lineage ledger.
+    parents: Dict(String, String),
+  )
+}
+
+/// No evidence: a stuck strand then has no time, no retry hint and no parent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_feed.no_evidence().parents == dict.new()
+/// ```
+pub fn no_evidence() -> Evidence {
+  Evidence(entries: dict.new(), parents: dict.new())
+}
+
+/// The longest error code a stuck item carries, in bytes.
+const reason_bytes = 40
 
 /// A count of what a session holds and the items of it a row has room for.
 pub type Section(item) {
@@ -175,8 +218,9 @@ pub fn feed(runtime: api.Runtime) -> Result(JsonValue, String) {
   use asks <- result.try(store.asks(runtime))
   use finds <- result.try(store.finds(runtime))
   use states <- result.try(strand_states(runtime))
-  use results <- result.map(last_results(runtime))
-  row_of(asks, finds, stuck_strands(states, results))
+  use results <- result.try(last_results(runtime))
+  use evidence <- result.map(evidence_for(runtime, states, results))
+  row_of(asks, finds, stuck_strands(states, results, evidence))
   |> shed
   |> encode
 }
@@ -287,26 +331,94 @@ fn find_item(find: Find) -> FindItem {
 /// ## Examples
 ///
 /// ```gleam
-/// assert attention_feed.stuck_strands([], []) == []
+/// assert attention_feed.stuck_strands([], [], attention_feed.no_evidence()) == []
 /// ```
 pub fn stuck_strands(
   states: List(#(String, Option(OpId))),
   results: List(#(String, operation.LastResult)),
+  evidence: Evidence,
 ) -> List(Stuck) {
   list.filter_map(results, fn(entry) {
     let #(strand, last) = entry
-    use failed_at <- result.map(failed_without_retry(strand, last, states))
-    Stuck(strand: glance.clip(strand, strand_bytes), failed_at:)
+    use failure <- result.map(failed_without_retry(strand, last, states))
+    let #(error, leaf) = failure
+    let #(failed_at, retry_after_ms) = failure_entry(evidence, leaf)
+    Stuck(
+      strand: glance.clip(strand, strand_bytes),
+      failed_at:,
+      reason: reason_word(error.code),
+      retry_after_ms:,
+      parent: dict.get(evidence.parents, strand)
+        |> result.map(glance.clip(_, strand_bytes))
+        |> option.from_result,
+    )
   })
 }
 
+/// The error code as a stuck item carries it: the harness's own short word, or
+/// `failed` for anything else, so no text a provider or a model chose can ride
+/// in the field.
+fn reason_word(code: String) -> String {
+  let word =
+    list.all(string.to_graphemes(code), fn(grapheme) {
+      string.contains("abcdefghijklmnopqrstuvwxyz0123456789_", grapheme)
+    })
+
+  // A code that is not a short lower-case word is reported as `failed`.
+  case word && code != "" && string.byte_size(code) <= reason_bytes {
+    True -> code
+    False -> "failed"
+  }
+}
+
+/// The time and retry hint of the failed response a run ended on. Only an
+/// assistant entry that records an error stands for the failure; any other
+/// leaf, or one that was not read, gives neither.
+fn failure_entry(
+  evidence: Evidence,
+  leaf: Option(EntryId),
+) -> #(Option(Int), Option(Int)) {
+  // Only a leaf that was read can say when the run failed.
+  let found = case leaf {
+    Some(id) -> dict.get(evidence.entries, id)
+    None -> Error(Nil)
+  }
+
+  // An assistant entry that records an error stands for the failure.
+  case found {
+    Ok(entry.MessageEntry(
+      message: message.AssistantMessage(
+        stop_reason: message.Errored,
+        diagnostics:,
+        ..,
+      ),
+      ts:,
+      ..,
+    )) -> #(Some(ts), retry_after(diagnostics))
+    Ok(_) | Error(Nil) -> #(None, None)
+  }
+}
+
+/// The provider's wait hint in a response's diagnostics, when it is a
+/// non-negative whole number.
+fn retry_after(diagnostics: Option(JsonValue)) -> Option(Int) {
+  case diagnostics {
+    Some(json.Object(fields)) ->
+      case list.key_find(fields, "retry_after_ms") {
+        Ok(json.Int(delay)) if delay >= 0 -> Some(delay)
+        Ok(_) | Error(Nil) -> None
+      }
+    Some(_) | None -> None
+  }
+}
+
 /// For a strand whose last result is a failed run and that is neither `main`,
-/// the advisor nor running, the time of the result's leaf entry.
+/// the advisor nor running, the run's error and its leaf entry.
 fn failed_without_retry(
   strand: String,
   last: operation.LastResult,
   states: List(#(String, Option(OpId))),
-) -> Result(Option(Int), Nil) {
+) -> Result(#(operation.OperationError, Option(EntryId)), Nil) {
   // A strand that is running has moved past its last failure.
   let running = case list.key_find(states, strand) {
     Ok(Some(_)) -> True
@@ -315,8 +427,9 @@ fn failed_without_retry(
 
   // Only a failed run of an idle strand is stuck; no other result is.
   case strand == primary_strand || strand == advisor_strand || running, last {
-    False, operation.RunLastResult(outcome: operation.RunFailed(_), leaf:, ..)
-    -> Ok(option.map(leaf, ids.entry_id_timestamp_ms))
+    False,
+      operation.RunLastResult(outcome: operation.RunFailed(error:), leaf:, ..)
+    -> Ok(#(error, leaf))
     True, _
     | False, operation.RunLastResult(..)
     | False, operation.CompactionLastResult(..)
@@ -325,9 +438,63 @@ fn failed_without_retry(
   }
 }
 
+/// What a row reads for its stuck strands: one batch read of the entries their
+/// failed runs ended on, and one listing of the lineage ledger. A session with
+/// no stuck strand reads neither.
+fn evidence_for(
+  runtime: api.Runtime,
+  states: List(#(String, Option(OpId))),
+  results: List(#(String, operation.LastResult)),
+) -> Result(Evidence, String) {
+  case stuck_strands(states, results, no_evidence()) {
+    [] -> Ok(no_evidence())
+    [_, ..] -> read_evidence(runtime, results)
+  }
+}
+
+/// The failed runs' leaf entries and the lineage ledger's parents.
+fn read_evidence(
+  runtime: api.Runtime,
+  results: List(#(String, operation.LastResult)),
+) -> Result(Evidence, String) {
+  let leaves =
+    list.filter_map(results, fn(entry) {
+      case entry.1 {
+        operation.RunLastResult(
+          outcome: operation.RunFailed(_),
+          leaf: Some(leaf),
+          ..,
+        ) -> Ok(leaf)
+        operation.RunLastResult(..)
+        | operation.CompactionLastResult(..)
+        | operation.NavigationLastResult(..) -> Error(Nil)
+      }
+    })
+  use entries <- result.try(
+    writer.get_entries(runtime.tree.writer, leaves)
+    |> result.map_error(string.inspect),
+  )
+  use cells <- result.map(
+    api.reserved_facts(runtime, prefix: lineage.key_prefix)
+    |> result.map_error(string.inspect),
+  )
+
+  // A ledger cell that does not decode names no parent, which is the absent
+  // field and not a fault.
+  let parents =
+    list.filter_map(cells, fn(pair) {
+      use strand <- result.try(lineage.strand_of_key(pair.0))
+      use cell <- result.map(
+        lineage.decode(pair.1) |> result.replace_error(Nil),
+      )
+      #(strand, cell.parent)
+    })
+  Evidence(entries:, parents: dict.from_list(parents))
+}
+
 /// Every strand's current operation, from one listing of the strand-state
 /// namespace. A cell that does not decode is left out.
-fn strand_states(
+pub fn strand_states(
   runtime: api.Runtime,
 ) -> Result(List(#(String, Option(OpId))), String) {
   use cells <- result.map(
@@ -344,7 +511,7 @@ fn strand_states(
 
 /// Every strand's latest terminal result, from one listing. A cell that does not
 /// decode is left out.
-fn last_results(
+pub fn last_results(
   runtime: api.Runtime,
 ) -> Result(List(#(String, operation.LastResult)), String) {
   use cells <- result.map(
@@ -482,14 +649,34 @@ fn find_json(item: FindItem) -> JsonValue {
   )
 }
 
-/// A stuck item, with `failed_at` only when the result had a leaf.
+/// A stuck item, with `failed_at`, `retry_after_ms` and `parent` only when it
+/// has them.
 fn stuck_json(item: Stuck) -> JsonValue {
   json.Object(
-    list.append([#("strand", json.String(item.strand))], case item.failed_at {
-      Some(at) -> [#("failed_at", json.Int(at))]
-      None -> []
-    }),
+    list.flatten([
+      [
+        #("strand", json.String(item.strand)),
+        #("reason", json.String(item.reason)),
+      ],
+      optional_int("failed_at", item.failed_at),
+      optional_int("retry_after_ms", item.retry_after_ms),
+      case item.parent {
+        Some(parent) -> [#("parent", json.String(parent))]
+        None -> []
+      },
+    ]),
   )
+}
+
+/// A member that is present only when it has a value.
+fn optional_int(
+  name: String,
+  value: Option(Int),
+) -> List(#(String, JsonValue)) {
+  case value {
+    Some(number) -> [#(name, json.Int(number))]
+    None -> []
+  }
 }
 
 // --- one record ------------------------------------------------------------------

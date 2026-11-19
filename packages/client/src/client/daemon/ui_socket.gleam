@@ -977,6 +977,7 @@ pub fn upgrade_home(
   // owner's operating page alone (protocol-change/120). The acts reach the
   // daemon's own door, which reads authority from the registry at each press;
   // the page's submit is admitted by the rule that admits the message form.
+  let brief_of = attachment.brief
   let home_attention =
     home_attention_capability(
       attachment.principal,
@@ -996,6 +997,12 @@ pub fn upgrade_home(
         approvals: fn(session, deliver) {
           read_task(deliver, fn() {
             approvals_for(attachment.attention_reach, session)
+          })
+        },
+        brief: fn(session, since, deliver) {
+          read_task(deliver, fn() {
+            brief_of(session, since)
+            |> result.map_error(fn(refusal) { refusal.words })
           })
         },
         review_pause_ms: ui_sessions.worktree_read_window_ms + 500,

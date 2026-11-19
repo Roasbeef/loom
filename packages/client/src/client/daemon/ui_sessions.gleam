@@ -220,6 +220,16 @@ pub const worktree_read_limit = 2
 /// The window `worktree_read_limit` is counted over, in milliseconds.
 pub const worktree_read_window_ms = 4000
 
+/// How many brief reads a credential's pages may start in
+/// `brief_read_window_ms` (protocol-change/125). A brief is a few register
+/// reads inside the session's Agency actor, which its other peer commands
+/// share, so the count is per credential and not per page. Six in four seconds
+/// is a page that selects a few threads in a row, with room for its refresh.
+pub const brief_read_limit = 6
+
+/// The window `brief_read_limit` is counted over, in milliseconds.
+pub const brief_read_window_ms = 4000
+
 /// What a page may be limited in the number of.
 pub type Allowance {
   /// The invitations a credential's pages mint (`invite_limit`).
@@ -230,6 +240,9 @@ pub type Allowance {
 
   /// The worktree reads a credential's pages start (`worktree_read_limit`).
   WorktreeReads
+
+  /// The brief reads a credential's pages start (`brief_read_limit`).
+  BriefReads
 }
 
 /// What page a ticket opens, which is also the page the UI session it becomes
@@ -514,6 +527,8 @@ type State {
     creations: Dict(String, List(Int)),
     /// The same for the worktree reads inside `worktree_read_window_ms`.
     reads: Dict(String, List(Int)),
+    /// The same for the brief reads inside `brief_read_window_ms`.
+    briefs: Dict(String, List(Int)),
   )
 }
 
@@ -553,6 +568,7 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
       dict.new(),
       dict.new(),
       0,
+      dict.new(),
       dict.new(),
       dict.new(),
       dict.new(),
@@ -763,6 +779,28 @@ pub fn reserve_worktree_read(
 ) -> Result(Nil, Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Reserve(
     WorktreeReads,
+    access.fingerprint(credential),
+    _,
+  ))
+  |> result.unwrap(Error(0))
+  |> result.replace_error(Nil)
+}
+
+/// Reserves one of the credential's brief reads, or refuses when it has started
+/// `brief_read_limit` in the last `brief_read_window_ms`. The count is made and
+/// taken in one message, and the place is not given back.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.reserve_brief_read(sessions, digest) == Ok(Nil)
+/// ```
+pub fn reserve_brief_read(
+  sessions: Sessions,
+  credential: access.Digest,
+) -> Result(Nil, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Reserve(
+    BriefReads,
     access.fingerprint(credential),
     _,
   ))
@@ -1457,6 +1495,31 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     }
 
+    Reserve(allowance: BriefReads, credential:, reply:) -> {
+      let recent =
+        recent_instants(state.briefs, credential, now, brief_read_window_ms)
+
+      // Enforce rate limit on recent brief read requests.
+      case list.drop(recent, brief_read_limit - 1) {
+        [held, ..] -> {
+          process.send(
+            reply,
+            Error(frees_at(state.settings, held + brief_read_window_ms)),
+          )
+          actor.continue(state)
+        }
+        [] -> {
+          process.send(reply, Ok(Nil))
+          actor.continue(
+            State(
+              ..state,
+              briefs: dict.insert(state.briefs, credential, [now, ..recent]),
+            ),
+          )
+        }
+      }
+    }
+
     Release(credential:) -> {
       // Remove the newest invitation timestamp from credential record.
       let held = case
@@ -1488,6 +1551,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           }),
           reads: dict.filter(state.reads, fn(_, instants) {
             list.any(instants, fn(at) { at > now - worktree_read_window_ms })
+          }),
+          briefs: dict.filter(state.briefs, fn(_, instants) {
+            list.any(instants, fn(at) { at > now - brief_read_window_ms })
           }),
           tickets: dict.filter(state.tickets, fn(_, entry) {
             entry.expires_at > now

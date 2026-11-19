@@ -66,15 +66,27 @@ pub type Find {
   )
 }
 
-/// One strand that stopped on a failed run and has not run since.
+/// One strand that stopped on a failed run and has not run since
+/// (protocol-change/120, the addendum on stuck strands).
 pub type Stuck {
   Stuck(
     /// The strand, cut by the daemon.
     strand: String,
-    /// A lower bound on when the run failed: the time of the strand's last
-    /// entry before it ended. A page words it as "since at least", never as
-    /// the time of the failure.
+    /// When the failed response was recorded, in Unix milliseconds: the exact
+    /// time of the entry the run ended on. Absent when the daemon had no such
+    /// entry to read, and for a daemon that predates the field. A page that has
+    /// no time draws none.
     failed_at: Option(Int),
+    /// The run's error code, the harness's own word (`provider_error`,
+    /// `context_overflow`, ...) and never model text. Absent for a daemon that
+    /// predates the field.
+    reason: Option(String),
+    /// The provider's minimum wait before a retry, in milliseconds, when the
+    /// failed response carried one.
+    retry_after_ms: Option(Int),
+    /// The strand that spawned this one, which is session text and drawn as
+    /// text only. Absent when the daemon read no lineage for it.
+    parent: Option(String),
   )
 }
 
@@ -198,7 +210,13 @@ fn find(value: JsonValue) -> Result(Find, Nil) {
 fn stuck_item(value: JsonValue) -> Result(Stuck, Nil) {
   use fields <- result.try(object(value))
   use strand <- result.map(text(fields, "strand"))
-  Stuck(strand:, failed_at: option_int(fields, "failed_at"))
+  Stuck(
+    strand:,
+    failed_at: option_int(fields, "failed_at"),
+    reason: option_text(fields, "reason"),
+    retry_after_ms: option_int(fields, "retry_after_ms"),
+    parent: option_text(fields, "parent"),
+  )
 }
 
 /// The fields of an object.

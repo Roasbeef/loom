@@ -492,7 +492,9 @@ pub fn a_busy_rows_question_says_it_is_mid_turn_test() {
   let busy =
     run(
       opened(home_start(Some(answering(asked)))),
-      home.Observed([#("B", sessions.Report(sessions.Working, None, []))]),
+      home.Observed([
+        #("B", sessions.Report(sessions.Working, None, [], None, None)),
+      ]),
     )
   let html = home_html(run(busy, home.SidebarArchiveAsked("B")))
   assert string.contains(html, "Stop this session mid-turn, then archive it?")
@@ -500,7 +502,9 @@ pub fn a_busy_rows_question_says_it_is_mid_turn_test() {
   let waiting =
     run(
       opened(home_start(Some(answering(asked)))),
-      home.Observed([#("B", sessions.Report(sessions.NeedsYou, None, []))]),
+      home.Observed([
+        #("B", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+      ]),
     )
   let html = home_html(run(waiting, home.SidebarArchiveAsked("B")))
   assert string.contains(html, "Stop this session mid-turn, then archive it?")
@@ -508,7 +512,9 @@ pub fn a_busy_rows_question_says_it_is_mid_turn_test() {
   let idle =
     run(
       opened(home_start(Some(answering(asked)))),
-      home.Observed([#("B", sessions.Report(sessions.Idle, None, []))]),
+      home.Observed([
+        #("B", sessions.Report(sessions.Idle, None, [], None, None)),
+      ]),
     )
   let html = home_html(run(idle, home.SidebarArchiveAsked("B")))
   assert string.contains(html, "Stop this session, then archive it?")

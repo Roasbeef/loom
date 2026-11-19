@@ -53,7 +53,13 @@ pub fn items_flatten_the_rows_in_kind_order_test() {
       #(
         "s1",
         row([ask("ask-1", 10)], [find("find-1", 5)], [
-          Stuck(strand: "sub:x", failed_at: None),
+          Stuck(
+            strand: "sub:x",
+            failed_at: None,
+            reason: None,
+            retry_after_ms: None,
+            parent: None,
+          ),
         ]),
       ),
       #("s2", row([ask("ask-2", 3)], [], [])),
@@ -61,7 +67,16 @@ pub fn items_flatten_the_rows_in_kind_order_test() {
   assert items
     == [
       AskItem("s1", ask("ask-1", 10)),
-      StuckItem("s1", Stuck(strand: "sub:x", failed_at: None)),
+      StuckItem(
+        "s1",
+        Stuck(
+          strand: "sub:x",
+          failed_at: None,
+          reason: None,
+          retry_after_ms: None,
+          parent: None,
+        ),
+      ),
       FindItem("s1", find("find-1", 5)),
       AskItem("s2", ask("ask-2", 3)),
     ]
@@ -72,12 +87,26 @@ pub fn needs_you_ranks_the_longest_wait_first_and_unknown_last_test() {
     attention_rule.items([
       #(
         "b",
-        row([ask("ask-b", 200)], [], [Stuck(strand: "sub:b", failed_at: None)]),
+        row([ask("ask-b", 200)], [], [
+          Stuck(
+            strand: "sub:b",
+            failed_at: None,
+            reason: None,
+            retry_after_ms: None,
+            parent: None,
+          ),
+        ]),
       ),
       #(
         "a",
         row([ask("ask-a", 200)], [], [
-          Stuck(strand: "sub:a", failed_at: Some(50)),
+          Stuck(
+            strand: "sub:a",
+            failed_at: Some(50),
+            reason: None,
+            retry_after_ms: None,
+            parent: None,
+          ),
         ]),
       ),
       #("c", row([ask("ask-c", 100)], [find("find-c", 1)], [])),
@@ -87,11 +116,29 @@ pub fn needs_you_ranks_the_longest_wait_first_and_unknown_last_test() {
   // at 200 by session, and the one with no time last. Finds are not here.
   assert attention_rule.needs_you(items)
     == [
-      StuckItem("a", Stuck(strand: "sub:a", failed_at: Some(50))),
+      StuckItem(
+        "a",
+        Stuck(
+          strand: "sub:a",
+          failed_at: Some(50),
+          reason: None,
+          retry_after_ms: None,
+          parent: None,
+        ),
+      ),
       AskItem("c", ask("ask-c", 100)),
       AskItem("a", ask("ask-a", 200)),
       AskItem("b", ask("ask-b", 200)),
-      StuckItem("b", Stuck(strand: "sub:b", failed_at: None)),
+      StuckItem(
+        "b",
+        Stuck(
+          strand: "sub:b",
+          failed_at: None,
+          reason: None,
+          retry_after_ms: None,
+          parent: None,
+        ),
+      ),
     ]
   assert attention_rule.finds(items) == [FindItem("c", find("find-c", 1))]
 }
@@ -109,12 +156,30 @@ pub fn the_age_line_says_a_stuck_time_is_a_bound_test() {
   assert attention_rule.age_line(AskItem("s", ask("ask-1", 0)), now)
     == Some("waiting 10 min")
   assert attention_rule.age_line(
-      StuckItem("s", Stuck(strand: "x", failed_at: Some(0))),
+      StuckItem(
+        "s",
+        Stuck(
+          strand: "x",
+          failed_at: Some(0),
+          reason: None,
+          retry_after_ms: None,
+          parent: None,
+        ),
+      ),
       now,
     )
     == Some("stuck since at least 10 min ago")
   assert attention_rule.age_line(
-      StuckItem("s", Stuck(strand: "x", failed_at: None)),
+      StuckItem(
+        "s",
+        Stuck(
+          strand: "x",
+          failed_at: None,
+          reason: None,
+          retry_after_ms: None,
+          parent: None,
+        ),
+      ),
       now,
     )
     == None
@@ -139,7 +204,16 @@ pub fn just_now_never_takes_an_ago_test() {
   assert attention_rule.age_line(FindItem("s", find("find-1", 0)), 300_000)
     == Some("noticed 5 min ago")
   assert attention_rule.age_line(
-      StuckItem("s", Stuck(strand: "x", failed_at: Some(0))),
+      StuckItem(
+        "s",
+        Stuck(
+          strand: "x",
+          failed_at: Some(0),
+          reason: None,
+          retry_after_ms: None,
+          parent: None,
+        ),
+      ),
       30_000,
     )
     == Some("stuck just now")
@@ -180,7 +254,18 @@ pub fn running_sessions_count_their_rows_and_an_activity_approval_test() {
   let tally =
     attention_rule.tally([
       Running(Pending, row([ask("ask-1", 1)], [find("find-1", 1)], [])),
-      Running(NotPending, row([], [], [Stuck(strand: "x", failed_at: None)])),
+      Running(
+        NotPending,
+        row([], [], [
+          Stuck(
+            strand: "x",
+            failed_at: None,
+            reason: None,
+            retry_after_ms: None,
+            parent: None,
+          ),
+        ]),
+      ),
       RunningUnread(Pending),
     ])
 

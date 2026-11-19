@@ -258,7 +258,8 @@ fn review() -> approval.Review {
       ]),
     ]),
     strand: None,
-    remote: option.None, None,
+    remote: option.None,
+    None,
   )
 }
 
