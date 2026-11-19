@@ -109,8 +109,9 @@ pub type Step {
   Step(
     /// When the response that asked for the call was written.
     at: Int,
-    /// The tool's name.
-    tool: String,
+    /// The tool's name, cut to `tool_bytes`. The model chooses the name of a call
+    /// it makes, so it is model text.
+    tool: Untrusted,
     /// The step's words as one line, such as `Ran make check-core` or
     /// `Edit calc.py +3 −1`, cut to `words_bytes`.
     words: Untrusted,
@@ -344,7 +345,7 @@ fn step(fields: List(#(String, JsonValue))) -> Result(Step, Nil) {
   use tool <- result.try(text(fields, "tool"))
   use words <- result.try(text(fields, "words"))
   use outcome <- result.map(text(fields, "outcome") |> result.try(outcome_of))
-  Step(at:, tool:, words: untrusted(words), outcome:)
+  Step(at:, tool: untrusted(tool), words: untrusted(words), outcome:)
 }
 
 /// The outcome a word names, or nothing for a word this page does not know.
@@ -462,7 +463,7 @@ fn time(fields: List(#(String, JsonValue)), name: String) -> Result(Int, Nil) {
 fn step_json(step: Step) -> JsonValue {
   json.Object([
     #("at", json.Int(step.at)),
-    #("tool", json.String(step.tool)),
+    #("tool", json.String(untrusted_text(step.tool))),
     #("words", json.String(untrusted_text(step.words))),
     #("trust", json.String("untrusted")),
     #("outcome", json.String(outcome_word(step.outcome))),

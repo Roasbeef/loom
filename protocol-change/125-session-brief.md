@@ -68,7 +68,7 @@ formats none. Absent sections are omitted.
 | Member | Meaning |
 |---|---|
 | `assistant` | `{"text", "trust": "untrusted", "at"}`: the latest assistant message of the main strand that has text, even when its turn is still running, cut to 600 bytes, with the `ts` of its entry. Model text. |
-| `steps[]` | At most 4 recent tool calls, newest first: `{"at", "tool", "words", "trust": "untrusted", "outcome"}`. `words` is the line the session's own page uses (`session_view/step_words`: `Ran make check-core`, `Edit calc.py +3 −1`), in the present tense for a call with no result, cut to 120 bytes. `outcome` is `running`, `succeeded` or `failed`, which is what the result envelope reported and no claim about the command's meaning. |
+| `steps[]` | At most 4 recent tool calls, newest first: `{"at", "tool", "words", "trust": "untrusted", "outcome"}`. `tool` is the name the model gave the call, cut to 64 bytes, and is model text like `words`. `words` is the line the session's own page uses (`session_view/step_words`: `Ran make check-core`, `Edit calc.py +3 −1`), in the present tense for a call with no result, cut to 120 bytes. `outcome` is `running`, `succeeded` or `failed`, which is what the result envelope reported and no claim about the command's meaning. |
 | `strands[]` | At most 12 strands, working ones first and then by name: `{"name", "state", "since"}`. `state` is `working`, `idle` or `stopped` (the last run failed). `since` is the mint time of the open operation for a working strand and the time of the last entry of the last run for another, and is omitted when there is none. |
 | `goal` | `{"objective", "status", "tokens_used", "token_budget"}` when the session has a goal: the objective cut to 200 bytes, `active`, `paused`, `limited` or `complete`, and the accounted total against the pinned budget. |
 | `peers[]` | At most 3 peer messages recorded after `since`, newest first: `{"session", "strand", "at", "text", "trust": "untrusted"}`, the text cut to 280 bytes. A peer message is a user message whose admitted author is a peer agent, so a message a person typed or a strand of the same session sent is not one. |
@@ -80,13 +80,14 @@ history is not read.
 
 ### What is model text
 
-The assistant's words, a step's words, a peer's message and the command are
-written by a model or another session. They carry `"trust": "untrusted"` on the
+The assistant's words, a step's tool name and words, a peer's message and the
+command are written by a model or another session. They carry `"trust": "untrusted"` on the
 wire, and the decoder (`web_view/session_brief`) wraps each in an opaque
 `Untrusted` type that is read only through `untrusted_text`, so a page cannot
 draw one without saying so. A page draws them as text nodes under a label that
-says whose words they are. The goal's objective and a strand's name are bounded
-text the page also draws as text nodes only.
+says whose words they are. The goal's objective (the operator's) and a strand's name are
+bounded plain text, not `Untrusted`: a strand's name is minted by the harness from
+a spawn's purpose, and the page draws both as text nodes only.
 
 ### Bounds
 

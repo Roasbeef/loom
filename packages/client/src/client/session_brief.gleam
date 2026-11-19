@@ -219,7 +219,10 @@ fn step(call: tool_activity.Call) -> session_brief.Step {
 
   session_brief.Step(
     at: option.unwrap(call.asked, 0),
-    tool: glance.clip(call.invocation.name, session_brief.tool_bytes),
+    tool: session_brief.untrusted(glance.clip(
+      call.invocation.name,
+      session_brief.tool_bytes,
+    )),
     words: session_brief.untrusted(glance.clip(
       step_words.text(spoken),
       session_brief.words_bytes,
