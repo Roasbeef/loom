@@ -43,6 +43,11 @@ import telemetry/log
 // The sandboxed Git over the rig's repository, with strict enforcement, beside
 // the rig's own, which the test uses for the Git it does as the operator.
 fn strict(rig: worktree_rig.Rig) -> Worktrees {
+  strict_with_path(rig, "")
+}
+
+// The same, with the daemon's `PATH` that the jailed commands are to see.
+fn strict_with_path(rig: worktree_rig.Rig, path: String) -> Worktrees {
   let assert Ok(here) = simplifile.current_directory()
     as "the test runner has a working directory"
   let assert Ok(trees) =
@@ -52,7 +57,7 @@ fn strict(rig: worktree_rig.Rig) -> Worktrees {
         ledger_path: rig.ledger_path,
         helper_path: here <> "/../sandbox/loom-exec",
         credentials: [],
-        path: "",
+        path:,
         demand: exec.PlatformEnforcement,
         logger: log.discard(),
       ),
@@ -483,9 +488,10 @@ pub fn an_interrupted_build_leaves_nothing_the_next_one_could_use_test() {
 // --- copies ----------------------------------------------------------------------------
 
 // A template with a cache in it, built under the sandbox. `Error` carries the
-// reason a degraded host gives.
+// reason a degraded host gives. A build that fails for any other reason is a
+// failure of the test, and is not skipped.
 fn with_template(scene: Scene) -> Result(String, String) {
-  case
+  let outcome =
     project_template.build(
       scene.trees,
       scene.layout,
@@ -495,12 +501,18 @@ fn with_template(scene: Scene) -> Result(String, String) {
         None,
       ),
     )
-  {
-    project_template.Built(_) -> Ok(project_repo.template_path(scene.layout))
-    project_template.Unchanged(_) ->
-      Ok(project_repo.template_path(scene.layout))
-    project_template.Failed(project_template.Failure(_, output)) ->
+  case degraded(outcome) {
+    True -> {
+      let assert project_template.Failed(project_template.Failure(_, output)) =
+        outcome
+        as "a degraded outcome is a failed build"
       Error(output)
+    }
+    False -> {
+      let assert project_template.Built(_) = outcome
+        as "the template builds on a host that can run it"
+      Ok(project_repo.template_path(scene.layout))
+    }
   }
 }
 
@@ -721,6 +733,82 @@ pub fn a_check_and_a_setup_have_a_temporary_directory_inside_the_tree_test() {
     True -> skip("the sandbox could not run the setup command")
     False -> {
       let assert project_template.Built(_) = built
+      Nil
+    }
+  }
+}
+
+// A setup that rewrites a file the repository tracks (a package manager's
+// lockfile) leaves a tree that no exclude can make read clean, so the build
+// fails at the seal and says which file, instead of sealing a template whose
+// every copy starts with an uncommitted change.
+pub fn a_setup_that_changes_a_tracked_file_fails_the_build_test() {
+  let scene = scene("tpl-tracked")
+  let outcome =
+    project_template.build(
+      scene.trees,
+      scene.layout,
+      request("echo changed >> .gitignore", None),
+    )
+  case degraded(outcome) {
+    True -> skip("the sandbox could not run the setup command")
+    False -> {
+      let assert project_template.Failed(project_template.Failure(
+        stage:,
+        output:,
+      )) = outcome
+        as "the build fails when setup changes a tracked file"
+      assert stage == project_template.Cutting
+      assert string.contains(output, "setup changed tracked files")
+      assert string.contains(output, ".gitignore")
+      assert !worktree_rig.exists(project_repo.template_path(scene.layout))
+    }
+  }
+}
+
+// The daemon's `PATH` reaches both the check and the setup runner, as the
+// value the Git configuration was given and not the system fallback. The jail
+// keeps only the directories that exist, so the value names two that do, in
+// an order the fallback does not have.
+pub fn the_daemon_path_reaches_a_check_and_a_setup_test() {
+  let scene = scene("tpl-path")
+  let path = "/bin:/usr/bin"
+  let trees = strict_with_path(scene.rig, path)
+  let commit = taken(scene, [#("src/a.go", "package a\n")])
+  let result =
+    project_start.run_check(
+      ffi_os.system_time_ms,
+      scene.layout,
+      Ok(trees),
+      check_request(commit, "echo \"$PATH\""),
+    )
+  case result.ending {
+    goalstate.Exited(status: 0) -> {
+      assert string.contains(result.output, path)
+    }
+    goalstate.Exited(_) -> panic as "the check could not print its PATH"
+    goalstate.DidNotFinish(reason:) -> skip(reason)
+  }
+
+  // The setup writes it to an ignored file, which the base check reads back.
+  let built =
+    project_template.build(
+      trees,
+      scene.layout,
+      request(
+        "mkdir -p .deps && echo \"$PATH\" > .deps/path.txt",
+        Some(
+          "case \"$(cat .deps/path.txt)\" in "
+          <> path
+          <> "*) true;; *) false;; esac",
+        ),
+      ),
+    )
+  case degraded(built) {
+    True -> skip("the sandbox could not run the setup command")
+    False -> {
+      let assert project_template.Built(_) = built
+        as "the setup saw the daemon's PATH"
       Nil
     }
   }

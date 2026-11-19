@@ -621,3 +621,7 @@ to one per ten minutes. A copy that is reading the old template while a rebuild 
 ticket tries again. Build output that is not ignored by the repository is excluded from the clone's
 `git status`, so a worker's file at one of those paths is invisible to the host's clean test. The template
 is a second copy of the build on disk, and the copies are cheap only where `git-cow` can clone.
+What `setup` writes must also be relocatable: the base check runs at `.template.making` and the copies
+run elsewhere, so an absolute path that `setup` bakes into its output (a virtual environment's shebang
+lines, say) names the build directory and breaks in every copy. A `setup` that changes a tracked file
+(a lockfile a package manager rewrote) fails the build, because no exclude hides that change from a copy.

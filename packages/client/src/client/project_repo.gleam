@@ -923,7 +923,7 @@ pub fn force_remove(
           "/bin/chmod",
           parent,
           [path],
-          ["-R", "u+w", path],
+          ["-R", "u+rwX", path],
           copy_within_ms,
         )
 
@@ -1049,7 +1049,8 @@ pub fn sound_template(path: String) -> Result(Nil, String) {
 /// writing it to the tree's `.git/info/exclude`. The caches `setup` and the
 /// base check wrote (`HOME` for one) are not in the repository and not
 /// ignored by it, and a worker's clone would otherwise read as holding changes
-/// no commit has. The write runs in the sandbox, because the tree is not the
+/// no commit has. A tracked file the build changed fails the call instead,
+/// since no exclude hides it. The write runs in the sandbox, because the tree is not the
 /// host's to trust: a link at `.git/info` would otherwise lead the host's own
 /// write elsewhere.
 ///
@@ -1068,14 +1069,27 @@ pub fn exclude_untracked(
       "--untracked-files=normal",
     ]),
   )
-  let patterns =
+  let entries =
     string.split(listing, "\u{0}")
-    |> list.filter_map(fn(entry) {
-      case string.starts_with(entry, "?? ") {
-        True -> Ok("/" <> escape_pattern(string.drop_start(entry, 3)))
-        False -> Error(Nil)
-      }
+    |> list.filter(fn(entry) { entry != "" })
+  let #(untracked, changed) =
+    list.partition(entries, string.starts_with(_, "?? "))
+  let patterns =
+    list.map(untracked, fn(entry) {
+      "/" <> escape_pattern(string.drop_start(entry, 3))
     })
+
+  // A tracked file the build changed (a lockfile a package manager rewrote)
+  // cannot be excluded, and every copy would start with that change
+  // uncommitted. The build fails here, naming the files, instead.
+  use Nil <- result.try(case changed {
+    [] -> Ok(Nil)
+    _ ->
+      Error(
+        "setup changed tracked files: "
+        <> string.join(list.map(changed, string.drop_start(_, 3)), ", "),
+      )
+  })
 
   // A tree with nothing untracked needs no write.
   case patterns {
@@ -1434,7 +1448,15 @@ pub fn check_tree_from(
     Warm(copier:) -> {
       use Nil <- result.try(copy_template(trees, layout, checks, path, copier))
       use _fetched <- result.try(fetch_into(trees, layout, path, commit))
-      change(trees, path, [path], ["checkout", "--quiet", "--detach", commit])
+
+      // Setup may have installed a post-checkout hook (git lfs, husky), and a
+      // hook that fails would fail a checkout the host asked for.
+      change(
+        trees,
+        path,
+        [path],
+        unhooked(["checkout", "--quiet", "--detach", commit]),
+      )
     }
   }
 
