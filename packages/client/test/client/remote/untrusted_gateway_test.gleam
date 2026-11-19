@@ -1062,9 +1062,9 @@ pub fn a_cancel_kills_the_tunnel_waiter_and_the_connection_serves_on_test() {
 }
 
 // A `cancel` for a waiter still waiting out the full pool kills it too. Both
-// calls are cancelled, the running one last; the pool has one helper, and a
-// surviving parked waiter would take it first and run its sleep, so the echo
-// clears only if the parked waiter is dead.
+// calls are cancelled, and once the running one lets its helper go, a
+// surviving parked waiter would take it and send `cleared` for its id, so the
+// connection stays silent. The echo then clears on the free helper.
 pub fn a_cancel_kills_a_tunnel_waiter_parked_in_the_pool_test() {
   use real, stream <- with_real_plane("cancel-parked", readable_workspace)
   send_clear(
@@ -1083,6 +1083,7 @@ pub fn a_cancel_kills_a_tunnel_waiter_parked_in_the_pool_test() {
   assert rig.next_raw(stream, 500) == Error("silent")
   rig.send(stream, untrusted_wire.Cancel(3))
   rig.send(stream, untrusted_wire.Cancel(2))
+  assert rig.next_raw(stream, 1000) == Error("silent")
   echoes(real, stream, 4)
 }
 
