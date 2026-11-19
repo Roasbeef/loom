@@ -95,7 +95,8 @@ fn load(model: Model, current: Route) -> Effect(Msg) {
 fn title(current: Route) -> Effect(Msg) {
   effect.from(fn(_dispatch) {
     ffi.set_title(case current {
-      route.Landing -> "Loom: a coding agent harness in Gleam, on the BEAM"
+      route.Landing ->
+        "Loom: a durable, distributed, self-evolving coding harness"
       route.DocsHome -> "Documentation | Loom"
       route.Doc(slug, _) -> docs.title_of(slug) <> " | Loom"
     })

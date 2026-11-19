@@ -2,7 +2,7 @@
 
 This directory is a separate Gleam project. It compiles to JavaScript and runs in the browser as a single-page [Lustre](https://hexdocs.pm/lustre/) application. It is not part of Loom's daemon, and nothing in `packages/` depends on it.
 
-The landing page is short on purpose. It says what Loom is, plays a recorded session in a terminal panel, and then makes four claims, each with one paragraph, a link to its documentation page and a figure that steps with its buttons. The explanation of every step is in the documentation, which embeds the same figures. The documentation pages are Markdown files that the app fetches and renders. `test/page_test.gleam` holds the landing page to a word budget, so a new section has to replace an old one.
+The landing page is short on purpose. It says what Loom is, plays a recorded session in a terminal panel, and then makes five claims, each with one paragraph, a link to its documentation page and a figure that steps with its buttons. The explanation of every step is in the documentation, which embeds the same figures. The documentation pages are Markdown files that the app fetches and renders. `test/page_test.gleam` holds the landing page to a word budget, so a new section has to replace an old one.
 
 Loom is released under the MIT License, and the site's footer says so.
 

@@ -83,9 +83,10 @@ pub fn the_landing_page_stays_short_test() {
   // by cutting another. The count is of every word in the markup, which is
   // more than a reader sees: each drawing is there in a wide and a narrow
   // layout, and each figure carries its table of states for screen readers.
-  // The page measured 1,367 when the budget was set.
+  // A figure costs about 220 of these words, so the budget is five figures
+  // and the prose around them. The page measured 1,585 when it was set.
   let words = word_count(visible_text(landing_html()))
-  assert words <= 1500
+  assert words <= 1700
 }
 
 /// The text of a page without its tags.

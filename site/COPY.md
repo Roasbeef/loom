@@ -12,13 +12,13 @@ A claim is only as strong as its source. Where the source carries a condition, t
 
 ## The hero
 
-**A coding agent whose sessions survive a crash.**
+**A durable, distributed, self-evolving coding harness.**
 
-Loom is a coding agent harness written in Gleam, on the BEAM. Each session is one SQLite file. Commands run in a kernel sandbox, and tool calls can run on a different machine from the one that holds your keys.
+Loom runs coding agents, and it's written in Gleam on the BEAM. A session is one SQLite file and survives a crash. Its tool calls can run on another machine, in a kernel sandbox. And the agent can write its own tools, which you approve.
 
-The headline is the one claim a reader can test with `kill -9`, and the recording under it shows it. The lede's first sentence names the language and the runtime for a reader who came looking for a Gleam or BEAM project, and the page title leads with those two for the same reason.
+The headline is the owner's, and it is the positioning: three words, each a property the page then has to show. So the lede cashes each word out as one plain sentence, in the headline's order, and the page gives each word a section with a figure: Durability, Distributed runtime, Self-evolution. If a word is ever added to the headline, it gets a lede sentence and a section, or it doesn't go in.
 
-Two headlines were set aside. "A coding agent harness written in Gleam, running on the BEAM" says what Loom is made of and not what it does for you. "A durable, distributed, self-evolving coding harness" is three adjectives, and the reader has to take each one on trust.
+Two alternatives were tried and set aside. "A coding agent harness written in Gleam, running on the BEAM" says what Loom is made of and not what it does for you. "A coding agent whose sessions survive a crash" is testable with `kill -9` but leaves out two of the three things Loom is for.
 
 ## Where each claim comes from
 

@@ -1,7 +1,7 @@
 //// The landing page.
 ////
 //// A short page. The hero says what Loom is and where to get it. A recorded
-//// session shows it working. Four stories follow, one claim each, with a
+//// session shows it working. Five stories follow, one claim each, with a
 //// paragraph, a link to the documentation page and a figure the reader can
 //// step through with its buttons. Then the two clients, a list of what else
 //// is in the box, and how to install.
@@ -13,7 +13,7 @@
 ////
 //// ## Flow
 ////
-//// - `view` is the page: header, `hero`, the replay, the four `story`
+//// - `view` is the page: header, `hero`, the replay, the five `story`
 ////   sections, then `clients`, `more` and `install`.
 //// - `story` is one claim beside its figure.
 
@@ -52,6 +52,26 @@ pub fn view(model: Model) -> Element(Msg) {
       ),
       story(
         model,
+        "distributed",
+        "Distributed runtime",
+        "Keys on one machine, tools on another",
+        "An orchestrator holds the conversation, the provider keys and the approvals. An executor runs the tool calls next to your checkout. `loom sessions move` hands a session to another orchestrator. A TLA+ model of one move, with a crash possible between any two writes, checks that two orchestrators never serve the session at once.",
+        "What remote sessions can't do yet",
+        route.doc("distributed-runtime"),
+        msg.Migration,
+      ),
+      story(
+        model,
+        "evolution",
+        "Self-evolution",
+        "The agent can write its own tools",
+        "An agent can author an extension, a code-mode program or a prompt profile for its own model. You approve one exact version, so the model can't approve its own work. Authored code is tested and run in a jail, and a running session switches to it without restarting. Local workspaces only for now.",
+        "How governed self-evolution works",
+        route.doc("self-evolution"),
+        msg.Evolution,
+      ),
+      story(
+        model,
         "sandbox",
         "Sandboxing",
         "Commands run in a kernel sandbox",
@@ -70,16 +90,6 @@ pub fn view(model: Model) -> Element(Msg) {
         route.doc("code-mode"),
         msg.CodeMode,
       ),
-      story(
-        model,
-        "distributed",
-        "Distributed runtime",
-        "Keys on one machine, tools on another",
-        "An orchestrator holds the conversation, the provider keys and the approvals. An executor runs the tool calls next to your checkout. `loom sessions move` hands a session to another orchestrator. A TLA+ model of one move, with a crash possible between any two writes, checks that two orchestrators never serve the session at once.",
-        "What remote sessions can't do yet",
-        route.doc("distributed-runtime"),
-        msg.Migration,
-      ),
       clients(model),
       more(),
       install(model),
@@ -95,11 +105,11 @@ fn hero() -> Element(Msg) {
     html.div([attribute.class("hero-inner")], [
       html.div([attribute.class("hero-text")], [
         html.h1([], [
-          element.text("A coding agent whose sessions survive a crash."),
+          element.text("A durable, distributed, self-evolving coding harness."),
         ]),
         html.p([attribute.class("lede")], [
           element.text(
-            "Loom is a coding agent harness written in Gleam, on the BEAM. Each session is one SQLite file. Commands run in a kernel sandbox, and tool calls can run on a different machine from the one that holds your keys.",
+            "Loom runs coding agents, and it's written in Gleam on the BEAM. A session is one SQLite file and survives a crash. Its tool calls can run on another machine, in a kernel sandbox. And the agent can write its own tools, which you approve.",
           ),
         ]),
         html.div([attribute.class("actions")], [
@@ -287,12 +297,6 @@ fn more() -> Element(Msg) {
             "Multiplayer",
             "Invite operators who can drive a session and observers who can only watch. Every prompt and approval records who sent it. [Guide]("
               <> release.source("docs/guide/multiplayer.md")
-              <> ").",
-          ),
-          #(
-            "Self-evolution",
-            "The agent can write its own extensions, programs and prompt profiles. You approve one exact version, and authored code runs in a jail. Local workspaces only for now. [How it works]("
-              <> route.doc("self-evolution")
               <> ").",
           ),
           #(

@@ -53,7 +53,7 @@ The docs text is plain Markdown under `public/content/`, so it can be edited wit
 
 ## The figures
 
-The landing page makes four claims, each with a figure: a crash in the middle of a tool call (`fig_crash`), a command that needs more access than the session has (`fig_approval`), code mode from program to result (`fig_codemode`), and moving a session between orchestrators (`fig_migration`). A fifth figure, `fig_evolution`, appears only in the documentation. A figure is a drawing plus a list of steps.
+The landing page makes five claims, each with a figure: a crash in the middle of a tool call (`fig_crash`), a command that needs more access than the session has (`fig_approval`), code mode from program to result (`fig_codemode`), moving a session between orchestrators (`fig_migration`), and an agent authoring its own extension (`fig_evolution`). A figure is a drawing plus a list of steps.
 
 | Module | Role |
 |---|---|
