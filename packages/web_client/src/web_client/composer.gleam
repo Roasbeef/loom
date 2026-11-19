@@ -400,9 +400,21 @@ fn listening() -> Effect(Msg) {
 // The page this editor is in, named by the route of the server component that
 // holds it, which is the page's own address plus `/ws`. The route is the same
 // after a reconnect, so it names the draft's page and no other.
+//
+// An element the server has already replaced is detached, and its root node is
+// itself, which has no host to read. That is the normal case after a send is
+// accepted, since an effect runs a frame after the message that raised it, so
+// a detached element names no page.
+/// The route of the page this editor is mounted in, or `Error` when it is not.
 fn page_key(root: Dynamic) -> Result(String, Nil) {
   let composer = ffi_dom.host(ffi_dom.as_element(root))
-  ffi_dom.attribute(ffi_dom.host(ffi_dom.root_node(composer)), "route")
+
+  // Only an element still in the document has a server component to name.
+  case ffi_dom.is_connected(composer) {
+    False -> Error(Nil)
+    True ->
+      ffi_dom.attribute(ffi_dom.host(ffi_dom.root_node(composer)), "route")
+  }
 }
 
 // Holds the editor's whole text in the document, in memory, so the next mount
@@ -520,7 +532,10 @@ fn choose(model: Model, index: Int) -> #(Model, Effect(Msg)) {
       }
 
       let chosen = Model(..model, draft: text, selected: 0, palette:)
-      #(chosen, effect.batch([placing(text), gating(gate(chosen))]))
+      #(
+        chosen,
+        effect.batch([placing(text), gating(gate(chosen)), remembering(text)]),
+      )
     }
     [] -> #(model, effect.none())
   }

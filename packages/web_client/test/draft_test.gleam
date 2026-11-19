@@ -39,6 +39,16 @@ pub fn a_draft_is_cut_to_the_limit_test() {
   assert kept == repeated(draft_rule.limit)
 }
 
+// A text whose characters fit the limit but whose bytes do not is still kept
+// whole, and one over the limit in characters is cut.
+pub fn a_multibyte_draft_within_the_limit_is_kept_whole_test() {
+  let text = string.repeat("é", draft_rule.limit)
+  assert draft_rule.held(draft_rule.holding(page, text), page) == text
+
+  let over = string.repeat("é", draft_rule.limit + 5)
+  assert draft_rule.held(draft_rule.holding(page, over), page) == text
+}
+
 fn repeated(count: Int) -> String {
   string.repeat("a", count)
 }

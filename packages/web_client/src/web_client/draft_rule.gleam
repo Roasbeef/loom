@@ -73,10 +73,20 @@ pub fn holding(key: String, text: String) -> Option(String) {
         json.to_string(
           json.object([
             #("key", json.string(key)),
-            #("text", json.string(string.slice(text, 0, limit))),
+            #("text", json.string(cut(text))),
           ]),
         ),
       )
+  }
+}
+
+// The text cut to `limit` characters. It runs on every keystroke, and slicing
+// walks the text by grapheme, so a text whose byte size is within the limit,
+// which has no more characters than bytes, is returned as it is.
+fn cut(text: String) -> String {
+  case string.byte_size(text) <= limit {
+    True -> text
+    False -> string.slice(text, 0, limit)
   }
 }
 
