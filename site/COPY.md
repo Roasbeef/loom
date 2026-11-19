@@ -1,36 +1,24 @@
-# Hero copy
+# Landing page copy
 
-The landing page's hero is a headline and a lede of two or three sentences. Three drafts follow. Variant 1 is the one in `src/site/landing.gleam`. To ship another, replace the `h1` and the `lede` paragraph in `hero()` there, and the page description in `index.html`.
+The landing page is short, and this file is the record of how its words were chosen. Each claim on the page is stated once, with its mechanism, and the explanation is left to the documentation page it links to. `test/page_test.gleam` puts a word budget on the page.
 
-Each variant says the same five things: Loom is written in Gleam, it runs on the BEAM, a session is an OTP supervision tree over a write-once SQLite store, commands run in kernel sandboxes, and the distributed runtime puts a session's runtime on an orchestrator and its tool calls on executors, with sessions that can move between orchestrators. The sources for each claim are in the table at the end.
+## How the copy is written
 
-## Variant 1: what it is (shipped)
+One engineer telling another what the thing does. A claim names the mechanism (two commits, a digest, a TLA+ model) where an adjective would have gone. Sentences are plain statements, contractions are fine, and there are no em dashes.
 
-**A coding agent harness written in Gleam, running on the BEAM.**
+Things to keep out, because each of them was on the page once: three adjectives in a row as a headline, a heading that defines its subject by what it isn't, a paragraph that ends by restating itself, a sentence that describes the page ("the table says..."), and a qualifier stacked on a qualifier. `scripts/copy-check.sh` catches the banned words and the em dash. The rest is on whoever edits the page.
 
-Each session is an OTP supervision tree over a write-once SQLite file, so a crashed process is restarted by its supervisor and a killed daemon loses no committed work. Commands run in kernel sandboxes. A distributed runtime puts a session's runtime on an orchestrator and its tool calls on executors, and lets a session move from one orchestrator to another.
+A claim is only as strong as its source. Where the source carries a condition, the sentence carries it too: "seccomp when the network is off", "a once-only yes", "a model of one move". The table at the end names the source of each claim and says why the wording stops where it does.
 
-This one names the language and the runtime in the headline, so a reader who skims only the headline gets the two facts the owner asked to state first. The lede then gives the three properties in the order a reader asks about them: survives crashes, sandboxed, distributed.
+## The hero
 
-## Variant 2: what survives
+**A coding agent whose sessions survive a crash.**
 
-**A coding agent whose sessions survive crashes and can move between machines.**
+Loom is a coding agent harness written in Gleam, on the BEAM. Each session is one SQLite file. Commands run in a kernel sandbox, and tool calls can run on a different machine from the one that holds your keys.
 
-Loom is written in Gleam and runs on the BEAM. Each session is a supervision tree over a write-once SQLite file, and every command runs in a kernel sandbox. In the distributed runtime, a session's runtime lives on an orchestrator, its tool calls run on executors, and the session can move to another orchestrator.
+The headline is the one claim a reader can test with `kill -9`, and the recording under it shows it. The lede's first sentence names the language and the runtime for a reader who came looking for a Gleam or BEAM project, and the page title leads with those two for the same reason.
 
-This one leads with the two outcomes and puts the language in the first lede sentence. It is the better headline for a reader who does not yet care what Gleam is, and the weaker one for a reader who searches for a Gleam or BEAM project. "Survive crashes" is a claim about committed work and recovery from the file, which the crash figure shows, so keep the figure close to it.
-
-## Variant 3: how it is built
-
-**Every Loom session is a process tree on the BEAM, with its history on disk.**
-
-Loom is a coding agent harness written in Gleam. OTP supervisors restart what crashes, the conversation is a write-once SQLite tree, and commands run under bubblewrap, Landlock and seccomp on Linux or Seatbelt on macOS. Run it on one machine, or split a session's runtime and tool calls across an orchestrator and executors.
-
-This one is the most concrete about mechanism and names the sandbox layers. It is the strongest for an engineer who wants the architecture in three sentences. It does not mention that a session can move, which is a feature the replay and the distributed story show, so it would need that sentence added if it shipped.
-
-## Why variant 1 ships
-
-Of the three, only variant 1 states the language and the runtime as the headline's subject, says what each session is, and includes moving between orchestrators in the lede. Variants 2 and 3 each drop one of those. The owner asked for all of them up front, and a plain statement of what the thing is serves a first-time visitor best.
+Two headlines were set aside. "A coding agent harness written in Gleam, running on the BEAM" says what Loom is made of and not what it does for you. "A durable, distributed, self-evolving coding harness" is three adjectives, and the reader has to take each one on trust.
 
 ## Where each claim comes from
 
@@ -43,10 +31,18 @@ Of the three, only variant 1 states the language and the runtime as the headline
 | Kernel sandboxes: bubblewrap, Landlock, seccomp, Seatbelt | `docs/architecture/effects.md`, `docs/adr/006-macos-seatbelt-boundary.md` |
 | Runtime on an orchestrator, tool calls on executors | `docs/architecture/distributed.md`, "The cut: `ToolSurface.run`" |
 | A session moves between orchestrators | `docs/architecture/distributed.md`, "Moving a session between orchestrators" |
+| Every tool call is committed twice, and a call that isn't safe to repeat gets an outcome-unknown result | `docs/architecture/orchestration.md`, the intent and settle commits and the replay policies. `bash` is `ReplayNever` in `docs/architecture/tools.md` |
+| A session resumes when it is opened again | `docs/architecture/daemon.md`: after a restart every session starts closed, and one reopens when a client asks for it. This is why the page says "open the session again" and doesn't say the daemon picks up by itself |
+| Commands, authored programs and MCP servers never run in the harness VM | `docs/loom-design.md`, Rule Zero. The claim names those three because `docs/architecture/tools.md` says most built-in tools do run in the harness VM on model-supplied arguments |
+| seccomp when the network is off | `docs/architecture/effects.md`, the helper's setup order |
+| A once-only yes covers one call by a digest of its arguments | `docs/architecture/approvals.md`. The claim says "once-only" because an approval for the session records grants that later calls pick up |
+| What a program imports bounds what it can do | `docs/architecture/code-mode.md`. Vetting also refuses `@external`, which is the other way a program could reach past its imports |
+| A TLA+ model of one move, with a crash between any two writes | `docs/architecture/distributed.md`, on `protocol/models/session-move`. The model covers one move and is not run in CI, so the page says "a model of one move" and names the one invariant |
+| Every prompt and approval records who sent it | `docs/architecture/multiplayer.md` |
 
 ## Other copy decisions
 
 - The primary action is **Download**, linked to the latest release, with the version label from `src/site/release.gleam`. The secondary action is **Build from source**. A third, quiet link goes to the repository.
-- The status line under the actions says that Loom is under active development and names the platforms the release workflow builds. It does not say that a release exists for a platform, because the macOS lane has not completed its first hosted comparison. The status table says so.
-- The footer and the README say `License: TBD`. No licence is named anywhere else on the site.
+- The status line under the actions says that Loom is under active development and names the platforms the release workflow builds. It does not say that a release exists for a platform, because the macOS lane has not completed its first hosted comparison. The platform table on the install page says so, and the status line links to it.
+- The footer names the MIT License, as the repository's `LICENSE` does.
 - The site does not claim remote code mode for background executions, MCP on executors, or a replicated session directory. The limits list on the distributed runtime page is the one in `docs/architecture/distributed.md`.
