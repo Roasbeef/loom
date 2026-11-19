@@ -422,7 +422,13 @@ meaning not given. `--workspace-mode shared|worktree` is recorded the same way i
 `UpOptions.workspace_mode` is an `Option`), and `vm_spec.guest_config_with`
 writes `mode = "worktree"` and `base = "HEAD"` into each `[workspaces.NAME]` for
 `GuestWorktree` and nothing more for `GuestShared`, so a seeded child can be
-placed on the guest (`remote/workspace.state_fitness`). Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
+placed on the guest (`remote/workspace.state_fitness`). `vm_cli.worktree_preflight` runs
+before anything is written and refuses `worktree` (the effective mode, a
+recorded one included) for a workspace that is not the top of a Git checkout, whose
+`HEAD` names no commit, or whose name `worktrees.safe_component` refuses
+(`vm_spec.worktree_refusal`), and on a resume checks every registered copy.
+`resolve_workspace_mode` and `record_workspace_mode` are `@internal` so the record
+is tested through its file. Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
 `statem` model over the pure decisions with a distribution guest in some
 starting configurations.
 
