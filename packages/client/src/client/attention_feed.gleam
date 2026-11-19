@@ -218,8 +218,14 @@ pub fn feed(runtime: api.Runtime) -> Result(JsonValue, String) {
   use asks <- result.try(store.asks(runtime))
   use finds <- result.try(store.finds(runtime))
   use states <- result.try(strand_states(runtime))
-  use results <- result.try(last_results(runtime))
-  use evidence <- result.map(evidence_for(runtime, states, results))
+  use results <- result.map(last_results(runtime))
+
+  // The evidence only adds a time, a hint and a parent to a stuck item. A read of
+  // it that fails must not cost the row its asks, finds and stuck strands, so the
+  // items are listed without it.
+  let evidence =
+    evidence_for(runtime, states, results)
+    |> result.unwrap(no_evidence())
   row_of(asks, finds, stuck_strands(states, results, evidence))
   |> shed
   |> encode
