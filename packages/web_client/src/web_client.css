@@ -26,48 +26,61 @@
 
    The values are written in OKLCH (lightness, chroma, hue), because the
    palette is built from lightness targets and that space keeps lightness
-   perceptual. Both themes share one cool neutral hue, 266, carried at a
-   chroma high enough to read as a tint (about 0.011 on the dark surfaces),
-   so the page is a blue-graphite rather than a flat grey. The accent and
-   the owner's own messages sit on an indigo, 274: `current` for the focused
-   strand, and `bg-user`, a surface tinted toward it, so a reader finds their
-   own turns at a glance. The surfaces step by a fixed lightness (sunk, page,
-   raised, code), so a card reads as raised without a shadow. The dark page
-   sits at a lightness of 0.17, low enough that the raised steps show. Text
-   clears both WCAG's ratio and APCA's
-   lightness contrast, which tracks how dark themes are read. The status
-   marks are spaced in lightness as well as hue, so added and removed, the
-   current strand and a peer, and the attention colour against both stay
-   apart for a reader with deuteranopia or protanopia, where hue alone fails.
-   Every value is inside sRGB, so the browser draws what was measured.
+   perceptual. They are the approved attention-inbox mockup's
+   (docs/design-notes/attention-inbox/final/mockup.html), converted from its
+   hex. The neutrals are warm: a hue near 85 to 91 in the light theme, a
+   near-neutral graphite in the dark one, so the light page is a warm off-white
+   (#f6f5f2) and not a cool grey. The accent, `current`, is an indigo (271 in
+   dark, 268 in light), and `bg-user`, which the mockup does not have, is a
+   surface tinted toward it so a reader finds their own turns at a glance.
+   Tokens the mockup lacks (`bg-user`, `advisor`, the strand hues, `on-danger`,
+   `on-signal`) stay in the same family: `advisor` follows `signal`, and the
+   strand hues keep their earlier values. The surfaces step in lightness (sunk,
+   page, raised, code), so a card reads as raised without a shadow. Text clears
+   both WCAG's ratio and APCA's lightness contrast, which tracks how dark
+   themes are read. The status marks are spaced in lightness as well as hue, so
+   added and removed, the current strand and a peer, and the attention colour
+   against both outcomes stay apart for a reader with deuteranopia or
+   protanopia, where hue alone fails. Every value is inside sRGB, so the
+   browser draws what was measured.
+
+   Where a mockup value fails one of the gates below, this file nudges its
+   lightness, and only its lightness except where a chroma change was needed to
+   stay inside sRGB. The dark theme moves `bg-sunk`, `code`, `fg`, `fg-quiet`,
+   `current`, the three `-text` tokens, `peer`, `danger`, `added` and
+   `strand-5-text`; the light theme moves `signal`, `peer`, `added`,
+   `danger-text` and the two diff backgrounds. The mockup's marks and its text
+   share one value in dark (`signal`, `peer`, `danger`, `added`), and the gates
+   ask a text value to be lighter than a mark can be, so the dark marks stay
+   nearer the mockup than the dark text does.
    scripts/web_client_contrast_check.sh holds all of that and fails
    `make lint` when a value breaks it. */
 @theme {
   --color-*: initial;
-  --color-bg: oklch(0.170 0.011 266);
-  --color-bg-raised: oklch(0.212 0.013 266);
-  --color-bg-sunk: oklch(0.138 0.010 266);
-  --color-bg-user: oklch(0.232 0.032 274);
-  --color-code: oklch(0.246 0.013 266);
-  --color-fg: oklch(0.955 0.005 266);
-  --color-fg-quiet: oklch(0.780 0.016 266);
-  --color-fg-faint: oklch(0.545 0.016 266);
-  --color-divider: oklch(0.292 0.014 266);
-  --color-current: oklch(0.785 0.105 274);
-  --color-signal: oklch(0.770 0.160 70);
-  --color-signal-text: oklch(0.810 0.145 72);
-  --color-advisor: oklch(0.770 0.160 70);
-  --color-advisor-text: oklch(0.810 0.145 72);
-  --color-peer: oklch(0.620 0.200 318);
-  --color-peer-text: oklch(0.800 0.125 318);
-  --color-danger: oklch(0.660 0.205 14);
-  --color-danger-text: oklch(0.800 0.115 14);
-  --color-on-danger: oklch(0.138 0.010 266);
-  --color-on-signal: oklch(0.138 0.010 266);
-  --color-added: oklch(0.890 0.190 152);
-  --color-added-text: oklch(0.840 0.170 152);
-  --color-added-bg: oklch(0.325 0.070 156);
-  --color-removed-bg: oklch(0.268 0.080 14);
+  --color-bg: oklch(0.195 0.004 264);
+  --color-bg-raised: oklch(0.227 0.006 271);
+  --color-bg-sunk: oklch(0.164 0.004 264);
+  --color-bg-user: oklch(0.248 0.022 271);
+  --color-code: oklch(0.258 0.008 275);
+  --color-fg: oklch(0.937 0.007 89);
+  --color-fg-quiet: oklch(0.795 0.012 90);
+  --color-fg-faint: oklch(0.503 0.010 92);
+  --color-divider: oklch(0.297 0.008 264);
+  --color-current: oklch(0.790 0.100 271);
+  --color-signal: oklch(0.774 0.135 65);
+  --color-signal-text: oklch(0.790 0.135 65);
+  --color-advisor: oklch(0.774 0.135 65);
+  --color-advisor-text: oklch(0.790 0.135 65);
+  --color-peer: oklch(0.620 0.180 294);
+  --color-peer-text: oklch(0.800 0.095 294);
+  --color-danger: oklch(0.660 0.190 1);
+  --color-danger-text: oklch(0.800 0.115 1);
+  --color-on-danger: oklch(0.195 0.004 264);
+  --color-on-signal: oklch(0.195 0.004 264);
+  --color-added: oklch(0.885 0.185 147);
+  --color-added-text: oklch(0.840 0.170 147);
+  --color-added-bg: oklch(0.379 0.073 152);
+  --color-removed-bg: oklch(0.296 0.075 3);
   --color-strand-2: oklch(0.810 0.130 190);
   --color-strand-2-text: oklch(0.810 0.130 190);
   --color-strand-3: oklch(0.830 0.150 120);
@@ -75,7 +88,7 @@
   --color-strand-4: oklch(0.790 0.120 236);
   --color-strand-4-text: oklch(0.790 0.120 236);
   --color-strand-5: oklch(0.790 0.140 345);
-  --color-strand-5-text: oklch(0.790 0.140 345);
+  --color-strand-5-text: oklch(0.800 0.140 345);
   --color-strand-6: oklch(0.790 0.125 45);
   --color-strand-6-text: oklch(0.790 0.125 45);
   --color-pill-ok-bg: color-mix(in srgb, var(--color-added) 12%, transparent);
@@ -87,7 +100,7 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
-/* The light tokens, a cool near-white, and how a theme reaches every part of the
+/* The light tokens, a warm off-white, and how a theme reaches every part of the
    page (docs/design-notes/web-design.md, sections 5 and 6.5).
 
    The page follows `prefers-color-scheme` until the reader presses the
@@ -114,30 +127,30 @@
    after the light media query as a light value. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --color-bg: oklch(0.978 0.003 266);
+    --color-bg: oklch(0.970 0.004 91);
     --color-bg-raised: oklch(1.000 0.000 0);
-    --color-bg-sunk: oklch(0.957 0.005 266);
-    --color-bg-user: oklch(0.955 0.020 274);
-    --color-code: oklch(0.957 0.005 266);
-    --color-fg: oklch(0.205 0.014 266);
-    --color-fg-quiet: oklch(0.490 0.018 266);
-    --color-fg-faint: oklch(0.700 0.016 266);
-    --color-divider: oklch(0.910 0.007 266);
-    --color-current: oklch(0.500 0.215 274);
-    --color-signal: oklch(0.660 0.145 64);
-    --color-signal-text: oklch(0.510 0.120 58);
-    --color-advisor: oklch(0.660 0.145 64);
-    --color-advisor-text: oklch(0.510 0.120 58);
-    --color-peer: oklch(0.670 0.190 318);
-    --color-peer-text: oklch(0.500 0.210 318);
-    --color-danger: oklch(0.585 0.205 4);
-    --color-danger-text: oklch(0.510 0.190 6);
+    --color-bg-sunk: oklch(0.946 0.007 89);
+    --color-bg-user: oklch(0.952 0.014 271);
+    --color-code: oklch(0.952 0.008 91);
+    --color-fg: oklch(0.227 0.004 85);
+    --color-fg-quiet: oklch(0.529 0.013 85);
+    --color-fg-faint: oklch(0.697 0.017 86);
+    --color-divider: oklch(0.904 0.010 87);
+    --color-current: oklch(0.526 0.199 268);
+    --color-signal: oklch(0.630 0.140 60);
+    --color-signal-text: oklch(0.527 0.108 61);
+    --color-advisor: oklch(0.630 0.140 60);
+    --color-advisor-text: oklch(0.527 0.108 61);
+    --color-peer: oklch(0.420 0.200 293);
+    --color-peer-text: oklch(0.538 0.192 293);
+    --color-danger: oklch(0.588 0.201 5);
+    --color-danger-text: oklch(0.525 0.180 5);
     --color-on-danger: oklch(1.000 0.000 0);
-    --color-on-signal: oklch(0.205 0.014 266);
-    --color-added: oklch(0.425 0.115 150);
-    --color-added-text: oklch(0.470 0.125 150);
-    --color-added-bg: oklch(0.952 0.060 152);
-    --color-removed-bg: oklch(0.910 0.045 14);
+    --color-on-signal: oklch(0.227 0.004 85);
+    --color-added: oklch(0.440 0.120 146);
+    --color-added-text: oklch(0.506 0.131 147);
+    --color-added-bg: oklch(0.950 0.060 153);
+    --color-removed-bg: oklch(0.922 0.040 359);
     --color-strand-2: oklch(0.600 0.100 190);
     --color-strand-2-text: oklch(0.500 0.085 190);
     --color-strand-3: oklch(0.600 0.120 122);
@@ -152,30 +165,30 @@
   }
 }
 :root[data-theme="light"] {
-  --color-bg: oklch(0.978 0.003 266);
+  --color-bg: oklch(0.970 0.004 91);
   --color-bg-raised: oklch(1.000 0.000 0);
-  --color-bg-sunk: oklch(0.957 0.005 266);
-  --color-bg-user: oklch(0.955 0.020 274);
-  --color-code: oklch(0.957 0.005 266);
-  --color-fg: oklch(0.205 0.014 266);
-  --color-fg-quiet: oklch(0.490 0.018 266);
-  --color-fg-faint: oklch(0.700 0.016 266);
-  --color-divider: oklch(0.910 0.007 266);
-  --color-current: oklch(0.500 0.215 274);
-  --color-signal: oklch(0.660 0.145 64);
-  --color-signal-text: oklch(0.510 0.120 58);
-  --color-advisor: oklch(0.660 0.145 64);
-  --color-advisor-text: oklch(0.510 0.120 58);
-  --color-peer: oklch(0.670 0.190 318);
-  --color-peer-text: oklch(0.500 0.210 318);
-  --color-danger: oklch(0.585 0.205 4);
-  --color-danger-text: oklch(0.510 0.190 6);
+  --color-bg-sunk: oklch(0.946 0.007 89);
+  --color-bg-user: oklch(0.952 0.014 271);
+  --color-code: oklch(0.952 0.008 91);
+  --color-fg: oklch(0.227 0.004 85);
+  --color-fg-quiet: oklch(0.529 0.013 85);
+  --color-fg-faint: oklch(0.697 0.017 86);
+  --color-divider: oklch(0.904 0.010 87);
+  --color-current: oklch(0.526 0.199 268);
+  --color-signal: oklch(0.630 0.140 60);
+  --color-signal-text: oklch(0.527 0.108 61);
+  --color-advisor: oklch(0.630 0.140 60);
+  --color-advisor-text: oklch(0.527 0.108 61);
+  --color-peer: oklch(0.420 0.200 293);
+  --color-peer-text: oklch(0.538 0.192 293);
+  --color-danger: oklch(0.588 0.201 5);
+  --color-danger-text: oklch(0.525 0.180 5);
   --color-on-danger: oklch(1.000 0.000 0);
-  --color-on-signal: oklch(0.205 0.014 266);
-  --color-added: oklch(0.425 0.115 150);
-  --color-added-text: oklch(0.470 0.125 150);
-  --color-added-bg: oklch(0.952 0.060 152);
-  --color-removed-bg: oklch(0.910 0.045 14);
+  --color-on-signal: oklch(0.227 0.004 85);
+  --color-added: oklch(0.440 0.120 146);
+  --color-added-text: oklch(0.506 0.131 147);
+  --color-added-bg: oklch(0.950 0.060 153);
+  --color-removed-bg: oklch(0.922 0.040 359);
   --color-strand-2: oklch(0.600 0.100 190);
   --color-strand-2-text: oklch(0.500 0.085 190);
   --color-strand-3: oklch(0.600 0.120 122);
