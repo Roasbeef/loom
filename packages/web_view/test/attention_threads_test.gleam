@@ -194,8 +194,6 @@ fn evidence() -> approval_evidence.Evidence {
       raised_at: None,
       network: None,
       policy: None,
-      call: None,
-      command: None,
     ),
   ])
 }
