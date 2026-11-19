@@ -3,8 +3,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -63,7 +65,8 @@ func errName(err error) string {
 	if err == nil {
 		return "ok"
 	}
-	if errno, ok := err.(unix.Errno); ok {
+	var errno unix.Errno
+	if errors.As(err, &errno) {
 		if name := unix.ErrnoName(errno); name != "" {
 			return name
 		}
@@ -162,8 +165,11 @@ func loopbackBattery(hostPort string) {
 		{"socket-inet-sctp", unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_SCTP},
 		{"socket-inet-mptcp", unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP},
 		{"socket-packet", unix.AF_PACKET, unix.SOCK_RAW, 0},
-		{"socket-netlink-route", unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE},
 		{"socket-netlink-generic", unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_GENERIC},
+		{"socket-netlink-audit", unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_AUDIT},
+		{"socket-netlink-uevent", unix.AF_NETLINK, unix.SOCK_DGRAM, unix.NETLINK_KOBJECT_UEVENT},
+		{"socket-netlink-netfilter", unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_NETFILTER},
+		{"socket-netlink-stream", unix.AF_NETLINK, unix.SOCK_STREAM, 0},
 	}
 	for _, r := range refused {
 		s, err := unix.Socket(r.domain, r.typ, r.protoc)
@@ -172,6 +178,29 @@ func loopbackBattery(hostPort string) {
 		}
 		fmt.Printf("%s=%s\n", r.name, errName(err))
 	}
+
+	// The one netlink socket the mode admits: NETLINK_ROUTE, raw or
+	// datagram. net.InterfaceAddrs is the call lnd's tests make, so it
+	// is the end-to-end claim; the raw sockets pin the argument match.
+	for _, r := range []struct {
+		name string
+		typ  int
+	}{
+		{"socket-netlink-route-raw", unix.SOCK_RAW},
+		{"socket-netlink-route-dgram", unix.SOCK_DGRAM},
+	} {
+		s, err := unix.Socket(unix.AF_NETLINK, r.typ, unix.NETLINK_ROUTE)
+		if err == nil {
+			unix.Close(s)
+		}
+		fmt.Printf("%s=%s\n", r.name, errName(err))
+	}
+	if _, err := net.InterfaceAddrs(); err != nil {
+		fmt.Printf("interface-addrs=%s\n", errName(err))
+	} else {
+		fmt.Println("interface-addrs=ok")
+	}
+
 	if pair, err := unix.Socketpair(unix.AF_INET, unix.SOCK_STREAM, 0); err == nil {
 		unix.Close(pair[0])
 		unix.Close(pair[1])

@@ -217,6 +217,14 @@ func TestNetworkLoopbackProgramAmd64(t *testing.T) {
 		{"AF_INET stream nonblock cloexec tcp", sock(unix.AF_INET, unix.SOCK_STREAM|sockNonblock|sockCloexec, unix.IPPROTO_TCP), retAllow},
 		{"AF_INET high bits of args are not read", sock(0xdead00000000|unix.AF_INET, 0xbeef00000000|unix.SOCK_STREAM, 0xcafe00000000), retAllow},
 
+		// Allowed: the route netlink socket, raw or datagram, flags
+		// masked, and nothing else netlink.
+		{"AF_NETLINK route raw", sock(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE), retAllow},
+		{"AF_NETLINK route dgram", sock(unix.AF_NETLINK, unix.SOCK_DGRAM, unix.NETLINK_ROUTE), retAllow},
+		{"AF_NETLINK route raw cloexec", sock(unix.AF_NETLINK, unix.SOCK_RAW|sockCloexec, unix.NETLINK_ROUTE), retAllow},
+		{"AF_NETLINK route dgram nonblock cloexec", sock(unix.AF_NETLINK, unix.SOCK_DGRAM|sockNonblock|sockCloexec, unix.NETLINK_ROUTE), retAllow},
+		{"AF_NETLINK route high bits of args are not read", sock(0xdead00000000|unix.AF_NETLINK, 0xbeef00000000|unix.SOCK_RAW, 0xcafe00000000|unix.NETLINK_ROUTE), retAllow},
+
 		// Refused: everything else about sockets.
 		{"AF_INET dgram", sock(unix.AF_INET, unix.SOCK_DGRAM, 0), epermDeny},
 		{"AF_INET dgram IPPROTO_UDP", sock(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP), epermDeny},
@@ -232,10 +240,17 @@ func TestNetworkLoopbackProgramAmd64(t *testing.T) {
 		{"AF_INET6 stream tcp", sock(unix.AF_INET6, unix.SOCK_STREAM, unix.IPPROTO_TCP), epermDeny},
 		{"AF_INET6 dgram", sock(unix.AF_INET6, unix.SOCK_DGRAM, 0), epermDeny},
 		{"AF_PACKET", sock(unix.AF_PACKET, unix.SOCK_RAW, 0), epermDeny},
-		{"AF_NETLINK route", sock(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE), epermDeny},
 		{"AF_NETLINK generic", sock(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_GENERIC), epermDeny},
 		{"AF_NETLINK netfilter", sock(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_NETFILTER), epermDeny},
 		{"AF_NETLINK diag", sock(unix.AF_NETLINK, unix.SOCK_DGRAM, unix.NETLINK_SOCK_DIAG), epermDeny},
+		{"AF_NETLINK audit", sock(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_AUDIT), epermDeny},
+		{"AF_NETLINK uevent", sock(unix.AF_NETLINK, unix.SOCK_DGRAM, unix.NETLINK_KOBJECT_UEVENT), epermDeny},
+		{"AF_NETLINK route stream-typed", sock(unix.AF_NETLINK, unix.SOCK_STREAM, unix.NETLINK_ROUTE), epermDeny},
+		{"AF_NETLINK route seqpacket-typed", sock(unix.AF_NETLINK, unix.SOCK_SEQPACKET, unix.NETLINK_ROUTE), epermDeny},
+		{"AF_NETLINK route type 0", sock(unix.AF_NETLINK, 0, unix.NETLINK_ROUTE), epermDeny},
+		{"AF_NETLINK protocol 1 raw", sock(unix.AF_NETLINK, unix.SOCK_RAW, 1), epermDeny},
+		{"AF_NETLINK protocol 31 raw", sock(unix.AF_NETLINK, unix.SOCK_RAW, 31), epermDeny},
+		{"AF_NETLINK protocol -1 raw", sock(unix.AF_NETLINK, unix.SOCK_RAW, 0xffffffff), epermDeny},
 		{"AF_NETLINK stream-typed", sock(unix.AF_NETLINK, unix.SOCK_STREAM, 0), epermDeny},
 		{"AF_VSOCK stream", sock(unix.AF_VSOCK, unix.SOCK_STREAM, 0), epermDeny},
 		{"AF_ALG", sock(unix.AF_ALG, unix.SOCK_SEQPACKET, 0), epermDeny},
@@ -247,6 +262,7 @@ func TestNetworkLoopbackProgramAmd64(t *testing.T) {
 		{"socketpair AF_INET stream tcp", pair(unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_TCP), epermDeny},
 		{"socketpair AF_INET6", pair(unix.AF_INET6, unix.SOCK_STREAM, 0), epermDeny},
 		{"socketpair AF_NETLINK", pair(unix.AF_NETLINK, unix.SOCK_RAW, 0), epermDeny},
+		{"socketpair AF_NETLINK route", pair(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE), epermDeny},
 
 		// setsockopt: only TCP_ULP at the TCP level is refused.
 		{"setsockopt TCP_ULP", setopt(unix.IPPROTO_TCP, tcpULP), epermDeny},
@@ -293,7 +309,8 @@ func TestNetworkLoopbackProgramArm64(t *testing.T) {
 		{"AF_INET stream", seccompDataArgs(sysSocket, arch, unix.AF_INET, unix.SOCK_STREAM, 0), retAllow},
 		{"AF_INET dgram", seccompDataArgs(sysSocket, arch, unix.AF_INET, unix.SOCK_DGRAM, 0), eperm},
 		{"AF_INET6 stream", seccompDataArgs(sysSocket, arch, unix.AF_INET6, unix.SOCK_STREAM, 0), eperm},
-		{"AF_NETLINK", seccompDataArgs(sysSocket, arch, unix.AF_NETLINK, unix.SOCK_RAW, 0), eperm},
+		{"AF_NETLINK route", seccompDataArgs(sysSocket, arch, unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE), retAllow},
+		{"AF_NETLINK audit", seccompDataArgs(sysSocket, arch, unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_AUDIT), eperm},
 		{"socketpair AF_INET", seccompDataArgs(sysSockpr, arch, unix.AF_INET, unix.SOCK_STREAM, 0), eperm},
 		{"TCP_ULP", seccompDataArgs(sysSetsock, arch, 3, unix.IPPROTO_TCP, tcpULP), eperm},
 		{"TCP_NODELAY", seccompDataArgs(sysSetsock, arch, 3, unix.IPPROTO_TCP, unix.TCP_NODELAY), retAllow},
