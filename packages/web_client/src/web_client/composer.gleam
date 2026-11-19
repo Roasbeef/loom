@@ -91,6 +91,7 @@ import web_client/composer_rule.{
   Listing, Nothing, Observed, Open, Other, Repeating, Sending, Shut, Take,
   Unattached, Unseen,
 }
+import web_client/draft_rule
 import web_client/follow_rule
 import web_client/internal/ffi_dom
 import web_client/pending_rule
@@ -286,7 +287,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           selected: 0,
           palette: Listing,
         )
-      #(typed, gating(gate(typed)))
+      #(typed, effect.batch([gating(gate(typed)), remembering(text)]))
     }
 
     // An image arriving in an empty editor makes the message sendable, and
@@ -339,6 +340,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         pending_rule.Shown(_) ->
           effect.batch([
             clearing(),
+            forgetting(),
             event.emit(follow_rule.sent_event, json.null()),
           ])
       })
@@ -346,7 +348,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Connected -> #(
       model,
-      effect.batch([unlistening(model.submitting), listening(), configuring()]),
+      effect.batch([
+        unlistening(model.submitting),
+        listening(),
+        configuring(),
+        recalling(),
+      ]),
     )
     Listening(submitting:) -> #(
       Model(..model, submitting: Some(submitting)),
@@ -388,6 +395,76 @@ fn listening() -> Effect(Msg) {
     dispatch(Listening(Submitting(form:, listener:)))
   }
   result.unwrap(started, or: Nil)
+}
+
+// The page this editor is in, named by the route of the server component that
+// holds it, which is the page's own address plus `/ws`. The route is the same
+// after a reconnect, so it names the draft's page and no other.
+fn page_key(root: Dynamic) -> Result(String, Nil) {
+  let composer = ffi_dom.host(ffi_dom.as_element(root))
+  ffi_dom.attribute(ffi_dom.host(ffi_dom.root_node(composer)), "route")
+}
+
+// Holds the editor's whole text in the document, in memory, so the next mount
+// of this element after a reconnect can put it back. The text is cut to the
+// draft rule's limit and an empty draft removes the attribute, which is how a
+// press clears it (`clearing` writes the empty text).
+/// Writes the draft to the document's root element, keyed by the page.
+fn remembering(text: String) -> Effect(Msg) {
+  use _, root <- effect.after_paint
+  let kept = {
+    use key <- result.map(page_key(root))
+    let page = ffi_dom.document_element()
+
+    // Text with a word in it is held, and anything else removes the held draft.
+    case draft_rule.holding(key, text) {
+      Some(value) ->
+        ffi_dom.set_attribute(page, draft_rule.attribute_name, value)
+      None -> ffi_dom.remove_attribute(page, draft_rule.attribute_name)
+    }
+  }
+  result.unwrap(kept, or: Nil)
+}
+
+// Drops the held draft at the press, in the turn it is made. It needs no
+// element: the server may take the draft and replace this element before the
+// next paint, and an effect that waited for the element would then find it
+// gone and leave the sent text held, to be put back into the new editor. A
+// refusal puts the text back in the editor, which holds it again.
+/// Removes the draft the document holds.
+fn forgetting() -> Effect(Msg) {
+  use _ <- effect.from
+  ffi_dom.remove_attribute(
+    ffi_dom.document_element(),
+    draft_rule.attribute_name,
+  )
+}
+
+// Puts back the draft the document holds for this page when the element mounts
+// with an empty editor. An editor that already holds text is left as it is, so
+// a returned prompt or anything typed first is never overwritten.
+/// Restores the held draft into an empty editor after a reconnect.
+fn recalling() -> Effect(Msg) {
+  use dispatch, root <- effect.after_paint
+  let recalled = {
+    use area <- result.try(editor(root))
+    use key <- result.map(page_key(root))
+    let raw =
+      ffi_dom.attribute(ffi_dom.document_element(), draft_rule.attribute_name)
+      |> option.from_result
+
+    // Only a held draft and an empty editor restore anything: the held text
+    // goes in, and an editor that already has text is left alone.
+    case draft_rule.held(raw, key), ffi_dom.value(area) {
+      "", _ -> Nil
+      text, "" -> {
+        ffi_dom.set_value(area, text)
+        dispatch(Typed(text))
+      }
+      _, _ -> Nil
+    }
+  }
+  result.unwrap(recalled, or: Nil)
 }
 
 /// Cleans up registered form submit event listener.

@@ -528,6 +528,18 @@ time builds anything.
   row in view. The shadow root holds the pending line, then the
   list, above one default slot; the list is `role="listbox"` and its rows
   `role="option"`.
+- `draft_rule` (`held`, `holding`, `attribute_name`, `limit`): the composer's
+  draft kept across a reconnect. A relayed page whose box returns closes its socket
+  once and the browser mounts a fresh component into the same document, so the
+  uncontrolled textarea is new and empty. Every `Typed` writes the editor's text to
+  the `data-loom-draft` attribute of the document's root element (JSON: the server
+  component's `route` attribute, which is the page's own address plus `/ws`, and the
+  text, cut to `limit`), and `Connected` puts it back into an empty editor of the
+  same route. A press removes it in its own turn (`forgetting`, which needs no
+  element, because the server can replace the element before the next paint); a
+  refusal restores the text into the editor, which writes it again. It is memory
+  only: no storage, no wire event, and it ends with the tab. A press whose outcome
+  is lost to a reconnect before the server answers leaves no draft behind.
 - `pending_rule.State` (`Clear` | `Shown(Pending(text, delivery))`),
   `Delivery` (`Sending` | `Queueing`), `Refusals` (`Unheard` | `Heard(count)`)
   and `Outcome` (`Keep` | `Restore(text)`), with `delivery` (the submit
