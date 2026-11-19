@@ -108,6 +108,11 @@ pub type Outbox {
   Settled(session: String, delivery: Delivery, answer: Answer)
 }
 
+/// The words a Retry sends a stuck strand. They are the page's own, fixed: the
+/// home's Retry and the live rail's Retry send exactly these, so a strand is
+/// asked the same thing from either, and the browser never supplies the text.
+pub const retry_prompt = "The last run of this strand failed. Please retry it."
+
 /// The buttons a thread of this kind offers, in the order they are drawn.
 ///
 /// An idle, failed or settled session takes one `Send`. A working one takes a

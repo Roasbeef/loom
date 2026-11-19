@@ -177,6 +177,29 @@ pub fn ask_key(id: String) -> String {
   "ask:" <> id
 }
 
+/// The key a find is lifted under, which the host maps back to the find.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.find_key("find-0123456789") == "find:find-0123456789"
+/// ```
+pub fn find_key(id: String) -> String {
+  "find:" <> id
+}
+
+/// The key a stuck strand is lifted under, which the host maps back to the
+/// strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.stuck_key("sub:a") == "stuck:sub:a"
+/// ```
+pub fn stuck_key(strand: String) -> String {
+  "stuck:" <> strand
+}
+
 /// The pinned row of an open ask or a stuck strand, or nothing for a find.
 fn waiting_row(record: Record) -> Result(Lifted, Nil) {
   // Only what waits on the owner is pinned.
@@ -190,7 +213,7 @@ fn waiting_row(record: Record) -> Result(Lifted, Nil) {
       ))
     StuckRecord(strand:) ->
       Ok(Lifted(
-        key: "stuck:" <> strand,
+        key: stuck_key(strand),
         kind: StuckStrand(strand),
         hold: PinnedUntilAnswered,
         head: "Stopped on a failed run",
@@ -203,7 +226,7 @@ fn waiting_row(record: Record) -> Result(Lifted, Nil) {
 fn find_row(record: Record) -> Result(Lifted, Nil) {
   case record {
     FindRecord(id:, kind:, head:) ->
-      Ok(insight("find:" <> id, FindOpen(kind), head))
+      Ok(insight(find_key(id), FindOpen(kind), head))
     AskRecord(..) | StuckRecord(..) -> Error(Nil)
   }
 }

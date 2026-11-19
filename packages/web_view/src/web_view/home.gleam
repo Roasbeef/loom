@@ -5742,8 +5742,9 @@ fn approving(model: Model) -> Effect(Msg) {
   }
 }
 
-/// The words a Retry sends the stuck strand. They are the page's own, fixed.
-const retry_words = "The last run of this strand failed. Please retry it."
+/// The words a Retry sends the stuck strand. They are the page's own, fixed, and
+/// the live rail's Retry sends the same ones (`thread_send.retry_prompt`).
+const retry_words = thread_send.retry_prompt
 
 /// What the page may do to an attention record, or nothing for a page that
 /// reads the feed and may not act: an observer's, a member's.
