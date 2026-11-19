@@ -130,7 +130,9 @@ fn rig(
           command: request.command,
           ending: now.check,
           output: now.output,
-          ran_at_ms: ffi_os.system_time_ms(),
+          // A strictly increasing stand-in for the time, so two runs never
+          // share one, however fast they follow each other.
+          ran_at_ms: ffi_os.unique_positive_integer(),
         )
       },
       publish: fn(request) {
