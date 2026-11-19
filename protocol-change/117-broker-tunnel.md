@@ -558,6 +558,61 @@ msgpack inside a 32 MiB frame can hold millions of values. The bound is on JSON 
 everything a frame decodes to. A byte cap on `msgpack_of` would refuse honest
 large binary arguments, so the risk is recorded rather than closed.
 
+*Addendum, 2026-11-18 (issues #1278 and #1279).* The msgpack half of this risk
+is closed by a value bound, not a byte cap, so honest large binary arguments
+are unaffected: a `bin` is one value however long. `msgpack_of`, and the two
+sandbox policy readers that now go through it, decode with
+`msgpack.decode_bounded` under `untrusted_wire.max_msgpack_values`
+(1,048,576, the order of `max_frame_values`). A payload past it is a decode
+error, so the link closes the connection as it does for an oversized frame; the
+untrusted wire version stays 5, because this refuses input and adds no frame.
+The first value past the bound is refused as it is reached, so a payload of 24
+MiB of one-byte values is refused after about 1,048,576 values of work, not
+24 million.
+
+A map key may not be an array or a map under `decode_bounded`. The
+duplicate-key index hashes a key whole, so a key that is itself a container is
+hashed again at every enclosing level, and a payload of about 20,000 values,
+250 maps each the key of the next around a large `bin`, took about 7.4 s. Every
+map the wire carries is keyed by text, so the bounded decode refuses a
+container key at its tag, in under a millisecond; `msgpack.decode` still
+accepts one for trusted callers.
+
+The sender checks what it is about to send. Jailed code chooses a capability
+call's arguments, and the executor, not the orchestrator, sends them (the
+orchestrator sends `cap_ok` results). `encode_fitting` therefore judges a
+`CapabilityCall` callback's arguments with `msgpack.check_bounded`, the same
+count and key rule as the decoder applied to the built value, and
+`untrusted_gateway.sent_callback` fails a call that does not pass locally
+instead of closing the link. Results are not checked: none comes near the
+bound, since tool output crosses as strings and `bin`.
+
+Measured on the development Mac under OTP 29, with the key rule in place,
+decoding a payload of exactly the bound's values takes about 0.17 s for an
+array of nils (1 MiB), about 0.23 s for an array of `uint16` integers (3 MiB),
+about 0.23 s for 250 nested arrays around 1,048,276 integers, and 1.3 to 1.7 s
+across three runs for a map of 524,287 four-byte string keys with nil values
+(3.5 MiB). That map is the worst case within the bounds now, because each key
+is entered in the duplicate-key index; 250 levels of string-keyed maps around a
+20 MB `bin` take 0.07 s, since only the keys are hashed. Refusing a payload one
+past the bound costs about 0.11 s, and refusing 24 MiB of nils about 0.12 s.
+Each runs in the link's process.
+
+`core/json.parse_number` also refuses a run of more than
+`json.max_number_digits` (4,096) digits, which the value bound did not limit
+because a number is one value. The two JSON texts carried in strings,
+`decode_lsp_server` and `decode_state`, were parsed by `gleam_json` with
+neither bound; each is now read once with `json.parse_bounded` under
+`max_frame_values` first, which also applies the digit cap. A hook settings
+file crosses as bytes and is parsed by `client/hookcompat`; its two JSON entry
+points now use `json.parse_bounded` under `hookcompat.max_json_values`. The
+TOML shape of a hook file is parsed by `tom` and is not bounded by either, but
+no executor bytes reach it today: the orchestrator chooses each file's shape,
+and every location `hookserve` names is a JSON settings file. `tom.parse` is
+quadratic in an integer's digits (about 0.8 s for 160,000 digits) and raises
+on a much larger one, so a TOML location served by a remote census needs a
+bound first.
+
 ## What it costs
 
 About 1,650 lines of product code and 850 of tests: the seam (about 170, with

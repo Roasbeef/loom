@@ -120,12 +120,22 @@ pub const max_frame_bytes = 33_554_432
 /// The most JSON values one frame, or one outcome fetched in pieces, may hold
 /// (protocol-change/117). The byte bound alone lets a frame describe tens of
 /// millions of small values, each of which the parser would build; this bounds
-/// the number of JSON values a frame may hold. A nested document inside a
-/// base64 string is decoded outside it (protocol-change/117, "Residual
-/// risks"). `untrusted_codec` refuses a received document
+/// the number of JSON values a frame may hold. A msgpack document inside a
+/// base64 string is bounded separately by `max_msgpack_values`
+/// (protocol-change/117, "Residual risks"). `untrusted_codec` refuses a received document
 /// past it during the parse, and each side counts its own frames against it
 /// before sending, so an honest sender never sends one the other refuses.
 pub const max_frame_values = 1_048_576
+
+/// The most msgpack values one base64 string in a frame may decode to
+/// (protocol-change/117, "Residual risks"). The JSON bound counts such a string
+/// as one value, and a msgpack value can take one byte, so about 24 MiB of
+/// msgpack inside a frame within `max_frame_bytes` could otherwise decode to
+/// millions of values. `untrusted_codec` decodes each such string with
+/// `msgpack.decode_bounded` under this bound and refuses one past it, as it
+/// refuses a frame past `max_frame_values`. It has the same order as that
+/// bound, which a frame's JSON may already use in full.
+pub const max_msgpack_values = 1_048_576
 
 /// The largest piece of a repository state a frame carries, so a
 /// `state_chunk` or a fetched piece fits in a frame with room for its

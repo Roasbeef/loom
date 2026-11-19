@@ -64,6 +64,17 @@ import gleam/string_tree.{type StringTree}
 /// the parser into unbounded recursion.
 pub const max_depth = 256
 
+/// The most digits one run of a number may hold. A number has up to three
+/// runs, the integer part, the fraction and the exponent, and each is held to
+/// this many. `parse_bounded` counts a number as one value however long it is,
+/// and converting a run of digits costs time that grows faster than its
+/// length, so hostile input of a single multi-megabyte number would otherwise
+/// cost far more than the value bound pays for. 4,096 digits is about 13,600
+/// bits, far past any integer a Loom document carries (the widest on the
+/// untrusted wire is 2^256, 78 digits) and past the 17 significant digits and
+/// three exponent digits of any double. A longer run is corruption.
+pub const max_number_digits = 4096
+
 /// A JSON document as plain data. Constructors carry no invariants beyond
 /// their types except:
 ///
@@ -87,7 +98,10 @@ pub type JsonValue {
   /// A JSON string.
   String(value: String)
 
-  /// A JSON number with no fraction or exponent part. Arbitrary precision.
+  /// A JSON number with no fraction or exponent part. Arbitrary precision in
+  /// memory, but `parse` refuses a literal of more than `max_number_digits`
+  /// digits, so `to_string` of an `Int` that wide writes text that will not
+  /// read back.
   Int(value: Int)
 
   /// A JSON number with a fraction or exponent part. Always finite.
@@ -1142,17 +1156,33 @@ fn parse_integer_digits(
   }
 }
 
+/// Takes the run of digits at the cursor, refusing one longer than
+/// `max_number_digits`. The run may be empty, which the callers judge.
 fn take_digits(cursor: Cursor) -> Result(#(String, Cursor), CorruptionReport) {
   let run = digit_run(cursor.rest, 0)
-  use #(digits, after) <- result.try(cut(cursor, run))
-  Ok(#(digits, advance(cursor, after, by: run)))
+
+  // The count stops one digit past the cap, so a run over it is recognised
+  // without reading the rest of a hostile run.
+  case run > max_number_digits {
+    True ->
+      Error(fail(
+        cursor,
+        "at most " <> int.to_string(max_number_digits) <> " digits in a number",
+      ))
+    False -> {
+      use #(digits, after) <- result.try(cut(cursor, run))
+      Ok(#(digits, advance(cursor, after, by: run)))
+    }
+  }
 }
 
-/// Counts consecutive ASCII digit bytes in the remaining input.
+/// Counts consecutive ASCII digit bytes in the remaining input, stopping once
+/// the count passes `max_number_digits`.
 fn digit_run(rest: BitArray, count: Int) -> Int {
   case rest {
-    <<byte, more:bits>> if byte >= 0x30 && byte <= 0x39 ->
-      digit_run(more, count + 1)
+    <<byte, more:bits>>
+      if byte >= 0x30 && byte <= 0x39 && count <= max_number_digits
+    -> digit_run(more, count + 1)
     _ -> count
   }
 }

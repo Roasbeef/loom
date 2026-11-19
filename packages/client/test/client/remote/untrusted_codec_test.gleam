@@ -58,10 +58,12 @@ import gleam/bit_array
 import gleam/dynamic
 import gleam/erlang/process
 import gleam/int
+import gleam/json as gleam_json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/string
+import host/bootstrap
 import machine/operation
 import qcheck
 import runtime/api
@@ -2694,4 +2696,181 @@ pub fn drawn_tunnel_items_round_trip_test() {
       )
     assert through(frame) == Ok(frame)
   })
+}
+
+// --- the msgpack value bound (117, residual risks) ---------------------------
+
+/// The base64 of an array32 holding `items` nils, which is `items + 1` msgpack
+/// values in `items + 5` bytes.
+fn nil_array_base64(items: Int) -> String {
+  let nils = bit_array.concat(list.repeat(<<0xc0>>, items))
+  bit_array.base64_encode(<<0xdd, items:size(32), nils:bits>>, True)
+}
+
+/// A capability callback whose arguments are the base64 text given.
+fn call_with_args(args: String) -> JsonValue {
+  parsed(
+    "{\"kind\":\"capability\",\"call\":{\"strand\":\"main\",\"op_id\":\""
+    <> ids.op_id_to_string(op())
+    <> "\",\"step_id\":\"s\",\"source_index\":0,\"seam\":\"workspace\",\"cap\":\"c\",\"args\":\""
+    <> args
+    <> "\",\"ordinal\":0}}",
+  )
+}
+
+// --- JSON inside a string (117, residual risks) ------------------------------
+
+/// `text` with `pad` zeros added as an unread member of its JSON object, so
+/// the document stays one the receiver's own reader accepts.
+fn padded_object(text: String, pad: Int) -> String {
+  let assert Ok(open) = string.reverse(text) |> string.pop_grapheme
+    as "an object ends with a brace"
+  let members = ",\"pad\":[" <> string.join(list.repeat("0", pad), ",") <> "]"
+  string.drop_end(text, 1) <> members <> open.0
+}
+
+/// `value` with every string equal to `from` replaced by `to`.
+fn replace_string(value: JsonValue, from: String, to: String) -> JsonValue {
+  case value {
+    json.String(text) if text == from -> json.String(to)
+    json.Array(items:) ->
+      json.Array(list.map(items, replace_string(_, from, to)))
+    json.Object(fields:) ->
+      json.Object(
+        list.map(fields, fn(field) {
+          #(field.0, replace_string(field.1, from, to))
+        }),
+      )
+    other -> other
+  }
+}
+
+/// Decodes a frame whose JSON was rewritten, as a receiver expecting an attach
+/// reply would.
+fn decode_rewritten(
+  value: JsonValue,
+) -> Result(untrusted_wire.Frame, CorruptionReport) {
+  untrusted_codec.decode_frame(
+    bit_array.from_string(json.to_string(value)),
+    fn(_id) { Some(untrusted_wire.AttachKind) },
+    fn(_binding, _id) { None },
+  )
+}
+
+pub fn an_lsp_server_text_is_held_to_the_value_bound_test() {
+  let attached =
+    protocol.Attached(
+      census: census(),
+      executor_now_ms: 1,
+      unacked: protocol.Unacked(terminal: [], unknown: [], executions: []),
+    )
+  let frame =
+    untrusted_wire.Response(
+      id: 1,
+      response: untrusted_wire.AttachAnswered(answer: Ok(attached)),
+    )
+  let honest = gleam_json.to_string(profile.encode_server(lsp_server()))
+  let assert Ok(document) =
+    json.parse(bit_array_text(untrusted_codec.encode_frame(frame)))
+    as "the frame is JSON"
+  let with_pad = fn(pad) {
+    decode_rewritten(replace_string(
+      document,
+      honest,
+      padded_object(honest, pad),
+    ))
+  }
+
+  let assert Ok(_frame) = with_pad(10)
+    as "a server text a few values wider is read"
+  let assert Error(_) = with_pad(untrusted_wire.max_frame_values)
+    as "a server text past the value bound is refused"
+  Nil
+}
+
+pub fn a_state_text_is_held_to_the_value_bound_test() {
+  let honest = state_object.encode(state())
+  let request = fn(text) {
+    parsed(
+      "{\"kind\":\"state_apply\",\"session\":\"s\",\"incarnation\":1,\"token\":\""
+      <> bit_array.base64_encode(token(), True)
+      <> "\",\"state\":"
+      <> json.to_string(json.String(text))
+      <> "}",
+    )
+    |> untrusted_codec.decode_request
+  }
+
+  let assert Ok(_request) = request(padded_object(honest, 10))
+    as "a state text a few values wider is read"
+  let assert Error(_) =
+    request(padded_object(honest, untrusted_wire.max_frame_values))
+    as "a state text past the value bound is refused"
+  Nil
+}
+
+pub fn a_sender_checks_capability_arguments_against_the_msgpack_bound_test() {
+  let callback = fn(args) {
+    untrusted_wire.Callback(
+      binding: binding(),
+      id: 1,
+      callback: untrusted_wire.CapabilityCall(
+        owner_services.OwnerCapCall(..cap_call(vet_policy.WorkspaceSeam), args:),
+      ),
+    )
+  }
+  let nils = fn(count) {
+    msgpack.ArrayValue(list.repeat(msgpack.NilValue, count))
+  }
+
+  let assert Ok(_) =
+    untrusted_codec.encode_fitting(
+      callback(nils(untrusted_wire.max_msgpack_values - 1)),
+    )
+    as "Arguments of exactly the bound's values fit."
+  let assert Error(untrusted_codec.Unfit(reason:, ..)) =
+    untrusted_codec.encode_fitting(
+      callback(nils(untrusted_wire.max_msgpack_values)),
+    )
+    as "One value past the bound does not fit."
+  assert string.contains(reason, "capability arguments")
+
+  let assert Error(_) =
+    untrusted_codec.encode_fitting(
+      callback(msgpack.MapValue([#(msgpack.ArrayValue([]), msgpack.NilValue)])),
+    )
+    as "A container key does not fit, however small."
+  Nil
+}
+
+pub fn msgpack_inside_base64_is_held_to_the_value_bound_test() {
+  // The bound counts the array and each nil in it.
+  let at_bound = untrusted_wire.max_msgpack_values - 1
+
+  let assert Ok(_callback) =
+    untrusted_codec.decode_callback(call_with_args(nil_array_base64(at_bound)))
+    as "A payload of exactly the bound's values is accepted."
+  let assert Error(report) =
+    untrusted_codec.decode_callback(
+      call_with_args(nil_array_base64(at_bound + 1)),
+    )
+    as "One value past the bound is refused."
+  assert string.contains(report.expected, "number of values")
+}
+
+pub fn a_container_map_key_in_base64_msgpack_is_refused_quickly_test() {
+  // 200 maps, each the key of the next. The duplicate-key index would hash
+  // each key at every level; the bounded decode refuses the first container
+  // key before reading it.
+  let nested =
+    list.fold(list.repeat(Nil, 200), from: <<0x80>>, with: fn(inner, _) {
+      <<0x81, inner:bits, 0xc0>>
+    })
+  let started = bootstrap.system_time_ms()
+  let assert Error(_) =
+    untrusted_codec.decode_callback(
+      call_with_args(bit_array.base64_encode(nested, True)),
+    )
+    as "A container key is refused."
+  assert bootstrap.system_time_ms() - started < 500
 }

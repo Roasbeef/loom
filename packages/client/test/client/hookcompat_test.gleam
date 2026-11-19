@@ -20,6 +20,31 @@ import simplifile
 // The shared source label every fixture in this file carries.
 const source = Source(label: "test", origin: UserSettings)
 
+// --- the value bound on a settings document ---------------------------------
+
+// A settings file read from an untrusted executor reaches this parser, so a
+// document of more values than a real file holds is refused, as the other
+// JSON on that link is, before its tree is built.
+pub fn a_settings_document_past_the_value_bound_is_refused_test() {
+  let wide = fn(pad) {
+    "{\"pad\":[" <> string.join(list.repeat("0", pad), ",") <> "]}"
+  }
+
+  let assert Ok(_config) =
+    hookcompat.parse_claude_settings(
+      wide(hookcompat.max_json_values - 3),
+      source,
+    )
+    as "A document at the bound is read."
+  let assert Error(_reason) =
+    hookcompat.parse_claude_settings(wide(hookcompat.max_json_values), source)
+    as "A document past the bound is refused."
+  let assert Error(_reason) =
+    hookcompat.parse_claude(wide(hookcompat.max_json_values), source)
+    as "The hooks-only shape is held to the same bound."
+  Nil
+}
+
 // --- one fixture, two shapes ------------------------------------------------
 
 // The realistic fixture: four events, matcher variants across the
