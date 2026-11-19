@@ -76,6 +76,35 @@ pub fn content_unavailable_note() -> Element(message) {
   ])
 }
 
+/// The same sentence as one tab's whole pane, for a page that has no content to
+/// list under any tab. `title` is the tab's name and `kind` the suffix of the
+/// pane's `pane-` class, which is what the shell reads to show only the chosen
+/// tab's pane, so the pane appears under exactly the tab its content would.
+/// The sentence carries no status role, since `content_unavailable` already
+/// carries the one a screen reader announces.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ended.content_unavailable_pane("Changes", "changes")
+/// ```
+pub fn content_unavailable_pane(
+  title: String,
+  kind: String,
+) -> Element(message) {
+  html.section(
+    [
+      attribute.class("pane"),
+      attribute.class("pane-" <> kind),
+      attribute.aria_label(title),
+    ],
+    [
+      html.h2([attribute.class("panel-title")], [html.text(title)]),
+      content_unavailable_note(),
+    ],
+  )
+}
+
 /// The notice for a home page that has ended, in the home's words, which name
 /// no session (protocol-change/065). It is `view`'s notice and its classes.
 ///

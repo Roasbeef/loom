@@ -8305,19 +8305,21 @@ pub fn panel(
 ) -> Element(message) {
   // A page that never held the session's content has none of it to list, and
   // a pane that said "No edits yet" would be a statement about a session it
-  // has not seen. Its first pane says why it is empty and the rest are bare.
+  // has not seen. Every tab says the content is not available, each in its
+  // own pane, so a reader who chooses a tab reads the sentence there and not a
+  // blank column. The nudge card has no pane of its own and stays bare.
   use <- bool.lazy_guard(content_unavailable(model), fn() {
     panel.view(
       0,
       ended.content_unavailable_note(),
       None,
+      ended.content_unavailable_pane("Changes", "changes"),
+      ended.content_unavailable_pane("Session", "session"),
+      ended.content_unavailable_pane("Trace", "trace"),
       element.none(),
       element.none(),
-      element.none(),
-      element.none(),
-      element.none(),
-      element.none(),
-      element.none(),
+      ended.content_unavailable_pane("Notes", "notes"),
+      ended.content_unavailable_pane("Evolution", "evolution"),
     )
   })
 
@@ -8683,6 +8685,31 @@ pub fn content_unavailable(model: Model(socket)) -> Bool {
         ending.Final -> False
       }
     Relayed(..), _, _ | Local, _, _ -> False
+  }
+}
+
+/// Whether the page has ended for good, so nothing it draws can reach a session.
+/// An ending the person must resolve closes the page's socket for good, and the
+/// browser does not reconnect (`ending.close`), so a composer drawn on such a
+/// page would take a draft, show it as sending, and never hear back, because the
+/// answer comes over the socket that is gone. The page draws no composer. An
+/// ending that may clear is not this case: the socket is held open there, and a
+/// draft is refused with a notice and kept, which is the composer's own way of
+/// saying the session cannot be reached now.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.input_closed(model)
+/// ```
+pub fn input_closed(model: Model(socket)) -> Bool {
+  case model.view.status {
+    Ended(ending:) ->
+      case ending.close(ending) {
+        ending.Final -> True
+        ending.Retry -> False
+      }
+    Connecting | Connected -> False
   }
 }
 

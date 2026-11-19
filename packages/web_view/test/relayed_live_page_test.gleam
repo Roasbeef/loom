@@ -296,6 +296,56 @@ pub fn a_relayed_page_that_opens_while_the_box_is_down_says_so_test() {
   assert !string.contains(html, "est $0.00")
 }
 
+// Every tab of a page that holds no content says so, each in its own pane, so a
+// reader who chooses Changes, Session, Trace, Notes or Evolution reads the
+// sentence there and not a blank column.
+pub fn every_tab_of_a_page_without_content_says_so_test() {
+  let model =
+    page_fixture.run(component.new(relayed_start()), operator_page.update, [
+      operator_page.Observed(
+        component.Refused(ending.reason(ending.PeerUnreachable)),
+      ),
+    ])
+  let html = drawn(model)
+
+  list.each(["Changes", "Session", "Trace", "Notes", "Evolution"], fn(title) {
+    let assert [_, after] = string.split(html, "aria-label=\"" <> title <> "\"")
+    let assert [pane, ..] = string.split(after, "</section>")
+    assert string.contains(pane, ended.content_unavailable_words)
+  })
+}
+
+// A page that ended for good has no socket left to answer a draft, so it draws
+// no composer: text typed into one showed "sending" and nothing was sent.
+pub fn a_page_that_ended_for_good_draws_no_composer_test() {
+  let ended_for_good =
+    page_fixture.run(opened(), operator_page.update, [
+      operator_page.Observed(component.Refused(ending.reason(ending.PageEnded))),
+    ])
+  assert component.input_closed(ended_for_good)
+
+  let html = drawn(ended_for_good)
+  assert string.contains(html, ending.headline(ending.PageEnded))
+  assert !string.contains(html, "aria-label=\"Composer\"")
+  assert !string.contains(html, "Cmd+Enter to send")
+}
+
+// A held page keeps its composer, because a draft typed there is refused with a
+// notice and kept, and that notice is drawn in the composer's own slot.
+pub fn a_held_page_keeps_its_composer_and_its_refusal_test() {
+  let model = dropped()
+  assert !component.input_closed(model)
+
+  let #(refused, _effects) =
+    operator_page.update(
+      model,
+      operator_page.Submitted("hello", operator.Prompt, []),
+    )
+  let html = drawn(refused)
+  assert string.contains(html, "aria-label=\"Composer\"")
+  assert string.contains(html, "no conversation is attached")
+}
+
 // A page whose lane was open and held the session's rows, after the lane's
 // socket closed under it the way a dropped link closes it.
 fn dropped() {

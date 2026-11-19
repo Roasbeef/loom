@@ -466,7 +466,13 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
             ),
           ),
         ),
-        composer(model),
+        // A page that ended for good has no socket to answer a draft, so it
+        // draws no composer. The empty node keeps the dock's child list the
+        // same length, so no other handler's path moves.
+        case component.input_closed(model) {
+          True -> element.none()
+          False -> composer(model)
+        },
       ]),
 
       // The element that moves the browser to another page is always the
