@@ -1007,11 +1007,10 @@ fn rejected(
   digest: model.CommandDigest,
   cause: model.FailureCause,
 ) -> #(State, List(Effect)) {
-  // A re-run of the commit that already failed is not another head.
-  let heads = case ticket.rejected {
-    Some(before) if before.commit == commit -> ticket.failed_heads
-    Some(_) | None -> ticket.failed_heads + 1
-  }
+  // A person's re-run of the failed commit is not another head, because the
+  // re-run request already cleared the count with the rejection. Each result
+  // here is therefore one more failing head.
+  let heads = ticket.failed_heads + 1
 
   // Only a failure of the work, with a worker to hear it and heads to spare,
   // sends the worker back. Every other row is a person's.
