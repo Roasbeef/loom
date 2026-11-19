@@ -5188,10 +5188,120 @@ exists: `Marks.times`, `lifted.Item.at` and `stream_head.Head.turn`. A rail
 entry for a stuck strand has no "Retry the last step" button, because a send
 from the rail would be a new handler that the observer's socket would have to
 refuse by path; the retry stays on Home's thread, where `ItemRetried` already
-gates it.
+gates it. (The addendum "the live rail's actions", 2026-11-19, later added that
+button, and "File issue" and "Dismiss", for an owner's and an operator's page,
+with the observer's socket still refusing every one.)
 
 ### Verification
 
 `web_view/test/lifted_test.gleam` and `operator_page_test.gleam` pin the new
 words and the unchanged paths. `ui_socket_test`, `ui_route_test` and
 `daemon_server_test` pass without a change to the admitted set.
+
+## Addendum: the live rail's actions (2026-11-19)
+
+The addendum on the live mode's stream and composer left "Retry the last step" out
+of the rail, because a send from the rail would be a handler the observer's socket
+would have to refuse by path. The owner has ruled that the rail takes the final
+design's actions on an owner's or an operator's page: "Retry the last step" on a
+stuck strand's card, and "File issue" and "Dismiss" on a find's card
+(`docs/design-notes/attention-inbox/final/mockup.html`). This addendum adds those
+three buttons and the way an observer's page and socket stay out of them.
+
+### What the page may do
+
+A session page that may act (a member operator's or the owner's, handed
+`Attention.act`, which `ui_socket.rail_act_capability` withholds from an
+observer's) may:
+
+- **Retry** a strand the feed row holds as stuck. The page names the strand, and
+  the daemon's task sends it `thread_send.retry_prompt`, the words the home's
+  Retry sends (`ItemRetried`), over the page's own gateway attachment with the
+  page's ceiling (`ui_socket.page_retry_for`, `page_strand_send`). The browser
+  never supplies the text.
+- **File issue** or **Dismiss** a find the feed row holds, as `Filed` or
+  `Dismissed` (`core/attention.Closure`), through `attention_door.close_find`
+  (`ui_socket.page_close_for`), the call the home's `ItemClosed` makes. The page
+  reads each find in full when the row names it (the same `attention.read` the
+  asks use, only on a page that may act) and names the revision it read, so a find
+  that changed since is refused by the door and not closed. "Fixed" is not drawn:
+  the mockup has no such button, and the home keeps it.
+
+Both ride the existing `RailAnswerDone`: one action is out at a time, the daemon's
+fixed word is said in the rail (`Closed.`, or the retry's delivery words), and a
+settled one is read again at once so the card leaves. The door and the gateway
+read authority again whatever the page was handed, so the capability is a
+convenience for drawing and not the gate.
+
+### What the page draws and what it does not
+
+A card's third child is now its actions: after the card's own button and the
+ask's place (`under`), `view/lifted` draws a `div.lift-acts` holding the buttons,
+or nothing. A stuck strand's card has "Retry the last step". A find's card has
+"File issue" and "Dismiss" once the page holds the find's record, and "Sending…"
+in place of both while an action is out. No other row has one: an approval is
+decided only in the dock, and an ask is answered by its form. The phone's sheet
+draws the same offers from the same inputs, as it draws the form.
+
+The buttons sit beside the card's button, not inside it, since a button cannot
+hold a button, so the card's button keeps its place and an unopened insight's press
+keeps its path. A page that may not act is handed `NoOffer` for every row and draws
+no button, so an observer's page has the same handlers it had.
+
+### The new presses, and who admits them
+
+| Press | Path | Operator and owner sockets | Observer's socket |
+|---|---|---|---|
+| Retry the last step | `rail_path`, `1\t0\t1`, position, `2\t0` (`component.rail_retry`) | admitted, as every click not at an owner's control | refused |
+| File issue, Dismiss | `rail_path`, `1\t1\t1`, position, `2`, `0` or `1` (`component.rail_close`) | admitted, as above | refused |
+
+The rule added is that the observer's list of admitted places does not change.
+`observer_path` still names the older, latest and Home buttons, the context
+refresh, the notes and strand lists, `rail_click`, `fold_click` and
+`message_click`, and neither new path has the shape of one of them: `rail_click`
+is nine segments ending `0`, these are ten. So `observer_accepts` refuses both
+for a click, a submit, any other event and a batch holding one. An operator's
+socket admits a click at any path but an owner's control's, which both are not, so
+no socket's code changed and no operator admission widened. The two predicates are
+documented test helpers, like `rail_submit`: `rail_actions_test` fails if the view
+moves a button off the shape, and `ui_socket_test` pins what each socket does at
+each path and at the neighbours a bug would land on.
+
+### What was considered
+
+- **An observer-side guard in `observer_path` that names the new paths.** It would
+  refuse what the list already refuses, and a second statement of the same fact
+  is what drifts. The tests state it instead.
+- **Reading the revision when the button is pressed.** That moves a read into the
+  press and a find that moved between the read and the press is then closed
+  blindly. Reading the find with the row, as the asks are, lets the page close
+  exactly what it drew.
+- **Hiding the buttons on a folded insight, as the mockup's `seen` card does.**
+  The mockup folds the actions away with the card, which leaves a find that was
+  opened with no way to close it from the rail. The buttons stay on a folded card.
+- **Offering "Fixed" too.** The mockup has two buttons on a find, and the home's
+  thread keeps all three.
+- **A second path to the daemon.** The page reuses the home's words and the door's
+  close, and adds no wire message.
+
+### Cost
+
+One `Act` capability on the component's transport, two messages (`RailClosed`,
+`RailRetried`), an `Offer` type and one field on `lifted.Rail`, two exact
+predicates, and a read of each open find on a page that may act (at most the row's
+cut of finds, once for each find). No route, frame, daemon field or admitted
+place.
+
+### Verification
+
+`web_view/test/rail_actions_test.gleam` drives the page: the three buttons in the
+rail and the sheet, their exact paths, the sends and the revision, a key or a
+strand the row does not hold, one action out at a time, and a page that may not act
+(and the observer's own view) with no button and nothing sent.
+`client/test/client/ui_socket_test.gleam` pins
+`only_an_operators_rail_retries_and_closes_test`: the operator's and owner's
+sockets admit each press, the observer's refuses each alone, as another event and
+in a batch, and at the neighbouring paths, and the capability is withheld from an
+observer. `client/test/client/ui_route_test.gleam` pins that a close needs an open
+page and the door's authority and that a retry sends the fixed prompt. A drive in a
+browser is recorded in the commit that adds the shots.
