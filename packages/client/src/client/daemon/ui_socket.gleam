@@ -3348,6 +3348,9 @@ fn admit(
   let registry = attachment.registry
   let credential = attachment.digest
   let principal = attachment.principal.id
+  let feed = attachment.attention
+  let session_id = attachment.session_id
+  let attention_reach = attachment.attention_reach
 
   // The rail's reads are every page's, and its answer is an operator's page's
   // alone (protocol-change/051, the addendum "the live rail, answered"). The
@@ -3355,22 +3358,18 @@ fn admit(
   let rail_attention =
     component.Attention(
       read: fn(deliver) {
-        read_task(deliver, fn() {
-          own_row(attachment.attention, attachment.session_id)
-        })
+        read_task(deliver, fn() { own_row(feed, session_id) })
       },
       record: fn(id, deliver) {
-        read_task(deliver, fn() {
-          record_for(attachment.attention_reach, attachment.session_id, id)
-        })
+        read_task(deliver, fn() { record_for(attention_reach, session_id, id) })
       },
       answer: rail_answer_capability(role, fn(ask, revision, form, deliver) {
         read_task(deliver, fn() {
           page_answer_for(
-            reach_of(standing, attachment.attention_reach.endpoint),
+            reach_of(standing, attention_reach.endpoint),
             open,
             page_strand_send(attach),
-            attachment.session_id,
+            session_id,
             ask,
             revision,
             form,
