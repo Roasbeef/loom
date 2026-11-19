@@ -1458,6 +1458,7 @@ fn start_state_git(
       scratch: root <> "/state-git",
       state_root: root,
       credentials: machine.credentials,
+      path: machine.check_path,
       demand: machine.demand,
     ))
     |> result.map(fn(git) { #(git, machine.credentials) })
@@ -1518,6 +1519,7 @@ pub fn start_owner_identity(
             scratch: root <> "/identity-git",
             state_root: root,
             credentials: machine.credentials,
+            path: machine.check_path,
             demand: machine.demand,
           )),
         )

@@ -200,6 +200,7 @@ fn receiver_at(rig: Rig) -> state_node.StateNode {
       scratch: root <> "/state-git",
       state_root: root,
       credentials: [],
+      path: "",
       demand: exec.BestEffort,
     ))
   state_node.StateNode(
