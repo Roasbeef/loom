@@ -1,4 +1,4 @@
-# protocol-change/119 — `validate` refuses a `..` segment in a root or the scratch path
+# protocol-change/124 — `validate` refuses a `..` segment in a root or the scratch path
 
 **Status**: ACCEPTED 2026-11-19; the owner delegated the call · **Affects**:
 Part 1.4 `SandboxPolicyV1` (which documents are valid, not their shape) and
@@ -87,13 +87,35 @@ spells `..`. The tree was searched for one (Gleam sources and tests, the Go
 helper and configuration docs) and none builds a root or scratch with `..` on
 purpose. The configuration parsers already refuse it for workspace roots and
 for a spawner's `writable_roots` and `readable_roots`, so a hand-written
-configuration is stopped earlier and in better words. A caller that composes a
-root from a model's `permissions.readable_roots` or `writable_roots` argument is
-not shown to canonicalize first; such a call now settles in band as a policy
-refusal naming the path, where before it reached the jail.
+configuration is stopped earlier and in better words.
 
 The check is lexical, and it is a limit. A root that is a symlink under a
 writable workspace is the helper's concern, because `broker` cannot stat. That
-the helper cleans roots is taken from the issue and
-`packages/sandbox/CLAUDE.md`, not re-read in Go for this change. A root that
-reaches outside its plane through a symlink is outside what `validate` can say.
+the helper cleans roots with `filepath.Clean` is confirmed in Go
+(`jail/mounts.go:436`, `env.go:183` and `bwrap.go:604`). A root that reaches
+outside its plane through a symlink is outside what `validate` can say.
+
+A relative path that also spells `..` reports `RootPathParentSegment` before
+`RelativePath`, because the segment check runs first.
+
+The one real input found is a model-supplied `permissions.readable_roots` or
+`writable_roots` argument. `tools/permissions` resolves those through
+`fs.resolve_real`, which pops an ordinary `..`, so a plain `..` never reaches
+`validate`. A `..` followed by a combining mark (`/work/../\u{301}x`) did:
+`fs.walk` splits by grapheme, so it came back as canonical, and the helper
+cleaned it to `/\u{301}x`. That call now settles in band as a policy refusal
+the model sees (`validate_rejects_parent_segment_before_combining_mark_test`).
+
+`gocache.locate` builds a writable root from `XDG_CACHE_HOME` or
+`$HOME/.cache` without cleaning it. That root reaches `validate` through
+`workspace_policy.base_policy` (`gocache.admitting`) and `base_policy_fault` at
+session boot, so `XDG_CACHE_HOME=/home/u/../cache` now refuses the boot with
+the new sentence instead of binding an unexpected directory.
+
+`untrusted_wire.version` stays 5. The executor encodes the new tag inside
+`ClearedAnswered` and the orchestrator decodes it; an older version-5
+orchestrator would read it as an unknown policy error and close the link, which
+fails closed. That is close to unreachable: tunnelled calls carry empty grants,
+orchestrator `..` roots are refused earlier by `tunnel_paths.plain_spec`, the
+executor's base is validated at boot, and a scratch reuses `scratch_is_root`.
+Version 5 is in no tagged release, so no bump is needed.

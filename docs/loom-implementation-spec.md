@@ -248,7 +248,7 @@ document is unchanged by 057, so `v` stays 2.
 
 `validate` also refuses a `..` segment in a `readable_roots` entry, a
 `writable_roots` entry or a host-path `scratch`
-([protocol-change/119](../protocol-change/119-validate-refuses-parent-segments.md)),
+([protocol-change/124](../protocol-change/124-validate-refuses-parent-segments.md)),
 because the meet compares roots as text and the helper cleans them, so `/w/..`
 would be kept under `/w` and bind `/`. Only `..` is refused (not `.`, `//` or a
 trailing slash), the test is lexical and judges bytes, and a scratch with no

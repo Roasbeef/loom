@@ -919,7 +919,7 @@ protocol (spec Part 1.4). WP-G.
   helper's decoder makes the same refusals at the wire
   (`policy.checkMounts`).
 - **A `..` segment in a root or scratch path is refused**
-  (`RootPathParentSegment`, `protocol-change/119`). `covers` is a text
+  (`RootPathParentSegment`, `protocol-change/124`). `covers` is a text
   prefix, so `/w/..` is kept under `/w` and the helper cleans it to `/`. The
   walk reads bytes and refuses only `..` (`.`, `//` and a trailing slash
   never widen), and a scratch with no segment other than empty or `.` is the

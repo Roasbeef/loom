@@ -284,7 +284,7 @@ pub type PolicyError {
   MountPathParentSegment(path: String)
 
   /// A readable root, a writable root or a host-path scratch contains a
-  /// ".." segment (`protocol-change/119`). `covers` compares roots as
+  /// ".." segment (`protocol-change/124`). `covers` compares roots as
   /// text, so `/w/..` is kept under a plane root `/w`, and the helper
   /// cleans it to `/` when it builds the jail, which grants more than
   /// the plane holds. A scratch of `/x/..` reaches the same whole-
@@ -462,10 +462,10 @@ pub fn session_lease(
 
 /// Checks the invariants the wire shape demands: absolute paths
 /// everywhere, no `..` segment in a readable root, writable root or
-/// scratch path (`RootPathParentSegment`, `protocol-change/119`),
-/// non-negative limits, a scratch that is not the literal
-/// host root (`ScratchIsRoot` — issue #59; see the module doc's layering
-/// note in `packages/sandbox/CLAUDE.md`), and a mount list that names
+/// scratch path (`RootPathParentSegment`, `protocol-change/124`),
+/// non-negative limits, a scratch that does not clean to the host root
+/// (`ScratchIsRoot` — issue #59, and `//` and `/.` count as the root; see
+/// the module doc's layering note in `packages/sandbox/CLAUDE.md`), and a mount list that names
 /// each region once, canonically, never a region a protected entry
 /// also names, and never a read-only region at or above a writable root
 /// (`MountShadowsWritableRoot`, `protocol-change/057`).
@@ -485,6 +485,9 @@ pub fn session_lease(
 ///
 pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
   use _ <- result.try(refuse_scratch_root(policy.scratch))
+
+  // This runs before the absolute-path check, so a relative root that
+  // also spells ".." reports RootPathParentSegment and not RelativePath.
   use _ <- result.try(refuse_parent_segment_roots(policy))
   let paths =
     list.flatten([
@@ -589,7 +592,7 @@ fn segment_bytes(
 /// a plane root it lies outside once the helper cleans it, and a scratch
 /// that spells it can reach the root. Only ".." is refused, because
 /// ".", "//" and a trailing slash never widen and an honest daemon with
-/// HOME=/ produces "//.loom/vm" (`protocol-change/119`).
+/// HOME=/ produces "//.loom/vm" (`protocol-change/124`).
 fn refuse_parent_segment_roots(
   policy: SandboxPolicy,
 ) -> Result(Nil, PolicyError) {
@@ -623,7 +626,7 @@ fn refuse_uncanonical_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
     })
 
     // Refuse parent segment navigation inside mount paths.
-    case list.contains(string.split(mount.path, "/"), "..") {
+    case has_parent_segment(mount.path) {
       True -> Error(MountPathParentSegment(path: mount.path))
       False -> Ok(Nil)
     }

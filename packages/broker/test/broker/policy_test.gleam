@@ -1334,7 +1334,7 @@ pub fn a_proxy_base_never_yields_loopback_without_a_grant_test() {
     == [policy.GrantNetwork(policy.NetworkLoopback)]
 }
 
-// protocol-change/119: a ".." root is kept by the meet's text prefix
+// protocol-change/124: a ".." root is kept by the meet's text prefix
 // test and cleaned by the helper, so it is refused wherever it sits.
 pub fn validate_rejects_parent_segment_in_writable_root_test() {
   let bad = policy.SandboxPolicy(..base(), writable_roots: ["/w/.."])
@@ -1390,4 +1390,29 @@ pub fn validate_rejects_scratch_that_cleans_to_root_test() {
 
 pub fn validate_accepts_workspace_default_test() {
   assert policy.validate(policy.workspace_default("/work")) == Ok(Nil)
+}
+
+pub fn validate_accepts_honest_unplain_scratch_test() {
+  let ok = policy.SandboxPolicy(..base(), scratch: policy.ScratchPath("//x"))
+  assert policy.validate(ok) == Ok(Nil)
+}
+
+pub fn validate_rejects_scratch_of_parent_of_root_test() {
+  let bad = policy.SandboxPolicy(..base(), scratch: policy.ScratchPath("/.."))
+  assert policy.validate(bad)
+    == Error(policy.RootPathParentSegment(path: "/.."))
+}
+
+// A mount is judged by the same byte walk as a root.
+pub fn validate_rejects_mount_parent_segment_before_combining_mark_test() {
+  let path = "/a/../\u{301}x"
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path:,
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad) == Error(policy.MountPathParentSegment(path:))
 }
