@@ -110,9 +110,9 @@
 ////   `deploy/`, and for a second one a `link` record saying `distribution`;
 ////   neither is booted), and `vm up` and `vm ensure` each refuse it naming
 ////   `loom vm sync`, `loom vm rm --yes` and `loom vm up`, and change no file;
-////   `vm rm --yes` then removes it, taking the `up` guest's `[distribution]`
-////   table and trusted row out of a file that also holds an untrusted row,
-////   which stays with every other line.
+////   `vm rm --yes` then deletes each guest's directory, leaves the
+////   configuration file byte-identical, and prints what the operator removes
+////   by hand (the row, the cookie, the authority directory, the ledger revoke).
 ////
 //// ## Running it
 ////
@@ -1589,8 +1589,8 @@ fn old_guest_snapshot(run: Run, names: List(String)) -> String {
 
 // A guest made over distribution is refused by `up` and by `ensure` before
 // anything is written, booted or sent, with one message naming the three
-// commands in the order a developer needs them, and `rm --yes` removes it with
-// the distribution teardown `rm` keeps. The `up` guest has bundles and no
+// commands in the order a developer needs them, and `rm --yes` deletes its
+// directory and leaves the configuration alone. The `up` guest has bundles and no
 // record, the shape every such guest has; the `ensure` guest is the one
 // `ensure` names after the repository, with a `link` record that says
 // `distribution` as well.
@@ -1688,10 +1688,9 @@ fn old_guests_are_refused(run: Run) -> Nil {
   }
     as { "vm list names the old guest's link:\n" <> listed }
 
-  // `rm --yes` removes each one with the distribution teardown. The `up`
-  // guest's two tables leave the file; the untrusted row, the model table and
-  // every other line stay, because an untrusted row does not need
-  // `[distribution]`. The `ensure` guest has no table in it.
+  // `rm --yes` deletes each guest's directory and nothing else: the file is
+  // byte-identical afterwards, and the output names what the operator removes
+  // by hand and says that `up` refuses the name until the row is gone.
   list.each([up_name, ensure_name], fn(name) {
     let removed =
       expect_ok(
@@ -1701,16 +1700,25 @@ fn old_guests_are_refused(run: Run) -> Nil {
     io.println_error(label <> " vm rm (old guest " <> name <> "):\n" <> removed)
     assert simplifile.is_directory(run.vm_home <> "/" <> name) == Ok(False)
       as { "rm removed the old guest " <> name <> ":\n" <> removed }
+    list.each(
+      [
+        "[executors." <> name <> "]",
+        "~/.erlang.cookie",
+        "the guest held that cookie",
+        "/authority/",
+        "loom distribution revoke " <> name,
+        "`loom vm up --name " <> name <> "` refuses until",
+      ],
+      fn(leftover) {
+        assert string.contains(removed, leftover)
+          as { "rm names " <> leftover <> ":\n" <> removed }
+      },
+    )
   })
-  let after = read_file(config)
-  assert !string.contains(after, "[distribution]")
-    as { "the old guest's [distribution] left the file:\n" <> after }
-  assert !string.contains(after, "[executors." <> up_name <> "]")
-    as { "the old guest's row left the file:\n" <> after }
-  list.each(string.split(kept_text, "\n"), fn(line) {
-    assert string.contains(after, line)
-      as { "rm kept the line " <> line <> ":\n" <> after }
-  })
+  assert read_file(config) == model
+    as {
+      "rm rewrote the configuration of an old guest:\n" <> read_file(config)
+    }
 }
 
 // The refusal says why, and names `sync`, `rm` and `up` for the guest, in that
