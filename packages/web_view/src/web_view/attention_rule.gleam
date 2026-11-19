@@ -236,6 +236,46 @@ pub fn age_line(item: Item, now: Int) -> Option(String) {
   }
 }
 
+/// How long an item has waited, in milliseconds, or nothing for an item whose
+/// record has no time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_rule.row_wait(item, 300_000) == Some(300_000)
+/// ```
+pub fn row_wait(item: Item, now: Int) -> Option(Int) {
+  option.map(since(item), fn(at) { now - at })
+}
+
+/// The age a row's first line carries at its right, in the short form the final
+/// design draws: "40m", "1h 22m", "3d". An item with no time has none, and a
+/// wait under a minute is "now", so no row claims a time the record lacks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_rule.row_age(item, 4_920_000) == Some("1h 22m")
+/// ```
+pub fn row_age(item: Item, now: Int) -> Option(String) {
+  option.map(since(item), fn(at) {
+    let wait = now - at
+    let minutes = wait / 60_000
+
+    // Minutes alone below an hour, hours and minutes below a day, then days.
+    case wait < 60_000, minutes < 60, wait < day_ms {
+      True, _, _ -> "now"
+      False, True, _ -> int.to_string(minutes) <> "m"
+      False, False, True ->
+        int.to_string(minutes / 60)
+        <> "h "
+        <> string.pad_start(int.to_string(minutes % 60), 2, "0")
+        <> "m"
+      False, False, False -> int.to_string(wait / day_ms) <> "d"
+    }
+  })
+}
+
 /// A saved session whose catalogue summary holds something open, as the thread
 /// the inbox draws for it: the headline counts that summary, so a count the page
 /// states is a row the person can act on. The name is the catalogue's, which

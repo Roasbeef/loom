@@ -464,3 +464,103 @@ fn first_of(threads: List(Thread)) -> Option(String) {
     [] -> None
   }
 }
+
+/// The group a rail folder shows, as the left column of Home lists them under
+/// "Everything, by need". A folder is a filter on the inbox's list and nothing
+/// the daemon is told: the page keeps the chosen one in its model for as long as
+/// the page lives.
+pub type Folder {
+  /// Every group, in the order the inbox draws them.
+  Everything
+
+  /// Approvals, asks and stuck strands, which wait on the owner.
+  Needing
+
+  /// Finished sessions and their trees, waiting on a read.
+  Reviewing
+
+  /// The finds the sessions noticed outside their tasks.
+  Finding
+
+  /// Sessions that are working with nothing asked.
+  Updating
+
+  /// Project tickets that wait on a person.
+  Projecting
+}
+
+/// The words of a folder in the rail: "Everything, by need" for the one that
+/// shows every group, and the group's own name for the others.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert inbox_rule.folder_words(inbox_rule.Everything) == "Everything, by need"
+/// ```
+pub fn folder_words(folder: Folder) -> String {
+  case folder {
+    Everything -> "Everything, by need"
+    Needing -> "Needs you"
+    Reviewing -> "To review"
+    Finding -> "Finds"
+    Updating -> "Updates"
+    Projecting -> "Projects"
+  }
+}
+
+/// The plain-case gloss that sits at the right of a group's band, saying in a
+/// few words what the group holds. The words are the final design's
+/// (`docs/design-notes/attention-inbox/final/mockup.html`) for the groups it
+/// draws. "Waiting" is the same kind of thing as "To review" for a page that
+/// cannot read a tree, so it says the same.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert inbox_rule.gloss(inbox_rule.Updates)
+///   == "working, nothing asked; message them here"
+/// ```
+pub fn gloss(group: Group) -> String {
+  case group {
+    NeedsYou -> "agents stopped for you"
+    ToReview | Waiting -> "finished, waiting on your read"
+    Updates -> "working, nothing asked; message them here"
+    Quiet -> "no one is waiting on you"
+  }
+}
+
+/// Whether the counts in the rail looked at the saved sessions.
+pub type Saved {
+  /// The page reads no catalogue summary, so saved sessions are not counted.
+  SavedUnchecked
+
+  /// The page counts each saved session from the catalogue's summary.
+  SavedFromCatalogue
+}
+
+/// The note under the rail's folders: how many running sessions the counts read
+/// and whether the saved ones were read too.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert inbox_rule.count_note(6, inbox_rule.SavedUnchecked)
+///   == "Counts read 6 running sessions. Saved sessions are not checked."
+/// ```
+pub fn count_note(running: Int, saved: Saved) -> String {
+  // One session is worded in the singular.
+  let sessions = case running {
+    1 -> "1 running session"
+    many -> int.to_string(many) <> " running sessions"
+  }
+
+  // Whether the saved sessions were read decides the note's second sentence.
+  case saved {
+    SavedUnchecked ->
+      "Counts read " <> sessions <> ". Saved sessions are not checked."
+    SavedFromCatalogue ->
+      "Counts read "
+      <> sessions
+      <> " live and each saved session from the catalogue's summary."
+  }
+}
