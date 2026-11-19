@@ -185,9 +185,10 @@ create it as you normally would and then make it shareable as below.
 
 ### Make an existing session shareable
 
-A "Make shareable" button on the admin page and on the session's Session tab
-is coming. It is not in this release. Until then, use the terminal. Stop the
-session first, then:
+The owner's page for a private session has a "Make shareable" button, and the
+admin page offers the same button under the session's line. It asks you to
+confirm, stops the session and makes it shareable, and you then reload the
+page. To do it from the terminal instead, stop the session first, then:
 
 ```bash
 loomd access isolate SESSION_ID --share-existing-transcript

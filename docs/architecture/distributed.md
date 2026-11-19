@@ -705,7 +705,7 @@ function on the node directly.
 
 Because the peers are trusted, a message is a typed Erlang term matched
 directly, not decoded from untrusted bytes. The only guard on its shape is
-`Attach.version` (`protocol.version`, 6 today). `Attach` keeps the shape it had
+`Attach.version` (`protocol.version`, 7 today). `Attach` keeps the shape it had
 in version 2, so a peer of any version reaches that check, and the host
 refuses a different version with `VersionMismatch`, creates nothing and stays
 up. Anything newer a peer needs at attach, such as the MCP plan, is asked for
@@ -1726,7 +1726,7 @@ run ended is not fenced by the run-end fence, which lives in the pair's session.
 
 ## Background code mode and MCP on a remote session
 
-**Status: built, introduced at protocol version 3 (the current version is 5).** The rules are in the protocol-change/078
+**Status: built, introduced at protocol version 3 (the current version is 7).** The rules are in the protocol-change/078
 addendum "background code mode and MCP façades on a remote session", together
 with the failure table for both paths. This section shows how the parts fit.
 
@@ -2318,8 +2318,10 @@ The directory holds no state of its own, so it has no model.
 - **MCP on a remote session**: the plan is fixed for an incarnation, a server is
   never restarted or jailed on either machine, and an orchestrator-placed server
   is started even when the executor offers no `code_mode`.
-- **After an executor restart**, an open session fails new calls until it is
-  closed and reopened, and the reopen needs the operator's release. Runs left
+- **After an executor restart**, a session that stays open attaches again on
+  its next call and continues ("What an executor restart does" above). A session
+  that was closed before its next call records an unproven cleanup, and its
+  reopen needs the operator's release. Runs left
   by an orchestrator that died hold their budget until the session is reopened
   and closed; there is no listing of them on the executor.
 - **Imported sessions whose origin is gone** (decommissioned, renamed or

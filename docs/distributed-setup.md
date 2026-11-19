@@ -1276,8 +1276,11 @@ needs a `[workspaces.proj]` of its own, because the orchestrator sends only the
 name. `loom distribution provision` writes `[executors.<name>]` tables with no
 declarations and no `[pools]`, so add both by hand. The rules are short:
 
-- **Order, not balance.** The orchestrator tries the executors in the order the
-  pool lists them. It goes to the next one only when the first could not hold the
+- **Fewest sessions first, then listed order.** The orchestrator tries first the
+  executor on which it has the fewest resident sessions, and the order the pool
+  lists breaks ties, so an unused pool is tried as listed. The count is this
+  orchestrator's own and says nothing of the machine's load or of what another
+  orchestrator holds there. It goes to the next one only when the first could not hold the
   session: the connection to it failed, or it answered that it already holds the
   most scopes it admits (16 unless `LOOM_EXECUTOR_MAX_SCOPES` lowers it).
 - **A session stays where it landed.** The first open records the executor in the
@@ -1302,7 +1305,8 @@ skips an executor that declares the wrong platform, that a contradicted declarat
 closes its scope and fails the open, that a full executor is moved past, and that a
 reopen into a full executor fails without moving. That test is not the cross-host
 run. The terminal's `--pool` flag is covered by its own unit tests and was not run
-against these daemons. The web home does not offer pools yet.
+against these daemons. The web home's "New session" form lists each pool under
+"Runs on", as section 7 describes.
 
 ### Moving a session to another orchestrator
 

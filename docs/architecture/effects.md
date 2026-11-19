@@ -19,7 +19,8 @@ tool content steering the model toward exfiltration or destruction);
 or persistence); and **compromised third-party tools** (a malicious
 language server, or a Model Context Protocol server). It does not defend
 against a hostile user on their own machine, or against kernel zero-days:
-surface is reduced, but machine-grade isolation waits for the microVM tier.
+surface is reduced, and machine-grade isolation is the job of the microVM
+tier ([microvm](microvm.md)), where the tools run in a guest.
 
 The defense rests on one rule, because BEAM processes provide fault
 isolation, not security isolation. Any process in the virtual machine can
