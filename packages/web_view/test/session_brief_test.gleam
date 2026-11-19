@@ -90,7 +90,12 @@ fn assistant() -> qcheck.Generator(brief.Assistant) {
 
 fn step() -> qcheck.Generator(brief.Step) {
   qcheck.map4(time(), words(), words(), outcome(), fn(at, tool, text, outcome) {
-    brief.Step(at:, tool:, words: brief.untrusted(text), outcome:)
+    brief.Step(
+      at:,
+      tool: brief.untrusted(tool),
+      words: brief.untrusted(text),
+      outcome:,
+    )
   })
 }
 
@@ -156,7 +161,14 @@ pub fn model_text_carries_the_untrusted_mark_on_the_wire_test() {
   let value =
     brief.Brief(
       assistant: Some(brief.Assistant(brief.untrusted("hi"), 5)),
-      steps: [brief.Step(1, "bash", brief.untrusted("Ran make"), brief.Running)],
+      steps: [
+        brief.Step(
+          1,
+          brief.untrusted("bash"),
+          brief.untrusted("Ran make"),
+          brief.Running,
+        ),
+      ],
       strands: [],
       goal: None,
       peers: [brief.Peer("s", "main", 2, brief.untrusted("hello"))],
@@ -165,4 +177,8 @@ pub fn model_text_carries_the_untrusted_mark_on_the_wire_test() {
   let text = json.to_string(brief.to_json(value))
   let marks = list.length(string.split(text, "\"trust\":\"untrusted\"")) - 1
   assert marks == 4
+
+  // The tool name of a call is the model's choice, so it is behind the type too.
+  let assert [step] = value.steps
+  assert brief.untrusted_text(step.tool) == "bash"
 }

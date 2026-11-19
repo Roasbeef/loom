@@ -153,7 +153,7 @@ pub fn a_step_is_worded_by_the_pages_own_words_and_its_result_test() {
   assert wire.untrusted_text(ok.words) == "Ran make check-core"
   assert failed.outcome == wire.Failed
   assert failed.at == 30
-  assert failed.tool == "bash"
+  assert wire.untrusted_text(failed.tool) == "bash"
 }
 
 pub fn at_most_four_steps_are_listed_newest_first_test() {
