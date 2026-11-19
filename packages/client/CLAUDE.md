@@ -7280,9 +7280,13 @@ response entry the run's leaf names (an assistant entry with `Errored`; any othe
 leaf gives no time), and `parent` from the `runtime/lineage` ledger; `Evidence` is
 read once per row, only when a strand is stuck. `approval_evidence.read(runtime,
 today)` adds `raised_at`, `network`, `policy` (`today_of` the session's base policy,
-lent through `agency.Config.approval_today`; the Agency answers `ApprovalRead`
-itself for that reason) and, for `code_mode`, `code_call` (`proc.run` and the argv of
-the first `proc.command([...])`, nothing when unparsable). `Overview` adds
+lent through `agency.Config.approval_today`, set from the assembled
+`plane.census.base_policy` when `serve` starts the Agency; the Agency answers
+`ApprovalRead` itself for that reason). The remembered-grants cell is read at each
+read and a remembered full network makes the item `on`; a word that cannot be
+exact (no policy, unreadable grants, loopback) is left out and `off` is never a
+guess. The call and command inside a `code_mode` program are not read from its
+source (a decoy would mislead) and the record holds none. `Overview` adds
 `last_message_at` and `turn_started_at` (050 addendum).
 
 `session.brief` (protocol-change/125): `client/session_brief` is the resident side

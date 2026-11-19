@@ -10,12 +10,11 @@
 ////
 //// An item carries the time its question was put to a person when the record has
 //// one (protocol-change/124), the network the call would have and the session's
-//// policy today, and for a `code_mode` program the capability call and command
-//// its source names (protocol-change/120, the addendum on approval words). A
-//// record from before the raise time was stored has none, and no page words an
-//// age for it. The tool, the preview, the reason, the call and the command were
-//// written by the harness and the model, so a page draws them as text nodes
-//// only.
+//// policy today (protocol-change/120, the addendum on approval words), each
+//// left out when the daemon could not make it exact. A record from before the
+//// raise time was stored has none, and no page words an age for it. The tool,
+//// the preview and the reason were written by the harness and the model, so a
+//// page draws them as text nodes only. `call` and `command` are never emitted.
 ////
 //// ## Flow
 ////
@@ -90,11 +89,11 @@ pub type Item {
     network: Option(Network),
     /// The session's sandbox and network policy at the moment of the read.
     policy: Option(Policy),
-    /// The capability a `code_mode` program calls, such as `proc.run`. Text
-    /// taken from a program's source.
+    /// The capability a `code_mode` program calls. The daemon never emits it,
+    /// because the escalation records no such call and a program's source can
+    /// show one it never makes; the member is kept for a record that carries it.
     call: Option(String),
-    /// The command that program runs, one line. Text taken from a program's
-    /// source, drawn as a text node.
+    /// The command that call runs, never emitted for the same reason.
     command: Option(String),
   )
 }

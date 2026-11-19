@@ -4134,7 +4134,6 @@ fn assemble_in(
         settings.peer_defaults,
         peer_mail.no_defaults,
       ),
-      approval_today: Some(approval_evidence.today_of(settings.base_policy)),
       attention_report: attention_report,
       outbox_queued: fn() { peer_outbox_drain.poke(outbox_drain_name) },
       remote: option.lazy_unwrap(settings.remote_reach, fn() {
@@ -5353,7 +5352,18 @@ fn assemble_in(
     |> sup.add(effect_abort.supervised(effect_abort_name, abort_op_effects))
     |> sup.add(workspace_gate.supervised(gate_address))
     |> sup.add(
-      supervision.worker(fn() { agency.start(agency_config, runtime) }),
+      supervision.worker(fn() {
+        // The policy words are those of the assembled base, which is known only
+        // once the workspace half is, so the config the Agency starts with is
+        // completed here and not where it is first built.
+        agency.start(
+          agency.Config(
+            ..agency_config,
+            approval_today: Some(approval_evidence.today_of(base_policy)),
+          ),
+          runtime,
+        )
+      }),
     )
     |> sup.add(
       supervision.worker(fn() { escalate.start(escalate_config, runtime) }),
