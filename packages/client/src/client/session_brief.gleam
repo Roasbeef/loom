@@ -75,14 +75,7 @@ const main_strand = "main"
 /// // session_brief.read(runtime, 0)
 /// ```
 pub fn read(runtime: api.Runtime, since: Int) -> Result(JsonValue, String) {
-  use entries <- result.try(window(runtime))
-  use roster <- result.try(strands(runtime))
-  use goal <- result.map(goal_of(runtime))
-
-  of_window(entries, since)
-  |> with(roster, goal)
-  |> shed
-  |> session_brief.to_json
+  build(runtime, since) |> result.map(session_brief.to_json)
 }
 
 /// The brief of this session as a typed value, before it is shed and encoded.
@@ -207,7 +200,9 @@ fn step(call: tool_activity.Call) -> session_brief.Step {
     Some(message.ToolResultMessage(is_error: False, ..)) ->
       session_brief.Succeeded
     Some(message.ToolResultMessage(is_error: True, ..)) -> session_brief.Failed
-    Some(_) -> session_brief.Succeeded
+    // A result that is not a tool result cannot answer a call, so the call still
+    // has none.
+    Some(_) -> session_brief.Running
   }
 
   // A call with no result is worded in the present tense, since the past tense
@@ -236,6 +231,8 @@ fn step(call: tool_activity.Call) -> session_brief.Step {
 /// agent, so a message a person typed or a strand of this session sent is not
 /// one.
 fn peers(newest_first: List(Entry), since: Int) -> List(session_brief.Peer) {
+  // The newest three are chosen first and only those are clipped, so a long
+  // history of long messages costs three cuts and not one for each.
   newest_first
   |> list.filter_map(fn(record) {
     case record {
@@ -249,20 +246,23 @@ fn peers(newest_first: List(Entry), since: Int) -> List(session_brief.Peer) {
         ..,
       )
         if ts > since
-      ->
-        Ok(session_brief.Peer(
-          session: glance.clip(session, session_brief.strand_bytes),
-          strand: glance.clip(strand, session_brief.strand_bytes),
-          at: ts,
-          text: session_brief.untrusted(glance.clip(
-            string.join(user_texts(content), " "),
-            session_brief.peer_bytes,
-          )),
-        ))
+      -> Ok(#(session, strand, ts, content))
       _ -> Error(Nil)
     }
   })
   |> list.take(session_brief.max_peers)
+  |> list.map(fn(found) {
+    let #(session, strand, at, content) = found
+    session_brief.Peer(
+      session: glance.clip(session, session_brief.strand_bytes),
+      strand: glance.clip(strand, session_brief.strand_bytes),
+      at:,
+      text: session_brief.untrusted(glance.clip(
+        string.join(user_texts(content), " "),
+        session_brief.peer_bytes,
+      )),
+    )
+  })
 }
 
 /// The text blocks of a user message.
@@ -331,8 +331,8 @@ fn strands(runtime: api.Runtime) -> Result(List(session_brief.Strand), String) {
     states
     |> list.sort(fn(left, right) {
       case option.is_some(left.1), option.is_some(right.1) {
-        True, False -> order_before()
-        False, True -> order_after()
+        True, False -> order.Lt
+        False, True -> order.Gt
         True, True | False, False -> string.compare(left.0, right.0)
       }
     })
@@ -376,16 +376,6 @@ fn strands(runtime: api.Runtime) -> Result(List(session_brief.Strand), String) {
         session_brief.Strand(name:, state: session_brief.Idle, since: None)
     }
   })
-}
-
-/// `Lt` and `Gt` named for what they mean in the roster's order.
-fn order_before() -> order.Order {
-  order.Lt
-}
-
-/// See `order_before`.
-fn order_after() -> order.Order {
-  order.Gt
 }
 
 /// Whether a strand with nothing running last failed or did not.
