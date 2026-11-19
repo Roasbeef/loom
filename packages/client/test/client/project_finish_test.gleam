@@ -10,6 +10,7 @@ import client/daemon/project_host
 import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
+import client/project_records
 import client/project_settings
 import client/project_template
 import core/json
@@ -19,8 +20,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import project/event
 import project/model
 import simplifile
+import storage/project_ledger
 import support/project_ports
 import tools/project as tools
 import weft/poll
@@ -845,6 +848,69 @@ pub fn a_failure_after_a_rerun_at_the_same_commit_is_told_again_test() {
   let assert [two] = note_ids(second, worker)
   assert one != two
   assert string.contains(board(handle), "\"stage\":\"working\"")
+}
+
+// A crash after the engine took a failure and before its row was settled leaves
+// the check due. On the next start it is not run again for a head the engine
+// already holds as rejected, so the failure is counted once and the worker is
+// not told twice.
+pub fn a_check_row_left_due_after_its_failure_was_taken_runs_no_second_time_test() {
+  let rig =
+    rig(
+      "crash-after-failure",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      failing_with(1, "--- FAIL: TestSum"),
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+  assert board_says(handle, "\"outcome\":\"failed\"")
+  let first = seen(rig)
+  assert checks(first) == ["aaaaaaa"]
+  assert list.length(notes(first, worker)) == 1
+
+  // The row of the check that just ran is queued again, as a crash before its
+  // settling would leave it.
+  let assert Ok(pid) = process.subject_owner(handle.commands)
+    as "the actor has an owner"
+  process.unlink(pid)
+  process.kill(pid)
+  process.sleep(100)
+  let assert Ok(ledger) = project_ledger.open(rig.config.ledger_path)
+    as "the ledger opens"
+  let written =
+    project_records.CheckRecorded(
+      "t-a",
+      "aaaaaaa",
+      "make check",
+      "failed",
+      "exit status 1",
+      1,
+    )
+  let assert Ok(_) =
+    project_ledger.append_with_effects(
+      ledger,
+      project_records.encode_record(written),
+      1,
+      [
+        project_records.draft(
+          1000,
+          1,
+          event.RequestCheck(model.TicketId("t-a"), model.CommitId("aaaaaaa")),
+        ),
+      ],
+    )
+    as "the due row is queued"
+  let assert Ok(Nil) = project_ledger.close(ledger) as "the ledger closes"
+
+  // After the restart the row is settled without running, and the ticket is
+  // where one failure left it.
+  let assert Ok(again) = project_host.start(rig.config)
+    as "the actor starts again"
+  assert board_says(again, "\"outcome\":\"failed\"")
+  let later = seen(rig)
+  assert checks(later) == []
+  assert notes(later, worker) == []
+  assert string.contains(board(again), "\"stage\":\"working\"")
 }
 
 // Publishing past a failed check is the person's, and the project's setting

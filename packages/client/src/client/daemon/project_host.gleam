@@ -2764,11 +2764,23 @@ fn observe_failed(
 /// stands, the commit is its head and nothing has judged it yet. The engine
 /// asked for the check at that head, and a head that has moved since makes the
 /// request stale.
+///
+/// A head the engine already holds as rejected is judged too. A crash between
+/// the engine's commit of a failure and the settling of its row leaves the row
+/// due, and running it again would count one more failing head for the same
+/// run. A person's re-run clears the rejection first, so it is still wanted.
 fn awaits_check(ticket: Ticket, commit: String) -> Bool {
+  // Only a rejection of this very commit means it was already judged.
+  let judged = case ticket.rejected {
+    Some(rejection) -> rejection.commit == model.CommitId(commit)
+    None -> False
+  }
+
   let current =
     ticket.head == Some(model.CommitId(commit))
     && ticket.outcome == None
     && ticket.authority == state.Granted
+    && !judged
 
   // Only a ticket still in progress takes a verdict.
   current
