@@ -2276,6 +2276,13 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
       <> "` contains a `..` segment. Mount paths are compared by "
       <> "component against protected entries and roots before anything "
       <> "resolves them, so this would claim one region and bind another"
+    policy.RootPathParentSegment(path:) ->
+      "the path `"
+      <> path
+      <> "` contains a `..` segment. Roots are compared as text before "
+      <> "the helper cleans them, so this would be kept under one root "
+      <> "and bind another; a scratch spelled this way can reach `/`. "
+      <> "Write the cleaned path"
     policy.MountShadowsWritableRoot(mount:, writable_root:) ->
       "the read-only mount `"
       <> mount

@@ -918,6 +918,14 @@ protocol (spec Part 1.4). WP-G.
   exactly because of them, and the Go emitters carry no tie-break. The
   helper's decoder makes the same refusals at the wire
   (`policy.checkMounts`).
+- **A `..` segment in a root or scratch path is refused**
+  (`RootPathParentSegment`, `protocol-change/119`). `covers` is a text
+  prefix, so `/w/..` is kept under `/w` and the helper cleans it to `/`. The
+  walk reads bytes and refuses only `..` (`.`, `//` and a trailing slash
+  never widen), and a scratch with no segment other than empty or `.` is the
+  root (`ScratchIsRoot`). The check is lexical; a root that is a symlink is
+  the helper's concern. `client/remote/tunnel_paths` refuses earlier, with a
+  reason, at the trust boundary.
 - **A read-only mount at or above a writable root is refused**
   (`MountShadowsWritableRoot`, `protocol-change/057`). Every explicit
   mount is emitted after every grant, so on Linux the read-only bind

@@ -19,6 +19,13 @@
 //// base's own or a fresh tmpfs; and the working directory is not part of the
 //// policy and binds nothing.
 ////
+//// `broker/policy.validate` refuses a `..` segment in any root or scratch path
+//// (protocol-change/119), so it is the second line behind this module. This
+//// module stays strict on every unplain spelling, and refuses earlier and with
+//// a reason, because it guards the trust boundary where the bytes arrive;
+//// `validate` refuses only the segment that widens, so that an honest `//`
+//// still clears.
+////
 //// `plain` judges one path, and `plain_spec` the roots of a spec.
 
 import broker/policy.{type SandboxPolicy}
