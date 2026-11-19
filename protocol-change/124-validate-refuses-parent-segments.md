@@ -107,10 +107,14 @@ cleaned it to `/\u{301}x`. That call now settles in band as a policy refusal
 the model sees (`validate_rejects_parent_segment_before_combining_mark_test`).
 
 `gocache.locate` builds a writable root from `XDG_CACHE_HOME` or
-`$HOME/.cache` without cleaning it. That root reaches `validate` through
+`$HOME/.cache`, and that root reaches `validate` through
 `workspace_policy.base_policy` (`gocache.admitting`) and `base_policy_fault` at
-session boot, so `XDG_CACHE_HOME=/home/u/../cache` now refuses the boot with
-the new sentence instead of binding an unexpected directory.
+session boot. `locate` now expands the place with `filepath.expand`, as
+`workspace_policy` does for paths built from the environment, so
+`XDG_CACHE_HOME=/home/u/../cache` yields the root under `/home/cache` and no
+boot refusal follows. A place that climbs above `/` has no cleaned form and
+gives no private caches, which is the behaviour of a session with no cache
+place.
 
 `untrusted_wire.version` stays 5. The executor encodes the new tag inside
 `ClearedAnswered` and the orchestrator decodes it; an older version-5
