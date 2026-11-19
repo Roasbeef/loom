@@ -83,8 +83,11 @@ A program may import the capability modules below and a fixed, pure part of the 
 | `cap/schedule` | Heartbeats that inject text into this strand's context on a timer. |
 | `cap/lsp`, `cap/lsp_sql` | Language-server queries, and read-only SQL over captured language-server facts. |
 | `cap/mcp/<server>` | Typed functions for each tool of a configured MCP server, generated at boot. |
+| `cap/evolution` | Propose, test and call governed candidates. Offered only to a session that owns an evolution plane. See [self-evolution](#/docs/self-evolution). |
 
 The model has no autocomplete, so the `code_mode` tool description lists each admitted module and its public types. For a full signature the model reads `cap://<module>` with `fs_read`.
+
+A host that embeds Loom can narrow this list for its sessions and add one generated `cap/<name>` module whose functions are the host's own registered tools. Such a seam only narrows what a program may import. It never widens it.
 
 A strand's tool list also bounds its programs. `proc.run` needs the `bash` tool, `fs.write` needs `fs_write`, and `strand.spawn` needs `agent_spawn`. A reviewer whose parent withheld `bash` cannot run commands from a program either. A call that needs a tool the strand lacks is refused with `tool_not_held`.
 
@@ -135,11 +138,13 @@ The first stage and the fourth run in the harness. The second and third run in t
 
 This works because of the language. Gleam has no `eval`, no reflection, no macros and no dynamic module lookup, and every effect enters through an import that reaches an `@external`. The transitive closure of a program's imports is therefore the most it can ever do, and vetting can check it without running anything. Python, JavaScript and Erlang can each reach the whole runtime through a string, so an import list tells you little about them.
 
-The trade-off is fluency. Models have seen far more JavaScript than Gleam, and every run pays for a compile. Loom offsets it by returning compiler diagnostics as an ordinary result, retrying once when a build fails only on unused imports, arguments or bindings, and listing the admitted modules' types in the tool description.
+The trade-off is fluency. Models have seen far more JavaScript than Gleam, and every run pays for a compile. Loom offsets it by returning compiler diagnostics as an ordinary result, retrying once when a build fails only on unused imports, arguments or bindings, or on a module the program used without importing it, and listing the admitted modules' types in the tool description.
 
 ## On an executor
 
-Work on the [distributed runtime](#/docs/distributed-runtime) separates the session's owner from the machine that holds the checkout. For code mode, the executor compiles the program beside the checkout and runs the satellite there, in the same jail with distribution disabled. Filesystem, report, command, job and language-server calls are served on the executor, against its workspace. Notes, strand operations, schedules and peer calls go back to the owner and keep the owner's session authority. Foreground code mode works this way on `main`. A remote session refuses background code mode (`"mode": "launch"`) and MCP façades inside code mode.
+Work on the [distributed runtime](#/docs/distributed-runtime) separates the session's owner from the machine that holds the checkout. For code mode, the executor compiles the program beside the checkout and runs the satellite there, in the same jail with distribution disabled. Filesystem, report, command, job and language-server calls are served on the executor, against its workspace. Notes, strand operations, schedules, peer calls and evolution calls go back to the owner and keep the owner's session authority. Foreground and background code mode (`"mode": "launch"`) both work this way on `main`. A launched program runs on the executor, and its record, input journal and progress stay with the owner.
+
+MCP façades work in a remote session too. By default a server runs on the orchestrator with the keys held there, and a program's call goes back to the owner. A server whose `[mcp.<name>]` table sets `runs_on = "executor"` runs beside the checkout from the executor's own configuration. A remote session still refuses installed extension tools and operator-added directories.
 
 ## Read more
 

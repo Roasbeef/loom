@@ -29,11 +29,17 @@ A small Go helper, `loom-exec`, is a separate OS process from the daemon. It res
 - When the network is off, a seccomp filter stops the process from creating network sockets.
 - The helper writes a report of which layers actually took effect, and the broker reads it.
 
-On macOS the helper runs the same stage under a generated Seatbelt profile that denies by default. macOS has no per-execution cgroup, so it enforces less, and the report says so. Run `make selftest` on the machine you plan to use. By default the daemon refuses to start when a layer is missing.
+On macOS the helper runs the same stage under a generated Seatbelt profile that denies by default. macOS has no per-execution cgroup, so it enforces less, and the report says so. Run `make selftest` on the machine you plan to use. By default the broker refuses to run a command when a layer the platform promises is missing or skipped: Linux must enforce everything, and macOS may lack only the three gaps that ADR-006 names. `loomd --best-effort` accepts broader gaps, and `loomd --full-enforcement` demands the full contract on every platform.
 
 The child's environment is constructed from an allowlist and never inherited, so the policy alone documents what a jail can see. A tool sees only the variables you name under `[tools]`.
 
 MCP servers are the exception. Configured MCP servers currently run as ordinary host child processes, so treat each one as a trusted installation.
+
+### Containers and guest VMs
+
+A container changes what the helper can enforce. In a plain `docker run`, bubblewrap cannot create a user namespace, so the jail never comes up: the self-test measured 0 of 11 probes enforced, and a model-written program is confined only by Docker itself. The full-isolation posture in [`docs/docker.md`](https://github.com/Roasbeef/loom/blob/main/docs/docker.md) restores Loom's own layers by removing most of Docker's confinement, which suits a dedicated machine and not a shared host.
+
+For a stronger boundary than a shared kernel, `loom --vm` opens a session whose tools run in a libkrun guest VM for that workspace, and `loom run -p "..." --vm` does the same headless. The same jail runs inside the guest, on the guest's kernel, and the guest's network denies by default. There is one guest per workspace, and it runs until `loom vm down`. Guests have booted on macOS and on Linux x86_64 with KVM. Linux arm64 has not been run.
 
 ## The policy
 
@@ -42,18 +48,18 @@ A call runs under a policy composed from the session's base policy, the tool's o
 | Field | How composition treats it |
 |---|---|
 | Readable and writable roots | A base root covers a request inside it, and the result is the narrower request. |
-| Network | `off` is stricter than `full`. The default for shell commands is `full`, and `[tools] network = "off"` disables it. |
+| Network | `off` is stricter than `full`. The default for shell commands is `full`, and `[tools] network = "off"` or `loomd --network off` disables it. |
 | Limits | The smaller value wins. |
 | Environment | The allowlists intersect. |
 | Protected paths | They union, and no grant can remove one. |
 
-The default base lets a command write inside the workspace and read most of the host except protected paths. For tighter reads, set `read_scope = "workspace"` under `[workspace]`. With the defaults, a jailed command can read most of the host and reach any host on the network, so set `network = "off"` and `read_scope = "workspace"` where that matters.
+The default base lets a command write inside the workspace and read most of the host except protected paths. For tighter reads, set `read_scope = "workspace"` under `[workspace]`, or start with `loomd --read-scope workspace`. With the defaults, a jailed command can read most of the host and reach any host on the network, so set `network = "off"` and `read_scope = "workspace"` where that matters.
 
 Every command and every code-mode capability call passes through one function in the harness, the broker's `clear_call`. The native file tools run in the harness and enforce their own path containment. It composes the policy, refuses or narrows the call, reserves a slot against a pooled cap, mints a token, borrows a helper and dispatches. From that point the caller receives exactly one settlement, however the execution ends. The token binds the operation, step, policy and deadline, and settling revokes it. An abort revokes every token of an operation and signals the whole process group, so no orphaned process is left.
 
 ## Asking for more access
 
-A call can declare what it needs. `bash` and `code_mode` accept a `permissions` argument with `readable_roots`, `writable_roots` and `network: "full"`. The native file tools, `fs_read`, `fs_write` and `fs_edit`, ask for the exact path they are about to touch. If the policy falls short, the call is refused before any process starts or budget is spent, and the refusal names the grants that would fix it.
+A call can declare what it needs. `bash` and `code_mode` accept a `permissions` argument with `readable_roots`, `writable_roots` and `network: "full"`, at most 32 paths in all. The native file tools, `fs_read`, `fs_write` and `fs_edit`, ask for the exact path they are about to touch. If the policy falls short, the call is refused before any process starts or budget is spent, and the refusal names the grants that would fix it.
 
 ::figure approval
 
@@ -62,8 +68,10 @@ A call can declare what it needs. `bash` and `code_mode` accept a `permissions` 
 If someone is attached, the refusal becomes a question. The terminal opens a dialog with the captured action, the requesting strand and the exact grants, and no choice is selected when it opens. The web page draws a card instead, in its own region above the composer, and ignores clicks for 600 ms after it appears. Your choices:
 
 - **Allow once** authorizes one execution of that call.
-- **Allow for the session** does the same and remembers the grants for later calls. It is offered only when every grant can be remembered: readable roots, writable roots and full network access. On the web, only the owner's page offers it.
+- **Allow for the session** does the same and remembers the grants for later calls. It is offered only when every grant can be remembered: readable roots, writable roots and full network access. One narrower case exists: a request for unlimited wall time alone can be remembered for that exact tool and arguments. On the web, only the owner's page offers it.
 - **Deny** rejects the question.
+
+The call waits about five seconds for an answer. After that, or when nobody is attached, it settles as refused and the question stays pending. When you answer later, Loom sends the model a notice so it can issue the call again and spend the approval.
 
 An approval is bound to the action by a digest of the call's effective arguments. A call that would do something else can neither claim the record nor spend it. A yes to a harmless command cannot be spent by a different command later.
 
@@ -75,7 +83,7 @@ A refusal that happens inside a running command does not become a question. A ra
 
 Two kinds of authority outlive a single call.
 
-- **Remembered grants** come from allow for the session. The owner can list them with the `permissions` tool and remove them with `permission_forget`. Running commands keep the authority they started with.
+- **Remembered grants** come from allow for the session. Only the owner can list and remove them, through the session protocol's `permissions` and `permission_forget` commands. The owner's web page lists them in its Session pane, each with a Forget button. Running commands keep the authority they started with.
 - **Added directories** come from the operator. `/add-dir PATH` adds read access and `/add-write-dir PATH` adds read and write. Only the owner or an operator may add one. The path must be an existing directory, and a write addition under a protected path is refused.
 
 ## Crashes and restarts
@@ -87,3 +95,5 @@ An approval is a durable record. If the daemon dies while a call waits, the call
 - [`docs/architecture/approvals.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/approvals.md): the record, its states and the decision rules.
 - [`docs/architecture/effects.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/effects.md): the broker, the wire, the jail and the self-test.
 - [`docs/adr/006-macos-seatbelt-boundary.md`](https://github.com/Roasbeef/loom/blob/main/docs/adr/006-macos-seatbelt-boundary.md): why macOS enforces less than Linux.
+- [`docs/architecture/microvm.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/microvm.md): the guest VM tier and its known gaps.
+- [`docs/docker.md`](https://github.com/Roasbeef/loom/blob/main/docs/docker.md): the container image and its two isolation postures.

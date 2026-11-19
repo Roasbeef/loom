@@ -22,15 +22,19 @@ Because the file is the session, deleting a session means removing a file, and c
 
 One `loomd` process hosts your sessions across workspaces. Each open session has its own supervision tree, its own conversation database and its own sandbox helpers. Several terminals and browsers can attach to the same session, and one terminal can switch between sessions without stopping the work it leaves behind.
 
-A **catalogue**, a small database of session metadata, lets the daemon list sessions without opening them. Discovery is not execution: listing a session never starts its runtime, and a daemon restart leaves every session closed until someone opens it. Opening runs the same recovery that a crash needs, so an operation that was in flight can resume.
+A **catalogue**, a small database of session metadata, lets the daemon list sessions without opening them. Discovery is not execution: listing a session never starts its runtime, and a daemon restart leaves every session closed until someone opens it. Opening runs the same recovery that a crash needs, so an operation that was in flight can resume. A schedule does not open a saved session either: an overdue one fires when someone opens the session.
 
 Three kinds of stop differ in scope:
 
 - Closing a client detaches one connection.
-- Stopping a session drains its work and keeps its database.
+- Stopping a session drains its work and keeps its database. It does not abort the operation, so a later open can resume it.
 - Shutting down the daemon drains every session.
 
-The web home page marks a running session `idle`, `working` or `needs you`, and a session on disk without a runtime `saved`. The terminal shows a session whose creation never finished as `reserved`, and only retrying the creation completes it.
+The web home page marks a running session `idle`, `working` or `needs you` (or `running`, when it has not reported what it is doing), and a session on disk without a runtime `saved`. The terminal shows a session whose creation never finished as `reserved`, and only retrying the creation completes it.
+
+The daemon holds 8 sessions at once by default, and `--capacity` changes that. A session that is opening, stopping or blocked in cleanup still counts.
+
+A session's workspace is normally a directory on the daemon's machine. It can instead be a checkout on another machine, which the [distributed runtime page](#/docs/distributed-runtime) covers.
 
 ## Two commits around every tool call
 
@@ -59,7 +63,11 @@ A hard kill runs no cleanup, so the next daemon finds state that an orderly shut
 
 ## Sharing a session
 
-The owner can invite people to a session as operators, who can direct the work and answer approvals, or as observers, who can follow without changing anything. Prompts and steering carry their author's identity, and presence shows who is attached. The [terminal and web page](#/docs/terminal-and-web) covers the commands.
+The owner can invite people to a session as operators, who can direct the work and answer approvals, or as observers, who can follow without changing anything. An invitation covers one session, not every session the daemon hosts. Prompts and steering carry their author's identity, and presence shows who is attached. The [terminal and web page](#/docs/terminal-and-web) covers the commands.
+
+Only a shareable session can be shared. A session is private by default: it shares the workspace's notes, memory and history with your other sessions in that workspace, and an invitee would see that layer. A shareable session keeps its own. Tick **Shareable** when you create a session on the web, or stop an existing session and run `loomd access isolate SESSION_ID --share-existing-transcript`. That keeps the transcript the session already has, which may include things recalled from your private notes, so anyone you invite later sees it.
+
+To let someone watch one session without an invitation, `loom ui --session SESSION_ID` prints a read-only link. It works once, within 60 seconds, and the page it opens lasts up to 8 hours.
 
 ## Compaction and memory
 
@@ -70,3 +78,4 @@ A compaction is itself an entry: a self-contained checkpoint that carries the re
 - [`docs/architecture/durability.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/durability.md): the three stores, transactions and the lease.
 - [`docs/architecture/orchestration.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/orchestration.md): the state machine, the effect sandwich and recovery.
 - [`docs/architecture/sessions.md`](https://github.com/Roasbeef/loom/blob/main/docs/architecture/sessions.md): the daemon, the catalogue and opening a session.
+- [`docs/guide/multiplayer.md`](https://github.com/Roasbeef/loom/blob/main/docs/guide/multiplayer.md): sharing a session, step by step.

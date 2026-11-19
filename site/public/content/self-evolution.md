@@ -2,7 +2,7 @@
 
 Loom lets an agent write new extensions, code-mode programs and prompt profiles for itself, and lets an operator test, approve and select them while the session keeps running. A selected extension or program is callable in that session at once. A selected prompt profile applies to sessions started afterwards. The agent proposes. The operator decides. The authored code runs in kernel-jailed satellites and never enters the harness VM.
 
-This page describes governed evolution as it is on the `main` branch. It follows [the architecture page](https://github.com/Roasbeef/loom/blob/main/docs/architecture/evolution.md) and [the live-upgrade page](https://github.com/Roasbeef/loom/blob/main/docs/architecture/live-upgrades.md). Today it works for a session on a local workspace with code mode available. A session on an executor or in a pool cannot use it yet, and [the last section](#/docs/self-evolution/what-is-not-done-yet) says why.
+This page describes governed evolution as it is on the `main` branch. It follows [the architecture page](https://github.com/Roasbeef/loom/blob/main/docs/architecture/evolution.md) and [the live-upgrade page](https://github.com/Roasbeef/loom/blob/main/docs/architecture/live-upgrades.md). All of it works for a session on a local workspace with code mode available. A session whose workspace is on an executor that can compile candidates gets extensions, programs and author tests, with the catalogue and every approval kept on the orchestrator. [The last section](#/docs/self-evolution/what-is-not-done-yet) lists what a remote session still lacks.
 
 ## What the agent can author
 
@@ -36,9 +36,12 @@ The conversation is never restarted. The session, its history and its other tool
 
 ## What the operator does
 
-The same controls exist as `loom evolution` and `loomd evolution`. The session has to be resident, and the command authenticates with the daemon's private owner credential, so nothing in the JSON can name a role or a principal.
+An operator has three surfaces that draw the same board and send the same actions: the command line, the web view's Evolution tab, and the terminal's `/evolution` overlay. In the two UIs each change is asked first and sent only on a second press. The command line is the only one that can start a core upgrade or downgrade.
+
+The command-line controls exist as `loom evolution` and `loomd evolution`. The session has to be resident, and the command authenticates with the daemon's private owner credential, so nothing in the JSON can name a role or a principal.
 
 ```sh
+loom evolution board SESSION
 loom evolution catalogue SESSION
 loom evolution inspect SESSION --candidate-id SHA256
 loom evolution evidence SESSION --evidence-id SHA256
@@ -47,7 +50,7 @@ loom evolution select SESSION --args selection.json
 loom evolution status SESSION --request-id publish-1
 ```
 
-The other actions are `revoke`, `rollback`, `admit_tasks`, `mark_outcome`, `core_status`, `core_upgrade` and `core_downgrade`. Put `--state-dir PATH` before the action when the daemon keeps its state somewhere other than the default.
+`board` answers the whole panel in one read of at most 48 KiB: the candidates the caller may see, their approvals, evidence and selections, the transition in progress and the newest 64 decisions. When it has to cut, it drops the oldest decisions first and reports the counts in `omitted`. The other actions are `revoke`, `rollback`, `admit_tasks`, `mark_outcome`, `core_status`, `core_upgrade` and `core_downgrade`. Put `--state-dir PATH` before the action when the daemon keeps its state somewhere other than the default.
 
 An approval names the two IDs that the operator looked at:
 
@@ -70,7 +73,7 @@ A selection names them again, with the generation it expects to replace. Generat
 
 Each command prints one JSON value. Exit status `0` means the daemon acknowledged the request. A `queued` response only means that the work was accepted, so poll `status` with the same `request_id`. Status `2` means invalid input, `3` means the request was refused or never sent, and `4` means the outcome is unknown and you should look the receipt up before retrying. Retrying with the same `request_id` and the same arguments finds the same request. Reusing an ID for different arguments is refused. `--args` takes a JSON object of at most 48 KiB, and the deadline is at most 120 seconds.
 
-A session operator can change their own session. Selecting a workspace program or an exact model profile needs owner authority. An observer can inspect the catalogue and read status but cannot change anything.
+A session operator can change their own session. Selecting a workspace program or an exact model profile needs owner authority. An observer can read the board, the catalogue and status but cannot change anything. Each approval, revocation and selection records the surface it came from (`cli`, `web` or `terminal`) in its audit entry.
 
 ## The safety model
 
@@ -116,18 +119,20 @@ The two paths keep separate authorities. An extension approval never allows code
 
 A prompt profile is judged by running it. The operator admits a task set with `admit_tasks`: up to ten tasks, each with a prompt, a map of starting files and a map of the exact files expected at the end. The model can name an admitted task set in `compare`, but it cannot write its own scorer.
 
-Every trial opens a fresh session and workspace with the ordinary jailed tools and one resolved model, once with the baseline profile and once with the candidate. Files are compared after the trial's processes have retired. The comparison records usage, turns, tool executions and the profile and composed-request digests. Before every request, a guard reserves its worst-case tokens and cost, including requests that fail, so an attempt with no usage report is never refunded. If anything is incomplete, the result is recorded as inconclusive. A comparison runs at most 20 trials, 20 turns, one million tokens and two dollars unless the caller lowers them.
+Every trial opens a fresh session and workspace with the ordinary jailed tools and one resolved model, once with the baseline profile and once with the candidate. A comparison can run each task more than once per arm: one sample by default, and at most three through the model's `compare`. Files are compared after the trial's processes have retired. The comparison records usage, turns, tool executions and the profile and composed-request digests. Before every request, a guard reserves its worst-case tokens and cost, including requests that fail, so an attempt with no usage report is never refunded. If anything is incomplete, the result is recorded as inconclusive. A comparison runs at most 20 trials, 100 turns, 480 seconds, one million tokens and two dollars unless the caller lowers them.
+
+The verdict is a paired statistical rule over the tasks, not a count of passes. Only a demonstrated improvement is `Passed`. A demonstrated harm and a tie the plan had the power to detect are both `Failed`. A comparison too small to have seen a ten-point effect, or one missing a planned trial, is `Inconclusive`. Twenty trials hold at most ten task and sample pairs per arm, so most comparisons through `compare` end `Inconclusive`. That is the rule declining to claim what the plan cannot show, not a fault in the comparison.
 
 An operator can also mark a settled assistant message in a session with `mark_outcome`. `trace` joins bounded excerpts of the conversation with the model identity, usage and these marks, and a message without a mark stays `unmarked`. Thinking blocks, signatures and images are left out.
 
 ## Configuration
 
-Evolution has no `loom.toml` keys. The operator-facing limits are in the commands: the 48 KiB argument size, the 120 second deadline and the trial ceilings above. The catalogue holds at most 128 candidates, at most 1 MiB each. An extension's `[live]` table lives in its own manifest, not in `loom.toml`.
+Evolution has no `loom.toml` keys. There is one switch: listing the reserved name `evolution` in the daemon's `LOOM_DISABLE_TOOLS` environment variable withholds `cap/evolution` from the whole session. The operator-facing limits are in the commands: the 48 KiB argument size, the 120 second deadline and the trial ceilings above. The catalogue holds at most 128 candidates, at most 1 MiB each. An extension's `[live]` table lives in its own manifest, not in `loom.toml`.
 
 ## What is not done yet
 
-- **Remote placements.** Evolution is wired only for a session on a local workspace where code mode is available, which means a Gleam and Erlang toolchain was found. A session on an executor or in a pool is not offered `cap/evolution`, and has no catalogue and no upgrade controller, and nothing on `main` serves it there.
-- **Search.** There is no multiple-candidate search or automatic optimisation of profiles, and no inference of a profile for a family of models.
+- **Remote placements.** For a session whose workspace is on an executor, the executor snapshots, compiles, tests and runs candidates, and the orchestrator keeps the catalogue, the evidence and the approvals. That covers extensions, programs and author tests. Prompt-profile trials and the scratch component upgrade are not built for a remote session: the upgrade controller exists only beside a local workspace. An executor that cannot compile gives its sessions evolution calls that refuse with its reason. An untrusted executor, which includes every microVM guest, does not carry evolution at all. The remote acceptance test covers a fixed executor with an extension, a program and an executor restart. It does not cover a pool or a link cut during staging. A session that serves a session-scoped selection whose approval still stands cannot be moved to another orchestrator, because the catalogue does not move with it.
+- **Search.** Governed evolution has no multiple-candidate search or automatic optimisation of profiles, and no inference of a profile for a family of models. The repository has a reflective prompt search in its developer evaluation instrument, but that instrument never ships in a release and never promotes anything. A profile it favours still has to pass `compare` and an operator's approval.
 - **Resident authored modules and downloads.** Authored code is not loaded into the harness, and a candidate cannot download dependencies.
 - **Automatic state migration.** An extension keeps its state across an upgrade only if its author wrote the migration and opted in.
 - **Model quality.** The acceptance tests use a scripted provider. They show that the loop works end to end. They do not show that a profile improves a commercial model. That takes real trials.

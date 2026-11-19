@@ -16,7 +16,7 @@ With no file at all, Loom builds a one-entry catalogue from environment variable
 
 **The reader is strict.** An unknown key, an unknown table, a value of the wrong type, or a model name that no entry defines is an error. The error names the file, the table and the key, and the daemon or session does not start. A typo is an error and not a setting that quietly does nothing.
 
-**There is no live reload.** A session reads the file when it is created, opened or resumed, and keeps what it read. To apply an edit, stop the session and open it again. Seven tables are read once when the daemon starts, so they need a daemon restart: `[daemon]`, `[peers]`, `[distribution]`, `[executors.<name>]`, `[pools.<name>]`, `[workspaces.<name>]` and `[orchestrators.<name>]`.
+**A session reloads by reopening.** A session reads the file when it is created, opened or resumed, and keeps what it read while it runs. A daemon session also watches the file it loaded. Once an edit has settled and the new text loads, the session reopens as soon as no strand is running. The reopen closes the session's attachments (the terminal reattaches, a web page needs a reload) and ends its background jobs. A save that does not load is logged as `config.refused` and changes nothing. Eight tables are read once when the daemon starts, so they need a daemon restart: `[daemon]`, `[peers]`, `[distribution]`, `[executors.<name>]`, `[pools.<name>]`, `[workspaces.<name>]`, `[orchestrators.<name>]` and `[spawners.<name>]`.
 
 **Secrets stay out of the file.** A model entry names an environment variable with `api_key_env`, and the daemon reads that variable when it dispatches a request. A missing key does not stop the daemon. The request fails with an error that the model and the terminal can read.
 
@@ -45,12 +45,13 @@ thinking = "unsupported"
 | Key | Meaning |
 |---|---|
 | `dialect` | The wire adapter: `anthropic`, `openai` (any OpenAI-compatible Chat Completions endpoint), `gemini`, `openai-responses`, or `codex-subscription`. |
+| `auth` | The authentication mode. Required for two dialects: `api-key` for `openai-responses` and `codex` for `codex-subscription`. The other dialects refuse it. |
 | `base_url` | The endpoint root. Each dialect has a default, except `codex-subscription`, which forbids it. |
 | `api_key_env` | The variable that holds the API key. Required for API-key dialects. |
 | `model_id` | The identifier the provider expects, verbatim. |
 | `context_window` | Tokens of context the model accepts. Overflow detection uses it, so use the provider's figure. |
 | `max_output_tokens` | The default per-turn output ceiling. |
-| `thinking` | `off`, `low`, `medium`, `high` or `unsupported`. The default is `off`. |
+| `thinking` | `off`, `low`, `medium`, `high`, `xhigh`, `max` or `unsupported`. The default is `off`. |
 
 An optional `[models.<name>.pricing]` table turns the usage ledger's cost columns from zeros into amounts. Every rate is US dollars per million tokens.
 
@@ -67,7 +68,7 @@ subagent = ["baseten-oss"]
 summarize = ["anthropic-opus"]
 ```
 
-A later name is used only when an attempt on the earlier one fails with a retryable error, such as a rate limit or a transport failure. It is never used after a settled response. Only `main` is required. A subagent with no route inherits its parent's model. The `advisor` role enables [advisor mode](https://github.com/Roasbeef/loom/blob/main/docs/architecture/advisor.md): with no route there is no advisor.
+A later name is used only when an attempt on the earlier one fails with a retryable error, such as a rate limit or a transport failure. It is never used after a settled response. Only `main` is required. A subagent with no route inherits its parent's model. The `vision` role serves image-bearing requests when a strand's model is text-only. The `advisor` role enables [advisor mode](https://github.com/Roasbeef/loom/blob/main/docs/architecture/advisor.md): with no route there is no advisor.
 
 ## Profiles
 
@@ -91,7 +92,7 @@ These tables decide what a session may reach. The defaults suit development on y
 | `[workspace]` | `read_scope = "host"` (the default) lets jails read installed tools and host files except protected paths. `"workspace"` allows only the workspace, the system runtime and explicit mounts. |
 | `[secrets]` | Host commands that supply a named credential that your shell has not exported, such as `gh auth token`. The command runs on the host, outside every jail. |
 | `[daemon]` | `ui = true` serves the [web view](#/docs/terminal-and-web). Connection limits live here too. |
-| `[mcp.<name>]` | A stdio MCP server, which becomes a typed module in [code mode](#/docs/code-mode). Adding one is a trust decision. |
+| `[mcp.<name>]` | An MCP server, either a local stdio `command` or a remote streamable-HTTP `url`, which becomes a typed module in [code mode](#/docs/code-mode). Adding one is a trust decision. |
 | `[lsp.<name>]` | A language server that runs in the jail. |
 
 For lockdown, the command-line flags `--read-scope workspace` and `--network off` override the file.
