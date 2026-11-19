@@ -177,6 +177,13 @@ pub type Action {
 /// the raise that opened it, one more for each re-opening — and is what
 /// `claimed` bounds a re-asking loop against. It decodes as `0` on a
 /// record written before it existed.
+///
+/// `raised_at` is the Unix-millisecond time the current question was put to a
+/// person (protocol-change/124): the raise that opened the row, or the raise
+/// that re-opened it after a decision. A claim that moves a still-pending
+/// record keeps it, because the question has not changed. It is `None` on a
+/// record written before the field existed, and a reader that wants an age
+/// then has none to print.
 pub type Escalation {
   Escalation(
     id: String,
@@ -190,6 +197,7 @@ pub type Escalation {
     asked: Int,
     /// Historical author of the winning decision, cleared when reopened.
     origin: Option(Origin),
+    raised_at: Option(Int),
   )
 }
 
@@ -229,6 +237,7 @@ pub fn encode(escalation: Escalation) -> JsonValue {
     #("preview", encode_optional_string(escalation.preview)),
     #("asked", json.Int(escalation.asked)),
     #("origin", origin.encode(escalation.origin)),
+    #("raised_at", encode_optional_int(escalation.raised_at)),
   ])
 }
 
@@ -236,6 +245,13 @@ fn encode_optional_string(value: Option(String)) -> JsonValue {
   case value {
     None -> json.Null
     Some(text) -> json.String(text)
+  }
+}
+
+fn encode_optional_int(value: Option(Int)) -> JsonValue {
+  case value {
+    None -> json.Null
+    Some(number) -> json.Int(number)
   }
 }
 
@@ -293,6 +309,7 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
       use preview <- result.try(optional_string(fields, "preview", where))
       use asked <- result.try(optional_int(fields, "asked", where))
       use origin <- result.try(origin.decode_field(fields))
+      use raised_at <- result.try(optional_time(fields, "raised_at", where))
       Ok(Escalation(
         id:,
         denial:,
@@ -304,6 +321,7 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
         preview:,
         asked:,
         origin:,
+        raised_at:,
       ))
     }
     other ->
@@ -392,6 +410,26 @@ fn optional_int(
   case list.key_find(fields, key) {
     Error(Nil) | Ok(json.Null) -> Ok(0)
     Ok(json.Int(number)) -> Ok(number)
+    Ok(other) ->
+      Error(corruption.report(
+        at: where,
+        on: key,
+        expected: "null or an integer",
+        context: json.to_string(other),
+      ))
+  }
+}
+
+/// Decodes an optional time field: absent or null is "not recorded", which is
+/// what every record written before protocol-change/124 says.
+fn optional_time(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  where: String,
+) -> Result(Option(Int), CorruptionReport) {
+  case list.key_find(fields, key) {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(json.Int(number)) -> Ok(Some(number))
     Ok(other) ->
       Error(corruption.report(
         at: where,
@@ -545,7 +583,7 @@ pub fn consume(record: Escalation) -> Escalation {
 /// ## Examples
 ///
 /// ```gleam
-/// // escalation.raised("esc-1", denial_json, action: None, scope: Some(s))
+/// // escalation.raised("esc-1", denial_json, action: None, scope: Some(s), at: 1)
 /// ```
 ///
 pub fn raised(
@@ -553,6 +591,7 @@ pub fn raised(
   denial: JsonValue,
   action action: Option(Action),
   scope scope: Option(CallScope),
+  at at: Int,
 ) -> Escalation {
   // Extracts optional action components into tool, digest, and preview.
   let #(tool, digest, preview) = case action {
@@ -575,6 +614,7 @@ pub fn raised(
     preview:,
     asked: 1,
     origin: None,
+    raised_at: Some(at),
   )
 }
 
@@ -629,7 +669,7 @@ pub type Claim {
 /// ## Examples
 ///
 /// ```gleam
-/// // escalation.claimed(record, denial, action, scope, max_asks: 3)
+/// // escalation.claimed(record, denial, action, scope, max_asks: 3, at: 1)
 /// ```
 ///
 pub fn claimed(
@@ -638,6 +678,7 @@ pub fn claimed(
   action: Action,
   scope: CallScope,
   max_asks max_asks: Int,
+  at at: Int,
 ) -> Claim {
   case record.status {
     Pending ->
@@ -654,9 +695,9 @@ pub fn claimed(
     Approved ->
       case bound_to(record, action.digest) {
         True -> Claimed(Escalation(..record, scope: Some(scope)))
-        False -> reopened(record, denial, action, scope, max_asks)
+        False -> reopened(record, denial, action, scope, max_asks, at)
       }
-    Rejected -> reopened(record, denial, action, scope, max_asks)
+    Rejected -> reopened(record, denial, action, scope, max_asks, at)
 
     // A spent approval ends the cycle with a person's yes that ran once, so
     // the next raise opens a fresh question and its count starts again. The
@@ -670,6 +711,7 @@ pub fn claimed(
         denial,
         action: Some(action),
         scope: Some(scope),
+        at:,
       ))
   }
 }
@@ -683,13 +725,20 @@ fn reopened(
   action: Action,
   scope: CallScope,
   max_asks: Int,
+  at: Int,
 ) -> Claim {
   case record.asked >= max_asks {
     True -> Exhausted(record)
     False ->
       Claimed(
         Escalation(
-          ..raised(record.id, denial, action: Some(action), scope: Some(scope)),
+          ..raised(
+            record.id,
+            denial,
+            action: Some(action),
+            scope: Some(scope),
+            at:,
+          ),
           asked: record.asked + 1,
         ),
       )

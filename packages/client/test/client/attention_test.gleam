@@ -577,6 +577,7 @@ fn escalation_with(status: durable.Status) -> durable.Escalation {
     preview: None,
     asked: 1,
     origin: None,
+    raised_at: None,
   )
 }
 

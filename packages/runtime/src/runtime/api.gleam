@@ -3303,10 +3303,11 @@ pub fn raise_escalation_for(
   denial: JsonValue,
   scope scope: escalation.CallScope,
 ) -> Result(Nil, ApiError) {
+  let #(now, _) = mint_context(runtime)
   commit_raised(
     runtime,
     id,
-    escalation.raised(id, denial, action: None, scope: Some(scope)),
+    escalation.raised(id, denial, action: None, scope: Some(scope), at: now),
   )
 }
 
@@ -3375,6 +3376,10 @@ pub fn claim_escalation(
     use <- attempt
     use found <- result.try(read_escalation_cell(runtime, id))
 
+    // The time is read on each attempt, so a retried claim stamps its own
+    // commit and not the first try's.
+    let #(now, _) = mint_context(runtime)
+
     // Computes expected sequence and claim update based on existing record.
     let #(expected, claim) = case found {
       None -> #(
@@ -3384,11 +3389,12 @@ pub fn claim_escalation(
           denial,
           action: Some(action),
           scope: Some(scope),
+          at: now,
         )),
       )
       Some(#(seq, record)) -> #(
         Some(seq),
-        escalation.claimed(record, denial, action, scope, max_asks:),
+        escalation.claimed(record, denial, action, scope, max_asks:, at: now),
       )
     }
 
@@ -3463,10 +3469,11 @@ pub fn raise_escalation(
   id: String,
   denial: JsonValue,
 ) -> Result(Nil, ApiError) {
+  let #(now, _) = mint_context(runtime)
   commit_raised(
     runtime,
     id,
-    escalation.raised(id, denial, action: None, scope: None),
+    escalation.raised(id, denial, action: None, scope: None, at: now),
   )
 }
 

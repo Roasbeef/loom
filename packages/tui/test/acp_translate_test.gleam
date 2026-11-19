@@ -282,7 +282,7 @@ fn review(grants: List(json.JsonValue)) -> approval.Review {
     None,
     approval.Exact("digest", grants),
     strand: Some("main"),
-    remote: None,
+    remote: None, None,
   )
 }
 
