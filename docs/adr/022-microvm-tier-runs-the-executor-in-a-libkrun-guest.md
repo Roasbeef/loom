@@ -402,3 +402,33 @@ directly, and `ensure` no longer ends with status 75 and `daemon=required`.
 it once no old guest can exist. Design note `microvm-untrusted-link.md`,
 section 8, slice 5, records the two parts. This supersedes nothing else in
 this ADR or its addenda.
+
+## Addendum, 2026-11-19: `--workspace-mode` for seeded children
+
+A seeded spawn (`seed = "workspace"`, protocol-change/107) on an executor or a
+pool needs the executor's workspace in `mode = "worktree"`, because the child's
+checkout is a worktree of its own. A guest's workspace was written with `root`
+and no `mode`, which `workspaces.mode_of` reads as `shared`, so
+`remote/workspace.state_fitness` refused every seeded child placed on a guest.
+The owner chose, on issue #85, the opt-in of three options considered: leave it
+out of scope, an opt-in flag, or worktree by default.
+
+`loom vm up` and `loom vm ensure` take `--workspace-mode shared|worktree`.
+`shared` is the default and is what every guest had, and `worktree` makes the
+guest's `[workspaces.NAME]` rows carry `mode = "worktree"` and `base = "HEAD"`.
+`HEAD` is the executor's own default written out; it is right on a guest
+because the workspace copy is a primary checkout with a `.git` directory of its
+own. The choice is recorded in `<vm home>/<name>/workspace-mode`, beside the
+`github` record and kept the same way: a flag replaces it, a resume with no
+flag keeps it, and `--fresh` returns to `shared`. A guest with no record is
+`shared`, and the configuration it is staged with is unchanged by one byte. A
+serving guest ignores the flag and `ensure` says so, as it does for `--github`.
+
+This is a new option of an operator command and no frozen Part 1 interface
+moves, so it needs no protocol-change. It changes nothing for a guest whose
+operator does not give it. The cost for one who does is what a worktree
+workspace is: each session on the guest works in its own worktree under the
+executor's state directory and not in the guest's checkout, so the checkout at
+`/srv/workspaces/NAME` does not show the session's files. `loom --vm`
+does not take the flag; a guest for seeded children is made with `loom vm up`
+or `loom vm ensure`.

@@ -693,8 +693,8 @@ and a failed setup changes nothing (`vm_spec.manifest_action`). It records
 `--github` beside `--allow` in `<vm home>/<name>/github`; a resume with no flag
 keeps the recorded value, an explicit flag replaces it and `--fresh` returns to
 `gh` (`vm_spec.effective_github`). `loomd vm ensure` takes `--workspace`,
-`--github`, `--allow` and `--config`; the name, size, `--fresh` and `--provision`
-are `up`'s alone.
+`--github`, `--allow`, `--workspace-mode` and `--config`; the name, size,
+`--fresh` and `--provision` are `up`'s alone.
 
 Tests: `vm_one_flag_test` (names, the table of `ensure_step`, the github record),
 `vm_lifecycle_model_test` (a `statem` model of two guests, one of which can
@@ -1259,6 +1259,19 @@ ignores it. `--github` is recorded the same way in `<vm home>/<name>/github`
 `status` prints it. A guest first started with `--github off` therefore resumes
 with no credential proxy, where before the missing flag meant the default `gh`.
 A guest with no record takes `gh`.
+
+`--workspace-mode shared|worktree` is recorded the same way in
+`<vm home>/<name>/workspace-mode` (`vm_spec.encode_workspace_mode`,
+`decode_workspace_mode`, `effective_workspace_mode`) and `status` prints it as
+`ws mode:`. `shared`, the default, leaves the `[workspaces.NAME]` rows of the
+guest's `loom.toml` as `root` alone. `worktree` adds `mode = "worktree"` and
+`base = "HEAD"` to each row (`vm_spec.guest_config_with`), which a seeded child
+(`seed = "workspace"`) placed on the guest needs: without it
+`remote/workspace.state_fitness` refuses the child because a shared workspace has
+no tree of its own for it. Each session on such a guest works in its own
+worktree under the executor's state directory, not in the checkout. A guest
+with no record is `shared`. ADR-022's addendum of 2026-11-19 records the
+decision.
 
 `--provision SCRIPT` takes a host path to a script the developer wrote. Only
 this flag can supply one: the workspace is untrusted input and is never
