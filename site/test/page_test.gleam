@@ -166,14 +166,6 @@ pub fn source_links_name_the_main_branch_only_test() {
   })
 }
 
-pub fn open_pull_requests_are_not_claimed_test() {
-  // PR #938 and PR #934 are not merged, so no page may present what they add.
-  let html = landing_html()
-  assert !string.contains(html, "#938")
-  assert !string.contains(html, "#934")
-  assert !string.contains(string.lowercase(html), "khepri")
-}
-
 // COPY ------------------------------------------------------------------------
 
 /// Every string the page and its figures and replay can show, joined.

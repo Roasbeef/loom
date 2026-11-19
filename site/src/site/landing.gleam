@@ -65,7 +65,7 @@ pub fn view(model: Model) -> Element(Msg) {
         "evolution",
         "Self-evolution",
         "The agent can write its own tools",
-        "An agent can author an extension, a code-mode program or a prompt profile for its own model. You approve one exact version, so the model can't approve its own work. Authored code is tested and run in a jail, and a running session switches to it without restarting. Local workspaces only for now.",
+        "An agent can author an extension, a code-mode program or a prompt profile for its own model. You approve one exact version, so the model can't approve its own work. Authored code is tested and run in a jail, and a running session switches to it without restarting.",
         "How governed self-evolution works",
         route.doc("self-evolution"),
         msg.Evolution,
@@ -300,6 +300,14 @@ fn more() -> Element(Msg) {
               <> ").",
           ),
           #(
+            "Project mode",
+            "One long-lived router session turns posts and GitHub comments into work, and runs each piece in its own session. Opt-in.",
+          ),
+          #(
+            "Headless and ACP",
+            "`loom run -p` runs one prompt and prints one JSON line. `loom acp` speaks the Agent Client Protocol, for Zed and other front ends.",
+          ),
+          #(
             "Subagents",
             "Run in parallel on their own conversation branch and report back to the parent.",
           ),
@@ -317,7 +325,11 @@ fn more() -> Element(Msg) {
           ),
           #(
             "MCP and extensions",
-            "MCP servers show up as typed modules in code mode. Extensions are Gleam programs that run sandboxed with declared capabilities.",
+            "MCP servers, over stdio or HTTP, show up as typed modules in code mode. Extensions are Gleam programs that run sandboxed with declared capabilities.",
+          ),
+          #(
+            "Skills and hooks",
+            "Loads `AGENTS.md`, `CLAUDE.md` and Markdown `SKILL.md` libraries. Runs your existing Claude hooks, jailed.",
           ),
           #(
             "Memory and automation",

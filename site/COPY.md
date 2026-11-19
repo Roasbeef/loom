@@ -43,6 +43,6 @@ Two alternatives were tried and set aside. "A coding agent harness written in Gl
 ## Other copy decisions
 
 - The primary action is **Download**, linked to the latest release, with the version label from `src/site/release.gleam`. The secondary action is **Build from source**. A third, quiet link goes to the repository.
-- The status line under the actions says that Loom is under active development and names the platforms the release workflow builds. It does not say that a release exists for a platform, because the macOS lane has not completed its first hosted comparison. The platform table on the install page says so, and the status line links to it.
+- The status line under the actions says that Loom is under active development and names the two platforms a release is published for. It links to the platform table on the install page, which says what is not built and not supported.
 - The footer names the MIT License, as the repository's `LICENSE` does.
-- The site does not claim remote code mode for background executions, MCP on executors, or a replicated session directory. The limits list on the distributed runtime page is the one in `docs/architecture/distributed.md`.
+- What a remote session can and can't do changes often. The landing page links to the limits list on the distributed runtime page and doesn't repeat it, so there is one list to keep in step with `docs/architecture/distributed.md`.
