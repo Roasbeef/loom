@@ -429,6 +429,11 @@ moves, so it needs no protocol-change. It changes nothing for a guest whose
 operator does not give it. The cost for one who does is what a worktree
 workspace is: each session on the guest works in its own worktree under the
 executor's state directory and not in the guest's checkout, so the checkout at
-`/srv/workspaces/NAME` does not show the session's files. `loom --vm`
-does not take the flag; a guest for seeded children is made with `loom vm up`
+`/srv/workspaces/NAME` does not show the session's files, and a worktree session
+starts from `HEAD` and does not see the operator's uncommitted edits. `up` refuses
+`worktree` before writing anything when a workspace is not a Git checkout with a
+commit or has a name a worktree directory cannot take. Switching the mode of a
+resumed guest moves a reopened session between the checkout and a tree, because
+the ledger matches a workspace by name only, so commit or `vm sync` first. `loom
+--vm` does not take the flag; a guest for seeded children is made with `loom vm up`
 or `loom vm ensure`.

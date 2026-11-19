@@ -796,7 +796,9 @@ firmware directories and the exported guest root. It then:
    worktree's branch (the ref is updated to the worktree's commit) or its
    detached commit, `origin` is set to the worktree's own `origin` URL (or
    removed when it has none, since the clone's `origin` is the host path), and
-   `git reset` makes the index match `HEAD`, so uncommitted edits show as edits.
+   `git reset` makes the index match `HEAD`, so uncommitted edits show as edits
+   in the checkout. Only a `shared` guest's sessions work in that checkout; a
+   `worktree` guest's sessions start from `HEAD` and do not see them.
    The remote-tracking refs are the source repository's local branches, not
    fetched state. A failed `cp`, `chmod`, Git step or config scrub removes the
    copy, because a later `up` keeps a copy that exists; a Git failure refuses
@@ -1273,6 +1275,20 @@ worktree under the executor's state directory, not in the checkout. A guest
 with no record is `shared`. ADR-022's addendum of 2026-11-19 records the
 decision.
 
+What the mode does to uncommitted work. The copy of the operator's directory,
+uncommitted edits included, is made the same way in both modes, and only a
+`shared` session works in it. A `worktree` session starts from `HEAD` in a tree
+of its own and does not see those edits, so commit before using a worktree
+guest. Switching a resumed guest from `shared` to `worktree` leaves out of every
+new tree the edits earlier sessions made in the checkout, and switching back
+moves a reopened session from its tree to the checkout, because the ledger
+matches a session's workspace by name only (`storage/exec_ledger.gleam`). Commit,
+or run `loom vm sync`, before switching. `up` refuses `worktree` before it writes
+anything when a registered workspace is not the top of a Git checkout, when its
+repository has no commit, or when its name is one the executor's worktree
+directory cannot take (`vm_spec.worktree_refusal`), because the executor would
+otherwise fail to start after the guest was written and booted.
+
 `--provision SCRIPT` takes a host path to a script the developer wrote. Only
 this flag can supply one: the workspace is untrusted input and is never
 searched for a script. `up` copies it to `/etc/loom-vm/provision` in the guest
@@ -1404,7 +1420,12 @@ only for an empty one. With `--yes`:
   `simplifile.delete_all`, which removes a link itself and does not follow it.
 
 Deleting a guest loses work that was not pushed, so a person who wants it first
-runs `loom vm sync`; uncommitted edits cannot be fetched and are lost.
+runs `loom vm sync`; uncommitted edits cannot be fetched and are lost. A
+`worktree` guest's sessions keep their uncommitted files in trees under the
+executor's state directory on `state.img`, not under `root/srv/workspaces/`, so
+copying files out of that directory does not reach them. Only committed work
+reaches the host: `sync` fetches the `loom/<session>` branches the sessions
+committed on.
 
 `loom vm sync [--name NAME] [--workspace NAME] [--checkout PATH]` fetches a copy's
 committed work, `loom/*` worktree branches included, into the developer's
@@ -1491,6 +1512,12 @@ the host are not in it.
 
 ## Known gaps
 
+- A `worktree` guest (`--workspace-mode worktree`) has not been run in a live
+  guest: no executor has been booted in that mode, no session attached and no
+  seeded child placed. Uncommitted files of its sessions are on `state.img` and
+  are not reachable from the host except through committed branches and `sync`.
+  A broken `git worktree add` in the guest would show only at a session's first
+  attach.
 - Nothing in the daemon places an executor into a guest. `loom --vm` (through
   `loom vm ensure`) starts one standing guest for the workspace from the
   command line; a broker or pool driver, a guest per session, and the bundle

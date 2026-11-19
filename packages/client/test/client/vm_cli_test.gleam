@@ -21,6 +21,7 @@ import client/membership_signing
 import client/vm_cli
 import client/vm_link
 import client/vm_spec.{Launch, Manifest, PidRecord}
+import client/workspaces
 import core/json
 import gleam/bit_array
 import gleam/list
@@ -2298,4 +2299,89 @@ pub fn a_worktree_guest_config_names_the_mode_and_base_test() {
   assert tom.get_string(document, ["workspaces", "b", "mode"]) == Ok("worktree")
   assert tom.get_string(document, ["workspaces", "b", "root"])
     == Ok("/srv/workspaces/b")
+}
+
+pub fn the_daemon_reads_the_guest_config_in_both_modes_test() {
+  // The executor's own parser, not a TOML read of the text, says what the
+  // guest serves.
+  let assert Ok([worktree]) =
+    workspaces.parse(guest_config_in(["a"], vm_spec.GuestWorktree))
+  assert worktree.mode == workspaces.Worktree(base: "HEAD")
+  assert worktree.root == "/srv/workspaces/a"
+
+  let assert Ok([shared]) =
+    workspaces.parse(guest_config_in(["a"], vm_spec.GuestShared))
+  assert shared.mode == workspaces.Shared
+}
+
+pub fn worktree_refuses_what_the_executor_could_not_serve_test() {
+  assert vm_spec.worktree_refusal("repo", "/src/repo", vm_spec.Present)
+    == Ok(Nil)
+
+  // No `.git`: the refusal names the directory and the way out.
+  let assert Error(no_git) =
+    vm_spec.worktree_refusal("notes", "/src/notes", vm_spec.Absent)
+  assert string.contains(no_git, "/src/notes")
+  assert string.contains(no_git, "no .git")
+  assert string.contains(no_git, "--workspace-mode shared")
+
+  // A name `worktrees.safe_component` refuses, though a shared guest takes it.
+  let assert Error(dotted) =
+    vm_spec.worktree_refusal(".hidden", "/src/.hidden", vm_spec.Present)
+  assert string.contains(dotted, "/src/.hidden")
+  assert string.contains(dotted, "does not start with a dot")
+  assert result.is_error(vm_spec.worktree_refusal(
+    "a b",
+    "/src/a b",
+    vm_spec.Present,
+  ))
+}
+
+pub fn the_workspace_mode_record_is_written_read_and_kept_test() {
+  let #(scratch, root, _) = scratch_root()
+  let file = root <> "/workspace-mode"
+
+  // No record: a resume is shared, and a flag is taken as given.
+  assert vm_cli.resolve_workspace_mode(file, None, vm_spec.Resume)
+    == Ok(vm_spec.GuestShared)
+  assert vm_cli.resolve_workspace_mode(
+      file,
+      Some(vm_spec.GuestWorktree),
+      vm_spec.Resume,
+    )
+    == Ok(vm_spec.GuestWorktree)
+
+  // The record is kept by a resume with no flag, and a fresh `up` forgets it.
+  let assert Ok(Nil) = vm_cli.record_workspace_mode(file, vm_spec.GuestWorktree)
+  assert simplifile.read(file) == Ok("worktree\n")
+  assert vm_cli.resolve_workspace_mode(file, None, vm_spec.Resume)
+    == Ok(vm_spec.GuestWorktree)
+  assert vm_cli.resolve_workspace_mode(file, None, vm_spec.Fresh)
+    == Ok(vm_spec.GuestShared)
+
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
+}
+
+pub fn a_damaged_workspace_mode_record_refuses_a_resume_test() {
+  let #(scratch, root, _) = scratch_root()
+  let file = root <> "/workspace-mode"
+  let assert Ok(Nil) = simplifile.write(file, "tree\n")
+
+  // A resume with no flag names the file and the way out.
+  let assert Error(reason) =
+    vm_cli.resolve_workspace_mode(file, None, vm_spec.Resume)
+  assert string.contains(reason, file)
+  assert string.contains(reason, "--workspace-mode")
+
+  // A flag or `--fresh` replaces it, so neither reads it.
+  assert vm_cli.resolve_workspace_mode(
+      file,
+      Some(vm_spec.GuestShared),
+      vm_spec.Resume,
+    )
+    == Ok(vm_spec.GuestShared)
+  assert vm_cli.resolve_workspace_mode(file, None, vm_spec.Fresh)
+    == Ok(vm_spec.GuestShared)
+
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
 }

@@ -259,7 +259,7 @@ What the daemon needs, read from the code:
 ### The guest side
 
 `vm_spec.guest_config` stops calling `distribution_bundle.config_tables`
-(the function is deleted; `client/vm_spec.gleam:2382` (`guest_config_with`) takes
+(the function is deleted; `client/vm_spec.gleam:2429` (`guest_config_with`) takes
 the link's tables) and writes instead:
 
 ```toml
@@ -328,7 +328,7 @@ the next `reload`.
 `up` and `ensure` write the file first, then send `reload` if a daemon is
 running. When none is, the next `loom` starts one that reads the file. Either
 way no daemon is stopped, which removes `vm_spec.daemon_step` and the stop
-step (`client/vm_spec.gleam:3030` (`daemon_step`)).
+step (`client/vm_spec.gleam:3077` (`daemon_step`)).
 
 A new control command is a change to the client control protocol, so this
 needs **protocol-change/116**.
@@ -336,7 +336,7 @@ needs **protocol-change/116**.
 ### (b) A stable address
 
 The row names `host:port`, and `boot` reserves a fresh loopback port on every
-boot today (`client/vm_cli.gleam:1826` (`reserve_loopback_port`)), which epmd
+boot today (`client/vm_cli.gleam:1946` (`reserve_loopback_port`)), which epmd
 made harmless.
 
 | Option | Daemon restart | Port taken while the guest is down | Cost |
@@ -472,7 +472,7 @@ line numbers below describe the file before that deletion.
 | Module | What goes | Lines, roughly |
 |---|---|---|
 | `client/vm_cli.gleam` | `deployment`, `begin`, `join`, `sealed_authority`, the ledger helpers, `provision`, `seal_authority`, `write_bundles`, `config_of`'s deployment half, `enroll`, `install`, from `deployment` (line 809 before the deletion) to about line 1520; `stage_ledger`; the daemon observation and stop step (`stop_daemon` and its neighbours, about lines 2615 to 2790); `epmd_line`; the revoke and cookie half of `rm` | 1,250 |
-| `client/vm_spec.gleam` | `deployment_plan`, `DeploymentState` and the join decisions (lines 2132 to about 2036 before the deletion); `with_loopback_listener`; `daemon_step` and its types; `registered_port`; `read_enrolment`, the cookie state and `plan_teardown` (`client/vm_spec.gleam:4076` (`plan_teardown`)) | 800 |
+| `client/vm_spec.gleam` | `deployment_plan`, `DeploymentState` and the join decisions (lines 2132 to about 2036 before the deletion); `with_loopback_listener`; `daemon_step` and its types; `registered_port`; `read_enrolment`, the cookie state and `plan_teardown` (`client/vm_spec.gleam:4123` (`plan_teardown`)) | 800 |
 | `test/client/vm_cli_test.gleam` | about 35 of its 155 tests: node names, epmd, loopback listener, deployment state, enrolment, ledger staging, authority sealing, revoke, cookie and teardown | 600 |
 | `test/client/daemon_shipped_microvm_test.gleam` | the ledger and authority assertions, the idle-daemon stop step, the second-guest refusal | 250 |
 

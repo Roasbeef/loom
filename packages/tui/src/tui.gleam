@@ -3775,7 +3775,11 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             choice is written into the guest's loom.toml as mode = worktree
             and base = HEAD, recorded, and kept by a later up with no flag;
             --fresh returns to shared. It changes what `loom --vm` shows: each
-            session works in a worktree, not in the checkout.
+            session works in a worktree, not in the checkout, and starts from
+            HEAD, so commit first. up refuses worktree for a workspace that
+            is not a Git checkout with a commit. Switching the mode of a
+            resumed guest moves a reopened session between the checkout and
+            a tree, so commit or run `loom vm sync` first.
             --allow HOST adds a host to the guest's egress allowlist, on top
             of the GitHub hosts, so a build can reach a package registry. HOST
             is a hostname or *.domain.tld; repeat the flag for more. The list
@@ -3798,7 +3802,8 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             --github, --allow, --workspace-mode and --config mean what they
             mean for up, and a resume keeps the access, hosts and workspace
             mode the guest was started with. A guest that already serves
-            ignores --github, --allow and --workspace-mode, and says so. A guest whose root came from another release, whose executor
+            ignores --github, --allow and --workspace-mode, and says so. A
+            guest whose root came from another release, whose executor
             is still booting, or that an older loom made as a distribution
             peer, is refused with the commands to run.
             Progress goes to standard error. The last line of standard output

@@ -1568,19 +1568,32 @@ fn worktree_mode_is_staged_and_kept(run: Run) -> Nil {
     run.vm_home <> "/" <> run.failing_name <> "/root/srv/loom-node/loom.toml"
   let workspace = "[workspaces." <> remote_pair.workspace_name <> "]"
 
-  // The script still fails, so `up` ends non-zero after it has staged.
+  // Shared first, so that the staged file starts without a worktree mode and a
+  // later `worktree` is a real rewrite. The script still fails, so each `up`
+  // ends non-zero, and its output names the script only if `up` got as far as
+  // the boot, which is after staging.
+  let shared = up_with(["--workspace-mode", "shared"])
+  assert string.contains(shared.output, "LOOM-PROVISION-FAILED")
+    as { "the shared up reached the boot:\n" <> shared.output }
+  assert !string.contains(read_file(staged), "mode = \"worktree\"")
+  assert string.contains(read_file(staged), workspace)
+
   let first = up_with(["--workspace-mode", "worktree"])
-  assert first.status != 0
+  assert string.contains(first.output, "LOOM-PROVISION-FAILED")
+    as { "the worktree up reached the boot:\n" <> first.output }
   assert string.contains(read_file(staged), "mode = \"worktree\"")
     as { "the worktree mode is staged:\n" <> read_file(staged) }
   assert string.contains(read_file(staged), "base = \"HEAD\"")
-  assert string.contains(read_file(staged), workspace)
   let status = vm(run, ["status", "--name", run.failing_name])
   assert string.contains(status.output, "ws mode:    worktree")
     as { "status names the mode:\n" <> status.output }
 
-  // No flag: the recorded mode is kept and staged again.
-  let _second = up_with([])
+  // No flag: the recorded mode is kept. The file was shared two steps ago and
+  // worktree one step ago, so keeping it means this `up` read the record and
+  // staged it again.
+  let second = up_with([])
+  assert string.contains(second.output, "LOOM-PROVISION-FAILED")
+    as { "the bare up reached the boot:\n" <> second.output }
   assert string.contains(read_file(staged), "mode = \"worktree\"")
     as { "a resume keeps the mode:\n" <> read_file(staged) }
 

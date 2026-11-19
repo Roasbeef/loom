@@ -79,6 +79,7 @@ import client/distribution_bundle.{type Bundle}
 import client/distribution_plan
 import client/membership_ledger
 import client/membership_signing
+import client/worktrees
 import core/json as core_json
 import gleam/bit_array
 import gleam/bool
@@ -759,10 +760,56 @@ fn github_access(value: String) -> Result(GitHubAccess, String) {
 
 /// Reads `--workspace-mode`'s value.
 fn workspace_mode_flag(value: String) -> Result(GuestWorkspaceMode, String) {
-  case decode_workspace_mode(value) {
-    Ok(mode) -> Ok(mode)
-    Error(_) ->
-      Error("--workspace-mode must be shared or worktree, got " <> value)
+  decode_workspace_mode(value)
+  |> result.map_error(fn(_) {
+    "--workspace-mode must be shared or worktree, got " <> value
+  })
+}
+
+/// Whether one workspace can be served in `worktree` mode, judged from what
+/// the host can see of its directory. The executor refuses to start when any
+/// registered workspace is not the top of a Git checkout, and a worktree's
+/// directory is named after the workspace, so `up` refuses these before it
+/// writes anything and the guest never fails late on its readiness wait.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.worktree_refusal("repo", "/src/repo", vm_spec.Present)
+///   == Ok(Nil)
+/// assert result.is_error(
+///   vm_spec.worktree_refusal("notes", "/src/notes", vm_spec.Absent),
+/// )
+/// assert result.is_error(
+///   vm_spec.worktree_refusal(".hidden", "/src/.hidden", vm_spec.Present),
+/// )
+/// ```
+pub fn worktree_refusal(
+  name: String,
+  directory: String,
+  git: Presence,
+) -> Result(Nil, String) {
+  let prefix = "--workspace-mode worktree cannot serve " <> directory <> ": "
+
+  // The name is judged first, because a name the worktree directory cannot
+  // take is wrong whether or not the directory is a checkout.
+  case worktrees.safe_component(name), git {
+    False, _ ->
+      Error(
+        prefix
+        <> "a worktree workspace's name is at most 128 bytes of letters, "
+        <> "digits, _, - and ., and does not start with a dot, and "
+        <> name
+        <> " is not. Rename the directory, or use --workspace-mode shared.",
+      )
+    True, Absent ->
+      Error(
+        prefix
+        <> "it has no .git, and a worktree workspace must be the top of a "
+        <> "Git checkout. Run git init and commit, or use --workspace-mode "
+        <> "shared.",
+      )
+    True, Present -> Ok(Nil)
   }
 }
 
