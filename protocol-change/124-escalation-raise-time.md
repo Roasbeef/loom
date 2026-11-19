@@ -64,7 +64,7 @@ The stored key is `raised_at`, an integer or `null`. A record written before
 this change has no key and decodes with `raised_at` absent. A value that is
 neither absent, `null` nor an integer is corruption, as every other typed field
 of the record is. `session_view/approval.Review` gains `raised_at:
-Option(Int)`, decoded the same way (a negative value is refused), and it is
+Option(Int)`, decoded the same way (a negative or mistyped value is no time, and the review survives it), and it is
 `None` for a child's request on another orchestrator, whose record carries none.
 Each `approval.read` item carries `raised_at` when the record has one and omits
 it otherwise.
