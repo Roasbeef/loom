@@ -45,11 +45,6 @@ pub fn view(model: Model) -> Element(Msg) {
       html.h2([], [
         element.text("One session, from a prompt to a move between machines"),
       ]),
-      html.p([], [
-        element.text(
-          "A recording of the terminal client, played from a script, with an example project. It stops at the approval until you answer, and your answer changes what happens next.",
-        ),
-      ]),
     ]),
     html.div(
       [
@@ -64,6 +59,11 @@ pub fn view(model: Model) -> Element(Msg) {
         ]),
       ],
     ),
+    html.p([attribute.class("replay-note")], [
+      element.text(
+        "A recording of the terminal client, played from a script, with an example project. It pauses at the approval for your answer.",
+      ),
+    ]),
   ])
 }
 

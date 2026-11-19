@@ -330,6 +330,17 @@
   outline-offset: 2px;
 }
 
+/* What the recording is, under it. It sits below the terminal so that the
+ * terminal is on the first screen. */
+
+.replay-note {
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--ink-3);
+  margin-top: 1rem;
+  max-width: 44rem;
+}
+
 .replay-controls {
   margin-top: 1.1rem;
   display: grid;

@@ -817,7 +817,7 @@ th {
   display: grid;
   grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
   gap: clamp(1.5rem, 4vw, 4rem);
-  align-items: center;
+  align-items: start;
 }
 
 .claim > * {

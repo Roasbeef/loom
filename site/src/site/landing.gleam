@@ -45,7 +45,7 @@ pub fn view(model: Model) -> Element(Msg) {
         "durable",
         "Durability",
         "Kill the daemon in the middle of a tool call",
-        "Every tool call is committed twice, the intent before it runs and the result after, into one SQLite file per session. Start the daemon again and the session picks up where it stopped. A call that isn't safe to repeat doesn't run a second time.",
+        "Every tool call is committed twice, the intent before it runs and the result after, into one SQLite file per session. Open the session again and it resumes from what was committed. A call that isn't safe to repeat, like `bash`, isn't rerun. It gets an explicit outcome-unknown result.",
         "How a session is stored",
         route.doc("sessions"),
         msg.Crash,
@@ -55,7 +55,7 @@ pub fn view(model: Model) -> Element(Msg) {
         "sandbox",
         "Sandboxing",
         "Commands run in a kernel sandbox",
-        "Anything the model can influence runs in its own OS process, under bubblewrap, Landlock and seccomp on Linux or Seatbelt on macOS. A call that needs more access than the session has stops and asks. Your yes is bound to a digest of that call's arguments, so a different command can't spend it.",
+        "Shell commands, programs the model writes and MCP servers never run in the harness VM. Each gets its own OS process, under bubblewrap and Landlock on Linux (plus seccomp when the network is off) or Seatbelt on macOS. A call that needs more access than the session has stops and asks. A once-only yes covers that exact call, by a digest of its arguments.",
         "Approvals and the sandbox",
         route.doc("approvals-and-sandboxing"),
         msg.Approval,
@@ -65,7 +65,7 @@ pub fn view(model: Model) -> Element(Msg) {
         "code-mode",
         "Code mode",
         "The model can write a program",
-        "In code mode the model sends one short Gleam program where it would have made a string of tool calls. Gleam has no `eval` and no reflection, so a program's imports are the most it can do. Loom checks them, compiles offline and runs the result in a jailed BEAM node.",
+        "In code mode the model sends one short Gleam program where it would have made a string of tool calls. Gleam has no `eval` and no reflection, so what a program imports bounds what it can do. Loom vets the imports, compiles offline and runs the result in a jailed BEAM node.",
         "How code mode works",
         route.doc("code-mode"),
         msg.CodeMode,
@@ -75,7 +75,7 @@ pub fn view(model: Model) -> Element(Msg) {
         "distributed",
         "Distributed runtime",
         "Keys on one machine, tools on another",
-        "An orchestrator holds the conversation, the provider keys and the approvals. An executor runs the tool calls next to your checkout. `loom sessions move` hands a session to another orchestrator, and we model-checked that move in TLA+ with a crash possible between any two writes.",
+        "An orchestrator holds the conversation, the provider keys and the approvals. An executor runs the tool calls next to your checkout. `loom sessions move` hands a session to another orchestrator. A TLA+ model of one move, with a crash possible between any two writes, checks that two orchestrators never serve the session at once.",
         "What remote sessions can't do yet",
         route.doc("distributed-runtime"),
         msg.Migration,
@@ -95,11 +95,11 @@ fn hero() -> Element(Msg) {
     html.div([attribute.class("hero-inner")], [
       html.div([attribute.class("hero-text")], [
         html.h1([], [
-          element.text("A coding agent that survives its own crashes."),
+          element.text("A coding agent whose sessions survive a crash."),
         ]),
         html.p([attribute.class("lede")], [
           element.text(
-            "Loom is a coding agent harness written in Gleam, on the BEAM. Sessions live on disk, commands run in a kernel sandbox, and the tools can run on a different machine from the model.",
+            "Loom is a coding agent harness written in Gleam, on the BEAM. Each session is one SQLite file. Commands run in a kernel sandbox, and tool calls can run on a different machine from the one that holds your keys.",
           ),
         ]),
         html.div([attribute.class("actions")], [
@@ -277,8 +277,7 @@ fn shot(src: String, alt: String, caption: String) -> Element(Msg) {
 fn more() -> Element(Msg) {
   html.section([attribute.class("story more"), attribute.id("more")], [
     html.div([attribute.class("story-head")], [
-      html.p([attribute.class("kicker")], [element.text("Also in Loom")]),
-      html.h2([], [element.text("The rest of it")]),
+      html.h2([], [element.text("Also in Loom")]),
     ]),
     html.dl(
       [attribute.class("rows")],
@@ -292,7 +291,7 @@ fn more() -> Element(Msg) {
           ),
           #(
             "Self-evolution",
-            "The agent can write its own extensions, programs and prompt profiles. You approve one exact version and it runs in a jail. Local workspaces only for now. [How it works]("
+            "The agent can write its own extensions, programs and prompt profiles. You approve one exact version, and authored code runs in a jail. Local workspaces only for now. [How it works]("
               <> route.doc("self-evolution")
               <> ").",
           ),
@@ -342,7 +341,9 @@ fn install(model: Model) -> Element(Msg) {
       html.p(
         [],
         inline.render(
-          "Download a release, or build it. Building needs Gleam 1.19.0, Erlang/OTP 29, Go 1.26, `rebar3`, a C compiler, `make` and `strip`.",
+          "Download a release, or build it. Building needs Gleam 1.19.0, Erlang/OTP 29 or later, Go 1.26 or later, `rebar3`, a C compiler, `make` and `strip`. `loom --demo` runs with no provider. For real work you bring a provider key, and [the install guide]("
+          <> route.doc("getting-started")
+          <> "/choose-a-model) shows where it goes.",
         ),
       ),
     ]),
