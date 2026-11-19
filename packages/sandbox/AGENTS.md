@@ -298,8 +298,9 @@ only Go module.
   usable and is confined by the filesystem layers; bwrap's network unshare
   is the independent second layer.
 - **Network `loopback` is the same namespace with a second program.** It
-  adds `socket(AF_INET, SOCK_STREAM, 0|IPPROTO_TCP)` (type masked with
-  `0xf`) and refuses `setsockopt(IPPROTO_TCP, TCP_ULP)`; every other
+  adds `socket(AF_INET, SOCK_STREAM, 0|IPPROTO_TCP)` and
+  `socket(AF_NETLINK, SOCK_RAW|SOCK_DGRAM, NETLINK_ROUTE)` (types masked with
+  `0xf`; `net.InterfaceAddrs` needs the latter) and refuses `setsockopt(IPPROTO_TCP, TCP_ULP)`; every other
   socket stays `EPERM`. The filter is sound only inside bwrap's fresh
   network namespace, so `jail.Start` refuses the mode on Darwin, on the
   degraded no-bwrap path and anywhere else, never narrowing it. Nothing
