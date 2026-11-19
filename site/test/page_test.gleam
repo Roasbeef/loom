@@ -1,9 +1,8 @@
 //// Tests that render whole pages to HTML and read what came out. They catch
-//// what a unit test of one function cannot: a sidebar entry whose section
-//// does not exist, a documentation link to a branch that is not `main`, a
+//// what a unit test of one function cannot: a replay link to a figure the
+//// page does not hold, a documentation link to a branch that is not `main`, a
 //// banned word in text that only appears in one step of one figure.
 
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -51,45 +50,83 @@ pub fn to_hash_inverts_parse_test() {
   })
 }
 
-// THE SIDEBAR -----------------------------------------------------------------
+// THE FIGURES ON THE LANDING PAGE ----------------------------------------------
 
-pub fn every_sidebar_entry_names_a_section_that_exists_test() {
+pub fn every_figure_the_replay_links_to_is_on_the_landing_page_test() {
+  // A link from a replay step scrolls to the element that carries the
+  // figure's `data-fig`. If the page has no such element, the link does
+  // nothing and says nothing, so the page must hold every figure the script
+  // names.
   let html = landing_html()
-  list.each(landing.section_ids(), fn(id) {
-    assert string.contains(html, "id=\"" <> id <> "\"")
+  list.each(replay.steps(), fn(step) {
+    case step.underneath {
+      Some(link) -> {
+        let key = msg.figure_key(link.figure)
+        assert string.contains(html, "data-fig=\"" <> key <> "\"")
+      }
+      None -> Nil
+    }
   })
 }
 
-pub fn section_ids_are_unique_test() {
-  let ids = landing.section_ids()
-  assert list.unique(ids) == ids
-}
-
-pub fn the_sidebar_marks_the_current_section_test() {
-  let model = m.Model(..m.new(route.Landing), section: "distributed")
-  let html = element.to_string(landing.view(model))
-  assert string.contains(html, "aria-current=\"location\"")
-  assert landing.label_of("distributed") == "Distributed runtime"
-  assert landing.label_of("nowhere") == ""
-}
-
-pub fn the_sidebar_is_in_page_order_test() {
-  // The scroll spy reports the last section whose top has passed the probe,
-  // so the list must follow the order of the sections in the page.
+pub fn a_landing_figure_is_the_panel_without_its_step_text_test() {
+  // The long text of a step belongs to the documentation page. If it came
+  // back here, the page would grow by a screen for every step.
   let html = landing_html()
-  let positions =
-    list.map(landing.section_ids(), fn(id) {
-      position_of(html, "id=\"" <> id <> "\"")
-    })
-  assert list.all(positions, fn(position) { position >= 0 })
-  assert positions == list.sort(positions, int.compare)
+  assert string.contains(html, "data-fig-panel=\"crash\"")
+  assert !string.contains(html, "class=\"step\"")
 }
 
-fn position_of(html: String, needle: String) -> Int {
-  case string.split_once(html, needle) {
-    Ok(#(before, _)) -> string.length(before)
-    Error(Nil) -> -1
-  }
+pub fn the_landing_page_stays_short_test() {
+  // The page was once about 5,000 words. This budget is what keeps it from
+  // growing back a paragraph at a time: a new section has to pay for itself
+  // by cutting another. The count is of every word in the markup, which is
+  // more than a reader sees: each drawing is there in a wide and a narrow
+  // layout, and each figure carries its table of states for screen readers.
+  // The page measured 1,367 when the budget was set.
+  let words = word_count(visible_text(landing_html()))
+  assert words <= 1500
+}
+
+/// The text of a page without its tags.
+fn visible_text(html: String) -> String {
+  string.split(html, "<")
+  |> list.map(fn(piece) {
+    case string.split_once(piece, ">") {
+      Ok(#(_, text)) -> text
+      Error(Nil) -> piece
+    }
+  })
+  |> string.join(" ")
+}
+
+fn word_count(text: String) -> Int {
+  string.split(text, " ")
+  |> list.filter(fn(word) { string.trim(word) != "" })
+  |> list.length
+}
+
+pub fn every_claim_links_to_its_documentation_page_test() {
+  let html = landing_html()
+  list.each(
+    [
+      "sessions", "approvals-and-sandboxing", "code-mode", "distributed-runtime",
+      "self-evolution", "terminal-and-web",
+    ],
+    fn(slug) {
+      assert string.contains(html, "href=\"#/docs/" <> slug <> "\"")
+      assert list.any(docs.pages(), fn(page) { page.slug == slug })
+    },
+  )
+}
+
+pub fn the_hero_links_to_the_platform_status_test() {
+  // The table of what runs where lives on the install page, and the hero's
+  // status line is the way to it.
+  assert string.contains(
+    landing_html(),
+    "href=\"#/docs/getting-started/platforms\"",
+  )
 }
 
 // THE RELEASE -----------------------------------------------------------------

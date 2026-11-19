@@ -2,11 +2,9 @@
 ////
 //// A figure is a drawing plus a list of steps. Each step has a name, a
 //// one-sentence caption that sits under the drawing, and a block of text
-//// that explains it. On the landing page the blocks form a column beside a
-//// sticky panel, and the scroll position picks the step. The same panel has
-//// explicit controls, so the figure works without scrolling, and it can be
-//// embedded in a documentation page, where the current step's block follows
-//// the panel.
+//// that explains it. The panel has the drawing, the caption and explicit
+//// controls. The landing page shows the panel alone. A documentation page
+//// embeds the same panel and puts the current step's block under it.
 ////
 //// This module owns the layout and the controls. The drawings and the
 //// wording of each step live in `site/fig_*`.
@@ -77,27 +75,23 @@ fn step_at(spec: Spec, index: Int) -> Step {
   }
 }
 
-/// The landing-page layout: text blocks beside a sticky panel.
-pub fn scrolly(
-  spec: Spec,
-  active: Int,
-  playing: Bool,
-  copied: Option(String),
-) -> Element(Msg) {
+/// The landing-page layout: the panel alone. A step's caption is all the
+/// text it shows; the long explanation of each step is on the documentation
+/// page that embeds the same figure. The wrapper carries `data-fig`, which is
+/// how a link from the replay finds the figure to scroll to.
+///
+/// ## Examples
+///
+/// ```gleam
+/// figure.compact(figures.spec(msg.Crash), 0, False)
+/// ```
+pub fn compact(spec: Spec, active: Int, playing: Bool) -> Element(Msg) {
   html.div(
     [
-      attribute.class("scrolly"),
+      attribute.class("compact"),
       attribute("data-fig", msg.figure_key(spec.id)),
     ],
-    [
-      html.div(
-        [attribute.class("scrolly-text")],
-        list.index_map(spec.steps, fn(step, index) {
-          block(spec.id, step, index, count(spec), index == active, copied)
-        }),
-      ),
-      panel(spec, active, playing),
-    ],
+    [panel(spec, active, playing)],
   )
 }
 
@@ -110,7 +104,7 @@ pub fn embedded(
 ) -> Element(Msg) {
   html.div([attribute.class("embedded")], [
     panel(spec, active, playing),
-    block(spec.id, step_at(spec, active), active, count(spec), True, copied),
+    block(spec.id, step_at(spec, active), active, count(spec), copied),
   ])
 }
 
@@ -259,16 +253,11 @@ fn block(
   step: Step,
   index: Int,
   total: Int,
-  is_active: Bool,
   copied: Option(String),
 ) -> Element(Msg) {
   html.article(
     [
-      attribute.class(case is_active {
-        True -> "step is-active"
-        False -> "step"
-      }),
-      attribute("data-step", int.to_string(index)),
+      attribute.class("step"),
       attribute.id(msg.figure_key(id) <> "-step-" <> int.to_string(index)),
     ],
     [
@@ -290,25 +279,9 @@ fn block(
         sample(id, index, step.sample, copied),
         state(step.state),
         failure(step.failure),
-        [jump(id, index, is_active)],
       ])
     ],
   )
-}
-
-fn jump(id: FigureId, index: Int, is_active: Bool) -> Element(Msg) {
-  case is_active {
-    True -> element.none()
-    False ->
-      html.button(
-        [
-          attribute.class("show-step"),
-          attribute.type_("button"),
-          event.on_click(msg.FigureGo(id, index)),
-        ],
-        [element.text("Show this step in the figure")],
-      )
-  }
 }
 
 fn sample(

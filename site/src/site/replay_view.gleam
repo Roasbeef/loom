@@ -41,15 +41,13 @@ import site/replay.{
 pub fn view(model: Model) -> Element(Msg) {
   html.section([attribute.class("story replay"), attribute.id("replay")], [
     html.div([attribute.class("story-head")], [
-      html.p([attribute.class("kicker")], [
-        element.text("1. A recorded session"),
-      ]),
+      html.p([attribute.class("kicker")], [element.text("A recorded session")]),
       html.h2([], [
         element.text("One session, from a prompt to a move between machines"),
       ]),
       html.p([], [
         element.text(
-          "This is a recording of the terminal client, played from a script. Nothing in it runs, and the project, the file names and the counts are examples. Press Play or step through it. When the approval dialog appears, playback stops until you answer, and your answer changes the steps after it. The dialog's wording is simplified.",
+          "A recording of the terminal client, played from a script, with an example project. It stops at the approval until you answer, and your answer changes what happens next.",
         ),
       ]),
     ]),

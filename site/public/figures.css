@@ -1,40 +1,36 @@
 /* The step-through figures.
  *
- * A story on the landing page is a column of step texts beside a sticky
- * panel. The panel holds the drawing, a caption, the controls and a table of
- * every part's state. Below 761px the panel is an ordinary block above the
- * one text that matches the current step, because a drawing tall enough to
- * read does not leave room for text under a sticky header on a phone.
+ * A figure is a panel: the drawing, a caption, the controls and a table of
+ * every part's state. The landing page shows the panel alone beside a
+ * claim, without the table. A documentation page shows the whole panel and
+ * puts the text of the current step under it.
  *
  * Surfaces are tinted backgrounds with hairline borders. There are no
  * shadows, no accent bars and no gradients. */
 
-/* Story layout ------------------------------------------------------------ */
-
-.scrolly {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: clamp(1.25rem, 3vw, 3.5rem);
-  margin-top: 2rem;
-  align-items: start;
-}
-
-.scrolly > * {
-  min-width: 0;
-}
-
 .panel {
   scroll-margin-top: calc(var(--stick) + 8px);
-  position: sticky;
-  top: calc(var(--stick) + 14px);
-  max-height: calc(100vh - var(--stick) - 28px);
-  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--rule);
   border-radius: 6px;
   padding: 12px 12px 10px;
   display: grid;
   gap: 8px;
+}
+
+/* On the landing page the table of states is left to screen readers, which
+ * skip the drawing and read the table. */
+
+.compact .panel-states {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .panel-caption {
@@ -144,21 +140,6 @@
 
 /* Step texts -------------------------------------------------------------- */
 
-.step {
-  min-height: 60vh;
-  padding: 2.5rem 0;
-  opacity: 0.5;
-  transition: opacity 0.35s;
-}
-
-.step.is-active {
-  opacity: 1;
-}
-
-.step:first-child {
-  padding-top: 0.5rem;
-}
-
 .step h3 {
   font-size: 1.4rem;
   line-height: 1.25;
@@ -172,8 +153,7 @@
 
 .step .state,
 .step .sample,
-.step .failure,
-.step .show-step {
+.step .failure {
   margin-top: 1.1rem;
 }
 
@@ -231,24 +211,6 @@
   letter-spacing: 0.02em;
 }
 
-.show-step {
-  all: unset;
-  display: inline-block;
-  cursor: pointer;
-  font-family: var(--sans);
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--link);
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-  margin-top: 1.1rem;
-}
-
-.show-step:focus-visible {
-  outline: 2px solid var(--hot);
-  outline-offset: 2px;
-}
-
 /* A figure inside a documentation page ------------------------------------- */
 
 .prose .dots {
@@ -282,18 +244,6 @@
   margin: 1.8rem 0;
   display: grid;
   gap: 1.2rem;
-}
-
-.embedded .panel {
-  position: static;
-  max-height: none;
-  overflow: visible;
-}
-
-.embedded .step {
-  min-height: 0;
-  opacity: 1;
-  padding: 0;
 }
 
 /* The drawing --------------------------------------------------------------
@@ -594,8 +544,7 @@
 /* Reduced motion ------------------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .dbox,
-  .step {
+  .dbox {
     transition: none;
   }
 
@@ -609,49 +558,12 @@
 /* Narrower screens ----------------------------------------------------------- */
 
 @media (max-width: 1199px) {
-  .scrolly {
-    grid-template-columns: minmax(0, 3fr) minmax(0, 4fr);
-    gap: 1.25rem;
-  }
-
   .panel {
     padding: 10px 10px 8px;
-  }
-
-  .step {
-    min-height: 56vh;
   }
 }
 
 @media (max-width: 760px) {
-  .scrolly {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-
-  .scrolly .panel {
-    order: -1;
-    position: static;
-    max-height: none;
-    overflow: visible;
-  }
-
-  .scrolly .step {
-    display: none;
-  }
-
-  .scrolly .step.is-active {
-    display: block;
-    min-height: 0;
-    padding: 1.4rem 0 0;
-    opacity: 1;
-  }
-
-  .scrolly .step .show-step {
-    display: none;
-  }
-
   .panel-caption {
     font-size: 0.9rem;
     min-height: 0;

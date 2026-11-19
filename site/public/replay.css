@@ -310,8 +310,24 @@
   padding: 0.55rem 0.8rem;
 }
 
+/* The link from a step's explanation to the figure that shows its mechanism. */
+
 .narration .show-step {
+  all: unset;
+  display: inline-block;
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
   margin-top: 1rem;
+}
+
+.narration .show-step:focus-visible {
+  outline: 2px solid var(--hot);
+  outline-offset: 2px;
 }
 
 .replay-controls {

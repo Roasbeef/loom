@@ -34,8 +34,6 @@ pub type Msg {
   DocLoaded(slug: String, body: Result(String, Nil))
   /// The reader chose a step with a button or a click.
   FigureGo(FigureId, Int)
-  /// The scroll spy found a different step under the reading line.
-  FigureScrolled(FigureId, Int)
   /// Start stepping a figure automatically.
   FigurePlay(FigureId)
   /// Stop automatic stepping.
@@ -44,12 +42,6 @@ pub type Msg {
   FigureTick(FigureId, Int)
   /// Open or close the documentation menu on a narrow screen.
   ToggleMenu
-  /// Scroll to a section of the landing page.
-  JumpTo(String)
-  /// The section spy found a different section under the reading line.
-  SectionScrolled(String)
-  /// Open or close the "On this page" list on a narrow screen.
-  ToggleContents
   /// The reader chose a replay step with a button, a chip or an arrow key.
   ReplayGo(Int)
   /// Start the replay stepping by itself. At the end, this starts it over.

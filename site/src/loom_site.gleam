@@ -10,12 +10,11 @@
 ////
 //// - `main` starts the application on `#app`.
 //// - `init` reads the fragment, loads the page's Markdown if it is a
-////   documentation page, and subscribes to hash changes and to the scroll
-////   spies.
+////   documentation page, and subscribes to hash changes.
 //// - `update` handles route changes, loaded documents, the figure messages
-////   (`FigureGo`, `FigureScrolled`, `FigurePlay`, `FigureTick`), the replay
-////   messages (`ReplayGo`, `ReplayPlay`, `ReplayTick`, `ReplayDecide`), the
-////   sidebar (`SectionScrolled`, `JumpTo`) and the copy buttons.
+////   (`FigureGo`, `FigurePlay`, `FigureTick`, `ShowFigure`), the replay
+////   messages (`ReplayGo`, `ReplayPlay`, `ReplayTick`, `ReplayDecide`) and
+////   the copy buttons.
 //// - `view` renders the landing page or a documentation page.
 
 import gleam/dict
@@ -56,20 +55,10 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   )
 }
 
-/// Hash changes and the scroll spies report through these callbacks.
+/// Hash changes report through this callback.
 fn subscribe() -> Effect(Msg) {
   effect.from(fn(dispatch) {
     ffi.on_hash_change(fn(hash) { dispatch(msg.RouteChanged(hash)) })
-    ffi.start_scroll_spy(
-      landing.section_ids(),
-      fn(key, step) {
-        case msg.figure_from_key(key) {
-          Ok(id) -> dispatch(msg.FigureScrolled(id, step))
-          Error(Nil) -> Nil
-        }
-      },
-      fn(id) { dispatch(msg.SectionScrolled(id)) },
-    )
   })
 }
 
@@ -106,8 +95,7 @@ fn load(model: Model, current: Route) -> Effect(Msg) {
 fn title(current: Route) -> Effect(Msg) {
   effect.from(fn(_dispatch) {
     ffi.set_title(case current {
-      route.Landing ->
-        "Loom: a durable, distributed, self-evolving coding harness"
+      route.Landing -> "Loom: a coding agent harness in Gleam, on the BEAM"
       route.DocsHome -> "Documentation | Loom"
       route.Doc(slug, _) -> docs.title_of(slug) <> " | Loom"
     })
@@ -132,8 +120,6 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ..m.stopped(model),
           route: current,
           menu_open: False,
-          contents_open: False,
-          section: "",
           docs: case current {
             route.Doc(slug, _) ->
               case dict.has_key(model.docs, slug) {
@@ -169,14 +155,8 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     msg.FigureGo(id, step) -> {
       let step = clamp(step, figure.count(figures.spec(id)))
-      #(set_step(m.stopped(model), id, step), reveal(id, step))
+      #(set_step(m.stopped(model), id, step), effect.none())
     }
-
-    msg.FigureScrolled(id, step) ->
-      case m.is_playing(model, id) {
-        True -> #(model, effect.none())
-        False -> #(set_step(model, id, step), effect.none())
-      }
 
     msg.FigurePlay(id) -> {
       let last = figure.count(figures.spec(id)) - 1
@@ -191,7 +171,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           playing: Some(id),
           play_generation: generation,
         )
-      #(next, effect.batch([reveal(id, start), tick(id, generation)]))
+      #(next, tick(id, generation))
     }
 
     msg.FigureStop -> #(m.stopped(model), effect.none())
@@ -208,13 +188,10 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               True -> m.stopped(next)
               False -> next
             },
-            effect.batch([
-              reveal(id, step),
-              case finished {
-                True -> effect.none()
-                False -> tick(id, generation)
-              },
-            ]),
+            case finished {
+              True -> effect.none()
+              False -> tick(id, generation)
+            },
           )
         }
         _, _ -> #(model, effect.none())
@@ -224,7 +201,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       let step = clamp(step, figure.count(figures.spec(id)))
       #(
         set_step(m.stopped(model), id, step),
-        effect.from(fn(_dispatch) { ffi.show_step(msg.figure_key(id), step) }),
+        effect.from(fn(_dispatch) { ffi.show_figure(msg.figure_key(id)) }),
       )
     }
 
@@ -237,18 +214,6 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, shot_view: view),
       effect.none(),
     )
-
-    msg.ToggleContents -> #(
-      Model(..model, contents_open: !model.contents_open),
-      effect.none(),
-    )
-
-    msg.JumpTo(id) -> #(
-      Model(..model, contents_open: False, section: id),
-      effect.from(fn(_dispatch) { ffi.jump_to_id(id) }),
-    )
-
-    msg.SectionScrolled(id) -> #(Model(..model, section: id), effect.none())
 
     msg.ReplayVisible ->
       case model.replay.autostarted || ffi.prefers_reduced_motion() {
@@ -403,13 +368,6 @@ fn timer(milliseconds: Int, message: Msg) -> Effect(Msg) {
 
 fn tick(id: msg.FigureId, generation: Int) -> Effect(Msg) {
   timer(3400, msg.FigureTick(id, generation))
-}
-
-fn reveal(id: msg.FigureId, step: Int) -> Effect(Msg) {
-  effect.from(fn(_dispatch) {
-    ffi.note_step(msg.figure_key(id), step)
-    ffi.reveal_step(msg.figure_key(id), step)
-  })
 }
 
 fn set_step(model: Model, id: msg.FigureId, step: Int) -> Model {
