@@ -1,24 +1,21 @@
 //// The landing page.
 ////
-//// A short guided read. The hero says what Loom is, a recorded
-//// session shows it working, and then one section each for durability, the
-//// distributed runtime and working together, followed by the two clients,
-//// the sandbox, code mode, the platforms and how to install. The durable,
-//// sandbox, code-mode and distributed sections each carry a step-through
-//// figure: the text blocks scroll beside a sticky panel, and the block under
-//// the reading line decides the step. The panel also has buttons, so the page
-//// works by keyboard and without scrolling.
+//// A short page. The hero says what Loom is and where to get it. A recorded
+//// session shows it working. Five stories follow, one claim each, with a
+//// paragraph, a link to the documentation page and a figure the reader can
+//// step through with its buttons. Then the two clients, a list of what else
+//// is in the box, and how to install.
 ////
-//// A sticky sidebar lists the sections and marks the one in view. On a
-//// phone it becomes an "On this page" control under the header.
+//// The page states each claim once and leaves the explanation to the
+//// documentation. A figure here is the panel alone, and the long text of
+//// each of its steps is on the documentation page that embeds the same
+//// figure.
 ////
 //// ## Flow
 ////
-//// - `sections` is the list the sidebar and the scroll spy share.
-//// - `view` is the page: header, hero, at-a-glance facts, then the sidebar
-////   beside the sections.
-//// - `story` is one figure's section; `multiplayer`, `evolution`, `clients`,
-////   `more`, `status` and `install` are the rest.
+//// - `view` is the page: header, `hero`, the replay, the five `story`
+////   sections, then `clients`, `more` and `install`.
+//// - `story` is one claim beside its figure.
 
 import gleam/list
 import lustre/attribute.{attribute}
@@ -36,102 +33,66 @@ import site/replay_view
 import site/route
 import site/ui
 
-/// A section of the page, as the sidebar names it.
-pub type Section {
-  Section(id: String, label: String)
-}
-
-/// The sections in page order. The ids are the ids of the elements.
-pub fn sections() -> List(Section) {
-  [
-    Section("replay", "Recorded session"),
-    Section("durable", "Durability"),
-    Section("distributed", "Distributed runtime"),
-    Section("multiplayer", "Working together"),
-    Section("clients", "Terminal and web"),
-    Section("sandbox", "Sandboxing"),
-    Section("code-mode", "Code mode"),
-    Section("evolution", "Self-evolution"),
-    Section("more", "Also in Loom"),
-    Section("status", "Platforms and status"),
-    Section("install", "Install"),
-  ]
-}
-
-/// The ids of the sections, in page order, for the scroll spy.
-pub fn section_ids() -> List(String) {
-  list.map(sections(), fn(section) { section.id })
-}
-
-/// The label of a section, or an empty string for an unknown id.
-pub fn label_of(id: String) -> String {
-  case list.find(sections(), fn(section) { section.id == id }) {
-    Ok(section) -> section.label
-    Error(Nil) -> ""
-  }
-}
-
 /// The landing page.
 pub fn view(model: Model) -> Element(Msg) {
   html.div([attribute.class("page")], [
     ui.header(""),
     html.main([attribute.id("main"), attribute.tabindex(-1)], [
       hero(),
-      facts(),
-      html.div([attribute.class("landing")], [
-        toc(model),
-        html.div([attribute.class("landing-body")], [
-          replay_view.view(model),
-          story(
-            model,
-            "durable",
-            "Durability",
-            "A crash doesn't lose your session",
-            [
-              "Kill the daemon mid-tool-call and nothing committed is lost. Every prompt, tool call and result goes into one SQLite file as it happens, so the file is always consistent. Sessions are OTP supervision trees, so a crash in one strand restarts only that strand.",
-              "You can also fork a session to try another approach without losing the first. The figure kills the daemon mid-tool-call.",
-            ],
-            msg.Crash,
-          ),
-          story(
-            model,
-            "distributed",
-            "Distributed runtime",
-            "The model and the tools don't have to share a machine",
-            [
-              "Provider keys and history stay on one server while the tools run on the machine that has your code. The orchestrator holds the conversation, the keys and approvals. The executor holds your checkout and runs tool calls. They connect over Erlang distribution on TLS with pinned certificates.",
-              "You can move a session to another orchestrator with `loom sessions move`. We model-checked the move in TLA+, with a crash possible between any two writes, to make sure two orchestrators never both own a session. [What remote sessions can't do yet](#/docs/distributed-runtime).",
-            ],
-            msg.Migration,
-          ),
-          multiplayer(),
-          clients(model),
-          story(
-            model,
-            "sandbox",
-            "Sandboxing and approval",
-            "Commands run in a kernel sandbox",
-            [
-              "Anything the model can influence runs in a separate sandboxed OS process, never in the harness itself. We call that Rule Zero. The sandbox is bubblewrap, Landlock and seccomp on Linux, and Seatbelt on macOS. If a call needs more access than the session grants, it's refused before it runs, and you can approve it.",
-            ],
-            msg.Approval,
-          ),
-          story(
-            model,
-            "code-mode",
-            "Code mode",
-            "One typed program instead of ten tool calls",
-            [
-              "In code mode the model writes a short Gleam program. Loom vets it, compiles it offline, runs it in a jailed BEAM node and returns one structured result. Gleam has no `eval` and no reflection, so a program can only do what its imports allow, and you can check that by reading it before it runs.",
-            ],
-            msg.CodeMode,
-          ),
-          evolution(),
-          more(),
-          status(),
-          install(model),
-        ]),
-      ]),
+      replay_view.view(model),
+      story(
+        model,
+        "durable",
+        "Durability",
+        "Kill the daemon in the middle of a tool call",
+        "Every tool call is committed twice, the intent before it runs and the result after, into one SQLite file per session. Open the session again and it resumes from what was committed. A call that isn't safe to repeat, like `bash`, isn't rerun. It gets an explicit outcome-unknown result.",
+        "How a session is stored",
+        route.doc("sessions"),
+        msg.Crash,
+      ),
+      story(
+        model,
+        "distributed",
+        "Distributed runtime",
+        "Keys on one machine, tools on another",
+        "An orchestrator holds the conversation, the provider keys and the approvals. An executor runs the tool calls next to your checkout. `loom sessions move` hands a session to another orchestrator. A TLA+ model of one move, with a crash possible between any two writes, checks that two orchestrators never serve the session at once.",
+        "What remote sessions can't do yet",
+        route.doc("distributed-runtime"),
+        msg.Migration,
+      ),
+      story(
+        model,
+        "evolution",
+        "Self-evolution",
+        "The agent can write its own tools",
+        "An agent can author an extension, a code-mode program or a prompt profile for its own model. You approve one exact version, so the model can't approve its own work. Authored code is tested and run in a jail, and a running session switches to it without restarting.",
+        "How governed self-evolution works",
+        route.doc("self-evolution"),
+        msg.Evolution,
+      ),
+      story(
+        model,
+        "sandbox",
+        "Sandboxing",
+        "Commands run in a kernel sandbox",
+        "Shell commands, programs the model writes and MCP servers never run in the harness VM. Each gets its own OS process, under bubblewrap and Landlock on Linux (plus seccomp when the network is off) or Seatbelt on macOS. A call that needs more access than the session has stops and asks. A once-only yes covers that exact call, by a digest of its arguments.",
+        "Approvals and the sandbox",
+        route.doc("approvals-and-sandboxing"),
+        msg.Approval,
+      ),
+      story(
+        model,
+        "code-mode",
+        "Code mode",
+        "The model can write a program",
+        "In code mode the model sends one short Gleam program where it would have made a string of tool calls. Gleam has no `eval` and no reflection, so what a program imports bounds what it can do. Loom vets the imports, compiles offline and runs the result in a jailed BEAM node.",
+        "How code mode works",
+        route.doc("code-mode"),
+        msg.CodeMode,
+      ),
+      clients(model),
+      more(),
+      install(model),
     ]),
     ui.footer(),
   ])
@@ -143,13 +104,12 @@ fn hero() -> Element(Msg) {
   html.section([attribute.class("hero"), attribute.id("top")], [
     html.div([attribute.class("hero-inner")], [
       html.div([attribute.class("hero-text")], [
-        html.p([attribute.class("kicker")], [element.text("Loom")]),
         html.h1([], [
           element.text("A durable, distributed, self-evolving coding harness."),
         ]),
         html.p([attribute.class("lede")], [
           element.text(
-            "Loom runs coding agents without losing work when something dies. A session keeps its history on disk, the tools can run on your dev box while the model runs somewhere else, and a few people can share one session. It's written in Gleam and runs on the BEAM.",
+            "Loom runs coding agents, and it's written in Gleam on the BEAM. A session is one SQLite file and survives a crash. Its tool calls can run on another machine, in a kernel sandbox. And the agent can write its own tools, which you approve.",
           ),
         ]),
         html.div([attribute.class("actions")], [
@@ -173,184 +133,66 @@ fn hero() -> Element(Msg) {
             [element.text("View on GitHub")],
           ),
         ]),
-        html.p([attribute.class("status")], [
-          element.text(
-            "Under active development. Linux x86_64 and macOS arm64.",
+        html.p(
+          [attribute.class("status")],
+          inline.render(
+            "Under active development. Linux x86_64 and macOS arm64. [Platform status]("
+            <> route.doc("getting-started")
+            <> "/platforms).",
           ),
-        ]),
+        ),
       ]),
       html.div(
         [attribute.class("hero-mark"), attribute("aria-hidden", "true")],
-        [ui.mark(240)],
+        [ui.mark(180)],
       ),
     ]),
-  ])
-}
-
-fn facts() -> Element(Msg) {
-  html.section(
-    [attribute.class("facts"), attribute("aria-label", "At a glance")],
-    [
-      html.dl(
-        [],
-        list.flat_map(
-          [
-            #(
-              "Language",
-              "Gleam, on Erlang/OTP 29 or later. A release bundles the BEAM runtime.",
-            ),
-            #(
-              "Interfaces",
-              "A terminal client, `loom`, and an opt-in web view. Both attach to one local daemon, `loomd`.",
-            ),
-            #(
-              "Sandbox",
-              "bubblewrap, Landlock and seccomp on Linux. Seatbelt on macOS.",
-            ),
-            #(
-              "State",
-              "A SQLite file per session, with a write-once conversation tree.",
-            ),
-          ],
-          fn(fact) {
-            [
-              html.div([], [
-                html.dt([], [element.text(fact.0)]),
-                html.dd([], inline.render(fact.1)),
-              ]),
-            ]
-          },
-        ),
-      ),
-    ],
-  )
-}
-
-// THE SIDEBAR ------------------------------------------------------------------
-
-/// The sticky list of sections. On a wide screen it is a column beside the
-/// page. On a narrow one it is a bar under the header that shows the current
-/// section and opens a list.
-fn toc(model: Model) -> Element(Msg) {
-  let current = label_of(model.section)
-  html.nav([attribute.class("toc"), attribute("aria-label", "On this page")], [
-    html.button(
-      [
-        attribute.class("toc-toggle"),
-        attribute.type_("button"),
-        attribute("aria-expanded", case model.contents_open {
-          True -> "true"
-          False -> "false"
-        }),
-        attribute("aria-controls", "toc-list"),
-        event.on_click(msg.ToggleContents),
-      ],
-      [
-        html.span([attribute.class("toc-toggle-label")], [
-          element.text("On this page"),
-        ]),
-        html.span([attribute.class("toc-current")], [element.text(current)]),
-      ],
-    ),
-    html.ol(
-      [
-        attribute.id("toc-list"),
-        attribute.class(case model.contents_open {
-          True -> "toc-list is-open"
-          False -> "toc-list"
-        }),
-      ],
-      list.map(sections(), fn(section) {
-        html.li([], [
-          html.button(
-            [
-              attribute.class(case section.id == model.section {
-                True -> "toc-item is-current"
-                False -> "toc-item"
-              }),
-              attribute.type_("button"),
-              event.on_click(msg.JumpTo(section.id)),
-              ..case section.id == model.section {
-                True -> [attribute("aria-current", "location")]
-                False -> []
-              }
-            ],
-            [element.text(section.label)],
-          ),
-        ])
-      }),
-    ),
   ])
 }
 
 // THE STORIES ------------------------------------------------------------------
 
+/// One claim: a heading, a paragraph and a link to the documentation page,
+/// beside the figure that shows the mechanism. The section's id is what the
+/// page's own links and the tests name it by.
 fn story(
   model: Model,
   id: String,
   topic: String,
   title: String,
-  intro: List(String),
+  body: String,
+  link_label: String,
+  link_target: String,
   figure_id: FigureId,
 ) -> Element(Msg) {
-  html.section([attribute.class("story"), attribute.id(id)], [
+  html.section([attribute.class("story claim"), attribute.id(id)], [
     html.div([attribute.class("story-head")], [
       html.p([attribute.class("kicker")], [element.text(topic)]),
       html.h2([], [element.text(title)]),
-      ..list.map(intro, inline.paragraph)
+      inline.paragraph(body),
+      html.p([attribute.class("more-link")], [
+        html.a([attribute.href(link_target)], [element.text(link_label)]),
+      ]),
     ]),
-    figure.scrolly(
+    figure.compact(
       figures.spec(figure_id),
       m.step(model, figure_id),
       m.is_playing(model, figure_id),
-      model.copied,
     ),
-  ])
-}
-
-fn multiplayer() -> Element(Msg) {
-  html.section([attribute.class("story"), attribute.id("multiplayer")], [
-    html.div([attribute.class("story-head")], [
-      html.p([attribute.class("kicker")], [element.text("Multiplayer")]),
-      html.h2([], [element.text("Several people can work in one session")]),
-      html.p(
-        [],
-        inline.render(
-          "Two people can drive one agent session, or one drives and others watch. The owner invites operators, who can direct the work and answer approvals, and observers, who can only watch. Everyone you invite attaches from their own terminal or browser and sees the transcript and tool steps live, and every command is tagged with who sent it. [The multiplayer guide]("
-          <> release.source("docs/guide/multiplayer.md")
-          <> ") walks through it.",
-        ),
-      ),
-    ]),
-  ])
-}
-
-fn evolution() -> Element(Msg) {
-  html.section([attribute.class("story"), attribute.id("evolution")], [
-    html.div([attribute.class("story-head")], [
-      html.p([attribute.class("kicker")], [element.text("Self-evolution")]),
-      html.h2([], [
-        element.text("The agent can extend itself, under your approval"),
-      ]),
-      html.p(
-        [],
-        inline.render(
-          "An agent can write an extension, a code-mode program or a prompt profile for its own model. You approve the exact version, so the model cannot approve its own work. A running session switches to a new extension or program without restarting, and a prompt profile applies to the next session. The agent's code is tested and run in jailed satellites, separate BEAM nodes in kernel sandboxes, and never in the harness VM. An extension that opts in keeps its process, mailbox and state across the swap, through `sys:suspend`, `sys:change_code` and `sys:resume`. The same path can replace one harness component, the scratch store, but only with a reviewed release build and never a candidate, and none has been released yet. It works today for sessions on a local workspace with code mode available, not yet on executors. [How governed self-evolution works](#/docs/self-evolution).",
-        ),
-      ),
-    ]),
   ])
 }
 
 fn clients(model: Model) -> Element(Msg) {
   html.section([attribute.class("story"), attribute.id("clients")], [
     html.div([attribute.class("story-head")], [
-      html.p([attribute.class("kicker")], [element.text("Terminal and browser")]),
-      html.h2([], [element.text("Terminal and browser, same session")]),
+      html.p([attribute.class("kicker")], [element.text("Clients")]),
+      html.h2([], [element.text("A terminal and a browser on one session")]),
       html.p(
         [],
         inline.render(
-          "Use the terminal, the browser, or both on the same session. A prompt typed in one shows up in the other, and an approval answered in either settles it. The daemon, `loomd`, hosts the sessions. The web view needs `--ui` and listens on loopback only, so use `ssh -L` to reach it from another machine.",
+          "Both attach to one daemon, `loomd`. A prompt typed in one shows up in the other, and either can answer an approval. The web view is opt-in with `--ui` and listens on loopback only. [Terminal and web]("
+          <> route.doc("terminal-and-web")
+          <> ").",
         ),
       ),
     ]),
@@ -358,7 +200,7 @@ fn clients(model: Model) -> Element(Msg) {
       shot(
         "./img/web-session.png",
         "The web session view with a live transcript, collapsible tool steps, subagent status and the advisor review rail.",
-        "The web session view: a live transcript with collapsible tool steps, reasoning blocks, subagent status and the advisor review rail.",
+        "The web view of a session.",
       ),
       terminal_shot(model.shot_view),
     ]),
@@ -445,16 +287,29 @@ fn shot(src: String, alt: String, caption: String) -> Element(Msg) {
 fn more() -> Element(Msg) {
   html.section([attribute.class("story more"), attribute.id("more")], [
     html.div([attribute.class("story-head")], [
-      html.p([attribute.class("kicker")], [element.text("Also in Loom")]),
-      html.h2([], [element.text("Also included")]),
+      html.h2([], [element.text("Also in Loom")]),
     ]),
     html.dl(
       [attribute.class("rows")],
       list.flat_map(
         [
           #(
+            "Multiplayer",
+            "Invite operators who can drive a session and observers who can only watch. Every prompt and approval records who sent it. [Guide]("
+              <> release.source("docs/guide/multiplayer.md")
+              <> ").",
+          ),
+          #(
+            "Project mode",
+            "One long-lived router session turns posts and GitHub comments into work, and runs each piece in its own session. Opt-in.",
+          ),
+          #(
+            "Headless and ACP",
+            "`loom run -p` runs one prompt and prints one JSON line. `loom acp` speaks the Agent Client Protocol, for Zed and other front ends.",
+          ),
+          #(
             "Subagents",
-            "Run in parallel on their own conversation branch and send results back to the parent.",
+            "Run in parallel on their own conversation branch and report back to the parent.",
           ),
           #(
             "Model routing",
@@ -462,7 +317,7 @@ fn more() -> Element(Msg) {
           ),
           #(
             "Advisor and goals",
-            "A second model can review the primary's work, and an operator can pin a goal that Loom works toward across runs.",
+            "A second model can review the first one's work. An operator can pin a goal that Loom keeps working toward across runs.",
           ),
           #(
             "Language servers",
@@ -470,7 +325,11 @@ fn more() -> Element(Msg) {
           ),
           #(
             "MCP and extensions",
-            "MCP servers show up as typed modules in code mode. Extensions are Gleam programs that run sandboxed with declared capabilities.",
+            "MCP servers, over stdio or HTTP, show up as typed modules in code mode. Extensions are Gleam programs that run sandboxed with declared capabilities.",
+          ),
+          #(
+            "Skills and hooks",
+            "Loads `AGENTS.md`, `CLAUDE.md` and Markdown `SKILL.md` libraries. Runs your existing Claude hooks, jailed.",
           ),
           #(
             "Memory and automation",
@@ -488,113 +347,6 @@ fn more() -> Element(Msg) {
   ])
 }
 
-// PLATFORMS AND STATUS ---------------------------------------------------------
-
-fn status() -> Element(Msg) {
-  html.section(
-    [attribute.class("story status-section"), attribute.id("status")],
-    [
-      html.div([attribute.class("story-head")], [
-        html.p([attribute.class("kicker")], [
-          element.text("Platforms and status"),
-        ]),
-        html.h2([], [
-          element.text("What runs where today"),
-        ]),
-        html.p(
-          [],
-          inline.render(
-            "A release is built for one platform, because it carries the BEAM runtime and a native SQLite library that were built on that platform. The table says what the release workflow builds and what enforces the sandbox on each platform. The sources are [docs/distribution.md]("
-            <> release.source("docs/distribution.md")
-            <> ") and [ADR-006]("
-            <> release.source("docs/adr/006-macos-seatbelt-boundary.md")
-            <> ").",
-          ),
-        ),
-      ]),
-      table(["Platform", "Release archives", "Sandbox", "State"], [
-        [
-          "Linux x86_64",
-          "Built twice on separate runners and compared byte for byte.",
-          "bubblewrap and Landlock, seccomp when the network is off, cgroup v2 limits where a cgroup is delegated.",
-          "Built and smoke-tested in CI.",
-        ],
-        [
-          "macOS arm64",
-          "Built twice on native macOS runners and compared byte for byte.",
-          "Seatbelt, with enforcement gaps that the helper reports.",
-          "The release lane is new, and its first hosted comparison has not run.",
-        ],
-        [
-          "Linux arm64",
-          "None. The release workflow does not build it.",
-          "The sandbox code targets arm64. It has never been run.",
-          "The release build has never been run.",
-        ],
-        [
-          "Windows",
-          "None.",
-          "None.",
-          "Not supported. The design lists it as a later milestone.",
-        ],
-      ]),
-      html.div([attribute.class("story-head status-notes")], [
-        html.h3([], [element.text("What the distributed runtime has and lacks")]),
-        html.p(
-          [],
-          inline.render(
-            "On `main` it has one orchestrator with one executor, executor pools, two orchestrators with peer mail between them, and `sessions.move`. It has no failover and cannot move a session between executors. A remote session refuses extension tools, operator-added directories, background code mode and MCP façades in code mode, and a move does not carry running processes. The list is the one in [the architecture page]("
-            <> release.source("docs/architecture/distributed.md")
-            <> ").",
-          ),
-        ),
-      ]),
-    ],
-  )
-}
-
-/// The heading of a column, for the label a phone shows beside a cell.
-fn cell_label(head: List(String), index: Int) -> String {
-  case list.drop(head, index) {
-    [label, ..] -> label
-    [] -> ""
-  }
-}
-
-/// A table whose first column heads its rows.
-fn table(head: List(String), rows: List(List(String))) -> Element(Msg) {
-  html.div([attribute.class("table-wrap status-table")], [
-    html.table([], [
-      html.thead([], [
-        html.tr(
-          [],
-          list.map(head, fn(cell) {
-            html.th([attribute("scope", "col")], [element.text(cell)])
-          }),
-        ),
-      ]),
-      html.tbody(
-        [],
-        list.map(rows, fn(row) {
-          case row {
-            [first, ..rest] ->
-              html.tr([], [
-                html.th([attribute("scope", "row")], [element.text(first)]),
-                ..list.index_map(rest, fn(cell, index) {
-                  html.td(
-                    [attribute("data-label", cell_label(head, index + 1))],
-                    inline.render(cell),
-                  )
-                })
-              ])
-            [] -> html.tr([], [])
-          }
-        }),
-      ),
-    ]),
-  ])
-}
-
 // INSTALL ----------------------------------------------------------------------
 
 fn install(model: Model) -> Element(Msg) {
@@ -605,8 +357,18 @@ fn install(model: Model) -> Element(Msg) {
       html.p(
         [],
         inline.render(
-          "Download the server and a client, check them against `SHA256SUMS`, and put their `bin` directories on your `PATH`. After that, `loom update` installs later releases.",
+          "Download a release, or build it. Building needs Gleam 1.19.0, Erlang/OTP 29 or later, Go 1.26 or later, `rebar3`, a C compiler, `make` and `strip`. `loom --demo` runs with no provider. For real work you bring a provider key, and [the install guide]("
+          <> route.doc("getting-started")
+          <> "/choose-a-model) shows where it goes.",
         ),
+      ),
+    ]),
+    html.div([attribute.class("install-code")], [
+      code.view(
+        "landing-install",
+        "sh",
+        "git clone https://github.com/Roasbeef/loom.git\ncd loom\nmake install\nexport PATH=\"$HOME/.local/bin:$PATH\"\n\nloom --demo        # the terminal, with no provider and no server\nloom               # in a project: starts or reconnects to the daemon",
+        model.copied,
       ),
     ]),
     html.div([attribute.class("actions")], [
@@ -617,23 +379,6 @@ fn install(model: Model) -> Element(Msg) {
           attribute.href(route.doc("getting-started")),
         ],
         [element.text("Read the install guide")],
-      ),
-    ]),
-    html.div([attribute.class("story-head install-source")], [
-      html.h3([], [element.text("Or build from source")]),
-      html.p(
-        [],
-        inline.render(
-          "You need Gleam 1.19.0, Erlang/OTP 29 or later, Go 1.26 or later, `rebar3`, a C compiler, `make` and `strip`. `make install` builds the client, the server, the sandbox helper and the code-mode toolchain under `~/.local`.",
-        ),
-      ),
-    ]),
-    html.div([attribute.class("install-code")], [
-      code.view(
-        "landing-install",
-        "sh",
-        "git clone https://github.com/Roasbeef/loom.git\ncd loom\nmake install\nexport PATH=\"$HOME/.local/bin:$PATH\"\n\nloom --demo        # the terminal, with no provider and no server\nloom               # in a project: starts or reconnects to the daemon",
-        model.copied,
       ),
     ]),
   ])

@@ -43,11 +43,6 @@ pub type Model {
     play_generation: Int,
     docs: Dict(String, Loaded),
     menu_open: Bool,
-    /// The landing page section under the reading line, or an empty string
-    /// above the first one.
-    section: String,
-    /// Whether the "On this page" list is open on a narrow screen.
-    contents_open: Bool,
     replay: Replay,
     /// The code sample that shows "Copied", if any.
     copied: Option(String),
@@ -65,8 +60,6 @@ pub fn new(current: Route) -> Model {
     play_generation: 0,
     docs: dict.new(),
     menu_open: False,
-    section: "",
-    contents_open: False,
     replay: new_replay(),
     copied: None,
     shot_view: msg.Compact,

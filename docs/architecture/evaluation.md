@@ -768,7 +768,7 @@ limits what was exercised, and it is worth being exact about it.
 | Refunding the unused part of a per-attempt reservation, so large-window targets can reach `Passed` | Follow-up to protocol-change/100 |
 | `Program` verifiers in governed comparisons | ADR-021, deferred |
 | `loom run -p` and the Harbor agent adapter | Built (`tui/run`, `integrations/harbor`); a real container run, an in-release ATIF export and strand-aware trajectories remain, see the adapter README |
-| The GEPA search | A later `eval/optimize`, consuming `Arm.components` and `Grade.side_info` |
+| The GEPA search | Built (`eval/optimize` over the `gepa` package, see the module table below); the remaining upstream techniques are tracked in issue #1126 |
 | The variance decomposition in the report | `eval/report`, calling `evalstat/paired.decompose` as it stands |
 | Mining of `client`, `tui` and `session_view` | After a measured per-module verifier cost |
 | Replace-mode tool descriptions, a SQLite ledger, LLM-judged tasks, byte-exact replay | Rejected (ADR-021 and the design note's cut list), not deferred |

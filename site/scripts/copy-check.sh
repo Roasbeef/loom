@@ -44,6 +44,15 @@ if ! grep -q 'github.com/Roasbeef/loom/releases/latest' "$here/public/content/ge
   status=1
 fi
 
+# The landing page links to the platform table on the install page, which is
+# the only place the site says what is not built and not supported.
+for needle in '^## Platforms' 'Linux arm64' 'Windows'; do
+  if ! grep -q "$needle" "$here/public/content/getting-started.md"; then
+    echo "copy-check: the install page lost its platform status ($needle)" >&2
+    status=1
+  fi
+done
+
 if [ "$status" -eq 0 ]; then
   echo "copy-check: clean"
 fi

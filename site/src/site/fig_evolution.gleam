@@ -4,8 +4,8 @@
 //// "Catalogue, commit and recovery", "Worker custody") and
 //// `packages/cap/src/cap/evolution.gleam` (the six calls a program makes and what
 //// `evolution.propose` refuses). The figure follows an extension on a local
-//// workspace, which is the only placement wired on `main`. The generation
-//// numbers are illustrative.
+//// workspace, the simplest placement. An executor that can compile does the
+//// same work for a remote session. The generation numbers are illustrative.
 ////
 //// The daemon box stands for the native evolution owner: it takes the
 //// snapshot, drives compilation and tests, serializes the replacement and

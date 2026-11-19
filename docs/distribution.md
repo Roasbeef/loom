@@ -825,7 +825,7 @@ smoke-testing its own artifact:
 |---|---|---|
 | `linux-x86_64` | a Linux x86_64 runner with Gleam, OTP, Go, rebar3 | built and smoke-tested |
 | `linux-arm64` | the same on arm64 | never run |
-| `macos-arm64` | a macOS runner | not yet published; helper runs under Seatbelt |
+| `macos-arm64` | a macOS runner | published since v0.3.2; helper runs under Seatbelt |
 
 The macOS helper uses the system `/usr/bin/sandbox-exec` with a generated
 Seatbelt profile. That binary is intentionally not bundled: the absolute
@@ -1214,8 +1214,8 @@ A `v*` tag starts `.github/workflows/release.yml`:
 Each build runs the server and bundled-client release smoke checks. Regular CI
 and required signoff remain separate gates to check before publishing the draft.
 The macOS runner image is recorded, but its label is not immutable like the
-Linux image digest; equality is checked for each run, never assumed. The new
-macOS release lane still needs its first successful hosted comparison. A
+Linux image digest; equality is checked for each run, never assumed. The
+macOS release lane's first hosted comparison passed for v0.3.2. A
 mismatch stops the workflow and leaves the candidate artifacts available for
 inspection. Do not publish a platform based on local unit tests alone.
 

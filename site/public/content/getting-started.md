@@ -57,7 +57,7 @@ loom --demo           # The terminal with canned content. No daemon, network or 
 
 On Linux, the sandbox needs bubblewrap, user namespaces and delegated cgroup v2 resources. The repository's `packages/sandbox/README.md` and `docs/docker.md` describe the host setup.
 
-By default the server refuses to start when a layer is missing: Linux must enforce everything, and macOS may lack only the three gaps that ADR-006 reports. `loomd --best-effort` accepts broader gaps for development machines, and `loomd --full-enforcement` demands the full contract on every platform.
+By default the broker refuses to run a command when a layer the platform promises is missing or skipped: Linux must enforce everything, and macOS may lack only the three gaps that ADR-006 reports. `loomd --best-effort` accepts broader gaps for development machines, and `loomd --full-enforcement` demands the full contract on every platform.
 
 ## Choose a model
 
@@ -89,11 +89,15 @@ Starting the daemon and listing sessions open no session runtimes. A session ope
 loom version                      # The installed client's version, commit and platform.
 loom update --check               # Verify the release metadata without installing.
 loom update                       # Install the latest stable release.
+loom update --nightly             # Install the newest published build of main.
 loom update --version {{tag}}     # Install a published tag.
+loom update --commit FULL_COMMIT  # Install the published build of one commit.
 loom update --install-only        # Install, and leave the daemon restart to you.
 ```
 
-Every archive must match its manifest's exact size and SHA-256. With `--keyring FILE --require-signature`, a signed manifest must also verify against your local keyring. Selecting the latest release refuses a known downgrade. An explicit tag is a deliberate choice and can move backwards.
+Every archive must match its manifest's exact size and SHA-256. With `--keyring FILE --require-signature`, a signed manifest must also verify against your local keyring. Selecting the latest release refuses a known downgrade. An explicit tag, commit or nightly is a deliberate choice and can move backwards.
+
+A nightly is a prerelease named `commit-<full-sha>`, built from `main` once a day by the same builders, with the same byte-for-byte comparison. It never becomes the latest stable release. `--nightly` and `--commit` install only builds that are already published. They never compile source and never fall back to a stable release.
 
 A client that you unpacked by hand is unmanaged, so give it a prefix: `loom update --prefix DIR`. That makes `DIR` a managed install with its own `bin`, `lib/loom/server` and `lib/loom/client`, and the update restarts the daemon from `DIR/bin/loomd`. The trees you unpacked by hand are left alone, so put `DIR/bin` first on your `PATH` afterwards.
 
@@ -134,6 +138,19 @@ make selftest
 It prints `ENFORCED`, `SKIPPED` or `FAILED` for each probe.
 
 To update a source build, run `make update` from a clean, committed checkout. It builds and smoke-tests its release artifacts, installs them and gracefully restarts the shared daemon. To package the archives that a release carries, run `make dist`. It writes the server tarball, the self-contained client tarball, the slim client tarball, a manifest and `SHA256SUMS`.
+
+To run the daemon in a container, `make docker-image` builds a Linux x86_64 image from the checkout. No image is published. The repository's `docs/docker.md` describes the two ways to run it and what each one enforces.
+
+## Platforms
+
+A release is built for one platform, because it carries a BEAM runtime and a native SQLite library built on that platform. The sources are `docs/distribution.md` and ADR-006 in the repository.
+
+| Platform | Release archives | Sandbox | State |
+|---|---|---|---|
+| Linux x86_64 | Built twice on separate runners and compared byte for byte. | bubblewrap and Landlock, seccomp when the network is off, cgroup v2 limits where a cgroup is delegated. | Built and smoke-tested in CI. |
+| macOS arm64 | Built twice on native macOS runners and compared byte for byte. | Seatbelt, with enforcement gaps that the helper reports. | Published since v0.3.2. |
+| Linux arm64 | None. The release workflow does not build it. | The sandbox code targets arm64. It has never been run. | The release build has never been run. |
+| Windows | None. | None. | Not supported. The design lists it as a later milestone. |
 
 ## Where to go next
 
