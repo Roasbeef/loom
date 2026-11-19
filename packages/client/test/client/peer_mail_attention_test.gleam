@@ -947,8 +947,6 @@ pub fn pending_approvals_are_listed_as_bounded_evidence_test() {
 
   // This host lent no policy, so the item names none and no call.
   assert absent(item, "policy")
-  assert absent(item, "call")
-  assert absent(item, "command")
   let assert json.Int(revision) = field(item, "revision")
   assert revision > 0
   let assert Ok(Nil) = api.close(runtime)

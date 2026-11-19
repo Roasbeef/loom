@@ -53,8 +53,6 @@ pub fn a_record_decodes_with_its_wanted_grants_test() {
           raised_at: None,
           network: None,
           policy: None,
-          call: None,
-          command: None,
         ),
       ]),
     )
@@ -95,8 +93,6 @@ pub fn a_reply_that_is_not_one_is_no_evidence_test() {
         raised_at: None,
         network: None,
         policy: None,
-        call: None,
-        command: None,
       ),
     ]
 }
