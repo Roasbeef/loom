@@ -1394,22 +1394,55 @@ pub fn a_host_copy_with_no_staged_script_is_staged_again_test() {
 }
 
 pub fn an_old_guests_leftovers_are_named_for_the_operator_test() {
-  let text =
-    string.join(vm_spec.retired_leftovers("dev", "/h/loom.toml", "/h/vm"), "\n")
+  let items = vm_spec.retired_leftovers("dev", "/h/loom.toml", "/h/vm")
+  let text = string.join(items, "\n")
 
-  // Each thing `rm` no longer undoes is named, with the cookie's reason.
-  assert string.contains(text, "[executors.dev] table in /h/loom.toml")
-  assert string.contains(text, "[distribution] table")
+  // The table is named with the file, and both shapes of guest are covered:
+  // one that minted its deployment lost the files the table names.
+  assert string.contains(text, "[distribution] table from /h/loom.toml")
+  assert string.contains(text, "/h/vm/dev/orch/")
+  assert string.contains(text, "the daemon will not start until the table")
+  assert string.contains(text, "no revoke is needed")
+  assert string.contains(text, "the guest joined a deployment")
+
+  // The revoke names its flags and comes before the key is deleted.
+  assert string.contains(text, "loom distribution revoke dev --force")
+  assert string.contains(text, "--passphrase-file")
+  let assert [before_delete, _] = string.split(text, "Delete /h/vm/authority/")
+  assert string.contains(before_delete, "loom distribution revoke dev")
+
+  // The cookie's reason is given, and the last item says why `up` refuses and
+  // what a guest that joined a ledger sees instead.
   assert string.contains(text, "~/.erlang.cookie")
   assert string.contains(text, "the guest held that cookie")
-  assert string.contains(text, "/h/vm/authority/")
-  assert string.contains(text, "loom distribution revoke dev")
-
-  // The last line says why `up` still refuses the name.
+  assert string.contains(text, "`loom vm up --name dev` refuses.")
   assert string.contains(
     text,
-    "`loom vm up --name dev` refuses until the [executors.dev] row is removed.",
+    "untrusted executor dev has the name of an executor",
   )
+}
+
+pub fn the_old_guest_report_and_preview_read_in_the_right_tense_test() {
+  let items = ["Remove x.", "Remove y."]
+
+  // After the deletion the heading says what was left as it was.
+  assert vm_spec.retired_removal_lines("/h/loom.toml", items)
+    == [
+      "`rm` left /h/loom.toml, the cookie and every ledger as they were. Remove by hand:",
+      "  - Remove x.",
+      "  - Remove y.",
+    ]
+
+  // Before it, the preview says what `--yes` will do and then what is left,
+  // and no line is prefixed as if it were an edit.
+  let preview = vm_spec.retired_preview_lines("/h/loom.toml", items)
+  assert preview
+    == [
+      "`--yes` removes the guest and changes nothing in /h/loom.toml, the cookie or any ledger. Afterwards, remove by hand:",
+      "  - Remove x.",
+      "  - Remove y.",
+    ]
+  assert !list.any(preview, string.contains(_, "leaves"))
 }
 
 // --- undoing an enrolment ----------------------------------------------------

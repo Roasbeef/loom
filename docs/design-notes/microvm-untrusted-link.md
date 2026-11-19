@@ -1,8 +1,8 @@
 # Reaching microVM guests over the untrusted link
 
 **Status**: proposed 2026-11-13 and ruled by the owner the same day (section 10:
-questions 1, 2, 3 and 5 as recommended). Slices 1 to 4 are built, and so is the
-all three parts of slice 5, which delete the distribution bring-up from
+questions 1, 2, 3 and 5 as recommended). Slices 1 to 4 are built, and so are the
+three parts of slice 5, which delete the distribution bring-up from
 `loom vm` and then from the launcher and the guest script (2026-11-18), and
 the `rm` teardown of guests an older loom made (2026-11-19). The ruling is recorded in
 ADR-022's addendum of 2026-11-17, which supersedes the link of the first
@@ -454,12 +454,12 @@ sealed authority key under `<vm home>/authority/<id>/`.
 |---|---|---|
 | Convert in place | needs the teardown code (`plan_teardown`, revoke through the sealed key) to run one last time inside `up`, plus deleting creds from a guest-written root | the most code, for a feature about two weeks old with few guests |
 | Keep the old path working forever | all of today's mint, join and teardown machinery stays | the exposure this note exists to remove stays on every old guest |
-| Refuse and name the way on | a resumed `up` on a guest with `deploy/` refuses, naming `loom vm sync` (to keep work), `loom vm rm <name> --yes` (which already removes the tables, the cookie when it is the guest's, the authority directory and the membership) and `loom vm up` | the guest's root and state disk are rebuilt |
+| Refuse and name the way on | a resumed `up` on a guest with `deploy/` refuses, naming `loom vm sync` (to keep work), `loom vm rm <name> --yes` (which deleted the guest and, when this table was written, also undid its enrolment; it now prints what the operator removes by hand) and `loom vm up` | the guest's root and state disk are rebuilt |
 
-**Recommended: refuse and name the way on.** `rm` kept its distribution
-teardown for one release so old guests could be removed, then it went with the
-rest; the 2026-11-19 addendum to ADR-022 records that it went at once, and that
-`rm` now prints what the operator removes by hand.
+**Recommended: refuse and name the way on.** This note first proposed that
+`rm` keep its distribution teardown for one release. The owner had it deleted on
+2026-11-19 instead (ADR-022, the addendum of that date): `rm` now deletes the
+guest's directory and prints what the operator removes by hand.
 
 Deleted once the migration is complete. The first part of this table, the
 bring-up of a distribution guest, was deleted on 2026-11-18, the day after the

@@ -267,14 +267,14 @@ private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
 the artifact manifest decoder and revision check, the guest's `loom.toml`, the
 `loom-vm run` and `cp` argument lists, `scrub_git_config`, the pid-file codec,
-the `epmd -names` reader and the daily verbs' decisions (`printable`, the
-checkouts record, `fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
-`read_enrolment`, `plan_teardown`). `client/vm_link` holds the decisions of the
+the daily verbs' decisions (`printable`, the checkouts record,
+`fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
+`retired_leftovers`). `client/vm_link` holds the decisions of the
 untrusted link, which every guest `up` and `ensure` make is on
 (protocol-change/109; ADR-022, the addendum of 2026-11-17). `client/vm_cli`
 performs them with `vm_link_pki`, `distribution_install` (the table merge),
 `host/bootstrap` (`spawn_server`, `process_identity`, `reserve_loopback_port`),
-`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname`, `git` and `epmd`,
+`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname` and `git`,
 `host/access` (`raw_request`, `execute`) for the daemon's `status`,
 `executors.reload` and `daemon.shutdown`, and `weft/poll`. It adds no FFI.
 

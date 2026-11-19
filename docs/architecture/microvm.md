@@ -848,14 +848,25 @@ rest of its directory, so an interrupted `rm` leaves `deploy/` or the `link`
 record behind with nothing they classify, and the next command still reads the
 guest as an old one. It changes nothing else: it rewrites no configuration,
 removes no cookie or sealed key, and signs no ledger revoke. It prints fixed
-lines (`vm_spec.retired_leftovers`) naming what the operator removes by hand:
-the `[executors.<name>]` table in the configuration file and, if no other
-executor uses it, the `[distribution]` table; `~/.erlang.cookie`, or a rotation
-of it, because the guest held that cookie; `<vm home>/authority/`; and `loom
-distribution revoke NAME` for a guest that joined a ledger. It says that `loom
-vm up` with the same name refuses until the row is removed, since a trusted
-`[executors.<name>]` row is foreign to the link `up` installs, and a daemon
-keeps accepting the cookie the guest held until the operator acts. The
+lines (`vm_spec.retired_leftovers`) naming what the operator removes by hand,
+for both shapes of old guest. A guest that minted its own deployment installed
+`[distribution]` pointing at `<vm home>/<name>/orch/`, which `rm` deleted, so
+the daemon will not start until that table and the `[executors.<name>]` table
+are removed from the configuration file, which also retires the deployment with
+no revoke. A guest that joined an operator's deployment has no
+`[executors.<name>]` row, because the daemon derives it from the ledger, and
+stays a member until `loom distribution revoke <name> --force
+--passphrase-file FILE` signs its revoke; the command looks for the key under
+`DIR/.loom/authority/<id>`, and a key `up` sealed is under
+`<vm home>/authority/<id>/`, so the line says to copy that directory there and
+pass `--home DIR`, and it comes before the line that deletes
+`<vm home>/authority/`. The other lines name `~/.erlang.cookie`, which the guest
+held and which is removed or rotated, and say that `loom vm up` with the same
+name refuses while a trusted `[executors.<name>]` row remains. For a guest that
+joined a ledger `up` writes an untrusted row instead and the daemon refuses
+`executors.reload` ("untrusted executor NAME has the name of an executor the
+ledger enrols") until the revoke lands. Without `--yes`, `rm` prints the same
+items under a heading in the future tense. The
 distribution teardown of `rm` was deleted on 2026-11-19 (ADR-022, the addendum
 of that date), after the mint, join and staging code on 2026-11-18. What stays
 is the detector (`vm_link.traces`, `made`, `settle`, `retired_refusal`) and the

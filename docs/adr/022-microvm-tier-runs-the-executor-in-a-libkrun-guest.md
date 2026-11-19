@@ -415,13 +415,20 @@ edited; those two sentences no longer describe the code.
 `loom vm rm --yes` on a guest made over distribution deletes the guest's
 directory and nothing else. It rewrites no configuration, removes no cookie or
 sealed key and signs no ledger revoke. It prints fixed lines naming what the
-operator removes by hand: the `[executors.NAME]` row and, if nothing else uses
-it, the `[distribution]` table; `~/.erlang.cookie`, or a rotation of it, since
-the guest held that cookie; `<vm home>/authority/`; and `loom distribution
-revoke NAME` for a guest that joined a ledger. It also says that `loom vm up`
-with the same name refuses until the row is removed, because a trusted
-`[executors.NAME]` row is foreign to the link `up` installs. The consequence is
-that a daemon keeps accepting a cookie the guest held until the operator acts.
+operator removes by hand, covering the two shapes of old guest. A guest that
+minted its own deployment installed a `[distribution]` table naming files under
+`<vm home>/NAME/orch/`, which `rm` has just deleted, so the daemon will not start
+until that table and the `[executors.NAME]` row are removed, and removing them
+retires the deployment with no revoke. A guest that joined an operator's
+deployment has no row of its own, because the daemon derives it from the ledger,
+and stays a member until `loom distribution revoke NAME --force` signs its
+revoke with the key, which `rm` tells the operator to do before deleting
+`<vm home>/authority/`. The lines also name `~/.erlang.cookie`, which the guest
+held and which is removed or rotated. They say that `loom vm up` with the same
+name refuses while a trusted `[executors.NAME]` row remains and, for a guest
+that joined a ledger, that `up` writes an untrusted row which the daemon
+refuses to reload until the revoke lands. The consequence is that a running
+daemon keeps accepting a cookie the guest held until the operator acts.
 
 The detector stays: `vm_link.traces`, `made`, `settle` and `retired_refusal`,
 `DeployTrace` and `LinkKind.Distribution`. Without it a guest with no `link`

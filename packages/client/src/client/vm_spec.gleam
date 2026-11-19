@@ -3618,51 +3618,121 @@ pub type Teardown {
   )
 }
 
-/// The lines `rm --yes` prints for a guest made over the retired distribution
-/// link, naming what the operator removes by hand. This release no longer edits
-/// the configuration, the cookie or the ledger for such a guest, so each line is
-/// a thing the guest's deployment left behind.
+/// The things the operator removes by hand after `rm --yes` of a guest made over
+/// the retired distribution link, one sentence each, in the order to do them.
+/// This release no longer edits the configuration, the cookie or the ledger for
+/// such a guest, and a guest has one of two shapes that need different words.
 ///
-/// The cookie line says the guest held that cookie, since anything that read the
-/// guest's root could have copied it. The last line says why `loom vm up` still
-/// refuses the name: a trusted `[executors.NAME]` row is foreign to the link
-/// that `up` installs.
+/// A guest that minted its own deployment installed `[distribution]` pointing at
+/// `<vm home>/NAME/orch/`, which `rm` has just deleted, so the daemon will not
+/// start until the table is removed; removing it retires that deployment and no
+/// revoke is needed. A guest that joined an operator's deployment has no
+/// `[executors.NAME]` row, because the daemon derives it from the ledger, and its
+/// membership stays until it is revoked. `loom distribution revoke` looks for the
+/// key under `DIR/.loom/authority`, and a key `up` sealed is under
+/// `<vm home>/authority/<id>/`, which no flag reaches, so the item says to put a
+/// copy where the command looks. The revoke comes before the item that deletes
+/// that directory, since the directory holds the only key that can sign it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let lines = vm_spec.retired_leftovers("dev", "/h/loom.toml", "/h/vm")
-/// assert list.any(lines, string.contains(_, "[executors.dev]"))
+/// let items = vm_spec.retired_leftovers("dev", "/h/loom.toml", "/h/vm")
+/// assert list.any(items, string.contains(_, "[executors.dev]"))
 /// ```
 pub fn retired_leftovers(
   name: String,
   config: String,
   vm_home: String,
 ) -> List(String) {
+  let orch = vm_home <> "/" <> name <> "/orch/"
+  let authority = vm_home <> "/" <> authority_dir <> "/"
   [
-    "This guest was made over the retired distribution link, so `rm` did not "
-      <> "change "
+    "Remove the [distribution] table from "
       <> config
-      <> ", the cookie or any ledger. Remove by hand:",
-    "  - the [executors."
+      <> ". If it names files under "
+      <> orch
+      <> " (the guest made its own deployment), `rm` has deleted them and the "
+      <> "daemon will not start until the table is removed, together with the "
+      <> "[executors."
       <> name
-      <> "] table in "
+      <> "] table; that retires the deployment and no revoke is needed. "
+      <> "Otherwise (the guest joined a deployment) remove the table only if "
+      <> "nothing else uses it.",
+    "For a guest that joined an operator's deployment, revoke it before "
+      <> "deleting "
+      <> authority
+      <> ": `loom distribution revoke "
+      <> name
+      <> " --force --passphrase-file FILE`, where --force is needed because "
+      <> "sessions may be placed on the guest. The command finds the key under "
+      <> "DIR/.loom/authority/<id>, so copy the directory "
+      <> authority
+      <> "<id> there and pass --home DIR; its passphrase is the file `passphrase` "
+      <> "inside it.",
+    "Remove ~/.erlang.cookie, or rotate it: the guest held that cookie, so "
+      <> "anything that read its files could have copied it.",
+    "Delete "
+      <> authority
+      <> ", the sealed authority key of a deployment the guest minted, once no "
+      <> "revoke above needs it.",
+    "While [executors."
+      <> name
+      <> "] is in "
       <> config
-      <> ", and the [distribution] table too when no other executor uses it",
-    "  - ~/.erlang.cookie, or rotate it: the guest held that cookie, so "
-      <> "anything that read its files could have copied it",
-    "  - "
-      <> vm_home
-      <> "/"
-      <> authority_dir
-      <> "/, the sealed authority key of a deployment the guest minted",
-    "  - for a guest that joined a ledger, run `loom distribution revoke "
+      <> ", `loom vm up --name "
       <> name
-      <> "`",
-    "`loom vm up --name "
+      <> "` refuses. A guest that joined a ledger has no such row; there `up` "
+      <> "writes an untrusted row, and the daemon refuses executors.reload "
+      <> "(\"untrusted executor "
       <> name
-      <> "` refuses until the [executors."
-      <> name
-      <> "] row is removed.",
+      <> " has the name of an executor the ledger enrols\") until the revoke "
+      <> "lands.",
+  ]
+}
+
+/// What `rm --yes` prints once it has deleted a guest made over the retired
+/// link: a heading in the past tense, then each item of `retired_leftovers`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lines = vm_spec.retired_removal_lines("/h/loom.toml", ["Remove x."])
+/// assert lines == [
+///   "`rm` left /h/loom.toml, the cookie and every ledger as they were. Remove by hand:",
+///   "  - Remove x.",
+/// ]
+/// ```
+pub fn retired_removal_lines(
+  config: String,
+  items: List(String),
+) -> List(String) {
+  [
+    "`rm` left "
+      <> config
+      <> ", the cookie and every ledger as they were. Remove by hand:",
+    ..list.map(items, fn(item) { "  - " <> item })
+  ]
+}
+
+/// What `rm` without `--yes` prints for such a guest: a heading in the future
+/// tense, then each item of `retired_leftovers`, so the preview reads as what
+/// will be left to do and not as something already done.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lines = vm_spec.retired_preview_lines("/h/loom.toml", ["Remove x."])
+/// assert list.first(lines) == Ok("`--yes` removes the guest and changes nothing in /h/loom.toml, the cookie or any ledger. Afterwards, remove by hand:")
+/// ```
+pub fn retired_preview_lines(
+  config: String,
+  items: List(String),
+) -> List(String) {
+  [
+    "`--yes` removes the guest and changes nothing in "
+      <> config
+      <> ", the cookie or any ledger. Afterwards, remove by hand:",
+    ..list.map(items, fn(item) { "  - " <> item })
   ]
 }

@@ -31,11 +31,11 @@
 ////   through `bring_up`, the same code `up` runs. Its last line of standard
 ////   output names the executor and workspace (`ensure`).
 //// - `down` signals the recorded process and waits for it (`down`).
-//// - `status` reports what the pid file, the process table and the host epmd
-////   say (`status`).
+//// - `status` reports what the pid file, the process table and the guest's
+////   records say (`status`).
 //// - logs prints the end of the console log (`logs`), and list prints one line
 ////   per guest directory (`guests`).
-//// - rm deletes a stopped guest and undoes its enrolment (`remove`).
+//// - rm deletes a stopped guest and undoes its untrusted enrolment (`remove`).
 //// - sync fetches a copy's committed work into the developer's checkout, or
 ////   bundles the checkout's commits for the guest (`sync`).
 ////
@@ -82,10 +82,9 @@
 //// and a deployment it minted has its authority key sealed under
 //// `<vm home>/authority/<deployment id>/` beside a generated `passphrase`. `up`
 //// and `ensure` refuse such a guest (`vm_link.settle`), and `status`, `list`,
-//// `logs`, `down`, `sync` and `rm` treat it as they always did; `rm` undoes
-//// its `[distribution]` and `[executors.<name>]` tables, its cookie, its
-//// sealed key and its ledger membership as `vm_spec.plan_teardown` and
-//// `removal_plan` decide.
+//// `logs`, `down`, `sync` and `rm` accept it; `rm` deletes its directory and
+//// prints what the operator removes by hand (`vm_spec.retired_leftovers`),
+//// because it no longer edits the configuration, the cookie or the ledger.
 ////
 //// ## Why the process is signalled by birth marker
 ////
@@ -228,13 +227,11 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             (--config PATH, default ~/.loom/loom.toml). For a guest on the
             untrusted link it removes [executors.NAME], and [executor_link]
             with the vm home's link credentials when no other untrusted guest
-            remains. A guest an older loom made as a distribution peer loses
-            its [executors.NAME], and the [distribution] table and the home's
-            .erlang.cookie only when they are this guest's deployment's and no
-            other trusted [executors.*] table remains; otherwise rm leaves them and
-            says so. Such a guest that joined a ledger deployment is revoked
-            with the key, when it is on this machine, and otherwise rm prints
-            the revoke to run; one that others joined is removed last. Every
+            remains. A guest an older loom made as a distribution peer is
+            deleted and nothing else changes: rm prints what you remove by
+            hand (the [distribution] table and [executors.NAME] row,
+            ~/.erlang.cookie, the authority directory and the ledger revoke),
+            and `loom vm up` refuses the name until the row is gone. Every
             other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
@@ -3640,8 +3637,9 @@ type RemovalPlan {
     // The configuration text after the tables go, or `None` when it is
     // unchanged.
     rewritten: option.Option(String),
-    // What the operator removes by hand, because this release no longer
-    // undoes it. Only a guest made over the retired distribution link has any.
+    // What the operator removes by hand, one sentence each, because this
+    // release no longer undoes it. Only a guest made over the retired
+    // distribution link has any.
     by_hand: List(String),
     // The vm home's link credentials, when this is the last untrusted guest
     // and nothing needs them any more.
@@ -3855,23 +3853,20 @@ fn planned_removal(
 
 /// What `--yes` would remove and leave in the configuration, for the refusal.
 fn removal_preview(plan: RemovalPlan) -> String {
-  string.join(
-    list.flatten([
-      [preview_header(plan)],
-      list.map(removed_things(plan), fn(thing) { "  removes " <> thing }),
-      list.map(plan.by_hand, fn(line) { "  leaves " <> line }),
-      list.map(plan.teardown.left, fn(line) { "  leaves " <> line }),
-    ]),
-    "\n",
-  )
-}
-
-/// The first line of the preview: a guest made over the retired link has no
-/// edit made to the configuration, only to its own directory.
-fn preview_header(plan: RemovalPlan) -> String {
+  // A guest made over the retired link edits nothing, so its preview is the
+  // list of what the operator removes afterwards and not a list of edits.
   case plan.by_hand {
-    [] -> "`--yes` also undoes the enrolment in " <> plan.config <> ":"
-    _ -> "`--yes` removes the guest and leaves " <> plan.config <> " as it is:"
+    [] ->
+      string.join(
+        list.flatten([
+          ["`--yes` also undoes the enrolment in " <> plan.config <> ":"],
+          list.map(removed_things(plan), fn(thing) { "  removes " <> thing }),
+          list.map(plan.teardown.left, fn(line) { "  leaves " <> line }),
+        ]),
+        "\n",
+      )
+    items ->
+      string.join(vm_spec.retired_preview_lines(plan.config, items), "\n")
   }
 }
 
@@ -3934,7 +3929,10 @@ fn apply_removal(
     list.flatten([
       ["Removed the guest " <> name <> ": deleted " <> guest.directory <> "."],
       list.map(removed_things(plan), fn(thing) { "Removed " <> thing <> "." }),
-      plan.by_hand,
+      case plan.by_hand {
+        [] -> []
+        items -> vm_spec.retired_removal_lines(plan.config, items)
+      },
       list.map(plan.teardown.left, fn(line) { "Left in place: " <> line }),
       daemon_lines,
     ]),

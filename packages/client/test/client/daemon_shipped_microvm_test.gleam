@@ -1601,8 +1601,7 @@ fn old_guests_are_refused(run: Run) -> Nil {
 
   // The file holds what a minted distribution guest installed, its
   // `[distribution]` table and trusted row under the node names `up` gave it,
-  // beside an untrusted row of another guest, which must not keep the
-  // deployment's table alive once its guest is removed.
+  // beside an untrusted row of another guest. `rm` must leave all of it.
   let names = vm_spec.names(up_name)
   let kept_text =
     remote_daemons.model_table("http://127.0.0.1:9")
@@ -1707,7 +1706,7 @@ fn old_guests_are_refused(run: Run) -> Nil {
         "the guest held that cookie",
         "/authority/",
         "loom distribution revoke " <> name,
-        "`loom vm up --name " <> name <> "` refuses until",
+        "`loom vm up --name " <> name <> "` refuses.",
       ],
       fn(leftover) {
         assert string.contains(removed, leftover)
