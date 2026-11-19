@@ -5140,3 +5140,58 @@ equals the rows its band draws, that a press for a folder the page does not list
 changes nothing, and that an emptied folder draws as "Everything, by need". The
 client's `ui_socket_test`, `ui_route_test` and `daemon_server_test` are run
 unchanged.
+
+## Addendum: the live mode's stream and composer (2026-11-19)
+
+The final design of the live mode
+(`docs/design-notes/attention-inbox/final/mockup.html`) changes how the session
+page draws its stream, its rail and its composer. Nothing the page reads or the
+daemon sends changes, and no handler moves.
+
+### What it changes in the markup
+
+- **The stream.** A row is the gutter, the dot and the piece. A tool call, a
+  spawn, a result and a settled turn's divider are each one bordered line with
+  the outcome as a word at the right edge. The word comes from a fixed class
+  (`work-ok`, `work-failed`, `work-stopped`, `spawn-started`, `spawn-failed`,
+  and `tool-line` with `done`, `failed` or `pending`) that the view chose from a
+  closed type, and the stylesheet draws it as `content`. The divider is still
+  one button holding one text node, with the same `data-loom-fold` marker, so
+  `<loom-follow>` hears the same press. A row the rail lifted carries a third
+  child, `lifted · Kind`, and a fourth, the row's time, which no page draws yet.
+  An answer in a `Plain` piece gains a `speech` wrapper and a speaker line, a
+  fixed word taken from the strand's name; the block inside it keeps its place
+  beneath the wrapper. The jump markers, `data-loom-row` and the message-toggle
+  paths are unchanged.
+- **The rail.** The card is the list item, so an ask's form is inside its
+  border. The group title is a heading with two spans, the count and a fixed
+  gloss. The groups' last sibling is a note. `rail_path` and the
+  `1\t1\t1\t<n>\t0` path of an insight's press are unchanged: the title is still
+  the group's first child, the list its second, and the card's button its first
+  child.
+- **The strip.** `view/stream_head` is a label with no handler. It is the centre
+  column's last child and the stylesheet orders it first, so `older_path` and
+  every path beneath the centre keep their positions.
+- **The composer.** The line above the editor reads
+  `To <session> · <strand> · running`, with `waiting on the approval` while an
+  approval is pending. A busy strand's hint says what Queue and Steer do. Queue
+  and Steer are the same submit buttons with the same `delivery` values
+  (protocol-change/022). The dock's approval card keeps its order and its
+  rules: Deny first, buttons naming the tool, the 600 ms arming delay and no
+  autofocus.
+
+### What it does not do
+
+The page has no time for a row, a lifted item or a turn, and no request count
+for a generation. Each has a place in the view that stays empty until the data
+exists: `Marks.times`, `lifted.Item.at` and `stream_head.Head.turn`. A rail
+entry for a stuck strand has no "Retry the last step" button, because a send
+from the rail would be a new handler that the observer's socket would have to
+refuse by path; the retry stays on Home's thread, where `ItemRetried` already
+gates it.
+
+### Verification
+
+`web_view/test/lifted_test.gleam` and `operator_page_test.gleam` pin the new
+words and the unchanged paths. `ui_socket_test`, `ui_route_test` and
+`daemon_server_test` pass without a change to the admitted set.

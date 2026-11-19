@@ -803,9 +803,8 @@ page keys and nonces, and the relay into the session's gateway.
   `expansion.capped` and is drawn only while open. Observer sockets admit the
   button's click at `component.message_click`'s two exact paths (the protocol-change/070 addendum on messages).
   A step still running draws `Running · ` and `<loom-elapsed since>` from
-  `turns.Step.since` (`fold_row.step`), and the composer's hint draws a pulsing
-  `span.busy-dot` while a turn runs (`operator_page.busy_mark`); the stylesheet's
-  reduced-motion rule stills both. `component.top(model)` is the `lane.Top` the lane draws above its
+  `turns.Step.since` (`fold_row.step`); the stylesheet's reduced-motion rule
+  stills its pulse. `component.top(model)` is the `lane.Top` the lane draws above its
   oldest row (`Beginning`, `Earlier`, `Loading` while the page reads turns,
   `Full(rows)`); the strands a reader left park their closed turns with their
   paging (`View.parked_sealed`). The Changes and Trace boards and the newest tool
@@ -1952,6 +1951,31 @@ exists in the lane until phase 1b adds asks). `component.sheet` is the phone's
 `<details>` bar and sheet, appended as the centre's last child and ordered above
 the dock by CSS; its rows are not handlers. `lifted_test` pins all of this with
 seed 20261118. The jump itself is `web_client/follow`'s.
+
+**The final design's look** (protocol-change/051, the addendum on the live mode's
+stream and composer). A rail row is a card (`li.lift` with a `lift-ask`,
+`lift-stuck`, `lift-find`, `lift-failed`, `lift-result`, `lift-peer` or
+`lift-approval` class chosen from `attention.Kind`), a chip with
+`lifted.kind_word`, the source, a jump link drawn by the stylesheet from
+`data-loom-jump`, then the words; an ask's form (drawn by `attention_thread`)
+sits inside the same card and the stylesheet dresses its options as numbered
+blocks. Each group's title carries its count and a fixed gloss, and
+`lift-note` closes the groups. `lane.Marks` gained `lifted: Dict(String,
+Lifting)` (hold and kind word, drawn as `lifted · Kind` under the row) and
+`times: Dict(String, String)`, the row time for the stream's gutter, empty
+today because no record the page reads carries one. A tool call is a
+`tool-line` (`fold_row.step`), a turn's divider carries `work-ok`,
+`work-failed` or `work-stopped`, and a spawn `spawn-started` or
+`spawn-failed`; the stylesheet draws the outcome word at the right edge, so the
+divider is still one text node. A `Plain` piece with an assistant line is
+wrapped in `div.speech` under a speaker line. `view/stream_head` is the strip
+above the stream (`component.stream_head`, the centre's last child, ordered
+first), with `Head.turn` empty until the page has a turn time; `lifted.Item.at`
+is the rail card's time, empty for the same reason. The composer's line reads
+`To <session> · <strand> · running`, and a busy strand's hint says what Queue and
+Steer do. A stuck strand's rail card has no Retry button: a send from the rail
+would be a new handler beneath `rail_path`, which an observer's socket already
+admits for the insights' presses.
 
 ## Evolution tab (protocol-change/099)
 
