@@ -244,22 +244,33 @@ pub const remembered_key = "client/permission_grants"
 fn remembered_network(runtime: api.Runtime) -> Remembered {
   case api.fact(runtime, remembered_key) {
     Ok(None) -> NothingRemembered
-    Ok(Some(json.Object(fields))) ->
-      case list.key_find(fields, "grants") {
-        Ok(json.Array(encoded)) ->
-          case grants.decode_all(encoded) {
-            Ok(held) ->
-              case
-                list.contains(held, policy.GrantNetwork(policy.NetworkFull))
-              {
-                True -> NetworkRemembered
-                False -> NothingRemembered
-              }
-            Error(_) -> Unknown
-          }
-        Ok(_) | Error(Nil) -> Unknown
-      }
+    Ok(Some(json.Object(fields))) -> held_network(fields)
     Ok(Some(_)) | Error(_) -> Unknown
+  }
+}
+
+/// The remembered grants of a decoded cell, as far as the network goes.
+fn held_network(fields: List(#(String, JsonValue))) -> Remembered {
+  // A cell whose grants are missing, are not a list or do not decode is not
+  // known, which is not the same as holding nothing.
+  let held = case list.key_find(fields, "grants") {
+    Ok(json.Array(encoded)) ->
+      grants.decode_all(encoded) |> result.replace_error(Nil)
+    Ok(_) | Error(Nil) -> Error(Nil)
+  }
+
+  // Only grants that were read can say whether a network is remembered.
+  case held {
+    Ok(held) -> network_in(held)
+    Error(Nil) -> Unknown
+  }
+}
+
+/// Whether remembered grants hold a full network.
+fn network_in(held: List(policy.Grant)) -> Remembered {
+  case list.contains(held, policy.GrantNetwork(policy.NetworkFull)) {
+    True -> NetworkRemembered
+    False -> NothingRemembered
   }
 }
 
