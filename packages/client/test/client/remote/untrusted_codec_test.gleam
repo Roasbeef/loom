@@ -2236,6 +2236,7 @@ fn every_broker_refusal() -> List(broker.Refusal) {
     policy.DuplicateMount(path: "/a"),
     policy.MountPathTrailingSlash(path: "/a/"),
     policy.MountPathParentSegment(path: "/a/../b"),
+    policy.RootPathParentSegment(path: "/w/.."),
     policy.MountShadowsWritableRoot(mount: "/", writable_root: "/work"),
   ]
   let spawn_errors = [

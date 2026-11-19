@@ -403,6 +403,41 @@ it once no old guest can exist. Design note `microvm-untrusted-link.md`,
 section 8, slice 5, records the two parts. This supersedes nothing else in
 this ADR or its addenda.
 
+## Addendum, 2026-11-19: `rm` no longer undoes an old guest's enrolment
+
+The owner asked to finish deleting the distribution path. This supersedes the
+sentence of the 2026-11-17 addendum that says `rm` keeps its distribution
+teardown (tables, cookie, sealed key, ledger revoke) for one release, and the
+sentence of the 2026-11-18 addendum that says `rm`'s teardown of a guest made
+over distribution is kept until a later change deletes it. Earlier text is not
+edited; those two sentences no longer describe the code.
+
+`loom vm rm --yes` on a guest made over distribution deletes the guest's
+directory and nothing else. It rewrites no configuration, removes no cookie or
+sealed key and signs no ledger revoke. It prints fixed lines naming what the
+operator removes by hand, covering the two shapes of old guest. A guest that
+minted its own deployment installed a `[distribution]` table naming files under
+`<vm home>/NAME/orch/`, which `rm` has just deleted, so the daemon will not start
+until that table and the `[executors.NAME]` row are removed, and removing them
+retires the deployment with no revoke. A guest that joined an operator's
+deployment has no row of its own, because the daemon derives it from the ledger,
+and stays a member until `loom distribution revoke NAME --force` signs its
+revoke with the key, which `rm` tells the operator to do before deleting
+`<vm home>/authority/`. The lines also name `~/.erlang.cookie`, which the guest
+held and which is removed or rotated. They say that `loom vm up` with the same
+name refuses while a trusted `[executors.NAME]` row remains and, for a guest
+that joined a ledger, that `up` writes an untrusted row which the daemon
+refuses to reload until the revoke lands. The consequence is that a running
+daemon keeps accepting a cookie the guest held until the operator acts.
+
+The detector stays: `vm_link.traces`, `made`, `settle` and `retired_refusal`,
+`DeployTrace` and `LinkKind.Distribution`. Without it a guest with no `link`
+record reads as new, and `up` would keep its root, with the cookie and node key,
+as an untrusted guest. `status` prints one `link:` line for such a guest, and
+`status`, `list`, `logs`, `down` and `sync` read it as before. The population is
+guests made between #1154 (2026-11-02) and 2026-11-17 on nightly builds. This
+supersedes nothing else in this ADR or its addenda.
+
 ## Addendum, 2026-11-19: `--workspace-mode` for seeded children
 
 A seeded spawn (`seed = "workspace"`, protocol-change/107) on an executor or a

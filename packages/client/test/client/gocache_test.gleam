@@ -13,6 +13,28 @@ import gleam/result
 import gleam/string
 import simplifile
 
+// A cache place an operator spelled with `..` is cleaned before the root is
+// built, so the root `policy.validate` sees has no `..` segment and the helper
+// binds the path the daemon judged.
+pub fn a_parent_segment_in_the_cache_place_is_cleaned_test() {
+  let assert Some(caches) =
+    gocache.locate(Some("/home/u/../cache/"), apart_workspace, None, 10)
+  assert string.starts_with(caches.root, "/home/cache/loom/workspace/")
+  assert policy.validate(
+      policy.SandboxPolicy(
+        ..policy.workspace_default(apart_workspace),
+        writable_roots: [caches.root],
+      ),
+    )
+    == Ok(Nil)
+}
+
+// A place that climbs above the root has no cleaned form, so the session
+// keeps the old behaviour instead of a refused boot.
+pub fn a_cache_place_above_the_root_gives_no_private_caches_test() {
+  assert gocache.locate(Some("/../cache"), apart_workspace, None, 10) == None
+}
+
 fn caches_at(root: String, limit_mib: Int) -> gocache.GoCaches {
   gocache.GoCaches(root:, mirror: None, limit_kib: limit_mib * 1024)
 }

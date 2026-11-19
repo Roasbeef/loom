@@ -4066,6 +4066,8 @@ fn encode_policy_error(error: sandbox_policy.PolicyError) -> JsonValue {
       tagged("mount_path_trailing_slash", [#("path", json.String(path))])
     sandbox_policy.MountPathParentSegment(path:) ->
       tagged("mount_path_parent_segment", [#("path", json.String(path))])
+    sandbox_policy.RootPathParentSegment(path:) ->
+      tagged("root_path_parent_segment", [#("path", json.String(path))])
     sandbox_policy.MountShadowsWritableRoot(mount:, writable_root:) ->
       tagged("mount_shadows_writable_root", [
         #("mount", json.String(mount)),
@@ -4108,6 +4110,10 @@ fn decode_policy_error(
     "mount_path_parent_segment" -> {
       use path <- result.map(string_field(fields, "path"))
       sandbox_policy.MountPathParentSegment(path:)
+    }
+    "root_path_parent_segment" -> {
+      use path <- result.map(string_field(fields, "path"))
+      sandbox_policy.RootPathParentSegment(path:)
     }
     "mount_shadows_writable_root" -> {
       use mount <- result.try(string_field(fields, "mount"))

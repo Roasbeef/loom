@@ -3824,13 +3824,11 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             (--config PATH, default ~/.loom/loom.toml). For a guest on the
             untrusted link it removes [executors.NAME], and [executor_link]
             with the vm home's link credentials when no other untrusted guest
-            remains. A guest an older loom made as a distribution peer loses
-            its [executors.NAME], and the [distribution] table and the home's
-            .erlang.cookie only when they are this guest's deployment's and no
-            other trusted [executors.*] table remains; otherwise rm leaves them and
-            says so. Such a guest that joined a ledger deployment is revoked
-            with the key, when it is on this machine, and otherwise rm prints
-            the revoke to run; one that others joined is removed last. Every
+            remains. A guest an older loom made as a distribution peer is
+            deleted and nothing else changes: rm prints what you remove by
+            hand (the [distribution] table and [executors.NAME] row,
+            ~/.erlang.cookie, the authority directory and the ledger revoke),
+            and `loom vm up` refuses the name until the row is gone. Every
             other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
