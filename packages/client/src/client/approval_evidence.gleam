@@ -286,7 +286,7 @@ fn policy_words(today: Option(Today), remembered: Remembered) -> Option(Today) {
 }
 
 /// The network the call would have if it were approved. `on` when the denial
-/// wants a network grant that is not `off`, when a full network is remembered, or
+/// wants a `full` or `proxy` network grant, when a full network is remembered, or
 /// when the policy today lets tools out. `off` only when the policy today is
 /// off and nothing remembered or wanted adds a network. Nothing in every other
 /// case, loopback included, since a word that cannot be exact is left out.
@@ -295,25 +295,52 @@ fn network_word(
   remembered: Remembered,
   denial: JsonValue,
 ) -> Option(String) {
-  let wants_network = list.any(wanted_list(denial), wants_network_on)
+  let wanted = wanted_network(denial)
 
-  // Anything that adds a network makes the call `on`, and `off` needs the whole
-  // of the policy to be known.
-  case wants_network, remembered, policy_words(today, remembered) {
-    True, _, _ | False, NetworkRemembered, _ -> Some("on")
-    False, _, Some(Today(network: "off", ..)) -> Some("off")
-    False, _, Some(Today(network: "proxy", ..))
-    | False, _, Some(Today(network: "on", ..))
+  // Anything that adds a network makes the call `on`, a wanted network whose mode
+  // is not one this module knows leaves the answer unknown, and `off` needs the
+  // whole of the policy to be known.
+  case wanted, remembered, policy_words(today, remembered) {
+    WantsNetwork, _, _ | WantsNothing, NetworkRemembered, _ -> Some("on")
+    WantsUnknown, _, _ -> None
+    WantsNothing, _, Some(Today(network: "off", ..)) -> Some("off")
+    WantsNothing, _, Some(Today(network: "proxy", ..))
+    | WantsNothing, _, Some(Today(network: "on", ..))
     -> Some("on")
-    False, _, Some(Today(network: _, ..)) | False, _, None -> None
+    WantsNothing, _, Some(Today(network: _, ..)) | WantsNothing, _, None -> None
   }
 }
 
-/// Whether a wanted grant is a network grant for a mode other than `off`.
-fn wants_network_on(grant: JsonValue) -> Bool {
-  field_text(grant, "grant") == "network"
-  && network_mode(grant) != "off"
-  && network_mode(grant) != ""
+/// What a denial's wanted grants say about the network.
+type WantedNetwork {
+  /// A network grant that lets the call out (`full` or `proxy`) is wanted.
+  WantsNetwork
+
+  /// No network grant is wanted, or only one for mode `off`.
+  WantsNothing
+
+  /// A network grant is wanted whose mode is loopback, empty or unreadable, which
+  /// is neither on nor off, so nothing can be said.
+  WantsUnknown
+}
+
+/// The network a denial wants: `WantsNetwork` if any wanted grant opens it, else
+/// `WantsUnknown` if any is a network grant of a mode this module cannot place.
+fn wanted_network(denial: JsonValue) -> WantedNetwork {
+  let modes =
+    wanted_list(denial)
+    |> list.filter(fn(grant) { field_text(grant, "grant") == "network" })
+    |> list.map(network_mode)
+
+  // A network that opens wins, then one that cannot be placed, then none.
+  case
+    list.any(modes, fn(mode) { mode == "full" || mode == "proxy" }),
+    list.all(modes, fn(mode) { mode == "off" })
+  {
+    True, _ -> WantsNetwork
+    False, True -> WantsNothing
+    False, False -> WantsUnknown
+  }
 }
 
 /// names no action has none, which the page words as unknown.

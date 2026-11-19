@@ -1065,6 +1065,62 @@ pub fn the_network_word_is_left_out_when_it_cannot_be_exact_test() {
   let assert Ok(Nil) = api.close(runtime)
 }
 
+fn denial_wanting(grant: JsonValue) -> JsonValue {
+  json.Object([
+    #("reason", json.String("the program wants the network")),
+    #("source", json.String("policy")),
+    #("wanted", json.Array([grant])),
+  ])
+}
+
+fn network_grant(mode: JsonValue) -> JsonValue {
+  json.Object([#("grant", json.String("network")), #("network", mode)])
+}
+
+// A wanted network whose mode is loopback, empty or unreadable is neither on nor
+// off, so the item says nothing even where the policy today is `off`, while a
+// wanted `off` or `full` is placed.
+pub fn a_wanted_network_that_cannot_be_placed_leaves_the_word_out_test() {
+  let word = fn(grant) {
+    let runtime = open()
+    let #(operation, _) =
+      ids.mint_op(ids.generator(clock.fixed(at: 5), seed: 3))
+    let assert Ok(_) =
+      api.claim_escalation(
+        runtime,
+        "esc-w",
+        denial_wanting(grant),
+        action: escalation.Action(tool: "bash", digest: "d", preview: "{}"),
+        scope: escalation.CallScope(
+          operation:,
+          strand: "main",
+          step_id: "step-1",
+          source_index: 0,
+          call_id: "call-w",
+        ),
+        max_asks: 3,
+      )
+      as "the escalation is raised"
+    let assert [item] = items_of(runtime, today("off"))
+    let seen = case absent(item, "network") {
+      True -> json.Null
+      False -> field(item, "network")
+    }
+    let assert Ok(Nil) = api.close(runtime)
+    seen
+  }
+  let mode = fn(text) { json.Object([#("mode", json.String(text))]) }
+
+  assert word(network_grant(mode("loopback"))) == json.Null
+  assert word(network_grant(mode(""))) == json.Null
+  assert word(network_grant(json.String("garbled"))) == json.Null
+  assert word(json.Object([#("grant", json.String("network"))])) == json.Null
+
+  // Modes that can be placed still are.
+  assert word(network_grant(mode("off"))) == json.String("off")
+  assert word(network_grant(mode("full"))) == json.String("on")
+}
+
 fn remember(runtime: api.Runtime, payload: JsonValue) -> Nil {
   let assert Ok(Nil) =
     api.put_reserved_fact(runtime, approval_evidence.remembered_key, payload)
