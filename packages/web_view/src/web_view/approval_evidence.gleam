@@ -102,6 +102,25 @@ pub type Evidence {
   )
 }
 
+/// When the oldest of the pending approvals the evidence carries was raised, or
+/// nothing when none of them carries a time. It is the time the thread's age
+/// and its "waiting since" are counted from, and the time after which the
+/// session's peer messages are wanted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert approval_evidence.oldest_raised(approval_evidence.Evidence(0, []))
+///   == option.None
+/// ```
+pub fn oldest_raised(evidence: Evidence) -> Option(Int) {
+  list.filter_map(evidence.items, fn(item) {
+    option.to_result(item.raised_at, Nil)
+  })
+  |> list.reduce(int.min)
+  |> option.from_result
+}
+
 /// What the page has of a session's approval evidence.
 pub type Seen {
   /// The daemon answered with this evidence.

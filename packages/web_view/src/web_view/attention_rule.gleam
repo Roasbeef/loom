@@ -39,6 +39,7 @@ import gleam/order
 import gleam/string
 import web_view/attention_feed.{type Ask, type Find, type Row, type Stuck}
 import web_view/saved_attention.{type Saved}
+import web_view/thread_words
 
 /// One open thing in a session that a person can act on: an ask to answer, a
 /// find to close, or a strand that stopped on a failure. The session is the
@@ -258,22 +259,7 @@ pub fn row_wait(item: Item, now: Int) -> Option(Int) {
 /// assert attention_rule.row_age(item, 4_920_000) == Some("1h 22m")
 /// ```
 pub fn row_age(item: Item, now: Int) -> Option(String) {
-  option.map(since(item), fn(at) {
-    let wait = now - at
-    let minutes = wait / 60_000
-
-    // Minutes alone below an hour, hours and minutes below a day, then days.
-    case wait < 60_000, minutes < 60, wait < day_ms {
-      True, _, _ -> "now"
-      False, True, _ -> int.to_string(minutes) <> "m"
-      False, False, True ->
-        int.to_string(minutes / 60)
-        <> "h "
-        <> string.pad_start(int.to_string(minutes % 60), 2, "0")
-        <> "m"
-      False, False, False -> int.to_string(wait / day_ms) <> "d"
-    }
-  })
+  option.map(since(item), fn(at) { thread_words.short_age(now - at) })
 }
 
 /// A saved session whose catalogue summary holds something open, as the thread
