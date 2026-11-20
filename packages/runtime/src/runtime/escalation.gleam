@@ -179,7 +179,7 @@ pub type Action {
 /// record written before it existed.
 ///
 /// `raised_at` is the Unix-millisecond time the current question was put to a
-/// person (protocol-change/124): the raise that opened the row, or the raise
+/// person (protocol-change/126): the raise that opened the row, or the raise
 /// that re-opened it after a decision. A claim that moves a still-pending
 /// record keeps it, because the question has not changed. It is `None` on a
 /// record written before the field existed, and a reader that wants an age
@@ -421,7 +421,7 @@ fn optional_int(
 }
 
 /// Decodes an optional time field: absent or null is "not recorded", which is
-/// what every record written before protocol-change/124 says.
+/// what every record written before protocol-change/126 says.
 fn optional_time(
   fields: List(#(String, JsonValue)),
   key: String,

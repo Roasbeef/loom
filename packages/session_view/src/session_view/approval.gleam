@@ -96,7 +96,7 @@ pub type Review {
     /// orchestrator, or `None` for this session's own.
     remote: Option(Remote),
     /// Unix milliseconds at which the question was put to a person, or `None`
-    /// for a row written before protocol-change/124, for a value that is not a
+    /// for a row written before protocol-change/126, for a value that is not a
     /// non-negative number, and for a child's request on another orchestrator,
     /// which carries no time. A page that has no time draws none.
     raised_at: Option(Int),

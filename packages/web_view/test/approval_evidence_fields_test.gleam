@@ -1,4 +1,4 @@
-//// The fields protocol-change/124 and the addendum to 120 add to an approval
+//// The fields protocol-change/126 and the addendum to 120 add to an approval
 //// item: the raise time, the network word and the policy today.
 ////
 //// Each decodes when present. A damaged one is absent and costs the item

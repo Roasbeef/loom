@@ -356,7 +356,7 @@ extended by the M3 runtime wave.
   not a question the model is wearing down. `bound_to` is
   `scoped_to`'s sibling and fails the same way: a record naming no
   action matches nothing.
-- **`raised_at`** (protocol-change/124): the Unix-ms time the pending question
+- **`raised_at`** (protocol-change/126): the Unix-ms time the pending question
   was put to a person. `raised` and `claimed` take it as `at:` and the api reads
   the runtime clock at each raise and at each retry of a claim, so the record
   transitions stay clock-free. A claim that only moves a pending record keeps it;

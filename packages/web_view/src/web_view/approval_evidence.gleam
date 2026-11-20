@@ -9,7 +9,7 @@
 //// evidence is only what a person reads on the way there.
 ////
 //// An item carries the time its question was put to a person when the record has
-//// one (protocol-change/124), the network the call would have and the session's
+//// one (protocol-change/126), the network the call would have and the session's
 //// policy today (protocol-change/120, the addendum on approval words), each
 //// left out when the daemon could not make it exact. A record from before the
 //// raise time was stored has none, and no page words an age for it. The tool,

@@ -1,4 +1,4 @@
-# protocol-change/124: the escalation's raise time
+# protocol-change/126: the escalation's raise time
 
 **Status**: PROPOSED 2026-11-19. The owner accepted autonomous protocol
 changes for the attention inbox build on 2026-11-17. This is part of the data

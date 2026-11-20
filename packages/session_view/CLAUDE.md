@@ -450,7 +450,7 @@ pieces and the register's reviews and lifts what needs the owner.
   storage numbers from the same counter as transcript entries. With no
   decisions to place it preserves the existing pieces and list spine, avoiding
   a full transcript traversal on every render.
-- `approval.Review.raised_at` (protocol-change/124): `Option(Int)` Unix ms from
+- `approval.Review.raised_at` (protocol-change/126): `Option(Int)` Unix ms from
   the local record's `raised_at`; `None` for an older record and for a remote
   child's request, and a negative or mistyped value is `None` and does not fail the review.
 - `approval.Review.call`: `Option(String)`, the provider's id of the tool call

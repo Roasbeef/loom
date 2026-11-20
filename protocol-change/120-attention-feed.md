@@ -713,7 +713,7 @@ each new member as optional, so a row from an older daemon decodes with none.
 
 | Member | Meaning |
 |---|---|
-| `raised_at` | [124](124-escalation-raise-time.md). |
+| `raised_at` | [126](126-escalation-raise-time.md). |
 | `network` | `on` or `off`: the network the call would have if approved. `on` when the denial wants a `full` or `proxy` network grant (a wanted grant whose mode is loopback, empty or unreadable leaves the word out), when the session remembers a full network (`client/permission_grants`, read at the moment of the read), or when the policy today lets tools out (`proxy` or unrestricted). `off` only when the policy today is `off` and nothing remembered or wanted adds a network. Absent in every other case: no policy lent, remembered grants that do not decode, and loopback, which is neither. A word that cannot be exact is left out, because evidence that understates what a call gets is the dangerous direction. |
 | `policy` | `{"sandbox", "network"}`, the words for the assembled base policy of the session (`plane.census.base_policy`, which the host passes to the Agency when it starts it) with the remembered grants folded in: `workspace-write` when the jail may write under a root and `read-only` when it may not, and `off`, `loopback`, `proxy` or `on`. Absent when the host lent no base or the remembered grants are not known. Computed at the read and never stored. |
 

@@ -940,7 +940,7 @@ pub fn pending_approvals_are_listed_as_bounded_evidence_test() {
       ]),
     ])
 
-  // The raise stamps the runtime's clock (protocol-change/124), and the denial
+  // The raise stamps the runtime's clock (protocol-change/126), and the denial
   // wants a network grant, so the call would have the network.
   assert field(item, "raised_at") == json.Int(now)
   assert field(item, "network") == json.String("on")

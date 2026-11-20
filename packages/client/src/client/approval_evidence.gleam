@@ -9,7 +9,7 @@
 //// It never decides, consumes or claims a record.
 ////
 //// An item carries `raised_at`, the time the record's question was put to a
-//// person (protocol-change/124), and none for a record written before that
+//// person (protocol-change/126), and none for a record written before that
 //// field existed. The record's scope names the operation that held the claim,
 //// and an operation can run for hours before it raises, so no age is ever
 //// worded from the scope (120 rejects the same idea for the feed).

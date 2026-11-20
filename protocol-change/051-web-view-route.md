@@ -5042,7 +5042,7 @@ and Answer are sent at once.
   exist for the control commands. The in-process feed (`ui_projects.Feed`) gains
   `stop` and `retry` with the same codes the commands answer, which is an
   in-process addition and changes no wire shape, so there is no
-  `protocol-change/124`.
+  new protocol change.
 
 ### Cost
 

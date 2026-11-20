@@ -749,7 +749,7 @@ pub fn escalation_origin_decoder_preserves_history_and_refuses_corruption_test()
   assert result.is_error(escalation.decode(escalation.encode(malformed)))
 }
 
-// A record written before protocol-change/124 has no `raised_at` key. It must
+// A record written before protocol-change/126 has no `raised_at` key. It must
 // decode with no time rather than as corruption, and the time must survive an
 // encode and decode when it is present.
 pub fn escalation_raised_at_decodes_absent_on_an_old_record_test() {

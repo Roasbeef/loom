@@ -2117,7 +2117,7 @@ number of the record's cell), `tool`, `preview` (a bounded rendering of the
 call's arguments, or `null`), `source` (`policy` or `execution`), `reason` (the
 denial's, at most 300 bytes), `wanted` (at most six `{kind, detail}` grants, the
 detail at most 160 bytes) and `asked`. An item also carries, when it has them:
-`raised_at` (Unix milliseconds, [Protocol 124](../protocol-change/124-escalation-raise-time.md);
+`raised_at` (Unix milliseconds, [Protocol 126](../protocol-change/126-escalation-raise-time.md);
 absent for a record written before the field), `network` (`on` or `off`, the
 network the call would have), `policy` (`{sandbox, network}`, the assembled base policy with the remembered
 grants folded in, at the moment of the read; each of the two is left out when it

@@ -1,5 +1,5 @@
 //// The raise time of a local escalation, as the page's decoder reads it
-//// (protocol-change/124).
+//// (protocol-change/126).
 ////
 //// A row written before the field existed has no `raised_at` key and must
 //// decode with no time, not as corruption, because the page then draws no age
