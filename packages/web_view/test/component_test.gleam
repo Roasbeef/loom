@@ -19,7 +19,7 @@ import session_view/connection_event
 import session_view/session_channel
 import web_view/component
 import web_view/ending
-import web_view/view/context_breakdown
+import web_view/view/shell
 
 fn simulation() {
   simulate.application(
@@ -236,7 +236,11 @@ pub fn an_observer_page_has_no_action_card_test() {
     |> simulate.message(component.Ticked)
   let html = element.to_string(simulate.view(page))
   assert string.contains(html, "Observer · read-only")
-  assert !string.contains(html, "approval")
+  // The rail's note and the kind's class say the word, so the check is for
+  // the card and its buttons, which are what an observer must not have.
+  assert !string.contains(html, "approval-card")
+  assert !string.contains(html, "approval-actions")
+  assert !string.contains(html, "approval-allow")
   assert !string.contains(html, "<form")
   assert !string.contains(html, "<textarea")
 
@@ -246,7 +250,8 @@ pub fn an_observer_page_has_no_action_card_test() {
   let refreshes = list.length(string.split(html, "class=\"notes-refresh\"")) - 1
   assert chips == 1
   assert refreshes == 1
-  assert buttons == chips + refreshes
+  let lifts = list.length(string.split(html, "class=\"lift-press\"")) - 1
+  assert buttons == chips + refreshes + lifts
   assert string.contains(html, "class=\"notes-search\"")
   assert string.contains(
     html,
@@ -302,10 +307,7 @@ pub fn the_heading_names_the_session_and_its_workspace_test() {
     element.to_string(component.heading(
       component.new(start),
       component.GoingHome,
-      context_breakdown.Actions(
-        refresh: component.ContextRefreshRequested,
-        compact: None,
-      ),
+      shell.Observer,
     ))
   assert string.contains(
     html,
@@ -313,7 +315,7 @@ pub fn the_heading_names_the_session_and_its_workspace_test() {
   )
   assert string.contains(
     html,
-    "<span class=\"workspace\" title=\"/home/me/src/loom/\">~/src/loom</span>",
+    "<span class=\"workspace\" title=\"~/src/loom\">loom</span>",
   )
 }
 
@@ -339,10 +341,7 @@ pub fn a_session_without_a_name_is_named_by_its_short_identity_test() {
       element.to_string(component.heading(
         component.new(start),
         component.GoingHome,
-        context_breakdown.Actions(
-          refresh: component.ContextRefreshRequested,
-          compact: None,
-        ),
+        shell.Observer,
       ))
     assert string.contains(html, ">Session 0f8e2a41</h1>")
     assert string.contains(html, "title=\"" <> id <> "\"")
@@ -377,7 +376,7 @@ pub fn the_observers_frame_is_bar_centre_panel_test() {
     |> arrive(page_fixture.transfer("observer", []))
   let html = element.to_string(simulate.view(page))
   assert in_order(html, [
-    "<loom-shell class=\"loom-session\" needing=\"0\" sidebar=\"none\">",
+    "<loom-shell class=\"loom-session loom-inbox\" needing=\"0\" sidebar=\"none\">",
     "class=\"session-head\"",
     "<main class=\"centre\">",
     "<loom-follow class=\"follow\" data-strand-key=\"",

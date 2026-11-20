@@ -101,6 +101,15 @@ renders again just for it:
   the arriving strand's (`follow_rule.arriving`), following the tail for a
   strand left at the bottom or never seen. Nothing is stored outside the
   element.
+- `<loom-follow>` also carries the live rail's jump (`jump_rule`). It listens
+  for `click` on the document and, when the path holds an element with
+  `data-loom-jump`, resolves it: `dock` scrolls `footer.dock` into view, and any
+  other value is a transcript row's key, looked up among the `data-loom-row`
+  elements of the button's own tree by string comparison (`jump.find`). A found row is scrolled to the
+  middle (`jump_rule.centring` over `scroll_by`), the reader becomes `Reading`,
+  and the row carries `data-loom-jumped` for `jump_rule.marked_for` (900 ms); a
+  row not on the page changes nothing. A jump closes the enclosing
+  `details[data-loom-sheet]` (the phone sheet). Nothing is sent to the server.
 - `<loom-composer returned="<n>">` wraps the operator's
   editor, the server's uncontrolled textarea, which is its default slot.
   It lists the slash commands as the draft grows, sends the draft on
@@ -449,7 +458,7 @@ time builds anything.
   lets the reader widen the panel to read a Changes diff: drag left to widen,
   right to narrow, arrow keys by `fine_step` (24 px), with Shift by
   `coarse_step` (96 px), Home and End to the narrowest and widest, a double click
-  to go back to `default_width` (340). `grip_rule` imports neither Lustre nor the
+  to go back to `default_width` (344). `grip_rule` imports neither Lustre nor the
   DOM and holds the decisions: `Room(panel, centre)` (the two columns' rendered
   widths, which the shell measures from the event: `room_of`), `ceiling` (what
   the pair shares less `centre_floor`, 360, which the stylesheet also gives the
@@ -686,8 +695,16 @@ sends the server nothing.
   `bg-sunk`, `bg-user`, `code`, and the diff backgrounds for `added-text` and
   `danger-text`) in either theme, or if a rule sets `color:` from a mark
   token, `--hue` or `fg-faint`. It has its own self-test. `on-danger` (the
-  tab badge's text) is held against `danger`, and `bg` against `fg` for the
-  filled primary buttons.
+  tab badge's text) is held against `danger`, `on-signal` (the text of a
+  badge drawn in the attention amber) against `signal`, and `bg` against `fg`
+  for the filled primary buttons. The tokens are written as `oklch(L C H)` (hex is
+  still read), and the same script holds the palette's design. It checks five
+  things: every value is inside sRGB; text has an APCA lightness contrast of
+  Lc 60, and `fg` Lc 90; the surfaces step in OKLCH lightness; the four
+  status-mark pairs stay 0.10 apart in OKLab for deuteranopia and protanopia
+  as well as normal vision; and marks are 3:1 on `bg` and `bg-raised`
+  (`docs/design-notes/web-design.md`, section 5.1). A new value has to clear
+  those checks, not only the ratio.
 - **The monospace face is for code.** Labels, rows and headings are
   `--font-sans`; `--font-mono` is for code, paths, tags, diffs and tool
   output. `scripts/web_client_css_check.sh`, run by `make lint`, fails a rule

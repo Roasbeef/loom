@@ -49,7 +49,19 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-17"
+  assert decoded.version == "loom-default-18"
+}
+
+// The conduct section already says to ask one specific question when a task is
+// ambiguous. The sentence beside it sends an owner's decision through `ask`
+// with options (protocol-change/119).
+pub fn conduct_sends_an_owners_decision_through_ask_with_options_test() {
+  let text = phrases(pack.FullyEnforced)
+  assert string.contains(text, "ask one specific question instead of guessing")
+  assert string.contains(
+    text,
+    "when a decision belongs to the owner, ask with `ask` and give options rather than asking in prose",
+  )
 }
 
 pub fn shipped_pack_has_no_problems_test() {

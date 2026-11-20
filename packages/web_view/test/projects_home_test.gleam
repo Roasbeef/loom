@@ -176,6 +176,8 @@ fn projects_with(
       process.send(asked, Accepted(project, id))
       deliver(feed.Closed)
     },
+    stop: fn(_, _, deliver) { deliver(feed.Acted) },
+    retry: fn(_, _, deliver) { deliver(feed.Acted) },
   )
 }
 
@@ -191,6 +193,8 @@ fn start_with(projects: option.Option(home.Projects)) -> home.Start {
     activity: fn(_, _) { Nil },
     rename: None,
     manage: None,
+    thread_send: None,
+    attention: None,
     create: None,
     folders: None,
     elsewhere: None,
@@ -694,6 +698,8 @@ pub fn a_refused_close_is_said_in_words_test() {
         process.send(asked, Accepted(project, id))
         deliver(feed.NotClosed("bad_request"))
       },
+      stop: fn(_, _, deliver) { deliver(feed.Acted) },
+      retry: fn(_, _, deliver) { deliver(feed.Acted) },
     )
   let model =
     run(opened(start_with(Some(projects))), home.OpeningTicket("p1", "t-ask"))
@@ -737,6 +743,8 @@ pub fn a_failed_start_shows_the_reason_and_offers_what_is_listed_test() {
       },
       answer: fn(_, _, _, _, deliver) { deliver(feed.Recorded) },
       close: fn(_, _, deliver) { deliver(feed.Closed) },
+      stop: fn(_, _, deliver) { deliver(feed.Acted) },
+      retry: fn(_, _, deliver) { deliver(feed.Acted) },
     )
   let model =
     run(opened(start_with(Some(projects))), home.OpeningTicket("p1", "t-bad"))
@@ -768,6 +776,8 @@ pub fn an_ended_ticket_has_no_close_button_test() {
       },
       answer: fn(_, _, _, _, deliver) { deliver(feed.Recorded) },
       close: fn(_, _, deliver) { deliver(feed.Closed) },
+      stop: fn(_, _, deliver) { deliver(feed.Acted) },
+      retry: fn(_, _, deliver) { deliver(feed.Acted) },
     )
   let model =
     run(opened(start_with(Some(projects))), home.OpeningTicket("p1", "t-done"))

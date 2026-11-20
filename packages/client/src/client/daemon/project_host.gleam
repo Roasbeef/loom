@@ -891,9 +891,14 @@ pub fn checkpoint_scan(handle: Handle, session: String, entry: String) -> Nil {
   process.send(handle.commands, ScanCheckpoint(session, entry))
 }
 
+/// The reason `ask` gives when the project's actor did not answer in time. The
+/// command it carried may still be performed, so a caller that must tell a
+/// refusal from silence compares against it.
+pub const not_answering = "the project is not answering"
+
 fn ask(handle: Handle, make: fn(Subject(a)) -> Message) -> Result(a, String) {
   call.try_call(handle.commands, waiting: 10_000, sending: make)
-  |> result.replace_error("the project is not answering")
+  |> result.replace_error(not_answering)
 }
 
 // --- boot --------------------------------------------------------------------

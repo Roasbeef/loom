@@ -45,8 +45,8 @@ fn at(model, clock, ms) {
 
 fn header(model) -> String {
   let assert Ok(header) =
-    query.find(component.view(model), query.element(query.tag("header")))
-    as "the web header exists"
+    query.find(component.view(model), query.element(query.class("stream-head")))
+    as "the stream's strip exists"
   element.to_string(header)
 }
 

@@ -1,14 +1,24 @@
 //// The transcript lane: the page strand's turns, drawn above the page's
-//// bottom bar or dock on both pages, as a timeline with a dot in the hue of
-//// the strand each piece belongs to.
+//// bottom bar or dock on both pages, as the stream of the attention inbox's
+//// live mode: a gutter that holds a row's time when the page has one, a dot
+//// in the hue of the strand each piece belongs to, and the piece beside them.
 ////
 //// The component projects a capture once into `turns.Piece`s
 //// (`component.relaned`), and this module only draws them. How the lines
 //// fold into turns, which rows a capture becomes and what each line says
 //// are `session_view`'s. Nothing here decides anything about the session.
 ////
-//// Each piece is a row of the timeline: a dot, and the piece beside it. The
-//// dot is a decoration hidden from assistive technology. Where the piece
+//// Each piece is a row of the stream: the gutter, a dot, and the piece beside
+//// them. The row's time (`Marks.times`) is drawn in the gutter as a
+//// `<loom-time>` only for a row whose records carry one (`turns.stamped`); a
+//// tool line inside the running turn's fold has its own, in a wrapper that is
+//// always drawn so the step keeps its element when the time arrives. A
+//// prose answer is headed by the strand that wrote it. A tool call, a spawn, a
+//// result and a turn's folded work are each one bordered line in the code face
+//// with the outcome as a word at its right edge (`ok`, `failed`, `started`,
+//// `settled`), drawn by the stylesheet from the classes this module sets
+//// (`outcome_class`, `spawn-started`, `spawn-failed`) and `view/fold_row`'s.
+//// The dot is a decoration hidden from assistive technology. Where the piece
 //// belongs to another strand the page lists (a spawn, a result, a nudge), the
 //// dot and the strand's tag in the piece carry `data-loom-focus`, the
 //// position of that strand's card, and no handler: `<loom-shell>` hears the
@@ -71,6 +81,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -78,6 +89,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
+import session_view/attention
 import session_view/composer
 import session_view/decisions
 import session_view/markdown
@@ -93,8 +105,10 @@ import web_view/tool_result
 import web_view/view/diff
 import web_view/view/expansion
 import web_view/view/fold_row
+import web_view/view/lifted
 import web_view/view/live
 import web_view/view/program_card as program_view
+import web_view/view/stamp
 import web_view/view/strip
 
 /// The lane: the page strand's turns, keyed by the engine's identity for
@@ -243,6 +257,18 @@ pub fn navigable(
   )
 }
 
+/// How the live rail holds a row of the lane: whether it needs the owner, and
+/// the word its kind goes by on the rail's chip. The row carries both in its
+/// tag, `lifted · Result`.
+pub type Lifting {
+  Lifting(
+    /// Whether the row needs the owner, which tints it.
+    hold: attention.Hold,
+    /// The kind's fixed word (`lifted.kind_word`), never session text.
+    word: String,
+  )
+}
+
 /// What the lane needs to mark a piece as belonging to a strand: which strand
 /// is on screen and its hue, and the position of each strand the panel lists.
 ///
@@ -260,6 +286,20 @@ pub type Marks {
     /// The page's number for that strand, assigned in the order the page first
     /// showed strands and never reused, so two strands never share one.
     key: Int,
+    /// The rows the live rail lifted, by the key each is drawn under
+    /// (`row_attribute`), with whether the row needs the owner. A row here
+    /// carries a small "lifted" tag, and one that needs the owner is tinted.
+    lifted: Dict(String, Lifting),
+    /// The time of a row in Unix milliseconds, by the key the row is drawn
+    /// under (`turns.stamped`). A row that has an entry draws it in quiet mono
+    /// in the gutter as a `<loom-time>`, so the browser words it in its own
+    /// zone (`13:40`); a row without one draws nothing there, so no time is
+    /// ever invented.
+    times: Dict(String, Int),
+    /// The provider's ids of the tool calls that wait on an approval nobody has
+    /// decided (`approval.Review.call`). A step whose call is among them says
+    /// `needs approval` at its right edge in place of `running`.
+    holding: Set(String),
   )
 }
 
@@ -272,7 +312,15 @@ pub type Marks {
 /// // lane.view(pieces, [], lane.Beginning, load, lane.NoReplies, lane.no_marks())
 /// ```
 pub fn no_marks() -> Marks {
-  Marks(active: "main", hue: turns.Primary, positions: dict.new(), key: 1)
+  Marks(
+    active: "main",
+    hue: turns.Primary,
+    positions: dict.new(),
+    key: 1,
+    lifted: dict.new(),
+    times: dict.new(),
+    holding: set.new(),
+  )
 }
 
 /// Whether the lane offers a reply to a peer's message, and what pressing it
@@ -479,7 +527,7 @@ fn timeline(
       turns.Commentary(..) -> Error(Nil)
       _ ->
         Ok(#(
-          piece_key(piece),
+          lifted.piece_key(piece),
           timeline_row(
             piece,
             draw,
@@ -645,24 +693,6 @@ fn boundary_content(top: Top, load: message) -> Element(message) {
   }
 }
 
-/// Piece key helper.
-fn piece_key(piece: turns.Piece) -> String {
-  case piece {
-    turns.Plain(block:, ..)
-    | turns.Prompt(block:, ..)
-    | turns.Commentary(block:, ..) -> block.key
-    turns.Work(key:, ..)
-    | turns.Spawned(key:, ..)
-    | turns.Returned(key:, ..)
-    | turns.Nudged(key:, ..)
-    | turns.Peer(key:, ..)
-    | turns.Sibling(key:, ..)
-    | turns.Trigger(key:, ..)
-    | turns.Missed(key:, ..)
-    | turns.Decided(key:, ..) -> key
-  }
-}
-
 /// One row of the timeline: the dot in the hue of the strand the piece belongs
 /// to, and the piece. The dot is drawn for every piece so the line reads as one,
 /// and is a control only where the piece belongs to another strand the page
@@ -678,16 +708,92 @@ fn timeline_row(
   newest: String,
 ) -> Element(message) {
   let #(hue, target) = belongs_to(piece, marks)
-  html.div([attribute.class("tl-row"), strip.hue_class(hue)], [
-    html.span(
-      [attribute.class("dot"), attribute.aria_hidden(True), ..marker(target)],
-      [],
-    ),
-    html.div([attribute.class("tl-body")], [
-      piece_element(piece, draw, replies, marks, folds, session, links, newest),
+  let key = lifted.piece_key(piece)
+
+  // The row is named for the rail's jump by its engine key, and tagged when
+  // the rail lifted it. The tag is the row's third child, after the body the
+  // admitted message paths run through, so no path moves with it.
+  let mark = dict.get(marks.lifted, key)
+
+  html.div(
+    list.flatten([
+      [
+        attribute.class("tl-row"),
+        strip.hue_class(hue),
+        attribute.attribute(row_attribute, key),
+      ],
+      case mark {
+        Ok(Lifting(hold: attention.PinnedUntilAnswered, ..)) -> [
+          attribute.class("lifted-row"),
+          attribute.class("needs-you"),
+        ]
+        Ok(Lifting(hold: attention.FoldsOnceOpened, ..)) -> [
+          attribute.class("lifted-row"),
+        ]
+        Error(Nil) -> []
+      },
     ]),
-  ])
+    [
+      html.span(
+        [attribute.class("dot"), attribute.aria_hidden(True), ..marker(target)],
+        [],
+      ),
+      html.div([attribute.class("tl-body")], [
+        piece_element(
+          piece,
+          draw,
+          replies,
+          marks,
+          folds,
+          session,
+          links,
+          newest,
+        ),
+      ]),
+      case mark {
+        Ok(Lifting(word:, ..)) ->
+          html.span([attribute.class("lift-tag")], [
+            html.text("lifted · " <> word),
+          ])
+        Error(Nil) -> element.none()
+      },
+
+      // The row's time, when the page has one, is the last child, so no
+      // admitted path moves; the stylesheet puts it in the gutter. The running
+      // turn's row has none of its own: each of its tool lines draws its time,
+      // and the turn's would sit on the first line's.
+      case piece {
+        turns.Work(folding: turns.Open, ..) -> element.none()
+        turns.Work(..)
+        | turns.Plain(..)
+        | turns.Prompt(..)
+        | turns.Spawned(..)
+        | turns.Returned(..)
+        | turns.Nudged(..)
+        | turns.Commentary(..)
+        | turns.Peer(..)
+        | turns.Sibling(..)
+        | turns.Trigger(..)
+        | turns.Missed(..)
+        | turns.Decided(..) -> gutter(marks.times, key)
+      },
+    ],
+  )
 }
+
+// The time of the row drawn under `key`, in the gutter's class, or nothing when
+// the records gave the row none.
+fn gutter(times: Dict(String, Int), key: String) -> Element(message) {
+  case dict.get(times, key) {
+    Ok(at) -> stamp.time(at, "tl-time")
+    Error(Nil) -> element.none()
+  }
+}
+
+/// The attribute a timeline row carries its engine key in, which the live
+/// rail's jump finds the row by (`web_client/jump_rule`). The value is the
+/// piece's key, a daemon identity, and never session text.
+pub const row_attribute = "data-loom-row"
 
 /// The hue a piece's dot is drawn in and the card it focuses, if any. A piece
 /// of the strand on screen is that strand's; a spawn and a result are the
@@ -761,8 +867,39 @@ fn piece_element(
   newest: String,
 ) -> Element(message) {
   case piece {
+    // An answer is headed by the strand that wrote it, in the small quiet
+    // line the stream puts above prose. Any other plain block (harness
+    // speech, a notice) has no speaker to name and keeps no heading.
     turns.Plain(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, folds, session, links, newest)
+      case speaks(block) {
+        True ->
+          html.div([attribute.class("speech")], [
+            html.p([attribute.class("who")], [
+              html.text(agent_roster.short_name(marks.active)),
+            ]),
+            block_element(
+              block,
+              thoughts,
+              took,
+              draw,
+              folds,
+              session,
+              links,
+              newest,
+            ),
+          ])
+        False ->
+          block_element(
+            block,
+            thoughts,
+            took,
+            draw,
+            folds,
+            session,
+            links,
+            newest,
+          )
+      }
 
     // A person's message: who sent it on a line of its own, and the words in
     // a bubble beneath. The sender's name is session text, a text node. The
@@ -814,7 +951,7 @@ fn piece_element(
           [attribute.class("work-items")],
           list.append(
             hidden_line(hidden),
-            work_items(items, draw, session, links, newest),
+            work_items(items, draw, session, links, newest, marks),
           ),
         ),
       ])
@@ -839,7 +976,7 @@ fn piece_element(
     turns.Work(items:, folding: turns.Open, ..) ->
       keyed.div(
         [attribute.class("work open")],
-        work_items(items, draw, session, links, newest),
+        work_items(items, draw, session, links, newest, marks),
       )
 
     // A spawn is a line of the strand that made it: the verb the step words
@@ -850,7 +987,15 @@ fn piece_element(
     // the line says how it failed, and why when the result recorded a reason.
     turns.Spawned(child:, purpose:, hue:, standing:, refusal:, ..) ->
       html.p(
-        [attribute.class("who"), attribute.class("spawn"), strip.hue_class(hue)],
+        [
+          attribute.class("who"),
+          attribute.class("spawn"),
+          attribute.class(case standing {
+            turns.Failed -> "spawn-failed"
+            turns.Pending | turns.Done -> "spawn-started"
+          }),
+          strip.hue_class(hue),
+        ],
         [
           html.text("Spawned"),
           ..list.append(
@@ -983,6 +1128,12 @@ fn piece_element(
     // arm is the closed case's other half and is never drawn.
     turns.Commentary(..) -> element.none()
   }
+}
+
+/// Whether a block holds an assistant's answer, which is what a speaker line
+/// is drawn above. Reasoning and tool rows have their own lines.
+fn speaks(block: transcript_lines.Block) -> Bool {
+  list.any(block.rows, fn(row) { row.1.speaker == transcript_line.Assistant })
 }
 
 /// What a peer card's head calls the session that wrote to this one: the
@@ -1135,6 +1286,7 @@ fn divider(
         [
           attribute.type_("button"),
           attribute.class("work-toggle"),
+          attribute.class(outcome_class(worked)),
           attribute.aria_expanded(shown == Opened),
           attribute.data(fold_marker, "fold"),
           event.on_click(toggle(id)),
@@ -1142,7 +1294,22 @@ fn divider(
         [words],
       )
     Some(_), NoFolds | None, Folds(..) | None, NoFolds ->
-      html.span([attribute.class("work-toggle")], [words])
+      html.span(
+        [attribute.class("work-toggle"), attribute.class(outcome_class(worked))],
+        [words],
+      )
+  }
+}
+
+/// The class that says how a turn's work ended, from the divider's own
+/// figures: a failed call wins over an interruption, and neither means `ok`.
+/// The stylesheet draws the status word at the line's right edge from the
+/// class, so the button still holds one text node.
+fn outcome_class(worked: turns.Worked) -> String {
+  case worked.failed, worked.ending {
+    0, turns.Finished -> "work-ok"
+    0, turns.Interrupted -> "work-stopped"
+    _, _ -> "work-failed"
   }
 }
 
@@ -1176,6 +1343,7 @@ fn work_items(
   session: String,
   links: Links,
   newest: String,
+  marks: Marks,
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
     // Dispatch on work_items state.
@@ -1184,7 +1352,31 @@ fn work_items(
       turns.Step(key:, ..) | turns.Memory(key:, ..) -> key
     }
 
-    #(key, item_element(item, draw, session, links, newest))
+    // A call that waits on an approval nobody has decided is tagged, and the
+    // stylesheet words its right edge `needs approval` from the tag. Only a
+    // call still pending can be held, so a settled one is never tagged.
+    let held = case item {
+      turns.Step(call:, standing: turns.Pending, ..) ->
+        set.contains(marks.holding, call)
+      turns.Step(..) | turns.Narrated(..) | turns.Memory(..) -> False
+    }
+
+    // The wrapper is always drawn, with the time or without it, so a step that
+    // gains its time when its result commits keeps its element and the open or
+    // closed state the browser holds for it.
+    #(
+      key,
+      html.div(
+        case held {
+          True -> [attribute.class("work-item"), attribute.class("approving")]
+          False -> [attribute.class("work-item")]
+        },
+        [
+          item_element(item, draw, session, links, newest),
+          gutter(marks.times, key),
+        ],
+      ),
+    )
   })
 }
 
@@ -1221,6 +1413,7 @@ fn item_element(
       )
     turns.Step(
       key:,
+      call: _,
       standing:,
       words:,
       detail:,

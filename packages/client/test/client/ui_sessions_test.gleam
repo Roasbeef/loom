@@ -831,6 +831,27 @@ pub fn a_credentials_worktree_reads_are_limited_in_a_short_window_test() {
   assert ui_sessions.reserve_worktree_read(sessions, digest) == Ok(Nil)
 }
 
+// Brief reads (protocol-change/125) are counted for the credential in their own
+// window and apart from worktree reads: six are answered, the seventh is refused,
+// a credential that spent its worktree reads still has its briefs, and one is
+// free again once the window has passed.
+pub fn a_credentials_brief_reads_are_limited_in_a_short_window_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(digest) = access.credential_digest(string.repeat("d", 64))
+    as "a digest"
+  list.each(list.repeat(Nil, ui_sessions.brief_read_limit), fn(_) {
+    assert ui_sessions.reserve_brief_read(sessions, digest) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_brief_read(sessions, digest) == Error(Nil)
+
+  // The worktree count is a different allowance.
+  assert ui_sessions.reserve_worktree_read(sessions, digest) == Ok(Nil)
+
+  process.send(time, Advance(ui_sessions.brief_read_window_ms))
+  assert ui_sessions.reserve_brief_read(sessions, digest) == Ok(Nil)
+}
+
 // --- the readers of a page's images ----------------------------------------
 
 // A reader that answers every request with one image, so a test can tell

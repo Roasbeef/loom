@@ -135,6 +135,8 @@ import web_client/follow_rule.{
   Waiting,
 }
 import web_client/internal/ffi_dom
+import web_client/jump
+import web_client/jump_rule
 
 /// The element's tag.
 pub const name = "loom-follow"
@@ -158,6 +160,9 @@ pub type Watching {
     /// The listener on the document for the composer's send
     /// (`follow_rule.sent_event`), which is outside this element.
     sent: ffi_dom.Listener,
+    /// The listener on the document for a press on the live rail's buttons
+    /// (`jump_rule.marker`), which are outside this element.
+    jumps: ffi_dom.Listener,
   )
 }
 
@@ -259,6 +264,14 @@ pub type Msg {
 
   /// The reader sent a message from the composer.
   Sent
+
+  /// The reader pressed a button of the live rail, marked with where it goes.
+  /// `origin` is the marked button, which names the tree the rows are in and
+  /// the sheet to close.
+  Railed(destination: jump_rule.Destination, origin: ffi_dom.Element)
+
+  /// The row a rail button names is on the page. `origin` is the button.
+  Located(row: ffi_dom.Element, origin: ffi_dom.Element)
 
   /// The lane's first row and where it is on screen, held while older rows
   /// load above it, or nothing when the page has no lane or the lane has no
@@ -504,6 +517,30 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       jump_to_latest(model.watching),
     )
 
+    // A press on the rail is not an event the server hears. The row it names
+    // is looked for in the page first, since a row older than the loaded
+    // window is not there and the press then changes nothing, the reader's
+    // position included.
+    Railed(destination: jump_rule.Row(key:), origin:) -> #(
+      model,
+      locate(key, origin),
+    )
+    Railed(destination: jump_rule.Dock, origin:) -> #(model, to_dock(origin))
+
+    // The row is there, so the jump is the reader's own move, as opening a
+    // fold is: they are reading, and the rows that land after it do not carry
+    // the transcript away from it. The scroll is made after this message,
+    // so the position is already `Reading` when the scroll is heard.
+    Located(row:, origin:) -> #(
+      Model(
+        ..model,
+        reader: follow_rule.folded(model.reader),
+        anchor: None,
+        divider: None,
+      ),
+      land(model.watching, row, origin),
+    )
+
     // A send is the same request made from the composer. The reader's own
     // message lands below the fold of a lane they had scrolled up in, and
     // the answer after it, so the transcript follows the tail again from the
@@ -585,6 +622,17 @@ fn start() -> Effect(Msg) {
       dispatch(Sent)
     })
 
+  // A press on a rail button is outside this element, in the panel. The path
+  // of the click tells which element carried the marker, shadow trees
+  // included.
+  let jumps =
+    ffi_dom.add_listener(ffi_dom.get_document(), "click", fn(event) {
+      case jump.pressed(event) {
+        Some(#(destination, origin)) -> dispatch(Railed(destination:, origin:))
+        None -> Nil
+      }
+    })
+
   // Observe resize and DOM mutation events on scroller children.
   let sizes = ffi_dom.resize_observer(fn() { dispatch(Resized) })
   ffi_dom.observe(sizes, host)
@@ -594,10 +642,43 @@ fn start() -> Effect(Msg) {
   ffi_dom.observe_child_list(children, host)
 
   dispatch(Watched(
-    Watching(host:, scroll:, inputs:, sizes:, children:, sent:),
+    Watching(host:, scroll:, inputs:, sizes:, children:, sent:, jumps:),
     top: ffi_dom.scroll_top(host),
     extent: extent_of(host),
   ))
+}
+
+/// Looks for the row a rail button names and tells the element when the page
+/// holds it (`jump.find`).
+fn locate(key: String, origin: ffi_dom.Element) -> Effect(Msg) {
+  use dispatch <- effect.from
+
+  // A row older than the loaded window is not there, and nothing happens.
+  case jump.find(key, origin) {
+    Ok(row) -> dispatch(Located(row:, origin:))
+    Error(Nil) -> Nil
+  }
+}
+
+/// Scrolls the located row to the middle of this transcript (`jump.land`).
+fn land(
+  watching: Option(Watching),
+  row: ffi_dom.Element,
+  origin: ffi_dom.Element,
+) -> Effect(Msg) {
+  use _ <- effect.from
+
+  // An element that is not yet watching has no scroller to move.
+  case watching {
+    Some(Watching(host:, ..)) -> jump.land(host, row, origin)
+    None -> Nil
+  }
+}
+
+/// Scrolls the dock into view for an approval entry (`jump.reveal_dock`).
+fn to_dock(origin: ffi_dom.Element) -> Effect(Msg) {
+  use _ <- effect.from
+  jump.reveal_dock(origin)
 }
 
 fn observe_children(sizes: ffi_dom.Observer, host: ffi_dom.Element) -> Nil {
@@ -620,6 +701,7 @@ fn stop(watching: Option(Watching)) -> Effect(Msg) {
         follow_rule.sent_event,
         watching.sent,
       )
+      ffi_dom.remove_listener(ffi_dom.get_document(), "click", watching.jumps)
       ffi_dom.disconnect(watching.sizes)
       ffi_dom.disconnect(watching.children)
     }

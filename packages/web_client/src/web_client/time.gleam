@@ -11,6 +11,15 @@
 //// whenever `at` does not parse, so a page never shows an empty gap; the title
 //// lets a person compare the two.
 ////
+//// A second attribute, `now`, makes the element a clock: whatever its `at`
+//// says, it draws the browser's current time of day and redraws it every ten
+//// seconds while it is on the page (`time_rule.current`). The rail's first line
+//// uses it, because a session's page hears from the daemon only when something
+//// happens, and an instant the server wrote when the page opened would read an
+//// hour late by the time anyone looked. `at` stays as the first reading, so the
+//// light text and the first draw agree with the server until the browser's own
+//// clock takes over.
+////
 //// The attribute is an instant and not a duration, so a browser whose clock
 //// disagrees with the daemon's still shows the daemon's instant correctly in
 //// its zone. The element draws one text node in its own shadow root, from a
@@ -29,10 +38,28 @@ import web_client/time_rule
 /// The element's tag.
 pub const name = "loom-time"
 
+/// What the element knows: the clock time it last drew, and the timer that
+/// keeps it current while the server has asked it to be a clock.
+pub type Model {
+  Model(clock: Option(String), timer: Option(ffi_dom.Timer))
+}
+
 /// Everything the element can be told.
 pub type Msg {
   /// The server wrote an instant.
   Instanted(milliseconds: Int)
+
+  /// The server set `now`: the element is a clock.
+  Following
+
+  /// The element left the page.
+  Disconnected
+
+  /// The timer started.
+  Started(timer: ffi_dom.Timer)
+
+  /// Ten seconds passed, and this is the browser's clock.
+  Ticked(now: Int)
 
   /// The browser answered with the clock time of the instant in its zone.
   Drawn(clock: String)
@@ -48,6 +75,8 @@ pub type Msg {
 pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
     component.on_attribute_change("at", instanted),
+    component.on_attribute_change("now", following),
+    component.on_disconnect(Disconnected),
   ])
   |> lustre.register(name)
 }
@@ -61,25 +90,63 @@ fn instanted(value: String) -> Result(Msg, Nil) {
   }
 }
 
-fn init(_: Nil) -> #(Option(String), Effect(Msg)) {
-  #(None, effect.none())
+// The attribute's presence is the request, whatever its value: the server
+// writes `now=""`.
+fn following(_value: String) -> Result(Msg, Nil) {
+  Ok(Following)
 }
 
-/// Applies one message. The zone is read only inside an effect, so `update` is
-/// a function of its messages.
+fn init(_: Nil) -> #(Model, Effect(Msg)) {
+  #(Model(clock: None, timer: None), effect.none())
+}
+
+/// Applies one message. The zone and the clock are read only inside effects, so
+/// `update` is a function of its messages.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert time.update(None, time.Drawn("13:02")).0 == Some("13:02")
+/// assert time.update(time.Model(None, None), time.Drawn("13:02")).0
+///   == time.Model(Some("13:02"), None)
 /// ```
-pub fn update(
-  model: Option(String),
-  message: Msg,
-) -> #(Option(String), Effect(Msg)) {
+pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     Instanted(milliseconds:) -> #(model, localise(milliseconds))
-    Drawn(clock:) -> #(Some(clock), effect.none())
+    Drawn(clock:) -> #(Model(..model, clock: Some(clock)), effect.none())
+
+    // A clock reads the browser's time at once, and then every tick. A timer
+    // left from an earlier `now` is stopped first, so the element never runs
+    // two.
+    Following -> #(model, effect.batch([stop(model.timer), start(), read()]))
+    Started(timer:) -> #(Model(..model, timer: Some(timer)), effect.none())
+    Disconnected -> #(Model(..model, timer: None), stop(model.timer))
+    Ticked(now:) -> #(model, localise(time_rule.current(now)))
+  }
+}
+
+fn read() -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(Ticked(ffi_dom.now()))
+}
+
+fn start() -> Effect(Msg) {
+  use dispatch <- effect.from
+  let timer =
+    ffi_dom.set_interval(10_000, fn() { dispatch(Ticked(ffi_dom.now())) })
+  dispatch(Started(timer))
+}
+
+/// Clears the interval when the element holds one, so a clock that is asked to
+/// follow again, or that leaves the page, never leaves a timer running that
+/// would draw into a dead element.
+fn stop(timer: Option(ffi_dom.Timer)) -> Effect(Msg) {
+  // A clock that was never started has nothing to clear.
+  case timer {
+    None -> effect.none()
+    Some(timer) -> {
+      use _ <- effect.from
+      ffi_dom.clear_interval(timer)
+    }
   }
 }
 
@@ -94,8 +161,8 @@ fn localise(milliseconds: Int) -> Effect(Msg) {
   )
 }
 
-fn view(model: Option(String)) -> Element(Msg) {
-  case model {
+fn view(model: Model) -> Element(Msg) {
+  case model.clock {
     Some(clock) -> html.text(clock)
     None -> component.default_slot([], [])
   }

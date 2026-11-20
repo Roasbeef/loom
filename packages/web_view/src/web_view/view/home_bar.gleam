@@ -164,10 +164,16 @@ pub fn account(
 /// control. The principal is always the third child, the status the fourth,
 /// and the notice and the control the fifth and sixth, whichever page draws it.
 ///
+/// `needing` is how many threads wait on the owner. When it is above none the
+/// bar draws it as the pill "N need you", which the stylesheet places beside the
+/// page's name. The pill is the seventh child, after the owner's control, so it
+/// moves no path the socket admits (`home.admin_path`); it is an empty node on
+/// every page that has no count to show.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_bar.with("Home", home_bar.account("Alice", "", home_bar.Closed), "connected", heading.Live, element.none(), element.none())
+/// // home_bar.with("Home", home_bar.account("Alice", "", home_bar.Closed), "connected", heading.Live, element.none(), element.none(), 0)
 /// ```
 pub fn with(
   title title: String,
@@ -176,11 +182,12 @@ pub fn with(
   tone tone: Tone,
   notice notice: Element(message),
   trailing trailing: Element(message),
+  needing needing: Int,
 ) -> Element(message) {
   html.header(
     [attribute.class("session-head"), attribute.attribute("slot", "bar")],
     [
-      html.span([attribute.class("brand")], [html.text("Loom")]),
+      html.span([attribute.class("brand")], [html.text("loom")]),
       html.h1([], [html.text(title)]),
       who,
       html.p(
@@ -194,8 +201,21 @@ pub fn with(
       ),
       notice,
       trailing,
+      need_pill(needing),
     ],
   )
+}
+
+/// The pill that says how many threads wait on the owner, or nothing when none
+/// does. The number is an integer the page counted.
+fn need_pill(needing: Int) -> Element(message) {
+  case needing > 0 {
+    True ->
+      html.span([attribute.class("need-pill")], [
+        html.text(int.to_string(needing) <> " need you"),
+      ])
+    False -> element.none()
+  }
 }
 
 /// The quiet pill beside the name, or nothing for no words. The words are fixed

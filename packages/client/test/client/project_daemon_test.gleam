@@ -577,6 +577,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
     )
   let config =
     server.Config(
+      worktree: fn(_) { None },
       peer_endpoint: fn(resident: serve.Resident) { Some(resident.peer) },
       daemon:,
       domain_configuration: "",

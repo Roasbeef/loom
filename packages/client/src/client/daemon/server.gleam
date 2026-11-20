@@ -56,6 +56,8 @@
 ////    `move_refusal_code` words a refusal for the control socket.
 
 import broker/token
+import client/daemon/attention_door
+import client/daemon/brief_door
 import client/daemon/manager
 import client/daemon/profiles
 import client/daemon/project_book
@@ -63,6 +65,7 @@ import client/daemon/project_host
 import client/daemon/project_start
 import client/daemon/project_verdict
 import client/daemon/protocol
+import client/daemon/review_door
 import client/daemon/root
 import client/daemon/ui_assets
 import client/daemon/ui_http
@@ -121,12 +124,16 @@ import storage/snapshot as storage_snapshot
 import telemetry/field
 import telemetry/level
 import telemetry/log
+import web_view/attention_feed as page_attention
 import web_view/elsewhere as page_elsewhere
 import web_view/ending.{type Ending}
 import web_view/image
 import web_view/machines
 import web_view/page
 import web_view/placements
+import web_view/review_feed
+import web_view/saved_attention
+import web_view/session_brief
 import web_view/sessions as listed_sessions
 import web_view/tool_result
 import weft
@@ -138,6 +145,12 @@ pub type Config(instance) {
     daemon: root.Root(instance),
     /// Projects the address-only communication endpoint from a resident.
     peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+    /// Projects a resident's own observation of its workspace, the closure the
+    /// web view's Changes tab reads (`serve.Resident.worktree`), or nothing for
+    /// a resident that has none. It takes nothing from a request: the review
+    /// read (`review_door`, protocol-change/123) calls it and never runs Git
+    /// itself.
+    worktree: fn(instance) -> Option(fn() -> Result(JsonValue, String)),
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
     /// The `[executors.<name>]` the owner configured, read once at startup,
@@ -285,7 +298,8 @@ pub type AdminAttachment(instance) {
     /// product and tags every session with as the machine that runs its agent.
     machine: String,
     /// Asks the named sessions what they are doing, as the home's does
-    /// (`HomeAttachment.activity`), for the admin sidebar's dots.
+    /// (`HomeAttachment.activity`, narrowed by `session_activity`), for the admin
+    /// sidebar's dots.
     activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
     /// The daemon's own state directory, which an isolated session's fresh
     /// stores are minted under (`manager.isolate`). It is the daemon's value and
@@ -360,10 +374,39 @@ pub type HomeAttachment(instance) {
     /// Asks the named sessions what they are doing: the `sessions.activity`
     /// read (protocol-change/050) the control socket serves the owner, made on
     /// a page for the sessions its credential holds, and reduced to one
-    /// state for each session that answered (`home_activity`). It blocks for up to the read's own
+    /// report for each session that answered (`home_activity`): its activity,
+    /// its last finished message and its strands' glances. It blocks for up to the read's own
     /// deadline, so the page never calls it from its runtime
     /// (`ui_socket.activity_task`).
-    activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
+    activity: fn(List(String)) -> List(#(String, listed_sessions.Report)),
+    /// Asks the named sessions what they need from a person: the
+    /// `sessions.attention` read (protocol-change/120), made for the sessions the
+    /// page's credential holds, reduced to one typed row for each session that
+    /// answered (`home_attention`). It blocks for up to the read's deadline, so
+    /// the page never calls it from its runtime.
+    attention: fn(List(String)) -> List(#(String, page_attention.Row)),
+    /// The catalogue's summary rows for the named sessions the page's credential
+    /// holds, saved or resident (`home_saved_attention`, protocol-change/122).
+    /// One registry turn, so a page may call it from a task of its own.
+    saved_attention: fn(List(String)) -> List(saved_attention.Saved),
+    /// What an answer to an ask, and the closing of a find, need to reach a
+    /// session as the page's credential (`attention_door`): the registry, the
+    /// credential and the resident's peer endpoint. The door reads authority from
+    /// the registry at each act and never from the page.
+    attention_reach: attention_door.Reach(instance),
+    /// One session's worktree as a review, as the page's credential may read it
+    /// (`home_review`, protocol-change/123). It blocks for up to
+    /// `review_door.deadline_ms` and spends the credential's workspace-read
+    /// allowance, so a page runs it in a task of its own
+    /// (`ui_socket.review_for`) and only for a page whose ceiling is not an
+    /// observer's.
+    review: fn(String) -> Result(review_feed.Review, attention_door.Refusal),
+    /// One session's brief as the page's credential may read it
+    /// (`home_brief`, protocol-change/125). It spends the credential's brief
+    /// allowance and asks the resident's own Agency actor, so a page runs it in
+    /// a task of its own.
+    brief: fn(String, Int) ->
+      Result(session_brief.Brief, attention_door.Refusal),
     /// The daemon's own sessions directory, which deleting a session removes
     /// the database family from (`manager.delete_session`). It is the daemon's
     /// value and never a page's, and only the owner's fresh home may reach it
@@ -515,6 +558,16 @@ pub type Attachment(instance) {
     models: fn() -> List(String),
     /// Configured profile names for the same completion table.
     profiles: fn() -> List(String),
+    /// Asks the named sessions what they need from a person
+    /// (`sessions.attention`, protocol-change/120), as the home's own feed read
+    /// does, with the page's credential. A session page asks for its own
+    /// session alone, for the rail's open asks, stuck strands and finds. It
+    /// blocks for up to the read's deadline, so the page runs it from a task.
+    attention: fn(List(String)) -> List(#(String, page_attention.Row)),
+    /// What an answer to an ask needs to reach the session as the page's
+    /// credential (`attention_door`). The door reads authority from the
+    /// registry at each answer and never from the page.
+    attention_reach: attention_door.Reach(instance),
   )
 }
 
@@ -886,6 +939,23 @@ fn home_upgrade(
             permit:,
             registry: state.registry,
             activity: home_activity(config, state.registry, grant.credential),
+            attention: home_attention(config, state.registry, grant.credential),
+            saved_attention: home_saved_attention(
+              state.registry,
+              grant.credential,
+            ),
+            attention_reach: attention_reach(
+              config,
+              state.registry,
+              grant.credential,
+            ),
+            review: home_review(
+              config,
+              state.registry,
+              grant.credential,
+              control_reserve(config, grant.credential),
+            ),
+            brief: home_brief(config, state.registry, grant.credential),
             sessions_directory: state.sessions_directory,
             state_root: state.state_root,
             create: fn(principal, request, scope) {
@@ -1031,7 +1101,7 @@ fn admin_upgrade(
             permit:,
             registry: state.registry,
             machine: page_machine(config.deployment),
-            activity: home_activity(config, state.registry, grant.credential),
+            activity: session_activity(config, state.registry, grant.credential),
             state_root: state.state_root,
             login:,
             deployment: fn(node) { admin_deployment(config, node) },
@@ -2505,7 +2575,7 @@ fn resident_upgrade(
                 state_root: state.state_root,
                 sessions_directory: state.sessions_directory,
                 registration:,
-                activity: home_activity(config, state.registry, digest),
+                activity: session_activity(config, state.registry, digest),
                 peers: peer_directory(config, state.registry),
                 models: fn() {
                   profiles.model_keys(config.domain_configuration)
@@ -2515,6 +2585,8 @@ fn resident_upgrade(
                   profiles.names(config.domain_configuration)
                   |> result.unwrap([])
                 },
+                attention: home_attention(config, state.registry, digest),
+                attention_reach: attention_reach(config, state.registry, digest),
               ),
             )
           root.release(config.daemon, permit)
@@ -3128,6 +3200,12 @@ fn control(
             | protocol.RunProjectVerdict(..)
             | protocol.PublishTicket(..)
             | protocol.SessionActivity(..)
+            | protocol.SessionAttention(..)
+            | protocol.ReadAttention(..)
+            | protocol.ReadApprovals(..)
+            | protocol.SessionBrief(..)
+            | protocol.ReviewSession(..)
+            | protocol.CloseFind(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
             | protocol.RestoreSession(..)
@@ -3176,6 +3254,11 @@ fn control_use(command: protocol.Command) {
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
     | protocol.SessionActivity(..)
+    | protocol.SessionAttention(..)
+    | protocol.ReadAttention(..)
+    | protocol.ReadApprovals(..)
+    | protocol.SessionBrief(..)
+    | protocol.ReviewSession(..)
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
@@ -3217,6 +3300,7 @@ fn control_use(command: protocol.Command) {
     | protocol.LabelTrigger(..)
     | protocol.RunProjectVerdict(..)
     | protocol.PublishTicket(..)
+    | protocol.CloseFind(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
     | protocol.MoveSession(..)
@@ -3349,6 +3433,99 @@ fn dispatch(
       |> result.map_error(tombstoned(config, principal, id, _))
       |> result.map_error(in_flight(state, id, _))
       |> result.map_error(busy_in_words)
+
+    // The attention reads and the closing of a find answer in words as well as
+    // codes (`attention_door.Refusal`), which the string codes of
+    // `dispatch_class` cannot carry, so they are served here
+    // (protocol-change/120). `sessions.attention` is a plain read and is served
+    // by `dispatch_class` beside `sessions.activity`.
+    protocol.ReadAttention(session, id, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      use record <- result.try(
+        attention_door.read(
+          attention_reach(config, state.registry, digest),
+          session,
+          id,
+        )
+        |> result.map_error(attention_refusal),
+      )
+      within_frame(reply_to, "attention.read", record)
+    }
+    protocol.ReadApprovals(session, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      use evidence <- result.try(
+        attention_door.read_approvals(
+          attention_reach(config, state.registry, digest),
+          session,
+        )
+        |> result.map_error(attention_refusal),
+      )
+      within_frame(reply_to, "approval.read", evidence)
+    }
+
+    // The brief is a read that refuses in words and spends the credential's brief
+    // allowance (`brief_door`, protocol-change/125).
+    protocol.SessionBrief(session, since, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      use brief <- result.try(
+        brief_door.read(
+          attention_reach(config, state.registry, digest),
+          brief_allowance(config, digest),
+          session,
+          since,
+        )
+        |> result.map_error(attention_refusal),
+      )
+      within_frame(reply_to, "session.brief", brief)
+    }
+
+    // The review is a read that refuses in words, like the attention reads, and
+    // its observation runs in a run of its own (`review_door`,
+    // protocol-change/123).
+    protocol.ReviewSession(session, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      let reach =
+        review_reach(
+          config,
+          state.registry,
+          digest,
+          control_reserve(config, digest),
+        )
+      use review <- result.try(
+        review_door.read(reach, session) |> result.map_error(attention_refusal),
+      )
+      within_frame(reply_to, "sessions.review", review_feed.encode(review))
+    }
+    protocol.CloseFind(session, find, revision, outcome, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      attention_door.close_find(
+        attention_reach(config, state.registry, digest),
+        session,
+        find,
+        revision,
+        outcome,
+      )
+      |> result.map_error(attention_refusal)
+      |> result.map(fn(settled) {
+        #(
+          "attention.close_find",
+          json.Object([
+            #("find", json.String(find)),
+            #("revision", json.Int(settled)),
+          ]),
+        )
+      })
+    }
 
     // The ledger commands answer with the step that failed, which the string
     // codes of `dispatch_class` cannot carry, so they are served here.
@@ -4744,6 +4921,30 @@ fn dispatch_class(
         False -> Error("metadata_too_large")
       }
     }
+    protocol.SessionAttention(sessions, supplied) -> {
+      use Nil <- result.try(epoch(state, supplied))
+
+      // A member is asked about only the sessions its credential holds, as for
+      // `sessions.activity`: an identity it does not hold is dropped as an
+      // unknown one is, so the reply never tells the two apart.
+      let rows =
+        attention_rows(
+          config,
+          state.registry,
+          held(state.registry, digest, sessions),
+        )
+      let body = json.Object([#("attention", json.Array(rows))])
+      use frame <- result.try(
+        protocol.event(Some(reply_to), "sessions.attention", body)
+        |> result.replace_error("metadata_too_large"),
+      )
+
+      // A frame over the bound is refused rather than sent.
+      case string.byte_size(frame) <= 60_000 {
+        True -> Ok(#("sessions.attention", body))
+        False -> Error("metadata_too_large")
+      }
+    }
     protocol.GetSession(id) -> {
       use _ <- result.try(authorized(state, digest, id))
       manager.get(state.registry, id)
@@ -4936,6 +5137,13 @@ fn dispatch_class(
     | protocol.ProjectLabels(..)
     | protocol.RunProjectVerdict(..)
     | protocol.PublishTicket(..) -> Error("unavailable")
+
+    // The attention reads that refuse in words are served by `dispatch` too.
+    protocol.ReadAttention(..)
+    | protocol.ReadApprovals(..)
+    | protocol.SessionBrief(..)
+    | protocol.ReviewSession(..)
+    | protocol.CloseFind(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
@@ -6428,6 +6636,29 @@ fn activity(
   registry: manager.Manager(instance),
   sessions: List(String),
 ) -> List(JsonValue) {
+  resident_rows(config, registry, sessions, peer_mail.Overview)
+}
+
+/// One row per resident identity for what each is asked, in request order, as
+/// `sessions.attention` reads the feed (protocol-change/120). It is
+/// `activity`'s fan-out with another command, so the bounds, the deadline and
+/// the `unknown` row are the same.
+fn attention_rows(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  sessions: List(String),
+) -> List(JsonValue) {
+  resident_rows(config, registry, sessions, peer_mail.AttentionFeed)
+}
+
+/// The fan-out both reads share: ask each resident `command` concurrently and
+/// bound each answer to `activity_row_bytes`.
+fn resident_rows(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  sessions: List(String),
+  command: peer_mail.Command,
+) -> List(JsonValue) {
   let residents =
     list.filter_map(sessions, fn(id) {
       manager.resolve(registry, id)
@@ -6441,7 +6672,7 @@ fn activity(
     |> list.map(fn(pair) {
       // This branch resolves pair 1 before the operation continues.
       case pair.1 {
-        Some(peer_mail.Endpoint(call:, ..)) -> fn() { call(peer_mail.Overview) }
+        Some(peer_mail.Endpoint(call:, ..)) -> fn() { call(command) }
         None -> fn() { Error(peer_mail.Refused("peer_service_unavailable")) }
       }
     })
@@ -6467,7 +6698,7 @@ fn activity(
   })
 }
 
-/// The activity read a home page is handed: `activity_states` over the
+/// The activity read a home page is handed: `activity_reports` over the
 /// sessions the page's credential holds. Membership is derived here, in the
 /// registry, at the moment of each read, from the credential's digest and never
 /// from the page's list, so a revoked credential or a removed membership reads
@@ -6483,12 +6714,286 @@ pub fn home_activity(
   config: Config(instance),
   registry: manager.Manager(instance),
   digest: access.Digest,
-) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
+) -> fn(List(String)) -> List(#(String, listed_sessions.Report)) {
   // The control command refuses a list past `activity_limit`; this read has no
   // request to refuse, so it keeps the first ones and the bound holds here too.
   fn(ids) {
     let asked = list.take(ids, protocol.activity_limit)
-    activity_states(config, registry, held(registry, digest, asked))
+    activity_reports(config, registry, held(registry, digest, asked))
+  }
+}
+
+/// The attention summaries a home page is handed for the sessions its
+/// credential holds, saved or resident (protocol-change/122).
+///
+/// Membership is derived here, in the registry, at the moment of each read,
+/// by the same check `home_activity` makes, so a member learns the counts of the
+/// sessions it holds and no others. One registry turn reads every row, and no
+/// session is opened. A session with no row, or whose row does not decode, has
+/// no entry, which is how the page tells "not checked" from "nothing open". A
+/// failed read answers nothing for every session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_saved_attention(registry, digest)(["0198..."])
+/// ```
+@internal
+pub fn home_saved_attention(
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(List(String)) -> List(saved_attention.Saved) {
+  // The listing is one catalogue page, so the read keeps its first ones too.
+  fn(ids) {
+    let asked = list.take(ids, listed_sessions.listed_limit)
+
+    // A failed read answers nothing, which the page draws as every listed
+    // session not checked and never as a session with nothing open.
+    case manager.attention_for(registry, held(registry, digest, asked)) {
+      Ok(rows) ->
+        list.filter_map(rows, fn(row) {
+          let #(id, summary) = row
+          saved_attention.from_row(
+            session_id: id,
+            pending_approvals: summary.pending_approvals,
+            open_asks: summary.open_asks,
+            open_finds: summary.open_finds,
+            oldest_open_at: summary.oldest_open_at,
+            updated_at: summary.updated_at,
+          )
+        })
+      Error(_) -> []
+    }
+  }
+}
+
+/// The attention read a home page is handed: `sessions.attention` over the
+/// sessions the page's credential holds, with each answered row decoded to the
+/// page's own type (`web_view/attention_feed.decode_row`). Membership is derived
+/// in the registry at the moment of each read, as `home_activity` does. A
+/// session that is not running, did not answer in time, or answered a row the
+/// page cannot decode has no entry, which a page words as not read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_attention(config, registry, digest)(["0198..."])
+/// ```
+@internal
+pub fn home_attention(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(List(String)) -> List(#(String, page_attention.Row)) {
+  fn(ids) {
+    let asked = list.take(ids, protocol.activity_limit)
+    attention_rows(config, registry, held(registry, digest, asked))
+    |> list.filter_map(attention_row_of)
+  }
+}
+
+/// The session and the typed row a reply row carries, when it is an `ok` row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.attention_row_of(row)
+/// ```
+@internal
+pub fn attention_row_of(
+  row: JsonValue,
+) -> Result(#(String, page_attention.Row), Nil) {
+  // Only an object can be a row.
+  case row {
+    json.Object(fields) -> {
+      use id <- result.try(text_field(fields, "session_id"))
+      use decoded <- result.map(page_attention.decode_row(row))
+      #(id, decoded)
+    }
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Nil)
+  }
+}
+
+/// What an act on an attention record needs to reach a session as the
+/// credential: the registry, the credential's digest and the resident's peer
+/// endpoint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.attention_reach(config, registry, digest)
+/// ```
+@internal
+pub fn attention_reach(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> attention_door.Reach(instance) {
+  attention_door.Reach(registry:, digest:, endpoint: config.peer_endpoint)
+}
+
+/// The worktree read a home page is handed: one session's review, as the
+/// credential may read it (`review_door.read`). Membership is derived in the
+/// registry at the moment of each read, so a revoked credential reads nothing
+/// from the next read on. `reserve` is the caller's allowance for workspace
+/// reads, which a home page takes from its credential's count
+/// (`ui_sessions.reserve_worktree_read`). The read blocks for up to
+/// `review_door.deadline_ms`, so a page runs it off its own runtime.
+///
+/// The authority checked here is the credential's over the session, and an
+/// observer's is refused. The page's own ceiling is not checked, so a caller
+/// does not offer this to a page whose ceiling is an observer's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_review(config, registry, digest, reserve)("0198...")
+/// ```
+@internal
+pub fn home_review(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  reserve: fn() -> Result(Nil, Nil),
+) -> fn(String) -> Result(review_feed.Review, attention_door.Refusal) {
+  fn(session) {
+    review_door.read(review_reach(config, registry, digest, reserve), session)
+  }
+}
+
+/// What a review read needs to reach a session as the credential.
+fn review_reach(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  reserve: fn() -> Result(Nil, Nil),
+) -> review_door.Reach(instance) {
+  review_door.Reach(registry:, digest:, observe: config.worktree, reserve:)
+}
+
+/// The allowance a brief read spends: the credential's brief reads in the web
+/// view's table when the daemon serves one, and none otherwise. A daemon with no
+/// web view has no table to count in, and its control sockets are the owner's
+/// and its members' alone.
+@internal
+pub fn brief_allowance(
+  config: Config(instance),
+  digest: access.Digest,
+) -> brief_door.Allowance {
+  case config.ui {
+    Some(ui) ->
+      brief_door.Allowance(reserve: fn() {
+        ui_sessions.reserve_brief_read(ui.sessions, digest)
+      })
+    None -> brief_door.Allowance(reserve: fn() { Ok(Nil) })
+  }
+}
+
+/// One session's brief as the credential may read it, for a home page
+/// (`brief_door.read_typed`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_brief(config, registry, digest)("0198...", 0)
+/// ```
+@internal
+pub fn home_brief(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(String, Int) -> Result(session_brief.Brief, attention_door.Refusal) {
+  fn(session, since) {
+    brief_door.read_typed(
+      attention_reach(config, registry, digest),
+      brief_allowance(config, digest),
+      session,
+      since,
+    )
+  }
+}
+
+/// The allowance the control socket's review spends from: the web view's
+/// workspace reads for the credential, when the daemon serves one, and none
+/// otherwise. A daemon with no web view has no table to count in, and its
+/// control sockets are the owner's and its members' alone.
+fn control_reserve(
+  config: Config(instance),
+  digest: access.Digest,
+) -> fn() -> Result(Nil, Nil) {
+  case config.ui {
+    Some(ui) -> fn() { ui_sessions.reserve_worktree_read(ui.sessions, digest) }
+    None -> fn() { Ok(Nil) }
+  }
+}
+
+/// The words and code of a door refusal, as the control socket sends it.
+fn attention_refusal(refusal: attention_door.Refusal) -> Refused {
+  Refused(refusal.code, refusal.words, [])
+}
+
+/// A reply body that is checked against the 60,000-byte frame, refused with
+/// `metadata_too_large` when the encoded frame is over it. A record's own bounds
+/// make that unreachable; the check keeps the arithmetic honest.
+fn within_frame(
+  reply_to: Int,
+  event: String,
+  body: JsonValue,
+) -> Result(#(String, JsonValue), Refused) {
+  use frame <- result.try(
+    protocol.event(Some(reply_to), event, body)
+    |> result.map_error(fn(_) { control_refusal("metadata_too_large") }),
+  )
+
+  // The encoded frame is checked against the reply bound.
+  case string.byte_size(frame) <= 60_000 {
+    True -> Ok(#(event, body))
+    False -> Error(control_refusal("metadata_too_large"))
+  }
+}
+
+/// The activity read the session page's sidebar and the admin page's dots are
+/// handed: `home_activity` reduced to the one state word each draws. Only the
+/// home page learns a session's last message and glances, so the narrowing
+/// happens here, at the daemon, and neither of the other two pages can draw
+/// what it was never given.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.session_activity(config, registry, digest)(["0198..."])
+/// ```
+@internal
+pub fn session_activity(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
+  states_of(home_activity(config, registry, digest))
+}
+
+/// Narrows a read of reports to a read of states: the one place a page that
+/// must not see what a session said is handed only what it may draw. A page
+/// that is given the home's reports (a live page the home opened) passes them
+/// through here, as `session_activity` does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.states_of(reports)(["0198..."])
+/// ```
+@internal
+pub fn states_of(
+  reports: fn(List(String)) -> List(#(String, listed_sessions.Report)),
+) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
+  fn(ids) {
+    reports(ids)
+    |> list.map(fn(pair) { #(pair.0, { pair.1 }.activity) })
   }
 }
 
@@ -6507,14 +7012,16 @@ fn held(
   })
 }
 
-/// What the named sessions are doing, for a home page's list: the same read
-/// the control command `sessions.activity` makes (`activity`, with its
-/// deadline and its bound on a row), reduced to the one state word the page
-/// draws for each session that answered. A session that was not running, did
-/// not answer in time, or answered with a state the page does not know has no
-/// entry. Only the state leaves the daemon here: the row's last message, model
-/// and glances, which the control command hands the owner, are dropped, so the
-/// page learns no more about a session than whether it works.
+/// What the named sessions are doing, for the session page's sidebar and the
+/// admin page's dots: the same read the control command `sessions.activity`
+/// makes (`activity`, with its deadline and its bound on a row), reduced to the
+/// one state word those pages draw for each session that answered. A session
+/// that was not running, did not answer in time, or answered with a state the
+/// page does not know has no entry. Only the state leaves the daemon here: the
+/// row's last message, model and glances are dropped, so the session page
+/// learns no more about another session than whether it works. The home page
+/// is the exception: it gets the message and the glances, through
+/// `activity_reports`.
 ///
 /// The caller names sessions from the page's own authorized list, at most 24
 /// of them, and runs this off the page's runtime. It blocks for up to the
@@ -6533,6 +7040,113 @@ pub fn activity_states(
 ) -> List(#(String, listed_sessions.Activity)) {
   activity(config, registry, sessions)
   |> list.filter_map(state_of)
+}
+
+/// What the named sessions are doing and last said, for the home page's inbox:
+/// the same read as `activity_states`, with the same deadline, bound and
+/// omissions, but each answer keeps the row's `last_message` and `glances`
+/// beside the state, as a `listed_sessions.Report`. The home page is the one
+/// page that draws them, and only as text nodes, because they are model text.
+///
+/// A row decodes totally. A missing or non-string `last_message` is no message,
+/// and a glance that is not an object of three strings is dropped alone, so a
+/// malformed field never costs a session its state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.activity_reports(config, registry, ["0198..."])
+/// ```
+@internal
+pub fn activity_reports(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  sessions: List(String),
+) -> List(#(String, listed_sessions.Report)) {
+  activity(config, registry, sessions)
+  |> list.filter_map(report_of)
+}
+
+/// The session and the report a reply row names, when it names a state the
+/// page knows. A `last_message` that is missing or is not a string is no
+/// message, and a glance that is not an object of three strings is dropped
+/// alone, so a malformed field never costs the row its state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [], None, None)))
+/// ```
+@internal
+pub fn report_of(
+  row: JsonValue,
+) -> Result(#(String, listed_sessions.Report), Nil) {
+  use #(id, doing) <- result.try(state_of(row))
+
+  // Only an object carries the extras, and `state_of` already took one.
+  case row {
+    json.Object(fields) -> {
+      // A message of any type but a string is no message.
+      let last_message = case list.key_find(fields, "last_message") {
+        Ok(json.String(text)) -> Some(text)
+        Ok(_) | Error(Nil) -> None
+      }
+
+      // Each glance is read alone, so one malformed glance costs only itself.
+      let glances = case list.key_find(fields, "glances") {
+        Ok(json.Array(items)) -> list.filter_map(items, glance_of)
+        Ok(_) | Error(Nil) -> []
+      }
+
+      Ok(#(
+        id,
+        listed_sessions.Report(
+          doing,
+          last_message,
+          glances,
+          // A time of any type but a whole non-negative number is no time,
+          // and an old daemon's row has neither.
+          time_field(fields, "last_message_at"),
+          time_field(fields, "turn_started_at"),
+        ),
+      ))
+    }
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Nil)
+  }
+}
+
+/// A Unix-millisecond time of a row, or nothing for a member that is missing,
+/// null, not a whole number or negative.
+fn time_field(fields: List(#(String, JsonValue)), name: String) -> Option(Int) {
+  case list.key_find(fields, name) {
+    Ok(json.Int(at)) if at >= 0 -> Some(at)
+    Ok(_) | Error(Nil) -> None
+  }
+}
+
+/// One glance of a row, or nothing for a value that is not an object with a
+/// string strand, title and summary.
+fn glance_of(item: JsonValue) -> Result(listed_sessions.Glance, Nil) {
+  // A glance is an object of three strings and nothing else.
+  case item {
+    json.Object(fields) -> {
+      use strand <- result.try(text_field(fields, "strand"))
+      use title <- result.try(text_field(fields, "title"))
+      use summary <- result.map(text_field(fields, "summary"))
+      listed_sessions.Glance(strand:, title:, summary:)
+    }
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Nil)
+  }
 }
 
 /// The session and the state a reply row names, when it names a state the page

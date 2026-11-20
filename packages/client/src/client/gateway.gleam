@@ -197,6 +197,7 @@ import broker/policy.{type Grant}
 import client/advisor
 import client/advisor_pending
 import client/approval_ceiling
+import client/attention
 import client/blocksummary
 import client/btw
 import client/catalog
@@ -510,6 +511,11 @@ pub type Options {
     /// strand, once (`protocol-change/067`). The daemon fills it with the
     /// catalogue's subtitle write; a host with no catalogue passes `None`.
     first_prompt: Option(fn(String) -> Nil),
+    /// Told after the hub commits an operator's decision on an escalation, so
+    /// the catalogue's attention summary lowers the pending count
+    /// (protocol-change/122). `attention.silent()` for a host with no
+    /// catalogue.
+    attention_report: attention.Report,
     /// What the hub needs from the daemon to read and switch the session's
     /// model profile (`protocol-change/082`). `None` is a session with no
     /// daemon behind it: `profile_get` and `profile_set` answer `unsupported`.
@@ -674,6 +680,8 @@ type State {
     // `None` is both a host with no catalogue and a report already sent, so
     // the check on the hot path is one pattern match.
     first_prompt: Option(fn(String) -> Nil),
+    // Tells the catalogue's attention summary about a committed decision.
+    attention_report: attention.Report,
     // The daemon's door for the session's model profile, when it has one.
     profile: Option(profile_switch.Desk),
     reload: Reload,
@@ -771,6 +779,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     btw: None,
     summary_demand: None,
     first_prompt: None,
+    attention_report: attention.silent(),
     profile: None,
     spawner: None,
     remote: None,
@@ -860,6 +869,23 @@ pub fn with_first_prompt(
   report: fn(String) -> Nil,
 ) -> Options {
   Options(..options, first_prompt: Some(report))
+}
+
+/// Supplies the report the hub makes after it commits an operator's decision on
+/// an escalation (`protocol-change/122`). The hub calls it from its own process
+/// and does not wait; the daemon connects it to the catalogue's attention
+/// summary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_attention_report(options, attention.reporter(clock, send, log))
+/// ```
+pub fn with_attention_report(
+  options: Options,
+  report: attention.Report,
+) -> Options {
+  Options(..options, attention_report: report)
 }
 
 /// Supplies the daemon's door for reading and switching the session's model
@@ -1536,6 +1562,7 @@ fn start_with_delivery(
         btw: options.btw,
         summary_demand: options.summary_demand,
         first_prompt: options.first_prompt,
+        attention_report: options.attention_report,
         profile: options.profile,
         reload: Current,
         delivery:,
@@ -2426,8 +2453,7 @@ fn dispatch_message(state: State, message: Message) -> State {
       reply:,
     ) -> {
       let #(now, _clock) = clock.read(state.runtime.effects.clock)
-      process.send(
-        reply,
+      let answer =
         remote_decision.admit_relayed(
           state.runtime,
           spawner,
@@ -2437,8 +2463,12 @@ fn dispatch_message(state: State, message: Message) -> State {
           expected_seq,
           decided_by,
           now,
-        ),
-      )
+        )
+
+      // Whether the commit won or lost its compare-and-set, the summary is
+      // made from the records as they now stand.
+      state.attention_report(state.runtime)
+      process.send(reply, answer)
       state
     }
     StopForRelayed(reply:) -> {
@@ -7036,6 +7066,12 @@ fn prompt_message(
   }
 }
 
+/// The words of the refusal a full input queue is answered with, as a
+/// `conflict` error. A caller that must tell a full queue from the other
+/// conflicts a prompt can meet (a restarting writer, a lost lease) compares
+/// against this constant, not against its own copy of the sentence.
+pub const queue_full_message = "the strand is busy and its queue is full"
+
 /// Puts one prompt at the tail of its strand's queue, or refuses the
 /// submission when the queue is full. The bound is what keeps a strand
 /// whose run never settles from accumulating unbounded hub memory, and the
@@ -7075,7 +7111,7 @@ fn hold_prompt(
         connection,
         id,
         protocol.code_conflict,
-        "the strand is busy and its queue is full",
+        queue_full_message,
       )
       state
     }
@@ -8154,6 +8190,7 @@ fn commit_approval(
   // Evaluate control flow transition for commit approval.
   case committed {
     Ok(_) -> {
+      state.attention_report(state.runtime)
       let _ =
         escalate.notify_decision(state.runtime, cell, case lifetime {
           Once -> escalate.ApprovedOnce
@@ -8275,6 +8312,7 @@ fn deny(
     id,
   )
 
+  state.attention_report(state.runtime)
   let _ = escalate.notify_decision(state.runtime, cell, escalate.Denied)
   reply_with_committed(state, connection, id, fn(emit) {
     escalation_emitted(emit, escalation_id, "rejected")
@@ -8665,16 +8703,21 @@ fn decide_for_spawner(
       ))
     Some(link) -> {
       let #(now, _clock) = clock.read(state.runtime.effects.clock)
-      remote_decision.admit(
-        state.runtime,
-        link,
-        parent,
-        escalation_id,
-        decision,
-        expected_seq,
-        decided_by,
-        now,
-      )
+      let answer =
+        remote_decision.admit(
+          state.runtime,
+          link,
+          parent,
+          escalation_id,
+          decision,
+          expected_seq,
+          decided_by,
+          now,
+        )
+
+      // As for a relayed decision, the summary follows the records either way.
+      state.attention_report(state.runtime)
+      answer
     }
   }
 }

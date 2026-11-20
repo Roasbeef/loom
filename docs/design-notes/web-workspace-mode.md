@@ -83,14 +83,14 @@ check anywhere.
 
 ### 1.1 What exists
 
-A UI session is a `Grant` (`ui_sessions.gleam:341`) of one session, one
+A UI session is a `Grant` (`ui_sessions.gleam:354`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:3112`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:3184`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:2528`)). The
-exchange redeems it once (`redeem` (`ui_sessions.gleam:795`)), the page and
+switching to another session (`ticket_for` (`ui_socket.gleam:3422`)). The
+exchange redeems it once (`redeem` (`ui_sessions.gleam:833`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
 order: `loopback_host` (`ui_http.gleam:401`), then `navigation_allowed`
@@ -99,14 +99,14 @@ the socket, then the cookie under the key. The cookie's `Path` is the key's
 (`set_cookie` (`ui_http.gleam:918`)), so it reaches no other page and no other
 loopback port. A UI session lives eight hours (`session_ms`
 (`ui_sessions.gleam:79`)); a chain of switches ends with the page it began
-from (`mint_before` (`ui_sessions.gleam:611`)).
+from (`mint_before` (`ui_sessions.gleam:627`)).
 
 The operator page already lists the principal's sessions in a sidebar,
 read with the page's credential digest (`listed_for`
 (`ui_socket.gleam:663`), `authorized_page`
 (`client/daemon/manager.gleam:1263`)), grouped by workspace (`grouped`
 (`web_view/sessions.gleam:154`)), and a row for a running session is a button
-that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:85`),
+that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:103`),
 `target` (`web_client/switch_rule.gleam:67`)). The observer page has no
 sidebar, by ruling (051, the addendum on the session sidebar): an observer
 link is the one a person hands to someone who may only watch one session.
@@ -297,7 +297,7 @@ that adds it says what the narrowed holder may ask.
 
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
-(`authenticate` (`client/daemon/manager.gleam:1942`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1978`), `session_authority`,
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
 gateway's per-frame re-check and the admin dispatch all run unchanged
@@ -309,7 +309,7 @@ anyone who sees the cookie knows it, and the row's digest is the digest of
 it. The first edition of this note said a login presented as a bearer is
 refused because the daemon would hash the whole token; that was true and
 beside the point, because the daemon hashes any presented string
-(`credential` (`client/daemon/server.gleam:1122`)), and `Authorization:
+(`credential` (`client/daemon/server.gleam:1192`)), and `Authorization:
 Bearer <id>` would have hashed to the row and authenticated as the
 principal with no ceiling, no expiry, no key and no nonce: for the owner's
 login, owner authority on the control socket. The review of 2026-10-04
@@ -522,7 +522,7 @@ their bearer, since a login is not a claim.
 | `POST /ui/claim` | host, `Sec-Fetch-Site`, body at most 1 KiB, claim redeems | the enter page, with the login cookie and nonce (section 5.3) |
 
 A `Home` ticket presented at a session's exchange, or a session ticket at
-the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:420`)
+the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:433`)
 spends one presented against the wrong session today. The scope is part of
 the redemption, in the same actor message, so the property 053 wanted from a
 separate admin ticket table (a session ticket never redeems at the admin
@@ -536,7 +536,7 @@ is eight hours, and only the login is thirty days.
 
 ### 1.6 What the home draws
 
-The home is the A2 shell (`view` (`web_view/view/shell.gleam:108`)) with the
+The home is the A2 shell (`view` (`web_view/view/shell.gleam:114`)) with the
 same four children in the same order, so the two pages feel like one app
 and the stylesheet needs no second layout:
 
@@ -641,7 +641,7 @@ login add these cases.
 `sessions.create` is owner-only (`CreateSession`
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
-`create_scoped` (`client/daemon/manager.gleam:2048`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:2084`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:847`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
@@ -697,7 +697,7 @@ the registry's capacity and `max_pages`, and prompt them at operator role.
 That is a new agent in a workspace the owner already runs agents in, at
 the sandbox policy that workspace's registrations carry. It can fill the
 catalogue with sessions; a count per credential per hour, as
-`reserve_invite` (`ui_sessions.gleam:706`) keeps for invitations, bounds it
+`reserve_invite` (`ui_sessions.gleam:722`) keeps for invitations, bounds it
 (065 proposes ten an hour). The daemon logs no line for a creation today;
 065 adds one, `daemon.session_created` with the principal's ID, so a run of
 creations from a stolen page is visible in `daemon.log`.
@@ -711,7 +711,7 @@ the membership and that the session is resident (`running`
 (`ui_socket.gleam:1012`)), mints with the page's own ceiling and deadline,
 and `<loom-switch>` navigates to the exchange. A saved session is text in
 the sidebar, and the refusal says to resume it from a terminal
-(`reason_words` (`web_view/sessions.gleam:296`)). The ruling "operator
+(`reason_words` (`web_view/sessions.gleam:352`)). The ruling "operator
 surfaces do not open saved sessions" was about the listing not being
 permission to activate; the open must go through the membership- and
 epoch-checked path.
@@ -730,8 +730,8 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:3146`) makes;
-3. `open` (`client/daemon/manager.gleam:2015`) is called, which is the same
+   it", the check `OpenSession` (`client/daemon/server.gleam:3224`) makes;
+3. `open` (`client/daemon/manager.gleam:2051`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
 4. the daemon waits for the session to become `Resident`, polling `get`
@@ -770,9 +770,9 @@ membership is.
 053 designed the admin page in full (phase 4) and the owner ruled on
 2026-09-30 that it waits for use of the terminal's `/access` overlay
 (`tui/access_overlay.gleam`). The daemon serves the two owner-only reads it
-needs, `principal_page` (`client/daemon/manager.gleam:1779`) and
-`membership_page` (`client/daemon/manager.gleam:1802`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:1213`): invite,
+needs, `principal_page` (`client/daemon/manager.gleam:1815`) and
+`membership_page` (`client/daemon/manager.gleam:1838`), and every mutation
+through one dispatch, `administer` (`client/daemon/manager.gleam:1226`): invite,
 set-role, revoke membership, rotate, revoke credentials, isolate. The owner's
 session page already starts one of those from a browser, `invite_for`
 (`ui_socket.gleam:812`), bounded to three an hour for the credential and shown
@@ -887,7 +887,7 @@ A principal has a stable ID and a display name (`Principal`
 SESSION PRINCIPAL ROLE NAME`, and `Guest <digits>` from the page). The
 catalogue can rename one (`rename` (`storage/access.gleam:1239`)) and no control
 command exposes it (053, Open). A claim binds a credential to the principal
-(`claim` (`client/daemon/manager.gleam:1092`)) and carried no name before this change. The name
+(`claim` (`client/daemon/manager.gleam:1105`)) and carried no name before this change. The name
 reaches everyone through the roster: the gateway stamps each connection and
 each admitted command with the principal's current name (`Origin`
 (`client/gateway.gleam:1783`)), presence frames carry it, and an origin keeps

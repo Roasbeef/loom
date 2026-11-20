@@ -42,6 +42,7 @@ import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws.{type Socket}
 import tui/connection
 import tui/daemon/protocol as terminal_protocol
+import web_view/saved_attention
 import web_view/sessions
 import weft
 import weft/poll
@@ -241,6 +242,42 @@ pub fn fixture_with_reload(
   executors_reload: option.Option(server.ExecutorsReload),
   run,
 ) {
+  fixture_observing(
+    connection_limits,
+    peer_endpoint,
+    fn(_) { None },
+    build,
+    asked,
+    movers,
+    reach,
+    ledger,
+    executors_reload,
+    run,
+  )
+}
+
+/// `fixture_with_reload` with the projection of a resident's own observation of
+/// its workspace, for a test of `sessions.review` (protocol-change/123). The
+/// default is a resident with none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_observing(limits.defaults, peer, worktree, build, stub, movers, reach, None, None, run)
+/// ```
+@internal
+pub fn fixture_observing(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  worktree,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  reach: deployment.Reach,
+  ledger: option.Option(ledger_control.Handle),
+  executors_reload: option.Option(server.ExecutorsReload),
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -263,6 +300,7 @@ pub fn fixture_with_reload(
     as "only the fixture receives plaintext owner credential"
   let config =
     server.Config(
+      worktree:,
       peer_endpoint:,
       daemon:,
       domain_configuration: "",
@@ -1554,6 +1592,11 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.Links(_)
           | peer_mail.Grants(_)
           | peer_mail.Overview
+          | peer_mail.AttentionFeed
+          | peer_mail.AttentionRead(..)
+          | peer_mail.ApprovalRead
+          | peer_mail.SessionBrief(..)
+          | peer_mail.AttentionSettle(..)
           | peer_mail.Inbox(..)
           | peer_mail.InboxGet(..)
           | peer_mail.History(..)
@@ -2119,11 +2162,11 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
   })
 }
 
-// A home page's activity read is the control command's read reduced to a state
-// word for each session that answered: a resident that answers is idle, then
-// needs you once an approval is pending, a resident that never answers and an
-// identity with no resident are left out, and nothing but the state leaves the
-// daemon. A member is answered only for the sessions it holds, and a session it
+// A home page's activity read is the control command's read as a report for each
+// session that answered: a resident that answers is idle, then needs you once an
+// approval is pending, a resident that never answers and an identity with no
+// resident are left out, and the report carries the row's last message and
+// glances, which the session page's narrower read (`session_activity`) drops. A member is answered only for the sessions it holds, and a session it
 // does not hold reads as an identity nobody has.
 pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
   let #(idle, _) = ids.mint_session(ids.generator(clock.fixed(0), 811))
@@ -2185,6 +2228,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
       })
       let config =
         server.Config(
+          worktree: fn(_) { None },
           peer_endpoint: endpoint,
           daemon:,
           domain_configuration: "",
@@ -2239,19 +2283,26 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
       // The owner: only the idle resident answers; the rest leave no entry.
       let read =
         server.home_activity(config, ready.registry, digest_of(credential))
-      assert read(asked) == [#(idle_id, sessions.Idle)]
+      assert read(asked)
+        == [#(idle_id, sessions.Report(sessions.Idle, None, [], None, None))]
 
       // A pending approval moves it to needs you.
       let assert Ok(Nil) =
         api.raise_escalation(runtime, "esc-1", json.Object([]))
         as "an approval is pending"
-      assert read([idle_id]) == [#(idle_id, sessions.NeedsYou)]
+      assert read([idle_id])
+        == [
+          #(idle_id, sessions.Report(sessions.NeedsYou, None, [], None, None)),
+        ]
 
       // A member holding the session, at any role, is answered for it, and for
       // nothing else it was asked about.
       let held =
         server.home_activity(config, ready.registry, digest_of("holder-token"))
-      assert held(asked) == [#(idle_id, sessions.NeedsYou)]
+      assert held(asked)
+        == [
+          #(idle_id, sessions.Report(sessions.NeedsYou, None, [], None, None)),
+        ]
 
       // A member holding nothing gets exactly what an unknown identity gets: no
       // row, so a reply cannot tell "not yours" from "not running".
@@ -2271,6 +2322,133 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         == []
     },
   )
+}
+
+fn row(fields: List(#(String, json.JsonValue))) -> json.JsonValue {
+  json.Object([
+    #("session_id", json.String("S")),
+    #("state", json.String("idle")),
+    ..fields
+  ])
+}
+
+fn glance(strand: String, title: String, summary: String) -> json.JsonValue {
+  json.Object([
+    #("strand", json.String(strand)),
+    #("title", json.String(title)),
+    #("summary", json.String(summary)),
+  ])
+}
+
+// A row decodes totally into a report: the message and the glances are read when
+// they are well-formed and are no message and no glances when they are not.
+pub fn a_row_decodes_into_a_report_with_or_without_its_extras_test() {
+  assert server.report_of(row([]))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
+
+  assert server.report_of(
+      row([
+        #("last_message", json.String("All done.")),
+        #(
+          "glances",
+          json.Array([glance("s1", "Lint", "green"), glance("s2", "", "idle")]),
+        ),
+      ]),
+    )
+    == Ok(#(
+      "S",
+      sessions.Report(
+        sessions.Idle,
+        Some("All done."),
+        [
+          sessions.Glance("s1", "Lint", "green"),
+          sessions.Glance("s2", "", "idle"),
+        ],
+        None,
+        None,
+      ),
+    ))
+
+  // A null message is none, and so is one of the wrong type.
+  assert server.report_of(row([#("last_message", json.Null)]))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
+  assert server.report_of(row([#("last_message", json.Int(3))]))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
+}
+
+// A malformed glance is dropped alone: its neighbours and the row's state and
+// message survive, and a glances field that is not a list is no glances.
+pub fn a_malformed_glance_is_dropped_and_never_fails_the_row_test() {
+  let bad_type =
+    json.Object([
+      #("strand", json.String("s2")),
+      #("title", json.Int(1)),
+      #("summary", json.String("no")),
+    ])
+  let missing = json.Object([#("strand", json.String("s3"))])
+
+  assert server.report_of(
+      row([
+        #("last_message", json.String("Hi")),
+        #(
+          "glances",
+          json.Array([
+            bad_type,
+            glance("s1", "T", "ok"),
+            json.String("x"),
+            missing,
+            json.Null,
+          ]),
+        ),
+      ]),
+    )
+    == Ok(#(
+      "S",
+      sessions.Report(
+        sessions.Idle,
+        Some("Hi"),
+        [
+          sessions.Glance("s1", "T", "ok"),
+        ],
+        None,
+        None,
+      ),
+    ))
+
+  assert server.report_of(row([#("glances", json.String("nope"))]))
+    == Ok(#("S", sessions.Report(sessions.Idle, None, [], None, None)))
+}
+
+// A row the page cannot read at all, an unknown state or no session, is no
+// report, exactly as it is no state.
+pub fn a_row_with_no_state_or_session_is_no_report_test() {
+  assert server.report_of(json.Array([])) == Error(Nil)
+  assert server.report_of(json.Object([#("session_id", json.String("S"))]))
+    == Error(Nil)
+  assert server.report_of(
+      json.Object([
+        #("session_id", json.String("S")),
+        #("state", json.String("unknown")),
+      ]),
+    )
+    == Error(Nil)
+}
+
+// The failed run and the pending approval are both `needs_you` on the wire; the
+// approvals count tells them apart in a report as it does in a state.
+pub fn a_reports_activity_follows_the_approvals_count_test() {
+  let needs = fn(approvals) {
+    json.Object([
+      #("session_id", json.String("S")),
+      #("state", json.String("needs_you")),
+      #("approvals", json.Int(approvals)),
+    ])
+  }
+
+  assert server.report_of(needs(0))
+    == Ok(#("S", sessions.Report(sessions.Failed, None, [], None, None)))
+  assert server.report_of(needs(2))
+    == Ok(#("S", sessions.Report(sessions.NeedsYou, None, [], None, None)))
 }
 
 fn sha256_hex(text: String) -> String {
@@ -2784,4 +2962,118 @@ pub fn a_model_with_no_config_file_is_refused_as_unknown_test() {
 fn catalogue_page(ready: root.Ready(String)) {
   manager.page(ready.registry, after: "")
   |> result.map(fn(page) { page.1 })
+}
+
+// A home page's attention read is the catalogue's summary rows for the sessions
+// its credential holds, resident or saved. A session with no row has no entry,
+// a member is answered only for what it holds, and an identity that is not held
+// reads exactly as one the catalogue has never heard of.
+pub fn a_homes_attention_read_is_the_held_summaries_test() {
+  let #(held, _) = ids.mint_session(ids.generator(clock.fixed(0), 821))
+  let #(unread, _) = ids.mint_session(ids.generator(clock.fixed(0), 822))
+  let #(absent, _) = ids.mint_session(ids.generator(clock.fixed(0), 823))
+  let held_id = ids.session_id_to_string(held)
+  let unread_id = ids.session_id_to_string(unread)
+  let absent_id = ids.session_id_to_string(absent)
+  fixture_with_peers(
+    limits.defaults,
+    fn(_) { None },
+    fn(_daemon, ready, _, credential) {
+      list.each([#(held_id, 821), #(unread_id, 822)], fn(pair) {
+        let assert Ok(_) =
+          manager.create(
+            ready.registry,
+            manager.Creation(
+              pair.0,
+              ready.state_root,
+              pair.0,
+              "",
+              None,
+              None,
+              "",
+              "",
+              agency_limits.empty,
+            ),
+            directory: ready.sessions_directory,
+            generator: ids.generator(clock.fixed(0), pair.1),
+          )
+          as "the session is created"
+        Nil
+      })
+      let digest_of = fn(token) {
+        let assert Ok(digest) =
+          token
+          |> bit_array.from_string
+          |> bootstrap.sha256
+          |> bit_array.base16_encode
+          |> string.lowercase
+          |> access.credential_digest
+          as "digest is valid"
+        digest
+      }
+      let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+        as "fixture administration opens the durable catalogue"
+      let assert Ok(holder) =
+        access.create_member(
+          store,
+          "holder",
+          "Holder",
+          digest_of("holder-token"),
+        )
+        as "member exists"
+      let assert Ok(_) =
+        access.create_member(
+          store,
+          "bystander",
+          "Bystander",
+          digest_of("bystander-token"),
+        )
+        as "member exists"
+      assert access.grant(store, holder.id, held_id, access.Observer) == Ok(Nil)
+      assert catalogue.close(store) == Ok(Nil)
+
+      // Only the held session has a row. The write is a cast and the read
+      // queues behind it in the registry's turn.
+      manager.record_attention(
+        ready.registry,
+        held_id,
+        catalogue.AttentionSummary(
+          pending_approvals: 1,
+          open_asks: 0,
+          open_finds: 2,
+          oldest_open_at: Some(30),
+          updated_at: 40,
+        ),
+      )
+      let expected = [
+        saved_attention.Saved(held_id, 1, 0, 2, Some(30), 40),
+      ]
+      let asked = [held_id, unread_id, absent_id]
+
+      // The owner holds every session: the one with a row answers, the one
+      // never read and the unknown identity leave no entry.
+      let read =
+        server.home_saved_attention(ready.registry, digest_of(credential))
+      assert read(asked) == expected
+
+      // A member is answered for what it holds and nothing else.
+      let held_read =
+        server.home_saved_attention(ready.registry, digest_of("holder-token"))
+      assert held_read(asked) == expected
+      assert held_read([unread_id]) == []
+
+      // A member holding nothing gets what an unknown identity gets, and so
+      // does a credential the catalogue does not know.
+      let bystander =
+        server.home_saved_attention(
+          ready.registry,
+          digest_of("bystander-token"),
+        )
+      assert bystander(asked) == []
+      assert server.home_saved_attention(ready.registry, digest_of("nobody"))(
+          asked,
+        )
+        == []
+    },
+  )
 }

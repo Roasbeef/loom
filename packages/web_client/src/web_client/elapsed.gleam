@@ -31,6 +31,11 @@
 //// browser's clock to agree with the daemon's, so a browser whose clock is
 //// wrong shows a wrong age; it never shows a negative one.
 ////
+//// A fourth attribute, `form="minutes"`, picks the coarser reading
+//// (`duration.minutes`: `14m` where the default says `14m 05s`), which the
+//// inbox's turn age uses. Any other value, or none, keeps the default, so the
+//// other uses of the element keep their format.
+////
 //// The element renders only what its attributes say: a number the
 //// daemon wrote, never session text. It draws a text node in its own shadow
 //// root, handles no key and takes no focus.
@@ -54,7 +59,21 @@ pub const name = "loom-elapsed"
 /// when it arrived, the browser's clock at the last tick, and its timer
 /// while it is on the page.
 pub type Model {
-  Model(reading: Option(Reading), now: Int, timer: Option(ffi_dom.Timer))
+  Model(
+    reading: Option(Reading),
+    now: Int,
+    timer: Option(ffi_dom.Timer),
+    form: Form,
+  )
+}
+
+/// How an elapsed reading is worded.
+pub type Form {
+  /// Minutes and padded seconds under an hour (`duration.format`).
+  Full
+
+  /// Whole minutes under an hour (`duration.minutes`).
+  Minutes
 }
 
 /// Which way a reading counts.
@@ -90,6 +109,9 @@ pub type Msg {
   /// The server set `since` to this Unix time in milliseconds.
   SinceChanged(since: Int)
 
+  /// The server set `form`; only `minutes` changes the wording.
+  FormChanged(form: Form)
+
   /// The reading arrived, anchored to the browser's clock.
   Anchored(reading: Reading)
 
@@ -118,6 +140,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
     component.on_attribute_change("offset", offset),
     component.on_attribute_change("remaining", remaining),
     component.on_attribute_change("since", since),
+    component.on_attribute_change("form", form_of),
     component.on_connect(Connected),
     component.on_disconnect(Disconnected),
   ])
@@ -149,8 +172,17 @@ fn since(value: String) -> Result(Msg, Nil) {
   |> result.map(SinceChanged)
 }
 
+// Only `minutes` asks for the coarser wording; anything else is the default,
+// so a stray value cannot hide the seconds from a reader who expects them.
+fn form_of(value: String) -> Result(Msg, Nil) {
+  case string.trim(value) {
+    "minutes" -> Ok(FormChanged(Minutes))
+    _ -> Ok(FormChanged(Full))
+  }
+}
+
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
-  #(Model(reading: None, now: 0, timer: None), effect.none())
+  #(Model(reading: None, now: 0, timer: None, form: Full), effect.none())
 }
 
 /// Applies one message. The clock is read only inside effects, so `update`
@@ -168,6 +200,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     OffsetChanged(offset:) -> #(model, anchor(offset, Up))
     RemainingChanged(remaining:) -> #(model, anchor(remaining, Down))
     SinceChanged(since:) -> #(model, anchor_since(since))
+    FormChanged(form:) -> #(Model(..model, form:), effect.none())
     Anchored(reading:) -> #(
       Model(..model, reading: Some(reading), now: reading.anchor),
       effect.none(),
@@ -234,7 +267,10 @@ fn view(model: Model) -> Element(Msg) {
       // Format count-up duration or countdown remaining time.
       case reading.direction {
         Up ->
-          html.text(duration.format(int.max(0, reading.offset + passed) / 1000))
+          html.text(worded(
+            model.form,
+            int.max(0, reading.offset + passed) / 1000,
+          ))
         Down ->
           html.text(duration.remaining(
             int.max(0, reading.offset - passed) / 1000,
@@ -242,5 +278,13 @@ fn view(model: Model) -> Element(Msg) {
       }
     }
     None -> element.none()
+  }
+}
+
+// The count-up reading in the wording the element was asked for.
+fn worded(form: Form, seconds: Int) -> String {
+  case form {
+    Full -> duration.format(seconds)
+    Minutes -> duration.minutes(seconds)
   }
 }

@@ -180,6 +180,7 @@ fn fixture_serving(
     server.Config(
       daemon,
       fn(_) { None },
+      fn(_) { None },
       "",
       roster.fixed([]),
       [],
@@ -777,7 +778,13 @@ fn insert_entry(harness: gateway_test.Harness, seed, text) {
 pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test() {
   fixture(fn(port, credential, id, _, harness) {
     let pending =
-      escalation.raised("esc-1", json.Object([]), action: None, scope: None)
+      escalation.raised(
+        "esc-1",
+        json.Object([]),
+        action: None,
+        scope: None,
+        at: 1,
+      )
     let assert Ok(_) =
       writer.commit(
         harness.runtime.tree.writer,
@@ -815,6 +822,7 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
         json.Object([]),
         action: None,
         scope: None,
+        at: 1,
       )
     let assert Ok(commit) =
       writer.commit(
@@ -957,7 +965,7 @@ pub fn decided_escalations_return_the_newest_decided_questions_only_test() {
       Nil
     }
     let raised = fn(name) {
-      escalation.raised(name, json.Object([]), action: None, scope: None)
+      escalation.raised(name, json.Object([]), action: None, scope: None, at: 1)
     }
     commit_record(raised("still-waiting"))
     commit_record(escalation.approve(raised("allowed"), [], Some(author)))

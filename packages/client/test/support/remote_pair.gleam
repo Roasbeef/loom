@@ -289,7 +289,10 @@ pub fn models(url: String, advisor_url: Option(String)) -> String {
 /// next step it is not. Routing the role to a port nothing listens on makes
 /// every glance fail where the loop expects failure, logs it at warning level
 /// and backs off. The child's own turns and the title are unrelated, so the
-/// script lists only the conversation the test is about.
+/// script lists only the conversation the test is about. A fixture that routes
+/// `summarize` or `subagent` to its scripted provider also glances `main`
+/// (`glance.Route`), so a multi-step main turn would meet the same extra
+/// request; route the role here instead.
 ///
 /// ## Examples
 ///

@@ -97,11 +97,11 @@ pub fn a_dot_and_a_tag_hold_the_position_of_the_strand_they_name_test() {
 
   // The spawn and its result belong to the reviewer, whose card is the second.
   assert in_order(html, [
-    "class=\"tl-row hue-2\">",
+    "class=\"tl-row hue-2",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"1\"></span>",
     "Spawned ",
     "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">&lt;b&gt;review</button>",
-    "class=\"tl-row hue-2\">",
+    "class=\"tl-row hue-2",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"1\"></span>",
     "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">&lt;b&gt;review</button>",
     " finished",
@@ -109,7 +109,7 @@ pub fn a_dot_and_a_tag_hold_the_position_of_the_strand_they_name_test() {
 
   // The nudge belongs to the advisor, whose card is last.
   assert in_order(html, [
-    "class=\"tl-row hue-advisor\">",
+    "class=\"tl-row hue-advisor",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"3\"></span>",
     "<button class=\"tag\" data-loom-focus=\"3\" type=\"button\">advisor</button>",
     " · nudge · delivered",

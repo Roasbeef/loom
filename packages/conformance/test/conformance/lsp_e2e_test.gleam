@@ -1070,6 +1070,7 @@ fn settings(
     spawner: None,
     laptop: None,
     first_prompt: None,
+    attention_report: None,
     profile_desk: None,
     secrets: secret.env(),
     secret_failures: [],

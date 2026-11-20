@@ -592,6 +592,10 @@ type Message(instance) {
   /// is no reply: the sender is a hub that must not wait on the registry.
   SeedSubtitle(String, String)
 
+  /// A session's attention summary, to be written as its catalogue row
+  /// (protocol-change/122). There is no reply, as for `SeedSubtitle`.
+  RecordAttention(String, catalogue.AttentionSummary)
+
   /// Records the executor a pooled session's first attach chose, once.
   SeedExecutor(String, String)
 
@@ -905,6 +909,13 @@ type Message(instance) {
   Custodies(
     List(String),
     Subject(Result(List(#(String, catalogue.Custody)), Error)),
+  )
+
+  /// The attention summaries of a page of sessions, saved or resident, read in
+  /// one registry turn (protocol-change/122). A session with no row is left out.
+  AttentionFor(
+    List(String),
+    Subject(Result(List(#(String, catalogue.AttentionSummary)), Error)),
   )
 
   /// The owner's request to hand a session to the orchestrator named, under the
@@ -1588,6 +1599,29 @@ pub fn seed_subtitle(
   prompt: String,
 ) -> Nil {
   process.send(manager.commands, SeedSubtitle(id, prompt))
+}
+
+/// Writes a session's attention summary to the catalogue, without waiting.
+///
+/// The session's host calls it after it commits a change to an escalation, an
+/// ask or a find, and once when it opens (`client/attention.reporter`). The
+/// write runs in the registry's turn, which serializes it with every other
+/// catalogue change. A failed write is not reported to the host: the record has
+/// committed, the row lags it, and the next change or open rewrites the row
+/// from the records (protocol-change/122).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.record_attention(registry, session_id, summary)
+/// ```
+@internal
+pub fn record_attention(
+  manager: Manager(instance),
+  id: String,
+  summary: catalogue.AttentionSummary,
+) -> Nil {
+  process.send(manager.commands, RecordAttention(id, summary))
 }
 
 /// Records which executor a pooled session's first attach chose, without
@@ -2961,6 +2995,29 @@ pub fn custodies(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Reads the attention summary of each session named, in one registry turn,
+/// without opening any of them (protocol-change/122).
+///
+/// The answer pairs each identity that has a row with its summary, in the order
+/// asked. A session whose summary was never made has no pair, which is how a
+/// saved session that was never checked differs from one with nothing open. The
+/// caller bounds `ids` to one listing page and has already dropped the sessions
+/// its credential does not hold.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.attention_for(registry, [session_id]) == Ok([])
+/// ```
+@internal
+pub fn attention_for(
+  manager: Manager(instance),
+  ids: List(String),
+) -> Result(List(#(String, catalogue.AttentionSummary)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: AttentionFor(ids, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Begins handing a session to the orchestrator `to` under the move `op`, as
 /// the owner, in one registry turn: the intent is committed and the session's
 /// slot is stopped together, so no runtime can open the store after the intent
@@ -3505,6 +3562,10 @@ fn handle(
       let _written = catalogue.seed_subtitle(book.catalogue, id, prompt)
       sm.keep(book)
     }
+    RecordAttention(id, summary) -> {
+      let _written = catalogue.record_attention(book.catalogue, id, summary)
+      sm.keep(book)
+    }
     SeedExecutor(id, executor) -> {
       let _written = catalogue.seed_executor(book.catalogue, id, executor)
 
@@ -3694,6 +3755,14 @@ fn handle(
         })
         |> result.map_error(Catalogue)
       process.send(reply, read)
+      sm.keep(book)
+    }
+    AttentionFor(ids, reply) -> {
+      process.send(
+        reply,
+        catalogue.attention_for(book.catalogue, ids)
+          |> result.map_error(Catalogue),
+      )
       sm.keep(book)
     }
     BeginMove(caller, epoch, id, to, op, departure, reply) -> {

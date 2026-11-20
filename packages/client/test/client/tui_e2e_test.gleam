@@ -1071,6 +1071,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     spawner: None,
     laptop: None,
     first_prompt: None,
+    attention_report: None,
     profile_desk: None,
     codemode_sockets: None,
     secrets: secret.env(),

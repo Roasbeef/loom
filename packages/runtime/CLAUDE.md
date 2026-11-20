@@ -1,5 +1,13 @@
 # runtime
 
+## Attention records
+
+`attention/ask/` and `attention/find/` are reserved fact prefixes
+(protocol-change/119). `client/attention` writes an ask's or a find's record
+there and a model's `put_fact` is refused, so a question a person is about to
+answer, and an answer, cannot be forged. The runtime treats the payloads as
+opaque; `core/attention` owns their shape and the host owns the bounds.
+
 ## Native evolution fact ownership
 
 The `evolution/` FactCustom prefix and existing `client/` and `prompt/`
@@ -348,6 +356,12 @@ extended by the M3 runtime wave.
   not a question the model is wearing down. `bound_to` is
   `scoped_to`'s sibling and fails the same way: a record naming no
   action matches nothing.
+- **`raised_at`** (protocol-change/126): the Unix-ms time the pending question
+  was put to a person. `raised` and `claimed` take it as `at:` and the api reads
+  the runtime clock at each raise and at each retry of a claim, so the record
+  transitions stay clock-free. A claim that only moves a pending record keeps it;
+  a re-opening stamps a new one. A record from before the field decodes with it
+  absent, and a wrong type is corruption.
 - `runtime/api.{escalations, escalation, escalation_cell,
   escalations_below, raise_escalation_for, claim_escalation,
   approve_escalation, deny_escalation, consume_escalation,

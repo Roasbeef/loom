@@ -142,6 +142,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
         ),
         action: Some(escalation.Action("bash", "same-action", "sleep 60")),
         scope: None,
+        at: 1,
       )
     let assert Ok(_) =
       writer.commit(
@@ -297,6 +298,7 @@ pub fn tui_session_dialog_commits_the_displayed_permissions_test() {
         ),
         action: Some(escalation.Action("bash", "network-action", "fetch data")),
         scope: None,
+        at: 1,
       )
     let assert Ok(_) =
       writer.commit(

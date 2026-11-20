@@ -22,6 +22,35 @@ page keys and nonces, and the relay into the session's gateway.
 
 ## Key Types
 
+`web_view/saved_attention.{Saved, from_row}` is one saved session's attention summary row as the catalogue keeps it (protocol-change/122), built by `server.home_saved_attention` and refusing negative figures. The inbox counts it for saved sessions (`attention_rule.tally`).
+
+**The inbox's layout and parts** (the fidelity pass, protocol-change/051's addendum on the rail's folders): `view/inbox` draws a full-height split, a 388px list (`inbox_parts.band` for each group, `inbox_parts.row` or `static_row` for each thread, `folded` for the quiet line) and a reading pane (`inbox_parts.pane`: a scrolling body over an outbox bar pinned to the foot). `view/attention_thread`, `view/ticket_thread` and `view/review_thread` call the same parts, so a row is one shape. Every page's frame carries the class `loom-inbox` (a 44px bar, a 184px rail): the `Inbox` audience is gone, and a session's page, the admin page and Home share the frame. `inbox_rule.Folder` names the rail's folders and `Model.folder` is the page-local filter (`FolderPicked`, `InboxClosed` for the pane's back control on a phone); `home.folder_counts` is each folder's count and the pill in the top bar (`home_bar.with(needing:)`, the bar's seventh child, so `admin_path` does not move). `sidebar.Folders` is drawn at the top of the home's sidebar and ends with the count note (`inbox_rule.count_note`). Where the mockup draws data the page lacks, the field is an `Option`: `inbox.Offer.waited` (an approval's age), `inbox_parts.eyebrow`'s `since`, `ticket_thread.Offer.check` (check output). The message form has one `Send` in the bar, naming the form in its `form` attribute; a working session's Queue/Steer are radios inside the form (`inbox-deliver`), so the draft and the delivery submit together. A row's dot is `inbox_parts.Reading` (`Model.opened`, page-local); an approval's title is composed by `attention_thread.approval_title`; tickets at `person/check` or `person/review` are `ticket_rule.Reviewing` and sit under To review; `inbox_parts.pane_with` puts the message block beside the body so its rule starts at the pane's edge.
+
+**One frame on every page (2026-11-19):** the figures and placement chips moved from `view/heading` to `view/stream_head` (`view/figures`), so `component.context_refresh_path` is `0\t2\t7\t5\t0\t1\t0\t0` and the observer's centre keeps an empty node at index 5 to match the operator's. `heading.view` draws `loom`, `‹ Inbox` (`home_path` unchanged), the crumb, `● live`, the need pill and a role chip. `sidebar.view` takes `Folders` (counts optional, `pick` optional: the admin page draws text) and `Page.watching`, the second line of a Watch live row (`watch_rule`). The review pane's diff is `diff.view_review`, a variant of the shared drawer.
+
+**The attention threads** (phase 1, protocol-change/051's addendum "the attention threads"): `Start.attention` is `Some(Attention(feed, saved, record, approvals, review, act))` on every page that reads the feed, and `act` (`Act(answer, close, strand)`) is `Some` only for the owner's operating page (`ui_socket.home_attention_capability`). `attention_rule` (pure) flattens feed rows into `Item`s (`AskItem | FindItem | StuckItem`), ranks them by wait (`needs_you`, `finds`, unknown times last), words ages (`age_line`), keys a thread (`Key(sort, session, id)`, compared and never drawn) and tallies the headline across running and saved sessions. `answer_rule` (pure) reads an ask form's fields back into the wire object (a question is its key, an option its position, never a label) and asks `core/attention_answer.check` for validity. `item_pane` (pure) is the open thread's state: the record read, the one outbox (a staged answer and a staged note) and the send's progress. `view/attention_thread` draws rows and the pane; every word a session wrote is a text node. `Model` holds `feed`, `saved`, `item` and `item_presses`; the messages are `FeedRead`, `SavedRead`, `ItemPicked`, `RecordRead`, `ItemStaged`, `ItemNoted`, `ItemCleared`, `ItemSent`, `ItemClosed`, `ItemRetried`, `ItemActed`, `ItemNoteAnswered` and `ItemRetryAnswered`. `CentreChoice` stays `Awaiting` until the first round of reads is complete (`landing_rule`), so a summary, a ticket or an ask that counts something is weighed with the activity read whichever came first.
+
+**The review pane** (protocol-change/051's addendum "the review pane", [123](../../protocol-change/123-review-hunks.md)): `Attention.review` reads one session's worktree as a `review_feed.Review` and is `Some` for an operator's page (owner's or member's), never an observer's (`ui_socket.home_attention_capability`, `ui_socket.review_for`). `review_scan_rule` (pure) decides who is "To review" (every idle session with a last message whose tree is not known clean, so a session moves to "Waiting" only on a clean read): one read at a time, once for each last message, a `Seen` for each session and never the review, whose `verdict` (the last successful read, for the message it was read for) survives a read out, a failure and an allowance refusal, so a session does not flap between "To review" and "Waiting"; `inbox_rule.grouped_with` moves those idle sessions out of "Waiting". `review_pane` (pure) is the open thread: the `Loaded` review, the revisions of its finds, `review_stage_rule.Staging` (verdict, one comment for each file, find actions) and the Send as a machine (`send` → `closed_with` → `prompted`; a refused close halts it and no prompt goes). `review_outbox_rule` (pure) words the one prompt and refuses past `composer.prompt_limit` before any close. `review_pin_rule` (pure) anchors a find at a line a shown hunk holds, else loose in its file, else at the pane's top. `view/review_thread` draws it through `view/diff.view_with`, with every session word a text node and each form keyed by session, open count and position (a delivered Send raises the count, so the comment boxes empty). `Model` holds `reviews`, `review` and `review_presses`; the messages are `ReviewScanned`, `ReviewRead`, `ReviewFindRead`, `ReviewVerdictChosen`, `ReviewCommented`, `ReviewFindStaged`, `ReviewCleared`, `ReviewSent`, `ReviewClosed` and `ReviewPrompted`.
+
+**Project tickets as threads** (phase 2, protocol-change/051's addendum "project tickets on Home"): a ticket whose stage needs a person is a row after the attention rows under Needs you, built from `Model.boards` by `ticket_rule.waiting`. `ticket_rule` (pure) decides the controls from the daemon's action list only (`controls`, `allowed`; Publish and unknown actions draw none), the one confirm click for Stop and Close (`press`, `confirmed`, `cancelled`) and the words of an outcome (`settled`, `refusal_words`). `view/ticket_thread` draws the row and pane; every ticket word is a text node and the answer form is keyed by project, ticket and question number. `Model.ticket` holds the open thread (never together with `item`); the messages are `TicketThreadPicked`, `TicketThreadRead`, `TicketControlPressed`, `TicketAnswerSent`, `TicketActConfirmed`, `TicketActKept` and `TicketActSettled`. `Projects` gained `stop` and `retry`. Each press re-derives authority (connected, capability at the Operator ceiling, control still listed). The board carries no branch, diff stat or check result, so none is drawn.
+
+**Data for the final inbox mockup** (protocol-change/050, 120 addenda, 125, 126). `sessions.Report` gains `last_message_at` and `turn_started_at` (`Option(Int)`, Unix ms; the page formats them). `attention_feed.Stuck` gains `reason`, `retry_after_ms` and `parent`, and its `failed_at` is exact. `approval_evidence.Item` gains `raised_at`, `network` (`NetworkOn`/`NetworkOff`), `policy` (`Policy(sandbox, network)`). `session_brief` (pure) is the codec of `session.brief`: `Brief(assistant, steps, strands, goal, peers, command)`, with model text in the opaque `Untrusted` (read only through `untrusted_text`), `to_json` for the daemon and a total `decode`. `Attention.brief` reads one session's brief, spends the credential's brief allowance, and answers `BriefRead` into `Model.briefs`; `Attention.brief` is read for the open thread only, by `approving` and `ItemPicked`, and never for a row that is not open.
+
+**The data drawn (2026-11-19, `web/inbox-wiring`).** Every Option slot the layers left is filled.
+- *Times.* `thread_words` (pure) words a wait (`short_age`, "1h 22m"; `overdue` at an hour), a turn (`turn_words`), and a stuck strand from its reason code through the closed table `kind_of` (rate_limited, overloaded, timeout, other) as a `Phrase`, a list of `Words` and `Clock(ms)` that `view/phrase` draws, each instant as `<loom-time at=ms>` so the browser's zone is used. No server formats a clock. `inbox_parts.eyebrow` takes `Option(Moment)` (`waiting since`, `finished`, `asked`, `failed`). `inbox.Offer.waited` is now `dated: List(#(session, Dated(age, moment, state)))`, built by `home.dated_threads`: an approval from `approval_evidence.oldest_raised`, an idle session from `Report.last_message_at`, a working one from `Report.turn_started_at` ("working, 14 min into a turn"). A session whose data holds no time has no entry.
+- *Approval rows.* `attention_thread.approval_item` draws `Network` from `Item.network` and `Policy today` from `Item.policy` in the daemon's words, and omits a row whose word is absent. The grant row is now "Wants a network grant". The "no time" line appears only when no item has a time.
+- *The brief* (`view/brief_view`, all text under an `untrusted text` label): `latest` (the agent's latest message and its time), `steps` (a monospace card; the outcome word is `brief-ok`, `brief-bad` or `brief-run`), `peers` ("In this session since it asked": session name, strand and time, never a claim of relevance), `coordinator` (goal, status, `delegates` counts, tokens as `412k of 1.2M`, a line per strand; no phase), `command` (the pill "last command: X, exit N"). An ask draws `stopped` and `coordinator`; a working session draws `latest` and `steps` in place of the glances ("Last few steps"), and a link to its open ask; a review draws the last message between its counts and its verdict (`review_thread.Offer.message`, `.command`).
+- *Peers are shown only under a matching read.* `brief_rule.shown` keeps `Brief.peers` only for an approval whose brief was read with `since` equal to its oldest raise time (`Model.brief_since`, set from `BriefRead.since`); any other thread draws none, so the label never misdescribes them. An approval's brief waits for its evidence (`home.evidence_awaited`) and `ApprovalsRead` starts it.
+- *Brief reads.* `brief_rule.due`: once when a thread opens (debounced one second), and on the refresh only when the last read is 15 s old or the read asked after another time. `Model.brief_reads` holds the last read's start and `since`. `home.brief_session` names the session whose pane needs one: an open ask's, or the shown session's for an approval, working or idle thread; never a stuck strand, a find, a ticket, a failed or settled session. A refused read keeps a brief already held.
+- *Stuck.* The row head is `thread_words.stuck_head` (no time; the row's age says how long). The pane's title is `stuck_title`, its sentence is `stuck_phrase(kind, failed_at, retry_after_ms)` and a `Parent` row draws `Stuck.parent`.
+- *Committed work* (protocol-change/123's addendum). `committed_patch` (pure) reads `Board.committed.patch` into files; `review_feed.of_board` merges them under the same bounds. A subject line is dropped with its `commit` line and hunks are read by their counts, so a commit message never becomes a patch line.
+
+**Approval evidence** (protocol-change/120's addendum): `Attention.approvals` reads a running session's pending approvals through `approval.read`; `approval_evidence` (pure) decodes the reply into `Evidence(count, items)` of `Item(id, revision, tool, preview, source, reason, wanted, asked)`, and `view/attention_thread.evidence` draws it in the approval thread above the one control that leads to the session's page. An item's `raised_at`, `network` and `policy` are drawn (see the next paragraph). `Model.evidence` holds the last read for each session whose thread was shown.
+
+**The live rail's records** (protocol-change/051's addendum "the live rail, answered"): `component.Transport.attention` is `Some(Attention(read, record, answer))` on a session page; `answer` is `Some` only for an operator's page (`ui_socket.rail_answer_capability`). `View.watching` (`Watch`) holds the session's feed row, the asks read in full, the refusals of the form and the answer being sent. `attention_due` reads the row on `Opened` and `Ticked` every `rail_refresh_ms`; `session_view/attention.lift_all` lifts the open asks and stuck strands (pinned) and finds (folding) beside the lane's rows. `lifted_view.Rail.under` draws an ask's form (`attention_thread.answer_form`) under its row, in the rail and the phone's sheet, and `RailAnswered` checks it with `answer_rule` and sends it at the revision read. Each form is keyed by its ask (the inbox's by its press count), because radios carry no `checked` and an unkeyed form would keep a departed ask's picks. `component.rail_submit` names the rail form's path, ending in the ask's key, as a test helper only: no socket consults it, operator sockets admit any submit and an observer's admits none, so the phone sheet's form needs no entry of its own.
+
+**The live rail's actions** (protocol-change/051's addendum "the live rail's actions"): `component.Attention.act` is `Some(Act(close, retry))` only for an operator's page (`ui_socket.rail_act_capability`, the same rule as `answer`). `lifted_view.Rail.offer` maps a row to an `Offer` (`NoOffer | RetryOffer | CloseOffer | OfferSent`) that `view/lifted` draws as the card's third child, `div.lift-acts`, after the card's button and the ask's `under` place, so no existing path moves. A stuck strand's card offers "Retry the last step" (`RailRetried(strand)`, which sends `thread_send.retry_prompt`, the words the home's Retry sends) and a find's offers "File issue" and "Dismiss" (`RailClosed(key, Filed | Dismissed)`, through `attention_door.close_find`, the home's close). A page that may act reads each open find in full beside the asks (`rail_heard`, `rail_recorded`) because a close names the revision read; a find with no record offers nothing. The actions ride `RailAnswerDone`, so one is out at a time (`Watch.sending` holds an ask or find id or `session_view/attention.stuck_key`), its word is said in the rail and a settled one reads the row again. `component.rail_retry` (`rail_path` then `1\t0\t1`, position, `2\t0`) and `rail_close` (`1\t1\t1`, position, `2`, `0` or `1`) are documented test helpers like `rail_submit`: no socket consults them, an operator's or owner's socket admits a click anywhere but an owner's control, and an observer's admits neither shape because `observer_path` names neither and `rail_click` is nine segments where they are ten. `rail_actions_test` and `ui_socket_test` pin it.
+
 - `component.Start(socket)`: what the daemon supplies when it starts a
   component: the session ID, the catalogue's `Label(name, workspace)` for
   the heading (or `None`, which only tests pass), `workspace_digest` (the
@@ -224,7 +253,51 @@ page keys and nonces, and the relay into the session's gateway.
   table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
   component's process) for a ticket, and `Linked(answer)` becomes the `to`
   attribute of the centre's last child, a hidden `<loom-switch>`, or a refusal
-  `home_table.Note` beside the row. The centre's first child is an empty node, so
+  `home_table.Note` beside the row. **The attention inbox** (phase 0): the home's
+  `Start.activity` hands over `sessions.Report`s (`activity`, `last_message`,
+  `glances`; all model text, drawn as text nodes only) and `Model` keeps them in
+  `reports` beside the narrow `activity` dict the sidebar and `listing` read.
+  `landing_rule` (pure, no Lustre) is the first round that decides the centre: `Round` holds one `Reading` (`Due | Answered | NotDue`) for the list, the activity read, the catalogue summaries, the boards and the feed; `listed` takes the first list that was read and with it which of the reads that depend on it are due, `answer` marks a read's first answer and says whether it was the last due (`Closes`), and `landing` reads the gathered `Picture` (the running sessions' reports and the counts of what waits). `inbox_rule` (pure, no Lustre) decides `Group` (`NeedsYou | Waiting | Updates |
+  Quiet`), `Kind`, `head`, `headline`, the ordering by name and `landing`
+  (`Inbox` when any session needs the owner, failed, works or is idle with a last
+  message; else `Form`). `view/inbox` draws the grouped list and a reading pane (`inbox_rule.Folder`, `gloss` and `count_note` word the rail and the bands)
+  inside the centre's body (so at `table_path`); `home.centre_body` shows it when
+  `landed_inbox` holds: pane `NewSession` or `SessionList` and `centre_choice`
+  is `Decided(InboxCentre)`. The centre is decided once per page load
+  (`CentreChoice`: `Awaiting`, then `Decided(InboxCentre | FormCentre |
+  ListCentre)`): when the last read of the first round answers (`landing_rule.answer`
+  returns `Closes`), through the landing rule over everything the round gathered;
+  no later read ever changes it, and only the clicks `ShowingInbox`, `ShowingList`, `ShowingNew` and `Composed`
+  do. `inbox_return` draws "Inbox" whenever the inbox has a thread and the
+  centre is not the inbox. An inbox shown with no thread left says "Nothing waits
+  on you right now" with a "New session" link. `Model.selected` is a `Selection`
+  (`Unchosen | Defaulted(id) | Pressed(id)`): the default is fixed at the first
+  read with a thread and does not move, and the shown thread keeps its previous
+  report when one read omits it while its session is still listed (`observed`).
+  `InboxOpened(id)` presses a thread (an id the reports no longer hold falls back
+  to the first thread). A pending
+  approval is named and sent to the session's page, never drawn; "Open session"
+  sends `Opening`, so the inbox adds no admission. **Messaging a thread**
+  (protocol-change/118): `Start.thread_send` is `Some` only for the owner's
+  operating home (`ui_socket.home_thread_send_capability`); with it each thread
+  ends in a form (`view/inbox` `Field`) of one `draft` box and submit buttons
+  named `delivery` (`prompt` or `steer`), whose handler carries the thread's
+  session so the browser names neither. `web_view/thread_send` (pure) holds the
+  vocabulary: `choices(kind)` (Send for idle or failed, Queue and Steer for
+  working, Send alone with a note that a message starts a turn and decides nothing, for an approval),
+  `delivery`, `sendable` (non-blank and at most `composer.prompt_limit` bytes),
+  the `Answer` (`Delivered(Admitted | Queued)` or `Refused(NotHeld | NotResident
+  | NotAccepted(reason) | QueueFull)`) and the `Outbox` words, which never carry
+  the reason. `ThreadSubmitted` is honoured for a connected page with the
+  capability, a sendable draft, a session the last read reports and no send out;
+  `ThreadAnswered` settles the outbox, and a delivered answer bumps
+  `Model.delivered`, which keys the box so it is drawn empty. The form submits
+  beneath `table_path`, which `home_owner_accepts` already admits for
+  `Submitting`, so no admission is added. `ShowingInbox` sets `centre_choice`
+  to `Decided(InboxCentre)`; `inbox_return` offers it ("‹ Inbox" in `home_table`,
+  "Back to the inbox" in the composer) on a list or composer, whether the
+  centre is `Decided` as anything but `InboxCentre` or still `Awaiting`, while
+  the inbox has content. The centre's first child is an empty node, so
   the table keeps its path; what the page says about a press is a `Note`
   (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
   its workspace's heading when the row is gone, or under `Sessions`, and it
@@ -745,9 +818,8 @@ page keys and nonces, and the relay into the session's gateway.
   `expansion.capped` and is drawn only while open. Observer sockets admit the
   button's click at `component.message_click`'s two exact paths (the protocol-change/070 addendum on messages).
   A step still running draws `Running · ` and `<loom-elapsed since>` from
-  `turns.Step.since` (`fold_row.step`), and the composer's hint draws a pulsing
-  `span.busy-dot` while a turn runs (`operator_page.busy_mark`); the stylesheet's
-  reduced-motion rule stills both. `component.top(model)` is the `lane.Top` the lane draws above its
+  `turns.Step.since` (`fold_row.step`); the stylesheet's reduced-motion rule
+  stills its pulse. `component.top(model)` is the `lane.Top` the lane draws above its
   oldest row (`Beginning`, `Earlier`, `Loading` while the page reads turns,
   `Full(rows)`); the strands a reader left park their closed turns with their
   paging (`View.parked_sealed`). The Changes and Trace boards and the newest tool
@@ -1101,6 +1173,17 @@ page keys and nonces, and the relay into the session's gateway.
   text nodes, a state's class is one of three literals chosen from the closed
   `State`, there is no handler, and the pane is memoized on the trace. With
   no program it is the heading and one line saying so.
+- `web_view/review_feed` is the review pane's typed read of a worktree
+  (protocol-change/123), drawn by no page yet. `of_board` turns a
+  `worktree_view.Board` into a `Review`: files with hunks (read by
+  `session_view/diff_view`), a `Stat`, the files ordered source, tests, docs
+  (`order`, `section_of`), and every cut counted (`max_files` 24, `max_hunks` 12,
+  `max_hunk_lines` 80, `max_line_bytes` 400, `max_bytes` 48,000; `omitted`,
+  `hunks_omitted`, `Hunk.omitted`, `Hunk.shortened`, `Extent`). A path that is not
+  workspace-relative is left out. `encode` and `decode` are the one wire shape, the
+  decoder is total and holds the same bounds; the daemon's `sessions.review` and the
+  home's `server.home_review` both answer it. Every string is repository text, drawn
+  as a text node only.
 - The Changes pane reads the workspace for an owner's or an operator's page
   (protocol-change/051, the addendum of 2026-10-05). `Transport.worktree` is
   `None` on an observer's page and otherwise a capability that returns at once
@@ -1855,6 +1938,74 @@ checks focus and stale handlers, and pins the actual Lustre handler table and
 numeric row paths. It also covers partial boards, raw text, literal excerpts,
 search, refresh selection and markup-looking content.
 
+## The live rail (protocol-change/051, the addendum on the live rail)
+
+`view/lifted` draws "Lifted from this session": `component.lifted(model)` is
+`attention.lift(pieces, shared.approvals)`, and `component.lift(model, pieces,
+dock)` pairs each row with the place its press goes (an approval is `dock`, a
+failed response inside a fold is its turn's key, anything else its own key). It
+is worked out once per render, from the one `pieces` the page also gives the
+lane, and shared by `marked`, `rail` and `sheet`. A turn with failed steps
+lifts once under its own key from `Worked.failed`. The rail is the Strands pane's
+fifth and last child (`component.rail_path`, `0\t3\t0\t4`; `view/panel` takes
+it after `commentary`), ordered first on screen by the stylesheet, so no
+admitted path moved. Two groups, "Needs you" (`PinnedUntilAnswered`) and
+"Insights"; an empty group or rail draws `element.none()`.
+
+A pinned row carries no handler and no deciding control: it says "Decide in the
+dock ↓" (`InDock`, the operator page) or "The operator decides" (`NoDock`, the
+observer page, which also draws no jump). An insight is drawn open until
+`RailOpened(key)` (an observer may send it, at exactly the path
+`component.rail_click` names in `ui_socket.observer_accepts`), then folded;
+strand focus clears the opened set; `View.opened` holds the keys, newest
+first, at most `component.open_insights`, and `rail_opened` accepts only a key
+naming a current insight. Every button carries `data-loom-jump`; the lane draws
+each row with `data-loom-row` (`lane.row_attribute`, the piece key), a "lifted"
+tag from `Marks.lifted`, and the `needs-you` tint only for a pinned row (none
+exists in the lane until phase 1b adds asks). `component.sheet` is the phone's
+`<details>` bar and sheet, appended as the centre's last child and ordered above
+the dock by CSS; its rows are not handlers. `lifted_test` pins all of this with
+seed 20261118. The jump itself is `web_client/follow`'s.
+
+**The final design's look** (protocol-change/051, the addendum on the live mode's
+stream and composer). A rail row is a card (`li.lift` with a `lift-ask`,
+`lift-stuck`, `lift-find`, `lift-failed`, `lift-result`, `lift-peer` or
+`lift-approval` class chosen from `attention.Kind`), a chip with
+`lifted.kind_word`, the source, a jump link drawn by the stylesheet from
+`data-loom-jump`, then the words; an ask's form (drawn by `attention_thread`)
+sits inside the same card and the stylesheet dresses its options as numbered
+blocks. Each group's title carries its count and a fixed gloss, and
+`lift-note` closes the groups. `lane.Marks` gained `lifted: Dict(String,
+Lifting)` (hold and kind word, drawn as `lifted · Kind` under the row) and
+`times: Dict(String, Int)`, the row time in Unix ms for the stream's gutter
+(`View.stamps`, built with the pieces by `turns.stamped`, and kept by a sealed
+turn in `Sealed.stamps`), drawn as `<loom-time class="tl-time">` through
+`view/stamp`, which also draws the rail's. A tool line in the running turn's
+fold is a `div.work-item` (always drawn, so a step keeps its element when its
+time arrives) with its own gutter time, and `Marks.holding` (the provider call
+ids of undecided approvals, `approval.Review.call`) tags a pending step
+`approving`, which the stylesheet words `needs approval`. A tool call is a
+`tool-line` (`fold_row.step`), a turn's divider carries `work-ok`,
+`work-failed` or `work-stopped`, and a spawn `spawn-started` or
+`spawn-failed`; the stylesheet draws the outcome word at the right edge, so the
+divider is still one text node. A `Plain` piece with an assistant line is
+wrapped in `div.speech` under a speaker line. `view/stream_head` is the strip
+above the stream (`component.stream_head`, the centre's last child, ordered
+first), with `Head.turn` the instant the running operation started
+(`core/ids.op_id_timestamp_ms` of the capture's operation id for the strand,
+`component.turn_started`), drawn as `running, turn <loom-elapsed since>` so the
+browser counts it; `lifted.Item.at` is the rail card's time in Unix ms
+(`component.rail_time`: a lane row's stamp, an approval's `raised_at`, an ask's
+or find's `created_at`, a stuck strand's `failed_at`). The live region ends with
+`live.Generating(elapsed_ms, request)`, `generating · 8 s · request 3 of this
+turn`, drawn while the strand's phase is `assistant`; `View.requests`
+(`turns.requests` over the window's blocks) is computed with the pieces, never
+per fragment. The composer's line reads
+`To <session> · <strand> · running`, and a busy strand's hint says what Queue and
+Steer do. A stuck strand's rail card has no Retry button: a send from the rail
+would be a new handler beneath `rail_path`, which an observer's socket already
+admits for the insights' presses.
+
 ## Evolution tab (protocol-change/099)
 
 The Evolution pane is the strand panel's seventh child (`component.evolution_path`,
@@ -2194,3 +2345,36 @@ Things that break if changed carelessly:
 - New CSS (`home-head`, `home-projects`, `home-ticket`, the 640px rules) is in
   `packages/web_client/src/web_client.css`. The built `priv/static/web_client.css`
   is regenerated by `make gen-client` and is stale until then.
+
+## The fidelity polish (2026-11-19, `web/fidelity-polish`)
+
+- **Times.** `<loom-time>` takes a `now` attribute (`web_client/time`): the element
+  then draws the browser's current time of day and redraws it every ten seconds,
+  and the server writes no instant for it. The rail's first line (`sidebar.away`)
+  uses it, so `sidebar.Folders` has no `at` and `component.rail_minute` is gone: the
+  session page's `stamp.transport_ms` is a monotonic clock and was never a Unix
+  time. `view/stamp` is the one place a `<loom-time>` is drawn (`time`, `plain`)
+  and clamps an instant before the epoch to `00:00`; `view/phrase.clock` calls it.
+  `<loom-elapsed form="minutes">` words a count-up as `14m` past a minute
+  (`duration.minutes`); the stream strip's turn age uses it and every other use
+  keeps `duration.format`.
+- **Rows.** `inbox_parts.Facts.head` is a `Phrase` (`inbox_parts.words` makes one
+  of plain text), so a stuck row's head can hold its time: `thread_words.stuck_head(
+  failure, failed_at)`. `review_scan_rule.Verdict` carries the read's `review_feed.Stat`
+  (`stat_of`, `stat_words`), and `inbox.Offer.sized` is each "To review" row's head
+  (`home.sized_reviews`: the size and the count of finds in the feed); a session
+  not yet read keeps its message's head. `home.brief_since` keeps the last brief
+  read's time when the approvals read fails, so a flapping read does not ask for
+  a brief faster than `brief_rule.due` allows.
+- **The review pane.** The first file's `<details>` is open. A cut commit stream
+  cuts the working-tree file it ended in (`review_feed.stream_cut`). The
+  "Comment" verdict stays: `review_stage_rule.Comment` is a real state.
+- **The phone (640px and below).** The bar keeps `loom`, `‹ Inbox`, the name, the
+  live mark and the need pill; the role chip, Search, Theme, the workspace and the
+  panel's toggle are hidden, and a session's page also hides the sidebar's toggle
+  and the strand panel, so the stream comes first. The rail's sheet
+  (`lifted.sheet`) is the bar above the composer; opened, the details element
+  leaves the flow, its summary shows `lift-bar-title` and `lift-bar-close` in place
+  of the counts, and a margin on the dock keeps the stream in place.
+- **Folders.** The session page's rail folders are buttons only where
+  `component.can_go_home` holds, and text otherwise.

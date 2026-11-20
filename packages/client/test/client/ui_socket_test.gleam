@@ -57,6 +57,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       rename: None,
       shareable: None,
       peers: None,
+      attention: None,
       worktree: None,
       logins: None,
       manage: None,
@@ -432,6 +433,53 @@ pub fn an_observer_socket_drops_a_click_on_a_marker_test() {
 
   // What the shell presses instead is a card, which is admitted.
   assert ui_socket.observer_accepts(click_at(component.strip_path <> "\t3\t0"))
+}
+
+// The live rail's one handler is an unopened insight's button, at the exact
+// path `component.rail_click` names (protocol-change/051, the addendum on the
+// live rail). An observer's socket admits a click there and nothing else new:
+// not the rail's own path, not any other path beneath it (the pinned group's,
+// the title's, the list's), not a path with a different shape or a number that
+// is not a position, its neighbours in the Strands pane, another event, or a
+// batch. The operator's admits the click as it admits any click that is not an
+// owner's control.
+pub fn the_rail_admits_an_insights_click_and_nothing_else_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let insight = component.rail_path <> "\t1\t1\t1\t2\t0"
+  assert component.rail_click(insight)
+  assert ui_socket.observer_accepts(click_at(insight, "click"))
+  assert ui_socket.operator_accepts(click_at(insight, "click"))
+  assert ui_socket.owner_accepts(click_at(insight, "click"))
+
+  list.each(
+    [
+      click_at(component.rail_path, "click"),
+      click_at(component.rail_path <> "\t1", "click"),
+      click_at(component.rail_path <> "\t1\t0\t1\t2\t0", "click"),
+      click_at(component.rail_path <> "\t0", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\t2", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\t2\t0\t0", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\t-1\t0", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\tx\t0", "click"),
+      click_at(component.rail_path <> "\t1\t1\t1\t02\t0", "click"),
+      click_at(component.rail_path <> "0\t1\t1\t1\t2\t0", "click"),
+      click_at("0\t3\t0\t3\t0", "click"),
+      click_at("0\t3\t0\t5\t0", "click"),
+      click_at(insight, "submit"),
+      click_at(insight, "keydown"),
+      click_at(insight, "input"),
+      "{\"kind\":3,\"messages\":[" <> click_at(insight, "click") <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
 }
 
 pub fn an_operator_socket_accepts_only_its_two_events_test() {
@@ -1185,6 +1233,226 @@ pub fn only_an_owners_operating_home_may_create_test() {
   assert ui_socket.home_create_capability(owner, access.Observer, ask) == None
   assert ui_socket.home_create_capability(member, access.Operator, ask) == None
   assert ui_socket.home_create_capability(member, access.Observer, ask) == None
+}
+
+// Only the owner's operating home is handed the capability to send a message to
+// a session from the inbox (protocol-change/118), built as the creation
+// capability is: a member's home at either ceiling and the owner's at the
+// observer's draw no message field.
+pub fn only_an_owners_operating_home_is_handed_the_thread_send_capability_test() {
+  let ask = fn(_session, _text, _delivery, _deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_thread_send_capability(owner, access.Operator, ask)
+  assert ui_socket.home_thread_send_capability(owner, access.Observer, ask)
+    == None
+  assert ui_socket.home_thread_send_capability(member, access.Operator, ask)
+    == None
+  assert ui_socket.home_thread_send_capability(member, access.Observer, ask)
+    == None
+}
+
+// The inbox's message form and its "Inbox" control are admitted by the rules
+// that already exist (protocol-change/118, "no admission rule changes"). The
+// form submits beneath the table's region, so a browsing home's socket refuses
+// the submit and a submitting (owner's operating) home's accepts it; the
+// control is a click beneath the same region, which every home's socket admits.
+// Neither is admitted outside the region.
+pub fn the_inbox_message_form_needs_no_new_admission_test() {
+  let form = home.table_path <> "\t1\t0\t2\t0\t3\t0"
+  let control = home.table_path <> "\t1\t0\t1"
+
+  // A browsing home (a member's, or one whose capability is withheld) refuses
+  // the submit, and accepts the click.
+  assert !ui_socket.home_accepts(submit_on(form))
+  assert ui_socket.home_accepts(click_on(control))
+
+  // A submitting home accepts both.
+  assert ui_socket.home_owner_accepts(submit_on(form))
+  assert ui_socket.home_owner_accepts(click_on(control))
+
+  // Neither reaches outside the table's region, whichever rights the home has.
+  list.each(
+    [
+      home.table_path,
+      home.sidebar_path <> "\t1\t0\t2",
+      "0\t0\t1",
+    ],
+    fn(path) {
+      assert !ui_socket.home_accepts(submit_on(path))
+      assert !ui_socket.home_owner_accepts(submit_on(path))
+    },
+  )
+}
+
+// The attention feed's reads belong to every page, since the daemon answers
+// only for the sessions a credential holds, and its acts (answer, close, retry
+// and a message to a strand) to the owner's operating page alone
+// (protocol-change/120): a member's home at either ceiling and the owner's at
+// the observer's keep the reads and have no act.
+pub fn only_an_owners_operating_home_may_act_on_attention_test() {
+  let reads =
+    home.Attention(
+      feed: fn(_, _) { Nil },
+      saved: fn(_, _) { Nil },
+      record: fn(_, _, _) { Nil },
+      approvals: fn(_, _) { Nil },
+      review: None,
+      review_pause_ms: 0,
+      act: None,
+      brief: fn(_, _, _) { Nil },
+    )
+  let act =
+    home.Act(
+      answer: fn(_, _, _, _, _) { Nil },
+      close: fn(_, _, _, _, _) { Nil },
+      strand: fn(_, _, _, _, _) { Nil },
+    )
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_attention_capability(owner, access.Operator, reads, act).act
+  assert ui_socket.home_attention_capability(owner, access.Observer, reads, act).act
+    == None
+  assert ui_socket.home_attention_capability(
+      member,
+      access.Operator,
+      reads,
+      act,
+    ).act
+    == None
+  assert ui_socket.home_attention_capability(
+      member,
+      access.Observer,
+      reads,
+      act,
+    ).act
+    == None
+}
+
+// The attention threads add a click for each row and for Close, Retry, Send and
+// Clear, and a submit for the ask's form and the note's, and all of them sit
+// beneath the table's region: a browsing home (a member's, an observer's)
+// admits the clicks and refuses the submits, a submitting home admits both, and
+// neither is admitted outside the region (protocol-change/051, the addendum
+// "the attention threads"). Observers can therefore read a thread and never
+// stage or send from it.
+pub fn the_attention_forms_need_no_new_admission_test() {
+  let ask_form = home.table_path <> "\t1\t0\t2\t0\t3\t1\t2\t0"
+  let note_form = home.table_path <> "\t1\t0\t2\t0\t3\t2"
+  let send = home.table_path <> "\t1\t0\t2\t0\t3\t3\t2\t0"
+
+  list.each([ask_form, note_form], fn(form) {
+    assert !ui_socket.home_accepts(submit_on(form))
+    assert ui_socket.home_owner_accepts(submit_on(form))
+  })
+  assert ui_socket.home_accepts(click_on(send))
+  assert ui_socket.home_owner_accepts(click_on(send))
+
+  // Neither a submit nor a click is admitted outside the table's region for a
+  // browsing home, and a submit is not for a submitting one either.
+  list.each([home.sidebar_path <> "\t1\t0\t2", "0\t0\t1"], fn(path) {
+    assert !ui_socket.home_accepts(submit_on(path))
+    assert !ui_socket.home_owner_accepts(submit_on(path))
+  })
+}
+
+// The live rail's answer is an operator's page's alone (protocol-change/051,
+// the addendum "the live rail, answered"). The form's submit is at the exact path
+// `component.rail_submit` names. An operator's and an owner's socket admit it, an
+// observer's socket refuses it whatever its shape and admits only the insight's
+// click it always admitted, and the capability to answer is handed to an
+// observer's page never.
+pub fn only_an_operators_rail_answers_an_ask_test() {
+  let form = component.rail_path <> "\t1\t0\t1\t0\t1\task-0123456789"
+  let press = component.rail_path <> "\t1\t1\t1\t0\t0"
+
+  // The path is the one the predicate names, and a click's path is not it.
+  assert component.rail_submit(form)
+  assert !component.rail_submit(press)
+  assert component.rail_click(press)
+
+  // An operator's page and the owner's admit the submit.
+  assert ui_socket.operator_accepts(submit_on(form))
+  assert ui_socket.owner_accepts(submit_on(form))
+
+  // An observer's refuses it, at the form's path and at every other beneath the
+  // rail, and still admits the insight's press.
+  assert !ui_socket.observer_accepts(submit_on(form))
+  assert !ui_socket.observer_accepts(submit_on(component.rail_path))
+  assert !ui_socket.observer_accepts(click_on(form))
+  assert ui_socket.observer_accepts(click_on(press))
+
+  // The capability itself is withheld from an observer.
+  assert ui_socket.rail_answer_capability(ui_socket.Observing, 1) == None
+  assert ui_socket.rail_answer_capability(ui_socket.Operating, 1) == Some(1)
+  assert ui_socket.rail_answer_capability(ui_socket.Owning, 1) == Some(1)
+}
+
+// The live rail's actions are an operator's page's alone (protocol-change/051,
+// the addendum "the live rail's actions"). Retry is at `component.rail_retry`'s
+// path and File issue and Dismiss at `component.rail_close`'s. An operator's
+// and an owner's socket admit a click at each. An observer's socket refuses it
+// at each, alone and inside a batch, and at every neighbouring path, so its
+// list of admitted places is the one it had, and the capability to act is
+// handed to an observer's page never.
+pub fn only_an_operators_rail_retries_and_closes_test() {
+  let retry = component.rail_path <> "\t1\t0\t1\t1\t2\t0"
+  let file = component.rail_path <> "\t1\t1\t1\t0\t2\t0"
+  let dismiss = component.rail_path <> "\t1\t1\t1\t0\t2\t1"
+
+  // The paths are the ones the predicates name, and none is an insight's press.
+  assert component.rail_retry(retry)
+  assert component.rail_close(file)
+  assert component.rail_close(dismiss)
+  assert !component.rail_click(retry)
+  assert !component.rail_click(file)
+  assert !component.rail_click(dismiss)
+
+  list.each([retry, file, dismiss], fn(path) {
+    // An operator's page and the owner's admit the click.
+    assert ui_socket.operator_accepts(click_on(path))
+    assert ui_socket.owner_accepts(click_on(path))
+
+    // An observer's refuses it, as a click, as any other event and in a batch.
+    assert !ui_socket.observer_accepts(click_on(path))
+    assert !ui_socket.observer_accepts(submit_on(path))
+    assert !ui_socket.observer_accepts(
+      "{\"kind\":3,\"messages\":[" <> click_on(path) <> "]}",
+    )
+    assert !ui_socket.observer_accepts(
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.rail_path <> "\t1\t1\t1\t0\t0")
+      <> ","
+      <> click_on(path)
+      <> "]}",
+    )
+  })
+
+  // Nor does an observer's socket admit a neighbour of either shape: the
+  // button's place beyond the second, the card's other children, a path that
+  // is deeper or shorter, or a position that is not a counter.
+  list.each(
+    [
+      component.rail_path <> "\t1\t1\t1\t0\t2\t2",
+      component.rail_path <> "\t1\t1\t1\t0\t2",
+      component.rail_path <> "\t1\t1\t1\t0\t1",
+      component.rail_path <> "\t1\t1\t1\t0\t2\t0\t0",
+      component.rail_path <> "\t1\t0\t1\t1\t2",
+      component.rail_path <> "\t1\t0\t1\t1\t2\t1",
+      component.rail_path <> "\t1\t1\t1\tx\t2\t0",
+      component.rail_path <> "\t1\t2\t1\t0\t2\t0",
+    ],
+    fn(path) {
+      assert !ui_socket.observer_accepts(click_on(path))
+    },
+  )
+
+  // The capability itself is withheld from an observer.
+  assert ui_socket.rail_act_capability(ui_socket.Observing, 1) == None
+  assert ui_socket.rail_act_capability(ui_socket.Operating, 1) == Some(1)
+  assert ui_socket.rail_act_capability(ui_socket.Owning, 1) == Some(1)
 }
 
 // Only the owner's operating home is handed the recent-folders capability.
@@ -2015,6 +2283,8 @@ pub fn only_an_owners_operating_home_is_handed_the_projects_capability_test() {
       ticket: fn(_, _, _) { Nil },
       answer: fn(_, _, _, _, _) { Nil },
       close: fn(_, _, _) { Nil },
+      stop: fn(_, _, _) { Nil },
+      retry: fn(_, _, _) { Nil },
     )
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)
@@ -2039,4 +2309,112 @@ pub fn only_an_owners_socket_admits_a_click_in_the_projects_section_test() {
   assert !ui_socket.home_owner_accepts(click_on(home.projects_path))
   assert !ui_socket.home_owner_accepts(click_on(home.projects_path <> "0\t1"))
   assert ui_socket.home_accepts(click_on(home.table_path <> "\t0"))
+}
+
+// The review read is an operating page's, owner's or member's, and an
+// observer's ceiling is handed none: the daemon refuses an observer the tree's
+// bytes, so the page never asks (protocol-change/051, the addendum "the review
+// pane"). The acts that follow a review stay the owner's alone.
+pub fn only_an_operating_page_is_handed_the_review_read_test() {
+  let reads =
+    home.Attention(
+      feed: fn(_, _) { Nil },
+      saved: fn(_, _) { Nil },
+      record: fn(_, _, _) { Nil },
+      approvals: fn(_, _) { Nil },
+      review: Some(fn(_, _) { Nil }),
+      review_pause_ms: 0,
+      act: None,
+      brief: fn(_, _, _) { Nil },
+    )
+  let act =
+    home.Act(
+      answer: fn(_, _, _, _, _) { Nil },
+      close: fn(_, _, _, _, _) { Nil },
+      strand: fn(_, _, _, _, _) { Nil },
+    )
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+
+  let assert Some(_) =
+    ui_socket.home_attention_capability(owner, access.Operator, reads, act).review
+  let assert Some(_) =
+    ui_socket.home_attention_capability(member, access.Operator, reads, act).review
+  assert ui_socket.home_attention_capability(owner, access.Observer, reads, act).review
+    == None
+  assert ui_socket.home_attention_capability(
+      member,
+      access.Observer,
+      reads,
+      act,
+    ).review
+    == None
+
+  // A member at the Operator ceiling reads and may not act.
+  assert ui_socket.home_attention_capability(
+      member,
+      access.Operator,
+      reads,
+      act,
+    ).act
+    == None
+}
+
+// The review pane adds a click for the verdict, Send and Clear, and a submit
+// for each file's comment and each find's form, all beneath the table's region:
+// a browsing home (a member's, an observer's) admits the clicks and refuses the
+// submits, a submitting home admits both, and neither is admitted outside the
+// region (protocol-change/051, the addendum "the review pane").
+pub fn the_review_forms_need_no_new_admission_test() {
+  let comment_form = home.table_path <> "\t1\t0\t2\t0\t4\t0\t1\t0\t0\t2"
+  let find_form = home.table_path <> "\t1\t0\t2\t0\t4\t0\t1\t0\t0\t1\t0"
+  let verdict = home.table_path <> "\t1\t0\t2\t0\t4\t0\t1\t0\t0\t0\t1"
+  let send = home.table_path <> "\t1\t0\t2\t0\t4\t0\t1\t0\t0\t3\t2\t0"
+
+  list.each([comment_form, find_form], fn(form) {
+    assert !ui_socket.home_accepts(submit_on(form))
+    assert ui_socket.home_owner_accepts(submit_on(form))
+  })
+  list.each([verdict, send], fn(path) {
+    assert ui_socket.home_accepts(click_on(path))
+    assert ui_socket.home_owner_accepts(click_on(path))
+  })
+
+  // A submit is admitted nowhere outside the table's region.
+  list.each([home.sidebar_path <> "\t1\t0\t2", "0\t0\t1"], fn(path) {
+    assert !ui_socket.home_accepts(submit_on(path))
+    assert !ui_socket.home_owner_accepts(submit_on(path))
+  })
+}
+
+// A project ticket's thread on Home adds no admission (protocol-change/051, the
+// addendum "project tickets on Home"). Its row, its Close, Retry, Stop, Confirm
+// and Keep buttons are clicks beneath the table's region, which every home's
+// socket admits, and its answer form is a submit beneath it, which only the
+// owner's socket admits. The page acts only where it holds the projects
+// capability, which is the owner's operating page's alone, so a member's or an
+// observer's home admits the clicks and does nothing with them. A click beneath
+// the projects section's region is admitted by the owner's socket alone, and a
+// submit there by none.
+pub fn a_ticket_thread_needs_no_new_admission_test() {
+  let answer = home.table_path <> "\t1\t0\t4\t0\t2\t1"
+  let control = home.table_path <> "\t1\t0\t4\t0\t3\t0"
+
+  assert !ui_socket.home_accepts(submit_on(answer))
+  assert ui_socket.home_owner_accepts(submit_on(answer))
+  assert ui_socket.home_accepts(click_on(control))
+  assert ui_socket.home_owner_accepts(click_on(control))
+
+  // Beneath the projects section's region only the owner's socket admits a
+  // click, and nothing admits a submit there.
+  let strip = home.projects_path <> "\t0\t1\t0\t0\t0"
+  assert !ui_socket.home_accepts(click_on(strip))
+  assert ui_socket.home_owner_accepts(click_on(strip))
+  assert !ui_socket.home_owner_accepts(submit_on(strip))
+
+  // Outside both regions a submit is admitted by no socket.
+  list.each([home.sidebar_path <> "\t1\t0\t2", "0\t0\t1"], fn(path) {
+    assert !ui_socket.home_accepts(submit_on(path))
+    assert !ui_socket.home_owner_accepts(submit_on(path))
+  })
 }

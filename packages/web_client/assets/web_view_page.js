@@ -37,6 +37,14 @@
     nonce = sessionStorage.getItem("loom-page-nonce." + keyed[1]);
   } catch (e) { nonce = null; }
   if (!nonce) { return; }
+  // The fallback paragraph is not drawn once the component has rendered its
+  // shell, but it stays in the light DOM, where `textContent` and extraction
+  // tools read it as a false disconnect. Remove it when the component mounts;
+  // a component that never mounts keeps it, which is the paragraph's job.
+  view.addEventListener("lustre:mount", function () {
+    var waiting = view.querySelector("loom-waiting");
+    if (waiting) { waiting.remove(); }
+  }, { once: true });
   view.setAttribute("csrf-token", nonce);
   view.setAttribute("route", location.pathname + "/ws");
 })();

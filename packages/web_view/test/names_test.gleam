@@ -54,6 +54,8 @@ fn start(
     activity: fn(_, _) { Nil },
     rename: None,
     manage: None,
+    thread_send: None,
+    attention: None,
     create: None,
     folders: None,
     elsewhere: None,

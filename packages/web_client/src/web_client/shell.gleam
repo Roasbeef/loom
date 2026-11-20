@@ -169,7 +169,6 @@ import lustre/component
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
-import lustre/element/svg
 import lustre/event
 import web_client/grip_rule
 import web_client/internal/ffi_dom.{type Listener}
@@ -1312,10 +1311,10 @@ fn search_chip(model: Model) -> Element(Msg) {
   }
 }
 
-// The Theme button: a real button whose icon shows which theme the page is in
-// and whose label says what pressing it does. The label is fixed words from
-// the rule and holds nothing from the session, and the icon is decoration
-// drawn from fixed shapes, so assistive technology reads only the label.
+// The Theme button: a real button drawn as a ghost button with the word
+// "Theme", as the final design draws it. Its label says what pressing it does,
+// including which theme the page shows. The label is fixed words from the rule
+// and holds nothing from the session.
 /// Renders color theme cycling toggle button in top bar.
 fn theme_button(model: Model) -> Element(Msg) {
   html.button(
@@ -1326,64 +1325,7 @@ fn theme_button(model: Model) -> Element(Msg) {
       attribute.title(layout_rule.label(model.theme)),
       event.on_click(ThemeCycled),
     ],
-    [theme_icon(model.theme)],
-  )
-}
-
-// The icon for a theme: a half-filled disc while the page follows the system,
-// a sun for light and a moon for dark. Each is a stroked outline in the
-// button's text colour, 16 units square, with no text and no session data.
-/// Renders inline SVG iconography for light, dark, and system themes.
-fn theme_icon(theme: Theme) -> Element(Msg) {
-  // Draw SVG shapes matching selected theme variant.
-  let shapes = case theme {
-    layout_rule.System -> [
-      svg.circle([
-        attribute.attribute("cx", "8"),
-        attribute.attribute("cy", "8"),
-        attribute.attribute("r", "5.5"),
-      ]),
-      svg.path([
-        attribute.attribute("d", "M8 2.5a5.5 5.5 0 0 1 0 11z"),
-        attribute.attribute("fill", "currentColor"),
-      ]),
-    ]
-
-    layout_rule.Light -> [
-      svg.circle([
-        attribute.attribute("cx", "8"),
-        attribute.attribute("cy", "8"),
-        attribute.attribute("r", "2.8"),
-      ]),
-      svg.path([
-        attribute.attribute(
-          "d",
-          "M8 1.5v1.7M8 12.8v1.7M1.5 8h1.7M12.8 8h1.7M3.4 3.4l1.2 1.2M11.4 11.4l1.2 1.2M12.6 3.4l-1.2 1.2M4.6 11.4l-1.2 1.2",
-        ),
-      ]),
-    ]
-
-    layout_rule.Dark -> [
-      svg.path([
-        attribute.attribute(
-          "d",
-          "M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z",
-        ),
-      ]),
-    ]
-  }
-
-  svg.svg(
-    [
-      attribute.attribute("viewBox", "0 0 16 16"),
-      attribute.attribute("fill", "none"),
-      attribute.attribute("stroke", "currentColor"),
-      attribute.attribute("stroke-width", "1.4"),
-      attribute.attribute("stroke-linecap", "round"),
-      attribute.attribute("stroke-linejoin", "round"),
-      attribute.aria_hidden(True),
-    ],
-    shapes,
+    [html.text("Theme")],
   )
 }
 

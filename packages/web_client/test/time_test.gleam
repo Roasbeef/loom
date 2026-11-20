@@ -48,3 +48,17 @@ pub fn only_a_whole_number_is_an_instant_test() {
   assert time_rule.instant("soon") == Error(Nil)
   assert time_rule.instant("1.5") == Error(Nil)
 }
+
+// A clock element draws the minute it is in. A page read at 20:55 shows 20:55,
+// not 20:56 as `clock` alone would round it.
+pub fn the_current_minute_is_the_start_of_the_minute_test() {
+  assert time_rule.clock(time_rule.current(instant - 1), 0) == "22:40"
+  assert time_rule.clock(time_rule.current(instant), 0) == "22:41"
+  assert time_rule.clock(time_rule.current(instant + 59_999), 0) == "22:41"
+  assert time_rule.clock(time_rule.current(instant + 60_000), 0) == "22:42"
+}
+
+// A browser clock set before the epoch cannot draw a time of day before 00:00.
+pub fn the_current_minute_never_precedes_the_epoch_test() {
+  assert time_rule.clock(time_rule.current(0), 0) == "00:00"
+}

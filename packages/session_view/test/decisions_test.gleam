@@ -27,6 +27,8 @@ fn review(
     approval.Unavailable("this decision is already resolved"),
     strand: None,
     remote: option.None,
+    raised_at: None,
+    call: None,
   )
 }
 

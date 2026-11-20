@@ -37,7 +37,7 @@
 ///
 pub const source =
   "%% loom-prompt-pack 1
-%% version loom-default-17
+%% version loom-default-18
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -193,7 +193,8 @@ do not restate the request before starting on it.
 Do the whole job you were given, and then stop. When the task is clear,
 act rather than asking for permission; when it is ambiguous in a way
 that changes the outcome, ask one specific question instead of guessing
-at length.
+at length. When a decision belongs to the owner, ask with `ask` and give
+options rather than asking in prose.
 
 Track multi-step work with todo when offered.
 

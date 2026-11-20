@@ -275,6 +275,8 @@
 //// from `Elsewhere` and `Chosen`.
 
 import core/agency_limits
+import core/attention
+import core/json.{type JsonValue}
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -282,6 +284,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import lustre
 import lustre/attribute
@@ -291,12 +294,21 @@ import lustre/element/html
 import lustre/event
 import lustre/server_component
 import session_view/move_candidates
+import session_view/operator
 import session_view/project_board as board
 import web_view/actions
+import web_view/answer_rule
+import web_view/approval_evidence
+import web_view/attention_feed
+import web_view/attention_rule
+import web_view/brief_rule
 import web_view/composer
 import web_view/creations.{type Sharing}
 import web_view/elsewhere
 import web_view/ending.{type Ending}
+import web_view/inbox_rule
+import web_view/item_pane
+import web_view/landing_rule
 import web_view/listing
 import web_view/names
 import web_view/orchestrators
@@ -306,11 +318,22 @@ import web_view/projects as feed
 import web_view/relayed
 import web_view/relayed_session
 import web_view/renames
+import web_view/review_feed
+import web_view/review_pane
+import web_view/review_scan_rule
+import web_view/review_stage_rule
+import web_view/saved_attention.{type Saved}
+import web_view/session_brief
 import web_view/sessions.{
   type Activity, type Entry, type Group, Live, NeedsYou, Working,
 }
 import web_view/signins.{type Signin}
+import web_view/thread_send
+import web_view/thread_words
+import web_view/ticket_rule
 import web_view/view/archiving
+import web_view/view/attention_thread
+import web_view/view/brief_view
 import web_view/view/create.{type Create}
 import web_view/view/elsewhere as elsewhere_view
 import web_view/view/ended
@@ -318,16 +341,21 @@ import web_view/view/folders as folders_view
 import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
+import web_view/view/inbox as inbox_view
+import web_view/view/inbox_parts
 import web_view/view/new_session
 import web_view/view/notice
 import web_view/view/projects as projects_view
 import web_view/view/relayed_session as relayed_view
 import web_view/view/resume.{type Resume}
+import web_view/view/review_thread as review_view
 import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/signins as signins_view
 import web_view/view/switch
+import web_view/view/ticket_thread
 import web_view/view/your_name
+import web_view/watch_rule
 
 /// The Lustre event path of the sidebar on the home page: it is the second
 /// child of the page's frame (`view/shell`), as on a session's page
@@ -448,7 +476,8 @@ pub type Start {
     /// function it is given, from that task, as `Observed`'s message. A session
     /// the daemon could not ask, or that was slow to answer, is left out of the
     /// answer, and its row says nothing about what it is doing.
-    activity: fn(List(String), fn(List(#(String, Activity))) -> Nil) -> Nil,
+    activity: fn(List(String), fn(List(#(String, sessions.Report))) -> Nil) ->
+      Nil,
     /// Asks the daemon to create a session in a place (a workspace the page
     /// drew, or a folder the owner typed, protocol-change/074) with the typed
     /// name and sharing, and mint a ticket for its page
@@ -550,6 +579,25 @@ pub type Start {
     /// unless the page is the owner's operating home that a `loom ui` exchange
     /// opened, and the daemon checks that again when it runs.
     manage: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
+    /// Asks the daemon to send a message to the named session on its main
+    /// strand, as a prompt or a steer, for the owner's operating home
+    /// (protocol-change/118): the daemon checks that the page is open and was
+    /// minted to operate, that its credential still authenticates as the
+    /// daemon's owner, that the principal holds the session and that it is
+    /// running, and then sends as the message is sent from the session's own
+    /// page. It must return at once, as `resume` must: the answer goes to the
+    /// function it is given, from the daemon's own task, as `ThreadAnswered`'s
+    /// message. It is `None` unless the page's principal is the daemon's owner on
+    /// a page minted to operate, and then the inbox draws no message field and
+    /// ignores the messages. The daemon checks that again when it runs.
+    thread_send: Option(
+      fn(String, String, operator.Delivery, fn(thread_send.Answer) -> Nil) ->
+        Nil,
+    ),
+    /// Reads the attention feed for the inbox's threads, and acts on it for
+    /// the owner's operating page (protocol-change/120). `None` on a page that
+    /// reads no feed, which then draws the inbox as it was before asks.
+    attention: Option(Attention),
     /// Starts the read of the principal's sign-ins, with the page's own
     /// credential, which the registry authenticates again, and returns at
     /// once; the daemon's task delivers the listing, dispatched as
@@ -744,7 +792,103 @@ pub type Projects {
     /// the function the daemon's word goes to. The daemon keeps the ticket's
     /// mandate, so a later message can resume it.
     close: fn(String, String, fn(feed.Closing) -> Nil) -> Nil,
+    /// Stops a ticket, withdrawing its mandate: the project, the ticket and the
+    /// function the daemon's word goes to. Only a ticket thread on the inbox
+    /// sends it.
+    stop: fn(String, String, fn(feed.Acted) -> Nil) -> Nil,
+    /// Asks for a new worker on a stalled ticket, with the same arguments.
+    retry: fn(String, String, fn(feed.Acted) -> Nil) -> Nil,
   )
+}
+
+/// What the inbox reads of the attention feed, and, for the owner's operating
+/// page alone, how it acts on what it reads (protocol-change/120). Every
+/// function returns at once and answers from the daemon's own task, which is a
+/// weft run that dies with the page, as `Projects` does.
+pub type Attention {
+  Attention(
+    /// Starts the read of the feed rows of the named running sessions, at most
+    /// `sessions.activity_limit` of them, all of which the page's own list
+    /// holds. The answer is dispatched as `FeedRead`. A session the daemon
+    /// could not read, or whose row did not decode, is left out, and the page
+    /// counts it as not checked.
+    feed: fn(List(String), fn(List(#(String, attention_feed.Row))) -> Nil) ->
+      Nil,
+    /// Starts the read of the catalogue's summary rows for the named saved
+    /// sessions (protocol-change/122). The answer is dispatched as `SavedRead`.
+    saved: fn(List(String), fn(List(Saved)) -> Nil) -> Nil,
+    /// Starts the read of one record in full: the session, the record's
+    /// identifier and the function the daemon's word goes to. A refusal is the
+    /// daemon's fixed words.
+    record: fn(String, String, fn(Result(item_pane.Record, String)) -> Nil) ->
+      Nil,
+    /// Starts the read of a running session's pending approvals as evidence, and
+    /// returns at once. The answer is the daemon's reading, or its fixed words
+    /// for why there is none, and arrives as `ApprovalsRead`. It reads and
+    /// never decides.
+    approvals: fn(String, fn(Result(approval_evidence.Evidence, String)) -> Nil) ->
+      Nil,
+    /// Starts the read of a running session's brief (protocol-change/125) and
+    /// returns at once: the session, the time after which peer messages are
+    /// wanted (Unix milliseconds, zero for the latest) and the function the
+    /// daemon's answer goes to. The answer is its reading or its fixed words and
+    /// arrives as `BriefRead`. It reads and never writes, and the daemon spends
+    /// the credential's brief allowance for it.
+    brief: fn(String, Int, fn(Result(session_brief.Brief, String)) -> Nil) ->
+      Nil,
+    /// Starts the read of a running session's worktree as a review
+    /// (protocol-change/123) and returns at once. The answer is the daemon's
+    /// review or its fixed words for why there is none, and arrives as
+    /// `ReviewScanned` or `ReviewRead`. It is `None` on a page whose ceiling is an
+    /// observer's, because the daemon refuses an observer the tree's bytes, and
+    /// then the inbox has no "To review" group and draws no review pane.
+    review: Option(
+      fn(String, fn(Result(review_feed.Review, String)) -> Nil) -> Nil,
+    ),
+    /// How long the page waits after the daemon refuses a read for the
+    /// credential's allowance before it reads again, in milliseconds: the
+    /// allowance's window and a margin (`ui_sessions.worktree_read_window_ms`),
+    /// so the allowance has refilled when the read is asked again.
+    review_pause_ms: Int,
+    /// How the page acts, or nothing for a page that may not: only the daemon's
+    /// owner on a page minted to operate is handed it, and the daemon decides
+    /// again each time one of its functions runs.
+    act: Option(Act),
+  )
+}
+
+/// What the owner's operating page may do to an attention record.
+pub type Act {
+  Act(
+    /// Answers an ask: the session, the ask, the revision the page read it at
+    /// and the wire object of the form. The daemon delivers one prompt to the
+    /// asking strand and then settles the record
+    /// (`client/daemon/attention_door.answer`).
+    answer: fn(String, String, Int, JsonValue, fn(ActOutcome) -> Nil) -> Nil,
+    /// Closes a find: the session, the find, the revision and the way.
+    close: fn(String, String, Int, attention.Closure, fn(ActOutcome) -> Nil) ->
+      Nil,
+    /// Sends a prompt or a steer to a named strand of a session, as a message
+    /// typed on the session's own page is sent.
+    strand: fn(
+      String,
+      String,
+      String,
+      operator.Delivery,
+      fn(thread_send.Answer) -> Nil,
+    ) -> Nil,
+  )
+}
+
+/// What the daemon said of an answer or a close. The words are the daemon's
+/// own fixed words: they name a question key at most and never text a person
+/// typed or a session wrote, so the page draws them as they are.
+pub type ActOutcome {
+  /// The record was settled.
+  Succeeded(words: String)
+
+  /// It was not, or not entirely. The words say what happened and what did not.
+  Failed(words: String)
 }
 
 /// Where a device link stands on the page.
@@ -800,6 +944,92 @@ pub opaque type Model {
     /// An answer replaces it whole, so a session that stopped running leaves it
     /// at the next one.
     activity: Dict(String, Activity),
+    /// What the daemon last said each running session is doing, last said and
+    /// reports about its strands, by identity: the same answer `activity` is
+    /// derived from, kept whole for the inbox. It is replaced whole with
+    /// `activity`, and everything in it that a session wrote is untrusted text.
+    reports: Dict(String, sessions.Report),
+    /// The session whose thread the inbox's reading pane shows, and how it came
+    /// to. The default is fixed when the first read that has a thread settles
+    /// (`settled_selection`), so a later read never moves the pane under the
+    /// person's reading or typing. A choice that left the list falls back to the
+    /// first thread (`inbox_rule.selection`).
+    selected: Selection,
+    /// How many threads the person has pressed, which keys the element that
+    /// scrolls the reading pane into view, so each press does.
+    presses: Int,
+    /// The keys of the threads the person has opened since the page loaded, for
+    /// the filled and hollow dot of each row (`view/inbox_parts.Reading`). It is
+    /// the page's own state: it is not saved, the daemon is told nothing of it,
+    /// and opening a thread never takes it out of the list.
+    opened: Set(String),
+    /// The rail folder the inbox's list is narrowed to. It is the page's own
+    /// state: it is not saved and the daemon is told nothing of it, and a folder
+    /// whose group has emptied draws as `Everything` (`shown_folder`).
+    folder: inbox_rule.Folder,
+    /// The last report of the selected thread, kept apart from `reports` so a
+    /// read that omits it does not blank the pane while its session is still
+    /// listed. It is drawn for that thread, and so counted in the group header
+    /// that holds it and listed in the thread list; the headline's count, the
+    /// states and the landing are counted from the fresh read alone.
+    shown: Option(#(String, sessions.Report)),
+    /// Which centre the page shows, decided once. It is `Awaiting` until the
+    /// first round of reads is complete (`round`), then the inbox or the
+    /// composer by the landing rule, and no later read changes it: a read that
+    /// is missed or late must not replace a pane or a composer the person is
+    /// using. After that only the person's clicks change it.
+    centre_choice: CentreChoice,
+    /// Which first reads the page is still owed and which have answered. The
+    /// centre is decided when the last one answers (`landing_rule`), whatever
+    /// order they came in.
+    round: landing_rule.Round,
+    /// What the inbox's outbox says: nothing sent, a message out to a session,
+    /// or the daemon's answer to the last one (`thread_send.Outbox`). There is
+    /// one outbox, so a second message waits for the first's answer.
+    outbox: thread_send.Outbox,
+    /// How many messages the daemon has delivered, which keys each thread's
+    /// message box: a delivered message leaves an empty box, and a refused one
+    /// leaves the draft as the person typed it.
+    delivered: Int,
+    /// The feed rows of the running sessions, by identity, replaced whole by
+    /// each read. A session that is missing is not checked.
+    feed: Dict(String, attention_feed.Row),
+    /// The catalogue's summary rows of the saved sessions, by identity.
+    saved: Dict(String, Saved),
+    /// The approval evidence read for the sessions whose thread was shown, by
+    /// session, replaced by each read.
+    evidence: Dict(String, approval_evidence.Seen),
+    /// The brief of each session whose thread was shown, by session, replaced by
+    /// each read (protocol-change/125).
+    briefs: Dict(String, session_brief.Seen),
+    /// The last brief read the page started of each session, which
+    /// `brief_rule.due` counts the next read from.
+    brief_reads: Dict(String, brief_rule.Read),
+    /// The time each held brief's read named as the start of the peer messages
+    /// it wanted, so a thread draws them only under a label they fit
+    /// (`brief_rule.shown`).
+    brief_since: Dict(String, Int),
+    /// The open item thread and what is staged in it.
+    item: item_pane.State,
+    /// How many item threads have been opened, which keys their forms so each
+    /// open starts empty.
+    item_presses: Int,
+    /// What the page knows of each idle session's worktree, by identity, which
+    /// decides who is "To review" (`web_view/review_scan_rule`). It holds a
+    /// verdict for each session and never a review.
+    reviews: Dict(String, review_scan_rule.Seen),
+    /// The open review thread: its review, what is staged and where a Send
+    /// stands.
+    review: review_pane.State,
+    /// How many review threads have been opened, which keys their forms so each
+    /// open starts empty.
+    review_presses: Int,
+    /// The timer that starts the scan again after the allowance refused a read,
+    /// known once the runtime has made it.
+    review_timer: Option(Subject(Nil)),
+    /// Whether that timer is already set. One is outstanding at most, so a run
+    /// of refusals sets it once.
+    review_rearm: Rearm,
     /// The time the last list was read, in Unix milliseconds, which the rows'
     /// ages are counted from.
     now: Int,
@@ -900,6 +1130,9 @@ pub opaque type Model {
     /// How many reads of the boards have been started, which numbers the next as
     /// `reads` does for the list: an answer a newer read overtook is dropped.
     board_reads: Int,
+    /// The project ticket whose thread the inbox's pane shows, if one is open.
+    /// It is never open together with an attention item's thread.
+    ticket: Option(ticket_rule.Opened),
   )
 }
 
@@ -920,6 +1153,51 @@ pub type OpenTicket {
     /// How many answers have been recorded, which keys the answer box.
     answered: Int,
   )
+}
+
+/// Whether the page has decided its centre. The decision is made once per page
+/// load, when the last read of the first round has answered (`landing_rule`):
+/// the inbox when anything across the round's reads waits or runs, the composer
+/// otherwise. After that the person's clicks are the only thing that change it.
+///
+/// | state | the round's last read answers | a later read answers | the person presses |
+/// | --- | --- | --- | --- |
+/// | `Awaiting` | `Decided` by what the round gathered | stays `Awaiting` until the round closes | `Decided` as pressed |
+/// | `Decided` | stays as it is | stays as it is | `Decided` as pressed |
+pub type CentreChoice {
+  /// The round of first reads is not complete, so the page shows the composer
+  /// or the list.
+  Awaiting
+
+  /// The centre is decided.
+  Decided(centre: Centre)
+}
+
+/// The centre the page shows in the body of its middle column, when no ticket's
+/// page or relayed session has taken it over.
+pub type Centre {
+  /// The attention inbox (`view/inbox`).
+  InboxCentre
+
+  /// The new-session composer.
+  FormCentre
+
+  /// The full session list.
+  ListCentre
+}
+
+/// The thread the inbox's reading pane shows and how it came to be shown.
+pub type Selection {
+  /// No thread has been shown yet.
+  Unchosen
+
+  /// The page showed the first thread of the first group, and keeps it until
+  /// the person presses another or the session leaves the list. On a narrow
+  /// screen the pane stays hidden for it.
+  Defaulted(session: String)
+
+  /// The person pressed its row.
+  Pressed(session: String)
 }
 
 /// Which centre the home shows. The composer is where a session is started and
@@ -971,7 +1249,163 @@ pub type Msg {
   /// The daemon's answer to the activity read a list started: one state for
   /// each session it could ask. It is the effect's own message, dispatched from
   /// the daemon's task, and no handler carries it.
-  Observed(rows: List(#(String, Activity)))
+  Observed(rows: List(#(String, sessions.Report)))
+
+  /// A thread in the inbox was pressed: show its reading pane. The identity is
+  /// the catalogue's, fixed when the tree was drawn, and the page honours it
+  /// only for a session its last read still reports (`inbox_rule.selection`).
+  InboxOpened(session: String)
+
+  /// The person pressed a button on an inbox thread's message field: send the
+  /// draft to the session as `delivery`. The session is the thread the form was
+  /// drawn for, fixed when the tree was drawn, and the page honours it only for
+  /// a running session its last read reports; the daemon decides whether the
+  /// principal holds it.
+  ThreadSubmitted(session: String, text: String, delivery: operator.Delivery)
+
+  /// The daemon answered a send. It is the effect's own message, dispatched
+  /// from the daemon's task.
+  ThreadAnswered(session: String, answer: thread_send.Answer)
+
+  /// The feed rows the daemon read for the running sessions.
+  FeedRead(rows: List(#(String, attention_feed.Row)))
+
+  /// The catalogue's summary rows the daemon read for the saved sessions.
+  SavedRead(rows: List(Saved))
+
+  /// The daemon's answer to the read of a session's brief. `since` is the time
+  /// the read asked peer messages after.
+  BriefRead(
+    session: String,
+    since: Int,
+    read: Result(session_brief.Brief, String),
+  )
+
+  /// The daemon's answer to the read of a session's approval evidence.
+  ApprovalsRead(
+    session: String,
+    read: Result(approval_evidence.Evidence, String),
+  )
+
+  /// An item's row was pressed: open its thread. The key is drawn into the
+  /// handler by the server, and the page honours it only for an item its last
+  /// read still holds.
+  ItemPicked(key: attention_rule.Key)
+
+  /// The daemon's answer to the read of an item's record.
+  RecordRead(key: attention_rule.Key, read: Result(item_pane.Record, String))
+
+  /// The ask's form was submitted: check it and stage the answer.
+  ItemStaged(fields: List(#(String, String)))
+
+  /// The note form was submitted: stage the message.
+  ItemNoted(text: String)
+
+  /// Take back everything staged.
+  ItemCleared
+
+  /// Send what is staged.
+  ItemSent
+
+  /// A find's close button was pressed.
+  ItemClosed(closure: attention.Closure)
+
+  /// Retry was pressed on a stuck strand.
+  ItemRetried
+
+  /// The daemon's word on an answer or a close.
+  ItemActed(key: attention_rule.Key, outcome: ActOutcome)
+
+  /// The daemon's word on a message to a strand that followed an answer or was
+  /// sent alone.
+  ItemNoteAnswered(key: attention_rule.Key, answer: thread_send.Answer)
+
+  /// The daemon's word on a retry.
+  ItemRetryAnswered(key: attention_rule.Key, answer: thread_send.Answer)
+
+  /// The daemon's answer to the read that decides whether a finished session is
+  /// "To review". The message is the session's last message when the read began.
+  ReviewScanned(
+    session: String,
+    message: String,
+    read: Result(review_feed.Review, String),
+  )
+
+  /// The runtime made the timer that starts the review scan again after the
+  /// allowance refused a read.
+  ReviewTimerReady(timer: Subject(Nil))
+
+  /// The scan's timer fired: read the next due session.
+  ReviewTicked
+
+  /// The daemon's answer to the read of the open review thread's worktree.
+  ReviewRead(session: String, read: Result(review_feed.Review, String))
+
+  /// The daemon's answer to the read of a find's record, for its revision.
+  ReviewFindRead(find: String, read: Result(item_pane.Record, String))
+
+  /// A verdict button was pressed.
+  ReviewVerdictChosen(verdict: review_stage_rule.Verdict)
+
+  /// A file's comment form was submitted: the file's path, drawn into the
+  /// handler by the server, and the text.
+  ReviewCommented(path: String, text: String)
+
+  /// A find's form was submitted: the find, the way to close it and a note.
+  ReviewFindStaged(find: String, closure: attention.Closure, note: String)
+
+  /// Take back everything staged in the review.
+  ReviewCleared
+
+  /// Send what the review staged.
+  ReviewSent
+
+  /// The daemon's word on a find close that a review's Send asked for.
+  ReviewClosed(
+    find: String,
+    closure: attention.Closure,
+    outcome: review_pane.Outcome,
+  )
+
+  /// The gateway's word on the prompt a review's Send delivered.
+  ReviewPrompted(answer: thread_send.Answer)
+
+  /// A project ticket's row was pressed: open its thread. The address is drawn
+  /// into the handler by the server, and the page honours it only for a ticket
+  /// its last board read still holds.
+  TicketThreadPicked(key: ticket_rule.Key)
+
+  /// A read of the open ticket thread's ticket arrived. It is the effect's own
+  /// message.
+  TicketThreadRead(key: ticket_rule.Key, read: feed.TicketRead)
+
+  /// A control on the open ticket thread was pressed. The control was drawn into
+  /// the handler, and the page honours it only when the ticket's daemon-listed
+  /// actions still hold it.
+  TicketControlPressed(control: ticket_rule.Control)
+
+  /// The thread's answer form was submitted, with the question's sequence number
+  /// it was drawn with and the text.
+  TicketAnswerSent(seq: Int, text: String)
+
+  /// The confirmation of a Stop or a Close was pressed: do what was asked. The
+  /// ticket and the act were drawn into the handler, and the page honours the
+  /// press only when both are still what it asked about.
+  TicketActConfirmed(key: ticket_rule.Key, control: ticket_rule.Control)
+
+  /// The confirmation's "Keep" was pressed: take the question back.
+  TicketActKept
+
+  /// The daemon's word on a ticket act. It is the effect's own message.
+  TicketActSettled(
+    key: ticket_rule.Key,
+    control: ticket_rule.Control,
+    outcome: feed.Acted,
+  )
+
+  /// The person pressed "Inbox" on the composer or the list: show the centre the
+  /// page lands on, which is the inbox while something waits or runs.
+  ShowingInbox
 
   /// A running session's row was pressed: ask the daemon for a ticket to open
   /// it. The identity is the catalogue's, fixed when the tree was drawn, and
@@ -1269,6 +1703,17 @@ pub type Msg {
   /// The sidebar's "All" pill: show every session.
   Widening
 
+  /// A rail folder: narrow the inbox's list to its group. The folder is the one
+  /// the server drew the button for, and the page honours it only for a folder
+  /// its last reads still list (`shown_folder`). It changes what the page draws
+  /// and sends the daemon nothing.
+  FolderPicked(folder: inbox_rule.Folder)
+
+  /// The reading pane's back control on a narrow screen: show the list. It
+  /// closes the open thread's pane, so a thread's own state is dropped as a press
+  /// on another thread drops it.
+  InboxClosed
+
   /// The runtime made the relay's refresh timer. The first read of the
   /// orchestrator follows, on a page that has `Start.visiting`.
   RelayTimerReady(timer: Subject(Nil))
@@ -1368,6 +1813,32 @@ pub fn new(start: Start) -> Model {
     start:,
     groups: [],
     activity: dict.new(),
+    reports: dict.new(),
+    selected: Unchosen,
+    presses: 0,
+    opened: set.new(),
+    folder: inbox_rule.Everything,
+    shown: None,
+    centre_choice: Awaiting,
+    round: landing_rule.open(case start.projects {
+      Some(_) -> landing_rule.Due
+      None -> landing_rule.NotDue
+    }),
+    outbox: thread_send.Unsent,
+    delivered: 0,
+    feed: dict.new(),
+    saved: dict.new(),
+    evidence: dict.new(),
+    briefs: dict.new(),
+    brief_reads: dict.new(),
+    brief_since: dict.new(),
+    item: item_pane.closed(),
+    item_presses: 0,
+    reviews: dict.new(),
+    review: review_pane.closed(),
+    review_presses: 0,
+    review_timer: None,
+    review_rearm: Unscheduled,
     now: 0,
     status: Connecting,
     timer: None,
@@ -1412,6 +1883,7 @@ pub fn new(start: Start) -> Model {
     side_timer: None,
     boards: [],
     board_reads: 0,
+    ticket: None,
   )
 }
 
@@ -1439,13 +1911,16 @@ fn wire() -> Effect(Msg) {
   use dispatch, timer <- server_component.select
   let relay_timer = process.new_subject()
   let side_timer = process.new_subject()
+  let review_timer = process.new_subject()
   dispatch(TimerReady(timer))
   dispatch(RelayTimerReady(relay_timer))
   dispatch(SideTimerReady(side_timer))
+  dispatch(ReviewTimerReady(review_timer))
   process.new_selector()
   |> process.select_map(timer, fn(_) { Ticked })
   |> process.select_map(relay_timer, fn(_) { RelayTicked })
   |> process.select_map(side_timer, fn(_) { SideTicked })
+  |> process.select_map(review_timer, fn(_) { ReviewTicked })
 }
 
 /// Applies one message.
@@ -1478,8 +1953,9 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Answered(serial:, listing:) ->
       case serial == model.reads {
         True -> {
-          let model = answered(model, listing)
-          #(model, observing(model))
+          let #(model, reads) =
+            approving(answered(model, listing), brief_rule.Refreshed)
+          #(model, effect.batch([observing(model), attending(model), reads]))
         }
         False -> #(model, effect.none())
       }
@@ -1498,7 +1974,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               elsewhere_reads: model.elsewhere_reads + 1,
               board_reads: model.board_reads + 1,
             )
-          #(model, effect.batch([observing(model), following(model, listing)]))
+          let #(model, reads) = approving(model, brief_rule.Refreshed)
+          #(
+            model,
+            effect.batch([
+              observing(model),
+              attending(model),
+              reads,
+              following(model, listing),
+            ]),
+          )
         }
         False -> #(model, arming(model))
       }
@@ -1507,10 +1992,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Observed(rows:) ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> #(
-          Model(..model, activity: dict.from_list(rows)),
-          effect.none(),
-        )
+        Connecting | Connected -> {
+          let next = observed(model, rows)
+          let #(reviewed, reading) = reviewing(next)
+          let #(reviewed, reads) = approving(reviewed, brief_rule.Refreshed)
+          #(reviewed, effect.batch([reads, reading]))
+        }
       }
 
     // The sidebar's own presses. The pills change what the sidebar lists and ask
@@ -1528,6 +2015,32 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     Widening -> #(Model(..model, filter: listing.Everywhere), effect.none())
+
+    // A folder is a filter on what the page draws and nothing else. A press
+    // for a folder the page does not list changes nothing.
+    FolderPicked(folder:) ->
+      case
+        folder == inbox_rule.Everything
+        || list.any(folder_counts(model), fn(entry) { entry.0 == folder })
+      {
+        True -> #(Model(..model, folder:), effect.none())
+        False -> #(model, effect.none())
+      }
+
+    // The way back from a pane on a narrow screen: the list is the page again,
+    // with the default thread behind it, and nothing of the closed thread is
+    // kept.
+    InboxClosed -> #(
+      Model(
+        ..model,
+        selected: Unchosen,
+        item: item_pane.closed(),
+        ticket: None,
+        review: review_pane.closed(),
+      )
+        |> fn(closed) { Model(..closed, selected: settled_selection(closed)) },
+      effect.none(),
+    )
 
     // The relayed session page reads the orchestrator when its timer exists and
     // on every interval after, for as long as the page is served. A page with no
@@ -1579,6 +2092,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // served. A page with no orchestrator has nothing to read.
     SideTimerReady(timer:) ->
       side_reading(Model(..model, side_timer: Some(timer)))
+
+    ReviewTimerReady(timer:) -> #(
+      Model(..model, review_timer: Some(timer)),
+      effect.none(),
+    )
+
+    // The timer fires once for a run of refusals, and the scan goes on from the
+    // session the refusal left unread.
+    ReviewTicked ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected ->
+          reviewing(Model(..model, review_rearm: Unscheduled))
+      }
 
     SideTicked ->
       case model.status {
@@ -1637,18 +2164,655 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // words saying so. A refusal puts the form back.
     Founded(orchestrator:, founding:) -> founded(model, orchestrator, founding)
 
-    ShowingList -> #(Model(..model, pane: SessionList), effect.none())
+    InboxOpened(session:) -> {
+      let next =
+        Model(
+          ..model,
+          selected: Pressed(session),
+          presses: model.presses + 1,
+          opened: set.insert(model.opened, session),
+          item: item_pane.closed(),
+          review: case model.review.loaded, model.review.session {
+            review_pane.Unavailable(_), Some(held) if held == session ->
+              review_pane.closed()
+            _, _ -> model.review
+          },
+          ticket: None,
+        )
+      let #(reviewed, reading) = reviewing(next)
+      let #(reviewed, reads) = approving(reviewed, brief_rule.Opened)
+      #(reviewed, effect.batch([reads, reading]))
+    }
 
-    ShowingNew ->
-      case model.start.create {
+    // A send asks the daemon in a task of its own. A draft with nothing in it
+    // or over the bound, a session the inbox does not draw, a page
+    // that is not connected and a send already out ask nothing. Past that the
+    // daemon is the authority: it checks the page and the session again.
+    ThreadSubmitted(session:, text:, delivery:) ->
+      case model.start.thread_send, model.status, model.outbox {
+        Some(send), Connected, thread_send.Unsent
+        | Some(send), Connected, thread_send.Settled(..)
+        ->
+          case
+            thread_send.sendable(text),
+            list.any(drawn_threads(model), fn(thread) { thread.id == session })
+          {
+            True, True -> #(
+              Model(..model, outbox: thread_send.Sending(session, delivery)),
+              {
+                use dispatch <- effect.from
+                send(session, text, delivery, fn(answer) {
+                  dispatch(ThreadAnswered(session, answer))
+                })
+              },
+            )
+            True, False | False, _ -> #(model, effect.none())
+          }
+        Some(_), Connected, thread_send.Sending(..)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    // The daemon's word on a send. A refusal keeps the draft and says why in
+    // fixed words. A delivered message leaves an empty box and changes what the
+    // session is doing, so the page asks for a fresh read at once and the
+    // buttons follow the new state rather than waiting for the next list.
+    ThreadAnswered(session:, answer:) -> {
+      // The answer does not carry the delivery, so it is the one the outbox
+      // recorded when the send went out; a stray answer reads as a prompt.
+      let sent = case model.outbox {
+        thread_send.Sending(out, delivery) if out == session -> delivery
+        thread_send.Sending(..)
+        | thread_send.Settled(..)
+        | thread_send.Unsent -> operator.Prompt
+      }
+
+      // A delivery changes the session's state and asks for a fresh read; a
+      // refusal changes nothing about it.
+      case answer {
+        thread_send.Delivered(_) -> {
+          let next =
+            Model(
+              ..model,
+              outbox: thread_send.Settled(session, sent, answer),
+              delivered: model.delivered + 1,
+            )
+          #(next, observing(next))
+        }
+        thread_send.Refused(_) -> #(
+          Model(..model, outbox: thread_send.Settled(session, sent, answer)),
+          effect.none(),
+        )
+      }
+    }
+
+    // The feed's rows replace the last ones whole, so an answered ask and a
+    // closed find leave the list at the next read. A page that ended keeps the
+    // rows it last drew, as it keeps its list.
+    FeedRead(rows:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          arrived(
+            Model(..model, feed: dict.from_list(rows)),
+            landing_rule.FeedSource,
+          ),
+          effect.none(),
+        )
+      }
+
+    // The catalogue's summaries replace the last ones whole. They can arrive
+    // when nothing runs, after a restart, and a summary that counts something
+    // is part of what the first round decides the centre by.
+    SavedRead(rows:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          arrived(
+            Model(
+              ..model,
+              saved: dict.from_list(
+                list.map(rows, fn(row) { #(row.session_id, row) }),
+              ),
+            ),
+            landing_rule.SummarySource,
+          ),
+          effect.none(),
+        )
+      }
+
+    // The brief replaces what the page held for that session, kept for each
+    // session whose thread was shown and so bounded by the sessions viewed. A
+    // refusal leaves a brief the page already holds, since the daemon allows six
+    // reads in four seconds and a refused read says nothing about what the
+    // session did.
+    BriefRead(session:, since:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected ->
+          case read, dict.get(model.briefs, session) {
+            Ok(brief), _ -> #(
+              Model(
+                ..model,
+                briefs: dict.insert(
+                  model.briefs,
+                  session,
+                  session_brief.Seen(brief),
+                ),
+                brief_since: dict.insert(model.brief_since, session, since),
+              ),
+              effect.none(),
+            )
+            Error(words), Error(Nil)
+            | Error(words), Ok(session_brief.Unseen(_))
+            -> #(
+              Model(
+                ..model,
+                briefs: dict.insert(
+                  model.briefs,
+                  session,
+                  session_brief.Unseen(words),
+                ),
+              ),
+              effect.none(),
+            )
+            Error(_), Ok(session_brief.Seen(_)) -> #(model, effect.none())
+          }
+      }
+
+    // The evidence replaces what the page held for that session. It is kept
+    // for each session whose thread was shown, so it is bounded by the sessions
+    // the page has viewed. A thread whose brief waited for the evidence reads it
+    // now, and one whose read asked after another time reads again.
+    ApprovalsRead(session:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected ->
+          briefing(
+            Model(
+              ..model,
+              evidence: dict.insert(model.evidence, session, case read {
+                Ok(evidence) -> approval_evidence.Seen(evidence)
+                Error(words) -> approval_evidence.Unseen(words)
+              }),
+            ),
+            brief_rule.Refreshed,
+          )
+      }
+
+    // A scan's answer is kept as what it found and the review is dropped. A
+    // read that found something starts the next due session at once. A refusal
+    // does not: the daemon allows two reads in four seconds, so the reads that
+    // follow a refusal would be refused too, and the next list or activity read
+    // starts them again once the allowance has refilled.
+    ReviewScanned(session:, message:, read:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> {
+          let next =
+            Model(
+              ..model,
+              reviews: review_scan_rule.answered(
+                model.reviews,
+                session,
+                message,
+                read,
+              ),
+            )
+
+          // A read that answered goes on to the next session, and a refusal stops.
+          case read {
+            Ok(_) -> reviewing(next)
+            Error(words) -> {
+              let #(opened, open, _) = opening_review(next)
+              let #(armed, arm) = rearming(opened, words)
+              #(armed, effect.batch([open, arm]))
+            }
+          }
+        }
+      }
+
+    // The pane's own read of the tree is a fresh scan of it, so a successful one
+    // also settles the session's classification: a tree the owner made clean
+    // leaves "To review" once opened. A failed read says nothing of the tree
+    // and leaves the classification as it was.
+    ReviewRead(session:, read:) -> #(
+      Model(
+        ..model,
+        review: review_pane.loaded(model.review, session, read),
+        reviews: case read, model.review.session, model.review.read_for {
+          Ok(_), Some(open), Some(message) if open == session ->
+            review_scan_rule.answered(model.reviews, session, message, read)
+          Ok(_), _, _ | Error(_), _, _ -> model.reviews
+        },
+      ),
+      effect.none(),
+    )
+
+    // A find's revision is what a close names, so a close is staged only once
+    // the record was read.
+    ReviewFindRead(find:, read:) -> #(
+      Model(
+        ..model,
+        review: review_pane.revision_read(
+          model.review,
+          find,
+          result.try(read, fn(record) {
+            case record {
+              item_pane.FindRecord(revision:, ..) -> Ok(revision)
+              item_pane.AskRecord(..) -> Error("That record is not a find.")
+            }
+          }),
+        ),
+      ),
+      effect.none(),
+    )
+
+    // A page that may not act ignores every staging message, and the daemon
+    // refuses the frames such a page could not have sent.
+    ReviewVerdictChosen(verdict:) ->
+      staged_review(model, review_pane.verdict(model.review, verdict))
+
+    ReviewCommented(path:, text:) ->
+      staged_review(model, review_pane.comment(model.review, path, text))
+
+    ReviewFindStaged(find:, closure:, note:) ->
+      staged_review(
+        model,
+        review_pane.find_action(model.review, find, closure, note),
+      )
+
+    ReviewCleared -> staged_review(model, review_pane.cleared(model.review))
+
+    ReviewSent ->
+      case acting(model), model.status {
+        Some(act), Connected -> {
+          let #(state, step) = review_pane.send(model.review)
+          #(
+            Model(..model, review: state),
+            review_asking(act, model.review.session, step),
+          )
+        }
+        _, _ -> #(model, effect.none())
+      }
+
+    ReviewClosed(find:, closure:, outcome:) ->
+      case acting(model) {
+        Some(act) -> {
+          let #(state, step) =
+            review_pane.closed_with(model.review, find, closure, outcome)
+          let next = Model(..model, review: state)
+
+          // A close the daemon refused dropped its revision, so the find is
+          // read again now and not at the next refresh.
+          let #(reopened, reopen, _) = opening_review(next)
+          #(
+            reopened,
+            effect.batch([
+              review_asking(act, model.review.session, step),
+              attending(reopened),
+              reopen,
+            ]),
+          )
+        }
+        None -> #(model, effect.none())
+      }
+
+    // A delivery empties the staging, and the browser keeps what was typed in
+    // a form it still has, so the open count rises with it: the forms are
+    // keyed by that count, and a form with a new key is a form with no text.
+    ReviewPrompted(answer:) -> {
+      let next =
+        Model(
+          ..model,
+          review: review_pane.prompted(model.review, answer),
+          review_presses: case answer {
+            thread_send.Delivered(_) -> model.review_presses + 1
+            thread_send.Refused(_) -> model.review_presses
+          },
+        )
+
+      // "Send & next" moves to the thread that follows in "To review" once the
+      // send was delivered, and stays on the receipt when none follows or the
+      // send was refused. Opening the next thread is a press on its row.
+      case answer, following_review(next, model.review.session) {
+        thread_send.Delivered(_), Some(following) ->
+          update(next, InboxOpened(following))
+        _, _ -> #(next, attending(next))
+      }
+    }
+
+    // An item's press opens its thread, for an item the last read still holds.
+    // Its record is read by the daemon in a task of its own.
+    ItemPicked(key:) ->
+      case
+        model.start.attention,
+        attention_rule.find_item(current_items(model), key)
+      {
+        Some(reads), Some(_) -> {
+          let #(state, reading) = item_pane.pick(model.item, key)
+          let #(next, brief) =
+            briefing(
+              Model(
+                ..model,
+                item: state,
+                item_presses: model.item_presses + 1,
+                opened: set.insert(model.opened, attention_rule.opened_key(key)),
+                ticket: None,
+              ),
+              brief_rule.Opened,
+            )
+
+          #(
+            next,
+            effect.batch([
+              case reading {
+                item_pane.ReadRecord -> {
+                  use dispatch <- effect.from
+                  reads.record(key.session, key.id, fn(read) {
+                    dispatch(RecordRead(key, read))
+                  })
+                }
+                item_pane.SkipRead -> effect.none()
+              },
+              brief,
+            ]),
+          )
+        }
+        Some(_), None | None, _ -> #(model, effect.none())
+      }
+
+    RecordRead(key:, read:) -> #(
+      Model(..model, item: item_pane.loaded(model.item, key, read)),
+      effect.none(),
+    )
+
+    // The form is checked here by the daemon's own rule and staged, and nothing
+    // is sent. A page that may not act ignores it.
+    ItemStaged(fields:) ->
+      case acting(model), model.item.key, model.item.loaded {
+        Some(_),
+          Some(key),
+          item_pane.Loaded(item_pane.AskRecord(ask:, revision:))
+        ->
+          case answer_rule.stage(key.session, ask, revision, fields) {
+            Ok(staged) -> #(
+              Model(..model, item: item_pane.staged_answer(model.item, staged)),
+              effect.none(),
+            )
+            Error(problem) -> #(
+              Model(..model, item: item_pane.refused(model.item, problem)),
+              effect.none(),
+            )
+          }
+        Some(_), Some(_), item_pane.Loaded(item_pane.FindRecord(..))
+        | Some(_), Some(_), item_pane.NoRecord
+        | Some(_), Some(_), item_pane.Loading
+        | Some(_), Some(_), item_pane.Unavailable(_)
+        | Some(_), None, _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    ItemNoted(text:) ->
+      case acting(model) {
         Some(_) -> #(
-          Model(..model, pane: NewSession, note: None),
+          Model(..model, item: item_pane.staged_note(model.item, text)),
           effect.none(),
         )
         None -> #(model, effect.none())
       }
 
-    Composed(message:) -> composing(model, message)
+    ItemCleared ->
+      case acting(model) {
+        Some(_) -> #(
+          Model(..model, item: item_pane.unstaged(model.item)),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
+    ItemSent -> sending_item(model)
+
+    // A find's close names the revision the page read it at, so a find that
+    // moved since is refused by the daemon and not closed.
+    ItemClosed(closure:) ->
+      case
+        acting(model),
+        model.item.key,
+        model.item.loaded,
+        model.item.progress
+      {
+        Some(act),
+          Some(key),
+          item_pane.Loaded(item_pane.FindRecord(revision:, ..)),
+          item_pane.Resting
+        | Some(act),
+          Some(key),
+          item_pane.Loaded(item_pane.FindRecord(revision:, ..)),
+          item_pane.Settled(_)
+        -> #(Model(..model, item: item_pane.sending(model.item)), {
+          use dispatch <- effect.from
+          act.close(key.session, key.id, revision, closure, fn(outcome) {
+            dispatch(ItemActed(key, outcome))
+          })
+        })
+        _, _, _, _ -> #(model, effect.none())
+      }
+
+    // Retry prompts the stuck strand itself, through the same path a message
+    // typed on the session's page takes.
+    ItemRetried ->
+      case acting(model), model.item.key, model.item.progress {
+        Some(act), Some(key), item_pane.Resting
+        | Some(act), Some(key), item_pane.Settled(_)
+        ->
+          case key.sort {
+            attention_rule.StuckSort -> #(
+              Model(..model, item: item_pane.sending(model.item)),
+              {
+                use dispatch <- effect.from
+                act.strand(
+                  key.session,
+                  key.id,
+                  retry_words,
+                  operator.Prompt,
+                  fn(answer) { dispatch(ItemRetryAnswered(key, answer)) },
+                )
+              },
+            )
+            attention_rule.AskSort | attention_rule.FindSort -> #(
+              model,
+              effect.none(),
+            )
+          }
+        _, _, _ -> #(model, effect.none())
+      }
+
+    // The daemon's word on an answer or a close. A success is followed by the
+    // staged note, which goes to the strand once the answer is settled; a
+    // refusal leaves the outbox for the owner to fix and send again.
+    ItemActed(key:, outcome:) ->
+      case model.item.key == Some(key), acting(model), outcome {
+        True, Some(act), Succeeded(words:) ->
+          case item_pane.after_answer(model.item, strand_of(model, key)) {
+            item_pane.NoteStep(session:, strand:, text:) -> #(
+              Model(
+                ..model,
+                item: item_pane.sending(item_pane.settled(
+                  model.item,
+                  words,
+                  item_pane.TheAnswer,
+                )),
+              ),
+              noting(act, key, session, strand, text),
+            )
+            item_pane.AnswerStep(_) | item_pane.NothingStaged -> {
+              let next =
+                Model(
+                  ..model,
+                  item: item_pane.settled(
+                    model.item,
+                    words,
+                    item_pane.Everything,
+                  ),
+                )
+              #(next, attending(next))
+            }
+          }
+        True, Some(_), Failed(words:) -> #(
+          Model(
+            ..model,
+            item: item_pane.settled(model.item, words, item_pane.Nothing),
+          ),
+          effect.none(),
+        )
+        True, None, _ | False, _, _ -> #(model, effect.none())
+      }
+
+    ItemNoteAnswered(key:, answer:) ->
+      case model.item.key == Some(key) {
+        True -> {
+          let words =
+            thread_send.answer_words(answer, operator.Prompt, "the strand")
+
+          // A delivery asks for a fresh read, and a refusal changes nothing the page holds.
+          case answer {
+            thread_send.Delivered(_) -> {
+              let next =
+                Model(
+                  ..model,
+                  item: item_pane.settled(
+                    model.item,
+                    words,
+                    item_pane.Everything,
+                  ),
+                )
+              #(next, attending(next))
+            }
+            thread_send.Refused(_) -> #(
+              Model(
+                ..model,
+                item: item_pane.settled(model.item, words, item_pane.Nothing),
+              ),
+              effect.none(),
+            )
+          }
+        }
+        False -> #(model, effect.none())
+      }
+
+    ItemRetryAnswered(key:, answer:) ->
+      case model.item.key == Some(key) {
+        True -> {
+          let next =
+            Model(
+              ..model,
+              item: item_pane.settled(
+                model.item,
+                thread_send.answer_words(answer, operator.Prompt, "the strand"),
+                item_pane.Nothing,
+              ),
+            )
+          #(next, attending(next))
+        }
+        False -> #(model, effect.none())
+      }
+
+    // A ticket row opens its thread for a ticket the last board read still holds
+    // as waiting on a person, and reads the ticket in full. The attention item
+    // thread closes, since one pane shows one thread.
+    TicketThreadPicked(key:) ->
+      case
+        model.start.projects,
+        list.any(ticket_rule.waiting(model.boards), fn(each) { each.key == key })
+      {
+        Some(_), True ->
+          reading_ticket_thread(
+            Model(
+              ..model,
+              item: item_pane.closed(),
+              opened: set.insert(model.opened, ticket_rule.opened_key(key)),
+              ticket: Some(thread_reopened(model.ticket, key)),
+            ),
+            key,
+          )
+        Some(_), False | None, _ -> #(model, effect.none())
+      }
+
+    // A read keeps its detail for the thread that asked, and a ticket the
+    // project no longer holds closes the thread.
+    TicketThreadRead(key:, read:) ->
+      case model.ticket {
+        Some(opened) if opened.key == key ->
+          ticket_thread_heard(model, opened, read)
+        Some(_) | None -> #(model, effect.none())
+      }
+
+    TicketControlPressed(control:) -> ticket_pressed(model, control, "")
+
+    TicketAnswerSent(seq:, text:) -> ticket_answered(model, seq, text)
+
+    // The confirmation sends the act it asked about, if the daemon still lists
+    // it for the ticket.
+    TicketActConfirmed(key:, control:) -> ticket_confirmed(model, key, control)
+
+    TicketActKept ->
+      case model.ticket {
+        Some(opened) -> #(
+          Model(..model, ticket: Some(ticket_rule.cancelled(opened))),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
+    // The daemon's word on an act becomes the pane's notice, and the ticket and
+    // the boards are read again so the pane and the list show what the daemon now
+    // holds.
+    TicketActSettled(key:, control:, outcome:) ->
+      case model.ticket {
+        Some(opened) if opened.key == key -> {
+          let next =
+            Model(
+              ..model,
+              ticket: Some(ticket_rule.settled(opened, control, outcome)),
+            )
+          let #(next, reading) = reading_ticket_thread(next, key)
+          let #(next, boards) = reading_boards(next)
+
+          #(next, effect.batch([reading, boards]))
+        }
+        Some(_) | None -> #(model, effect.none())
+      }
+
+    ShowingInbox -> #(
+      Model(..model, centre_choice: Decided(InboxCentre)),
+      effect.none(),
+    )
+
+    ShowingList -> #(
+      Model(..model, pane: SessionList, centre_choice: Decided(ListCentre)),
+      effect.none(),
+    )
+
+    ShowingNew ->
+      case model.start.create {
+        Some(_) -> #(
+          Model(
+            ..model,
+            pane: NewSession,
+            note: None,
+            centre_choice: Decided(FormCentre),
+          ),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
+    Composed(message:) ->
+      composing(Model(..model, centre_choice: Decided(FormCentre)), message)
 
     // A press asks the daemon in the component's own process. An ended page
     // asks nothing: its principal's access is gone, and the daemon would
@@ -1900,10 +3064,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case serial == model.board_reads, model.start.projects, read {
         True, Some(_), feed.Heard(projects: listed) ->
           boards_heard(model, feed.decode(listed))
-        True, Some(_), feed.Unread | True, None, _ | False, _, _ -> #(
-          model,
+
+        // A read that told nothing, or that a newer one overtook, still ends the
+        // wait for the first board, so the round is not held open for ever.
+        True, Some(_), feed.Unread | False, Some(_), _ -> #(
+          arrived(model, landing_rule.BoardsSource),
           effect.none(),
         )
+        True, None, _ | False, None, _ -> #(model, effect.none())
       }
 
     // A ticket's button opens its page, on a page that lists projects and only
@@ -3444,6 +4612,262 @@ fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
   #(model, effect)
 }
 
+/// Starts the read of the open ticket thread's ticket from the daemon's own
+/// task.
+fn reading_ticket_thread(
+  model: Model,
+  key: ticket_rule.Key,
+) -> #(Model, Effect(Msg)) {
+  case model.start.projects {
+    Some(Projects(ticket: read, ..)) -> #(model, {
+      use dispatch <- effect.from
+      read(key.project, key.ticket, fn(heard) {
+        dispatch(TicketThreadRead(key, heard))
+      })
+    })
+    None -> #(model, effect.none())
+  }
+}
+
+/// Starts a read of the projects' boards, so the list shows what an act changed
+/// without waiting for the next timer.
+fn reading_boards(model: Model) -> #(Model, Effect(Msg)) {
+  // A page with no projects capability has no board to read.
+  case model.start.projects {
+    Some(Projects(boards:, ..)) -> {
+      // The serial is bumped as a list read bumps it, so a read this one
+      // overtakes is dropped.
+      let serial = model.board_reads + 1
+
+      #(Model(..model, board_reads: serial), {
+        use dispatch <- effect.from
+        boards(fn(read) { dispatch(BoardsRead(serial, read)) })
+      })
+    }
+    None -> #(model, effect.none())
+  }
+}
+
+/// What a read of the open ticket thread's ticket changes. A detail that does
+/// not decode is said in words and keeps what the pane had, and a ticket the
+/// project no longer holds closes the thread.
+fn ticket_thread_heard(
+  model: Model,
+  opened: ticket_rule.Opened,
+  read: feed.TicketRead,
+) -> #(Model, Effect(Msg)) {
+  case read {
+    feed.TicketHeard(detail: document) ->
+      case board.decode_detail(document) {
+        Ok(detail) -> #(
+          Model(
+            ..model,
+            ticket: Some(ticket_rule.reconciled(
+              ticket_rule.heard(opened, detail),
+              ticket_standing(model),
+            )),
+          ),
+          effect.none(),
+        )
+        Error(_) -> #(
+          Model(..model, ticket: Some(ticket_rule.unreadable(opened))),
+          effect.none(),
+        )
+      }
+    feed.TicketGone -> #(Model(..model, ticket: None), effect.none())
+    feed.TicketUnread -> #(model, effect.none())
+  }
+}
+
+/// What the page may do to a ticket: operate when the page holds the projects
+/// capability at the owner's Operator ceiling, which `closable` requires too.
+/// Any other page draws the thread and no control.
+fn ticket_standing(model: Model) -> ticket_rule.Standing {
+  case model.start.projects, model.start.ceiling {
+    Some(_), OperatorCeiling -> ticket_rule.Operating
+    Some(_), ObserverCeiling | None, _ -> ticket_rule.Watching
+  }
+}
+
+/// The ticket the open thread draws now: its last read, or the board's row.
+fn open_ticket(model: Model) -> Option(#(ticket_rule.Opened, board.Ticket)) {
+  case model.ticket {
+    Some(opened) ->
+      case ticket_rule.current(opened, model.boards) {
+        Some(ticket) -> Some(#(opened, ticket))
+        None -> None
+      }
+    None -> None
+  }
+}
+
+/// A press on a control, with the text of an answer when the control is one and
+/// empty otherwise. The authority is derived again here, at the press: the page
+/// must be connected and hold the capability at the Operator ceiling, and the
+/// control must be one the daemon lists for the ticket as it now stands. A press
+/// that fails either asks nothing.
+fn ticket_pressed(
+  model: Model,
+  control: ticket_rule.Control,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  // The open ticket, the page's connection and its standing together say whether
+  // this page may act at all; only then is the control itself judged.
+  case open_ticket(model), model.status, ticket_standing(model) {
+    Some(#(opened, ticket)), Connected, ticket_rule.Operating ->
+      case ticket_rule.allowed(ticket, ticket_rule.Operating, control) {
+        True -> ticket_stepped(model, ticket_rule.press(opened, control), text)
+        False -> #(model, effect.none())
+      }
+    Some(_), Connected, ticket_rule.Watching
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+/// What the rule made of a press: a confirmation to draw, an act to send, or
+/// nothing.
+fn ticket_stepped(
+  model: Model,
+  step: ticket_rule.Press,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  case step {
+    ticket_rule.Confirming(next) -> #(
+      Model(..model, ticket: Some(next)),
+      effect.none(),
+    )
+    ticket_rule.Send(next, sent) -> ticket_acted(model, next, sent, text)
+    ticket_rule.Nothing -> #(model, effect.none())
+  }
+}
+
+/// The thread to show for a press on a row: the one already open when the row
+/// is its own, so a re-press keeps what is out and only reads again, and a new
+/// one otherwise.
+fn thread_reopened(
+  held: Option(ticket_rule.Opened),
+  key: ticket_rule.Key,
+) -> ticket_rule.Opened {
+  case held {
+    Some(opened) if opened.key == key -> opened
+    Some(_) | None -> ticket_rule.open(key)
+  }
+}
+
+/// The press on a confirmation. It goes through the same gate as a press on a
+/// control: the page must be connected and operate, the thread must be the one
+/// the confirmation was drawn for, and the act must still be listed for the
+/// ticket as it now stands. A confirmation that fails any of these sends
+/// nothing.
+fn ticket_confirmed(
+  model: Model,
+  key: ticket_rule.Key,
+  control: ticket_rule.Control,
+) -> #(Model, Effect(Msg)) {
+  // The open ticket, the page's connection and its standing say whether this
+  // page may act at all; only then is the confirmation itself judged.
+  case open_ticket(model), model.status, ticket_standing(model) {
+    Some(#(opened, ticket)), Connected, ticket_rule.Operating ->
+      case
+        opened.key == key
+        && opened.confirm == ticket_rule.Asked(control)
+        && ticket_rule.allowed(ticket, ticket_rule.Operating, control)
+      {
+        True ->
+          case ticket_rule.confirmed(opened) {
+            ticket_rule.Send(next, sent) -> ticket_acted(model, next, sent, "")
+            ticket_rule.Confirming(_) | ticket_rule.Nothing -> #(
+              model,
+              effect.none(),
+            )
+          }
+        False -> #(model, effect.none())
+      }
+    Some(_), Connected, ticket_rule.Watching
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+/// An answer from the thread's form. An empty answer asks nothing, and one past
+/// the box's limit is refused here in words. Past that the daemon is the
+/// authority: an answer to a question that has since changed is refused there.
+fn ticket_answered(
+  model: Model,
+  seq: Int,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  // The box's own limits are judged before the press is.
+  case string.trim(text), string.length(text) > ticket_thread.answer_limit {
+    "", _ -> #(model, effect.none())
+    _, True -> #(
+      Model(
+        ..model,
+        ticket: option.map(model.ticket, fn(opened) {
+          ticket_rule.Opened(
+            ..opened,
+            notice: Some(ticket_rule.Refused(
+              "That answer is longer than the box allows.",
+            )),
+          )
+        }),
+      ),
+      effect.none(),
+    )
+    _, False -> ticket_pressed(model, ticket_rule.Answer(seq), text)
+  }
+}
+
+/// Sends the act through the capability the page holds, from the daemon's own
+/// task, and answers `TicketActSettled`. The text is the answer's and is empty
+/// for any other act.
+fn ticket_acted(
+  model: Model,
+  opened: ticket_rule.Opened,
+  control: ticket_rule.Control,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  let model = Model(..model, ticket: Some(opened))
+  let key = opened.key
+
+  // A page with no projects capability has nothing to send through.
+  case model.start.projects {
+    Some(Projects(answer:, close:, stop:, retry:, ..)) -> #(model, {
+      use dispatch <- effect.from
+      let settle = fn(outcome) {
+        dispatch(TicketActSettled(key, control, outcome))
+      }
+
+      // Each act goes through its own capability, and each answer is read into
+      // the rule's one outcome.
+      case control {
+        ticket_rule.Answer(seq) ->
+          answer(key.project, key.ticket, seq, text, fn(told) {
+            settle(case told {
+              feed.Recorded -> feed.Acted
+              feed.Refused(code:) -> feed.Declined(code)
+            })
+          })
+        ticket_rule.Close ->
+          close(key.project, key.ticket, fn(told) {
+            settle(case told {
+              feed.Closed -> feed.Acted
+              feed.NotClosed(code:) -> feed.Declined(code)
+            })
+          })
+        ticket_rule.Retry -> retry(key.project, key.ticket, settle)
+        ticket_rule.Stop -> stop(key.project, key.ticket, settle)
+      }
+    })
+    None -> #(model, effect.none())
+  }
+}
+
 /// The boards a read gave. A board set equal to the one held changes nothing; a
 /// new one replaces it, and an open ticket is read again when its project's board
 /// has moved past the revision its detail was read at.
@@ -3454,19 +4878,33 @@ fn boards_heard(
   // Equal boards mean the revision did not move, because a revision is part of
   // what a decoded board holds.
   case boards == model.boards {
-    True -> #(model, effect.none())
+    True -> #(arrived(model, landing_rule.BoardsSource), effect.none())
     False -> {
-      let model = Model(..model, boards:)
+      // The boards are stored before the round hears of them, so a ticket they
+      // hold is part of what the round decides by.
+      let model = arrived(Model(..model, boards:), landing_rule.BoardsSource)
 
       // A ticket page is refreshed only when it is open and stale, so a board
-      // that moved elsewhere costs the open page nothing.
-      case model.pane {
-        Ticketed(open) ->
+      // that moved elsewhere costs the open page nothing. The same holds for
+      // the inbox's ticket thread.
+      case model.pane, model.ticket {
+        Ticketed(open), _ ->
           case ticket_is_stale(boards, open) {
             True -> reading_ticket(model, open.project, open.ticket)
             False -> #(model, effect.none())
           }
-        NewSession | SessionList | Relayed(_) -> #(model, effect.none())
+        NewSession, Some(opened)
+        | SessionList, Some(opened)
+        | Relayed(_), Some(opened)
+        ->
+          case ticket_rule.stale(opened, boards) {
+            True -> reading_ticket_thread(model, opened.key)
+            False -> #(model, effect.none())
+          }
+        NewSession, None | SessionList, None | Relayed(_), None -> #(
+          model,
+          effect.none(),
+        )
       }
     }
   }
@@ -3750,14 +5188,34 @@ fn following(model: Model, listing: Listing) -> Effect(Msg) {
 /// is gone from the page, and a closed page keeps the last list it drew with
 /// the notice beside it, as a session's page keeps its last capture.
 fn answered(model: Model, listing: Listing) -> Model {
+  // Only a list that was read changes the groups; an unread one changes
+  // nothing and a closed page keeps what it drew.
   case listing {
-    Listed(entries:) ->
-      Model(
-        ..model,
-        groups: sessions.grouped(list.take(entries, sessions.listed_limit)),
-        now: model.start.now(),
-        status: Connected,
-      )
+    Listed(entries:) -> {
+      let listed =
+        Model(
+          ..model,
+          groups: sessions.grouped(list.take(entries, sessions.listed_limit)),
+          now: model.start.now(),
+          status: Connected,
+        )
+
+      // The list says which of the reads that follow it the page will ask, and
+      // the round waits for those and decides when the last has answered.
+      let #(round, close) =
+        landing_rule.listed(
+          listed.round,
+          activity: activity_reading(listed),
+          summary: summary_reading(listed),
+          feed: feed_reading(listed),
+        )
+
+      concluded(Model(..listed, round:), close)
+    }
+
+    // A list that could not be read is no answer to wait on: the reads that
+    // depend on it cannot be known to be due, and the timer reads again. The
+    // round stays open, so the first list that is read decides with the rest.
     Unread -> model
     Closed(ending:) -> Model(..model, status: Ended(ending:))
   }
@@ -3898,11 +5356,12 @@ pub fn view(model: Model) -> Element(Msg) {
   shell.view(
     shell.Home,
     home_bar.with(
-      title: case model.pane {
-        NewSession -> "New session"
-        SessionList -> "Sessions"
-        Ticketed(_) -> "Ticket"
-        Relayed(_) -> "Session"
+      title: case model.pane, landed_inbox(model) {
+        NewSession, True | SessionList, True -> "Inbox"
+        NewSession, False -> "New session"
+        SessionList, False -> "Sessions"
+        Ticketed(_), _ -> "Ticket"
+        Relayed(_), _ -> "Session"
       },
       who: home_bar.account(
         model.name,
@@ -3913,6 +5372,10 @@ pub fn view(model: Model) -> Element(Msg) {
       tone: status_tone(model.status),
       notice: ended.home(ended_ending(model.status)),
       trailing: admin_offer(model),
+      needing: case landed_inbox(model) {
+        True -> needing_count(model)
+        False -> 0
+      },
     ),
     shell_sidebar(model),
     [
@@ -4077,6 +5540,1467 @@ fn worker_press(model: Model, session: String) -> Option(Msg) {
 /// is the new session's, and the list otherwise. Both sit at `table_path`, so the
 /// admission is the same for both and no path moves.
 fn centre_body(model: Model) -> Element(Msg) {
+  case landed_inbox(model) {
+    True -> inbox_page(model)
+    False -> centre_pane(model)
+  }
+}
+
+/// The running sessions the page lists that the daemon's last activity read
+/// answered for, as the inbox's threads. A report for a session the page's own
+/// list does not hold is not drawn: the list is what the daemon authorized, and
+/// a saved session has no report to read.
+fn inbox_threads(model: Model) -> List(inbox_rule.Thread) {
+  list.filter_map(listing.entries(model.groups), fn(entry) {
+    case entry.residency {
+      Live ->
+        dict.get(model.reports, entry.id)
+        |> result.map(thread_of(entry, _))
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> Error(Nil)
+    }
+  })
+}
+
+/// One session as the inbox draws it, from its catalogue row and a report.
+fn thread_of(entry: Entry, report: sessions.Report) -> inbox_rule.Thread {
+  inbox_rule.Thread(
+    id: entry.id,
+    name: sessions.label(entry),
+    workspace: entry.workspace,
+    report:,
+  )
+}
+
+/// The threads the inbox draws: the fresh read's, and the selected thread's kept
+/// report when the fresh read omits it. Only the groups and the reading pane
+/// use it; counts and the landing use `inbox_threads`.
+fn drawn_threads(model: Model) -> List(inbox_rule.Thread) {
+  let fresh = inbox_threads(model)
+
+  // The kept report stands in only for a thread the fresh read left out.
+  case model.shown {
+    Some(#(id, report)) ->
+      case list.any(fresh, fn(thread) { thread.id == id }) {
+        True -> fresh
+        False ->
+          case
+            list.find(listing.entries(model.groups), fn(entry) {
+              entry.id == id && entry.residency == Live
+            })
+          {
+            Ok(entry) -> list.append(fresh, [thread_of(entry, report)])
+            Error(Nil) -> fresh
+          }
+      }
+    None -> fresh
+  }
+}
+
+/// Whether a catalogue summary is coming: the page reads the feed and its list
+/// holds a saved session, which is the one kind the page reads a summary for.
+/// A list with no running session leaves the centre undecided while one is due,
+/// because after a restart that summary is what says whether something waits.
+fn summary_due(model: Model) -> Bool {
+  case model.start.attention {
+    Some(_) ->
+      list.any(listing.entries(model.groups), fn(entry) {
+        entry.residency == sessions.Saved
+      })
+    None -> False
+  }
+}
+
+/// The activity read the list started: due when the list holds a running
+/// session, because `observing` asks nothing for a page with none.
+fn activity_reading(model: Model) -> landing_rule.Reading {
+  case running_sessions(model) {
+    0 -> landing_rule.NotDue
+    _ -> landing_rule.Due
+  }
+}
+
+/// The summary read the list started, due as `summary_due` says.
+fn summary_reading(model: Model) -> landing_rule.Reading {
+  case summary_due(model) {
+    True -> landing_rule.Due
+    False -> landing_rule.NotDue
+  }
+}
+
+/// The feed read the list started: due when the page reads the feed and the list
+/// holds a running session, since `attending` asks the feed for those alone.
+fn feed_reading(model: Model) -> landing_rule.Reading {
+  case model.start.attention, running_sessions(model) {
+    None, _ | Some(_), 0 -> landing_rule.NotDue
+    Some(_), _ -> landing_rule.Due
+  }
+}
+
+/// Whether the inbox has anything to show: a thread drawn from a report, or an
+/// ask, stuck strand or find from the feed or the catalogue.
+fn inbox_has_content(model: Model) -> Bool {
+  drawn_threads(model) != [] || something_waits(model)
+}
+
+/// What the first round has gathered, as the landing rule reads it: the reports
+/// of the running sessions, and what waits in the feed, the catalogue and the
+/// boards. Something waiting in the feed or the catalogue lands on the inbox even
+/// when no session runs, which is a restart with an approval pending.
+fn picture(model: Model) -> landing_rule.Picture {
+  let tally = attention_rule.tally(standings(model))
+
+  landing_rule.Picture(
+    reports: list.map(inbox_threads(model), fn(thread) { thread.report }),
+    needing: tally.needing,
+    finds: tally.finds,
+    tickets: waiting_tickets(model),
+  )
+}
+
+/// The model once a first-round read has answered: the round records it and,
+/// if it was the last one due, the centre is decided by what the round gathered.
+/// A read that answers when the round is complete, or after the person chose a
+/// centre, changes no centre.
+fn arrived(model: Model, source: landing_rule.Source) -> Model {
+  let #(round, close) = landing_rule.answer(model.round, source)
+
+  concluded(Model(..model, round:), close)
+}
+
+/// The model once a round has taken an answer. Only the answer that closes the
+/// round decides, and only for a page whose centre is still `Awaiting`.
+fn concluded(model: Model, close: landing_rule.Close) -> Model {
+  case close, model.centre_choice {
+    landing_rule.Closes, Awaiting ->
+      Model(
+        ..model,
+        centre_choice: Decided(case landing_rule.landing(picture(model)) {
+          inbox_rule.Inbox -> InboxCentre
+          inbox_rule.Form -> FormCentre
+        }),
+      )
+    landing_rule.Closes, Decided(_) | landing_rule.Continues, _ -> model
+  }
+}
+
+/// Applies the daemon's answer to the activity read. The reports, and so the
+/// states and the headline's count, are the fresh answer alone. The one
+/// exception is the thread the pane shows, whose last report is kept in `shown`
+/// when one read leaves it out and its session is still listed, since a slow
+/// session is not a gone one. The answer takes part in the first round (`arrived`)
+/// and fixes the default thread (`settled_selection`); no later answer changes
+/// the centre.
+fn observed(model: Model, rows: List(#(String, sessions.Report))) -> Model {
+  let fresh = dict.from_list(rows)
+  let read =
+    Model(
+      ..model,
+      activity: dict.map_values(fresh, fn(_, report) { report.activity }),
+      reports: fresh,
+      shown: shown_report(model, fresh),
+    )
+
+  let settled = Model(..read, selected: settled_selection(read))
+
+  arrived(settled, landing_rule.ActivitySource)
+}
+
+/// The report to keep for the selected thread: its fresh one, or else the one
+/// kept before while its session is still a running row of the page's list.
+fn shown_report(
+  model: Model,
+  fresh: Dict(String, sessions.Report),
+) -> Option(#(String, sessions.Report)) {
+  case selected_session(model.selected) {
+    None -> None
+    Some(id) ->
+      case dict.get(fresh, id) {
+        Ok(report) -> Some(#(id, report))
+        Error(Nil) ->
+          case still_running(model, id) {
+            True -> previous_report(model, id)
+            False -> None
+          }
+      }
+  }
+}
+
+/// The last report the page held for `id`: the previous read's, or the one
+/// kept for it already.
+fn previous_report(
+  model: Model,
+  id: String,
+) -> Option(#(String, sessions.Report)) {
+  case dict.get(model.reports, id), model.shown {
+    Ok(report), _ -> Some(#(id, report))
+    Error(Nil), Some(#(held, _) as kept) if held == id -> Some(kept)
+    Error(Nil), Some(_) | Error(Nil), None -> None
+  }
+}
+
+/// Whether the page's own list still shows `id` as a running session.
+fn still_running(model: Model, id: String) -> Bool {
+  list.any(listing.entries(model.groups), fn(entry) {
+    entry.id == id && entry.residency == Live
+  })
+}
+
+/// The session a selection names, if it names one.
+fn selected_session(selection: Selection) -> Option(String) {
+  case selection {
+    Unchosen -> None
+    Defaulted(session:) | Pressed(session:) -> Some(session)
+  }
+}
+
+/// The selection after a read: a pressed or defaulted thread that is still
+/// listed stands, and anything else becomes the first thread as a default, or
+/// nothing when there is none. A default is therefore fixed at the first read
+/// that has a thread, and a thread that later outranks it does not move it.
+fn settled_selection(model: Model) -> Selection {
+  let groups = model_groups(model)
+  let chosen = inbox_rule.selection(groups, selected_session(model.selected))
+
+  // A press that still stands stays a press; any other thread shown is a
+  // default, so the narrow screen can keep its pane hidden.
+  case chosen, model.selected {
+    Some(id), Pressed(held) if held == id -> Pressed(id)
+    Some(id), _ -> Defaulted(id)
+    None, _ -> Unchosen
+  }
+}
+
+/// Whether the centre is the inbox: the pane is the composer's or the list's
+/// and the centre was decided to be the inbox. A ticket's page and a relayed
+/// session are the centre's whole subject.
+fn landed_inbox(model: Model) -> Bool {
+  case model.pane, model.centre_choice {
+    NewSession, Decided(InboxCentre) | SessionList, Decided(InboxCentre) -> True
+    Ticketed(_), _
+    | Relayed(_), _
+    | NewSession, Awaiting
+    | SessionList, Awaiting
+    | NewSession, Decided(FormCentre)
+    | SessionList, Decided(FormCentre)
+    | NewSession, Decided(ListCentre)
+    | SessionList, Decided(ListCentre)
+    -> False
+  }
+}
+
+/// Whether the feed or the catalogue says something waits, an approval, an ask,
+/// a stuck strand or a find. A session that runs does not count by running.
+fn something_waits(model: Model) -> Bool {
+  let tally = attention_rule.tally(standings(model))
+  tally.needing + tally.finds + waiting_tickets(model) > 0
+}
+
+/// How many project tickets the last board read holds as waiting on a person.
+/// They count toward landing on the inbox, as an ask does.
+fn waiting_tickets(model: Model) -> Int {
+  list.length(ticket_rule.waiting(model.boards))
+}
+
+/// The running session whose thread the pane shows when its activity says an
+/// approval is pending, which is the one session whose evidence the page reads.
+fn approval_session(model: Model) -> Option(String) {
+  let groups = model_groups(model)
+  let shown = inbox_rule.selection(groups, selected_session(model.selected))
+
+  // Only a thread whose activity word is an approval has evidence to read.
+  case shown {
+    Some(id) ->
+      case dict.get(model.reports, id) {
+        Ok(sessions.Report(activity: NeedsYou, ..)) -> Some(id)
+        Ok(_) | Error(Nil) -> None
+      }
+    None -> None
+  }
+}
+
+/// Starts the reads of the shown session that its thread draws: its pending
+/// approvals and its brief. Both return at once and answer later. The model
+/// comes back with the time the brief read was started, which the next read
+/// counts from.
+fn approving(
+  model: Model,
+  trigger: brief_rule.Trigger,
+) -> #(Model, Effect(Msg)) {
+  let #(model, brief) = briefing(model, trigger)
+  #(model, effect.batch([approval_read(model), brief]))
+}
+
+/// The session whose brief the open thread's pane draws, or nothing when the
+/// pane has none to draw. An ask's pane draws the coordinator and where the
+/// session stopped, and a session's thread draws its approval's peer messages,
+/// its latest message and steps, or its review's last command. A stuck strand,
+/// a find, a ticket, a failed run and a session with nothing to say draw no
+/// brief, so none is read for them, and no thread that is not open is read.
+fn brief_session(model: Model) -> Option(String) {
+  // An open item thread decides first, then an open ticket, then the session
+  // thread the list shows.
+  case model.item.key, model.ticket {
+    Some(key), _ ->
+      case attention_rule.find_item(current_items(model), key) {
+        Some(attention_rule.AskItem(session:, ..)) -> Some(session)
+        Some(attention_rule.FindItem(..))
+        | Some(attention_rule.StuckItem(..))
+        | None -> None
+      }
+    None, Some(_) -> None
+    None, None -> {
+      let groups = model_groups(model)
+      let shown = inbox_rule.selection(groups, selected_session(model.selected))
+
+      // A session thread draws a brief for every kind but a failed or settled one.
+      case option.map(shown, dict.get(model.reports, _)) {
+        Some(Ok(report)) ->
+          case inbox_rule.kind(report) {
+            inbox_rule.Failed | inbox_rule.Settled -> None
+            inbox_rule.ApprovalPending | inbox_rule.Idle | inbox_rule.Working ->
+              shown
+          }
+        Some(Error(Nil)) | None -> None
+      }
+    }
+  }
+}
+
+/// Whether a session's thread is an approval whose evidence the page has not
+/// received. Its brief waits for the evidence, because the time its peer
+/// messages are counted from is the approval's raise time.
+fn evidence_awaited(model: Model, session: String) -> Bool {
+  case dict.get(model.reports, session), dict.get(model.evidence, session) {
+    Ok(sessions.Report(activity: NeedsYou, ..)), Error(Nil) -> True
+    _, _ -> False
+  }
+}
+
+/// Starts the read of the open thread's session's brief and returns at once; the
+/// answer arrives later as `BriefRead`. The time after which peer messages are
+/// wanted is the raise time of the session's oldest pending approval, so a
+/// session whose approval evidence has not arrived waits for it: a read made
+/// before it would carry messages the thread's label does not describe. A page
+/// that reads no feed, one that has not connected or has ended, and a thread
+/// that has no brief to draw ask nothing, and so does a thread whose last read
+/// is too recent (`brief_rule.due`).
+fn briefing(
+  model: Model,
+  trigger: brief_rule.Trigger,
+) -> #(Model, Effect(Msg)) {
+  // Only a connected page that reads the feed, with a thread open that has a
+  // brief to draw, reads one.
+  case model.start.attention, model.status, brief_session(model) {
+    Some(reads), Connected, Some(session) -> {
+      let since = brief_since(model, session)
+      let now = model.start.now()
+      let last = option.from_result(dict.get(model.brief_reads, session))
+
+      // The read waits for the evidence and for its own turn.
+      case
+        evidence_awaited(model, session),
+        brief_rule.due(last, now, since, trigger)
+      {
+        False, True -> #(
+          Model(
+            ..model,
+            brief_reads: dict.insert(
+              model.brief_reads,
+              session,
+              brief_rule.Read(started: now, since:),
+            ),
+          ),
+          effect.from(fn(dispatch) {
+            reads.brief(session, since, fn(read) {
+              dispatch(BriefRead(session, since, read))
+            })
+          }),
+        )
+        True, _ | False, False -> #(model, effect.none())
+      }
+    }
+    Some(_), Connected, _
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+/// The time after which a session's peer messages are wanted: the oldest raise
+/// time among the pending approvals the page holds for it, or zero. An approvals
+/// read that failed or has not answered says nothing, so the time of the last
+/// brief read stands: a flapping read would otherwise swing the time to zero and
+/// back, and each swing would ask for another brief before `brief_rule.due`'s
+/// pacing allowed it.
+fn brief_since(model: Model, session: String) -> Int {
+  case dict.get(model.evidence, session) {
+    Ok(approval_evidence.Seen(evidence:)) ->
+      approval_evidence.oldest_raised(evidence) |> option.unwrap(0)
+    Ok(approval_evidence.Unseen(_)) | Error(Nil) ->
+      case dict.get(model.brief_reads, session) {
+        Ok(brief_rule.Read(since:, ..)) -> since
+        Error(Nil) -> 0
+      }
+  }
+}
+
+/// Starts the read of the shown session's pending approvals and returns at
+/// once; the answer arrives later as `ApprovalsRead`. A page that reads no
+/// feed, one that has not connected or has ended, and a thread with no approval
+/// ask nothing.
+fn approval_read(model: Model) -> Effect(Msg) {
+  // A page that reads the feed and shows an approval's thread asks for its
+  // evidence once it has connected.
+  case model.start.attention, model.status, approval_session(model) {
+    Some(reads), Connected, Some(session) -> {
+      use dispatch <- effect.from
+      reads.approvals(session, fn(read) {
+        dispatch(ApprovalsRead(session, read))
+      })
+    }
+    Some(_), Connected, None
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> effect.none()
+  }
+}
+
+/// The words a Retry sends the stuck strand. They are the page's own, fixed, and
+/// the live rail's Retry sends the same ones (`thread_send.retry_prompt`).
+const retry_words = thread_send.retry_prompt
+
+/// What the page may do to an attention record, or nothing for a page that
+/// reads the feed and may not act: an observer's, a member's.
+fn acting(model: Model) -> Option(Act) {
+  case model.start.attention {
+    Some(reads) -> reads.act
+    None -> None
+  }
+}
+
+/// Every item the last feed read holds, for the sessions the page's list still
+/// holds as running. The rows are taken in the order of the session identity so
+/// two renders of one read agree.
+fn current_items(model: Model) -> List(attention_rule.Item) {
+  let running =
+    list.filter_map(listing.entries(model.groups), fn(entry) {
+      case entry.residency {
+        Live -> Ok(entry.id)
+        sessions.Saved
+        | sessions.Blocked
+        | sessions.FailedStart(_)
+        | sessions.Moving(_) -> Error(Nil)
+      }
+    })
+
+  model.feed
+  |> dict.to_list
+  |> list.filter(fn(entry) { list.contains(running, entry.0) })
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> attention_rule.items
+}
+
+/// The strand a thread's messages go to: the strand that wrote the record, read
+/// from the record when the page has it and from the feed's row otherwise, and
+/// the strand itself for a stuck one. `main` is the fallback, and the gateway
+/// answers a strand that does not exist as `UnknownStrand`.
+fn strand_of(model: Model, key: attention_rule.Key) -> String {
+  case model.item.loaded, key.sort {
+    item_pane.Loaded(item_pane.AskRecord(ask:, ..)), _ -> ask.header.strand
+    item_pane.Loaded(item_pane.FindRecord(find:, ..)), _ -> find.header.strand
+    item_pane.NoRecord, attention_rule.StuckSort
+    | item_pane.Loading, attention_rule.StuckSort
+    | item_pane.Unavailable(_), attention_rule.StuckSort
+    -> key.id
+    item_pane.NoRecord, _
+    | item_pane.Loading, _
+    | item_pane.Unavailable(_), _
+    ->
+      case attention_rule.find_item(current_items(model), key) {
+        Some(attention_rule.AskItem(ask:, ..)) -> ask.strand
+        Some(attention_rule.FindItem(find:, ..)) -> find.strand
+        Some(attention_rule.StuckItem(stuck:, ..)) -> stuck.strand
+        None -> "main"
+      }
+  }
+}
+
+/// Sends what is staged, one step at a time: the answer first, and the note
+/// when the answer is settled. A page that may not act, one that is not
+/// connected and a send already out ask nothing.
+fn sending_item(model: Model) -> #(Model, Effect(Msg)) {
+  case acting(model), model.item.key, model.status, model.item.progress {
+    Some(act), Some(key), Connected, item_pane.Resting
+    | Some(act), Some(key), Connected, item_pane.Settled(_)
+    ->
+      case item_pane.first_step(model.item, strand_of(model, key)) {
+        item_pane.AnswerStep(staged) -> #(
+          Model(..model, item: item_pane.sending(model.item)),
+          {
+            use dispatch <- effect.from
+            act.answer(
+              staged.session,
+              staged.ask,
+              staged.revision,
+              staged.wire,
+              fn(outcome) { dispatch(ItemActed(key, outcome)) },
+            )
+          },
+        )
+        item_pane.NoteStep(session:, strand:, text:) -> #(
+          Model(..model, item: item_pane.sending(model.item)),
+          noting(act, key, session, strand, text),
+        )
+        item_pane.NothingStaged -> #(model, effect.none())
+      }
+    _, _, _, _ -> #(model, effect.none())
+  }
+}
+
+/// The effect that messages a strand with a staged note, whose answer is
+/// `ItemNoteAnswered`.
+fn noting(
+  act: Act,
+  key: attention_rule.Key,
+  session: String,
+  strand: String,
+  text: String,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  act.strand(session, strand, text, operator.Prompt, fn(answer) {
+    dispatch(ItemNoteAnswered(key, answer))
+  })
+}
+
+/// Starts the attention reads for the sessions the page lists and returns at
+/// once: the feed rows of the running ones, in the order the page draws them and
+/// no more than `activity_limit`, and the catalogue's summaries of the saved
+/// ones. Each answer arrives later as `FeedRead` or `SavedRead`, dispatched
+/// from the daemon's task. A page without the capability, and one that has not
+/// connected or has ended, asks nothing.
+fn attending(model: Model) -> Effect(Msg) {
+  // A page that cannot read, one that has not connected and one that ended ask nothing.
+  case model.start.attention, model.status {
+    Some(reads), Connected -> {
+      let entries = listing.entries(model.groups)
+      let live =
+        entries
+        |> list.filter(fn(entry) { entry.residency == Live })
+        |> list.take(sessions.activity_limit)
+        |> list.map(fn(entry) { entry.id })
+      let saved =
+        entries
+        |> list.filter(fn(entry) { entry.residency == sessions.Saved })
+        |> list.take(sessions.listed_limit)
+        |> list.map(fn(entry) { entry.id })
+
+      effect.batch([
+        case live {
+          [] -> effect.none()
+          [_, ..] -> {
+            use dispatch <- effect.from
+            reads.feed(live, fn(rows) { dispatch(FeedRead(rows)) })
+          }
+        },
+        case saved {
+          [] -> effect.none()
+          [_, ..] -> {
+            use dispatch <- effect.from
+            reads.saved(saved, fn(rows) { dispatch(SavedRead(rows)) })
+          }
+        },
+      ])
+    }
+    Some(_), Connecting | Some(_), Ended(_) | None, _ -> effect.none()
+  }
+}
+
+/// What each listed session is known by, for the headline's count: a running
+/// session by its feed row and its activity word, a saved one by the
+/// catalogue's summary. A session whose custody is moving, blocked or failed
+/// to start is left out, because its records are not the page's to read.
+fn standings(model: Model) -> List(attention_rule.Standing) {
+  list.filter_map(listing.entries(model.groups), fn(entry) {
+    // A running session reads its row, a saved one its summary, and the rest are not the page's to count.
+    case entry.residency {
+      Live -> {
+        // An approval is pending when the session's own activity word says so.
+        let approval = case dict.get(model.reports, entry.id) {
+          Ok(sessions.Report(activity: NeedsYou, ..)) -> attention_rule.Pending
+          Ok(_) | Error(Nil) -> attention_rule.NotPending
+        }
+
+        // A running session whose row was not read is counted as not checked.
+        case dict.get(model.feed, entry.id) {
+          Ok(row) -> Ok(attention_rule.Running(approval:, row:))
+          Error(Nil) -> Ok(attention_rule.RunningUnread(approval:))
+        }
+      }
+      sessions.Saved ->
+        case dict.get(model.saved, entry.id) {
+          Ok(saved) -> Ok(attention_rule.SavedCounted(saved:))
+          Error(Nil) -> Ok(attention_rule.SavedUnread)
+        }
+      sessions.Blocked | sessions.FailedStart(_) | sessions.Moving(_) ->
+        Error(Nil)
+    }
+  })
+}
+
+/// The line any refusal leaves on the saved row it was placed on, and nothing
+/// for any other row. The table draws the same note beside its own row, which
+/// is not on screen in the inbox.
+fn saved_refusal(model: Model, session: String) -> Option(Element(Msg)) {
+  case model.note {
+    Some(home_table.Note(
+      place: home_table.Session(id:, ..),
+      notice: notice.Refused(words:),
+    ))
+      if id == session
+    -> Some(notice.line(notice.Refused(words)))
+    Some(_) | None -> None
+  }
+}
+
+/// The saved sessions the catalogue has a summary for, as the rows the inbox
+/// draws for them, in the order the list shows the sessions.
+fn saved_threads(model: Model) -> List(attention_rule.SavedThread) {
+  list.filter_map(listing.entries(model.groups), fn(entry) {
+    case entry.residency, dict.get(model.saved, entry.id) {
+      sessions.Saved, Ok(saved) ->
+        Ok(attention_rule.SavedThread(
+          session: entry.id,
+          name: sessions.label(entry),
+          saved:,
+        ))
+      sessions.Saved, Error(Nil)
+      | Live, _
+      | sessions.Blocked, _
+      | sessions.FailedStart(_), _
+      | sessions.Moving(_), _
+      -> Error(Nil)
+    }
+  })
+}
+
+/// The inbox's attention threads: the rows that wait on the owner, the finds
+/// and the open thread's pane. Nothing on a page that reads no feed.
+fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
+  // A page with no feed capability draws no threads.
+  case model.start.attention {
+    None -> None
+    Some(reads) -> {
+      let items = current_items(model)
+      let now = model.now
+      let selected = model.item.key
+      let row = fn(item) {
+        attention_thread.row(
+          item,
+          now,
+          selected,
+          model.opened,
+          ItemPicked,
+          session_name(model, _),
+        )
+      }
+
+      // A saved session's summary is counted in the headline, so each one that
+      // holds something open is a row the person can act on, after the live ones.
+      let saved = saved_threads(model)
+      let offer =
+        attention_thread.SavedOffer(
+          resume: case model.start.ceiling {
+            OperatorCeiling -> Some(Resuming)
+            ObserverCeiling -> None
+          },
+          resuming: model.resuming,
+          said: fn(session) { saved_refusal(model, session) },
+        )
+      let saved_row = fn(side) {
+        fn(thread) { attention_thread.saved_row(thread, side, now, offer) }
+      }
+
+      Some(
+        inbox_view.Threads(
+          needs: list.append(
+            list.map(attention_rule.needs_you(items), row),
+            list.map(
+              attention_rule.saved_needing(saved),
+              saved_row(attention_thread.SavedNeeding),
+            ),
+          ),
+          tickets: [],
+          reviews: [],
+          finds: list.append(
+            list.map(attention_rule.finds(items), row),
+            list.map(
+              attention_rule.saved_finding(saved),
+              saved_row(attention_thread.SavedFinding),
+            ),
+          ),
+          titles: list.filter_map(dict.to_list(model.evidence), fn(entry) {
+            attention_thread.approval_title(entry.1)
+            |> option.map(fn(nodes) { #(entry.0, nodes) })
+            |> option.to_result(Nil)
+          }),
+          evidence: list.map(dict.to_list(model.evidence), fn(entry) {
+            #(entry.0, attention_thread.evidence(entry.1))
+          }),
+          pane: case model.item.key {
+            None -> None
+            Some(key) ->
+              Some(
+                attention_thread.pane(attention_thread.Offer(
+                  now: model.now,
+                  state: model.item,
+                  item: attention_rule.find_item(items, key),
+                  presses: model.item_presses,
+                  acting: case reads.act {
+                    Some(_) ->
+                      Some(attention_thread.Acting(
+                        stage: ItemStaged,
+                        note: ItemNoted,
+                        unstage: ItemCleared,
+                        send: ItemSent,
+                        close: ItemClosed,
+                        retry: ItemRetried,
+                      ))
+                    None -> None
+                  },
+                  open: Opening,
+                  back: InboxClosed,
+                  session_name: session_name(model, key.session),
+                  brief: shown_brief(model, key.session),
+                )),
+              )
+          },
+        ),
+      )
+    }
+  }
+}
+
+/// The inbox's threads with the project tickets that wait on a person added.
+/// Their rows follow the attention rows in Needs you, and the open ticket's pane
+/// takes the reading pane, which no attention item's pane shares: opening one
+/// closes the other.
+fn with_tickets(
+  model: Model,
+  base: Option(inbox_view.Threads(Msg)),
+) -> Option(inbox_view.Threads(Msg)) {
+  let waiting = ticket_rule.waiting(model.boards)
+  let shown = open_ticket(model)
+
+  // A page with neither feed nor tickets has no threads; any other draws the
+  // feed's, with tickets added.
+  case base, waiting, shown {
+    None, [], None -> None
+    Some(held), _, _ -> Some(ticketed(model, held, waiting, shown))
+    None, _, _ ->
+      Some(ticketed(
+        model,
+        inbox_view.Threads(
+          needs: [],
+          tickets: [],
+          reviews: [],
+          finds: [],
+          pane: None,
+          titles: [],
+          evidence: [],
+        ),
+        waiting,
+        shown,
+      ))
+  }
+}
+
+/// The threads of `held` with the ticket rows appended to what needs the owner,
+/// and the open ticket's pane drawn in place of the pane `held` has, if one is
+/// open.
+fn ticketed(
+  model: Model,
+  held: inbox_view.Threads(Msg),
+  waiting: List(ticket_rule.Waiting),
+  shown: Option(#(ticket_rule.Opened, board.Ticket)),
+) -> inbox_view.Threads(Msg) {
+  let selected = option.map(model.ticket, fn(opened) { opened.key })
+  let standing = ticket_standing(model)
+
+  inbox_view.Threads(
+    ..held,
+    tickets: list.map(
+      ticket_rule.in_lane(waiting, ticket_rule.Answering),
+      fn(each) {
+        ticket_thread.row(
+          each,
+          model.now,
+          selected,
+          model.opened,
+          TicketThreadPicked,
+        )
+      },
+    ),
+    reviews: list.map(
+      ticket_rule.in_lane(waiting, ticket_rule.Reviewing),
+      fn(each) {
+        ticket_thread.row(
+          each,
+          model.now,
+          selected,
+          model.opened,
+          TicketThreadPicked,
+        )
+      },
+    ),
+    pane: case shown {
+      Some(#(opened, ticket)) ->
+        Some(
+          ticket_thread.pane(ticket_thread.Offer(
+            now: model.now,
+            opened:,
+            ticket:,
+            standing:,
+            controls: ticket_rule.controls(ticket, standing),
+            press: TicketControlPressed,
+            answer: TicketAnswerSent,
+            confirm: TicketActConfirmed,
+            keep: TicketActKept,
+            back: InboxClosed,
+            check: None,
+          )),
+        )
+      None -> held.pane
+    },
+  )
+}
+
+/// The inbox, drawn from the page's reports. Its buttons send messages the home
+/// already has: a thread's press shows it (`InboxOpened`), and the open buttons
+/// send what a list row's press sends (`Opening`), so there is one way to open a
+/// session from here and the socket admits no new event.
+fn inbox_page(model: Model) -> Element(Msg) {
+  let groups = model_groups(model)
+  let chosen = inbox_rule.selection(groups, selected_session(model.selected))
+
+  inbox_view.view(
+    inbox_view.Offer(
+      folder: shown_folder(model),
+      groups:,
+      selected: case chosen {
+        Some(id) if model.selected == Pressed(id) -> Some(inbox_view.Pressed(id))
+        Some(id) -> Some(inbox_view.Default(id))
+        None -> None
+      },
+      opening: model.opening,
+      pick: InboxOpened,
+      open: Opening,
+      back: InboxClosed,
+      all_sessions: ShowingList,
+      new_session: case model.start.create {
+        Some(_) -> Some(ShowingNew)
+        None -> None
+      },
+      presses: model.presses,
+      opened: model.opened,
+      field: case model.start.thread_send {
+        Some(_) ->
+          Some(inbox_view.Field(
+            outbox: model.outbox,
+            delivered: model.delivered,
+            submit: ThreadSubmitted,
+          ))
+        None -> None
+      },
+      attention: with_tickets(model, attention_threads(model)),
+      review: review_offer(model),
+      checking: checking_ids(model),
+      sized: sized_reviews(model),
+      dated: dated_threads(model),
+      briefs: fn(session) { shown_brief(model, session) },
+      name_of: session_name(model, _),
+      ask_of: fn(session) { ask_press(model, session) },
+    ),
+  )
+}
+
+/// What the page knows of when each session's thread began. An approval's age is
+/// counted from the raise time of its oldest pending approval, and says
+/// `waiting since` that time; a finished session's from the time of its last
+/// message, and says `finished`; a working session's from the start of the turn
+/// now running, and says how long it has gone on. A session whose data holds no
+/// such time has no entry, and the row and the pane draw none: the page never
+/// words an age the record lacks.
+fn dated_threads(model: Model) -> List(#(String, inbox_view.Dated)) {
+  let now = model.now
+
+  list.filter_map(inbox_threads(model), fn(thread) {
+    case inbox_rule.kind(thread.report) {
+      inbox_rule.ApprovalPending ->
+        case dict.get(model.evidence, thread.id) {
+          Ok(approval_evidence.Seen(evidence:)) ->
+            case approval_evidence.oldest_raised(evidence) {
+              Some(raised) ->
+                Ok(#(
+                  thread.id,
+                  inbox_view.Dated(
+                    age: Some(aged(now - raised)),
+                    moment: Some(inbox_parts.Moment("waiting since", raised)),
+                    state: None,
+                  ),
+                ))
+              None -> Error(Nil)
+            }
+          Ok(approval_evidence.Unseen(_)) | Error(Nil) -> Error(Nil)
+        }
+      inbox_rule.Idle ->
+        case thread.report.last_message_at {
+          Some(at) ->
+            Ok(#(
+              thread.id,
+              inbox_view.Dated(
+                age: Some(aged(now - at)),
+                moment: Some(inbox_parts.Moment("finished", at)),
+                state: None,
+              ),
+            ))
+          None -> Error(Nil)
+        }
+      inbox_rule.Working ->
+        case thread.report.turn_started_at {
+          Some(started) ->
+            Ok(#(
+              thread.id,
+              inbox_view.Dated(
+                age: Some(aged(now - started)),
+                moment: None,
+                state: Some(
+                  "working, " <> thread_words.turn_words(started, now),
+                ),
+              ),
+            ))
+          None -> Error(Nil)
+        }
+      inbox_rule.Failed | inbox_rule.Settled -> Error(Nil)
+    }
+  })
+}
+
+/// A wait as a row's age: its short words, marked when it is an hour or more.
+fn aged(wait: Int) -> inbox_parts.Age {
+  inbox_parts.Age(
+    words: thread_words.short_age(wait),
+    standing: case thread_words.overdue(wait) {
+      True -> inbox_parts.Overdue
+      False -> inbox_parts.Ordinary
+    },
+  )
+}
+
+/// The brief a thread draws for a session: what the page holds of it, with the
+/// peer messages kept only for an approval whose brief was read after that
+/// approval's raise time (`brief_rule.shown`).
+fn shown_brief(model: Model, session: String) -> Option(session_brief.Brief) {
+  // The raise time is the oldest pending approval's, when the page has read one.
+  let raised = case dict.get(model.evidence, session) {
+    Ok(approval_evidence.Seen(evidence:)) ->
+      approval_evidence.oldest_raised(evidence)
+    Ok(approval_evidence.Unseen(_)) | Error(Nil) -> None
+  }
+
+  brief_rule.shown(
+    option.from_result(dict.get(model.briefs, session)),
+    option.from_result(dict.get(model.brief_since, session)),
+    raised,
+  )
+}
+
+/// The press that opens a session's own open ask, when the last feed read holds
+/// one.
+fn ask_press(model: Model, session: String) -> Option(Msg) {
+  list.find_map(current_items(model), fn(item) {
+    case item {
+      attention_rule.AskItem(session: owner, ..) if owner == session ->
+        Ok(ItemPicked(attention_rule.key_of(item)))
+      attention_rule.AskItem(..)
+      | attention_rule.FindItem(..)
+      | attention_rule.StuckItem(..) -> Error(Nil)
+    }
+  })
+  |> option.from_result
+}
+
+/// The session whose thread follows `current` in "To review", or nothing when
+/// `current` is the last one or is not listed there. It is what "Send & next"
+/// moves to.
+fn following_review(model: Model, current: Option(String)) -> Option(String) {
+  case list.key_find(model_groups(model), inbox_rule.ToReview), current {
+    Ok(threads), Some(session) ->
+      threads
+      |> list.map(fn(thread) { thread.id })
+      |> list.drop_while(fn(id) { id != session })
+      |> list.drop(1)
+      |> list.first
+      |> option.from_result
+    Error(Nil), _ | _, None -> None
+  }
+}
+
+/// The inbox's groups: the threads of the last reads, with the idle sessions
+/// whose worktree holds changes under "To review".
+fn model_groups(
+  model: Model,
+) -> List(#(inbox_rule.Group, List(inbox_rule.Thread))) {
+  inbox_rule.grouped_with(drawn_threads(model), reviewing_ids(model))
+}
+
+/// The idle sessions with a last message, as their identity and that message,
+/// in the order the page lists them: the sessions whose tree could be reviewed.
+fn scan_candidates(model: Model) -> List(#(String, String)) {
+  list.filter_map(inbox_threads(model), fn(thread) {
+    case inbox_rule.kind(thread.report), thread.report.last_message {
+      inbox_rule.Idle, Some(message) -> Ok(#(thread.id, message))
+      inbox_rule.Idle, None
+      | inbox_rule.ApprovalPending, _
+      | inbox_rule.Failed, _
+      | inbox_rule.Working, _
+      | inbox_rule.Settled, _
+      -> Error(Nil)
+    }
+  })
+}
+
+/// The sessions listed under "To review": the idle ones with a last message
+/// whose tree is not known to be clean. A page that cannot read a worktree has
+/// no such group, so it lists none, whatever the sessions hold.
+fn reviewing_ids(model: Model) -> List(String) {
+  case review_reader(model) {
+    Some(_) -> review_scan_rule.to_review(scan_candidates(model), model.reviews)
+    None -> []
+  }
+}
+
+/// The sessions under "To review" whose tree has not been read at the message
+/// they say now, which their rows word as being checked.
+fn checking_ids(model: Model) -> List(String) {
+  case review_reader(model) {
+    Some(_) -> review_scan_rule.checking(scan_candidates(model), model.reviews)
+    None -> []
+  }
+}
+
+/// The head of each "To review" row whose tree was read at the session's current
+/// message: the change's size from that read and the number of finds the
+/// attention feed holds for the session. A session not read at its current
+/// message has none, so its row keeps the head of its message.
+fn sized_reviews(model: Model) -> List(#(String, String)) {
+  list.filter_map(scan_candidates(model), fn(candidate) {
+    let #(session, message) = candidate
+
+    // Only a read at the message now shown has a size worth saying.
+    case review_scan_rule.stat_of(model.reviews, session, message) {
+      Some(stat) -> {
+        // The finds are the feed's, which may not have been read yet: then
+        // the row says the size alone.
+        let finds = case dict.get(model.feed, session) {
+          Ok(row) -> list.length(row.finds.items)
+          Error(Nil) -> 0
+        }
+
+        Ok(#(session, review_scan_rule.stat_words(stat, finds)))
+      }
+      None -> Error(Nil)
+    }
+  })
+}
+
+/// How the page reads a worktree, or nothing for a page that may not: an
+/// observer's has no review.
+fn review_reader(
+  model: Model,
+) -> Option(fn(String, fn(Result(review_feed.Review, String)) -> Nil) -> Nil) {
+  case model.start.attention {
+    Some(reads) -> reads.review
+    None -> None
+  }
+}
+
+/// Starts the read that decides the next idle session, when one is due and none
+/// is out. A page that cannot read a worktree, and one that is not connected,
+/// read none.
+fn scanning(model: Model) -> #(Model, Effect(Msg)) {
+  case review_reader(model), model.status {
+    Some(read), Connected ->
+      case
+        review_scan_rule.due(scan_candidates(model), model.reviews, model.now)
+      {
+        Some(#(session, message)) -> #(
+          Model(
+            ..model,
+            reviews: review_scan_rule.started(
+              model.reviews,
+              session,
+              message,
+              model.now,
+            ),
+          ),
+          {
+            use dispatch <- effect.from
+            read(session, fn(result) {
+              dispatch(ReviewScanned(session, message, result))
+            })
+          },
+        )
+        None -> #(model, effect.none())
+      }
+    Some(_), Connecting
+    | Some(_), Ended(_)
+    | None, Connecting
+    | None, Connected
+    | None, Ended(_)
+    -> #(model, effect.none())
+  }
+}
+
+/// Opens the review thread of the session the pane shows when it is "To
+/// review" and the review held is not for it, or is for an older message, and
+/// starts the reads: the worktree and the record of each of its finds. A Send
+/// that is out keeps its review, and a thread already open is not read again.
+fn opening_review(model: Model) -> #(Model, Effect(Msg), OpenRead) {
+  let shown =
+    inbox_rule.selection(model_groups(model), selected_session(model.selected))
+
+  // The message the shown session last said, which its review is read for.
+  let message = case shown {
+    Some(id) ->
+      case dict.get(model.reports, id) {
+        Ok(report) -> Some(option.unwrap(report.last_message, ""))
+        Error(Nil) -> None
+      }
+    None -> None
+  }
+
+  // A Send that is out keeps its review where it is, and so does the receipt of
+  // one that settled, until the agent next speaks. Both are
+  // `ReviewClosed` and `ReviewPrompted`'s only way to find the session: they
+  // carry none, and the Sending guard is what makes them safe, since a close or
+  // a prompt that answers while no Send is out changes nothing.
+  let sending = case model.review.progress {
+    review_pane.Sending(..) -> True
+    review_pane.Resting | review_pane.Settled(_) -> False
+  }
+
+  // A page that may read, a shown thread that is To review and no Send out open the review.
+  case review_reader(model), model.start.attention, shown, message, sending {
+    Some(read), Some(reads), Some(id), Some(said), False ->
+      case list.contains(reviewing_ids(model), id) {
+        False -> #(model, effect.none(), NoFreshRead)
+        True -> {
+          let fresh =
+            model.review.session != Some(id)
+            || model.review.read_for != Some(said)
+
+          // A review that is not yet this session's, or is for an older message, is opened afresh.
+          let held = case fresh {
+            True -> review_pane.opened(id, said)
+            False -> model.review
+          }
+
+          let #(asked, finds) =
+            review_pane.ask_revisions(held, session_finds(model, id))
+          let next =
+            Model(..model, review: asked, review_presses: case fresh {
+              True -> model.review_presses + 1
+              False -> model.review_presses
+            })
+
+          #(
+            next,
+            effect.batch([
+              case fresh {
+                True -> {
+                  use dispatch <- effect.from
+                  read(id, fn(result) { dispatch(ReviewRead(id, result)) })
+                }
+                False -> effect.none()
+              },
+              ..list.map(finds, fn(find) {
+                use dispatch <- effect.from
+                reads.record(id, find, fn(result) {
+                  dispatch(ReviewFindRead(find, result))
+                })
+              })
+            ]),
+            case fresh {
+              True -> FreshRead
+              False -> NoFreshRead
+            },
+          )
+        }
+      }
+    _, _, _, _, _ -> #(model, effect.none(), NoFreshRead)
+  }
+}
+
+/// Whether the scan's re-arm timer is set.
+type Rearm {
+  /// No timer is set.
+  Unscheduled
+
+  /// One is set, and no other is until it fires.
+  Scheduled
+}
+
+/// Sets the timer that starts the scan again, once, after the daemon refused a
+/// read for the credential's allowance. Any other failure waits for the next
+/// list or activity read, since a pause does not mend it. A page whose timer the
+/// runtime has not made, and one with a timer already set, set none.
+fn rearming(model: Model, words: String) -> #(Model, Effect(Msg)) {
+  // Only a refusal for the allowance is mended by waiting.
+  case
+    words == review_scan_rule.busy_words,
+    model.review_timer,
+    model.review_rearm
+  {
+    True, Some(timer), Unscheduled -> #(
+      Model(..model, review_rearm: Scheduled),
+      {
+        use _ <- effect.from
+        let _ =
+          process.send_after(
+            timer,
+            option.map(model.start.attention, fn(reads) {
+              reads.review_pause_ms
+            })
+              |> option.unwrap(0),
+            Nil,
+          )
+        Nil
+      },
+    )
+    True, _, _ | False, _, _ -> #(model, effect.none())
+  }
+}
+
+/// Whether `opening_review` started the read of the open thread's worktree.
+type OpenRead {
+  /// It did, so the daemon's allowance is spent on it and a scan waits.
+  FreshRead
+
+  /// It did not.
+  NoFreshRead
+}
+
+/// An opening and then a scan, for a model whose reads or selection changed. The
+/// opening goes first, and a fresh read of the open thread keeps the scan from
+/// starting beside it: the two would draw on the same allowance, and the one
+/// that lost would be the thread the person is looking at.
+fn reviewing(model: Model) -> #(Model, Effect(Msg)) {
+  let #(opened, open, read) = opening_review(model)
+
+  // A fresh open read holds the scan back, and otherwise the scan goes on.
+  case read {
+    FreshRead -> #(opened, open)
+    NoFreshRead -> {
+      let #(scanned, scan) = scanning(opened)
+      #(scanned, effect.batch([open, scan]))
+    }
+  }
+}
+
+/// The identifiers of a session's open finds, as the feed last read them.
+fn session_finds(model: Model, session: String) -> List(String) {
+  case dict.get(model.feed, session) {
+    Ok(row) -> list.map(row.finds.items, fn(find) { find.id })
+    Error(Nil) -> []
+  }
+}
+
+/// A staging the pane made, kept only by a page that may act.
+fn staged_review(
+  model: Model,
+  state: review_pane.State,
+) -> #(Model, Effect(Msg)) {
+  case acting(model) {
+    Some(_) -> #(Model(..model, review: state), effect.none())
+    None -> #(model, effect.none())
+  }
+}
+
+/// The effect a step of a review's Send asks: a find close at its revision, the
+/// prompt to the session's main strand, or nothing when the send ended.
+fn review_asking(
+  act: Act,
+  session: Option(String),
+  step: review_pane.Step,
+) -> Effect(Msg) {
+  // A step is a find close, the prompt, or nothing more to ask.
+  case session, step {
+    Some(held), review_pane.CloseStep(find:, revision:, closure:) -> {
+      use dispatch <- effect.from
+      act.close(held, find, revision, closure, fn(outcome) {
+        dispatch(
+          ReviewClosed(find, closure, case outcome {
+            Succeeded(words:) -> review_pane.Done(words)
+            Failed(words:) -> review_pane.Refused(words)
+          }),
+        )
+      })
+    }
+    Some(held), review_pane.PromptStep(text:) -> {
+      use dispatch <- effect.from
+      act.strand(held, "main", text, operator.Prompt, fn(answer) {
+        dispatch(ReviewPrompted(answer))
+      })
+    }
+    None, _ | Some(_), review_pane.Halted -> effect.none()
+  }
+}
+
+/// Whether the open review is still drawn: its session is To review, or a Send
+/// is out for it, or a Send has settled and the session has not spoken since. A
+/// session that goes back to work on the prompt keeps its receipt, since its
+/// last message stays what it was while the turn runs, and the receipt goes when
+/// the agent next speaks: the hunks and the staging belong to what it said
+/// before.
+fn review_listed(model: Model, session: String) -> Bool {
+  case model.review.progress {
+    review_pane.Sending(..) -> True
+    review_pane.Settled(_) ->
+      case dict.get(model.reports, session) {
+        Ok(report) ->
+          Some(option.unwrap(report.last_message, "")) == model.review.read_for
+        Error(Nil) -> False
+      }
+    review_pane.Resting -> list.contains(reviewing_ids(model), session)
+  }
+}
+
+/// The open review's pane, for the session whose thread is "To review" and
+/// open, on a page that may read a worktree. A page that may act is handed the
+/// controls; one that may only read draws the files and the finds alone.
+fn review_offer(model: Model) -> Option(inbox_view.Reviewed(Msg)) {
+  case review_reader(model), model.review.session {
+    Some(_), Some(session) ->
+      case review_listed(model, session) {
+        False -> None
+        True ->
+          Some(reviewed_with(
+            session,
+            review_view.pane(review_view.Offer(
+              state: model.review,
+              name: case
+                list.find(inbox_threads(model), fn(thread) {
+                  thread.id == session
+                })
+              {
+                Ok(thread) -> thread.name
+                Error(Nil) -> "this session"
+              },
+              finds: case dict.get(model.feed, session) {
+                Ok(row) -> row.finds.items
+                Error(Nil) -> []
+              },
+              presses: model.review_presses,
+              acting: case acting(model) {
+                Some(_) ->
+                  Some(review_view.Acting(
+                    verdict: ReviewVerdictChosen,
+                    comment: ReviewCommented,
+                    find: ReviewFindStaged,
+                    unstage: ReviewCleared,
+                    send: ReviewSent,
+                  ))
+                None -> None
+              },
+              command: case shown_brief(model, session) {
+                Some(read) -> read.command
+                None -> None
+              },
+              message: review_message(model, session),
+            )),
+          ))
+      }
+    _, _ -> None
+  }
+}
+
+/// The agent's last message under its label, for the review's pane, which draws
+/// it between the counts and the verdict. Nothing when the session said none.
+fn review_message(model: Model, session: String) -> Element(Msg) {
+  case dict.get(model.reports, session) {
+    Ok(sessions.Report(last_message: Some(text), last_message_at: at, ..)) ->
+      case string.trim(text) {
+        "" -> element.none()
+        _ ->
+          html.div([attribute.class("inbox-said")], [
+            brief_view.finished(text, at),
+          ])
+      }
+    Ok(_) | Error(Nil) -> element.none()
+  }
+}
+
+/// The review pane's three parts in the shape the inbox places them.
+fn reviewed_with(
+  session: String,
+  drawn: review_view.Drawn(Msg),
+) -> inbox_view.Reviewed(Msg) {
+  inbox_view.Reviewed(
+    session:,
+    title: drawn.title,
+    body: drawn.body,
+    bar: drawn.bar,
+  )
+}
+
+/// A session's name as the inbox words it: the catalogue's label for a session
+/// the page lists, and the first eight characters of its identity otherwise.
+fn session_name(model: Model, session: String) -> String {
+  case
+    list.find(listing.entries(model.groups), fn(entry) { entry.id == session })
+  {
+    Ok(entry) -> sessions.label(entry)
+    Error(Nil) -> "Session " <> string.slice(session, 0, 8)
+  }
+}
+
+/// The message the "Inbox" control sends: whenever the inbox has a thread to
+/// show and the centre is not the inbox. The centre is never switched for the
+/// person, so this is the way back from the composer or the list. A page with no
+/// thread has no inbox to return to.
+fn inbox_return(model: Model) -> Option(Msg) {
+  case model.pane, landed_inbox(model), inbox_has_content(model) {
+    NewSession, False, True | SessionList, False, True -> Some(ShowingInbox)
+    NewSession, _, _
+    | SessionList, _, _
+    | Ticketed(_), _, _
+    | Relayed(_), _, _
+    -> None
+  }
+}
+
+/// How many running sessions the page lists, which the inbox's headline counts
+/// its answers against.
+fn running_sessions(model: Model) -> Int {
+  list.count(listing.entries(model.groups), fn(entry) {
+    case entry.residency {
+      Live -> True
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> False
+    }
+  })
+}
+
+/// The centre's body when the inbox is not it: the composer, a ticket's page,
+/// a relayed session or the list.
+fn centre_pane(model: Model) -> Element(Msg) {
   case model.pane, model.start.create {
     NewSession, Some(_) -> new_session.view(new_pane(model))
     Ticketed(open), _ -> ticket_page(model, open)
@@ -4095,6 +7019,7 @@ fn centre_body(model: Model) -> Element(Msg) {
         elsewhere_offer(model),
         model.opening,
         model.note,
+        inbox_return(model),
       )
   }
 }
@@ -4143,6 +7068,7 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       open: Opening,
       depart: Composed(composer.OpenedUnsent),
       listing: ShowingList,
+      inbox: inbox_return(model),
     ),
   )
 }
@@ -4528,7 +7454,107 @@ fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
         resume_offer(model),
         archive_offer(model),
         relayed_rows(model),
+        rail_folders(model),
       ))
+  }
+}
+
+/// The rail's folders, drawn when the centre is the inbox and nowhere else.
+/// "Everything, by need" is always first, and each group that holds a thread
+/// follows with its count. The note says how many sessions the counts read.
+fn rail_folders(model: Model) -> Option(sidebar.Folders(Msg)) {
+  // The folders belong to the inbox, so any other centre draws none.
+  case landed_inbox(model) {
+    False -> None
+    True -> {
+      let tally = attention_rule.tally(standings(model))
+
+      // The counts looked at saved sessions only where a catalogue summary
+      // supplied some.
+      let saved = case model.start.attention, tally.from_catalogue {
+        Some(_), found if found > 0 -> inbox_rule.SavedFromCatalogue
+        _, _ -> inbox_rule.SavedUnchecked
+      }
+
+      Some(sidebar.Folders(
+        items: [
+          #(inbox_rule.Everything, Some(0)),
+          ..list.map(folder_counts(model), fn(entry) {
+            #(entry.0, Some(entry.1))
+          })
+        ],
+        current: Some(shown_folder(model)),
+        pick: Some(FolderPicked),
+        note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
+        running: running_sessions(model),
+      ))
+    }
+  }
+}
+
+/// The folders with something in them and their counts, in the rail's order. A
+/// count is the number of rows the group's band draws, so a folder and its band
+/// agree: "Needs you" holds the asks, stuck strands, saved sessions' needs, the
+/// sessions with an approval pending and the tickets that wait on an answer. "To
+/// review" holds the finished sessions and the tickets whose work waits to be
+/// read (`ticket_rule.lane`).
+fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
+  let groups = model_groups(model)
+  let in_group = fn(which) {
+    case list.key_find(groups, which) {
+      Ok(found) -> list.length(found)
+      Error(Nil) -> 0
+    }
+  }
+
+  // The reads the counts are made from: the feed's items, the saved sessions'
+  // summaries and the tickets that wait on a person.
+  let items = current_items(model)
+  let saved = saved_threads(model)
+  let tickets = waiting_tickets(model)
+  let reading =
+    list.length(ticket_rule.in_lane(
+      ticket_rule.waiting(model.boards),
+      ticket_rule.Reviewing,
+    ))
+  let needing =
+    in_group(inbox_rule.NeedsYou)
+    + list.length(attention_rule.needs_you(items))
+    + list.length(attention_rule.saved_needing(saved))
+    + tickets
+    - reading
+  let finds =
+    list.length(attention_rule.finds(items))
+    + list.length(attention_rule.saved_finding(saved))
+
+  list.filter(
+    [
+      #(inbox_rule.Needing, needing),
+      #(inbox_rule.Reviewing, in_group(inbox_rule.ToReview) + reading),
+      #(inbox_rule.Finding, finds),
+      #(inbox_rule.Updating, in_group(inbox_rule.Updates)),
+      #(inbox_rule.Projecting, tickets),
+    ],
+    fn(entry) { entry.1 > 0 },
+  )
+}
+
+/// How many things wait on the owner, as the top bar's pill counts them: the
+/// "Needs you" folder's count.
+fn needing_count(model: Model) -> Int {
+  case list.key_find(folder_counts(model), inbox_rule.Needing) {
+    Ok(count) -> count
+    Error(Nil) -> 0
+  }
+}
+
+/// The folder the list is narrowed to: the chosen one while its group holds
+/// something, and `Everything` once it has emptied, so a list never draws as
+/// blank under a folder the rail no longer offers.
+fn shown_folder(model: Model) -> inbox_rule.Folder {
+  case list.any(folder_counts(model), fn(entry) { entry.0 == model.folder }) {
+    True -> model.folder
+    False -> inbox_rule.Everything
   }
 }
 
@@ -4583,7 +7609,57 @@ fn sidebar_page(model: Model) -> sidebar.Page(Msg) {
       Some(_), _ | _, Some(_) -> Some(ShowingList)
     },
     who: model.name,
+    watching: watching(model),
   )
+}
+
+/// The second line of each running session's row in the rail, in the words of
+/// `watch_rule`: its activity, how many records the live rail pins for it, an
+/// open ask, a tree waiting to be read, and its project. The pinned count is the
+/// feed row's asks and stuck strands and one for a pending approval.
+fn watching(model: Model) -> Dict(String, String) {
+  let reviewing = reviewing_ids(model)
+
+  listing.entries(model.groups)
+  |> list.filter_map(fn(entry) {
+    // Only a session a process runs has a line; the rest are not "Watch live".
+    case entry.residency {
+      Live -> {
+        let activity = dict.get(model.activity, entry.id) |> option.from_result
+
+        // A running session whose feed row was not read pins nothing.
+        let #(asks, stuck) = case dict.get(model.feed, entry.id) {
+          Ok(row) -> #(row.asks.count, row.stuck.count)
+          Error(Nil) -> #(0, 0)
+        }
+
+        // A pending approval is pinned in the rail like an ask.
+        let approval = case activity {
+          Some(NeedsYou) -> 1
+          Some(_) | None -> 0
+        }
+
+        Ok(#(
+          entry.id,
+          watch_rule.words(watch_rule.Facts(
+            activity:,
+            pinned: asks + stuck + approval,
+            asks:,
+            review: case list.contains(reviewing, entry.id) {
+              True -> watch_rule.ToRead
+              False -> watch_rule.NothingToRead
+            },
+            project: option.map(entry.project, creations.folder),
+          )),
+        ))
+      }
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> Error(Nil)
+    }
+  })
+  |> dict.from_list
 }
 
 // What the bar says of the page's ceiling: nothing for an operating page, which
