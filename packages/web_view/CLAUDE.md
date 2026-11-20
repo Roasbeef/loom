@@ -1977,16 +1977,30 @@ sits inside the same card and the stylesheet dresses its options as numbered
 blocks. Each group's title carries its count and a fixed gloss, and
 `lift-note` closes the groups. `lane.Marks` gained `lifted: Dict(String,
 Lifting)` (hold and kind word, drawn as `lifted · Kind` under the row) and
-`times: Dict(String, String)`, the row time for the stream's gutter, empty
-today because no record the page reads carries one. A tool call is a
+`times: Dict(String, Int)`, the row time in Unix ms for the stream's gutter
+(`View.stamps`, built with the pieces by `turns.stamped`, and kept by a sealed
+turn in `Sealed.stamps`), drawn as `<loom-time class="tl-time">` through
+`view/stamp`, which also draws the rail's. A tool line in the running turn's
+fold is a `div.work-item` (always drawn, so a step keeps its element when its
+time arrives) with its own gutter time, and `Marks.holding` (the provider call
+ids of undecided approvals, `approval.Review.call`) tags a pending step
+`approving`, which the stylesheet words `needs approval`. A tool call is a
 `tool-line` (`fold_row.step`), a turn's divider carries `work-ok`,
 `work-failed` or `work-stopped`, and a spawn `spawn-started` or
 `spawn-failed`; the stylesheet draws the outcome word at the right edge, so the
 divider is still one text node. A `Plain` piece with an assistant line is
 wrapped in `div.speech` under a speaker line. `view/stream_head` is the strip
 above the stream (`component.stream_head`, the centre's last child, ordered
-first), with `Head.turn` empty until the page has a turn time; `lifted.Item.at`
-is the rail card's time, empty for the same reason. The composer's line reads
+first), with `Head.turn` the instant the running operation started
+(`core/ids.op_id_timestamp_ms` of the capture's operation id for the strand,
+`component.turn_started`), drawn as `running, turn <loom-elapsed since>` so the
+browser counts it; `lifted.Item.at` is the rail card's time in Unix ms
+(`component.rail_time`: a lane row's stamp, an approval's `raised_at`, an ask's
+or find's `created_at`, a stuck strand's `failed_at`). The live region ends with
+`live.Generating(elapsed_ms, request)`, `generating · 8 s · request 3 of this
+turn`, drawn while the strand's phase is `assistant`; `View.requests`
+(`turns.requests` over the window's blocks) is computed with the pieces, never
+per fragment. The composer's line reads
 `To <session> · <strand> · running`, and a busy strand's hint says what Queue and
 Steer do. A stuck strand's rail card has no Retry button: a send from the rail
 would be a new handler beneath `rail_path`, which an observer's socket already

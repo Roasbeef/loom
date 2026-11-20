@@ -9,8 +9,10 @@
 //// are `session_view`'s. Nothing here decides anything about the session.
 ////
 //// Each piece is a row of the stream: the gutter, a dot, and the piece beside
-//// them. The row's time (`Marks.times`) is drawn in the gutter only for a row
-//// that has one, since no record the page reads carries a time for a row. A
+//// them. The row's time (`Marks.times`) is drawn in the gutter as a
+//// `<loom-time>` only for a row whose records carry one (`turns.stamped`); a
+//// tool line inside the running turn's fold has its own, in a wrapper that is
+//// always drawn so the step keeps its element when the time arrives. A
 //// prose answer is headed by the strand that wrote it. A tool call, a spawn, a
 //// result and a turn's folded work are each one bordered line in the code face
 //// with the outcome as a word at its right edge (`ok`, `failed`, `started`,
@@ -79,6 +81,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -105,6 +108,7 @@ import web_view/view/fold_row
 import web_view/view/lifted
 import web_view/view/live
 import web_view/view/program_card as program_view
+import web_view/view/stamp
 import web_view/view/strip
 
 /// The lane: the page strand's turns, keyed by the engine's identity for
@@ -286,12 +290,16 @@ pub type Marks {
     /// (`row_attribute`), with whether the row needs the owner. A row here
     /// carries a small "lifted" tag, and one that needs the owner is tinted.
     lifted: Dict(String, Lifting),
-    /// The time of a row, worded for the stream's gutter (`13:40`), by the key
-    /// the row is drawn under. The records the page reads carry no time for a
-    /// row, so every page passes an empty dictionary today; a row that has an
-    /// entry draws it in quiet mono in the gutter, and a row without one
-    /// draws nothing there, so no time is ever invented.
-    times: Dict(String, String),
+    /// The time of a row in Unix milliseconds, by the key the row is drawn
+    /// under (`turns.stamped`). A row that has an entry draws it in quiet mono
+    /// in the gutter as a `<loom-time>`, so the browser words it in its own
+    /// zone (`13:40`); a row without one draws nothing there, so no time is
+    /// ever invented.
+    times: Dict(String, Int),
+    /// The provider's ids of the tool calls that wait on an approval nobody has
+    /// decided (`approval.Review.call`). A step whose call is among them says
+    /// `needs approval` at its right edge in place of `running`.
+    holding: Set(String),
   )
 }
 
@@ -311,6 +319,7 @@ pub fn no_marks() -> Marks {
     key: 1,
     lifted: dict.new(),
     times: dict.new(),
+    holding: set.new(),
   )
 }
 
@@ -750,13 +759,35 @@ fn timeline_row(
       },
 
       // The row's time, when the page has one, is the last child, so no
-      // admitted path moves; the stylesheet puts it in the gutter.
-      case dict.get(marks.times, key) {
-        Ok(time) -> html.span([attribute.class("tl-time")], [html.text(time)])
-        Error(Nil) -> element.none()
+      // admitted path moves; the stylesheet puts it in the gutter. The running
+      // turn's row has none of its own: each of its tool lines draws its time,
+      // and the turn's would sit on the first line's.
+      case piece {
+        turns.Work(folding: turns.Open, ..) -> element.none()
+        turns.Work(..)
+        | turns.Plain(..)
+        | turns.Prompt(..)
+        | turns.Spawned(..)
+        | turns.Returned(..)
+        | turns.Nudged(..)
+        | turns.Commentary(..)
+        | turns.Peer(..)
+        | turns.Sibling(..)
+        | turns.Trigger(..)
+        | turns.Missed(..)
+        | turns.Decided(..) -> gutter(marks.times, key)
       },
     ],
   )
+}
+
+// The time of the row drawn under `key`, in the gutter's class, or nothing when
+// the records gave the row none.
+fn gutter(times: Dict(String, Int), key: String) -> Element(message) {
+  case dict.get(times, key) {
+    Ok(at) -> stamp.time(at, "tl-time")
+    Error(Nil) -> element.none()
+  }
 }
 
 /// The attribute a timeline row carries its engine key in, which the live
@@ -920,7 +951,7 @@ fn piece_element(
           [attribute.class("work-items")],
           list.append(
             hidden_line(hidden),
-            work_items(items, draw, session, links, newest),
+            work_items(items, draw, session, links, newest, marks),
           ),
         ),
       ])
@@ -945,7 +976,7 @@ fn piece_element(
     turns.Work(items:, folding: turns.Open, ..) ->
       keyed.div(
         [attribute.class("work open")],
-        work_items(items, draw, session, links, newest),
+        work_items(items, draw, session, links, newest, marks),
       )
 
     // A spawn is a line of the strand that made it: the verb the step words
@@ -1312,6 +1343,7 @@ fn work_items(
   session: String,
   links: Links,
   newest: String,
+  marks: Marks,
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
     // Dispatch on work_items state.
@@ -1320,7 +1352,31 @@ fn work_items(
       turns.Step(key:, ..) | turns.Memory(key:, ..) -> key
     }
 
-    #(key, item_element(item, draw, session, links, newest))
+    // A call that waits on an approval nobody has decided is tagged, and the
+    // stylesheet words its right edge `needs approval` from the tag. Only a
+    // call still pending can be held, so a settled one is never tagged.
+    let held = case item {
+      turns.Step(call:, standing: turns.Pending, ..) ->
+        set.contains(marks.holding, call)
+      turns.Step(..) | turns.Narrated(..) | turns.Memory(..) -> False
+    }
+
+    // The wrapper is always drawn, with the time or without it, so a step that
+    // gains its time when its result commits keeps its element and the open or
+    // closed state the browser holds for it.
+    #(
+      key,
+      html.div(
+        case held {
+          True -> [attribute.class("work-item"), attribute.class("approving")]
+          False -> [attribute.class("work-item")]
+        },
+        [
+          item_element(item, draw, session, links, newest),
+          gutter(marks.times, key),
+        ],
+      ),
+    )
   })
 }
 
@@ -1357,6 +1413,7 @@ fn item_element(
       )
     turns.Step(
       key:,
+      call: _,
       standing:,
       words:,
       detail:,

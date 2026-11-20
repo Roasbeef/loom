@@ -1313,6 +1313,16 @@
   .tl-row{position:relative;min-width:0;padding:5px 0 5px 54px;border-radius:8px;}
   .tl-body{min-width:0;}
   .tl-time{position:absolute;left:0;top:8px;width:44px;color:var(--color-fg-quiet);font:11.5px/1.45 var(--font-mono);}
+  /* A tool line inside the running turn's fold is one `.work-item`: the line and
+     its own time, which sits in the same gutter as the rows' by stepping back
+     the row's 54px padding. A call that waits on an approval nobody has decided
+     says so at its right edge in place of `running`. */
+  .work-item{position:relative;min-width:0;}
+  .work-item > .tl-time{left:-54px;top:5px;}
+  .work-item.approving .tool-line.pending .row-head::after{content:"needs approval";color:var(--color-signal-text);}
+  /* The line under the live region: which request of the turn is generating and
+     for how long, in the stream's quiet face. */
+  .generating{margin:4px 0 0;color:var(--color-fg-quiet);font:12.5px/1.5 var(--font-sans);font-variant-numeric:tabular-nums;}
   .dot{position:absolute;left:34px;top:11px;width:6px;height:6px;margin:0;box-sizing:border-box;border:0;border-radius:50%;background:var(--hue,var(--color-current));transition:box-shadow 120ms;}
   .dot[data-loom-focus]{cursor:pointer;}
   .dot.pulse{animation:pulse 1.4s infinite;}

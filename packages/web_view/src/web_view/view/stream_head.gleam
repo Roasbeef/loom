@@ -21,17 +21,21 @@
 //// engine wrote, so each is a text node and none reaches an attribute. The
 //// dot's colour comes from `Tone`, a closed type, never from the words.
 ////
-//// ## Missing data
+//// ## The turn's time
 ////
-//// The records the page reads carry no time for a turn. `Head.turn` is the
-//// place that time goes: `None` today, which leaves the state's words alone,
-//// and `Some("14m")` draws `running, turn 14m` with no other change.
+//// A running turn's age is `Head.turn`: the instant its operation started,
+//// which the operation's identity carries (`core/ids.op_id_timestamp_ms`). The
+//// strip draws `running, turn 14m` with the age in a `<loom-elapsed since>`
+//// (`web_client/elapsed`), so the browser counts it on and the server draws the
+//// strip again for nothing but a clock. `None` (no operation, or an identity
+//// that does not parse) leaves the state's words alone, and no age is invented.
 ////
 //// ## Flow
 ////
-//// `view` draws the strip, `state_words` joins the state and the turn's time,
-//// and `fact` draws each remaining fact after a separator.
+//// `view` draws the strip, `state` joins the state and the turn's age, and
+//// `fact` draws each remaining fact after a separator.
 
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
@@ -64,10 +68,10 @@ pub type Head {
     /// What the strand is doing, in a few words: `running`, `idle`, `waiting
     /// for a decision`.
     state: String,
-    /// How long the current turn has run, worded (`14m`). No record the page
-    /// reads carries it, so it is `None` today; a later layer fills it and
-    /// the strip draws `, turn 14m` after the state.
-    turn: Option(String),
+    /// The instant the current turn's operation started, in Unix milliseconds
+    /// (`core/ids.op_id_timestamp_ms`), or `None` when no operation runs. The
+    /// strip draws `, turn 14m` after the state and the browser counts it on.
+    turn: Option(Int),
     /// The pinned goal in one line (`goal: Ship it · active · 4k of 9k
     /// tokens`), or `None` when no goal is pinned.
     goal: Option(String),
@@ -80,7 +84,7 @@ pub type Head {
 /// ## Examples
 ///
 /// ```gleam
-/// // stream_head.view(Head("ws-1a6368", "main · loom", Running, "running", None, None), figures, chips)
+/// // stream_head.view(Head("ws-1a6368", "main · loom", Running, "running", Some(1_790_000_000_000), None), figures, chips)
 /// ```
 pub fn view(
   head: Head,
@@ -91,7 +95,7 @@ pub fn view(
     html.span([attribute.class("stream-dot"), tone_class(head.tone)], []),
     html.b([attribute.class("stream-name")], [html.text(head.name)]),
     html.span([attribute.class("stream-fact")], [html.text(head.place)]),
-    fact(state_words(head.state, head.turn)),
+    state(head.state, head.turn),
     case head.goal {
       Some(words) -> fact(words)
       None -> element.none()
@@ -101,18 +105,29 @@ pub fn view(
   ])
 }
 
-/// The state and, when the page has it, the turn's time: `running, turn 14m`.
+/// The state and, when the page has it, the turn's age: `running, turn 14m`,
+/// the age a `<loom-elapsed since>` the browser counts on.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert stream_head.state_words("running", Some("14m")) == "running, turn 14m"
-/// assert stream_head.state_words("idle", None) == "idle"
+/// // stream_head.state("running", Some(1_790_000_000_000))
 /// ```
-pub fn state_words(state: String, turn: Option(String)) -> String {
+pub fn state(words: String, turn: Option(Int)) -> Element(message) {
   case turn {
-    Some(time) -> state <> ", turn " <> time
-    None -> state
+    Some(since) ->
+      html.span(
+        [attribute.class("stream-fact"), attribute.class("stream-sep")],
+        [
+          html.text(words <> ", turn "),
+          element.element(
+            "loom-elapsed",
+            [attribute.attribute("since", int.to_string(since))],
+            [],
+          ),
+        ],
+      )
+    None -> fact(words)
   }
 }
 

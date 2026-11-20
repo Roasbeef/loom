@@ -18,9 +18,11 @@
 ////
 //// A row is a card: a chip with the kind's word, the strand or tool it came
 //// from, and a link to its place in the stream on the first line, then the
-//// row's words. The time the row was raised belongs before the strand
-//// (`Item.at`); no lifted row carries one yet, so it is `None` and the
-//// header says the strand alone.
+//// row's words. The time the row was raised comes before the strand
+//// (`Item.at`), a `<loom-time>` (`view/stamp`) so the browser words it in its
+//// own zone. A row's time is its record's: the entry time of a lane row, an
+//// approval's `raised_at`, an ask's or find's `created_at`, a stuck strand's
+//// `failed_at`. A row whose record carries none says the strand alone.
 ////
 //// A pinned row never folds, and its own button carries no handler. An approval is
 //// decided in the dock, above the composer, under the rules of
@@ -79,6 +81,7 @@ import lustre/element/html
 import lustre/event
 import session_view/attention.{type Lifted}
 import session_view/turns
+import web_view/view/stamp
 
 /// The marker attribute a press is routed by: its value names the row to
 /// scroll to. It is read by `web_client/jump_rule`, which owns the same name.
@@ -104,12 +107,10 @@ pub type Item {
     /// The value of the row's `data-loom-jump`: a transcript row's key, or
     /// `dock_target`. Empty when the row has nowhere to go.
     target: String,
-    /// The time the row was raised, worded for the card's header (`13:40`).
-    /// No lifted row carries a time today, so `items` leaves it `None` and
-    /// the header draws the strand alone; a later layer that reads the time
-    /// from the daemon fills it, and the header draws it before the strand
-    /// without any other change.
-    at: Option(String),
+    /// When the row was raised, in Unix milliseconds, drawn before the source
+    /// in the card's header (`13:40`). `None` for a row whose record carries
+    /// no time, and the header then draws the source alone.
+    at: Option(Int),
   )
 }
 
@@ -184,15 +185,16 @@ pub type Rail(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert lifted.items([], [], lifted.InDock) == []
+/// assert lifted.items([], [], lifted.InDock, fn(_) { None }) == []
 /// ```
 pub fn items(
   pieces: List(turns.Piece),
   lifted: List(Lifted),
   dock: Dock,
+  at: fn(String) -> Option(Int),
 ) -> List(Item) {
   list.map(lifted, fn(row) {
-    Item(lifted: row, target: target(pieces, row, dock), at: None)
+    Item(lifted: row, target: target(pieces, row, dock), at: at(row.key))
   })
 }
 
@@ -536,7 +538,7 @@ fn row(item: Item, rail: Rail(message)) -> Element(message) {
           html.span([attribute.class("lift-kind")], [
             html.text(kind_word(lifted)),
           ]),
-          source(header_words(item.at, source_words(rail, lifted))),
+          source(item.at, source_words(rail, lifted)),
           html.span([attribute.class("lift-head")], [html.text(lifted.head)]),
           decide(lifted, rail.dock),
         ],
@@ -579,16 +581,6 @@ fn act(label: String, press: message) -> Element(message) {
     ],
     [html.text(label)],
   )
-}
-
-/// The header's words after the kind chip: the time and the source joined by
-/// a dot where the row has both, and whichever it has otherwise.
-fn header_words(at: Option(String), from: String) -> String {
-  case at, from {
-    Some(at), "" -> at
-    Some(at), from -> at <> " · " <> from
-    None, from -> from
-  }
 }
 
 /// The class that names a row's kind, from the closed type and never from
@@ -643,12 +635,23 @@ fn press(
   }
 }
 
-/// The words after the kind, or nothing when the row names no source.
-fn source(words: String) -> Element(message) {
-  // An empty source draws no span, so the head follows the kind directly.
-  case words {
-    "" -> element.none()
-    words -> html.span([attribute.class("lift-source")], [html.text(words)])
+/// The header's words after the kind chip: the time and the source joined by
+/// a dot where the row has both, and whichever it has otherwise. Nothing when
+/// the row has neither.
+fn source(at: Option(Int), from: String) -> Element(message) {
+  // An empty header draws no span, so the head follows the kind directly.
+  case at, from {
+    None, "" -> element.none()
+    None, from -> html.span([attribute.class("lift-source")], [html.text(from)])
+    Some(at), "" ->
+      html.span([attribute.class("lift-source")], [
+        stamp.time(at, "lift-time"),
+      ])
+    Some(at), from ->
+      html.span([attribute.class("lift-source")], [
+        stamp.time(at, "lift-time"),
+        html.text(" · " <> from),
+      ])
   }
 }
 

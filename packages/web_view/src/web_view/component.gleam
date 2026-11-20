@@ -150,6 +150,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import lustre
 import lustre/attribute
@@ -1232,6 +1233,16 @@ type View(socket) {
     /// their summaries, and then the window's blocks laid out, derived
     /// with them.
     pieces: List(turns.Piece),
+    /// When each row of `pieces` happened, by the row's key (`turns.stamped`),
+    /// built with the pieces from the window's blocks and the closed turns'
+    /// summaries, which keep their own. The lane draws it in the gutter and
+    /// the rail on its cards, so a tick or a fragment reads it and builds
+    /// nothing.
+    stamps: Dict(String, Int),
+    /// Which request the running turn is generating (`turns.requests`), read
+    /// from `blocks` when the pieces are built, for the line under the live
+    /// region.
+    requests: Int,
     /// The inputs `blocks` and `pieces` were derived from.
     projected: Projected,
     /// The edits the held window carries (`session_view/changes_view`),
@@ -1654,6 +1665,8 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       parked_sealed: dict.new(),
       blocks: [],
       pieces: [],
+      stamps: dict.new(),
+      requests: 1,
       projected: projected_of(shared, Tail, [], Unasked),
       changes: changes_view.empty(),
       worktree: case start.transport.worktree {
@@ -2969,19 +2982,24 @@ fn browsed(
     [] -> scrollback
   }
 
+  let pieces =
+    turns.pieces(
+      blocks,
+      view.strands,
+      turns.Running,
+      turns.Expand(expansion.capped),
+    )
+    |> fold_budget.draw(model.view.folds, dict.new())
+    |> turns.attributed(turns.authors(view.peers))
+
   Model(
     shared: shared_set.scrollback(model.shared, scrollback),
     view: View(
       ..model.view,
       blocks:,
-      pieces: turns.pieces(
-          blocks,
-          view.strands,
-          turns.Running,
-          turns.Expand(expansion.capped),
-        )
-        |> fold_budget.draw(model.view.folds, dict.new())
-        |> turns.attributed(turns.authors(view.peers)),
+      pieces:,
+      stamps: turns.stamped(pieces, blocks),
+      requests: turns.requests(blocks),
     ),
   )
 }
@@ -3788,6 +3806,8 @@ fn overrun(
       ..model.view,
       blocks:,
       pieces:,
+      stamps: turns.stamped(pieces, blocks),
+      requests: turns.requests(blocks),
       folds: [],
       steps: dict.new(),
       earlier: Unheld,
@@ -3867,6 +3887,12 @@ fn fitted_page(
       blocks:,
       pieces: list.append(closed_pieces, window_pieces)
         |> turns.attributed(turns.authors(view.peers)),
+      stamps: list.fold(
+        kept_sealed,
+        turns.stamped(window_pieces, blocks),
+        fn(found, turn) { dict.merge(found, turn.stamps) },
+      ),
+      requests: turns.requests(blocks),
       folds: fitted.folds,
       raised: remembered(model.view.raised, view.cells),
       earlier: earlier_of(model, kept_sealed, window),
@@ -7466,9 +7492,49 @@ pub fn lift(
       pieces,
       attention.lift_all(pieces, model.shared.approvals, rail_records(model)),
       dock,
+      rail_time(model),
     ),
     dock:,
   )
+}
+
+/// When a lifted row was raised, by the row's key: a lane row's entry time
+/// (`View.stamps`), and for the rows of the session's own records the time the
+/// record carries: an approval's `raised_at`, an ask's or find's `created_at`
+/// and a stuck strand's `failed_at`. A record with no time gives none, and the
+/// card's header then names its source alone.
+fn rail_time(model: Model(socket)) -> fn(String) -> Option(Int) {
+  let records =
+    list.flatten([
+      list.filter_map(model.shared.approvals, fn(review) {
+        option.to_result(review.raised_at, Nil)
+        |> result.map(fn(at) { #("approval:" <> review.id, at) })
+      }),
+      case model.view.watching.row {
+        None -> []
+        Some(row) ->
+          list.flatten([
+            list.map(row.asks.items, fn(ask) {
+              #(attention.ask_key(ask.id), ask.created_at)
+            }),
+            list.map(row.finds.items, fn(find) {
+              #(attention.find_key(find.id), find.created_at)
+            }),
+            list.filter_map(row.stuck.items, fn(stuck) {
+              option.to_result(stuck.failed_at, Nil)
+              |> result.map(fn(at) { #(attention.stuck_key(stuck.strand), at) })
+            }),
+          ])
+      },
+    ])
+    |> dict.from_list
+
+  fn(key) {
+    case dict.get(model.view.stamps, key) {
+      Ok(at) -> Some(at)
+      Error(Nil) -> dict.get(records, key) |> option.from_result
+    }
+  }
 }
 
 /// The rail's drawing inputs: what was lifted, which insights the reader has
@@ -8474,7 +8540,17 @@ fn live_rows_of(model: Model(socket)) -> List(live.Row) {
     |> option.unwrap([])
     |> list.map(fn(input) { live.Pending(input) })
   let held = queue_input.retain(model.view.queue_editor, held)
-  list.append(streamed, held)
+
+  // The line that says which request this is stands while a generation runs,
+  // which is the strand's `assistant` phase, after the rows it describes.
+  let generating = case session_model.active_strand_phase(shared) {
+    Some("assistant") -> [
+      live.Generating(elapsed_ms:, request: model.view.requests),
+    ]
+    _ -> []
+  }
+
+  list.flatten([streamed, generating, held])
 }
 
 /// Draws a held row with the page's local editor state.
@@ -9433,8 +9509,19 @@ pub fn marks(model: Model(socket)) -> lane.Marks {
     key: dict.get(model.view.strand_keys, model.shared.active_strand)
       |> result.unwrap(0),
     lifted: dict.new(),
-    times: dict.new(),
+    times: model.view.stamps,
+    holding: held_calls(model),
   )
+}
+
+/// The provider ids of the calls that wait on an undecided approval, which the
+/// lane words `needs approval`. A review that names no call (one with no call
+/// scope, or a child's request on another orchestrator) holds none.
+fn held_calls(model: Model(socket)) -> set.Set(String) {
+  list.filter_map(pending(model), fn(review) {
+    option.to_result(review.call, Nil)
+  })
+  |> set.from_list
 }
 
 /// `marks`, with the rows the rail lifted (`lift`) set on it, so the lane
@@ -9715,7 +9802,7 @@ pub fn stream_head(
         False, Busy -> "running"
         False, Idle -> "idle"
       },
-      turn: None,
+      turn: turn_started(model),
       goal: goal_words(goal(model)),
     ),
     figures.view(
@@ -9735,6 +9822,24 @@ pub fn stream_head(
     ),
     placement.view(model.view.machine, current_code(model)),
   )
+}
+
+/// When the active strand's running operation started, in Unix milliseconds,
+/// read from the minting time its identity carries. A strand with no running
+/// operation, a page that has not read a capture and an identity that does not
+/// parse have none, and the strip then draws no turn age. The age counts from
+/// the daemon's clock reading, so a browser whose clock is wrong shows a wrong
+/// age and never a negative one (`web_client/elapsed`, `since`).
+fn turn_started(model: Model(socket)) -> Option(Int) {
+  use #(_, view) <- option.then(model.shared.captured)
+  use id <- option.then(
+    dict.get(view.operations, model.shared.active_strand)
+    |> option.from_result,
+  )
+
+  ids.parse_op_id(id)
+  |> result.map(ids.op_id_timestamp_ms)
+  |> option.from_result
 }
 
 /// The page's name for its session: the catalogue's label, or the identity's

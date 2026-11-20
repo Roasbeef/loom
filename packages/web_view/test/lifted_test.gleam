@@ -131,6 +131,53 @@ pub fn an_empty_group_draws_nothing_test() {
   assert !string.contains(html, "Needs you")
 }
 
+fn one_card(at: option.Option(Int)) -> String {
+  lifted.Rail(
+    items: [
+      lifted.Item(
+        attention.Lifted(
+          "9.0",
+          attention.FailedTurn,
+          attention.FoldsOnceOpened,
+          "boom",
+        ),
+        "9.0",
+        at,
+      ),
+    ],
+    opened: [],
+    strand: "main",
+    dock: lifted.InDock,
+    names: fn(_) { None },
+    open: None,
+    under: fn(_) { element.none() },
+    offer: fn(_) { lifted.NoOffer },
+    status: "",
+  )
+  |> lifted.view
+  |> element.to_string
+}
+
+// A card's time comes before its source, in the browser's zone, and a card whose
+// record carries none draws the source alone.
+pub fn a_cards_time_comes_before_its_source_test() {
+  assert string.contains(
+    one_card(Some(1_790_030_460_000)),
+    "<span class=\"lift-source\"><loom-time at=\"1790030460000\" class=\"lift-time\" title=\"22:41 UTC\">22:41</loom-time> · main</span>",
+  )
+  let without = one_card(None)
+  assert string.contains(without, "<span class=\"lift-source\">main</span>")
+  assert !string.contains(without, "loom-time")
+}
+
+// The lane's gutter draws the time of every row whose records carry one, as an
+// element the browser words in its own zone, so a row is never given a time the
+// records did not.
+pub fn the_lane_draws_each_rows_time_in_the_gutter_test() {
+  let html = observer(lifting())
+  assert string.contains(html, "class=\"tl-time\" title=\"")
+}
+
 // An approval is decided in the dock under 051's rules. The rail points at the
 // card and has no control that acts: no form, no submit, none of the card's
 // words, and no handler on the pinned row.
@@ -252,7 +299,7 @@ pub fn a_key_with_no_row_is_left_alone_test() {
       attention.FoldsOnceOpened,
       "1 step failed",
     )
-  let items = lifted.items([], [step], lifted.InDock)
+  let items = lifted.items([], [step], lifted.InDock, fn(_) { None })
   assert list.map(items, fn(item) { item.target }) == ["work:7"]
 }
 

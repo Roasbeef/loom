@@ -43,6 +43,12 @@ fn running() -> session_channel.Update {
   lane_fixture.asked(Some(lane_fixture.main_op()))
 }
 
+// The strand is generating, so the page draws the line under the live region
+// (`generating · 8 s · request 3 of this turn`) and a patch carries it.
+fn generating() -> session_channel.Update {
+  session_channel.Auxiliary(protocol.OperationChanged("main", "assistant"))
+}
+
 fn page(updates) {
   component.new(page_fixture.start()) |> component.apply(updates)
 }
@@ -416,9 +422,10 @@ pub fn a_batch_of_fragments_costs_the_tail_of_the_answer_test() {
 
   // A page holding a hundred and fifty rows, and one holding a prompt.
   let full =
-    page([lane_fixture.conversation(301, 450), start])
+    page([lane_fixture.conversation(301, 450), generating(), start])
     |> sizes(generation, fragments)
-  let bare = page([running(), start]) |> sizes(generation, fragments)
+  let bare =
+    page([running(), generating(), start]) |> sizes(generation, fragments)
 
   // The rows the page holds change nothing about a batch's patch, beyond the
   // few bytes an index in the patch's path takes.
@@ -438,7 +445,7 @@ pub fn a_patch_is_bounded_by_the_paragraph_being_written_test() {
   let generation = lane_fixture.generation(2)
   let start = lane_fixture.fragment(generation, "text", "Sentence 0. ")
   let patches =
-    page([lane_fixture.conversation(301, 450), start])
+    page([lane_fixture.conversation(301, 450), generating(), start])
     |> sizes(generation, sentences(120))
   let early = list.take(patches, 30)
   let late = list.drop(patches, 90)
@@ -512,6 +519,48 @@ pub fn the_live_rows_are_plain_values_test() {
     |> element.to_string
   assert string.contains(none, "<span class=\"verb\">Reasoning</span>")
   assert !string.contains(none, "loom-elapsed")
+}
+
+// The line under the live region says which request of the turn is generating,
+// and the browser counts its seconds.
+pub fn the_generating_line_names_the_request_test() {
+  let timed =
+    live.view([live.Generating(Some(8000), 3)], fn(line: Line) {
+      html.text(line.text)
+    })
+    |> element.to_string
+  assert string.contains(
+    timed,
+    "class=\"generating\">generating · <loom-elapsed class=\"elapsed\" offset=\"8000\"></loom-elapsed> · request 3 of this turn</p>",
+  )
+
+  // Before the generation clock starts the line says no time.
+  let untimed =
+    live.view([live.Generating(None, 1)], fn(line: Line) {
+      html.text(line.text)
+    })
+    |> element.to_string
+  assert string.contains(
+    untimed,
+    "class=\"generating\">generating · request 1 of this turn</p>",
+  )
+}
+
+// A strand generating draws the line, after the rows it describes; a strand that
+// is not generating draws none.
+pub fn a_page_draws_the_generating_line_only_while_generating_test() {
+  let generation = lane_fixture.generation(2)
+  let model =
+    page([
+      lane_fixture.phased(running(), "assistant"),
+      lane_fixture.fragment(generation, "text", "Hello, "),
+    ])
+  list.each(pages(model), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, "request 1 of this turn")
+    assert count(drawn, "request 1 of this turn") == 1
+  })
+  assert !string.contains(region(observer(page([running()]))), "generating")
 }
 
 // Closed, the live row is its words and a one-line preview of the latest
