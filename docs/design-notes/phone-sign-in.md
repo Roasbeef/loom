@@ -1,7 +1,11 @@
 # Signing a phone into the web view without a shell on the daemon's box
 
-Status: **PROPOSED**. Written against `main` at `ffdfdeeb9` on 2026-11-20.
-Nothing here is built. A citation names a file and line in that tree; a
+Status: **OPTION 2b CHOSEN** on 2026-11-20 and specified in
+[protocol-change/127](../../protocol-change/127-passkey-sign-in.md). The other
+options remain proposals. Written against `main` at `ffdfdeeb9` on 2026-11-20,
+so a line number in a citation below was true of that tree and not of this one;
+the citations of the current tree are in the protocol change.
+Nothing in the options other than 2b is built. A citation names a file and line in that tree; a
 sentence marked *(inference)* is my reading of code or of Tailscale
 behaviour that I did not run, and the owner should treat it as a question.
 
@@ -18,7 +22,7 @@ starts from a credential the daemon has already issued:
    `Fresh`, for the credential on the control connection
    (`packages/client/src/client/daemon/server.gleam:4651-4670`). The ticket
    is single-use and lives 60 seconds. `loom ui --device` mints the same
-   ticket for ten minutes and draws a QR code (`server.gleam:4676-4700`;
+   ticket for ten minutes and draws a QR code (`server.gleam`;
    `docs/architecture/web-view.md:1936-1940`). Both need a process on the
    box that holds a control credential, so from a phone the owner has to
    open a shell on the box first.
@@ -30,11 +34,11 @@ starts from a credential the daemon has already issued:
    `Resumed`. The home draws no control for it in that case
    (`docs/architecture/web-view.md:1708-1713`).
 3. **The bookmark.** `POST /ui/l/<key>/home` (`server.login_resume`,
-   `server.gleam:1545`) opens a `Resumed` home from a thirty-day login
+   `server.gleam`) opens a `Resumed` home from a thirty-day login
    cookie plus a nonce held in that browser's `localStorage`
    (`web-view.md:1664-1700`). It cannot help a browser that has no login yet.
 4. **The browser claim.** `POST /ui/claim` (`server.claim_submit`,
-   `server.gleam:1649`) turns an invitation token into a login. It is for a
+   `server.gleam`) turns an invitation token into a login. It is for a
    new person, not for the owner, and the owner would need a `loomclaim_`
    token, which `loom` on the box also issues (`web-view.md:1740-1770`).
 
@@ -59,7 +63,7 @@ hand, such as a passkey on the laptop, and no login command on the box.
   listener: its tools can reach `127.0.0.1:<bind port>` unless the session
   runs with `--network off`. Any scheme that trusts something a loopback
   client can write is open to it. This is why the daemon never reads
-  `X-Forwarded-*` (`web-view.md:1942-1950`).
+  `X-Forwarded-*` (`web-view.md`).
 - **Where a sign-in ends.** Every route into a browser ends in
   `ui_login.issue`, which writes one catalogue row of kind `browser` and
   signs a macaroon-style token from the root key
@@ -132,7 +136,7 @@ options are:
    Filesystem permissions on the socket would then replace the loopback
    port as the gate. The daemon cannot listen there today:
    `glisten.bind` accepts an address, not a socket path
-   (`glisten.gleam:325-337`), so this means forking glisten and mist.
+   (`glisten.gleam`), so this means forking glisten and mist.
    That is a large cost for one option.
 3. *Bind the tailnet address and verify with `whois`.* The daemon listens
    on the node's `100.x` address, reads the real peer address, and asks
@@ -149,7 +153,7 @@ process, including a session's agent under `network = "full"`.
 tailnet identity (a header read, or a call to `tailscale whois --json`
 through a spawned process, or the LocalAPI over its unix socket, which needs
 a client for HTTP over a unix socket that `gleam_httpc` is not *(inference)*);
-a route or an extra branch in `server.web_view` (`server.gleam:568`) that
+a route or an extra branch in `server.web_view` (`server.gleam`) that
 calls `ui_login.issue` for the owner; and tests.
 
 **Cost.** Smallest UX of any option, and the only one needing nothing from
@@ -251,7 +255,7 @@ but the resume policy is the form-based one. A passkey page needs
 `connect-src 'self'` (for challenge fetch and assertion post) or a
 two-form flow. It does not need `unsafe-inline`: the script is a served
 asset, as `web_view_resume.js` is. The mermaid child policy at
-`page.gleam:100` uses `sandbox allow-scripts` without `allow-same-origin`,
+`page.gleam` uses `sandbox allow-scripts` without `allow-same-origin`,
 which would give WebAuthn an opaque origin and make it fail; the passkey
 page must not copy that policy. *(inference: I did not run it.)*
 `Permissions-Policy` does not need to be widened for same-origin use, since
@@ -264,7 +268,7 @@ carries one `catalogue_*_schema.gleam` per table); registry calls to add,
 list, authenticate and delete; a challenge table in `ui_sessions` or its
 own actor; three routes (`GET /ui/signin`, `POST` for options and for the
 assertion) with `Sec-Fetch-Site: same-origin` rules as the resume has
-(`ui_http.same_origin_post`, `ui_http.gleam:581`); two pure modules in
+(`ui_http.same_origin_post`, `ui_http.gleam`); two pure modules in
 `web_view/host` for the byte parsing and checks (property-tested on both
 targets, like `host/login`); the kryptos dependency and no FFI; one asset
 script and
@@ -307,7 +311,7 @@ expiry and names it as parent (`ui_socket.gleam:3200-3210` doc, passing
 its own thirty days by minting children.
 
 What remains is that revoking a login does **not** cascade.
-`access.gleam:1477-1497` revokes only the one row, and the `EndLogin` case
+`access.gleam` revokes only the one row, and the `EndLogin` case
 in `ui_sessions` (`:1296-1306`) ends only that login's own pages. A thief
 who mints a child before the owner revokes the parent keeps the child. So
 2c needs a transitive `issued_by` cascade, in the registry and in the page
@@ -353,7 +357,7 @@ request an attacker started.
 and the person decides after seeing which device asks. It adds an
 unauthenticated endpoint that creates pending state, so it needs a hard
 cap on pending requests, a short expiry, and a rate limit like the claim's
-reservation (`root.acquire_claim`, `web-view.md:1750-1754`).
+reservation (`root.acquire_claim`, `web-view.md`).
 
 **What it trusts and the residual risk.** The approving browser and the
 person comparing codes. An attacker who starts a request and persuades the
@@ -418,7 +422,7 @@ owner's ruling (section 4, question 3).
    the rule can read "`Fresh` or the owner's own resumed home", which keeps
    a member's stolen bookmark unable to mint.
 2. **Build the revocation cascade?** Revoking a login does not end the
-   logins it issued (`access.gleam:1477-1497`; `ui_sessions` `EndLogin`,
+   logins it issued (`access.gleam`; `ui_sessions` `EndLogin`,
    `:1296-1306`). 2c is unsafe without a transitive `issued_by` cascade.
    Is that worth building for a stopgap, given passkeys do not need it?
 3. **Should a passkey sign-in be `Fresh`?** If not, a phone signed in with a
