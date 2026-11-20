@@ -109,10 +109,15 @@ fn owner(asked: Asked) -> home.Start {
     resume: fn(_, _) { Nil },
     now: fn() { 7_400_000 },
     activity: fn(_, deliver) {
-      deliver([#("B", sessions.NeedsYou), #("A", sessions.Working)])
+      deliver([
+        #("B", sessions.Report(sessions.Idle, None, [], None, None)),
+        #("A", sessions.Report(sessions.Idle, None, [], None, None)),
+      ])
     },
     rename: None,
     manage: None,
+    thread_send: None,
+    attention: None,
     create: Some(recording(asked)),
     folders: None,
     elsewhere: None,
@@ -187,6 +192,17 @@ fn settle(model: home.Model, dispatched: Subject(home.Msg)) -> home.Model {
 }
 
 // The owner's page after its first read, on the composer where it opens.
+// The owner's page when the daemon says `B` has an approval pending and `A`
+// works: something waits and runs, so the page lands on the inbox.
+fn needing(start: home.Start) -> home.Start {
+  home.Start(..start, activity: fn(_, deliver) {
+    deliver([
+      #("B", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+      #("A", sessions.Report(sessions.Working, None, [], None, None)),
+    ])
+  })
+}
+
 fn opened(start: home.Start) -> home.Model {
   run(home.new(start), home.TimerReady(process.new_subject()))
 }
@@ -609,7 +625,7 @@ pub fn every_composer_handler_is_beneath_the_table_region_test() {
 // that runs the agent and where its code is, and offers a pill for a machine only
 // when it tells rows apart.
 pub fn the_sidebar_groups_tags_and_filters_test() {
-  let model = opened(owner(process.new_subject()))
+  let model = opened(needing(owner(process.new_subject())))
   let html = drawn(model)
 
   // `B` needs the owner, `A` is working, the other running ones are idle and
@@ -618,8 +634,7 @@ pub fn the_sidebar_groups_tags_and_filters_test() {
   assert string.contains(html, "state-working")
   assert string.contains(html, "state-idle")
   assert string.contains(html, "1 saved")
-  assert string.contains(html, "<span class=\"tag-agent\">laptop</span>")
-  assert string.contains(html, "<span class=\"tag-code\">exec · repo</span>")
+  assert string.contains(html, "<span class=\"session-watch\">")
 
   // One executor is in use, so there is a pill for it and one for All; the
   // daemon's own would match every row and is not drawn.
@@ -640,10 +655,34 @@ pub fn the_sidebar_groups_tags_and_filters_test() {
 // The owner's page counts the sessions waiting on a decision on the frame, for
 // the phone's menu button, and draws the banner that names the first.
 pub fn the_phone_banner_names_the_session_that_needs_the_owner_test() {
-  let html = drawn(opened(owner(process.new_subject())))
+  let model =
+    run(opened(needing(owner(process.new_subject()))), home.ShowingNew)
+  let html = drawn(model)
   assert string.contains(html, "waiting=\"1\"")
   assert string.contains(html, "vetting lint needs you")
   assert string.contains(html, "class=\"banner\"")
+}
+
+// A page lands on the inbox when something waits or runs, and the owner's choice
+// of the composer is never overridden by a later read: the inbox replaces the
+// form only until the owner chooses.
+pub fn the_owner_lands_on_the_inbox_when_something_waits_test() {
+  let model = opened(needing(owner(process.new_subject())))
+  let html = drawn(model)
+  assert string.contains(html, "<h1>Inbox</h1>")
+  assert !string.contains(html, "What should the agent work on?")
+
+  let chosen = run(model, home.ShowingNew)
+  assert string.contains(drawn(chosen), "What should the agent work on?")
+
+  let read =
+    run(
+      chosen,
+      home.Observed([
+        #("B", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+      ]),
+    )
+  assert string.contains(drawn(read), "What should the agent work on?")
 }
 
 // The sidebar's "New session" returns to the composer from the list, and the list

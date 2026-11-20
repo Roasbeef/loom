@@ -22,44 +22,75 @@
    marks do not reach 4.5:1 on the light surfaces. `--color-X-text` is the
    value for words drawn in that hue: in the dark theme it is the same colour,
    and in the light theme a darker one. `fg-faint` is a mark colour only and
-   has no text token. scripts/web_client_contrast_check.py computes the ratio
-   of every text token on every surface it is drawn on, and fails `make lint`
-   under 4.5:1. */
+   has no text token.
+
+   The values are written in OKLCH (lightness, chroma, hue), because the
+   palette is built from lightness targets and that space keeps lightness
+   perceptual. They are the approved attention-inbox mockup's
+   (docs/design-notes/attention-inbox/final/mockup.html), converted from its
+   hex. The neutrals are warm: a hue near 85 to 91 in the light theme, a
+   near-neutral graphite in the dark one, so the light page is a warm off-white
+   (#f6f5f2) and not a cool grey. The accent, `current`, is an indigo (271 in
+   dark, 268 in light), and `bg-user`, which the mockup does not have, is a
+   surface tinted toward it so a reader finds their own turns at a glance.
+   Tokens the mockup lacks (`bg-user`, `advisor`, the strand hues, `on-danger`,
+   `on-signal`) stay in the same family: `advisor` follows `signal`, and the
+   strand hues keep their earlier values. The surfaces step in lightness (sunk,
+   page, raised, code), so a card reads as raised without a shadow. Text clears
+   both WCAG's ratio and APCA's lightness contrast, which tracks how dark
+   themes are read. The status marks are spaced in lightness as well as hue, so
+   added and removed, the current strand and a peer, and the attention colour
+   against both outcomes stay apart for a reader with deuteranopia or
+   protanopia, where hue alone fails. Every value is inside sRGB, so the
+   browser draws what was measured.
+
+   Where a mockup value fails one of the gates below, this file nudges its
+   lightness, and only its lightness except where a chroma change was needed to
+   stay inside sRGB. The dark theme moves `bg-sunk`, `code`, `fg`, `fg-quiet`,
+   `current`, the three `-text` tokens, `peer`, `danger`, `added` and
+   `strand-5-text`; the light theme moves `signal`, `peer`, `added`,
+   `danger-text` and the two diff backgrounds. The mockup's marks and its text
+   share one value in dark (`signal`, `peer`, `danger`, `added`), and the gates
+   ask a text value to be lighter than a mark can be, so the dark marks stay
+   nearer the mockup than the dark text does.
+   scripts/web_client_contrast_check.sh holds all of that and fails
+   `make lint` when a value breaks it. */
 @theme {
   --color-*: initial;
-  --color-bg: #141517;
-  --color-bg-raised: #1b1c1f;
-  --color-bg-sunk: #111214;
-  --color-bg-user: #1b1c1f;
-  --color-code: #212226;
-  --color-fg: #e8e6e1;
-  --color-fg-quiet: #9a978f;
-  --color-fg-faint: #66645e;
-  --color-divider: #2b2d31;
-  --color-current: #7c96ff;
-  --color-signal: #f0a24f;
-  --color-signal-text: #f0a24f;
-  --color-advisor: #f0a24f;
-  --color-advisor-text: #f0a24f;
-  --color-peer: #a78bfa;
-  --color-peer-text: #a78bfa;
-  --color-danger: #f06595;
-  --color-danger-text: #f06595;
-  --color-on-danger: #141517;
-  --color-added: #51cf66;
-  --color-added-text: #51cf66;
-  --color-added-bg: #1f4d2e;
-  --color-removed-bg: #4a1a29;
-  --color-strand-2: #3cc9b4;
-  --color-strand-2-text: #3cc9b4;
-  --color-strand-3: #a3b85a;
-  --color-strand-3-text: #a3b85a;
-  --color-strand-4: #4fb3e8;
-  --color-strand-4-text: #4fb3e8;
-  --color-strand-5: #d873c8;
-  --color-strand-5-text: #d873c8;
-  --color-strand-6: #e07a5f;
-  --color-strand-6-text: #e07a5f;
+  --color-bg: oklch(0.195 0.004 264);
+  --color-bg-raised: oklch(0.227 0.006 271);
+  --color-bg-sunk: oklch(0.164 0.004 264);
+  --color-bg-user: oklch(0.248 0.022 271);
+  --color-code: oklch(0.258 0.008 275);
+  --color-fg: oklch(0.937 0.007 89);
+  --color-fg-quiet: oklch(0.795 0.012 90);
+  --color-fg-faint: oklch(0.503 0.010 92);
+  --color-divider: oklch(0.297 0.008 264);
+  --color-current: oklch(0.790 0.100 271);
+  --color-signal: oklch(0.774 0.135 65);
+  --color-signal-text: oklch(0.790 0.135 65);
+  --color-advisor: oklch(0.774 0.135 65);
+  --color-advisor-text: oklch(0.790 0.135 65);
+  --color-peer: oklch(0.620 0.180 294);
+  --color-peer-text: oklch(0.800 0.095 294);
+  --color-danger: oklch(0.660 0.190 1);
+  --color-danger-text: oklch(0.800 0.115 1);
+  --color-on-danger: oklch(0.195 0.004 264);
+  --color-on-signal: oklch(0.195 0.004 264);
+  --color-added: oklch(0.885 0.185 147);
+  --color-added-text: oklch(0.840 0.170 147);
+  --color-added-bg: oklch(0.379 0.073 152);
+  --color-removed-bg: oklch(0.296 0.075 3);
+  --color-strand-2: oklch(0.810 0.130 190);
+  --color-strand-2-text: oklch(0.810 0.130 190);
+  --color-strand-3: oklch(0.830 0.150 120);
+  --color-strand-3-text: oklch(0.830 0.150 120);
+  --color-strand-4: oklch(0.790 0.120 236);
+  --color-strand-4-text: oklch(0.790 0.120 236);
+  --color-strand-5: oklch(0.790 0.140 345);
+  --color-strand-5-text: oklch(0.800 0.140 345);
+  --color-strand-6: oklch(0.790 0.125 45);
+  --color-strand-6-text: oklch(0.790 0.125 45);
   --color-pill-ok-bg: color-mix(in srgb, var(--color-added) 12%, transparent);
   --color-pill-wait-bg: color-mix(in srgb, var(--color-signal) 14%, transparent);
   --color-pill-bad-bg: color-mix(in srgb, var(--color-danger) 12%, transparent);
@@ -69,7 +100,7 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
-/* The light tokens, a warm paper, and how a theme reaches every part of the
+/* The light tokens, a warm off-white, and how a theme reaches every part of the
    page (docs/design-notes/web-design.md, sections 5 and 6.5).
 
    The page follows `prefers-color-scheme` until the reader presses the
@@ -96,76 +127,78 @@
    after the light media query as a light value. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --color-bg: #f6f5f2;
-    --color-bg-raised: #ffffff;
-    --color-bg-sunk: #efede8;
-    --color-bg-user: #ffffff;
-    --color-code: #f1efe9;
-    --color-fg: #1d1c1a;
-    --color-fg-quiet: #6f6b63;
-    --color-fg-faint: #a29d92;
-    --color-divider: #e2dfd8;
-    --color-current: #3b5bdb;
-    --color-signal: #d9822b;
-    --color-signal-text: #975a1e;
-    --color-advisor: #d9822b;
-    --color-advisor-text: #975a1e;
-    --color-peer: #8b5cf6;
-    --color-peer-text: #764ed1;
-    --color-danger: #d6336c;
-    --color-danger-text: #c02d61;
-    --color-on-danger: #ffffff;
-    --color-added: #2f9e44;
-    --color-added-text: #237833;
-    --color-added-bg: #d3efda;
-    --color-removed-bg: #fce6ec;
-    --color-strand-2: #0f9d8a;
-    --color-strand-2-text: #0b7567;
-    --color-strand-3: #7a8a3a;
-    --color-strand-3-text: #616e2e;
-    --color-strand-4: #1a8fc4;
-    --color-strand-4-text: #14709a;
-    --color-strand-5: #b0429f;
-    --color-strand-5-text: #a73e97;
-    --color-strand-6: #c2502e;
-    --color-strand-6-text: #b04829;
+    --color-bg: oklch(0.970 0.004 91);
+    --color-bg-raised: oklch(1.000 0.000 0);
+    --color-bg-sunk: oklch(0.946 0.007 89);
+    --color-bg-user: oklch(0.952 0.014 271);
+    --color-code: oklch(0.952 0.008 91);
+    --color-fg: oklch(0.227 0.004 85);
+    --color-fg-quiet: oklch(0.529 0.013 85);
+    --color-fg-faint: oklch(0.697 0.017 86);
+    --color-divider: oklch(0.904 0.010 87);
+    --color-current: oklch(0.526 0.199 268);
+    --color-signal: oklch(0.630 0.140 60);
+    --color-signal-text: oklch(0.527 0.108 61);
+    --color-advisor: oklch(0.630 0.140 60);
+    --color-advisor-text: oklch(0.527 0.108 61);
+    --color-peer: oklch(0.420 0.200 293);
+    --color-peer-text: oklch(0.538 0.192 293);
+    --color-danger: oklch(0.588 0.201 5);
+    --color-danger-text: oklch(0.525 0.180 5);
+    --color-on-danger: oklch(1.000 0.000 0);
+    --color-on-signal: oklch(0.227 0.004 85);
+    --color-added: oklch(0.440 0.120 146);
+    --color-added-text: oklch(0.506 0.131 147);
+    --color-added-bg: oklch(0.950 0.060 153);
+    --color-removed-bg: oklch(0.922 0.040 359);
+    --color-strand-2: oklch(0.600 0.100 190);
+    --color-strand-2-text: oklch(0.500 0.085 190);
+    --color-strand-3: oklch(0.600 0.120 122);
+    --color-strand-3-text: oklch(0.495 0.100 122);
+    --color-strand-4: oklch(0.600 0.130 238);
+    --color-strand-4-text: oklch(0.505 0.110 238);
+    --color-strand-5: oklch(0.580 0.180 345);
+    --color-strand-5-text: oklch(0.505 0.165 345);
+    --color-strand-6: oklch(0.600 0.155 42);
+    --color-strand-6-text: oklch(0.505 0.145 42);
     --shadow-float: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
   }
 }
 :root[data-theme="light"] {
-  --color-bg: #f6f5f2;
-  --color-bg-raised: #ffffff;
-  --color-bg-sunk: #efede8;
-  --color-bg-user: #ffffff;
-  --color-code: #f1efe9;
-  --color-fg: #1d1c1a;
-  --color-fg-quiet: #6f6b63;
-  --color-fg-faint: #a29d92;
-  --color-divider: #e2dfd8;
-  --color-current: #3b5bdb;
-  --color-signal: #d9822b;
-  --color-signal-text: #975a1e;
-  --color-advisor: #d9822b;
-  --color-advisor-text: #975a1e;
-  --color-peer: #8b5cf6;
-  --color-peer-text: #764ed1;
-  --color-danger: #d6336c;
-  --color-danger-text: #c02d61;
-  --color-on-danger: #ffffff;
-  --color-added: #2f9e44;
-  --color-added-text: #237833;
-  --color-added-bg: #d3efda;
-  --color-removed-bg: #fce6ec;
-  --color-strand-2: #0f9d8a;
-  --color-strand-2-text: #0b7567;
-  --color-strand-3: #7a8a3a;
-  --color-strand-3-text: #616e2e;
-  --color-strand-4: #1a8fc4;
-  --color-strand-4-text: #14709a;
-  --color-strand-5: #b0429f;
-  --color-strand-5-text: #a73e97;
-  --color-strand-6: #c2502e;
-  --color-strand-6-text: #b04829;
+  --color-bg: oklch(0.970 0.004 91);
+  --color-bg-raised: oklch(1.000 0.000 0);
+  --color-bg-sunk: oklch(0.946 0.007 89);
+  --color-bg-user: oklch(0.952 0.014 271);
+  --color-code: oklch(0.952 0.008 91);
+  --color-fg: oklch(0.227 0.004 85);
+  --color-fg-quiet: oklch(0.529 0.013 85);
+  --color-fg-faint: oklch(0.697 0.017 86);
+  --color-divider: oklch(0.904 0.010 87);
+  --color-current: oklch(0.526 0.199 268);
+  --color-signal: oklch(0.630 0.140 60);
+  --color-signal-text: oklch(0.527 0.108 61);
+  --color-advisor: oklch(0.630 0.140 60);
+  --color-advisor-text: oklch(0.527 0.108 61);
+  --color-peer: oklch(0.420 0.200 293);
+  --color-peer-text: oklch(0.538 0.192 293);
+  --color-danger: oklch(0.588 0.201 5);
+  --color-danger-text: oklch(0.525 0.180 5);
+  --color-on-danger: oklch(1.000 0.000 0);
+  --color-on-signal: oklch(0.227 0.004 85);
+  --color-added: oklch(0.440 0.120 146);
+  --color-added-text: oklch(0.506 0.131 147);
+  --color-added-bg: oklch(0.950 0.060 153);
+  --color-removed-bg: oklch(0.922 0.040 359);
+  --color-strand-2: oklch(0.600 0.100 190);
+  --color-strand-2-text: oklch(0.500 0.085 190);
+  --color-strand-3: oklch(0.600 0.120 122);
+  --color-strand-3-text: oklch(0.495 0.100 122);
+  --color-strand-4: oklch(0.600 0.130 238);
+  --color-strand-4-text: oklch(0.505 0.110 238);
+  --color-strand-5: oklch(0.580 0.180 345);
+  --color-strand-5-text: oklch(0.505 0.165 345);
+  --color-strand-6: oklch(0.600 0.155 42);
+  --color-strand-6-text: oklch(0.505 0.145 42);
   --shadow-float: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
 }
 :host {
@@ -188,6 +221,7 @@
   --color-danger: inherit;
   --color-danger-text: inherit;
   --color-on-danger: inherit;
+  --color-on-signal: inherit;
   --color-added: inherit;
   --color-added-text: inherit;
   --color-added-bg: inherit;
@@ -231,7 +265,7 @@
      padding: the dock carries its own, so it sits flush with the edge it is
      pinned to.
 
-     The widths: the sidebar is 232px, the panel 340px until the reader drags
+     The widths: the sidebar is 232px, the panel 344px until the reader drags
      its grip (280px at least, and never so wide that the transcript falls under
      360px, see .shell-centre), and the transcript at most 780px. Each side column is dropped where it would leave the
      transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
@@ -259,26 +293,22 @@
   .session-head .status{box-sizing:border-box;flex:0 0 auto;height:26px;margin:0;padding:0 10px;border:1px solid transparent;border-radius:6px;line-height:1;}
   .session-head .workspace{flex:0 1 auto;min-width:0;max-width:34ch;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .session-head .workspace::after{content:" /";content:" /" / "";}
-  .session-head .figures{display:flex;flex-wrap:wrap;align-items:center;flex:0 0 auto;gap:0 14px;margin-left:auto;color:var(--color-fg-quiet);font:12px/26px var(--font-sans);font-variant-numeric:tabular-nums;}
-  .session-head .figure{white-space:nowrap;}
-  .session-head .figure .num{color:var(--color-fg);font:500 12px/1.4 var(--font-mono);}
+  .stream-head .figures{display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:0 10px;color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);font-variant-numeric:tabular-nums;}
+  .stream-head .figure{white-space:nowrap;}
+  .stream-head .figure:not(.ctx)::before,.stream-head details.ctx > summary::before{content:"\00b7\00a0";}
+  .stream-head details.ctx{display:inline-block;}
+  .stream-head details.ctx > summary{display:inline;}
+  .stream-head .figure .num{color:var(--color-fg);font:500 12px/1.4 var(--font-mono);}
   /* The speed's slot keeps its width whether or not a generation has been
      timed, so the figures beside it do not move when the first sample lands.
      With no sample it shows a dash in the quiet colour. */
-  .session-head .figure.rate{display:inline-block;min-width:10ch;text-align:right;}
-  .session-head .figure.rate.idle .num{color:inherit;}
-  @media (max-width:1099px){
-    .session-head .figures{flex:1 0 100%;margin-left:0;}
-  }
+  .stream-head .figure.rate{display:inline-block;min-width:10ch;text-align:left;}
+  .stream-head .figure.rate.idle .num{color:inherit;}
   @media (max-width:899px){
     .session-head .workspace{display:none;}
   }
   @media (max-width:639px){
-    .session-head .brand{display:none;}
-    .session-head .session-title{flex:1 0 100%;order:2;}
-    .session-head .figures{order:3;gap:0 12px;}
-    .session-head .ended-notice,.session-head .placement-strip{order:4;}
-    .session-head .figure.rate{min-width:0;}
+    .stream-head .figure.rate{min-width:0;}
   }
   /* The context figure is a native details element: its summary is the
      `ctx ~41%` words and its body is the breakdown (web_view/view/context_breakdown).
@@ -286,13 +316,13 @@
      wrapping and the columns' clipping cannot cut it, and it is at most the
      viewport's width less a gutter. It has a hairline border and no shadow. The
      browser opens and closes it, so the server never renders for that. */
-  .session-head details.ctx > summary{cursor:pointer;list-style:none;border-radius:4px;}
-  .session-head details.ctx > summary::-webkit-details-marker{display:none;}
-  .session-head details.ctx > summary:hover{color:var(--color-fg);}
-  .session-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
-  .ctx-panel{position:fixed;z-index:40;top:48px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
+  .stream-head details.ctx > summary{cursor:pointer;list-style:none;border-radius:4px;}
+  .stream-head details.ctx > summary::-webkit-details-marker{display:none;}
+  .stream-head details.ctx > summary:hover{color:var(--color-fg);}
+  .stream-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .ctx-panel{position:fixed;z-index:40;top:92px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
   /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is as wide as --panel-width, which <loom-shell> sets on its frame (340px until the reader drags the grip, 0px while the panel is closed) but never so wide that the 360px transcript floor is crossed, since the column shrinks to that floor where the window cannot hold the saved width, with the page's 12px margin beyond it. */
-  @media (min-width:980px){.ctx-panel{right:calc(min(var(--panel-width,340px),100vw - 372px) + 12px);width:min(420px,calc(100vw - min(var(--panel-width,340px),100vw - 372px) - 24px));}}
+  @media (min-width:980px){.ctx-panel{right:calc(min(var(--panel-width,344px),100vw - 372px) + 12px);width:min(420px,calc(100vw - min(var(--panel-width,344px),100vw - 372px) - 24px));}}
   .ctx-actions{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px 0;}
   .ctx-button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;}
   .ctx-button:hover{background:var(--color-bg-sunk);}
@@ -338,7 +368,7 @@
   .region-sidebar{width:288px;}
   /* The panel's column holds the tab bar above the slot. It carries the
      column's border and background, so the bar and the panes share them. */
-  .region-panel{flex:0 1 auto;width:var(--panel-width,340px);min-width:280px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg);border-left:1px solid var(--color-divider);}
+  .region-panel{flex:0 1 auto;width:var(--panel-width,344px);min-width:280px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg-sunk);border-left:1px solid var(--color-divider);}
   .panel-body{flex:1 1 0;min-height:0;}
   /* The tab bar (web_client/shell): one real button per tab, the shown one
      underlined. The Strands tab's badge counts the strands that wait on a
@@ -387,8 +417,21 @@
   .toggle-sidebar .toggle-icon::after{left:0;}
   .toggle-panel .toggle-icon::after{right:0;}
   .shell-toggle[aria-expanded="false"] .toggle-icon::after{opacity:.2;}
-  main.centre{flex:1 1 0;display:flex;flex-direction:column;min-width:0;min-height:0;box-sizing:border-box;padding:16px 16px 0;overflow:hidden;}
+  main.centre{flex:1 1 0;display:flex;flex-direction:column;reading-flow:flex-visual;min-width:0;min-height:0;box-sizing:border-box;padding:16px 16px 0;overflow:hidden;}
   main.centre > :not(loom-follow){width:100%;max-width:780px;margin-left:auto;margin-right:auto;box-sizing:border-box;}
+  /* The session page's stream (web_view/view/stream_head, view/lane): the
+     centre has no padding and no column width, so the strip, the rows and the
+     dock run the stream's full width with the 24px gutter the final design
+     draws. The home, the admin pages and the new-session view have no
+     scroller and keep the padded column. */
+  main.centre:has(> loom-follow){padding:0;}
+  main.centre:has(> loom-follow) > :not(loom-follow){max-width:none;margin-left:0;margin-right:0;}
+  main.centre > .stream-head{order:-2;flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:baseline;gap:0 10px;padding:10px 24px;border-bottom:1px solid var(--color-divider);color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);}
+  .stream-dot{align-self:center;flex:none;width:8px;height:8px;border-radius:50%;background:var(--color-fg-faint);}
+  .stream-dot.stream-run{background:var(--color-current);}
+  .stream-dot.stream-wait{background:var(--color-signal);}
+  .stream-name{color:var(--color-fg);font-weight:600;font-size:13.5px;}
+  .stream-sep::before{content:"\00b7\00a0";}
   /* A strand's hue as a mark (--hue: a dot, a bar, a border) and as words
      (--hue-text: a name or a heading), which is a darker colour in the light
      theme. */
@@ -407,7 +450,7 @@
      rules below hide the others. A browser without custom states drops
      the rules and shows every pane. Below 980px the Strands pane is a row of
      cards under the bar instead, scrolling sideways. */
-  aside.panel{width:100%;height:100%;box-sizing:border-box;min-height:0;padding:14px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  aside.panel{width:100%;height:100%;box-sizing:border-box;min-height:0;padding:12px 12px 20px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   loom-shell:state(tab-strands) .pane:not(.pane-strands){display:none;}
   loom-shell:state(tab-changes) .pane:not(.pane-changes){display:none;}
   loom-shell:state(tab-session) .pane:not(.pane-session){display:none;}
@@ -470,13 +513,13 @@
   .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:left;}
   .detail-recent .panel-title{margin:0 0 6px 0;}
   .detail-answer{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
   /* A peek at a remote child's transcript (web_view/view/peek), in the same
      place as a strand's own view. The framing lines are quiet, and the page
      sits on a tinted ground inside a hairline border, with no accent bar and
      no shadow. Every word is a text node, kept as written with pre-wrap. */
   .chip-seen{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
-  .peek-frame{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  .peek-frame{margin:0;color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
   .peek-body{display:flex;flex-direction:column;gap:10px;min-width:0;padding:8px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);}
   .peek-entry{display:grid;row-gap:2px;min-width:0;}
   .peek-speaker{color:var(--color-fg-quiet);font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;}
@@ -617,6 +660,267 @@
   main.centre > .home-sessions{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   .home-heading{margin:0 0 12px 0;font:600 15px/1.4 var(--font-sans);}
   .home-empty{margin:0;color:var(--color-fg-quiet);}
+  /* The home's attention inbox (view/inbox, view/inbox_parts): the final design's
+     full-height split, a 388px thread list and a reading pane that fill the
+     centre and scroll on their own (docs/design-notes/attention-inbox/final/
+     mockup.html). The measurements are the mockup's. No edge bars and no
+     shadows; a thread is marked by a raised background and a hairline ring, and
+     a kind's colour is on its words and its dot only. */
+  main.centre:has(> .inbox){padding:0;}
+  main.centre > .inbox{flex:1 1 0;min-height:0;display:grid;grid-template-columns:388px minmax(0,1fr);width:100%;max-width:none;margin:0;overflow:hidden;}
+  .inbox-list{min-width:0;min-height:0;overflow:auto;position:relative;border-right:1px solid var(--color-divider);overscroll-behavior:contain;scrollbar-width:thin;}
+  .inbox-group{margin:0;}
+  .inbox-threads{margin:0;padding:0;list-style:none;}
+  .inbox-band{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:0;padding:8px 14px;background:var(--color-bg);border-bottom:1px solid var(--color-divider);color:var(--color-fg-quiet);font:600 12px/1.45 var(--font-sans);letter-spacing:.04em;text-transform:uppercase;}
+  .inbox-band small{color:var(--color-fg-quiet);font:400 12px/1.45 var(--font-sans);letter-spacing:0;text-transform:none;text-align:right;}
+  .inbox-band-signal{background:color-mix(in srgb,var(--color-signal) 14%,var(--color-bg));border-bottom-color:color-mix(in srgb,var(--color-signal) 45%,transparent);color:var(--color-signal-text);}
+  .inbox-count{font-weight:600;font-variant-numeric:tabular-nums;}
+  .inbox-row{position:relative;display:block;width:100%;box-sizing:border-box;margin:0;padding:10px 14px 10px 28px;border:0;border-bottom:1px solid var(--color-divider);border-radius:0;background:transparent;color:var(--color-fg);font:14px/1.45 var(--font-sans);text-align:left;}
+  button.inbox-row{cursor:pointer;}
+  button.inbox-row:hover{background:var(--color-bg-raised);}
+  button.inbox-row:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .inbox-row.inbox-selected{background:var(--color-bg-raised);box-shadow:inset 0 0 0 1px var(--color-divider);}
+  .inbox-r1{display:flex;justify-content:space-between;gap:8px;}
+  .inbox-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px;font-weight:600;}
+  .inbox-age{flex:0 0 auto;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);white-space:nowrap;}
+  .inbox-age.inbox-age-overdue{color:var(--color-signal-text);font-weight:600;}
+  .inbox-r2{display:flex;gap:8px;align-items:baseline;min-width:0;margin-top:2px;}
+  .inbox-head{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font-size:13px;}
+  .inbox-dot{position:absolute;left:12px;top:15px;width:8px;height:8px;box-sizing:border-box;border-radius:50%;background:var(--color-current);}
+  .inbox-seen .inbox-dot{border:1px solid var(--color-fg-faint);background:transparent;}
+  .inbox-seen .inbox-name{font-weight:500;}
+  .inbox-kind{flex:0 0 auto;padding:0 6px;border:1px solid var(--color-divider);border-radius:6px;color:var(--color-fg-quiet);font-size:11px;font-weight:600;line-height:18px;white-space:nowrap;}
+  .inbox-row-static button.inbox-open{margin-top:6px;}
+  .inbox-row-static .notice-line,.inbox-row-static .notice-refusal{margin:6px 0 0 0;}
+  .inbox-folded{display:flex;gap:10px;align-items:baseline;margin:0;padding:9px 14px;border-bottom:1px solid var(--color-divider);color:var(--color-fg-quiet);font-size:13px;}
+  .inbox-folded b{color:var(--color-fg);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;}
+  .inbox-folded-names{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .inbox-folded-count{font-variant-numeric:tabular-nums;}
+  .inbox-empty{margin:0;padding:12px 14px;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .inbox-list button.inbox-all{margin:12px 14px;}
+  .inbox-reveal{display:none;}
+  /* The reading pane: a scrolling body over the outbox bar, which stays at the
+     foot of the pane whatever the body's length. */
+  .inbox-reading{min-width:0;min-height:0;overflow:auto;display:flex;flex-direction:column;position:relative;overscroll-behavior:contain;scrollbar-width:thin;}
+  .inbox-body-text{flex:0 0 auto;box-sizing:border-box;width:100%;max-width:820px;padding:22px 32px 20px;}
+  .inbox-back{display:none;}
+  .inbox-eyebrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0;color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);overflow-wrap:anywhere;}
+  .inbox-title{margin:8px 0 6px;font:620 20px/1.3 var(--font-sans);letter-spacing:-.005em;overflow-wrap:anywhere;}
+  .inbox-title code{font:12px var(--font-mono);letter-spacing:0;}
+  .inbox-meta,.inbox-standing{margin:0;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);}
+  .inbox-section{margin:0;}
+  .inbox-label{margin:22px 0 8px;color:var(--color-fg-quiet);font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;}
+  .inbox-card{box-sizing:border-box;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);}
+  .inbox-card + .inbox-card{margin-top:8px;}
+  .inbox-card + .inbox-meta{margin-top:8px;}
+  button.inbox-open.inbox-open-primary{border-color:var(--color-current);color:var(--color-current);}
+  table.inbox-kv{width:100%;border-collapse:collapse;}
+  table.inbox-kv td{padding:4px 0;vertical-align:top;font-size:13px;overflow-wrap:anywhere;}
+  table.inbox-kv td:first-child{width:128px;color:var(--color-fg-quiet);}
+  table.inbox-kv code{font:12px/1.45 var(--font-mono);}
+  .inbox-quote{display:block;box-sizing:border-box;padding:9px 12px;border:1px dashed var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font-size:13px;}
+  .inbox-quote-source{display:block;margin-bottom:3px;color:var(--color-fg-quiet);font-size:11.5px;font-weight:400;}
+  .inbox-quote-words{display:block;white-space:pre-wrap;overflow-wrap:anywhere;}
+  .inbox-said{margin-top:8px;}
+  .inbox-glances{margin:0;padding:0;list-style:none;font:12px/1.7 var(--font-mono);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  /* What a session's brief draws (view/brief_view): the last few steps as a
+     monospace card, and the coordinator's card of goal, counts and strands. A
+     step's outcome word is the added colour for a success and the danger colour
+     for a failure. */
+  .brief-steps{margin:0;padding:0;list-style:none;font:12px/1.7 var(--font-mono);color:var(--color-fg-quiet);}
+  .brief-steps li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;overflow-wrap:anywhere;}
+  .brief-tool{color:var(--color-fg);font-weight:500;}
+  .brief-words{flex:1 1 12em;min-width:0;}
+  .brief-ok{color:var(--color-added-text);}
+  .brief-bad{color:var(--color-danger-text);}
+  .inbox-pill.brief-command{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .brief-ctx{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}
+  .brief-ctx > div{font-size:12.5px;overflow-wrap:anywhere;}
+  .brief-ctx b{display:block;font-size:13.5px;font-weight:600;}
+  .brief-label,.brief-note{display:block;color:var(--color-fg-quiet);font-size:12px;}
+  .brief-strands{display:flex;flex-direction:column;gap:5px;margin:10px 0 0 0;padding:0;list-style:none;font-size:13px;}
+  .brief-strands li{display:flex;gap:8px;align-items:baseline;}
+  .brief-strand{min-width:104px;font:12px var(--font-mono);overflow-wrap:anywhere;}
+  p.inbox-place{margin:6px 0 0 0;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  .inbox-out{margin:0;padding:9px 12px;border-radius:8px;background:var(--color-code);font:12px/1.55 var(--font-mono);white-space:pre-wrap;overflow:hidden;}
+  .inbox-acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .inbox-body-text > .inbox-acts,.inbox-section > .inbox-acts{margin-top:10px;}
+  .inbox-quote + .inbox-place{margin-top:8px;}
+  .inbox-reading .inbox-questions .place-send{align-self:flex-start;margin:0;padding:6px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:550 13px/1.45 var(--font-sans);}
+  .inbox-reading .inbox-questions .place-send:hover{border-color:var(--color-fg-faint);}
+  .inbox-reading .inbox-question .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:inherit;}
+  .inbox-acts + .inbox-hint,.inbox-hint{margin:8px 0 0 0;color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);}
+  .inbox-btn,button.inbox-open{margin:0;padding:6px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:550 13px/1.45 var(--font-sans);text-align:left;cursor:pointer;}
+  .inbox-btn:hover:not(:disabled),button.inbox-open:hover:not(:disabled){border-color:var(--color-fg-faint);}
+  .inbox-btn:disabled,button.inbox-open:disabled{opacity:.5;cursor:default;}
+  .inbox-btn:focus-visible,button.inbox-open:focus-visible,.inbox-primary:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .inbox-btn[aria-pressed="true"]{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
+  .inbox-btn[aria-pressed="true"]::before{content:"\2713  ";color:var(--color-current);}
+  .inbox-sm{padding:3px 9px;font-size:12px;}
+  .inbox-ta{display:block;box-sizing:border-box;width:100%;min-height:54px;padding:8px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:inherit;resize:vertical;}
+  .inbox-ta:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  form.inbox-form{margin:0;}
+  .inbox-form .inbox-acts{margin-top:8px;}
+  .inbox-msg{margin-top:22px;padding-top:4px;border-top:1px solid var(--color-divider);}
+  .inbox-message{flex:0 0 auto;box-sizing:border-box;width:100%;max-width:820px;margin:0;padding:0 32px 20px;border-top:1px solid var(--color-divider);}
+  .inbox-message .inbox-msg{margin-top:0;padding-top:0;border-top:0;}
+  .inbox-send{margin:0;}
+  .inbox-hold{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .inbox-outbox{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .inbox-outbox-bar{position:sticky;bottom:0;box-sizing:border-box;display:flex;gap:14px;align-items:center;min-height:56px;margin-top:auto;padding:10px 32px;border-top:1px solid var(--color-divider);background:var(--color-bg);}
+  .inbox-outbox-to{flex:1 1 0;min-width:0;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);overflow-wrap:anywhere;}
+  .inbox-outbox-to b{color:var(--color-fg);font-weight:600;}
+  .inbox-outbox-items{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px;}
+  .inbox-staged{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;border:1px solid color-mix(in srgb,var(--color-current) 50%,var(--color-divider));border-radius:10px;background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));color:var(--color-fg);font-size:12px;}
+  .inbox-how{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;}
+  .inbox-deliver{position:relative;display:inline-block;}
+  .inbox-deliver input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer;}
+  .inbox-deliver span{display:inline-block;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:550 12px/1.45 var(--font-sans);}
+  .inbox-deliver:hover span{border-color:var(--color-fg-faint);}
+  .inbox-deliver input:checked + span{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
+  .inbox-deliver input:checked + span::before{content:"\2713  ";color:var(--color-current);}
+  .inbox-deliver input:focus-visible + span{outline:2px solid var(--color-current);outline-offset:1px;}
+  .inbox-staged-msg{display:none;}
+  .inbox-reading:has(.inbox-send .inbox-ta:not(:placeholder-shown)):has(input[value="prompt"]:checked) .inbox-staged-queue{display:inline-block;}
+  .inbox-reading:has(.inbox-send .inbox-ta:not(:placeholder-shown)):has(input[value="steer"]:checked) .inbox-staged-steer{display:inline-block;}
+  .inbox-reading:has(.inbox-send .inbox-ta:not(:placeholder-shown)) .inbox-says{display:none;}
+  .inbox-reading:has(.inbox-send .inbox-ta:placeholder-shown) .inbox-primary{border-color:var(--color-divider);background:transparent;color:var(--color-fg-quiet);opacity:.7;pointer-events:none;}
+  .inbox-outbox-buttons{display:flex;gap:8px;flex:0 0 auto;}
+  .inbox-primary{margin:0;padding:8px 16px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-current);color:var(--color-bg-raised);font:600 14px/1.45 var(--font-sans);white-space:nowrap;cursor:pointer;}
+  .inbox-primary:disabled{border-color:var(--color-divider);background:transparent;color:var(--color-fg-quiet);opacity:.7;cursor:default;}
+  /* An ask's questions as fixed components, each a raised card. */
+  .inbox-questions{display:flex;flex-direction:column;gap:8px;margin:8px 0 0 0;}
+  fieldset.inbox-question{display:flex;flex-direction:column;gap:6px;min-width:0;margin:0;padding:10px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);}
+  fieldset.inbox-question legend{padding:0 4px;color:var(--color-fg);font:600 13.5px/1.45 var(--font-sans);letter-spacing:0;text-transform:none;}
+  label.inbox-option{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px;min-height:32px;overflow-wrap:anywhere;}
+  .inbox-mark{color:var(--color-current);font:12px/1.4 var(--font-sans);}
+  .inbox-note{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  /* The review pane: count pills, a verdict, the finds, and a card of files whose
+     hunks are the shared diff drawer on the code ground, a find under the line it
+     names. A find is a raised note with a signal hairline, never a coloured bar. */
+  .inbox-pills{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 0 0;}
+  .inbox-pill{padding:0 8px;border:1px solid var(--color-divider);border-radius:10px;color:var(--color-fg-quiet);font-size:12px;line-height:20px;}
+  .inbox-pill-ok{color:var(--color-added-text);}
+  .inbox-pill-bad{color:var(--color-danger-text);}
+  .review-body{display:flex;flex-direction:column;}
+  .review-notice{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .inbox-card.review-files-card{padding:0;overflow:hidden;}
+  .review-files{list-style:none;margin:0;padding:0;}
+  .review-files > li + li{border-top:1px solid var(--color-divider);}
+  .review-file{background:transparent;}
+  .review-file-head{display:flex;gap:10px;align-items:baseline;padding:8px 14px;cursor:pointer;}
+  .review-path{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:12px/1.45 var(--font-mono);}
+  .review-change{color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
+  .review-marks{color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .review-file[open]{border-top:0;}
+  .review-file > *:not(summary){margin:0 14px 10px 14px;}
+  .review-file > .review-hunks{margin-top:4px;}
+  .review-hunk .diff{overflow:hidden;border-radius:8px;background:var(--color-code);}
+  .diff-review .diff-row{display:grid;grid-template-columns:34px 22px 1fr;font:12px/1.55 var(--font-mono);}
+  .diff-review .diff-no{color:var(--color-fg-quiet);text-align:right;padding-right:8px;user-select:none;}
+  .diff-review .diff-pin{display:flex;align-items:center;justify-content:center;}
+  .diff-review .diff-text{padding:0 8px 0 0;}
+  .diff-review .diff-hunk{display:block;padding:5px 10px;font:12px var(--font-mono);}
+  .diff-review .diff-hunk .diff-text{padding:0;}
+  .diff-review .diff-marked{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-signal) 55%,transparent);}
+  .diff-pin-mark{display:inline-block;width:16px;height:16px;border-radius:50%;background:var(--color-signal);color:var(--color-on-signal);font:600 10px/16px var(--font-sans);text-align:center;}
+  .review-hunk .diff-row{background:var(--color-code);line-height:1.55;}
+  .review-hunk .diff-row.diff-added{background:var(--color-added-bg);}
+  .review-hunk .diff-row.diff-removed{background:var(--color-removed-bg);}
+  .review-hunk .diff-gutter,.review-hunk .diff-num{background:transparent;}
+  .review-hunk .diff-added .diff-gutter{background:var(--color-added-bg);}
+  .review-hunk .diff-removed .diff-gutter{background:var(--color-removed-bg);}
+  .review-hunk .diff-hunk{border-bottom:1px solid var(--color-divider);background:var(--color-code);}
+  .review-find{margin:8px 0 0 0;padding:7px 10px;border:1px solid color-mix(in srgb,var(--color-signal) 50%,var(--color-divider));border-radius:8px;background:var(--color-bg-raised);font:13px/1.45 var(--font-sans);white-space:normal;position:sticky;left:0;}
+  .review-find .inbox-quote{padding:0;border:0;background:transparent;}
+  .review-finds{display:flex;flex-direction:column;gap:8px;}
+  .review-finds > .review-find{margin:0;}
+  .review-form{margin-top:8px;}
+  /* The heading row that carries the way back to the inbox. */
+  .home-headrow{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 12px 0;}
+  .home-headrow .home-heading{margin:0;}
+  /* On a narrow screen the list is the page, and the reading pane covers it
+     under a thread the person pressed, with a way back to the list. */
+  @media (max-width:768px){
+    main.centre > .inbox{display:block;position:relative;}
+    .inbox-list{height:100%;border-right:0;}
+    .inbox-reading{position:absolute;inset:0;z-index:5;display:none;background:var(--color-bg);}
+    .inbox-reading.inbox-reading-pressed{display:flex;}
+    .inbox-back{display:inline-block;margin:0 0 6px 0;padding:0;border:0;background:none;color:var(--color-current);font:13px/1.45 var(--font-sans);cursor:pointer;}
+    .inbox-body-text{padding:14px 16px;}
+    .inbox-outbox-bar{flex-wrap:wrap;padding:10px 16px;}
+    .inbox-title{font-size:17px;}
+    table.inbox-kv td:first-child{width:90px;}
+    .brief-ctx{grid-template-columns:1fr 1fr;}
+    .inbox-row,.inbox-btn,button.inbox-open{min-height:44px;}
+    .inbox-row.inbox-selected{background:transparent;box-shadow:none;}
+  }
+  /* The frame, on every page: a 44px bar and a 184px rail, as the final design
+     draws them. The host class is `loom-inbox` (view/shell), which every
+     audience carries, so Home, a session's page and the admin page share the
+     bar's one row and the rail's width. The bar reads `loom  ‹ Inbox  workspace /
+     name  live`, then the pill that counts what needs the owner, then at the
+     right the chip that says who the page is for, a ghost Search with its
+     shortcut and a ghost Theme. The connection's pill is drawn only when the
+     page is not connected. */
+  :host(.loom-inbox) .region-sidebar{width:184px;}
+  :host(.loom-inbox) .shell-bar{align-items:center;box-sizing:border-box;height:44px;background:var(--color-bg);}
+  :host(.loom-inbox) .shell-toggle{align-self:center;height:43px;}
+  :host(.loom-inbox) .toggle-sidebar{width:44px;}
+  :host(.loom-inbox) .toggle-hint{display:none;}
+  :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:center;box-sizing:border-box;width:auto;height:auto;margin:0 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  :host(.loom-inbox) .shell-theme{margin-right:12px;}
+  :host(.loom-inbox) .bar-search:hover,:host(.loom-inbox) .shell-theme:hover{background:var(--color-bg-raised);color:var(--color-fg);}
+  loom-shell.loom-inbox .session-head{flex-wrap:nowrap;align-items:center;gap:0 14px;min-height:43px;padding:0 16px 0 4px;overflow:hidden;}
+  loom-shell.loom-inbox .session-head > *{order:3;flex:0 0 auto;}
+  loom-shell.loom-inbox .session-head .brand{display:block;order:0;font:650 14px/26px var(--font-sans);letter-spacing:.01em;}
+  loom-shell.loom-inbox .session-head > h1{order:1;flex:0 1 auto;color:var(--color-fg-quiet);font:400 14px/26px var(--font-sans);}
+  loom-shell.loom-inbox .session-head .home-link{order:1;height:auto;padding:0;border:0;background:none;color:var(--color-current);font:13px/26px var(--font-sans);}
+  loom-shell.loom-inbox .session-head .home-link:hover{background:none;text-decoration:underline;text-underline-offset:2px;}
+  loom-shell.loom-inbox .session-head .workspace{order:1;flex:0 1 auto;max-width:24ch;color:var(--color-fg-quiet);font:14px/26px var(--font-sans);}
+  loom-shell.loom-inbox .session-head .session-title{order:1;flex:0 1 auto;align-items:center;gap:10px;}
+  loom-shell.loom-inbox .session-head .session-title h1{color:var(--color-fg);font:600 14px/26px var(--font-sans);}
+  loom-shell.loom-inbox .session-head .session-model{display:none;}
+  .live-mark{display:inline-flex;align-items:center;gap:6px;color:var(--color-fg-quiet);font:14px/26px var(--font-sans);white-space:nowrap;}
+  loom-shell.loom-inbox .session-head .status.online{display:none;}
+  loom-shell.loom-inbox .session-head .status{height:auto;padding:0 10px;font:12px/22px var(--font-sans);}
+  .role-chip{margin-left:auto;padding:2px 8px;border:1px solid var(--color-divider);border-radius:10px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);white-space:nowrap;}
+  loom-shell.loom-inbox .session-head .home-who{order:4;margin-left:auto;}
+  loom-shell.loom-inbox .session-head .home-who-button{padding:2px 8px;border:1px solid var(--color-divider);border-radius:10px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  loom-shell.loom-inbox .session-head .home-who-button:hover,loom-shell.loom-inbox .session-head .home-who-button[aria-expanded="true"]{background:var(--color-bg-raised);}
+  loom-shell.loom-inbox .session-head .role-chip{order:4;}
+  .need-pill{order:2;flex:0 0 auto;padding:2px 8px;border:1px solid color-mix(in srgb,var(--color-signal) 40%,transparent);border-radius:10px;background:var(--color-pill-wait-bg);color:var(--color-signal-text);font:600 12px/1.45 var(--font-sans);white-space:nowrap;}
+  /* The rail: the folders at its top, the running sessions under "Watch live"
+     in the mockup's two-line rows, then what the counts read and "New session". */
+  .rail-folders{flex:0 0 auto;display:flex;flex-direction:column;padding:14px 10px 0;}
+  .rail-away{margin:0 8px 12px 8px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .rail-away .rail-time{color:var(--color-fg);font-weight:600;}
+  .folder{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;box-sizing:border-box;margin:0;padding:6px 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--color-fg);font:13.5px/1.45 var(--font-sans);text-align:left;cursor:pointer;}
+  .folder:hover{background:var(--color-bg-raised);}
+  .folder[aria-pressed="true"]{border-color:var(--color-divider);background:var(--color-bg-raised);}
+  .folder:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .folder .nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .folder .n{min-width:20px;color:var(--color-fg-quiet);font-size:12px;text-align:center;}
+  .folder.need .n{padding:0 6px;border-radius:10px;background:var(--color-signal);color:var(--color-on-signal);font-weight:700;}
+  .rail-heading{flex:0 0 auto;margin:18px 18px 6px 18px;color:var(--color-fg-quiet);font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;}
+  loom-shell.loom-inbox .state-heading{display:none;}
+  loom-shell.loom-inbox section.state-group{margin:0;}
+  loom-shell.loom-inbox li.session{min-height:0;border-radius:6px;font-size:13px;}
+  loom-shell.loom-inbox li.session:hover{background:var(--color-bg-raised);}
+  loom-shell.loom-inbox li.session{border:1px solid transparent;}
+  loom-shell.loom-inbox li.session.current{background:var(--color-bg-raised);border-color:var(--color-divider);}
+  loom-shell.loom-inbox .session-open,loom-shell.loom-inbox li.session:not(:has(>.session-open)){gap:8px;min-height:0;padding:5px 8px;}
+  loom-shell.loom-inbox .session-tag{font-size:11.5px;}
+  .session-watch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:11.5px/1.4 var(--font-sans);}
+  loom-shell.loom-inbox .session-name{font-size:13px;}
+  :host(.loom-inbox) .toggle-sidebar{position:relative;}
+  @media (min-width:1212px){:host(.loom-inbox[waiting]) .toggle-sidebar::after{display:none;}}
+  loom-shell.loom-inbox .tag-agent{color:var(--color-fg-quiet);font-weight:400;}
+  loom-shell.loom-inbox .tag-arrow,loom-shell.loom-inbox .tag-code{display:none;}
+  loom-shell.loom-inbox .session-subtitle{display:none;}
+  .rail-note{margin:16px 8px 0 8px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
+  .rail-new{display:block;box-sizing:border-box;width:calc(100% - 16px);margin:16px 8px 0 8px;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);text-align:left;cursor:pointer;}
+  .rail-new:hover{background:var(--color-bg-raised);}
   .home-withheld{margin:16px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   /* One list for each workspace: a heading with the shortened path and the
      count as the sidebar's eyebrow has them, and a hairline-ruled row for each
@@ -970,26 +1274,23 @@
      squeezing rows. The scroller fills the centre, so its scrollbar is at
      the column's edge, and its children are the transcript's 780px column,
      centred. */
-  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;padding-bottom:56px;container-type:inline-size;}
-  loom-follow.follow > *{flex-shrink:0;width:100%;max-width:780px;align-self:center;box-sizing:border-box;padding-right:clamp(0px,calc((876px - 100cqw) / 2),48px);}
+  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;padding-top:10px;padding-bottom:56px;container-type:inline-size;}
+  loom-follow.follow > *{flex-shrink:0;width:100%;max-width:none;align-self:stretch;box-sizing:border-box;padding-left:24px;padding-right:24px;}
   /* The scroller ends in room for the "Jump to latest" button below (56px: its
      12px off the bottom edge, its height and a gap), so the last row of the
      transcript is never under it when the reader has scrolled to the end. */
   /* The "Jump to latest" button, drawn inside the client component while
      the reader is away from the bottom. Its wrapper has no height and
      sticks to the bottom edge of the scroller, so the button floats and the
-     content's size does not change when it appears. A button over the column
+     content's size does not change when it appears. A button over the stream
      covers a line of whatever the reader stopped at, a code block's included,
-     so it is never over the column: it is a 32px disc at the scroller's right
-     edge, in a zone 48px wide that no row reaches. Where the scroller is wider
-     than the column by 48px a side the zone is the gutter. Where it is not
-     (the strands panel open at 1440 leaves 44px, a window of 800px none) the
-     column keeps a right padding of what is missing, so the zone is 48px at
-     every width and nothing is drawn in it (the 876px is the 780px column and
-     the zone on both sides). */
+     so it is never over a row: it is a 24px disc at the scroller's right edge,
+     in the 24px gutter the stream keeps on that side (`loom-follow.follow > *`),
+     which no row reaches. The stream fills the scroller at every width, so the
+     gutter is the same at every width. */
   .jump-anchor{position:sticky;bottom:0;z-index:1;flex:0 0 0;height:0;display:flex;justify-content:flex-end;padding-right:8px;}
-  loom-follow.follow > .jump-anchor{align-self:stretch;max-width:none;padding-right:8px;}
-  .jump-latest{position:absolute;bottom:12px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:1px solid var(--color-divider);border-radius:50%;background:var(--color-bg-raised);color:var(--color-fg);font:16px/1 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-float);}
+  loom-follow.follow > .jump-anchor{align-self:stretch;max-width:none;padding:0;}
+  .jump-latest{position:absolute;bottom:12px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;height:24px;padding:0;border:1px solid var(--color-divider);border-radius:50%;background:var(--color-bg-raised);color:var(--color-fg);font:14px/1 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-float);}
   /* The line above the lane's oldest row: the "Load older" button, or
      words saying why there is none. Each fits the same minimum height, so
      the change from one to the other does not move the rows below. */
@@ -1005,37 +1306,51 @@
      through the shell's relay. The row's own padding is the space between
      pieces, so the line runs unbroken. The live answer has no dot and
      is indented to line up with the rows. */
-  .tl-row{position:relative;min-width:0;padding:0 0 10px 22px;}
-  .tl-row::before{content:"";position:absolute;left:7px;top:0;bottom:0;border-left:1px solid var(--color-divider);}
-  .tl-row:first-child::before{top:8px;}
+  /* The stream of the final design: a 44px gutter and a 10px gap before the
+     row, so the row's time (when the page has one, `.tl-time`) sits in the
+     gutter in quiet mono and a row with no time leaves it empty. The dot keeps
+     the strand's hue at the gutter's inner edge and has no line to join it. */
+  .tl-row{position:relative;min-width:0;padding:5px 0 5px 54px;border-radius:8px;}
   .tl-body{min-width:0;}
-  .dot{position:absolute;left:3px;top:6px;width:9px;height:9px;margin:-2px;box-sizing:content-box;border:2px solid var(--color-bg);border-radius:50%;background:var(--hue,var(--color-current));transition:box-shadow 120ms;}
+  .tl-time{position:absolute;left:0;top:8px;width:44px;color:var(--color-fg-quiet);font:11.5px/1.45 var(--font-mono);}
+  /* A tool line inside the running turn's fold is one `.work-item`: the line and
+     its own time, which sits in the same gutter as the rows' by stepping back
+     the row's 54px padding. A call that waits on an approval nobody has decided
+     says so at its right edge in place of `running`. */
+  .work-item{position:relative;min-width:0;}
+  .work-item > .tl-time{left:-54px;top:5px;}
+  .work-item.approving .tool-line.pending .row-head::after{content:"needs approval";color:var(--color-signal-text);}
+  /* The line under the live region: which request of the turn is generating and
+     for how long, in the stream's quiet face. */
+  .generating{margin:4px 0 0;color:var(--color-fg-quiet);font:12.5px/1.5 var(--font-sans);font-variant-numeric:tabular-nums;}
+  .dot{position:absolute;left:34px;top:11px;width:6px;height:6px;margin:0;box-sizing:border-box;border:0;border-radius:50%;background:var(--hue,var(--color-current));transition:box-shadow 120ms;}
   .dot[data-loom-focus]{cursor:pointer;}
   .dot.pulse{animation:pulse 1.4s infinite;}
   .dot[data-loom-focus]::after{content:"";position:absolute;inset:-6px;}
   .dot[data-loom-focus]:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--hue,var(--color-current)) 28%,transparent);}
-  .transcript.lane > .block.live{padding-left:22px;}
+  .transcript.lane > .block.live{padding-left:54px;}
   button.tag{margin:0;padding:0 5px;border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;background:transparent;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);cursor:pointer;transition:background-color 120ms;}
   button.tag:hover{background:color-mix(in srgb,var(--hue,var(--color-fg-quiet)) 10%,transparent);}
   /* The breadcrumb above the transcript while a strand other than main is in
      focus (web_view/view/crumb), in the centre column's 780px width. */
-  nav.crumb{display:flex;align-items:center;gap:8px;min-width:0;padding:0 0 8px 22px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  nav.crumb{display:flex;align-items:center;gap:8px;min-width:0;padding:8px 24px;order:-1;border-bottom:1px solid var(--color-divider);color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .crumb-session{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .crumb-strand{color:var(--color-fg);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .crumb-spacer{flex:1 1 auto;}
   kbd.crumb-hint{margin:0;padding:0 4px;border:1px solid var(--color-divider);border-radius:4px;color:var(--color-fg-quiet);font:11px/1.5 var(--font-sans);}
   .block{min-width:0;}
-  .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
+  .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13.5px/1.45 var(--font-sans);}
   /* A person's message (web_view/view/lane): who sent it on a line of its
-     own, and the words in a bubble no wider than nine tenths of the lane. */
-  .who{margin:0 0 2px 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+     own, and the words in a raised bubble the width of the stream. An answer
+     is headed by the strand that wrote it, in the same small quiet line. */
+  .who{display:block;margin:0;color:var(--color-fg-quiet);font:11.5px/1.45 var(--font-sans);}
   .who-name{color:var(--color-fg);font-weight:600;}
-  .line.user{display:inline-block;box-sizing:border-box;max-width:90%;background:var(--color-bg-user);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
+  .line.user{display:block;box-sizing:border-box;background:var(--color-bg-raised);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
   /* Tool output is code, so it keeps the monospace face. The selector names
      the kind and not `.line`: scripts/web_client_css_check.sh keeps the face
      off the page's own rows. */
   pre.tool-detail,pre.tool-result,pre.tool-patch{font:12px/1.5 var(--font-mono);}
-  .line.assistant{padding:0 2px;}
+  .line.assistant{padding:0;}
   .line.system,.line.reasoning,.line.reasoning-digest,.line.summarized-reasoning, .line.tool-detail,.line.tool-result{color:var(--color-fg-quiet);}
   .line.failure,.line.tool-failure{color:var(--color-danger-text);}
   .line.failure .failure-label{font-weight:600;}
@@ -1140,24 +1455,44 @@
      lane): its glyph is the stylesheet's, from the state the server renders, so
      the button holds only the words and every click lands on it. A divider with
      no number to open it by is plain words in the same column. */
-  .work-toggle{display:flex;align-items:baseline;width:100%;min-width:0;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);text-align:left;overflow-wrap:anywhere;}
+  .work-toggle{display:flex;align-items:baseline;width:100%;min-width:0;box-sizing:border-box;margin:0;padding:4px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);text-align:left;overflow-wrap:anywhere;}
+  .work-toggle::after{margin-left:auto;padding-left:12px;white-space:nowrap;}
+  .work-ok::after{content:"ok";color:var(--color-added-text);}
+  .work-failed::after{content:"failed";color:var(--color-danger-text);}
+  .work-stopped::after{content:"interrupted";color:var(--color-signal-text);}
   button.work-toggle{cursor:pointer;}
   button.work-toggle::before{content:"▸";display:inline-block;width:1.2em;flex:0 0 auto;font-size:11px;}
   button.work-toggle[aria-expanded="true"]::before{content:"▾";}
   button.work-toggle:hover{color:var(--color-fg);}
-  span.work-toggle{padding-left:1.2em;}
+  span.work-toggle{padding-left:10px;}
   .work-hidden{margin:0;padding:2px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
-  .work-items{display:flex;flex-direction:column;gap:1px;padding:2px 0 6px 1.2em;}
-  .work.open{display:flex;flex-direction:column;gap:1px;}
+  .work-items{display:flex;flex-direction:column;gap:4px;padding:4px 0 6px 0;}
+  .work.open{display:flex;flex-direction:column;gap:4px;}
   .step{min-width:0;}
   .step.flat{padding:2px 0 2px 1.2em;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  /* A tool call is one bordered line in the code face, as the final design
+     draws it, with its outcome as a word at the right edge: `ok`, `failed` or
+     `running`, in the colour of the outcome. The line is the call's host
+     (`tool-line`, so no rule names `.step` and sets the code face): a call with
+     a body is a <loom-expand>, whose own button takes the box in its shadow
+     root, and one without is a plain div. The glyph the call used to lead with
+     is left out, since the word says the same. */
+  loom-expand.tool-line,div.tool-line{font:12px/1.2 var(--font-mono);color:var(--color-fg-quiet);}
+  div.tool-line.flat{padding:4px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  :host(.tool-line) .expand-toggle{box-sizing:border-box;padding:4px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:inherit;}
+  .tool-line .row-head{flex:1 1 auto;}
+  .tool-line .row-head .mono,.tool-line .row-head .change{line-height:1.2;}
+  .tool-line .row-head .glyph{display:none;}
+  .tool-line .row-head::after{margin-left:auto;padding-left:12px;white-space:nowrap;}
+  .tool-line.done .row-head::after{content:"ok";color:var(--color-added-text);}
+  .tool-line.failed .row-head::after{content:"failed";color:var(--color-danger-text);}
+  .tool-line.pending .row-head::after{content:"running";color:var(--color-fg-quiet);}
   .row-head{display:flex;align-items:baseline;gap:6px;min-width:0;}
   .row-head .glyph{flex:0 0 auto;width:1em;text-align:center;font-size:12px;}
   .step.done .glyph{color:var(--color-added-text);}
   .step.failed .glyph{color:var(--color-danger-text);}
   .step.pending .glyph{color:var(--color-current);animation:pulse 1.4s infinite;}
   .row-head .running-time{flex:0 0 auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
-  .busy-dot{display:inline-block;margin-right:6px;color:var(--color-current);animation:pulse 1.4s infinite;}
   .row-head .verb{flex:0 0 auto;}
   .row-head .subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .row-head .mono{font:12px/1.5 var(--font-mono);}
@@ -1186,10 +1521,15 @@
   .row-body .line{padding-left:0;}
   /* A spawn and a result are lines of the timeline, not cards: who did what,
      and for a result the first line of the report, opened to the rest. */
-  .who.spawn{display:block;margin:0;}
-  .spawn-purpose{color:var(--color-fg);overflow-wrap:anywhere;}
+  .who.spawn,.result > .who{display:flex;align-items:baseline;gap:6px;min-width:0;box-sizing:border-box;margin:0;padding:4px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
+  .who.spawn::after,.result > .who::after{margin-left:auto;padding-left:12px;white-space:nowrap;}
+  .spawn-started::after{content:"started";}
+  .spawn-failed::after{content:"failed";color:var(--color-danger-text);}
+  .result > .who::after{content:"settled";color:var(--color-added-text);}
+  .who.spawn button.tag,.result > .who button.tag{padding:0;border:0;background:none;font:inherit;}
+  .spawn-purpose{color:inherit;overflow-wrap:anywhere;}
   .result{min-width:0;}
-  .result-line{margin:0;color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .result-line{margin:2px 0 0 0;color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);overflow-wrap:anywhere;}
   .step.reading .subject{color:var(--color-fg);}
   .result-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   /* A one-line Markdown preview (markdown_view.line): the finished row's line
@@ -1244,7 +1584,7 @@
   .pc-caret .pc-t{color:var(--color-danger-text);}
   .pc-note .pc-t{color:var(--color-fg-quiet);white-space:pre-wrap;}
   .pc-errh{margin:0 0 2px 0;color:var(--color-danger-text);font:13px/1.5 var(--font-mono);overflow-wrap:anywhere;}
-  .pc-loc{margin:0 0 6px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  .pc-loc{margin:0 0 6px 0;color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
   .pc-all{margin-top:6px;}
   summary.pc-button{display:inline-block;cursor:pointer;list-style:none;border:1px solid var(--color-divider);border-radius:5px;padding:2px 8px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   summary.pc-button:hover{color:var(--color-fg);}
@@ -1444,7 +1784,7 @@
   .session-rename .rename-status{flex:1 0 100%;margin:0;}
   .session-rename .rename-status:empty{display:none;}
   .session-group p,.session-group ul{margin:0;}
-  .session-workspace{color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  .session-workspace{color:var(--color-fg-quiet);font:12px/1.2 var(--font-mono);overflow-wrap:anywhere;}
   ul.session-jobs,ul.session-viewers{list-style:none;padding:0;}
   .session-quiet{color:var(--color-fg-quiet);}
   /* The operator's list of remembered permissions, the Session pane's last
@@ -1480,7 +1820,7 @@
   .proposal-settled{margin:4px 0 0 0;}
   .proposals-notice{margin:0 0 8px 0;color:var(--color-danger-text);}
   button.proposal-approve,button.proposal-reject{font-size:12px;}
-  .tab-badge.tab-badge-proposals{background:var(--color-signal);color:var(--color-on-danger);}
+  .tab-badge.tab-badge-proposals{background:var(--color-signal);color:var(--color-on-signal);}
   /* The strand panel's Evolution tab (web_view/view/evolution,
      protocol-change/099), the panel's seventh child. Each candidate is a tinted
      box with a hairline border, and the question a change asks replaces the
@@ -1704,14 +2044,14 @@
   /* The approvals sit in the dock above the composer. Their height is
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */
-  section.approvals{margin:0 0 6px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-signal);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
+  section.approvals{margin:0 24px 8px 24px;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
+  article.approval-card{background:color-mix(in srgb,var(--color-signal) 5%,var(--color-bg-raised));border:1px solid color-mix(in srgb,var(--color-signal) 55%,var(--color-divider));border-radius:10px;padding:10px 14px;margin:0 0 6px 0;}
   article.approval-card:last-child{margin-bottom:0;}
-  .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.4 var(--font-sans);}
+  .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.45 var(--font-sans);}
   .approval-strand{font-weight:600;}
   .approval-question{margin:0 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
-  pre.approval-action{margin:0 0 6px 0;padding:6px 8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
-  ul.approval-authority{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
+  pre.approval-action{margin:6px 0;padding:6px 10px;border-radius:6px;background:var(--color-code);white-space:pre-wrap; overflow-wrap:anywhere;font:12px/1.45 var(--font-mono);}
+  ul.approval-authority{margin:4px 0 8px 0;padding-left:18px;color:var(--color-fg-quiet);font:12px/1.6 var(--font-mono);}
   /* Grants a child's request asked for that its spawner's approval ceiling does
      not admit: listed with the reason, greyed, and not part of what Allow carries. */
   ul.approval-outside{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);opacity:.6;}
@@ -1742,7 +2082,7 @@
   .nudge-more{margin:4px 0 0 0;color:var(--color-fg-quiet);font-size:12px;}
   /* The operator's session controls, in the dock above the approvals: the
      goal's buttons and the fork form. Stop and Set goal left the page. */
-  section.controls{flex:0 0 auto;margin:12px 0 0 0;padding-top:10px;border-top:1px solid var(--color-divider);font-size:13px;}
+  section.controls{flex:0 0 auto;margin:12px 24px 0 24px;padding-top:10px;border-top:1px solid var(--color-divider);font-size:13px;}
   .control-row{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
   button.control-clear{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.control-pause,button.control-resume{border-color:var(--color-signal);color:var(--color-signal-text);}
@@ -1761,10 +2101,10 @@
      the frame. It is the last item of the page's column and the transcript
      takes what is left above it, so a card appearing or the editor growing
      shrinks the transcript and never covers its last row. */
-  footer.dock{flex:0 0 auto;margin-top:8px;padding:8px 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
-  form.composer{position:relative;margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:12px;padding:0;}
-  .to{display:flex;gap:8px;align-items:center;padding:8px 12px 0;font-size:12px;color:var(--color-fg-quiet);}
-  .to-tag{border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;padding:0 5px;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);}
+  footer.dock{flex:0 0 auto;margin-top:0;padding:0 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
+  form.composer{position:relative;margin:0;background:transparent;border:0;border-top:1px solid var(--color-divider);border-radius:0;padding:10px 24px 0 24px;}
+  .to{display:flex;gap:4px;align-items:baseline;padding:0;margin:0 0 3px 0;font-size:12px;color:var(--color-fg-quiet);}
+  .to-tag{border:0;padding:0;color:var(--color-fg);font:600 12px/1.45 var(--font-sans);}
   .outlook{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--color-divider);border-radius:999px; padding:0 8px;color:var(--color-fg-quiet);font:11px/1.6 var(--font-sans);}
   .outlook::before{content:"";width:9px;height:9px;border-radius:50%;border:2px solid var(--color-divider);}
   .outlook.ring-head::before{border-color:var(--color-current);}
@@ -1772,7 +2112,8 @@
   .outlook.ring-tail::before{border-color:var(--color-divider);border-top-color:var(--color-signal);}
   .outlook.ring-idle::before{border-color:var(--color-fg-faint);}
   .outlook.ring-elapsed::before{border-style:dashed;border-color:var(--color-fg-quiet);}
-  .editor textarea{field-sizing:content;min-height:3em;max-height:30vh;width:100%;box-sizing:border-box;background:transparent;color:var(--color-fg);border:0;border-radius:0;padding:6px 12px 8px;font:14px/1.5 var(--font-sans);resize:none;}
+  .editor{border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);}
+  .editor textarea{field-sizing:content;min-height:52px;max-height:30vh;width:100%;box-sizing:border-box;background:transparent;color:var(--color-fg);border:0;border-radius:0;padding:8px 10px;font:14px/1.45 var(--font-sans);resize:none;}
   .editor textarea:focus-visible{outline:none;}
   form.composer:has(textarea:focus-visible){border-color:var(--color-fg-quiet);}
   /* The composer's element and its list of commands. The list is drawn in
@@ -1810,7 +2151,8 @@
   .attachment-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   button.attachment-remove{padding:0 8px;border-radius:999px;font-size:12px;border-color:transparent;color:var(--color-fg-quiet);}
   button.attachment-remove:hover{color:var(--color-danger-text);}
-  .composer-actions{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:6px 10px;border-top:1px solid var(--color-divider);color:var(--color-fg-quiet);font-size:12px;}
+  .composer-actions{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;padding:12px 0 0 0;border-top:0;color:var(--color-fg-quiet);font-size:12px;}
+  .composer-actions .hint{font-size:12.5px;}
   /* The attach element and the notice flow in the footer as its own
      children: their hosts draw no box, so the button, the chips and the
      notice are items of the footer row. The chips go first, on a row of
@@ -1833,7 +2175,7 @@
   .notice:not(.warned){animation:loom-fade 4s forwards;}
   @keyframes loom-fade{0%,75%{opacity:1;}100%{opacity:0;}}
   /* One line of the goal in the dock, while a goal is active or paused. */
-  section.dock-goal{flex:0 0 auto;margin:0 0 8px 0;padding:0 4px;font-size:13px;}
+  section.dock-goal{flex:0 0 auto;margin:0 24px 8px 24px;padding:0;font-size:13px;}
   /* An approval decision in the lane, as a who line. */
   p.decided{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   .decided-who{color:var(--color-fg);font-weight:500;}
@@ -1841,19 +2183,20 @@
   p.decided-allowed .decided-tool{color:var(--color-added-text);}
   button{font:13px/1.4 var(--font-sans);border-radius:6px;padding:4px 10px;cursor:pointer; border:1px solid var(--color-divider);background:var(--color-bg);color:var(--color-fg);}
   /* One filled primary per region, the rest quiet outlines. */
-  button.send,button.queue{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
-  button.send:hover:not(:disabled),button.queue:hover:not(:disabled){background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  button.send{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
+  button.send,button.queue,button.steer{padding:6px 12px;font-weight:550;}
+  button.queue,button.steer{background:var(--color-bg-raised);border-color:var(--color-divider);color:var(--color-fg);}
+  button.queue:hover:not(:disabled),button.steer:hover:not(:disabled){border-color:var(--color-fg-faint);}
+  button.send:hover:not(:disabled){background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
   form.composer button[type="submit"]:disabled{opacity:.45;cursor:default;}
-  button.steer{border-color:var(--color-signal);color:var(--color-signal-text);}
-  button.steer:hover{background:color-mix(in srgb,var(--color-signal) 10%,transparent);}
   /* A status pill (the connected state in the bar). */
   .pill{display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:999px;font:12px/1.6 var(--font-sans);white-space:nowrap;}
   .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto;}
   .pill.online{background:var(--color-pill-ok-bg);color:var(--color-added-text);}
   .pill.pending{background:var(--color-pill-wait-bg);color:var(--color-signal-text);}
   .pill.ended{background:var(--color-pill-bad-bg);color:var(--color-danger-text);}
-  button.approval-deny{border-color:var(--color-danger);color:var(--color-danger-text);}
-  button.approval-allow{border-color:var(--color-added);color:var(--color-added-text);}
+  button.approval-deny{padding:3px 9px;border-color:color-mix(in srgb,var(--color-danger) 55%,var(--color-divider));background:var(--color-bg-raised);color:var(--color-danger-text);font:550 12px/1.4 var(--font-sans);}
+  button.approval-allow{padding:3px 9px;border-color:color-mix(in srgb,var(--color-added) 55%,var(--color-divider));background:var(--color-bg-raised);color:var(--color-added-text);font:550 12px/1.4 var(--font-sans);}
   button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   /* The new-session view (web_view/view/new_session): a centred composer, the
      places a session worked in, three chips and a sentence. It fills the centre
@@ -1977,8 +2320,9 @@
      its commands run, on a row of its own beneath the title, from the same left
      edge as the Home chip. The tags are the bar's chips: 26px tall, 6px radius,
      a hairline and no fill. */
-  .placement-strip{display:flex;flex-wrap:wrap;gap:6px;flex:1 0 100%;margin:0;}
-  .placement-tag{display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;height:26px;padding:0 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;font:12px/1 var(--font-sans);}
+  .placement-strip{display:inline-flex;flex-wrap:wrap;gap:0 10px;margin:0;}
+  .placement-tag{display:inline-flex;align-items:baseline;gap:6px;box-sizing:border-box;padding:0;border:0;background:transparent;font:12.5px/1.45 var(--font-sans);}
+  .placement-tag::before{content:"\00b7";color:var(--color-fg-quiet);}
   .placement-tag{max-width:100%;min-width:0;}
   .placement-label{flex:0 0 auto;color:var(--color-fg-quiet);white-space:nowrap;}
   .placement-where{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -1986,7 +2330,7 @@
      for the window where the sidebar is a drawer. <loom-shell> carries it as
      `waiting`, a number the component counted, capped at ten. */
   .toggle-sidebar{position:relative;}
-  :host([waiting]) .toggle-sidebar::after{content:"";position:absolute;top:5px;right:3px;box-sizing:border-box;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--color-signal);color:var(--color-on-danger);font:700 10.5px/16px var(--font-sans);text-align:center;}
+  :host([waiting]) .toggle-sidebar::after{content:"";position:absolute;top:5px;right:3px;box-sizing:border-box;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--color-signal);color:var(--color-on-signal);font:700 10.5px/16px var(--font-sans);text-align:center;}
   :host([waiting="1"]) .toggle-sidebar::after{content:"1";}
   :host([waiting="2"]) .toggle-sidebar::after{content:"2";}
   :host([waiting="3"]) .toggle-sidebar::after{content:"3";}
@@ -2010,9 +2354,6 @@
      session switcher lists it as a place and presses it. The bar's product name is
      the sidebar's top line where the sidebar is a column. */
   .session-head .home-admin{display:none;}
-  @media (min-width:1212px){
-    loom-shell[sidebar="listed"] .session-head .brand{display:none;}
-  }
   /* The narrow frames. Below 1212px the sidebar's column is dropped, and the
      sidebar is a 232px drawer over the page, opened by its bar button or the
      shortcut, behind a scrim that a click closes (web_client/shell). The
@@ -2074,6 +2415,160 @@
     .session-open,li.session:not(:has(>.session-open)){min-height:48px;}
   }
   @media (prefers-reduced-motion:reduce){*:not(.arming):not(.arm-note){transition:none!important;animation:none!important;}}
+
+  /* The live rail, "Lifted from this session" (web_view/view/lifted). It is the
+     Strands pane's last child, so the paths the socket admits do not move, and
+     it is ordered first on screen: the pane is a flex column read in visual
+     order, as the Session pane is. The final design draws it as the right
+     column: a "Needs you" group whose cards carry the owner's border, then an
+     "Insights" group, each card a raised surface with a kind chip, the strand,
+     and a "in stream" link on one line, then the row's words. A needs-you card
+     has the signal border only. An insight is whole until pressed once, then
+     folded to a line on the page's background. Neither has an accent bar or a
+     shadow. The pane's title stays for assistive technology. */
+  .pane-strands{display:flex;flex-direction:column;reading-flow:flex-visual;}
+  .pane-strands > section.lifted{order:-1;margin:0 0 16px 0;min-width:0;font:12px/1.45 var(--font-sans);}
+  .pane-strands > section.lifted > .panel-title{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+  .lift-groups{display:flex;flex-direction:column;gap:0;min-width:0;}
+  .lift-status{margin:8px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .lift-group-title{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:6px 4px 8px 4px;font:600 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  .lift-group-title .lift-gloss{font-weight:400;letter-spacing:0;text-transform:none;}
+  .lift-needs .lift-group-title{color:var(--color-signal-text);}
+  ul.lift-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;min-width:0;}
+  .lift-group + .lift-group .lift-group-title{margin-top:10px;}
+  li.lift{min-width:0;padding:9px 12px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);}
+  li.lift-pinned{border-color:color-mix(in srgb,var(--color-signal) 45%,var(--color-divider));}
+  li.lift-folded{background:transparent;}
+  .lift-press{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;width:100%;box-sizing:border-box;margin:0;padding:0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);text-align:left;cursor:pointer;}
+  .lift-press:not([data-loom-jump]){cursor:default;}
+  .lift-press:focus-visible{outline:2px solid var(--color-current);outline-offset:3px;}
+  .lift-kind{grid-column:1;grid-row:1;padding:0 6px;border:1px solid var(--color-divider);border-radius:6px;color:var(--color-fg-quiet);font:600 11px/18px var(--font-sans);white-space:nowrap;}
+  .lift-source{grid-column:2;grid-row:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);}
+  .lift-press[data-loom-jump]::after{content:"\2191  in stream";grid-column:3;grid-row:1;color:var(--color-current);white-space:nowrap;}
+  .lift-head{grid-column:1 / -1;grid-row:2;min-width:0;margin:4px 0 0 0;color:var(--color-fg);font:13px/1.45 var(--font-sans);overflow-wrap:anywhere;}
+  .lift-ask .lift-head{margin:4px 0 8px 0;font-weight:550;font-size:13.5px;}
+  .lift-go{grid-column:1 / -1;margin-top:6px;color:var(--color-signal-text);font-weight:500;}
+  .lift-dock{justify-self:start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
+  .lift-approval .lift-press[data-loom-jump]::after{content:none;}
+  .lift-folded .lift-kind,.lift-folded .lift-source{color:var(--color-fg-quiet);}
+  .lift-folded .lift-head{color:var(--color-fg-quiet);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .lift-note{margin:14px 4px 0 4px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
+
+  /* A card's actions (view/lifted draws them as the card's last child): the
+     final design's small buttons, "Retry the last step" on a stuck strand and
+     "File issue" and "Dismiss" on a find, in a row that wraps. They sit under
+     the card's own button, never inside it. While one is with the daemon the
+     row holds a quiet word instead. */
+  .lift-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0 0 0;}
+  .lift-act{margin:0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:550 12px/1.4 var(--font-sans);cursor:pointer;}
+  .lift-act:hover{border-color:var(--color-fg-faint);}
+  .lift-act:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .lift-sending{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+
+  /* An ask's form inside its card (view/attention_thread draws it; the rail
+     only dresses it). An option is a raised block: its number in the code
+     face, its label in semibold, its note beneath and, where the ask marks one,
+     the "recommended" pill at the right. The radio fills the block, hidden but
+     still the control, so the block is the target and the keyboard focus ring
+     is the block's. A question's legend repeats the card's words when it is
+     the only one, so it is kept for assistive technology and not drawn. */
+  .lift .inbox-questions{gap:6px;margin:0;}
+  .lift fieldset.inbox-question{gap:6px;margin:0;padding:0;border:0;counter-reset:opt;}
+  .lift fieldset.inbox-question:only-of-type > legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
+  .lift fieldset.inbox-question > legend{padding:0;font:550 13px/1.4 var(--font-sans);}
+  .lift label.inbox-option{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;min-height:0;margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);counter-increment:opt;cursor:pointer;}
+  .lift label.inbox-option::before{content:counter(opt);grid-column:1;grid-row:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
+  .lift label.inbox-option > input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
+  .lift label.inbox-option > span{grid-column:2;grid-row:1;font:600 13.5px/1.45 var(--font-sans);}
+  .lift label.inbox-option .inbox-mark{grid-column:3;grid-row:1;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);}
+  .lift label.inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .lift label.inbox-option:hover{border-color:var(--color-fg-faint);}
+  .lift label.inbox-option:has(> input:checked){border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));}
+  .lift label.inbox-option:has(> input:focus-visible){outline:2px solid var(--color-current);outline-offset:1px;}
+  .lift .inbox-questions .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:13px/1.45 var(--font-sans);}
+  .lift .inbox-questions .place-send{align-self:flex-start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-bg-raised);color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
+
+  /* A lifted row in the stream is tagged `lifted · Kind` under its words, and
+     tinted across the row only when it needs the owner, with the tint and the
+     row's gutter running 8px past the stream's edge as the final design draws
+     it. A row a jump lands on is marked for a moment (web_client/follow). */
+  .lift-tag{display:block;margin-top:2px;color:var(--color-fg-quiet);font:600 10.5px/1.4 var(--font-sans);}
+  .tl-row.needs-you{margin:0 -8px;padding-left:62px;padding-right:8px;background:color-mix(in srgb,var(--color-signal) 9%,transparent);}
+  .tl-row.needs-you > .tl-time{left:8px;}
+  .tl-row.needs-you > .dot{left:42px;}
+  .tl-row.needs-you > .lift-tag{color:var(--color-signal-text);}
+  .tl-row[data-loom-jumped]{background:color-mix(in srgb,var(--color-current) 14%,transparent);outline:1px solid color-mix(in srgb,var(--color-current) 60%,transparent);outline-offset:0;}
+
+  /* The phone's bar and sheet. Wide frames draw the rail in the panel and hide
+     these; below 980px the panel is a row of cards, the rail is hidden, and the
+     bar sits above the dock as one line, "2 need you · 3 insights" and "Lifted
+     ▴" at its right, on a tint of the signal colour. It opens the same rows as
+     a sheet that rises from the bar over the stream and ends in rounded top
+     corners, so the dock and the bar stay in place and the bar closes it. It
+     is a native details element, so opening it is the browser's. */
+  details.lift-sheet{display:none;}
+  @media (max-width:979px){
+    .pane-strands > section.lifted{display:none;}
+    details.lift-sheet{position:relative;display:block;order:1;flex:0 0 auto;margin:0;font:13px/1.45 var(--font-sans);}
+    main.centre > footer.dock,main.centre > .observer-bar{order:2;}
+    summary.lift-bar{list-style:none;cursor:pointer;box-sizing:border-box;min-height:44px;display:flex;align-items:center;gap:8px;width:100%;padding:8px 14px;border-top:1px solid var(--color-divider);background:color-mix(in srgb,var(--color-signal) 10%,var(--color-bg));color:var(--color-fg-quiet);font-size:13px;}
+    summary.lift-bar::-webkit-details-marker{display:none;}
+    summary.lift-bar:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+    .lift-bar-need{color:var(--color-signal-text);font-weight:600;}
+    .lift-bar-more{margin-left:auto;color:var(--color-current);}
+    /* Closed, the bar says the counts and "Lifted ▴". Open, the bar is the
+       sheet's header, "Lifted from this session" and "Close ▾", and the sheet
+       sits over the dock from the stream's bottom edge: the details element
+       leaves the flow, a margin on the dock keeps the stream where it was, and
+       the body is the sheet's scrolling part. The sheet's height is bounded by
+       the centre, so it never rises under the top bar. */
+    .lift-bar-title,.lift-bar-close{display:none;}
+    main.centre{position:relative;}
+    main.centre:has(> details.lift-sheet[open]) > footer.dock{margin-top:44px;}
+    details.lift-sheet[open]{position:absolute;left:0;right:0;bottom:0;z-index:6;display:flex;flex-direction:column;box-sizing:border-box;max-height:calc(100% - 12px);border-top:1px solid var(--color-divider);border-radius:14px 14px 0 0;background:var(--color-bg-sunk);}
+    details.lift-sheet[open] > summary.lift-bar{flex:0 0 auto;border-top:0;background:transparent;padding:16px 16px 8px 16px;color:var(--color-fg);font:600 15px/1.4 var(--font-sans);}
+    details.lift-sheet[open] .lift-bar-need,details.lift-sheet[open] .lift-bar-count,details.lift-sheet[open] .lift-bar-more{display:none;}
+    details.lift-sheet[open] .lift-bar-title{display:inline;}
+    details.lift-sheet[open] .lift-bar-close{display:inline;margin-left:auto;color:var(--color-fg-quiet);font:400 14px/1.4 var(--font-sans);}
+    details.lift-sheet[open] > .lift-sheet-body{position:static;flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto;padding:4px 16px 20px 16px;border:0;border-radius:0;background:transparent;}
+    .lift-sheet .lift-press{min-height:0;}
+  }
+  /* The phone keeps the stream's gutter and narrows its margins to 14px. */
+  @media (max-width:640px){
+    main.centre > .stream-head{padding-left:14px;padding-right:14px;}
+    loom-follow.follow > *{padding-left:14px;padding-right:14px;}
+    section.approvals,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
+    form.composer{padding-left:14px;padding-right:14px;}
+  }
+
+  /* The phone's bar (final-phone-live, final-phone-inbox). Below 640px the bar
+     is `loom`, `‹ Inbox`, the session's name, `● live` and the pill that counts
+     what needs the owner, and nothing else: the chip that says who the page is
+     for, Search, Theme, the workspace and the panel's toggle are folded away. A
+     session's page also folds away the sidebar's toggle, since `‹ Inbox` is its
+     way to the other sessions, and the strand panel, whose Strands, Changes,
+     Trace and Session panes would otherwise stack above the stream; the
+     stream comes first, and the rail is the sheet above the composer. Home keeps
+     the sidebar's toggle because the folders live there. The name takes the
+     slack and ends in an ellipsis, so a long one never pushes the pill off. */
+  @media (max-width:640px){
+    :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme,:host(.loom-inbox) .toggle-panel{display:none;}
+    :host(.loom-session:not(.loom-home)) .toggle-sidebar,:host(.loom-session:not(.loom-home)) .region-panel{display:none;}
+    loom-shell.loom-inbox .session-head .role-chip,loom-shell.loom-inbox .session-head .home-who,loom-shell.loom-inbox .session-head .workspace{display:none;}
+    loom-shell.loom-inbox .session-head{gap:0 10px;padding-right:12px;}
+    loom-shell.loom-session:not(.loom-home) .session-head{padding-left:16px;}
+    loom-shell.loom-inbox .session-head .session-title{flex:0 1 auto;min-width:0;}
+    loom-shell.loom-inbox .session-head .session-title h1{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    loom-shell.loom-inbox .session-head .need-pill,loom-shell.loom-inbox .session-head .brand,loom-shell.loom-inbox .session-head .home-link,.live-mark{flex:0 0 auto;}
+  }
+  /* The review's count chips and the last command share one line where there is
+     room: the counts keep their size and the command's chip takes what is left,
+     cut with an ellipsis. On a phone the chips wrap as before. */
+  @media (min-width:641px){
+    .review-stat .inbox-pills{flex-wrap:nowrap;}
+    .review-stat .inbox-pill{flex:0 0 auto;}
+    .review-stat .inbox-pill.brief-command{flex:0 1 auto;}
+  }
 }
 
 /* Explicit result pages keep large lines readable within the viewport. */

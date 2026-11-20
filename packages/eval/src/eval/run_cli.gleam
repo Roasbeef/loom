@@ -92,6 +92,7 @@ pub fn base_settings(
     profile_desk: None,
     go_caches: None,
     first_prompt: None,
+    attention_report: None,
     peer_directory: None,
     codemode_sockets: Some(root <> "/run"),
     secrets:,

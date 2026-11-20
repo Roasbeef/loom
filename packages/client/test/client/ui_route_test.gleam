@@ -14,6 +14,7 @@
 
 import broker/token
 import client/daemon/admin as access_admin
+import client/daemon/attention_door
 import client/daemon/domain as domain_service
 import client/daemon/limits
 import client/daemon/manager
@@ -23,6 +24,7 @@ import client/daemon/server
 import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_origin
+import client/daemon/ui_projects
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/daemon_claim_test
@@ -43,6 +45,7 @@ import client/session_directory
 import client/session_movers
 import client/ui_result_test
 import core/agency_limits
+import core/attention
 import core/clock
 import core/ids
 import core/json
@@ -64,6 +67,7 @@ import host/claim
 import host/login
 import mist
 import session_view/move_candidates
+import session_view/operator as session_operator
 import session_view/transcript_image
 import simplifile
 import sqlight
@@ -87,9 +91,11 @@ import web_view/names
 import web_view/orchestrators as relayed_roster
 import web_view/page
 import web_view/peer_links
+import web_view/projects as page_projects
 import web_view/renames
 import web_view/sessions
 import web_view/signins
+import web_view/thread_send
 import weft
 import weft/poll
 
@@ -242,6 +248,7 @@ fn fixture_lasting_with_root(
     as "the fixture's remote origin parses"
   let config =
     server.Config(
+      worktree: fn(_) { None },
       peer_endpoint: fn(_) { None },
       daemon:,
       domain_configuration: "",
@@ -381,9 +388,10 @@ fn fixture_lasting_with_root(
             Switching ->
               case
                 req.get_header(request, "x-switch-target"),
-                req.get_header(request, "x-create-workspace")
+                req.get_header(request, "x-create-workspace"),
+                req.get_header(request, "x-send-session")
               {
-                Ok(target), _ ->
+                Ok(target), _, _ ->
                   opening_from_home(
                     sessions,
                     request,
@@ -392,7 +400,7 @@ fn fixture_lasting_with_root(
                     open,
                     target,
                   )
-                Error(Nil), Ok(workspace) ->
+                Error(Nil), Ok(workspace), _ ->
                   creating_from_home(
                     sessions,
                     request,
@@ -401,7 +409,9 @@ fn fixture_lasting_with_root(
                     open,
                     workspace,
                   )
-                Error(Nil), Error(Nil) ->
+                Error(Nil), Error(Nil), Ok(session) ->
+                  sending_from_home(request, attachment, seen, open, session)
+                Error(Nil), Error(Nil), Error(Nil) ->
                   with_page(
                     homed(
                       ready.state_root,
@@ -790,6 +800,65 @@ fn creating_from_home(
         Ok(creations.Unstarted(..) as unstarted) ->
           reported(stub(292, string.inspect(unstarted)), reach)
         Ok(creations.Unsent(path)) -> reported(stub(293, path), reach)
+        Error(Nil) -> stub(298, "the task never answered")
+      }
+    }
+  }
+}
+
+// The home's upgrade as the inbox's message field asks: the capability the
+// socket hands a page (`home_thread_send_capability`) is consulted first, and a
+// page with none is answered 289 unless `x-send-force` asks the daemon anyway, as
+// a forged message from a page that was wrongly handed the capability would. The
+// request is run in the task the page uses (`thread_send_task`) over the
+// daemon's own resolution of the session (`message_to`), with no gateway to
+// reach, and answered 290 and the answer if it was delivered, or 291 and the
+// refusal. The text, the delivery and the ended page come from headers.
+fn sending_from_home(
+  request,
+  attachment: server.HomeAttachment(String),
+  seen: server.PageGrant,
+  open: fn() -> Result(Int, Nil),
+  session: String,
+) {
+  let ceiling = seen.grant.ceiling
+  let open = case req.get_header(request, "x-switch-ended") {
+    Ok(_) -> fn() { Error(Nil) }
+    Error(Nil) -> open
+  }
+  let standing = ui_socket.home_standing(attachment, seen)
+  let text = result.unwrap(req.get_header(request, "x-send-text"), "go on")
+  let delivery = case req.get_header(request, "x-send-delivery") {
+    Ok("steer") -> session_operator.Steer
+    Ok(_) | Error(Nil) -> session_operator.Prompt
+  }
+  let ask = fn(session, text, delivery, deliver) {
+    ui_socket.thread_send_task(
+      standing,
+      open,
+      ui_socket.message_to(attachment, fn(_) { Error(Nil) }),
+      session,
+      text,
+      delivery,
+      deliver,
+    )
+  }
+  let capability =
+    ui_socket.home_thread_send_capability(attachment.principal, ceiling, ask)
+  let asked = case capability, req.get_header(request, "x-send-force") {
+    Some(ask), _ -> Some(ask)
+    None, Ok(_) -> Some(ask)
+    None, Error(Nil) -> None
+  }
+  case asked {
+    None -> stub(289, "no capability")
+    Some(ask) -> {
+      let answers = process.new_subject()
+      ask(session, text, delivery, fn(answer) { process.send(answers, answer) })
+      case process.receive(answers, 10_000) {
+        Ok(thread_send.Delivered(_) as answer) ->
+          stub(290, string.inspect(answer))
+        Ok(thread_send.Refused(refusal)) -> stub(291, string.inspect(refusal))
         Error(Nil) -> stub(298, "the task never answered")
       }
     }
@@ -2312,6 +2381,43 @@ pub fn the_nonce_is_kept_per_page_and_the_bundle_assigns_the_location_test() {
   assert string.contains(bundle, "location.assign(")
   assert !string.contains(bundle, "location.replace(")
   assert string.contains(bundle, "history.back()")
+}
+
+// The shell's fallback paragraph is removed once the component has mounted, so
+// text extraction never reads a false disconnect from a connected page, and it
+// stays when the component never mounts.
+pub fn the_page_script_removes_the_fallback_once_the_component_mounts_test() {
+  fixture(fn(_ready, port, _credential) {
+    let script = get(port, "/ui/assets/web_view_page.js", [host(port)])
+    assert script.status == 200
+    assert string.contains(script.body, "\"lustre:mount\"")
+    assert string.contains(script.body, "querySelector(\"loom-waiting\")")
+    assert string.contains(script.body, "waiting.remove()")
+  })
+}
+
+// The page's bundles are served at fixed, unversioned URLs, so a browser that
+// kept one across a daemon rebuild would run the old client against the new
+// daemon. Every asset is `no-store`, which a browser never reuses, and this
+// holds each of the ones a page loads to it.
+pub fn every_script_and_the_stylesheet_are_served_uncached_test() {
+  fixture(fn(_ready, port, _credential) {
+    list.each(
+      [
+        "web_client.mjs",
+        "web_client.css",
+        "web_view_page.js",
+        "web_view_enter.js",
+        "lustre-server-component-5.7.1.mjs",
+      ],
+      fn(name) {
+        let asset = get(port, "/ui/assets/" <> name, [host(port)])
+        assert asset.status == 200
+        assert list.key_find(asset.headers, "cache-control") == Ok("no-store")
+        assert list.key_find(asset.headers, "etag") == Error(Nil)
+      },
+    )
+  })
 }
 
 // Referrer-Policy is load-bearing: the exchange's URL carries the ticket and
@@ -5174,6 +5280,460 @@ pub fn an_ended_home_creates_nothing_test() {
     assert refused.body == "NotOwner"
     assert session_count(ready, credential) == before
   })
+}
+
+// The whole path through the router for the inbox's message field
+// (protocol-change/118): the owner's operating home resolves the session as its
+// principal. A session the registry does not hold is `NotHeld`, and one it holds
+// that is saved, or whose gateway is not running, is `NotResident`, so the page
+// can word each. Nothing is sent by either, since there is no gateway to send to.
+pub fn an_owners_home_resolves_the_session_it_sends_to_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "send-held", 1201)
+    let home = enter(port, operator_home(port, credential))
+    let send = fn(target) {
+      home_socket(port, home, [#("x-send-session", target)])
+    }
+
+    // Held and resident, with no gateway behind it in this rig.
+    let resident = send(session)
+    assert resident.status == 291
+    assert resident.body == "NotResident"
+
+    // Held and saved.
+    saved(ready, session)
+    let stopped = send(session)
+    assert stopped.status == 291
+    assert stopped.body == "NotResident"
+
+    // Not held at all.
+    let unknown = send("01HXNOSUCHSESSION")
+    assert unknown.status == 291
+    assert unknown.body == "NotHeld"
+  })
+}
+
+// A member's operator home and an observer's home are handed no capability, and
+// a forged send that reaches the daemon anyway is refused from the grant the page
+// holds, whatever the frame said. A page that has ended is refused the same way.
+pub fn a_members_and_an_observers_home_send_nothing_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "send-refused", 1202)
+    let operator = [#("page", json.String("operator"))]
+    let grant = member(ready, "ui-sender", session, access.Operator)
+    let members_home = enter(port, home_link(port, grant, operator))
+    let observers_home = enter(port, home_link(port, credential, []))
+
+    list.each([members_home, observers_home], fn(home) {
+      let plain = home_socket(port, home, [#("x-send-session", session)])
+      assert plain.status == 289
+      let forced =
+        home_socket(port, home, [
+          #("x-send-session", session),
+          #("x-send-force", "yes"),
+        ])
+      assert forced.status == 291
+      assert forced.body == "NotHeld"
+    })
+
+    let owners_home = enter(port, operator_home(port, credential))
+    let ended =
+      home_socket(port, owners_home, [
+        #("x-send-session", session),
+        #("x-switch-ended", "yes"),
+      ])
+    assert ended.status == 291
+    assert ended.body == "NotHeld"
+  })
+}
+
+// A draft with nothing in it, or over the bound, is refused by the daemon
+// whatever the page checked, and the words are the gateway-side refusal's, not a
+// resolution failure: the session is never looked up.
+pub fn an_empty_or_oversized_message_is_not_sent_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "send-bounds", 1203)
+    let home = enter(port, operator_home(port, credential))
+
+    list.each(["   ", "", string.repeat("m", 16_385)], fn(text) {
+      let refused =
+        home_socket(port, home, [
+          #("x-send-session", session),
+          #("x-send-text", text),
+        ])
+      assert refused.status == 291
+      assert string.starts_with(refused.body, "NotAccepted")
+    })
+  })
+}
+
+// `thread_send_for` against the real registry: the page's standing is judged
+// before `send` is asked, so a page that may not send reaches nobody, and an
+// owner's page reaches `send` with exactly the session, the text and the delivery
+// it was given.
+pub fn a_send_is_asked_only_for_an_owners_operating_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let send = fn(session, text, delivery) {
+      process.send(asked, #(session, text, delivery))
+      thread_send.Delivered(thread_send.Queued)
+    }
+
+    assert ui_socket.thread_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Steer,
+      )
+      == thread_send.Delivered(thread_send.Queued)
+    assert process.receive(asked, 0)
+      == Ok(#("S1", "go on", session_operator.Steer))
+
+    // Each of an observer's ceiling, another principal's page and an ended page
+    // is `NotHeld`, and none reaches `send`.
+    let refused = thread_send.Refused(thread_send.NotHeld)
+    assert ui_socket.thread_send_for(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
+    assert ui_socket.thread_send_for(
+        ui_socket.Standing(..standing, principal: "someone-else"),
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
+    assert ui_socket.thread_send_for(
+        standing,
+        fn() { Error(Nil) },
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
+
+    // A revoked credential authenticates as nobody.
+    revoke(ready.state_root, credential)
+    assert ui_socket.thread_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "go on",
+        session_operator.Prompt,
+      )
+      == refused
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// `answer_ask_for` judges the page's standing before the door is asked, as
+// `thread_send_for` does: an ended page and an observer's ceiling are each
+// declined as `forbidden`, and the send, which would deliver the prompt, is
+// never called (protocol-change/120).
+pub fn an_answer_is_asked_only_for_an_owners_operating_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let send = fn(session, strand, text, delivery) {
+      process.send(asked, #(session, strand, text, delivery))
+      thread_send.Delivered(thread_send.Admitted)
+    }
+    let endpoint = fn(_) { None }
+    let declined =
+      Error(
+        attention_door.Declined(attention_door.Refusal(
+          "forbidden",
+          "this page cannot answer",
+        )),
+      )
+
+    assert ui_socket.answer_ask_for(
+        standing,
+        fn() { Error(Nil) },
+        endpoint,
+        send,
+        "S1",
+        "ask-0123456789",
+        1,
+        json.Object([]),
+      )
+      == declined
+    assert ui_socket.answer_ask_for(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        endpoint,
+        send,
+        "S1",
+        "ask-0123456789",
+        1,
+        json.Object([]),
+      )
+      == declined
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// A message to a named strand judges the page's standing before the gateway is
+// asked, as `thread_send_for` does, and refuses an empty text. A strand the
+// session no longer has is the gateway's own word and reaches the page as it is
+// (protocol-change/120).
+pub fn a_strand_message_is_asked_only_for_an_owners_operating_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let send = fn(session, strand, text, delivery) {
+      process.send(asked, #(session, strand, text, delivery))
+      thread_send.Refused(thread_send.UnknownStrand)
+    }
+    let refused = thread_send.Refused(thread_send.NotHeld)
+
+    // An ended page and an observer's ceiling never reach the gateway.
+    assert ui_socket.strand_send_for(
+        standing,
+        fn() { Error(Nil) },
+        send,
+        "S1",
+        "sub:main/a",
+        "retry",
+        session_operator.Prompt,
+      )
+      == refused
+    assert ui_socket.strand_send_for(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        send,
+        "S1",
+        "sub:main/a",
+        "retry",
+        session_operator.Prompt,
+      )
+      == refused
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // An empty text is refused before the gateway too.
+    let assert thread_send.Refused(thread_send.NotAccepted(_)) =
+      ui_socket.strand_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "sub:main/a",
+        "  ",
+        session_operator.Prompt,
+      )
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // The owner's operating page sends to the strand it named, and the
+    // gateway's word about an unknown strand is the answer.
+    assert ui_socket.strand_send_for(
+        standing,
+        page_open,
+        send,
+        "S1",
+        "sub:main/a",
+        "retry",
+        session_operator.Steer,
+      )
+      == thread_send.Refused(thread_send.UnknownStrand)
+    assert process.receive(asked, 0)
+      == Ok(#("S1", "sub:main/a", "retry", session_operator.Steer))
+  })
+}
+
+// What the door says to the page is worded from constants: a prompt that was
+// delivered and not settled says the ask may still be open, a refusal that sent
+// nothing says the ask is still open, and no text of a person or a session is
+// repeated.
+pub fn the_doors_words_reach_the_page_as_fixed_words_test() {
+  assert ui_socket.answer_outcome(
+      Ok(attention_door.Answered(thread_send.Admitted, 8)),
+    )
+    == home.Succeeded("Answered. Delivered to the strand · admitted")
+  assert ui_socket.answer_outcome(
+      Error(
+        attention_door.Declined(attention_door.Refusal(
+          "conflict",
+          "that ask was already answered",
+        )),
+      ),
+    )
+    == home.Failed("Not sent: that ask was already answered")
+  assert ui_socket.answer_outcome(
+      Error(attention_door.NotSent(thread_send.QueueFull)),
+    )
+    == home.Failed("Not sent: its queue is full. The ask is still open.")
+  assert ui_socket.answer_outcome(
+      Error(
+        attention_door.Unsettled(attention_door.Refusal(
+          "conflict",
+          "delivered; the record changed",
+        )),
+      ),
+    )
+    == home.Failed(
+      "Delivered, but delivered; the record changed. The ask may still be open.",
+    )
+  assert ui_socket.close_outcome(Ok(4)) == home.Succeeded("Closed.")
+  assert ui_socket.close_outcome(
+      Error(attention_door.Refusal("conflict", "the record changed")),
+    )
+    == home.Failed("Not closed: the record changed")
+}
+
+// A rail's answer needs the page open, and then the door's own authority:
+// an ended page is declined as `forbidden` before anything is sent, and a
+// session the credential does not hold is told no such session, with nothing
+// sent either way (protocol-change/120).
+pub fn a_rail_answer_needs_an_open_page_and_the_doors_authority_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let send = fn(strand, text) {
+      process.send(asked, #(strand, text))
+      thread_send.Delivered(thread_send.Admitted)
+    }
+    let reach =
+      attention_door.Reach(
+        registry: ready.registry,
+        digest: standing.digest,
+        endpoint: fn(_) { None },
+      )
+
+    assert ui_socket.page_answer_for(
+        reach,
+        fn() { Error(Nil) },
+        send,
+        "S1",
+        "ask-0123456789",
+        1,
+        json.Object([]),
+      )
+      == Error(
+        attention_door.Declined(attention_door.Refusal(
+          "forbidden",
+          "this page cannot answer",
+        )),
+      )
+
+    let assert Error(attention_door.Declined(attention_door.Refusal(
+      code: "not_found",
+      ..,
+    ))) =
+      ui_socket.page_answer_for(
+        reach,
+        page_open,
+        send,
+        "S1",
+        "ask-0123456789",
+        1,
+        json.Object([]),
+      )
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// A rail's close needs the page open and then the door's own authority, as an
+// answer does: an ended page is refused as `forbidden` before the door is read,
+// and a session the credential does not hold is told no such session
+// (protocol-change/051, the addendum on the live rail's actions).
+pub fn a_rail_close_needs_an_open_page_and_the_doors_authority_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let reach =
+      attention_door.Reach(
+        registry: ready.registry,
+        digest: standing.digest,
+        endpoint: fn(_) { None },
+      )
+
+    assert ui_socket.page_close_for(
+        reach,
+        fn() { Error(Nil) },
+        "S1",
+        "find-0123456789",
+        1,
+        attention.Filed,
+      )
+      == Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot close a find",
+      ))
+
+    let assert Error(attention_door.Refusal(code: "not_found", ..)) =
+      ui_socket.page_close_for(
+        reach,
+        page_open,
+        "S1",
+        "find-0123456789",
+        1,
+        attention.Dismissed,
+      )
+
+    Nil
+  })
+}
+
+// A rail's retry needs the page open, sends the one fixed prompt to the strand
+// it names and words the gateway's answer as the home words the same act.
+pub fn a_rail_retry_sends_the_fixed_prompt_from_an_open_page_test() {
+  let asked = process.new_subject()
+  let send = fn(strand, text) {
+    process.send(asked, #(strand, text))
+
+    case strand {
+      "gone" -> thread_send.Refused(thread_send.UnknownStrand)
+      _ -> thread_send.Delivered(thread_send.Admitted)
+    }
+  }
+
+  assert ui_socket.page_retry_for(fn() { Error(Nil) }, send, "sub:a")
+    == home.Failed("Not sent: this page cannot act")
+  assert process.receive(asked, 0) == Error(Nil)
+
+  assert ui_socket.page_retry_for(page_open, send, "sub:a")
+    == home.Succeeded("Delivered to the strand · admitted")
+  assert process.receive(asked, 0)
+    == Ok(#("sub:a", "The last run of this strand failed. Please retry it."))
+
+  assert ui_socket.page_retry_for(page_open, send, "gone")
+    == home.Failed("Not sent: that strand no longer exists")
+}
+
+// The task answers whether or not the send does: one that finishes is delivered
+// as it answered, and one that outlasts its deadline is delivered as not
+// accepted, so an outbox that says "Sending…" is always settled.
+pub fn a_send_that_outlasts_its_deadline_is_answered_test() {
+  let answers = process.new_subject()
+  ui_socket.thread_send_within(
+    fn() { thread_send.Delivered(thread_send.Admitted) },
+    2000,
+    fn(answer) { process.send(answers, answer) },
+  )
+  assert process.receive(answers, 5000)
+    == Ok(thread_send.Delivered(thread_send.Admitted))
+
+  ui_socket.thread_send_within(
+    fn() {
+      process.sleep(10_000)
+      thread_send.Delivered(thread_send.Admitted)
+    },
+    50,
+    fn(answer) { process.send(answers, answer) },
+  )
+  assert process.receive(answers, 5000)
+    == Ok(thread_send.Refused(thread_send.Unanswered))
 }
 
 // The steps of `create_for` against the real registry, one at a time, with a
@@ -10773,4 +11333,79 @@ pub fn only_an_owners_operating_page_is_handed_the_orchestrators_test() {
       make,
     )
     == None
+}
+
+// A review read judges the page's standing before the door is asked: an ended
+// page and an observer's ceiling never reach it, and the door's refusal reaches
+// the page as the door's fixed words (protocol-change/123).
+pub fn a_review_is_read_only_for_a_page_that_may_operate_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let review = fn(session) {
+      process.send(asked, session)
+      Error(attention_door.Refusal("forbidden", "an observer cannot read it"))
+    }
+
+    // An ended page and an observer's ceiling never reach the door.
+    assert ui_socket.review_for(standing, fn() { Error(Nil) }, review, "S1")
+      == Error("This page may not read a worktree.")
+    assert ui_socket.review_for(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        review,
+        "S1",
+      )
+      == Error("This page may not read a worktree.")
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // An operating page asks the door, and the door's words are the answer.
+    assert ui_socket.review_for(standing, page_open, review, "S1")
+      == Error("an observer cannot read it")
+    assert process.receive(asked, 0) == Ok("S1")
+  })
+}
+
+// A stop or a retry of a ticket from Home is the owner's alone. A page whose
+// standing check fails (a read-only page, a member at Operator, an ended page)
+// reaches no actor and is told `forbidden`, so a project's ledger is written by
+// nothing a member or an observer could press (protocol-change/051, the
+// addendum on project tickets on Home).
+pub fn a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test() {
+  fixture(fn(ready, _, _) {
+    let reached = process.new_subject()
+    let feed =
+      ui_projects.Feed(
+        boards: fn() { page_projects.Unread },
+        ticket: fn(_, _) { page_projects.TicketUnread },
+        answer: fn(_, _, _, _) { page_projects.Refused("unused") },
+        close: fn(_, _) { page_projects.NotClosed("unused") },
+        stop: fn(project, ticket) {
+          process.send(reached, "stop " <> project <> " " <> ticket)
+          page_projects.Acted
+        },
+        retry: fn(project, ticket) {
+          process.send(reached, "retry " <> project <> " " <> ticket)
+          page_projects.Acted
+        },
+      )
+    let #(standing, _) = standing_of(ready, "ui-ticket-member", access.Operator)
+
+    list.each(
+      [
+        #(standing, page_open),
+        #(ui_socket.Standing(..standing, ceiling: access.Observer), page_open),
+        #(standing, fn() { Error(Nil) }),
+      ],
+      fn(page) {
+        assert ui_socket.stop_ticket_for(page.0, page.1, feed, "p1", "t-a")
+          == page_projects.Declined("forbidden")
+        assert ui_socket.retry_ticket_for(page.0, page.1, feed, "p1", "t-a")
+          == page_projects.Declined("forbidden")
+      },
+    )
+
+    // No refused page reached an actor.
+    assert process.receive(reached, 0) == Error(Nil)
+  })
 }

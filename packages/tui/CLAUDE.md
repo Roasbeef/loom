@@ -266,7 +266,10 @@ read too; `agent_strip` keeps the rows it paints and the keyboard focus.
 Each row joins the existing `agent_view.Row` with the daemon's glance
 (`core/glance`, `client/glance/{strand}`), decoded once per capture by
 `agent_strip.observe` (`agent_roster.observe`). A glance is shown only while its `operation` is the
-strand's current one. An empty or absent summary falls back to the row's
+strand's current one. The daemon also writes a glance for `main` (for the
+web view's inbox); `agent_roster.observe` leaves it out, because the strip
+draws `main` from its own row, and the session picker's preview
+(`session_selector.glance_lines`) skips it for the same reason. An empty or absent summary falls back to the row's
 deterministic activity, and an absent title to the accepted task excerpt.
 Elapsed time never subtracts a server timestamp from the terminal clock. A
 `Clock` starts on the terminal's clock when an operation is first seen, and a

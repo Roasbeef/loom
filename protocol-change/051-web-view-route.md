@@ -4473,3 +4473,891 @@ origin's words and its press sets `__Secure-loom_ui` and
 `__Secure-loom_login` with `Secure`. `client/ui_http_test` covers the routes
 and `posted_ticket`; `web_view/page_test` covers the document and its
 escaping. A real drive from a phone through Tailscale Serve has not been run.
+
+## Addendum: the attention inbox on Home (2026-11-18)
+
+Phase 0 of the attention inbox (`docs/design-notes/attention-inbox/README.md`)
+adds a region to the owner's Home page. The page's wire, the home socket's
+admission rules and the page's capabilities are unchanged, except for the
+thread-send capability that
+[protocol-change/118](118-inbox-thread-send.md) adds.
+
+### What the page adds
+
+The page adds an inbox region: a list of threads, grouped by what each
+needs, and a reading pane for the selected thread. The region is drawn
+inside Home's existing table region, so it stays beneath `home.table_path`
+(`web_view/home.gleam:345`).
+
+The landing rule is as follows. The first answer decides the centre once per
+page load: the inbox when at least one session is waiting or running, and the
+new-session form otherwise (a list with no running session settles on the form
+at once). No later read changes it; only the person's clicks do, through "New
+session", "All sessions", and an "Inbox" control that is drawn whenever the
+inbox has a thread and the centre is elsewhere. An inbox whose threads all go
+away says that nothing waits and offers "New session" rather than switching.
+
+### The click paths
+
+Selecting a thread is a click beneath `home.table_path`. `home_accepts`
+(`client/daemon/ui_socket.gleam:2187`) admits a click there for every home
+through `home_row_path` (`client/daemon/ui_socket.gleam:2312`), whether the
+home is an owner's, a member's or an observer's.
+
+The message field's submit is beneath `home.table_path`. `home_owner_accepts`
+(`client/daemon/ui_socket.gleam:2215`) admits a submit there for the owner's
+operating home (`Submitting`). The socket of any other home does not admit
+it: a member's home and an observer-ceiling home use `home_accepts`, which
+admits a submit only beneath `home.signins_path`.
+
+No admission rule changes. An observer's socket admits no submit, and a
+submit anywhere outside `home.table_path` and `home.signins_path` is still
+dropped, as is a batch that contains one.
+
+### What the page shows
+
+For each running session the page shows what the daemon's `sessions.activity`
+read (protocol-change/050) returns: the session's last finished turn and the
+glances of its strands. The daemon reduced that row to one state word before.
+Now the home's read hands the page one `sessions.Report` for each session that
+answered: the state, the `last_message` and the `glances`
+(`activity_reports` and `report_of` in `client/daemon/server.gleam`, reached
+through `home_activity`). The row's other fields (the model, the working
+strands, the approval count beyond telling a failed run from an approval) still
+do not leave the daemon, and the session page's sidebar and the admin page's
+dots still receive the state word alone (`activity_states`). The read stays
+within the bounds it already has: 2,000 ms for the slowest resident
+(`activity_deadline_ms`) and 2,400 bytes for a row (`activity_row_bytes`).
+A `last_message` that is not a string is no message, and a glance that is not
+an object of three strings is dropped alone, so a malformed field never costs a
+session its state.
+
+The text in the row was produced by a session. It is untrusted. The page
+draws it as text nodes only, as the rest of this document requires. The page
+does not claim that an idle session's last message is a question. It shows
+the message and says nothing about its intent.
+
+### What the page refuses
+
+- The page draws no approval content on Home and no control that answers an
+  approval. A thread whose session has a pending approval says that an
+  approval is pending, and offers a link to the session's own page, whose
+  dock is where an approval is decided.
+- The page draws no ages. The activity row carries no time, so any age shown
+  in phase 0 would be invented.
+- Each count says what it reads. A count of running sessions counts running
+  sessions only. A count of saved sessions says "saved" and does not claim
+  that they were checked.
+
+### What was considered
+
+- **Reading each session's lane for the thread.** That opens a gateway
+  attachment for every session on every refresh. The activity read is one
+  bounded request that the daemon already makes, and a saved session is left
+  out of it without being opened.
+- **A new top-level region outside the table.** That needs a new path
+  constant and a new rule in `home_event`
+  (`client/daemon/ui_socket.gleam:2254`). A region beneath
+  `home.table_path` needs neither.
+
+### Cost
+
+One new view region and its tests. One field added to what the home passes
+from the activity read to its component. No new route, no new frame and no
+new admitted path. The thread-send capability is costed in
+[protocol-change/118](118-inbox-thread-send.md).
+
+### Verification
+
+`client/test/client/ui_socket_test.gleam` pins the admission set:
+
+- `the_home_socket_admits_only_a_click_on_a_row_test` (`:341`) pins that a
+  member's home admits clicks on rows and nothing else.
+- `the_home_socket_admits_a_rename_submit_only_for_an_owner_test` (`:1096`)
+  pins that a submit beneath `home.table_path` is admitted for the owner's
+  home and dropped for every other home, and that a submit outside the table
+  is dropped for all.
+- `only_an_owners_operating_home_may_create_test` (`:1177`) pins the
+  capability's `Some` and `None` cases, which the thread-send capability
+  repeats.
+- `every_home_socket_admits_a_submit_beneath_the_account_panel_test`
+  (`:1658`) pins that the only submit a non-owner home admits is beneath
+  `home.signins_path`.
+
+The message field adds two more (protocol-change/118):
+
+- `only_an_owners_operating_home_is_handed_the_thread_send_capability_test`
+  (`:1194`) pins the capability's `Some` for the owner at the Operator ceiling
+  and `None` for the rest.
+- `the_inbox_message_form_needs_no_new_admission_test` (`:1214`) pins that a
+  browsing home refuses a submit beneath `home.table_path`, that a submitting
+  home accepts it, that the "Inbox" control is a click every home admits, and
+  that neither is admitted outside the table.
+
+The inbox's own view tests are in `web_view/test/inbox_view_test.gleam`. A real
+drive of the inbox in a browser has not been run.
+
+## Addendum: the live rail (2026-11-18)
+
+A session page draws a rail beside the transcript, "Lifted from this session"
+(`web_view/view/lifted`). It lists what `session_view/attention` found in the
+lane and the register: a pending approval under "Needs you", and failed
+steps, failed responses, sub-agent results and peer messages under
+"Insights". This addendum records the one handler the rail adds, the client
+behaviour that goes with it, and what the rail does not do.
+
+### What it adds
+
+The rail is the last child of the Strands pane, so it sits at `0\t3\t0\t4`
+(`component.rail_path`) and no admitted path moves. The stylesheet orders it
+above the pane title. An insight is drawn whole until the reader presses it
+once, and folded to one line from then on. The press sends `RailOpened(key)`,
+where `key` is the `Lifted.key` the view drew into the handler. The page
+keeps the opened keys in its model (at most 64, newest first, cleared when
+strand focus changes, since the keys name rows of one strand's lane), and keeps
+nothing in the browser. A key that names no insight the page holds, or one
+already opened, changes nothing.
+
+`ui_socket.observer_accepts` gains one rule: a `click` at exactly the path
+`component.rail_click` names, `rail_path` then `1\t1\t1\t<position>\t0`: the
+rail's groups, the "Insights" group, its list, one item and that item's
+button, with `<position>` a whole number. The operator and owner
+sockets already admit a click at any path that is not an owner control, so
+they gain nothing. The "Needs you" group and the rail's title draw no
+handler, so the rule admits the press of an insight and no other control, and
+a path beneath the rail with any other shape is refused.
+
+The jump from a row to its place in the stream is not an event. Each row
+carries `data-loom-jump`, whose value is a transcript row key or `dock`, and
+`<loom-follow>` hears the click on the document and scrolls the row with the
+matching `data-loom-row` into view in the browser. Nothing is sent. Below
+980px the rail is hidden and a bar above the dock opens the same rows as a
+sheet (a native `<details>`); the sheet rows carry no handler, and a jump
+closes the sheet.
+
+### What it refuses
+
+- No control in the rail decides anything. An approval entry reads "Decide
+  in the dock" and its press only scrolls the dock into view. The approval
+  card stays in the dock above the composer under the rules of the
+  addendum on the pinned composer: Deny first, arming, no autofocus. An
+  observer's page has no dock, so its approval entry says the operator
+  decides and carries no jump.
+- A row's `head` is session text. It is a text node and never an attribute,
+  a class or a key. Markers carry daemon keys only.
+- The observer's socket still drops a click on the rail's own path, on any
+  other path beneath it (the pinned group's, the list's, a button's children,
+  a position that is not a whole number), on a neighbour of it in the Strands
+  pane, any other event beneath it, and a batch. An earlier draft admitted
+  every path beneath the rail by prefix; the exact predicate replaced it so a
+  later control placed there is not admitted by default.
+- No new wire frame, no seen cursor and no persistence.
+
+### Cost
+
+The page reads the lane three more times per render (the rail, the sheet and
+the lane's marks), each a linear pass over the pieces it already holds.
+One more admitted path for observers, a click that only changes what the
+page draws. A rail row in the stream is tagged "lifted", and one that needs
+the owner is tinted with the existing signal token.
+
+### Verification
+
+`web_view/lifted_test` pins the groups, the absence of a deciding control or
+a handler on a pinned row, folding after one open, the key-only markers, the
+tag and tint on stream rows, the phone bar's count, and (with seed
+20261118) that the handlers are exactly the unopened insights.
+`client/ui_socket_test` pins the admission above and what stays refused.
+`web_client/jump_rule_test` pins which click jumps and where.
+
+## Addendum: the attention threads (2026-11-18)
+
+Phase 1 of the attention inbox draws the feed's records as threads on Home
+(`docs/design-notes/attention-inbox/README.md`, sections 2.1 and 2.2;
+[120](120-attention-feed.md), [122](122-attention-catalogue-summary.md)). Under
+"Needs you" the inbox lists one thread for each open ask routed to the owner and
+one for each stuck strand, longest wait first. A "Finds" group lists the open
+finds. A press on a row opens its thread in the reading pane, whose record the
+daemon reads in full (`attention_door.read_stored`).
+
+### What the page may do
+
+All of it is an event beneath `home.table_path`, so the socket's admission set
+is the one the message field already has and no frame, path constant or rule is
+added.
+
+| Control | Event | Admitted for |
+|---|---|---|
+| A thread's row | click | every home |
+| An ask's form, "Stage the answer" | submit | the owner's operating home |
+| The note form, "Stage the message" | submit | the owner's operating home |
+| Send, Clear, Close (Fixed, Filed, Dismiss), Retry | click | every home, acted on only where the capability is |
+
+A click is admitted everywhere because the component ignores it unless the page
+holds `Start.attention.act`, which only the daemon's owner on a page minted to
+operate is handed (`ui_socket.home_attention_capability`). A member's home and
+an observer's draw the thread and its record, with no form, no staging, no
+outbox and no Send, and the daemon refuses the submits such a page could not
+have drawn. Every act runs the standing check again
+(`ui_socket.answer_ask_for`, `close_find_for`, `strand_send_for`), and the
+door reads authority from the registry at each press.
+
+### What the page draws and what it does not
+
+- Every word a session wrote (an ask's questions, an option's label and note, a
+  find's text and path, a strand's name) is a text node. No attribute, class or
+  key carries it. A control's name is a question's key (`q1` to `q4`), an
+  option's value is its position, and a thread is selected by a key the server
+  drew into the handler, never one the browser names.
+- A form submit is read back by `web_view/answer_rule` and checked by the
+  daemon's own rule, `core/attention_answer.check`, before anything is staged.
+  A refusal is worded from the rule's fixed words and names the question.
+- Nothing reaches the session until Send. Send answers at the revision the page
+  read, delivers one prompt to the asking strand, settles the record, and then
+  delivers the staged note to the strand. A refused answer leaves the outbox as
+  it was. A prompt that was delivered and not settled says that the ask may
+  still be open.
+- A message to a strand the session no longer has is the gateway's own
+  `unknown_strand`, worded "Not sent: that strand no longer exists".
+- Retry on a stuck strand sends a fixed prompt to that strand through
+  `message_to_strand`, the path a message typed on the session's page takes.
+  There is no other retry path to reuse.
+- An approval is still named and sent to the session's own page. Nothing
+  decides one from Home.
+
+### What the counts read
+
+Home reads the feed for running sessions and the catalogue's summary
+(`home_saved_attention`) for saved sessions, skipping sessions whose custody is
+moving, blocked or failed to start. The headline says how many sessions it read
+live, how many it took from the catalogue and how many no source answered for.
+A summary that counts something takes a page that nothing chose away from the
+composer to the inbox, so a restart with an approval pending is still counted
+and shown.
+
+### What was considered
+
+- **A new daemon command to read an approval's escalation record.** The README
+  asks the pane to list the approval's tool, command, network, wanted grant and
+  policy. `attention.read` serves asks and finds only, and
+  [120](120-attention-feed.md) rejects approvals in the feed, so the evidence
+  needs a command that does not exist. It is not added here, and the approval
+  thread is unchanged from phase 0.
+- **Staging in the browser.** The outbox lives in the server model so that a
+  second tab and a reload see what is staged, and so the form's fields are
+  checked by the daemon's rule before they are kept.
+
+### Cost
+
+One capability on `home.Start`, a pure rule for items and counts, a pure rule
+for the form, and one view module. No new route, frame or admitted path.
+
+### Verification
+
+`client/test/client/ui_socket_test.gleam` pins
+`only_an_owners_operating_home_may_act_on_attention_test` (the act is the
+owner's and the reads are everyone's) and
+`the_attention_forms_need_no_new_admission_test` (a browsing home refuses the
+submits and admits the clicks, and nothing outside the table is admitted).
+`client/test/client/ui_route_test.gleam` pins the strand send's standing check
+and the door's words. `web_view/test/attention_threads_test.gleam` drives the
+page, observer included. A real drive in a browser has not been run.
+
+## Addendum: the live rail, answered (2026-11-18)
+
+The first addendum on the live rail left an approval, a failure, a result and a
+peer message in "Lifted from this session". This one puts the session's own open
+records there and lets an operator's page answer an ask in the rail
+(`docs/design-notes/attention-inbox/README.md`, section 2.3;
+[120](120-attention-feed.md)).
+
+### What the rail lifts
+
+A session page reads its own feed row (`sessions.attention` for one session,
+through `Attachment.attention`) when it opens and every `rail_refresh_ms`
+(5,000 ms of the transport's clock) after, and again at once after an answer. Its
+open asks and stuck strands pin under "Needs you" after any pending approval,
+until the next read no longer holds them. Its open finds join "Insights" and fold
+once opened, as every insight does (`RailOpened`). A row's head is session text
+and is a text node. A stuck strand and an ask name no row of the lane, so their
+press jumps nowhere. The approval's entry still only points at the dock ("Decide
+in the dock ↓"), and an observer's still says that the operator decides.
+
+The phone's sheet draws the same rows and the same forms from the same inputs.
+Its bar counts them.
+
+### The new submit: the ask's form, in two places
+
+An ask's row holds its button and then, on a page that may answer, a keyed `div`
+holding a form with the inbox's components
+(`view/attention_thread.answer_form`). The form's submit is the one new event.
+It is drawn in two places, because the phone has no rail and carries the same
+rows in its sheet:
+
+- In the rail, at `rail_path`, then `1\t0\t1` (the "Needs you" group's list),
+  then the item's position, then `1` (the keyed `div`), then the ask's
+  identifier, which is the form's key. `component.rail_submit` names that shape.
+- In the phone's sheet, a `<details>` that is the centre's last child, at a path
+  that is not beneath `rail_path`.
+
+The form is keyed by the ask. Radios and checkboxes carry no `checked` in the
+tree, so an unkeyed form would stay in place when the ask above it was answered
+and left, and the ask that moved up would be answered with the picks made for
+the one that left. A new key makes the browser build a new form. The inbox's
+pane keys its form by how many threads have been opened, for the same reason.
+
+The page's own word on the last answer is the rail section's last child, after
+the groups, so no path the socket admits at the rail moves.
+
+| Socket | A submit from either form |
+|---|---|
+| An operator's page, a member's or the owner's | admitted, as every submit at any path is |
+| An observer's page | refused, as every submit is: `observer_accepts` admits only clicks |
+
+No socket consults `component.rail_submit`. An operator's or owner's socket
+admits a submit at any path, which it did before this change, and an observer's
+admits none, so the sheet's form needs no entry of its own and the predicate
+changes no admission. The predicate is kept as a documented test helper:
+`rail_threads_test` fails if the view moves the rail's form, and
+`ui_socket_test` pins what each socket does at the path it names and at every
+other. The observer's page is handed no answer capability, so it draws the rows
+and no form, and a frame that names a path finds no handler.
+
+### What the page does with a submit
+
+`RailAnswered` names the ask the form was drawn for, an identifier the server
+drew into the handler. The page honours it only for an ask it has read in full
+(`attention.read`, through `attention_door.read_stored`), checks the fields with
+`web_view/answer_rule`, which asks the daemon's own `core/attention_answer.check`,
+and sends the answer at the revision it read. A refusal of the rule is worded
+beside the ask in fixed words. The send is `attention_door.answer`: the door reads
+the caller's authority from the registry at that moment, so only the owner and an
+Operator member are answered, refuses a revision that moved, delivers one prompt
+to the asking strand over the page's own gateway attachment (a binding of its own
+carrying the page's ceiling), and then settles the record. The daemon's word, in
+the door's fixed words, is said in the rail, and a settled ask is read again at
+once so it leaves.
+
+### What was considered
+
+- **Staging into an outbox on the session page.** The inbox stages because it
+  gathers several threads' answers and notes into one Send. The session page has
+  one session and its own composer, so one submit checks and sends.
+- **Drawing the form only in the rail and not the sheet.** The phone has no rail,
+  and the owner on a phone is the person most likely to be away from the desk, so
+  the sheet carries the form too.
+- **Narrowing operator admission to the exact path.** That changes admission for
+  every other submit of an operator's page, which is not this work's to decide.
+
+### Cost
+
+One capability on the component's transport, one state value in the page's view,
+four messages, one exact predicate, and a feed read and a reach on the session
+attachment. No new route or frame.
+
+### Verification
+
+`web_view/test/rail_threads_test.gleam` drives the page: the pinning and the
+folding, the form's controls and escaped text, the send at the revision, the
+refusal beside the ask, the observer's page with no form and a submit ignored, the
+form's exact path, and the phone's sheet. `client/test/client/ui_socket_test.gleam`
+pins `only_an_operators_rail_answers_an_ask_test`: the operator's and the owner's
+sockets admit the submit, the observer's refuses it and everything beneath the
+rail except the insight's press, and the capability is withheld from an observer.
+`client/test/client/ui_route_test.gleam` pins that a rail answer needs an open page
+and the door's authority. A real drive in a browser has not been run.
+
+## Addendum: the review pane (2026-11-18)
+
+Phase 1 of the attention inbox draws a finished session's work for review
+(`docs/design-notes/attention-inbox/README.md`, section 2.1 and ruling 4;
+[123](123-review-hunks.md)). A finished session is an idle session with a last
+message and a worktree that holds changes. Home lists it under "To review", and
+a press on its row opens a review pane in the reading pane.
+
+### What the page reads
+
+The page reads each candidate's worktree through `server.home_review`, one
+session at a time, once for each last message the session has said
+(`web_view/review_scan_rule`). A read is about twenty-six jailed Git calls and
+the daemon allows a credential two in four seconds, so the page never reads more
+than one at once, keeps a verdict for each session and not the review, and
+retries a failure at most three times for the same message. A refusal for the
+allowance is not a failure: it ends the run, counts as no try, and sets one timer
+(the allowance's window and half a second, `Attention.review_pause_ms`) that
+starts the scan again, with at most one outstanding. The open thread's
+review is read once more when it opens, and the record of each find the pane
+shows is read for its revision (`attention.read`, as an ask's is).
+
+The read is handed to a page whose ceiling is an operator's, owner's or member's,
+and to no page whose ceiling is an observer's (`ui_socket.home_attention_capability`).
+An observer's home has no "To review" group and no pane: it shows the session in
+"Waiting" with its last message. `ui_socket.review_for` checks the page's standing
+at each read, that the page is open, the ceiling is not an observer's and the
+credential still authenticates as the principal the page was admitted for. The
+door then reads the credential's authority over the session from the registry and
+refuses an observer, as [123](123-review-hunks.md) says.
+
+### What the page may do
+
+All of it is an event beneath `home.table_path`, so the socket's admission set is
+the one the attention threads already have, and no frame, path constant or rule
+is added.
+
+| Control | Event | Admitted for |
+|---|---|---|
+| A thread's row | click | every home |
+| A verdict, Send, Clear | click | every home, acted on only where `Attention.act` is |
+| A file's comment, a find's form | submit | the owner's operating home |
+
+A member at the Operator ceiling reads the review and may act on none of it,
+because `act` is the owner's alone, the rule for every other act on Home.
+
+One Send applies the staged find closes at the revisions the page read, one at a
+time, through the same `close` the find thread uses, and then delivers one prompt
+to the session's main strand through the same `strand` a retry uses. The prompt is
+composed first and refused, with its byte count, when it is past the composer's
+16,384 bytes, so an oversized review has no side effect. A close the daemon
+refuses stops the Send and no prompt is delivered, since the prompt would say the
+find was closed. A close that was applied is not applied twice by a later Send. A
+prompt the gateway refuses leaves everything staged. The receipt is the daemon's
+fixed words for each close and the gateway's answer to the prompt, delivered as
+admitted, queued, or refused.
+
+### What the page draws and what it does not
+
+- Every word of a review is a text node: paths, hunk headers, lines, find text,
+  and the agent's last message under a label that says it is untrusted. No
+  attribute, class, label, placeholder or key carries any of it. A form's controls
+  are named by fixed words (`comment`, `note`, `closure`), a form is keyed by the
+  session, the open count and its position, and a find's form also carries the
+  find's identifier, which the daemon minted (`find-` and ten hexadecimal digits)
+  and no session wrote. The handlers close over the path and the find's
+  identifier on the server.
+- A form's submit is read back strictly: a comment form is exactly one `comment`
+  field, a find form exactly a `note` and a `closure` that is `fixed`, `filed` or
+  `dismissed`. A comment on a path the review does not hold is refused and not
+  kept.
+- Truncation is shown plainly: how many files are not shown, how many hunks and
+  lines a file or hunk left out, how many lines were shortened, and that the
+  counts are lower bounds when anything was cut. The pane also says that
+  committed work is not shown, which is the largest gap in
+  [123](123-review-hunks.md).
+- Nothing reaches the agent before Send.
+
+### What was considered
+
+- **Reading every idle session's worktree on every refresh.** That spends the
+  allowance twenty-fold and starves the Changes tab. The scan reads one session
+  once for each message.
+- **Opening files through a round trip.** Each file is a `<details>` the browser
+  opens, since the hunks are already in the review, so no click path exists for
+  it.
+- **Delivering the prompt after a refused close.** The prompt names the closes, so
+  after a refusal it would be wrong.
+
+### Cost
+
+One capability on `home.Attention`, one field on the home attachment, three pure
+rule modules, a pure pane state and a view module. No new route, frame or admitted
+path.
+
+### Verification
+
+`client/test/client/ui_socket_test.gleam` pins
+`only_an_operating_page_is_handed_the_review_read_test` (an operator's page,
+owner's or member's, has the read, an observer's has none, and a member has no act)
+and `the_review_forms_need_no_new_admission_test` (a browsing home refuses the
+submits and admits the clicks, a submitting home admits both, and nothing outside
+the table is admitted). `client/test/client/ui_route_test.gleam` pins
+`a_review_is_read_only_for_a_page_that_may_operate_test`.
+`web_view/test/review_threads_test.gleam` drives the page: the group, the cuts,
+text-only drawing, finds pinned and loose, staging, one Send with its receipt, a
+refused close, an oversized review, the read-only page and the observer.
+`review_stage_rule_test`, `review_pin_rule_test` and `review_pane_test` pin the
+rules. A real drive in a browser has not been run.
+
+## Addendum: project tickets on Home (2026-11-18)
+
+Phase 2 of the attention inbox draws a project ticket that waits on a person as
+a thread under "Needs you"
+(revised 2026-11-19: a ticket at `person/check` or `person/review` is under "To review"; see the addendum "one frame on every page")
+(`docs/design-notes/attention-inbox/README.md`, phase 2 and ruling 6). The rows
+follow the attention rows. A press opens a pane with the ticket's stage, title,
+age, mandate, question and pull request. The pane has no check output and no
+Recheck, because the owner rules on question 6 later: a `person/check` stage is
+drawn as its raw word, and its controls are whatever the daemon lists.
+
+### What the page may do
+
+Every handler is beneath `home.table_path`, so the socket's admission set is
+unchanged and no frame, path constant or rule is added.
+
+| Control | Event | Admitted for |
+|---|---|---|
+| A ticket's row | click | every home |
+| Close, Retry, Stop, "Confirm: ...", Keep | click | every home, acted on only where the capability is |
+| The answer form, "Send answer" | submit | the owner's operating home |
+
+A click is admitted everywhere because the page ignores it unless it holds
+`Start.projects`, which only the daemon's owner on a page minted to operate is
+handed (`ui_socket.home_projects_capability`). A page without it draws no ticket
+row, and a member's home or an observer's never reads a board. A page that holds
+the capability at an Observer ceiling, as a test may build one, draws the thread
+and its question and no control.
+
+Controls are drawn only for actions the daemon lists for the ticket
+(`project_board.offers`), never from the stage. Each press derives the page's
+authority again: the page is connected, holds the capability at the Operator
+ceiling, and the control is still among those listed for the ticket as it now
+stands. The daemon checks the owner a third time (`answer_for`, `close_for`,
+`stop_ticket_for`, `retry_ticket_for`), so a page that fails the check writes
+nothing to a project's ledger and is told `forbidden`.
+
+Stop and Close cannot be undone, so each asks once: the first press only draws
+the question and a button that names the act, and "Keep" takes it back. Retry
+and Answer are sent at once.
+
+### What the page draws and what it does not
+
+- Every word a ticket carries (title, stage word, question, options, pull
+  request, failure) is a text node. No attribute, class or key carries it.
+  Handlers carry the ticket's address and the question's sequence number, which
+  the server drew and the browser never names. The answer form is keyed by
+  project, ticket and question number, so text typed for one question cannot be
+  submitted for another.
+- Publish draws no control. The board carries no reason for a publish that is
+  listed and not allowed, so there is nothing true to show beside a disabled
+  button.
+- The board carries no branch and no diff stat, so the pane draws neither.
+- A refusal shows in the board's words (`answer_refusal_words`,
+  `close_refusal_words`) or, for Stop and Retry, in a sentence made from the
+  daemon's code.
+
+### What was considered
+
+- **Adding check output and Recheck.** Ruled out until the owner settles
+  question 6.
+- **A new daemon command.** None. `project_host.stop_ticket` and `retry` already
+  exist for the control commands. The in-process feed (`ui_projects.Feed`) gains
+  `stop` and `retry` with the same codes the commands answer, which is an
+  in-process addition and changes no wire shape, so there is no
+  new protocol change.
+
+### Cost
+
+Two functions on `ui_projects.Feed` and `home.Projects`, one pure rule
+(`web_view/ticket_rule`) and one view module (`web_view/view/ticket_thread`). No
+new route, frame or admitted path.
+
+### Verification
+
+`client/test/client/ui_socket_test.gleam` pins
+`a_ticket_thread_needs_no_new_admission_test`. `client/test/client/ui_route_test.gleam`
+pins `a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test`, and
+`project_board_wire_test.gleam` the feed's codes. `web_view/test/ticket_threads_test.gleam`
+drives the page: controls match the listed actions, an answer sends, a refusal
+shows, Stop and Close confirm, and an observer has no controls. A real drive in
+a browser has not been run.
+
+## Addendum: the inbox's rail folders and layout (2026-11-19)
+
+The owner asked that Home's inbox look like the final design
+(`docs/design-notes/attention-inbox/final/mockup.html`) and approved one
+feature the design adds: filter folders at the top of the left rail. When the
+centre is the inbox, the page draws "Everything, by need" and one folder for
+each group that holds a thread ("Needs you", "To review", "Finds", "Updates",
+"Projects"), each with its count. A press narrows the inbox's list to that
+group, and "Everything, by need" clears it. The centre becomes a full-height
+split of a 388px thread list and a reading pane, and a narrow screen gains a
+back control on the pane that returns to the list.
+
+### What the page may do
+
+Every new handler is beneath a path the socket already admits, so no frame,
+path constant or rule is added.
+
+| Control | Event | Path | Admitted for |
+|---|---|---|---|
+| A folder in the rail | click | beneath `home.sidebar_path` | every home |
+| The pane's back control | click | beneath `home.table_path` | every home |
+
+A folder's press sends `FolderPicked(folder)`. The folder is the one the server
+drew the button for, and the page honours it only for a folder it lists now
+(`home.folder_counts`): a press for any other changes nothing. The filter is a
+field of the home component's model. It is not saved, it is not sent to the
+daemon, and it changes what the page draws and nothing a session, the catalogue
+or a project holds. A folder whose group has emptied draws as "Everything, by
+need", so the list is never blank under a filter the rail no longer offers.
+
+The back control sends `InboxClosed`, which drops the open thread's state as a
+press on another thread does and returns the default thread behind the list. It
+is drawn on every thread's pane and shown only below 768px.
+
+The message form's buttons moved from inside the form to the pane's outbox bar.
+They name the form in a `form` attribute, so the browser submits the same form
+with the pressed button as its submitter, and the handler is still the form's
+`submit` event beneath `home.table_path`. The decoder is unchanged: exactly one
+`draft` and at most one `delivery`.
+
+### What the page draws and what it does not
+
+- Every word a session, a strand or a ticket wrote is still a text node. The
+  folders' names and the bands' glosses are the page's own fixed words, and no
+  folder, band or row carries session text in a class, attribute or key.
+- The top bar draws the number of threads that wait on the owner as a pill. The
+  pill is the bar's seventh child, after the owner's control, so
+  `home.admin_path` does not move.
+- An approval draws no age and no "waiting since". The escalation record has no
+  raise time (README section 7.2). Each place the design draws a time that the
+  page lacks is an `Option` that draws nothing while it is `None`
+  (`inbox.Offer.waited`, the `since` of `inbox_parts.eyebrow`).
+- An approval's thread keeps one action, "Decide on the session's page". No
+  control on Home decides an approval.
+
+### What was considered
+
+- **A new daemon command for the filter.** Ruled out: the filter changes what
+  the page draws and nothing the daemon holds, so a command would carry state
+  the daemon has no use for.
+- **Keeping the filter in the browser.** Ruled out: the page is a server
+  component and the list is drawn on the server, so the filter has to be in its
+  model for the server to draw it.
+- **Moving the folders into their own region.** Ruled out: the sidebar is the
+  second child of the frame (`home.sidebar_path`) and already admitted, and a
+  new region would need a new admission rule for the same click.
+
+### Cost
+
+One message on `home.Msg` for each of the two controls, one field on the
+model, a `Folders` offer on the sidebar and one pure module of shared parts
+(`web_view/view/inbox_parts`). No new route, frame or admitted path.
+
+### Verification
+
+`home_test` and `inbox_view_test` fail if the view moves `table_path`,
+`sidebar_path` or `admin_path`. `inbox_folders_test` pins that a folder's count
+equals the rows its band draws, that a press for a folder the page does not list
+changes nothing, and that an emptied folder draws as "Everything, by need". The
+client's `ui_socket_test`, `ui_route_test` and `daemon_server_test` are run
+unchanged.
+
+## Addendum: the live mode's stream and composer (2026-11-19)
+
+The final design of the live mode
+(`docs/design-notes/attention-inbox/final/mockup.html`) changes how the session
+page draws its stream, its rail and its composer. Nothing the page reads or the
+daemon sends changes, and no handler moves.
+
+### What it changes in the markup
+
+- **The stream.** A row is the gutter, the dot and the piece. A tool call, a
+  spawn, a result and a settled turn's divider are each one bordered line with
+  the outcome as a word at the right edge. The word comes from a fixed class
+  (`work-ok`, `work-failed`, `work-stopped`, `spawn-started`, `spawn-failed`,
+  and `tool-line` with `done`, `failed` or `pending`) that the view chose from a
+  closed type, and the stylesheet draws it as `content`. The divider is still
+  one button holding one text node, with the same `data-loom-fold` marker, so
+  `<loom-follow>` hears the same press. A row the rail lifted carries a third
+  child, `lifted · Kind`, and a fourth, the row's time, which no page draws yet.
+  An answer in a `Plain` piece gains a `speech` wrapper and a speaker line, a
+  fixed word taken from the strand's name; the block inside it keeps its place
+  beneath the wrapper. The jump markers, `data-loom-row` and the message-toggle
+  paths are unchanged.
+- **The rail.** The card is the list item, so an ask's form is inside its
+  border. The group title is a heading with two spans, the count and a fixed
+  gloss. The groups' last sibling is a note. `rail_path` and the
+  `1\t1\t1\t<n>\t0` path of an insight's press are unchanged: the title is still
+  the group's first child, the list its second, and the card's button its first
+  child.
+- **The strip.** `view/stream_head` is a label with no handler. It is the centre
+  column's last child and the stylesheet orders it first, so `older_path` and
+  every path beneath the centre keep their positions.
+- **The composer.** The line above the editor reads
+  `To <session> · <strand> · running`, with `waiting on the approval` while an
+  approval is pending. A busy strand's hint says what Queue and Steer do. Queue
+  and Steer are the same submit buttons with the same `delivery` values
+  (protocol-change/022). The dock's approval card keeps its order and its
+  rules: Deny first, buttons naming the tool, the 600 ms arming delay and no
+  autofocus.
+
+### What it does not do
+
+The page has no time for a row, a lifted item or a turn, and no request count
+for a generation. Each has a place in the view that stays empty until the data
+exists: `Marks.times`, `lifted.Item.at` and `stream_head.Head.turn`. A rail
+entry for a stuck strand has no "Retry the last step" button, because a send
+from the rail would be a new handler that the observer's socket would have to
+refuse by path; the retry stays on Home's thread, where `ItemRetried` already
+gates it. (The addendum "the live rail's actions", 2026-11-19, later added that
+button, and "File issue" and "Dismiss", for an owner's and an operator's page,
+with the observer's socket still refusing every one.)
+
+### Verification
+
+`web_view/test/lifted_test.gleam` and `operator_page_test.gleam` pin the new
+words and the unchanged paths. `ui_socket_test`, `ui_route_test` and
+`daemon_server_test` pass without a change to the admitted set.
+
+## Addendum: the live rail's actions (2026-11-19)
+
+The addendum on the live mode's stream and composer left "Retry the last step" out
+of the rail, because a send from the rail would be a handler the observer's socket
+would have to refuse by path. The owner has ruled that the rail takes the final
+design's actions on an owner's or an operator's page: "Retry the last step" on a
+stuck strand's card, and "File issue" and "Dismiss" on a find's card
+(`docs/design-notes/attention-inbox/final/mockup.html`). This addendum adds those
+three buttons and the way an observer's page and socket stay out of them.
+
+### What the page may do
+
+A session page that may act (a member operator's or the owner's, handed
+`Attention.act`, which `ui_socket.rail_act_capability` withholds from an
+observer's) may:
+
+- **Retry** a strand the feed row holds as stuck. The page names the strand, and
+  the daemon's task sends it `thread_send.retry_prompt`, the words the home's
+  Retry sends (`ItemRetried`), over the page's own gateway attachment with the
+  page's ceiling (`ui_socket.page_retry_for`, `page_strand_send`). The browser
+  never supplies the text.
+- **File issue** or **Dismiss** a find the feed row holds, as `Filed` or
+  `Dismissed` (`core/attention.Closure`), through `attention_door.close_find`
+  (`ui_socket.page_close_for`), the call the home's `ItemClosed` makes. The page
+  reads each find in full when the row names it (the same `attention.read` the
+  asks use, only on a page that may act) and names the revision it read, so a find
+  that changed since is refused by the door and not closed. "Fixed" is not drawn:
+  the mockup has no such button, and the home keeps it.
+
+Both ride the existing `RailAnswerDone`: one action is out at a time, the daemon's
+fixed word is said in the rail (`Closed.`, or the retry's delivery words), and a
+settled one is read again at once so the card leaves. The door and the gateway
+read authority again whatever the page was handed, so the capability is a
+convenience for drawing and not the gate.
+
+### What the page draws and what it does not
+
+A card's third child is now its actions: after the card's own button and the
+ask's place (`under`), `view/lifted` draws a `div.lift-acts` holding the buttons,
+or nothing. A stuck strand's card has "Retry the last step". A find's card has
+"File issue" and "Dismiss" once the page holds the find's record, and "Sending…"
+in place of both while an action is out. No other row has one: an approval is
+decided only in the dock, and an ask is answered by its form. The phone's sheet
+draws the same offers from the same inputs, as it draws the form.
+
+The buttons sit beside the card's button, not inside it, since a button cannot
+hold a button, so the card's button keeps its place and an unopened insight's press
+keeps its path. A page that may not act is handed `NoOffer` for every row and draws
+no button, so an observer's page has the same handlers it had.
+
+### The new presses, and who admits them
+
+| Press | Path | Operator and owner sockets | Observer's socket |
+|---|---|---|---|
+| Retry the last step | `rail_path`, `1\t0\t1`, position, `2\t0` (`component.rail_retry`) | admitted, as every click not at an owner's control | refused |
+| File issue, Dismiss | `rail_path`, `1\t1\t1`, position, `2`, `0` or `1` (`component.rail_close`) | admitted, as above | refused |
+
+The rule added is that the observer's list of admitted places does not change.
+`observer_path` still names the older, latest and Home buttons, the context
+refresh, the notes and strand lists, `rail_click`, `fold_click` and
+`message_click`, and neither new path has the shape of one of them: `rail_click`
+is nine segments ending `0`, these are ten. So `observer_accepts` refuses both
+for a click, a submit, any other event and a batch holding one. An operator's
+socket admits a click at any path but an owner's control's, which both are not, so
+no socket's code changed and no operator admission widened. The two predicates are
+documented test helpers, like `rail_submit`: `rail_actions_test` fails if the view
+moves a button off the shape, and `ui_socket_test` pins what each socket does at
+each path and at the neighbours a bug would land on.
+
+### What was considered
+
+- **An observer-side guard in `observer_path` that names the new paths.** It would
+  refuse what the list already refuses, and a second statement of the same fact
+  is what drifts. The tests state it instead.
+- **Reading the revision when the button is pressed.** That moves a read into the
+  press and a find that moved between the read and the press is then closed
+  blindly. Reading the find with the row, as the asks are, lets the page close
+  exactly what it drew.
+- **Hiding the buttons on a folded insight, as the mockup's `seen` card does.**
+  The mockup folds the actions away with the card, which leaves a find that was
+  opened with no way to close it from the rail. The buttons stay on a folded card.
+- **Offering "Fixed" too.** The mockup has two buttons on a find, and the home's
+  thread keeps all three.
+- **A second path to the daemon.** The page reuses the home's words and the door's
+  close, and adds no wire message.
+
+### Cost
+
+One `Act` capability on the component's transport, two messages (`RailClosed`,
+`RailRetried`), an `Offer` type and one field on `lifted.Rail`, two exact
+predicates, and a read of each open find on a page that may act (at most the row's
+cut of finds, once for each find). No route, frame, daemon field or admitted
+place.
+
+### Verification
+
+`web_view/test/rail_actions_test.gleam` drives the page: the three buttons in the
+rail and the sheet, their exact paths, the sends and the revision, a key or a
+strand the row does not hold, one action out at a time, and a page that may not act
+(and the observer's own view) with no button and nothing sent.
+`client/test/client/ui_socket_test.gleam` pins
+`only_an_operators_rail_retries_and_closes_test`: the operator's and owner's
+sockets admit each press, the observer's refuses each alone, as another event and
+in a batch, and at the neighbouring paths, and the capability is withheld from an
+observer. `client/test/client/ui_route_test.gleam` pins that a close needs an open
+page and the door's authority and that a retry sends the fixed prompt. A drive in a
+browser is recorded in the commit that adds the shots.
+
+## Addendum: one frame on every page (2026-11-19)
+
+The final design (`docs/design-notes/attention-inbox/final/mockup.html`) draws one
+frame for every page: a bar of one 44px row and a 184px rail. Until this change
+only Home's inbox had it. The session page, the admin page and every other page
+of the home now draw it. No handler is added and no admission rule changes, but
+one admitted path moves, and the rail on a session's page gains six buttons
+beneath a path the operator's socket already admits.
+
+### What it changes in the markup
+
+- **The frame's class.** `<loom-shell>` carries `loom-inbox` on every page. The
+  `Inbox` audience of `view/shell` is gone, since it differed from `Home` only by
+  that class.
+- **The bar.** A session's bar reads `loom  ‹ Inbox  <folder> / <name>  ● live`,
+  then `N need you`, then a chip that says who the page is for
+  (`owner · operating`, `member · watching`). The "Home" button is now "‹ Inbox"
+  and keeps its place as the bar's second child (`component.home_path`). The
+  connection's pill is drawn as before and the stylesheet shows it only when the
+  page is not connected. The theme control is a ghost button with the word
+  "Theme", and Search is a ghost button with `⌘K`.
+- **The strip.** The context, cost and speed figures and the two placement
+  chips left the bar for the stream's strip (`view/stream_head`, `view/figures`).
+  The strip is the centre's eighth child on both pages: the observer's page keeps
+  an empty node in the sixth place, where the operator's page draws its switcher,
+  so one index serves both.
+- **The rail.** A session's page draws the same six folders and the same "Watch
+  live" list as Home. Its folders carry no count, since that page does not read
+  the attention feed, and a press of one is `GoingHome`, the press the bar's
+  "‹ Inbox" sends. A running row's second line is `view/watch_rule`'s words:
+  `running · 2 lifted`, `approval · 1 lifted`, `aegis · asked`,
+  `finished · to review`. The admin page draws the folders as text, since its
+  socket admits no press beneath its rail.
+
+### Paths
+
+| Path | Before | After |
+|---|---|---|
+| `component.context_refresh_path` | `0\t0\t5\t0\t1\t0\t0` | `0\t2\t7\t5\t0\t1\t0\t0` |
+
+The Compact now button is still the row's second child. The observer's socket
+admits the same one path for Refresh and nothing else is added: the folders are
+beneath `sidebar_path`, which only an operator's page draws, and the operator's
+socket admits any click that is not an owner's control. `ui_socket_test`,
+`ui_route_test`, `daemon_server_test` and the `admin_*` tests pass.
+
+### Project tickets
+
+A ticket at `person/check` or `person/review` is a finished piece of work that
+waits to be read. It sits under "To review", as the mockup draws it, and counts
+in that folder. A ticket at any other stage that needs a person
+(`person/answer`, `person/blocked`, `person/failed`) stays under "Needs you".
+The "Projects" folder lists both. This revises the addendum "project tickets on
+Home" (2026-11-18), which put every ticket under "Needs you".

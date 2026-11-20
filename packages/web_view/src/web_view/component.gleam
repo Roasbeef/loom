@@ -140,7 +140,9 @@
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
+import core/attention as core_attention
 import core/ids
+import core/json.{type JsonValue}
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -148,6 +150,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import lustre
 import lustre/attribute
@@ -160,6 +163,7 @@ import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
+import session_view/attention
 import session_view/block_summary
 import session_view/btw
 import session_view/cache_miss
@@ -212,12 +216,15 @@ import session_view/turn_ledger
 import session_view/turns
 import session_view/worktree_view
 import web_view/actions
+import web_view/answer_rule
+import web_view/attention_feed
 import web_view/creations
 import web_view/ending.{type Ending}
 import web_view/evolution as evolving
 import web_view/grants
 import web_view/image as web_image
 import web_view/invites
+import web_view/item_pane
 import web_view/listing
 import web_view/notes
 import web_view/peer_links
@@ -227,6 +234,7 @@ import web_view/renames
 import web_view/sessions
 import web_view/shareables
 import web_view/view/archiving
+import web_view/view/attention_thread
 import web_view/view/changes
 import web_view/view/commentary
 import web_view/view/context_breakdown
@@ -234,8 +242,10 @@ import web_view/view/crumb
 import web_view/view/ended
 import web_view/view/evolution as evolution_view
 import web_view/view/expansion
+import web_view/view/figures
 import web_view/view/heading
 import web_view/view/lane
+import web_view/view/lifted as lifted_view
 import web_view/view/live
 import web_view/view/notes as notes_panel
 import web_view/view/nudges
@@ -248,10 +258,12 @@ import web_view/view/rename as rename_view
 import web_view/view/session_tab
 import web_view/view/shell
 import web_view/view/strand_detail
+import web_view/view/stream_head as stream_head_view
 import web_view/view/strip
 import web_view/view/switch
 import web_view/view/todo_panel
 import web_view/view/trace
+import web_view/watch_rule
 import web_view/worktrees
 
 /// The most frames one `Arrived` carries: the frame the selector matched
@@ -425,6 +437,22 @@ pub const proposals_path = "0\t3\t2\t7"
 /// no event beneath it. `evolution_page_test` fails if the view moves the pane.
 pub const evolution_path = "0\t3\t6"
 
+/// The Lustre event path of the live rail, "Lifted from this session": the
+/// Strands pane's fifth and last child, after the title, the strip, the strand
+/// detail and the advisor's commentary (`view/panel`), so that placing it
+/// there moved no path the socket admits. Most handlers beneath it are one
+/// insight's press, which asks the page to draw that insight folded from now on
+/// (`RailOpened`). That reads nothing and sends no command, so an observer's
+/// socket admits a `click` at exactly `rail_click`'s shape and nowhere else
+/// beneath the rail (`client/daemon/ui_socket.observer_accepts`,
+/// protocol-change/051, the addendum on the live rail). The others are an ask's
+/// form and the buttons of a stuck strand's or a find's card (`rail_submit`,
+/// `rail_retry` and `rail_close`), which send, and which only an operator's page
+/// draws and only an operator's or an owner's socket admits. The jump to a
+/// transcript row is the browser's and fires no event. `lifted_test` fails if
+/// the view moves the rail.
+pub const rail_path = "0\t3\t0\t4"
+
 /// How soon after the present the page wakes for an evolution read or poll
 /// that the lane could not send yet, in milliseconds of the transport's clock.
 /// A past-due instant means the lane's command slot was busy, so waking at
@@ -452,8 +480,12 @@ pub const peers_refresh_ms = 15_000
 pub const home_path = "0\t0\t1"
 
 /// The Lustre event path of the Refresh button in the context breakdown, on
-/// both pages: the top bar's figures are its sixth child, the context figure
-/// is the figures' first child (a `<details>`), its panel (`view/context_breakdown`)
+/// both pages: the stream's strip (`view/stream_head`) is the eighth child of the
+/// centre, which is the frame's third child (`view/shell`), and the observer's
+/// page keeps an empty node in the sixth child's place, where the operator's
+/// page draws its switcher, so the strip has the same index on both pages. The strip's figures are its sixth child, the
+/// context figure is the figures' first child (a `<details>`), its panel
+/// (`view/context_breakdown`)
 /// the figure's second child, the panel's row of buttons the panel's first
 /// child, and Refresh the row's first. The observer's socket admits a `click` at
 /// exactly this path (`client/daemon/ui_socket.observer_accepts`), since the
@@ -462,7 +494,7 @@ pub const home_path = "0\t0\t1"
 /// the row's second child and is drawn only on the operator's page, where the
 /// socket admits it like any click. `page_events_test` fails if the view moves
 /// the button.
-pub const context_refresh_path = "0\t0\t5\t0\t1\t0\t0"
+pub const context_refresh_path = "0\t2\t7\t5\t0\t1\t0\t0"
 
 /// The Lustre event path of the operator's session controls, the goal's
 /// buttons and the Fork form: the fourth child of the Session pane, after the
@@ -641,6 +673,80 @@ pub type Label {
   )
 }
 
+/// What a session's own page reads of the attention feed, and, for an operator's
+/// page alone, how it answers an ask (protocol-change/120, the addendum "the
+/// live rail"). Every function returns at once and answers from the daemon's own
+/// task, which dies with the page.
+pub type Attention {
+  Attention(
+    /// Starts the read of this session's feed row: its open asks, finds and
+    /// stuck strands. The answer is dispatched as `RailRead`. A row the daemon
+    /// could not read is the daemon's fixed words.
+    read: fn(fn(Result(attention_feed.Row, String)) -> Nil) -> Nil,
+    /// Starts the read of one record in full, by its identifier, for an ask the
+    /// rail draws the form of. The answer is dispatched as `RailRecord`.
+    record: fn(String, fn(Result(item_pane.Record, String)) -> Nil) -> Nil,
+    /// How the page answers: the ask, the revision the page read it at, the
+    /// wire object of the form and the function the daemon's word goes to. It
+    /// is `Some` only for an operator's page, and the daemon reads authority
+    /// again when it runs, whatever this page said.
+    answer: Option(fn(String, Int, JsonValue, fn(AnswerOutcome) -> Nil) -> Nil),
+    /// How the page acts on a find or a stuck strand from the rail's cards
+    /// (protocol-change/051, the addendum on the live rail's actions). It is
+    /// `Some` only for an operator's page, as `answer` is, and the daemon reads
+    /// authority again when either function runs.
+    act: Option(Act),
+  )
+}
+
+/// What an operator's session page may do to the session's own open records
+/// besides answering an ask. Each function returns at once and answers from
+/// the daemon's own task, with the daemon's fixed words.
+pub type Act {
+  Act(
+    /// Closes a find: the find's identifier, the revision the page read it
+    /// at, the way it is closed and the function the daemon's word goes to.
+    close: fn(String, Int, core_attention.Closure, fn(AnswerOutcome) -> Nil) ->
+      Nil,
+    /// Asks a stuck strand to retry, by sending it the fixed retry prompt
+    /// (`thread_send.retry_prompt`). The page names the strand and never the
+    /// words.
+    retry: fn(String, fn(AnswerOutcome) -> Nil) -> Nil,
+  )
+}
+
+/// What the daemon said of an answer sent from the rail. The words are the
+/// daemon's own fixed words, which never include text a person typed or a
+/// session wrote.
+pub type AnswerOutcome {
+  /// The ask was settled.
+  AnswerSent(words: String)
+
+  /// It was not, or not entirely.
+  AnswerFailed(words: String)
+}
+
+/// What the page holds of the session's own open records and of the answer it
+/// is sending. It is the page's own state and nothing the daemon records.
+pub type Watch {
+  Watch(
+    /// The feed row of the last read, or nothing before one answered.
+    row: Option(attention_feed.Row),
+    /// When the page last asked for the row, on the transport's clock, so the
+    /// next ask waits `rail_refresh_ms` whether or not the daemon answered.
+    asked_at: Option(Int),
+    /// The asks read in full, by identifier, with the revision each was read at.
+    records: Dict(String, item_pane.Record),
+    /// Why the last submit of an ask's form was refused, by identifier.
+    problems: Dict(String, answer_rule.Problem),
+    /// The ask whose answer is with the daemon, if one is. There is one at a
+    /// time.
+    sending: Option(String),
+    /// The page's word on the last answer, in the daemon's fixed words.
+    words: String,
+  )
+}
+
 /// The host's transport and clock.
 ///
 /// Every function runs in the component's own process, which owns the
@@ -794,6 +900,10 @@ pub type Transport(socket) {
     /// unless the page's principal is the daemon's owner, so a page with no
     /// capability draws no section and reads nothing.
     peers: Option(fn(peer_links.Request, fn(peer_links.Answer) -> Nil) -> Nil),
+    /// Reads this session's open asks, finds and stuck strands for the live
+    /// rail, and answers an ask from it on an operator's page. `None` on a page
+    /// that reads no feed, which then draws the rail as it was before asks.
+    attention: Option(Attention),
   )
 }
 
@@ -1067,6 +1177,14 @@ type View(socket) {
     /// reads the whole text from the entry its block holds. A strand the
     /// reader leaves forgets them.
     said: List(String),
+    /// The keys of the rail's insights the reader has opened, the most
+    /// recently opened first and at most `open_insights`. An insight is drawn
+    /// whole until its key is here and folded to one line after, for the life
+    /// of the strand on screen: a strand the reader leaves forgets them, as it
+    /// forgets `said`, because the keys name rows of that strand's lane. The
+    /// keys are `attention.Lifted.key` values, which are daemon identities;
+    /// nothing is stored in the browser.
+    opened: List(String),
     /// The `paging` of each strand the reader left, keyed by strand name,
     /// for the life of the page. `focus` parks the departing strand's here
     /// and restores the arriving strand's, so a strand whose older rows the
@@ -1115,6 +1233,16 @@ type View(socket) {
     /// their summaries, and then the window's blocks laid out, derived
     /// with them.
     pieces: List(turns.Piece),
+    /// When each row of `pieces` happened, by the row's key (`turns.stamped`),
+    /// built with the pieces from the window's blocks and the closed turns'
+    /// summaries, which keep their own. The lane draws it in the gutter and
+    /// the rail on its cards, so a tick or a fragment reads it and builds
+    /// nothing.
+    stamps: Dict(String, Int),
+    /// Which request the running turn is generating (`turns.requests`), read
+    /// from `blocks` when the pieces are built, for the line under the live
+    /// region.
+    requests: Int,
     /// The inputs `blocks` and `pieces` were derived from.
     projected: Projected,
     /// The edits the held window carries (`session_view/changes_view`),
@@ -1194,6 +1322,8 @@ type View(socket) {
     /// asked for the strand's links, on the transport's clock.
     peering: peer_links.Control,
     peers_asked_at: Option(Int),
+    /// The session's own open records and the answer being sent from the rail.
+    watching: Watch,
     /// When the page opened or last asked for the strand's live jobs, on the
     /// transport's clock, so the next ask waits `jobs_refresh_ms` whether or
     /// not the daemon answered. A refused read is therefore not repeated on
@@ -1342,6 +1472,40 @@ pub type Msg(socket) {
   /// messages).
   MessageToggled(key: String)
 
+  /// An insight on the live rail was pressed: draw it folded from now on. The
+  /// insight is named by the key the view drew into the handler, never by
+  /// anything the browser sent, and a key that names no insight the rail holds
+  /// changes nothing. It changes only what this page draws and sends no
+  /// command, so an observer's page may carry it (protocol-change/051, the
+  /// addendum on the live rail). The jump to the row is the browser's alone.
+  RailOpened(key: String)
+
+  /// The daemon's answer to the read of this session's feed row.
+  RailRead(read: Result(attention_feed.Row, String))
+
+  /// The daemon's answer to the read of one ask in full.
+  RailRecord(id: String, read: Result(item_pane.Record, String))
+
+  /// The form of an ask on the rail was submitted: check it by the daemon's own
+  /// rule and send it. The ask is the one the form was drawn for, fixed when the
+  /// tree was drawn, and the page honours it only for an ask it has read in
+  /// full; the daemon decides whether this page may answer.
+  RailAnswered(id: String, fields: List(#(String, String)))
+
+  /// The daemon's word on an answer, a close or a retry sent from the rail.
+  RailAnswerDone(id: String, outcome: AnswerOutcome)
+
+  /// "File issue" or "Dismiss" was pressed on a find's card. The find is the
+  /// row's own key, fixed when the tree was drawn, and the page honours it only
+  /// for a find the feed row holds and that it has read in full; the daemon
+  /// decides whether this page may close it, at the revision the page read.
+  RailClosed(key: String, closure: core_attention.Closure)
+
+  /// "Retry the last step" was pressed on a stuck strand's card. The strand is
+  /// the one the row was drawn for, and the page honours it only while the feed
+  /// row still holds it stuck. The words sent are the daemon's own.
+  RailRetried(strand: String)
+
   /// A chip of the agent strip was pressed: show this strand and address it.
   /// The strand is the name the strip was drawn with, never text the browser
   /// sent, because a handler's message is fixed when the tree is drawn and
@@ -1488,6 +1652,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       notes: notes.new(),
       folds: [],
       said: [],
+      opened: [],
       parked_paging: dict.new(),
       strand_keys: dict.from_list([#(shared.active_strand, 1)]),
       earlier: Reached,
@@ -1500,6 +1665,8 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       parked_sealed: dict.new(),
       blocks: [],
       pieces: [],
+      stamps: dict.new(),
+      requests: 1,
       projected: projected_of(shared, Tail, [], Unasked),
       changes: changes_view.empty(),
       worktree: case start.transport.worktree {
@@ -1542,6 +1709,14 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       renamed: 0,
       peering: peer_links.start(capable: option.is_some(start.transport.peers)),
       peers_asked_at: None,
+      watching: Watch(
+        row: None,
+        asked_at: None,
+        records: dict.new(),
+        problems: dict.new(),
+        sending: None,
+        words: "",
+      ),
       jobs_asked_at: None,
       decided: Owed,
       holding: holding.new(),
@@ -1714,6 +1889,7 @@ pub fn update(
       stepping(Model(shared:, view:), [tick_at(at)], at)
       |> relisted(at)
       |> peers_due(at)
+      |> attention_due(at)
     }
 
     // The relay could not attach, or a held page's standing ended after it
@@ -1761,6 +1937,7 @@ pub fn update(
       stepping(jobs_wanted(model, at), [tick_at(at)], at)
       |> relisted(at)
       |> peers_due(at)
+      |> attention_due(at)
       |> reobserved(at)
 
     QueueAction(action) -> queue_action(model, action, at)
@@ -1797,6 +1974,22 @@ pub fn update(
     FoldToggled(fold:) -> folded_at(model, fold, at)
 
     MessageToggled(key:) -> #(messaged(model, key), effect.none())
+
+    RailOpened(key:) -> #(rail_opened(model, key), effect.none())
+
+    // The feed row replaces the last one whole, so an answered ask leaves the
+    // rail at the next read. The asks the page has no full record of are read.
+    RailRead(read:) -> rail_heard(model, read)
+
+    RailRecord(id:, read:) -> #(rail_recorded(model, id, read), effect.none())
+
+    RailAnswered(id:, fields:) -> rail_answered(model, id, fields)
+
+    RailAnswerDone(id:, outcome:) -> rail_answer_done(model, id, outcome)
+
+    RailClosed(key:, closure:) -> rail_closed(model, key, closure)
+
+    RailRetried(strand:) -> rail_retried(model, strand)
 
     FocusRequested(strand:) -> focus_at(model, strand, at) |> peers_due(at)
 
@@ -2789,19 +2982,24 @@ fn browsed(
     [] -> scrollback
   }
 
+  let pieces =
+    turns.pieces(
+      blocks,
+      view.strands,
+      turns.Running,
+      turns.Expand(expansion.capped),
+    )
+    |> fold_budget.draw(model.view.folds, dict.new())
+    |> turns.attributed(turns.authors(view.peers))
+
   Model(
     shared: shared_set.scrollback(model.shared, scrollback),
     view: View(
       ..model.view,
       blocks:,
-      pieces: turns.pieces(
-          blocks,
-          view.strands,
-          turns.Running,
-          turns.Expand(expansion.capped),
-        )
-        |> fold_budget.draw(model.view.folds, dict.new())
-        |> turns.attributed(turns.authors(view.peers)),
+      pieces:,
+      stamps: turns.stamped(pieces, blocks),
+      requests: turns.requests(blocks),
     ),
   )
 }
@@ -3608,6 +3806,8 @@ fn overrun(
       ..model.view,
       blocks:,
       pieces:,
+      stamps: turns.stamped(pieces, blocks),
+      requests: turns.requests(blocks),
       folds: [],
       steps: dict.new(),
       earlier: Unheld,
@@ -3687,6 +3887,12 @@ fn fitted_page(
       blocks:,
       pieces: list.append(closed_pieces, window_pieces)
         |> turns.attributed(turns.authors(view.peers)),
+      stamps: list.fold(
+        kept_sealed,
+        turns.stamped(window_pieces, blocks),
+        fn(found, turn) { dict.merge(found, turn.stamps) },
+      ),
+      requests: turns.requests(blocks),
       folds: fitted.folds,
       raised: remembered(model.view.raised, view.cells),
       earlier: earlier_of(model, kept_sealed, window),
@@ -6861,6 +7067,7 @@ fn focus_strand_at(
             floor: Unheld,
             folds: [],
             said: [],
+            opened: [],
             parked_paging: dict.delete(remembered, strand),
             refusal: None,
             outcome: "",
@@ -7245,6 +7452,678 @@ pub fn expanded(model: Model(socket)) -> List(String) {
   model.view.said
 }
 
+/// How many opened insights the page remembers. Each is a key the page drew,
+/// and the oldest-opened is forgotten first, which draws it whole again.
+pub const open_insights = 64
+
+/// The rows the live rail lifts from the page: the pending approvals first,
+/// then the lane's failures, results and peer messages newest first
+/// (`session_view/attention`). It reads the pieces the lane draws, so the rail
+/// and the transcript never disagree about what is on the page, and it holds
+/// nothing of its own but the opened set.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.lifted(component.new(transport)) == []
+/// ```
+pub fn lifted(model: Model(socket)) -> List(attention.Lifted) {
+  attention.lift_all(pieces(model), model.shared.approvals, rail_records(model))
+}
+
+/// What the page lifts, worked out once per render from the pieces the lane
+/// draws: the rows and the place each press goes. The page passes the one
+/// value to the lane's marks, the rail and the sheet, so the lane's pieces are
+/// read and lifted once however many places draw them. `dock` says whether an
+/// approval entry points at a dock.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.lift(model, component.pieces(model), lifted_view.InDock)
+/// ```
+pub fn lift(
+  model: Model(socket),
+  pieces: List(turns.Piece),
+  dock: lifted_view.Dock,
+) -> lifted_view.Lift {
+  lifted_view.Lift(
+    items: lifted_view.items(
+      pieces,
+      attention.lift_all(pieces, model.shared.approvals, rail_records(model)),
+      dock,
+      rail_time(model),
+    ),
+    dock:,
+  )
+}
+
+/// When a lifted row was raised, by the row's key: a lane row's entry time
+/// (`View.stamps`), and for the rows of the session's own records the time the
+/// record carries: an approval's `raised_at`, an ask's or find's `created_at`
+/// and a stuck strand's `failed_at`. A record with no time gives none, and the
+/// card's header then names its source alone.
+fn rail_time(model: Model(socket)) -> fn(String) -> Option(Int) {
+  let records =
+    list.flatten([
+      list.filter_map(model.shared.approvals, fn(review) {
+        option.to_result(review.raised_at, Nil)
+        |> result.map(fn(at) { #("approval:" <> review.id, at) })
+      }),
+      case model.view.watching.row {
+        None -> []
+        Some(row) ->
+          list.flatten([
+            list.map(row.asks.items, fn(ask) {
+              #(attention.ask_key(ask.id), ask.created_at)
+            }),
+            list.map(row.finds.items, fn(find) {
+              #(attention.find_key(find.id), find.created_at)
+            }),
+            list.filter_map(row.stuck.items, fn(stuck) {
+              option.to_result(stuck.failed_at, Nil)
+              |> result.map(fn(at) { #(attention.stuck_key(stuck.strand), at) })
+            }),
+          ])
+      },
+    ])
+    |> dict.from_list
+
+  fn(key) {
+    case dict.get(model.view.stamps, key) {
+      Ok(at) -> Some(at)
+      Error(Nil) -> dict.get(records, key) |> option.from_result
+    }
+  }
+}
+
+/// The rail's drawing inputs: what was lifted, which insights the reader has
+/// opened, the strand on screen, and how to name a session. `open` is the
+/// rail's handler for an unopened insight, or `None` for the sheet, whose rows
+/// send nothing.
+fn lifted_rail(
+  model: Model(socket),
+  lift: lifted_view.Lift,
+  open: option.Option(fn(String) -> message),
+  observed: fn(Msg(socket)) -> message,
+) -> lifted_view.Rail(message) {
+  lifted_view.Rail(
+    items: lift.items,
+    opened: model.view.opened,
+    strand: model.shared.active_strand,
+    dock: lift.dock,
+    names: fn(id) { session_name(model, id) },
+    open:,
+    under: fn(key) { rail_form(model, key, observed) },
+    offer: fn(row) { rail_offer(model, row, observed) },
+    status: model.view.watching.words,
+  )
+}
+
+/// The live rail for the Strands pane: the rows `lift` holds, grouped as
+/// "Needs you" and "Insights", or nothing when there are none. An unopened
+/// insight's press is `RailOpened` wrapped by `observed`; the jump to its row
+/// is the browser's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.rail(model, lift, fn(msg) { msg })
+/// ```
+pub fn rail(
+  model: Model(socket),
+  lift: lifted_view.Lift,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  lifted_view.view(lifted_rail(
+    model,
+    lift,
+    Some(fn(key) { observed(RailOpened(key)) }),
+    observed,
+  ))
+}
+
+/// The phone's bar and sheet for the same rows, drawn last in the centre
+/// column and ordered above the dock by the stylesheet, so no path the socket
+/// admits moves. Its rows are not handlers: a press only jumps, in the browser.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.sheet(model, lift)
+/// ```
+pub fn sheet(
+  model: Model(socket),
+  lift: lifted_view.Lift,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  lifted_view.sheet(lifted_rail(model, lift, None, observed))
+}
+
+/// How often the page asks for the session's feed row, in milliseconds of the
+/// transport's clock. An answer asks for one at once, so this is only the pace
+/// at which a record the agent wrote reaches the rail.
+pub const rail_refresh_ms = 5000
+
+/// The session's own open records as the classifier takes them: the asks
+/// oldest first, then the stuck strands, then the finds, each in the order the
+/// feed gave them. The row holds only what the daemon read, so a session whose
+/// row was not read has none.
+fn rail_records(model: Model(socket)) -> List(attention.Record) {
+  case model.view.watching.row {
+    None -> []
+    Some(row) ->
+      list.flatten([
+        row.asks.items
+          |> list.sort(fn(left, right) {
+            int.compare(left.created_at, right.created_at)
+          })
+          |> list.map(fn(ask) { attention.AskRecord(ask.id, ask.head) }),
+        list.map(row.stuck.items, fn(stuck) {
+          attention.StuckRecord(stuck.strand)
+        }),
+        list.map(row.finds.items, fn(find) {
+          attention.FindRecord(find.id, attention_feed_kind(find), find.head)
+        }),
+      ])
+  }
+}
+
+/// The kind word of a find, as the agent calls it.
+fn attention_feed_kind(find: attention_feed.Find) -> String {
+  case find.kind {
+    core_attention.Risk -> "risk"
+    core_attention.Idea -> "idea"
+    core_attention.Bug -> "bug"
+    core_attention.Wondering -> "question"
+  }
+}
+
+/// Reads the session's feed row when the last read is `rail_refresh_ms` old, on
+/// `Opened` and `Ticked`. A page with no capability or one that ended asks
+/// nothing.
+fn attention_due(
+  done: #(Model(socket), Effect(Msg(socket))),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(model, effects) = done
+  let watching = model.view.watching
+
+  // The pace is the transport's clock, so a refused read is not repeated on
+  // every tick.
+  let elapsed = case watching.asked_at {
+    Some(before) -> at - before >= rail_refresh_ms
+    None -> True
+  }
+
+  // A page that reads the feed and has not ended asks when the last read is old.
+  case model.view.transport.attention, model.view.status, elapsed {
+    Some(reads), Connecting, True | Some(reads), Connected, True -> {
+      let model =
+        Model(
+          ..model,
+          view: View(
+            ..model.view,
+            watching: Watch(..watching, asked_at: Some(at)),
+          ),
+        )
+      #(model, effect.batch([effects, rail_asking(reads)]))
+    }
+    Some(_), _, False | Some(_), Ended(_), True | None, _, _ -> done
+  }
+}
+
+/// The effect that asks for the feed row.
+fn rail_asking(reads: Attention) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  reads.read(fn(read) { dispatch(RailRead(read)) })
+}
+
+/// Takes the feed row, forgets the full records of asks the row no longer
+/// holds, and reads the ones it has not read. A refused read changes nothing.
+fn rail_heard(
+  model: Model(socket),
+  read: Result(attention_feed.Row, String),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+
+  // A row is kept only by a page that reads the feed and has not ended.
+  case read, model.view.transport.attention, model.view.status {
+    Ok(row), Some(reads), Connecting | Ok(row), Some(reads), Connected -> {
+      let asks = list.map(row.asks.items, fn(ask) { ask.id })
+      let finds = list.map(row.finds.items, fn(find) { find.id })
+      let held = list.append(asks, finds)
+      let kept =
+        dict.filter(watching.records, fn(id, _) { list.contains(held, id) })
+
+      // Only a page that may answer draws an ask's form, so only it reads the
+      // asks in full. A find is read in full only by a page that may close it,
+      // because the close names the revision the page read.
+      let wanted =
+        list.append(
+          case reads.answer {
+            Some(_) -> asks
+            None -> []
+          },
+          case reads.act {
+            Some(_) -> finds
+            None -> []
+          },
+        )
+      let missing = list.filter(wanted, fn(id) { !dict.has_key(kept, id) })
+
+      #(
+        Model(
+          ..model,
+          view: View(
+            ..model.view,
+            watching: Watch(..watching, row: Some(row), records: kept),
+          ),
+        ),
+        effect.batch(
+          list.map(missing, fn(id) {
+            use dispatch <- effect.from
+            reads.record(id, fn(read) { dispatch(RailRecord(id, read)) })
+          }),
+        ),
+      )
+    }
+    Ok(_), _, _ | Error(_), _, _ -> #(model, effect.none())
+  }
+}
+
+/// Keeps an ask or a find read in full, when the row still holds it. A find's
+/// record is the revision a close names.
+fn rail_recorded(
+  model: Model(socket),
+  id: String,
+  read: Result(item_pane.Record, String),
+) -> Model(socket) {
+  let watching = model.view.watching
+
+  // A record is kept only for an id the feed row still holds.
+  case read, rail_holds(watching, id) {
+    Ok(record), True ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          watching: Watch(
+            ..watching,
+            records: dict.insert(watching.records, id, record),
+          ),
+        ),
+      )
+    Ok(_), False | Error(_), _ -> model
+  }
+}
+
+/// Whether the feed row holds an ask or a find with this identifier.
+fn rail_holds(watching: Watch, id: String) -> Bool {
+  case watching.row {
+    Some(row) ->
+      list.any(row.asks.items, fn(ask) { ask.id == id })
+      || list.any(row.finds.items, fn(find) { find.id == id })
+    None -> False
+  }
+}
+
+/// The form drawn under an open ask on the rail, for a page that may answer and
+/// has read the ask in full. A page that may not, an ask not yet read and every
+/// other row draw nothing under the row.
+fn rail_form(
+  model: Model(socket),
+  key: String,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  let watching = model.view.watching
+
+  // Only an ask's key names a form, and only a page with an answer draws it.
+  case model.view.transport.attention, watching.row {
+    Some(Attention(answer: Some(_), ..)), Some(row) ->
+      case
+        list.find(row.asks.items, fn(ask) { attention.ask_key(ask.id) == key })
+      {
+        Ok(ask) -> rail_filled(watching, ask.id, observed)
+        Error(Nil) -> element.none()
+      }
+    Some(_), _ | None, _ -> element.none()
+  }
+}
+
+/// The form of one ask the page has read in full, or nothing while the read is
+/// out.
+fn rail_filled(
+  watching: Watch,
+  id: String,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  // The record is the ask's questions, and without it there is nothing to draw.
+  case dict.get(watching.records, id) {
+    Ok(item_pane.AskRecord(ask: full, ..)) ->
+      attention_thread.answer_form(
+        id,
+        full,
+        option.from_result(dict.get(watching.problems, id)),
+        case watching.sending == Some(id) {
+          True -> "Sending…"
+          False -> "Send answer"
+        },
+        fn(fields) { observed(RailAnswered(id, fields)) },
+      )
+    Ok(item_pane.FindRecord(..)) | Error(Nil) -> element.none()
+  }
+}
+
+/// Checks a submitted form with the daemon's own rule and sends the answer at
+/// the revision the page read. A page that may not answer, an ask it has not
+/// read in full, a page that ended and an answer already out ask nothing.
+fn rail_answered(
+  model: Model(socket),
+  id: String,
+  fields: List(#(String, String)),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+  let session = session_id(model)
+
+  // An answer is sent only for an ask read in full, with none out and the page
+  // not ended.
+  case
+    model.view.transport.attention,
+    dict.get(watching.records, id),
+    watching.sending,
+    model.view.status
+  {
+    Some(Attention(answer: Some(send), ..)),
+      Ok(item_pane.AskRecord(ask:, revision:)),
+      None,
+      Connecting
+    | Some(Attention(answer: Some(send), ..)),
+      Ok(item_pane.AskRecord(ask:, revision:)),
+      None,
+      Connected
+    ->
+      case answer_rule.stage(session, ask, revision, fields) {
+        Ok(staged) -> #(
+          Model(
+            ..model,
+            view: View(
+              ..model.view,
+              watching: Watch(
+                ..watching,
+                problems: dict.delete(watching.problems, id),
+                sending: Some(id),
+                words: "",
+              ),
+            ),
+          ),
+          {
+            use dispatch <- effect.from
+            send(id, staged.revision, staged.wire, fn(outcome) {
+              dispatch(RailAnswerDone(id, outcome))
+            })
+          },
+        )
+        Error(problem) -> #(
+          Model(
+            ..model,
+            view: View(
+              ..model.view,
+              watching: Watch(
+                ..watching,
+                problems: dict.insert(watching.problems, id, problem),
+              ),
+            ),
+          ),
+          effect.none(),
+        )
+      }
+    _, _, _, _ -> #(model, effect.none())
+  }
+}
+
+/// What a card offers beneath its button: "Retry the last step" on a stuck
+/// strand and "File issue" and "Dismiss" on a find, for a page that may act
+/// (`Attention.act`) and has not ended. A find offers nothing until the page has
+/// read it in full, because a close names the revision read. The card of the
+/// action that is out says so and offers nothing, and every other row offers
+/// nothing.
+fn rail_offer(
+  model: Model(socket),
+  row: attention.Lifted,
+  observed: fn(Msg(socket)) -> message,
+) -> lifted_view.Offer(message) {
+  let watching = model.view.watching
+
+  // An offer needs an act capability and a page that has not ended.
+  case rail_acting(model), row.kind {
+    Ok(_), attention.StuckStrand(strand:) ->
+      case watching.sending == Some(attention.stuck_key(strand)) {
+        True -> lifted_view.OfferSent
+        False -> lifted_view.RetryOffer(observed(RailRetried(strand)))
+      }
+    Ok(_), attention.FindOpen(..) ->
+      rail_find_offer(watching, row.key, observed)
+    Error(Nil), _
+    | Ok(_), attention.ApprovalPending(..)
+    | Ok(_), attention.FailedStep
+    | Ok(_), attention.FailedTurn
+    | Ok(_), attention.SubagentResult(..)
+    | Ok(_), attention.PeerMessage(..)
+    | Ok(_), attention.AskPending
+    -> lifted_view.NoOffer
+  }
+}
+
+/// The offer of a find's card: the two ways to close it once the page holds the
+/// find's record, and nothing before. Both messages name the row's own key.
+fn rail_find_offer(
+  watching: Watch,
+  key: String,
+  observed: fn(Msg(socket)) -> message,
+) -> lifted_view.Offer(message) {
+  // The record is what holds the revision, so no record means no close.
+  case rail_find(watching, key) {
+    Ok(find) ->
+      case dict.get(watching.records, find.id) {
+        Ok(item_pane.FindRecord(..)) ->
+          case watching.sending == Some(find.id) {
+            True -> lifted_view.OfferSent
+            False ->
+              lifted_view.CloseOffer(
+                file: observed(RailClosed(key, core_attention.Filed)),
+                dismiss: observed(RailClosed(key, core_attention.Dismissed)),
+              )
+          }
+        Ok(item_pane.AskRecord(..)) | Error(Nil) -> lifted_view.NoOffer
+      }
+    Error(Nil) -> lifted_view.NoOffer
+  }
+}
+
+/// The find the feed row holds under a lifted key.
+fn rail_find(watching: Watch, key: String) -> Result(attention_feed.Find, Nil) {
+  case watching.row {
+    Some(row) ->
+      list.find(row.finds.items, fn(find) { attention.find_key(find.id) == key })
+    None -> Error(Nil)
+  }
+}
+
+/// What the page may act with: the capability, on a page that has not ended.
+/// A page with none, and a page that ended, may not.
+fn rail_acting(model: Model(socket)) -> Result(Act, Nil) {
+  case model.view.transport.attention, model.view.status {
+    Some(Attention(act: Some(act), ..)), Connecting
+    | Some(Attention(act: Some(act), ..)), Connected
+    -> Ok(act)
+    Some(_), _ | None, _ -> Error(Nil)
+  }
+}
+
+/// Closes a find in the daemon, at the revision the page read it at. A page
+/// that may not act, a key that names no find the feed row holds, a find the
+/// page has not read in full, an action already out and a page that ended ask
+/// nothing. The daemon refuses a find that moved since, and it reads authority
+/// again.
+fn rail_closed(
+  model: Model(socket),
+  key: String,
+  closure: core_attention.Closure,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+  let begun = {
+    use act <- result.try(rail_acting(model))
+    use find <- result.try(rail_find(watching, key))
+
+    // Only a find read in full has the revision a close must name.
+    case dict.get(watching.records, find.id) {
+      Ok(item_pane.FindRecord(revision:, ..)) -> Ok(#(act, find.id, revision))
+      Ok(item_pane.AskRecord(..)) | Error(Nil) -> Error(Nil)
+    }
+  }
+
+  // One action is out at a time, whichever card it was pressed on.
+  case begun, watching.sending {
+    Ok(#(act, id, revision)), None -> #(rail_sent(model, id), {
+      use dispatch <- effect.from
+      act.close(id, revision, closure, fn(outcome) {
+        dispatch(RailAnswerDone(id, outcome))
+      })
+    })
+    Ok(_), Some(_) | Error(Nil), _ -> #(model, effect.none())
+  }
+}
+
+/// Asks a stuck strand to retry. A page that may not act, a strand the feed row
+/// does not hold stuck, an action already out and a page that ended ask nothing.
+/// The words the strand receives are the daemon's own.
+fn rail_retried(
+  model: Model(socket),
+  strand: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+  let id = attention.stuck_key(strand)
+
+  // Whether the last feed row names this strand among the stuck ones.
+  let held = case watching.row {
+    Some(row) -> list.any(row.stuck.items, fn(stuck) { stuck.strand == strand })
+    None -> False
+  }
+
+  // The strand is retried only while the row still holds it stuck.
+  case rail_acting(model), held, watching.sending {
+    Ok(act), True, None -> #(rail_sent(model, id), {
+      use dispatch <- effect.from
+      act.retry(strand, fn(outcome) { dispatch(RailAnswerDone(id, outcome)) })
+    })
+    Ok(_), True, Some(_) | Ok(_), False, _ | Error(Nil), _, _ -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
+/// The page with an action out for this identifier, and no word on the last
+/// one.
+fn rail_sent(model: Model(socket), id: String) -> Model(socket) {
+  let watching = model.view.watching
+
+  Model(
+    ..model,
+    view: View(
+      ..model.view,
+      watching: Watch(..watching, sending: Some(id), words: ""),
+    ),
+  )
+}
+
+/// Takes the daemon's word on an answer, a close or a retry. It is said in the
+/// rail whatever it is, and a settled one is read again at once so the row
+/// leaves the rail rather than waiting for the next tick.
+fn rail_answer_done(
+  model: Model(socket),
+  id: String,
+  outcome: AnswerOutcome,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+
+  // Only the answer that is out has a word to take.
+  case watching.sending == Some(id) {
+    False -> #(model, effect.none())
+    True -> {
+      // A word is said whatever it is; only a settled ask asks for a fresh read.
+      let #(words, asked) = case outcome {
+        AnswerSent(words:) -> #(words, Some(model.view.transport.now()))
+        AnswerFailed(words:) -> #(words, watching.asked_at)
+      }
+
+      let model =
+        Model(
+          ..model,
+          view: View(
+            ..model.view,
+            watching: Watch(..watching, sending: None, words:, asked_at: asked),
+          ),
+        )
+
+      // A settled ask is read again now, and that read is the tick's for this
+      // interval, so an answer costs one read.
+      case outcome, model.view.transport.attention {
+        AnswerSent(..), Some(reads) -> #(model, rail_asking(reads))
+        AnswerSent(..), None | AnswerFailed(..), _ -> #(model, effect.none())
+      }
+    }
+  }
+}
+
+/// Whether a Lustre event path is the submit of an ask's form in the live rail
+/// (not the phone's sheet, whose form is elsewhere in the tree). The ask is a
+/// pinned row, so its item sits in the "Needs you" group, which is the groups'
+/// first child, under the list that is that group's second child. The item
+/// holds the row's button and then a keyed `div` that holds the form, so a
+/// submit is at `rail_path`, then `1\t0\t1`, then the item's position, then
+/// `1`, then the ask's identifier, which is the form's key.
+///
+/// No socket consults this predicate. An operator's or an owner's socket admits
+/// a submit at any path, and an observer's admits none, so it changes no
+/// admission. It is a test helper: `rail_threads_test` fails if the view moves
+/// the form, and `ui_socket_test` pins what each socket does at this path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_submit("0\t3\t0\t4\t1\t0\t1\t2\t1\task-0123456789")
+/// assert !component.rail_submit("0\t3\t0\t4\t1\t1\t1\t2\t1\task-0123456789")
+/// ```
+pub fn rail_submit(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "0", "1", position, "1", key] ->
+      is_counter(position) && string.starts_with(key, "ask-")
+    _ -> False
+  }
+}
+
+/// Remembers that an insight was opened. A key that names no insight the rail
+/// holds, a key already opened, and a press on a page that is not following a
+/// session change nothing, as with a fold.
+fn rail_opened(model: Model(socket), key: String) -> Model(socket) {
+  let known =
+    lifted(model)
+    |> attention.insights
+    |> list.any(fn(row) { row.key == key })
+
+  // Only a followed session, a current insight and a first press change the
+  // set; the other combinations leave the page as it was.
+  case model.view.status, known, list.contains(model.view.opened, key) {
+    Connected, True, False -> {
+      let opened = list.take([key, ..model.view.opened], open_insights)
+      Model(..model, view: View(..model.view, opened:))
+    }
+    Connected, _, _ | Connecting, _, _ | Ended(_), _, _ -> model
+  }
+}
+
 /// Whether a Lustre event path is the button after a shortened message. The
 /// lane's rows are keyed, so a path names the lane's list (the second child of
 /// `<loom-follow>`, which is the lane's second child of the centre column), the
@@ -7270,6 +8149,85 @@ pub fn message_click(path: String) -> Bool {
   case string.split(path, "\t") {
     ["0", "2", "1", "1", key, "1", "0", "0", "1"]
     | ["0", "2", "1", "1", key, "1", "0", "1", "0", "1"] -> is_block_key(key)
+    _ -> False
+  }
+}
+
+/// Whether a Lustre event path is an insight's press on the live rail. The
+/// rail is a section whose second child holds the groups, the "Insights" group
+/// is the groups' second child, its list is that section's second child, and
+/// each insight is one item of the list holding one button, so a press is at
+/// `rail_path`, then `1\t1\t1`, then the item's position, then `0`. The
+/// "Needs you" group draws no handler, and nothing else in the rail does, so no
+/// other path is a press. An observer's socket admits a `click` at exactly this
+/// shape and nowhere else beneath the rail
+/// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the
+/// addendum on the live rail). `lifted_test` fails if the view moves the
+/// button, so the predicate and the view cannot drift apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_click("0\t3\t0\t4\t1\t1\t1\t2\t0")
+/// assert !component.rail_click("0\t3\t0\t4\t1\t0\t1\t2\t0")
+/// ```
+pub fn rail_click(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "1", "1", position, "0"] -> is_counter(position)
+    _ -> False
+  }
+}
+
+/// Whether a Lustre event path is the "Retry the last step" button of a stuck
+/// strand's card in the live rail. A stuck strand is a pinned row, so its card
+/// is an item of the "Needs you" group (the groups' first child), whose list is
+/// that group's second child. The card holds its own button, the ask's place
+/// (empty for any row but an ask) and then the actions, so the actions are the
+/// item's third child, and Retry is their first and only button: a click is at
+/// `rail_path`, then `1\t0\t1`, then the item's position, then `2\t0`.
+///
+/// No socket consults this predicate: an operator's or an owner's socket admits
+/// a click at any path, and an observer's admits `rail_click` and the other
+/// exact places only, none of which has this shape
+/// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the addendum
+/// on the live rail's actions). It is a test helper: `rail_actions_test` fails if
+/// the view moves the button, and `ui_socket_test` pins what each socket does at
+/// this path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_retry("0\t3\t0\t4\t1\t0\t1\t1\t2\t0")
+/// assert !component.rail_retry("0\t3\t0\t4\t1\t1\t1\t1\t2\t0")
+/// ```
+pub fn rail_retry(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "0", "1", position, "2", "0"] ->
+      is_counter(position)
+    _ -> False
+  }
+}
+
+/// Whether a Lustre event path is a button that closes a find in the live rail:
+/// "File issue", the actions' first button, or "Dismiss", their second. A find
+/// is an insight, so its card is an item of the "Insights" group (the groups'
+/// second child), whose list is that group's second child, and the actions are
+/// the item's third child, so a click is at `rail_path`, then `1\t1\t1`, then
+/// the item's position, then `2`, then the button's place. The socket
+/// admissions are those of `rail_retry`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_close("0\t3\t0\t4\t1\t1\t1\t2\t2\t0")
+/// assert component.rail_close("0\t3\t0\t4\t1\t1\t1\t2\t2\t1")
+/// assert !component.rail_close("0\t3\t0\t4\t1\t1\t1\t2\t2\t2")
+/// ```
+pub fn rail_close(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "1", "1", position, "2", "0"]
+    | ["0", "3", "0", "4", "1", "1", "1", position, "2", "1"] ->
+      is_counter(position)
     _ -> False
   }
 }
@@ -7582,7 +8540,17 @@ fn live_rows_of(model: Model(socket)) -> List(live.Row) {
     |> option.unwrap([])
     |> list.map(fn(input) { live.Pending(input) })
   let held = queue_input.retain(model.view.queue_editor, held)
-  list.append(streamed, held)
+
+  // The line that says which request this is stands while a generation runs,
+  // which is the strand's `assistant` phase, after the rows it describes.
+  let generating = case session_model.active_strand_phase(shared) {
+    Some("assistant") -> [
+      live.Generating(elapsed_ms:, request: model.view.requests),
+    ]
+    _ -> []
+  }
+
+  list.flatten([streamed, generating, held])
 }
 
 /// Draws a held row with the page's local editor state.
@@ -7696,6 +8664,74 @@ pub fn widen(model: Model(socket)) -> Model(socket) {
 pub fn waiting_count(model: Model(socket)) -> Int {
   listing.waiting(listing.entries(model.view.groups), session_activity(model))
   |> list.length
+}
+
+/// The second line of each running session's row in the rail, by identity, in
+/// the words of `watch_rule`. The page reads no attention feed, so a line says
+/// what the session is doing and its project and nothing of the live rail's
+/// count: `running`, `approval`, `aegis · quiet`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_watching(model)
+/// ```
+pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
+  let activity = session_activity(model)
+
+  // The approvals the page holds are read once for the render, not once for
+  // each listed session.
+  let held = pending(model)
+
+  listing.entries(model.view.groups)
+  |> list.filter_map(fn(entry) {
+    // Only a session a process runs has a line in "Watch live".
+    case entry.residency {
+      sessions.Live -> {
+        // The session on screen knows its own approvals, which the activity
+        // read may not have named yet.
+        let #(doing, pinned) = case entry.id == model.shared.session, held {
+          True, [_, ..] as held -> #(Some(sessions.NeedsYou), list.length(held))
+          _, _ -> #(dict.get(activity, entry.id) |> option.from_result, 0)
+        }
+
+        Ok(#(
+          entry.id,
+          watch_rule.words(watch_rule.Facts(
+            activity: doing,
+            pinned:,
+            asks: 0,
+            review: watch_rule.NothingToRead,
+            project: option.map(entry.project, creations.folder),
+          )),
+        ))
+      }
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> Error(Nil)
+    }
+  })
+  |> dict.from_list
+}
+
+/// How many sessions the rail lists as running, for the line above its folders.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.running_count(model)
+/// ```
+pub fn running_count(model: Model(socket)) -> Int {
+  list.count(listing.entries(model.view.groups), fn(entry) {
+    case entry.residency {
+      sessions.Live -> True
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> False
+    }
+  })
 }
 
 /// Whether the page can take its person to the home page, which is where a
@@ -8164,13 +9200,14 @@ pub fn session_id(model: Model(socket)) -> String {
 /// // element.to_string(component.view(model))
 /// ```
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
+  // The lane's pieces are read once and shared by the lane, the rail and the
+  // sheet.
+  let pieces = pieces(model)
+  let lift = lift(model, pieces, lifted_view.NoDock)
+
   shell.view(
     shell.Observer,
-    heading(
-      model,
-      GoingHome,
-      context_breakdown.Actions(refresh: ContextRefreshRequested, compact: None),
-    ),
+    heading(model, GoingHome, shell.Observer),
     shell.Unlisted,
     [
       crumb(model),
@@ -8178,13 +9215,13 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         True -> ended.content_unavailable()
         False ->
           lane.navigable(
-            pieces(model),
+            pieces,
             live(model),
             top(model),
             OlderRequested,
             latest_action(model, LatestRequested),
             lane.NoReplies,
-            marks(model),
+            marked(model, lift),
             lane.Folds(FoldToggled, MessageToggled, expanded(model)),
             session_id(model),
             result_links(model),
@@ -8203,6 +9240,26 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         Some(_) -> switch(model)
         None -> element.none()
       },
+
+      // The operator's page draws its session switcher here. The observer's
+      // has none, and the empty node keeps the strip at the index it has on
+      // the operator's page, so one path admits the context figure's Refresh
+      // on both.
+      element.none(),
+
+      // The phone's sheet is the centre's last child but one, so no admitted
+      // path moves with it; the stylesheet orders it above the bar.
+      sheet(model, lift, fn(message) { message }),
+
+      // The strip above the stream is drawn last and ordered first by the
+      // stylesheet, for the same reason.
+      stream_head(
+        model,
+        context_breakdown.Actions(
+          refresh: ContextRefreshRequested,
+          compact: None,
+        ),
+      ),
     ],
     panel(
       model,
@@ -8217,6 +9274,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       element.none(),
       element.none(),
       element.none(),
+      lift,
     ),
     needing(model),
     proposals_pending(model),
@@ -8282,12 +9340,14 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// owner's review of proposed standing rules (`view/proposals`), likewise, and
 /// `memory` the owner's read-only overview of the daemon's memory
 /// (`view/memory`), likewise, and `evolution` the operator's governed-evolution
-/// tab (`view/evolution`), likewise.
+/// tab (`view/evolution`), likewise. `lift` is what the page lifted for the
+/// live rail (`lift`), which the Strands pane draws and whose approval rows
+/// point at the dock (`view/lifted`).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none())
+/// // component.panel(model, FocusRequested, observed, None, element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), element.none(), lift)
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -8302,6 +9362,7 @@ pub fn panel(
   proposals: Element(message),
   memory: Element(message),
   evolution: Element(message),
+  lift: lifted_view.Lift,
 ) -> Element(message) {
   // A page that never held the session's content has none of it to list, and
   // a pane that said "No edits yet" would be a statement about a session it
@@ -8311,6 +9372,7 @@ pub fn panel(
       0,
       ended.content_unavailable_note(),
       None,
+      element.none(),
       element.none(),
       element.none(),
       element.none(),
@@ -8358,6 +9420,7 @@ pub fn panel(
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),
     commentary.view(advisor_commentary(model)),
+    rail(model, lift, observed),
     notes_panel.view(
       model.view.notes,
       strand(model),
@@ -8433,7 +9496,56 @@ pub fn marks(model: Model(socket)) -> lane.Marks {
     positions: strip.positions(model.view.strip),
     key: dict.get(model.view.strand_keys, model.shared.active_strand)
       |> result.unwrap(0),
+    lifted: dict.new(),
+    times: model.view.stamps,
+    holding: held_calls(model),
   )
+}
+
+/// The provider ids of the calls that wait on an undecided approval, which the
+/// lane words `needs approval`. A review that names no call (one with no call
+/// scope, or a child's request on another orchestrator) holds none.
+fn held_calls(model: Model(socket)) -> set.Set(String) {
+  list.filter_map(pending(model), fn(review) {
+    option.to_result(review.call, Nil)
+  })
+  |> set.from_list
+}
+
+/// `marks`, with the rows the rail lifted (`lift`) set on it, so the lane
+/// tags them. The lane draws the same pieces the lift was read from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.marked(model, lift).lifted
+/// ```
+pub fn marked(model: Model(socket), lift: lifted_view.Lift) -> lane.Marks {
+  lane.Marks(..marks(model), lifted: lifted_rows(lift))
+}
+
+/// The rows of the lane the rail lifted, by the key the lane draws each under.
+/// A row that needs the owner wins over an insight in the same row, and an
+/// approval names no lane row, since it lives in the dock.
+fn lifted_rows(lift: lifted_view.Lift) -> Dict(String, lane.Lifting) {
+  lift.items
+  |> list.fold(dict.new(), fn(rows, item) {
+    // A pinned mark is kept; any other mark is written or replaced.
+    case item.target, dict.get(rows, item.target) {
+      "", _ -> rows
+      target, _ if target == lifted_view.dock_target -> rows
+      _, Ok(lane.Lifting(hold: attention.PinnedUntilAnswered, ..)) -> rows
+      target, Ok(_) | target, Error(Nil) ->
+        dict.insert(
+          rows,
+          target,
+          lane.Lifting(
+            hold: item.lifted.hold,
+            word: lifted_view.kind_word(item.lifted),
+          ),
+        )
+    }
+  })
 }
 
 /// How many strands are waiting on a decision, the number on the Strands tab's
@@ -8557,11 +9669,11 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// the words as plain values, because it cannot import the types this module
 /// defines.
 ///
-/// `context_actions` are the two messages the context breakdown's buttons
-/// send (`view/context_breakdown`): the observer's page offers Refresh alone,
-/// and the operator's page adds Compact now, since only it may run `/compact`.
+/// `audience` is who the page is drawn for, which words the chip at the bar's
+/// right (`owner · operating`, `member · watching`) together with the page's
+/// principal (`role_words`).
 ///
-/// `going_home` is the message the bar's "Home" button sends, which the page's
+/// `going_home` is the message the bar's "‹ Inbox" button sends, which the page's
 /// own message type wraps. The button is drawn only when the transport has the
 /// capability to go home, and otherwise the bar's second child is an empty
 /// node.
@@ -8569,12 +9681,12 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.heading(model, GoingHome, context_breakdown.Actions(Refresh, None))
+/// // component.heading(model, GoingHome, shell.Observer)
 /// ```
 pub fn heading(
   model: Model(socket),
   going_home: message,
-  context_actions: context_breakdown.Actions(message),
+  audience: shell.Audience,
 ) -> Element(message) {
   heading.view(
     session_id: model.shared.session,
@@ -8587,19 +9699,6 @@ pub fn heading(
     model: model_of(model.shared, agent_roster.primary),
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
-    context: context_figure(model),
-    breakdown: context_breakdown.panel_with_remote(
-      model.shared.context,
-      model.shared.remote_usage,
-      context_actions,
-    ),
-    // A page with no content has no cost to estimate, and `est $0.00` would
-    // state one.
-    cost: case content_unavailable(model) {
-      True -> ""
-      False -> transcript_lines.cost_words(model.shared.usage)
-    },
-    rate: session_model.output_rate_tps(model.shared),
     notice: case model.view.route {
       Local -> ended.view(ended_ending(model.view.status), model.shared.session)
 
@@ -8607,8 +9706,179 @@ pub fn heading(
       // daemon holds, so a command naming it would mint nothing.
       Relayed(..) -> ended.relayed(ended_ending(model.view.status))
     },
-    placement: placement.view(model.view.machine, current_code(model)),
+    doing: stream_tone(model),
+    needing: waiting_count(model),
+    role: role_words(model, audience),
   )
+}
+
+/// The words of the chip at the bar's right: who holds the page and whether it
+/// may send. They are the page's own fixed words, never the principal's name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.role_words(model, shell.Observer)
+/// ```
+pub fn role_words(model: Model(socket), audience: shell.Audience) -> String {
+  // The daemon's owner and a member hold a page differently, and the chip says so.
+  let holder = case model.view.reader {
+    DaemonOwner -> "owner"
+    Participant -> "member"
+  }
+
+  // Dispatch on role_words state.
+  case audience {
+    shell.Observer -> holder <> " · watching"
+    shell.Operator | shell.Home -> holder <> " · operating"
+  }
+}
+
+/// What the session is doing, for the dot of the bar's `live` mark and the
+/// strip's dot: an approval that waits wins over a running turn.
+fn stream_tone(model: Model(socket)) -> stream_head_view.Tone {
+  case pending(model) != [], activity(model) {
+    True, _ -> stream_head_view.Waiting
+    False, Busy -> stream_head_view.Running
+    False, Idle -> stream_head_view.Quiet
+  }
+}
+
+/// The strip above the stream (`view/stream_head`): the session's name, the
+/// strand on screen with the workspace's last segment, what the strand is
+/// doing, the pinned goal when there is one, then the session's figures and the
+/// two placement chips. Every field is one the page already holds. It is drawn
+/// as the centre column's last child and ordered first by the stylesheet, so no
+/// path the socket admits moves.
+///
+/// `context_actions` are the two messages the context breakdown's buttons send
+/// (`view/context_breakdown`): the observer's page offers Refresh alone, and the
+/// operator's page adds Compact now, since only it may run `/compact`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.stream_head(model, context_breakdown.Actions(Refresh, None))
+/// ```
+pub fn stream_head(
+  model: Model(socket),
+  context_actions: context_breakdown.Actions(message),
+) -> Element(message) {
+  let waiting = pending(model) != []
+  let label = model.view.label
+  let name = session_title(model)
+
+  // The workspace is drawn as its last path segment, as the sidebar does, and
+  // a page whose label was not read names no folder.
+  let folder = case option.map(label, fn(label) { label.workspace }) {
+    Some(path) -> heading.last_folder(path)
+    None -> ""
+  }
+
+  let strand = agent_roster.short_name(model.shared.active_strand)
+
+  stream_head_view.view(
+    stream_head_view.Head(
+      name:,
+      place: case folder {
+        "" -> strand
+        folder -> strand <> " · " <> folder
+      },
+      tone: stream_tone(model),
+      state: case waiting, activity(model) {
+        True, _ -> "waiting for a decision"
+        False, Busy -> "running"
+        False, Idle -> "idle"
+      },
+      turn: turn_started(model),
+      goal: goal_words(goal(model)),
+    ),
+    figures.view(
+      context_figure(model),
+      context_breakdown.panel_with_remote(
+        model.shared.context,
+        model.shared.remote_usage,
+        context_actions,
+      ),
+      // A page with no content has no cost to estimate, and `est $0.00` would
+      // state one.
+      case content_unavailable(model) {
+        True -> ""
+        False -> transcript_lines.cost_words(model.shared.usage)
+      },
+      session_model.output_rate_tps(model.shared),
+    ),
+    placement.view(model.view.machine, current_code(model)),
+  )
+}
+
+/// When the active strand's running operation started, in Unix milliseconds,
+/// read from the minting time its identity carries. A strand with no running
+/// operation, a page that has not read a capture and an identity that does not
+/// parse have none, and the strip then draws no turn age. The age counts from
+/// the daemon's clock reading, so a browser whose clock is wrong shows a wrong
+/// age and never a negative one (`web_client/elapsed`, `since`).
+fn turn_started(model: Model(socket)) -> Option(Int) {
+  use #(_, view) <- option.then(model.shared.captured)
+  use id <- option.then(
+    dict.get(view.operations, model.shared.active_strand)
+    |> option.from_result,
+  )
+
+  ids.parse_op_id(id)
+  |> result.map(ids.op_id_timestamp_ms)
+  |> option.from_result
+}
+
+/// The page's name for its session: the catalogue's label, or the identity's
+/// first eight characters when the label has none, as the top bar draws it.
+/// Both are text the catalogue or the daemon wrote.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_title(model)
+/// ```
+pub fn session_title(model: Model(socket)) -> String {
+  heading.session_name(
+    model.shared.session,
+    option.map(model.view.label, fn(label) { label.name }),
+  )
+}
+
+/// The pinned goal in one line for the strip: its objective, its status and
+/// the accounted spend against its budget. A page with no goal, or one that
+/// has not read it yet, has none.
+fn goal_words(board: Option(goal_view.Board)) -> Option(String) {
+  case board {
+    Some(goal_view.Pinned(status:, objective:, token_budget:, tokens_used:, ..)) ->
+      Some(
+        "goal: "
+        <> text_hygiene.single_line(objective)
+        <> " · "
+        <> goal_view.status_word(status)
+        <> " · "
+        <> tokens_words(tokens_used)
+        <> " of "
+        <> tokens_words(token_budget)
+        <> " tokens",
+      )
+    Some(goal_view.NoGoal(..)) | None -> None
+  }
+}
+
+/// A token count in the short form the strip uses: `412k`, `1.2M`, or the
+/// number itself below a thousand.
+fn tokens_words(count: Int) -> String {
+  case count {
+    n if n >= 1_000_000 ->
+      int.to_string(n / 1_000_000)
+      <> "."
+      <> int.to_string(n % 1_000_000 / 100_000)
+      <> "M"
+    n if n >= 1000 -> int.to_string(n / 1000) <> "k"
+    n -> int.to_string(n)
+  }
 }
 
 /// Where the page's own session keeps its code. A local page reads it from the

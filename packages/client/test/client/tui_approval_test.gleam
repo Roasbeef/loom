@@ -54,6 +54,7 @@ fn review(id, seq) {
       ]),
       action: Some(escalation.Action("bash", "exact-action", "sleep 60")),
       scope: None,
+      at: 1,
     )
   let assert Ok(review) =
     approval.decode(snapshot_view.Cell(

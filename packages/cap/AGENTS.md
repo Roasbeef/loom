@@ -77,6 +77,15 @@ cannot hide the capability error. This does not grant the program a new effect.
 
 ## Key Types
 
+- `cap/attention.{ask, notice, confirm, choose, choose_many, checklist, fill,
+  alternative, Question, Kind, Alternative, Format, Find, AttentionError,
+  error_text}` — questions for the owner and notes about what a program saw,
+  as the `ask` and `notice` tools record them (protocol-change/119). `ask`
+  returns the ask's id and does not end the turn: the program's caller ends
+  its own turn after the program returns. Capability names are
+  `attention.ask` (8 per execution) and `attention.notice` (32). The module
+  is on `harness_only_cap_modules` and is admitted per host where a door is
+  wired, as `cap/notes` is.
 - `cap/report.{Outcome, Value}` — `Completed(value)` /
   `Errored(message, details)`. A program is a `fn() -> Outcome`;
   `to_msgpack` is the marshalling the boot runtime writes as the terminal

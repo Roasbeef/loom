@@ -1,7 +1,7 @@
 //// What `<loom-shell>` decides about the width of the strand panel: how far a
 //// drag moves it, what the arrow keys do to it, and how large it may grow.
 ////
-//// The panel is the frame's right column, 340 px wide until the reader
+//// The panel is the frame's right column, 344 px wide until the reader
 //// changes it. A Changes diff or a Trace row is wider than that, so the shell
 //// draws a grip on the column's left edge, and the reader drags it left to
 //// widen the panel or right to narrow it. The grip is also a keyboard control
@@ -39,7 +39,7 @@ import web_client/shell_rule.{type Modifier, Free, Held}
 
 /// The panel's width before the reader changes it, in pixels. The stylesheet's
 /// fallback for the `--panel-width` property is the same number.
-pub const default_width = 340
+pub const default_width = 344
 
 /// The narrowest the panel may be, in pixels: room for the four tabs.
 pub const least_width = 280

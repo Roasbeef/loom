@@ -292,6 +292,23 @@ pub fn the_feed_closes_a_ticket_and_says_so_when_it_cannot_test() {
   stop(handle)
 }
 
+pub fn the_feed_stops_and_retries_a_ticket_and_says_so_when_it_cannot_test() {
+  let handle = start("feed-stop")
+  let _ = asking(handle)
+  let assert Some(feed) = ui_projects.feed(Some(controlled(handle)))
+
+  // A project or ticket the table does not hold is `not_found` or refused, and
+  // nothing is recorded for it.
+  assert feed.stop("nope", "t-a") == page_projects.Declined("not_found")
+  assert feed.retry("nope", "t-a") == page_projects.Declined("not_found")
+  assert feed.retry("p1", "t-missing") == page_projects.Declined("bad_request")
+
+  // A ticket the project does not hold cannot be stopped, and one it holds is.
+  assert feed.stop("p1", "t-missing") == page_projects.Declined("bad_request")
+  assert feed.stop("p1", "t-a") == page_projects.Acted
+  stop(handle)
+}
+
 fn controlled(handle: project_host.Handle) -> project_start.Control {
   let assert Ok(book) = project_book.start() as "the table starts"
   project_book.put(book, handle)
@@ -347,4 +364,25 @@ pub fn the_feed_reads_a_ticket_or_says_it_is_gone_test() {
   assert feed.ticket("p1", "t-none") == page_projects.TicketGone
   assert feed.ticket("p-none", "t-a") == page_projects.TicketGone
   stop(handle)
+}
+
+// Silence from a project's actor is not a refusal: the queued act may still
+// commit, so each of the page's four acts reports it as `unanswered` and not as
+// `bad_request`, and the page says to read again.
+pub fn a_timeout_is_unanswered_and_never_a_refusal_test() {
+  let silent = project_host.not_answering
+
+  assert ui_projects.acted_of(Error(silent))
+    == page_projects.Declined("unanswered")
+  assert ui_projects.acted_of(Error("some refusal"))
+    == page_projects.Declined("bad_request")
+  assert ui_projects.closing_of(Error(silent))
+    == page_projects.NotClosed("unanswered")
+  assert ui_projects.closing_of(Error("some refusal"))
+    == page_projects.NotClosed("bad_request")
+  assert ui_projects.answer_of(Error(project_host.NotAccepted(silent)))
+    == page_projects.Refused("unanswered")
+  assert ui_projects.answer_of(Error(project_host.NotAccepted("refused")))
+    == page_projects.Refused("bad_request")
+  assert ui_projects.acted_of(Ok(Nil)) == page_projects.Acted
 }

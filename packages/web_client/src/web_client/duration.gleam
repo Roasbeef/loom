@@ -26,6 +26,26 @@ pub fn format(seconds: Int) -> String {
   }
 }
 
+/// An elapsed duration in the coarser form the inbox's turn age uses
+/// (`running, turn 14m`): seconds under a minute, whole minutes under an hour
+/// with no seconds, then hours and padded minutes as `format` has them. It
+/// differs from `format` only between one minute and one hour, where a turn
+/// that has run a while does not need its seconds counted aloud.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert duration.minutes(14 * 60 + 5) == "14m"
+/// assert duration.minutes(59) == "59s"
+/// assert duration.minutes(3600 + 22 * 60) == "1h 22m"
+/// ```
+pub fn minutes(seconds: Int) -> String {
+  case seconds >= 3600, seconds >= 60 {
+    False, True -> int.to_string(seconds / 60) <> "m"
+    _, _ -> format(seconds)
+  }
+}
+
 fn pad2(value: Int) -> String {
   string.pad_start(int.to_string(value), to: 2, with: "0")
 }

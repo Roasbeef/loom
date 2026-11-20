@@ -33,6 +33,14 @@
 //// stays in the dock, above the composer, where its rules hold
 //// (docs/design-notes/web-design.md, section 6.1).
 ////
+//// The pane's last child is the live rail, "Lifted from this session"
+//// (`view/lifted`). It is last in the document so that the paths above it do
+//// not move, and first on screen: the pane is a flex column and the
+//// stylesheet orders the rail above the title. That puts the rail where a
+//// reader looks first without changing the tab model or the paths the socket
+//// admits. Like the nudge card it draws `element.none()` when it has nothing,
+//// so the pane's child list keeps one length.
+////
 //// The title counts the strands the list holds, as text the component
 //// computed from the strip (`strip.count`). No attribute here is built from
 //// session text.
@@ -61,7 +69,7 @@ import lustre/element/html
 /// ## Examples
 ///
 /// ```gleam
-/// // panel.view(strip.count(strip), strip.view(strip, focus), None, changes.view(board), session, trace.view(trace), nudges.view(board))
+/// // panel.view(strip.count(strip), strip.view(strip, focus), None, changes.view(board), session, trace.view(trace), nudges.view(board), commentary, lifted.view(rail), notes, evolution)
 /// ```
 pub fn view(
   count: Int,
@@ -72,6 +80,7 @@ pub fn view(
   trace: Element(message),
   nudges: Element(message),
   commentary: Element(message),
+  rail: Element(message),
   notes: Element(message),
   evolution: Element(message),
 ) -> Element(message) {
@@ -102,6 +111,7 @@ pub fn view(
             None -> element.none()
           },
           commentary,
+          rail,
         ],
       ),
       changes,

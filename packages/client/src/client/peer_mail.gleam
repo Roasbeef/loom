@@ -37,9 +37,14 @@
 ////    would admit, through the same decision.
 //// 5. `overview` summarizes the whole session for the owner's picker.
 
+import client/approval_evidence
+import client/attention
+import client/attention_feed
 import client/internal/message_inspection
 import client/internal/peer_outbox_store
 import client/peer_outbox
+import client/session_brief
+import core/attention as records
 import core/clock
 import core/entry
 import core/glance
@@ -224,6 +229,33 @@ pub type Command {
   /// (`protocol-change/050`). It reads and never writes, and its answer is
   /// bounded to `overview_row_bytes` whatever the session holds.
   Overview
+
+  /// Lists what the session needs from a person: its open owner-routed asks,
+  /// its open finds and its stuck strands, bounded to
+  /// `attention_feed.row_bytes` (`protocol-change/120`). It reads and never
+  /// writes.
+  AttentionFeed
+
+  /// Reads one ask or find with the revision of its cell, in the stored
+  /// shape (`protocol-change/120`). It reads and never writes.
+  AttentionRead(id: String)
+
+  /// Lists the session's pending approvals as evidence: for each the tool, a
+  /// bounded rendering of the action, what held it and the grants it wants, at
+  /// the revision of its cell (`client/approval_evidence`). It reads and never
+  /// decides, claims or consumes.
+  ApprovalRead
+
+  /// Reports the session's recent work as a bounded brief: the latest assistant
+  /// text, a few tool steps, the strands, the goal's spend, the peer messages
+  /// recorded after `since` (Unix milliseconds) and the last shell command
+  /// (`protocol-change/125`). It reads and never writes.
+  SessionBrief(since: Int)
+
+  /// Settles an open record as answered or closed, expecting its cell to be at
+  /// `revision` (`protocol-change/120`). The daemon has already decided who may
+  /// do it and, for an answer, delivered the prompt.
+  AttentionSettle(id: String, revision: Int, settlement: attention.Settlement)
 
   /// Records an outgoing message in the sender's outbox before its first
   /// delivery attempt (`client/peer_outbox`). The answer says whether the
@@ -484,6 +516,26 @@ pub fn handle_with(
   defaults: Defaults,
   command: Command,
 ) -> Result(JsonValue, String) {
+  handle_reporting(runtime, clock, defaults, attention.silent(), command)
+}
+
+/// Executes one endpoint command as `handle_with` does, and calls `report`
+/// after an `AttentionSettle` commits, so the catalogue's open ask and find
+/// counts drop with the record (protocol-change/122). A refused settle
+/// reports nothing, because nothing changed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peer_mail.handle_reporting(runtime, clock, defaults, report, command)
+/// ```
+pub fn handle_reporting(
+  runtime: api.Runtime,
+  clock: clock.Clock,
+  defaults: Defaults,
+  report: attention.Report,
+  command: Command,
+) -> Result(JsonValue, String) {
   // The incoming peer message determines its state transition and reply.
   case command {
     History(strand, before, limit) ->
@@ -622,6 +674,21 @@ pub fn handle_with(
     Roster(source_session, source_strand) ->
       roster(runtime, defaults, source_session, source_strand)
     Overview -> overview(runtime)
+    AttentionFeed -> attention_feed.feed(runtime)
+    AttentionRead(id) -> attention_read(runtime, id)
+    ApprovalRead -> approval_evidence.read(runtime, None)
+    SessionBrief(since) -> session_brief.read(runtime, since)
+    AttentionSettle(id, revision, settlement) -> {
+      let answer = attention_settle(runtime, clock, id, revision, settlement)
+
+      // The report follows the commit and only a commit.
+      case answer {
+        Ok(_) -> attention.settled(report, runtime)
+        Error(_) -> Nil
+      }
+
+      answer
+    }
     OutboxClaim(source, strand, session, target, id, body) -> {
       let #(now, _) = clock.read(clock)
       peer_outbox_store.claim(
@@ -1448,8 +1515,54 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
     #("approvals", json.Int(approvals)),
     #("last_outcome", last_outcome(last)),
     #("model", model),
+    #("turn_started_at", turn_started_at(states)),
   ]
-  Ok(fit_overview(base, final_message(runtime, last), glances))
+  let #(message, message_at) = final_message(runtime, last)
+  Ok(fit_overview(base, message, message_at, glances))
+}
+
+/// One record in the stored shape beside its revision. A record that is not
+/// there is `not_found`, the word the daemon turns into its refusal.
+fn attention_read(
+  runtime: api.Runtime,
+  id: String,
+) -> Result(JsonValue, String) {
+  case attention.read(runtime, id) {
+    Ok(attention.StoredAsk(ask:, revision:)) ->
+      Ok(stored_record(records.encode_ask(ask), revision))
+    Ok(attention.StoredFind(find:, revision:)) ->
+      Ok(stored_record(records.encode_find(find), revision))
+    Error(attention.NoSuchRecord) -> Error("not_found")
+    Error(attention.Unreadable(reason:)) -> Error(reason)
+  }
+}
+
+/// The reply of `AttentionRead`: the revision and the record as it is stored.
+fn stored_record(record: JsonValue, revision: Int) -> JsonValue {
+  json.Object([
+    #("revision", json.Int(revision)),
+    #("record", record),
+  ])
+}
+
+/// Settles a record and answers its new revision. The refusals are the words
+/// `not_found`, `conflict` and `bad_request`, which the daemon maps onto its
+/// own codes; anything else is the store's own reason.
+fn attention_settle(
+  runtime: api.Runtime,
+  time: clock.Clock,
+  id: String,
+  revision: Int,
+  settlement: attention.Settlement,
+) -> Result(JsonValue, String) {
+  case attention.settle(runtime, time, id, revision, settlement) {
+    Ok(settled) -> Ok(json.Object([#("revision", json.Int(settled))]))
+    Error(attention.Missing) -> Error("not_found")
+    Error(attention.Moved) | Error(attention.AlreadySettled) ->
+      Error("conflict")
+    Error(attention.WrongKind) -> Error("bad_request")
+    Error(attention.Failed(reason:)) -> Error(reason)
+  }
 }
 
 /// What a session is doing, as its overview words it and as a spawner's
@@ -1559,10 +1672,13 @@ fn strand_operations(
   })
 }
 
-// The glances a reader may still show, newest first. `core/glance` says a
-// glance describes one operation and is shown only while that operation is
-// its strand's current one, so a cell left behind by a finished task is
-// dropped here rather than reported as present work.
+// The glances a reader may still show: `main`'s first when it has a current
+// one, then the others newest first. `core/glance` says a glance describes
+// one operation and is shown only while that operation is its strand's
+// current one, so a cell left behind by a finished task is dropped here
+// rather than reported as present work. `main` leads because `fit_overview`
+// sheds from the end, and the session's own current work is the line the
+// attention inbox needs last of all to lose.
 /// Builds the bounded set of current peer activity summaries.
 fn current_glances(
   runtime: api.Runtime,
@@ -1581,18 +1697,23 @@ fn current_glances(
       }
     })
     |> dict.from_list
-  cells
-  |> list.filter_map(fn(pair) {
-    use strand <- result.try(glance.strand_of(pair.0))
-    use cell <- result.try(glance.decode(pair.1) |> result.replace_error(Nil))
+  let live =
+    cells
+    |> list.filter_map(fn(pair) {
+      use strand <- result.try(glance.strand_of(pair.0))
+      use cell <- result.try(glance.decode(pair.1) |> result.replace_error(Nil))
 
-    // The current glances state determines which branch is valid for this peer operation.
-    case dict.get(current, strand) == Ok(cell.operation) {
-      True -> Ok(#(strand, cell))
-      False -> Error(Nil)
-    }
-  })
-  |> list.sort(fn(left, right) { int.compare({ right.1 }.at, { left.1 }.at) })
+      // The current glances state determines which branch is valid for this peer operation.
+      case dict.get(current, strand) == Ok(cell.operation) {
+        True -> Ok(#(strand, cell))
+        False -> Error(Nil)
+      }
+    })
+    |> list.sort(fn(left, right) { int.compare({ right.1 }.at, { left.1 }.at) })
+  let #(primary, others) =
+    list.partition(live, fn(pair) { pair.0 == default_strand })
+
+  list.append(primary, others)
   |> list.take(overview_glances)
   |> list.map(glance_line)
   |> Ok
@@ -1626,66 +1747,92 @@ fn last_outcome(last: Option(operation.LastResult)) -> JsonValue {
   }
 }
 
-// The final assistant text of main's last run. `LastResult` holds only the
-// entry id, so this is one point read of that entry; a run with no final
-// answer, or an entry with no text, reports null.
-/// Selects the final assistant message from the materialized history.
-fn final_message(
-  runtime: api.Runtime,
-  last: Option(operation.LastResult),
-) -> JsonValue {
-  case last {
-    Some(operation.RunLastResult(final_assistant: Some(id), ..)) ->
-      // Clipping collapses whitespace first, so a message of only
-      // whitespace is null here rather than an empty string.
-      case glance.clip(assistant_text(runtime, id), overview_message_bytes) {
-        "" -> json.Null
-        text -> json.String(text)
-      }
-    Some(operation.RunLastResult(final_assistant: None, ..))
-    | Some(operation.CompactionLastResult(..))
-    | Some(operation.NavigationLastResult(..))
-    | None -> json.Null
+// The time main's current turn began, as the mint time of its current
+// operation's id, in Unix milliseconds (protocol-change/050, the addendum on
+// times). It is null when main is not running a turn, so a page reads a
+// number as "a turn is running and began then" and never as the time of the
+// last one.
+/// The mint time of main's current operation, or null when it has none.
+fn turn_started_at(states: List(#(String, Option(OpId)))) -> JsonValue {
+  case list.key_find(states, default_strand) {
+    Ok(Some(operation)) -> json.Int(ids.op_id_timestamp_ms(operation))
+    Ok(None) | Error(Nil) -> json.Null
   }
 }
 
-/// Extracts assistant text from a materialized peer entry.
-fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
+// The final assistant text of main's last run and the time of its entry.
+// `LastResult` holds only the entry id, so this is one point read of that
+// entry; a run with no final answer, or an entry with no text, reports null
+// for both, so a time is never present without the words it dates.
+/// Selects the final assistant message, and when it was written, from the
+/// materialized history.
+fn final_message(
+  runtime: api.Runtime,
+  last: Option(operation.LastResult),
+) -> #(JsonValue, JsonValue) {
+  // A run with a final answer reports its text and the time of its entry.
+  case last {
+    Some(operation.RunLastResult(final_assistant: Some(id), ..)) -> {
+      let #(text, at) = assistant_text(runtime, id)
+
+      // Clipping collapses whitespace first, so a message of only
+      // whitespace is null here rather than an empty string.
+      case glance.clip(text, overview_message_bytes) {
+        "" -> #(json.Null, json.Null)
+        text -> #(json.String(text), json.Int(at))
+      }
+    }
+    Some(operation.RunLastResult(final_assistant: None, ..))
+    | Some(operation.CompactionLastResult(..))
+    | Some(operation.NavigationLastResult(..))
+    | None -> #(json.Null, json.Null)
+  }
+}
+
+/// Extracts assistant text and its entry's time from a materialized peer
+/// entry.
+fn assistant_text(runtime: api.Runtime, id: EntryId) -> #(String, Int) {
   case writer.get_entries(runtime.tree.writer, [id]) {
-    Error(_) -> ""
+    Error(_) -> #("", 0)
     Ok(found) ->
       case dict.get(found, id) {
         Ok(entry.MessageEntry(
           message: message.AssistantMessage(content:, ..),
+          ts:,
           ..,
-        )) ->
+        )) -> #(
           content
-          |> list.filter_map(fn(block) {
-            case block {
-              message.AssistantText(text:, ..) -> Ok(text)
-              _ -> Error(Nil)
-            }
-          })
-          |> string.join(" ")
-        _ -> ""
+            |> list.filter_map(fn(block) {
+              case block {
+                message.AssistantText(text:, ..) -> Ok(text)
+                _ -> Error(Nil)
+              }
+            })
+            |> string.join(" "),
+          ts,
+        )
+        _ -> #("", 0)
       }
   }
 }
 
 // Each field is clipped, but JSON escaping can still grow a clipped string
 // several times over, so the encoded row is measured. An oversized row sheds
-// its oldest glance first, then the final message. What remains is counts,
+// glances from the end of the list, so `main`'s, which leads it, is the last
+// to go, and then the final message. What remains is counts,
 // fixed names, and a model clipped to 64 bytes, which fits even escaped.
 /// Trims overview text to fit its declared output bound.
 fn fit_overview(
   base: List(#(String, JsonValue)),
   message: JsonValue,
+  message_at: JsonValue,
   glances: List(JsonValue),
 ) -> JsonValue {
   let row =
     json.Object(
       list.append(base, [
         #("last_message", message),
+        #("last_message_at", message_at),
         #("glances", json.Array(glances)),
       ]),
     )
@@ -1695,9 +1842,14 @@ fn fit_overview(
   case fits, glances, message {
     True, _, _ -> row
     False, [_, ..], _ ->
-      fit_overview(base, message, list.take(glances, list.length(glances) - 1))
+      fit_overview(
+        base,
+        message,
+        message_at,
+        list.take(glances, list.length(glances) - 1),
+      )
     False, [], json.Null -> row
-    False, [], _ -> fit_overview(base, json.Null, [])
+    False, [], _ -> fit_overview(base, json.Null, json.Null, [])
   }
 }
 

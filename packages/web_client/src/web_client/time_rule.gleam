@@ -59,6 +59,21 @@ pub fn clock(milliseconds: Int, offset_minutes: Int) -> String {
   pad(local / 60) <> ":" <> pad(local % 60)
 }
 
+/// The instant a clock element shows at browser time `now`: the start of the
+/// minute, so the time of day it then draws reads that minute and not the next
+/// (`clock` rounds up, which suits a time still to come and not one that is
+/// here).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert time_rule.clock(time_rule.current(1_790_030_459_999), 0) == "22:40"
+/// assert time_rule.clock(time_rule.current(1_790_030_460_000), 0) == "22:41"
+/// ```
+pub fn current(now: Int) -> Int {
+  now / minute_ms * minute_ms
+}
+
 fn pad(number: Int) -> String {
   string.pad_start(int.to_string(number), to: 2, with: "0")
 }

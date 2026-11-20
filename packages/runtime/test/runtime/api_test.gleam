@@ -497,6 +497,31 @@ pub fn remote_mail_and_send_cells_are_reserved_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// An ask's record and a find's record are the harness's cells: a question a
+// person is about to answer must not be one a model can write or replace. The
+// model's `put_fact` refuses both prefixes, the harness door writes them, and
+// a key that merely contains the word is free.
+pub fn attention_cells_are_reserved_test() {
+  let rt = answering_runtime()
+  assert api.reserved_fact_key("attention/ask/ask-0123456789")
+  assert api.reserved_fact_key("attention/find/find-0123456789")
+  assert api.reserved_fact_key(api.attention_ask_fact_prefix)
+  assert api.reserved_fact_key(api.attention_find_fact_prefix)
+  assert !api.reserved_fact_key("agent/main/attention/ask/x")
+  assert !api.reserved_fact_key("attention/other")
+
+  let assert Error(api.ReservedFactKey(key: "attention/ask/ask-0123456789")) =
+    api.put_fact(rt, "attention/ask/ask-0123456789", json.Null)
+  let assert Error(api.ReservedFactKey(key: "attention/find/find-0123456789")) =
+    api.put_fact(rt, "attention/find/find-0123456789", json.Null)
+  let assert Ok(Nil) =
+    api.put_reserved_fact(rt, "attention/ask/ask-0123456789", json.Null)
+  let assert Ok(asks) =
+    api.reserved_facts(rt, prefix: api.attention_ask_fact_prefix)
+  assert asks == [#("attention/ask/ask-0123456789", json.Null)]
+  process.kill(rt.tree.supervisor)
+}
+
 // A strand name beginning with `^` is the reference to a parent strand on
 // another orchestrator, never a strand of this session. Both creation doors
 // refuse it, the one that accepts a brief and the one that does not, and

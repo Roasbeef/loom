@@ -65,6 +65,25 @@
 //// a `title` why it has none. The page decides whether the action exists by what
 //// it passes, so a page without the capability draws none of it.
 ////
+//// ## The inbox folders
+////
+//// On the home page, when the centre is the attention inbox, the column leads
+//// with the inbox's folders (`Folders`): "Everything, by need" and one folder
+//// for each group that has threads, each with its count, which narrow the
+//// inbox's list. A press sends the message the page drew into the folder, naming
+//// a `Folder` the page itself offered, and the page honours it for a folder it
+//// lists. The sessions' list under it is headed "Watch live", and the column
+//// ends with a note saying what the counts read and the "New session" button.
+//// Every folder is beneath the sidebar's path, so the home's socket admits its
+//// press with no new rule. A session's page draws the same folders and the same
+//// "Watch live" list, since the final design gives every page one rail; its
+//// folders carry no count, because that page does not read the attention feed,
+//// and a press of one is a way back to the inbox.
+////
+//// A row's second line is `Page.watching`'s words for the session when the page
+//// has them (`watch_rule`: `running · 2 lifted`, `aegis · asked`), and the
+//// placement tag otherwise.
+////
 //// ## Sessions of other orchestrators
 ////
 //// The owner's home can also draw the sessions its daemon relays on other
@@ -81,13 +100,14 @@
 ////
 //// ## Flow
 ////
-//// `view` / `home` → `column` → `entry` → `lead`, and `relayed_sections` →
-//// `relayed_section` → `relayed_row`
+//// `view` / `home` → `column` → `entry` → `lead`, `folders_nav` and
+//// `relayed_sections` → `relayed_section` → `relayed_row`
 ////
 //// 1. `view` is a session page's sidebar and `home` the home's. Each memoizes on
 ////    what it draws and hands `column` the groups.
-//// 2. `column` lays the column out: the top, the pills, a section for each state,
-////    the saved region, the other orchestrators' sections and the foot.
+//// 2. `column` lays the column out: the top (or the inbox's folders), the pills,
+////    a section for each state, the saved region, the other orchestrators'
+////    sections, the folders' note and the foot.
 //// 3. `entry` draws one session's row and `lead` its two lines.
 //// 4. `relayed_sections` draws the sessions of the orchestrators the daemon relays
 ////    for, one `relayed_section` for each, and `relayed_row` one session of it.
@@ -107,6 +127,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import lustre/event
+import web_view/inbox_rule.{type Folder}
 import web_view/listing.{type Filter, type Row, type Rows}
 import web_view/orchestrators.{type Listed}
 import web_view/relayed as relayed_words
@@ -178,6 +199,10 @@ pub type Page(message) {
     managing: Option(message),
     /// The principal's display name for the foot, or an empty string.
     who: String,
+    /// The second line of a running session's row, by session identity, in the
+    /// words `watch_rule` composes: `running · 2 lifted`, `aegis · asked`. A
+    /// session with no entry keeps the placement tag as its second line.
+    watching: Dict(String, String),
   )
 }
 
@@ -202,6 +227,27 @@ pub type Relayed(message) {
     /// A row's press, given the orchestrator's key and the session's identity.
     /// The page honours it only for a row it holds.
     open: fn(String, String) -> message,
+  )
+}
+
+/// The inbox's folders in the column, with what the counts read.
+pub type Folders(message) {
+  Folders(
+    /// Each folder to draw and its count, in order. A folder with nothing in it
+    /// is left out by the page, and "Everything, by need" is always first. A page
+    /// that does not read the attention feed, a session's page, passes no count
+    /// and draws the folders as links to the inbox, where the counts are read.
+    items: List(#(Folder, Option(Int))),
+    /// The folder the list is narrowed to.
+    current: Option(Folder),
+    /// A folder's press, given the folder the page drew it for, or nothing on a
+    /// page whose socket admits no press beneath the column (the admin page's),
+    /// which draws each folder as text.
+    pick: Option(fn(Folder) -> message),
+    /// The words under the sessions: what the counts read.
+    note: String,
+    /// How many running sessions the page lists, for the line at the top.
+    running: Int,
   )
 }
 
@@ -233,6 +279,7 @@ pub fn view(
   open: fn(String) -> message,
   resume: Resume(message),
   archiving: Archiving(message),
+  folders: Folders(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
@@ -241,6 +288,7 @@ pub fn view(
     element.ref(memoed(page)),
     element.ref(resume.pending(resume)),
     element.ref(archiving.stage(archiving)),
+    element.ref(#(folders.items, folders.note, folders.running)),
   ])
 
   // Dispatch on view state.
@@ -256,6 +304,7 @@ pub fn view(
         resume,
         archiving,
         None,
+        Some(folders),
       )
   }
 }
@@ -279,10 +328,13 @@ pub fn view(
 /// `relayed` adds the sessions of the orchestrators the daemon relays for, after
 /// the saved ones, and is the memo's key as the groups are.
 ///
+/// `folders` is the inbox's folders, drawn at the top when the centre is the
+/// inbox and `None` otherwise.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.home(home.groups(model), dict.new(), page, Opening, resume.Never, archiving.Never, relayed)
+/// // sidebar.home(home.groups(model), dict.new(), page, Opening, resume.Never, archiving.Never, relayed, None)
 /// ```
 pub fn home(
   groups: List(Group),
@@ -292,6 +344,7 @@ pub fn home(
   resume: Resume(message),
   archiving: Archiving(message),
   relayed: Relayed(message),
+  folders: Option(Folders(message)),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
@@ -300,6 +353,11 @@ pub fn home(
     element.ref(resume.pending(resume)),
     element.ref(archiving.stage(archiving)),
     element.ref(relayed.sections),
+    element.ref(
+      option.map(folders, fn(each) {
+        #(each.items, each.current, each.note, each.running)
+      }),
+    ),
   ])
   column(
     groups,
@@ -310,6 +368,7 @@ pub fn home(
     resume,
     archiving,
     Some(relayed),
+    folders,
   )
 }
 
@@ -325,6 +384,7 @@ fn memoed(
   Option(message),
   Option(message),
   String,
+  Dict(String, String),
 ) {
   #(
     page.doors,
@@ -334,6 +394,7 @@ fn memoed(
     page.administering,
     page.managing,
     page.who,
+    page.watching,
   )
 }
 
@@ -350,6 +411,7 @@ fn column(
   resume: Resume(message),
   archiving: Archiving(message),
   relayed: Option(Relayed(message)),
+  folders: Option(Folders(message)),
 ) -> Element(message) {
   let all = listing.entries(groups)
   let rows =
@@ -364,7 +426,15 @@ fn column(
     ],
     [
       html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
-      top(page),
+      case folders {
+        Some(shown) -> folders_nav(shown)
+        None -> top(page)
+      },
+      case folders {
+        Some(_) ->
+          html.h3([attribute.class("rail-heading")], [html.text("Watch live")])
+        None -> element.none()
+      },
       pills(all, page),
       html.div([attribute.class("side-scroll")], [
         state("Needs you", "state-needs-you", rows.needs, draw),
@@ -372,6 +442,10 @@ fn column(
         idle(rows, draw),
         saved_region(rows.saved, draw),
         relayed_sections(relayed),
+        case folders {
+          Some(shown) -> rail_foot(shown, page)
+          None -> element.none()
+        },
       ]),
       foot(page),
     ],
@@ -550,6 +624,121 @@ fn top(page: Page(message)) -> Element(message) {
       ),
     ]),
     ..new
+  ])
+}
+
+/// The inbox's folders: a button for each, its name at the left and its count at
+/// the right. The count of "Needs you" is a filled pill in the signal colour,
+/// since it is the one that asks something of the person, and the folder the
+/// list is narrowed to is raised. The names are the page's own fixed words.
+fn folders_nav(folders: Folders(message)) -> Element(message) {
+  html.nav(
+    [attribute.class("rail-folders"), attribute.aria_label("Inbox folders")],
+    [
+      away(folders),
+      ..list.map(folders.items, fn(entry) {
+        let #(folder, count) = entry
+
+        folder_element(
+          folders.pick,
+          folder,
+          case Some(folder) == folders.current {
+            True -> Chosen
+            False -> Offered
+          },
+          [
+            html.span([attribute.class("nm")], [
+              html.text(inbox_rule.folder_words(folder)),
+            ]),
+            case folder, count {
+              inbox_rule.Everything, _ | _, None -> element.none()
+              _, Some(count) ->
+                html.span([attribute.class("n")], [
+                  html.text(int.to_string(count)),
+                ])
+            },
+          ],
+        )
+      })
+    ],
+  )
+}
+
+/// One folder: a button where the page offers a press, with `aria-pressed` saying
+/// whether it is the one the list is narrowed to, and a block of the same shape
+/// where it does not.
+fn folder_element(
+  pick: Option(fn(Folder) -> message),
+  folder: Folder,
+  mark: Mark,
+  parts: List(Element(message)),
+) -> Element(message) {
+  // The folder that asks something of the person carries the signal count.
+  let need = case folder {
+    inbox_rule.Needing -> attribute.class("need")
+    _ -> attribute.none()
+  }
+
+  // Dispatch on folder_element state.
+  case pick {
+    Some(press) ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("folder"),
+          need,
+          attribute.attribute("aria-pressed", pressed(mark)),
+          event.on_click(press(folder)),
+        ],
+        parts,
+      )
+    None -> html.div([attribute.class("folder"), need], parts)
+  }
+}
+
+/// The line above the folders: the time of day in the browser's own zone and how
+/// many sessions run. The time is the browser's clock (`<loom-time now>`), which
+/// draws the current time and moves on each minute, so no time the server holds
+/// is used and a page that heard nothing for an hour still reads right. The
+/// element's light text, `--:--`, shows until the browser has drawn it.
+fn away(folders: Folders(message)) -> Element(message) {
+  html.p([attribute.class("rail-away")], [
+    html.span([attribute.class("rail-time")], [
+      element.element("loom-time", [attribute.attribute("now", "")], [
+        html.text("--:--"),
+      ]),
+    ]),
+    html.text(
+      " · "
+      <> int.to_string(folders.running)
+      <> case folders.running {
+        1 -> " running session"
+        _ -> " running sessions"
+      },
+    ),
+  ])
+}
+
+/// What ends the inbox's column: the note on what the counts read, and the "New
+/// session" button where the page offers one.
+fn rail_foot(
+  folders: Folders(message),
+  page: Page(message),
+) -> Element(message) {
+  html.div([attribute.class("rail-foot")], [
+    html.p([attribute.class("rail-note")], [html.text(folders.note)]),
+    case page.starting {
+      Some(press) ->
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("rail-new"),
+            event.on_click(press),
+          ],
+          [html.text("+ New session")],
+        )
+      None -> element.none()
+    },
   ])
 }
 
@@ -795,7 +984,7 @@ fn entry(
   let entry = row.entry
   let kind = resume.kind(resume, entry)
   let words = row_words(entry, kind, suffix)
-  let lead = lead(row)
+  let lead = lead(row, page.watching)
   let residency = residency(words)
   let parts = [residency, lead]
 
@@ -874,7 +1063,7 @@ fn entry(
 /// The row's two lines: the name, and the tag under it. The name is the
 /// catalogue's label as a text node, and the tag is the place's two halves as
 /// text nodes, the code's whole path a `title`.
-fn lead(row: Row) -> Element(message) {
+fn lead(row: Row, watching: Dict(String, String)) -> Element(message) {
   let entry = row.entry
 
   // Dispatch on lead state.
@@ -887,15 +1076,23 @@ fn lead(row: Row) -> Element(message) {
     html.span([attribute.class("session-name")], [
       html.text(sessions.label(entry)),
     ]),
-    html.span([attribute.class("session-tag")], [
-      html.span([attribute.class("tag-agent")], [html.text(row.place.agent)]),
-      html.span([attribute.class("tag-arrow"), attribute.aria_hidden(True)], [
-        html.text(" → "),
-      ]),
-      html.span([attribute.class("tag-code"), ..code], [
-        html.text(listing.entry_words(entry, row.place)),
-      ]),
-    ]),
+    case dict.get(watching, entry.id) {
+      Ok(words) ->
+        html.span([attribute.class("session-watch")], [html.text(words)])
+      Error(Nil) ->
+        html.span([attribute.class("session-tag")], [
+          html.span([attribute.class("tag-agent")], [
+            html.text(row.place.agent),
+          ]),
+          html.span(
+            [attribute.class("tag-arrow"), attribute.aria_hidden(True)],
+            [html.text(" → ")],
+          ),
+          html.span([attribute.class("tag-code"), ..code], [
+            html.text(listing.entry_words(entry, row.place)),
+          ]),
+        ])
+    },
     ..subtitle(entry)
   ])
 }

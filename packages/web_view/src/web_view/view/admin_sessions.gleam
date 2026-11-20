@@ -258,7 +258,7 @@ fn sharing(
     Shareable ->
       keyed.div([attribute.class("admin-invitation")], [
         #(
-          "invite-" <> int.to_string(invited),
+          "invite-" <> selection.session <> "-" <> int.to_string(invited),
           invitation(selection.session, label, presses, busy),
         ),
         #("notice", html.div([], [notice.at_invitation(spoken)])),

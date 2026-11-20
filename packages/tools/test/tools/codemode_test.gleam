@@ -2190,6 +2190,23 @@ pub fn recipes_are_advertised_only_with_their_required_imports_test() {
   assert !string.contains(description, "Workspace recipe")
 }
 
+pub fn the_attention_guidance_is_offered_only_with_the_module_test() {
+  let with =
+    codemode.SeamOffer(..workspace_offer(), allowed_imports: [
+      "cap/attention",
+      "cap/report",
+    ])
+  let described = codemode.description(echoing_over(codemode.one_seam(with)))
+  assert string.contains(described, "cap/attention.ask(questions")
+  assert string.contains(described, "does not end your turn")
+  assert string.contains(described, "end your turn yourself")
+  assert string.contains(described, "must never request a secret")
+  let without =
+    codemode.SeamOffer(..workspace_offer(), allowed_imports: ["cap/report"])
+  let described = codemode.description(echoing_over(codemode.one_seam(without)))
+  assert !string.contains(described, "cap/attention")
+}
+
 // A model fills fields from the schema, so a conditional requirement the
 // `required` list cannot express has to be in the property itself. With
 // run and launch require exactly one source input; interactions need

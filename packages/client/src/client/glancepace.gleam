@@ -2,7 +2,8 @@
 //// one pure function of (book, event, now).
 ////
 //// The loop (`client/glance`) spends a provider request per refresh, on
-//// every running sub-agent, for as long as it runs. Left to react to every
+//// every running sub-agent (and `main`, on a cheap route), for as long as it
+//// runs. Left to react to every
 //// committed step it would ask once per tool round trip on every strand at
 //// once, so the pacing is the part of the loop that decides what it costs,
 //// and it is kept apart from the process so it can be tested by stepping

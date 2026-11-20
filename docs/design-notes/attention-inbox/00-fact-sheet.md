@@ -14,7 +14,7 @@ and reaches the page), **PARTIAL** (some of it exists, or it exists but does not
    See Q3.
 2. **The home page and the sidebar already group sessions by "what needs you"** (Needs you / Working / Idle /
    Saved) from a polled `sessions.activity` read. But the page keeps only a four-word state and throws away
-   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:6501-6558`).
+   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:7021-6558`).
 3. **Project mode is already a coordinator.** One router session, worker sessions per ticket, a ledger, a
    board whose stages are literally "who acts next" (`person/answer`, `person/review`, `person/blocked`,
    `person/failed`), a worker question with an answer box, and GitHub PR creation and polling. The web home
@@ -102,7 +102,7 @@ words for a pending-proposal badge (`session_words(n)`), not a proposals engine.
   (`web_view/view/sidebar.gleam:1-14`; `web_view/listing.gleam:107-121`, `bucket` at `listing.gleam:291`, quiet group folds
   after `idle_shown = 5`, line 52). It re-reads activity every 5 s for the rows it lists
   (`web_view/component.gleam:490`, read started near `component.gleam:1939-1950`). The page's own session is read from
-  its lane (`session_activity`), not the poll (`component.gleam:488-489`).
+  its lane (`session_activity`), not the poll (`component.gleam:521-489`).
 - A count of sessions waiting on the person is written as the shell's `waiting` attribute (max 10) so a phone
   shows a badge on the menu button while the sidebar is shut (`view/shell.gleam:189-203`).
 - **NOTE (doc drift):** `web-design.md` §2.2 (line 140) says other sessions' rows carry no activity ("no new
@@ -222,7 +222,7 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
 - Web: home Projects section, "what is waiting on me in my projects?" Stage groups, most urgent first, then a
   ticket page with the worker's question and an answer box, Close, link to the worker session
   (`web_view/view/projects.gleam:1-30`; `web_view/home.gleam:723-745` `Projects(boards, ticket, answer, close)`; mounted at
-  `projects_path = "0\t2\t0"`, `home.gleam:353`). Board polled every 5 s (`project_board.refresh_ms`).
+  `projects_path = "0\t2\t0"`, `home.gleam:378`). Board polled every 5 s (`project_board.refresh_ms`).
 - Per ticket: `id, title, stage, session, mandate(strength, via, source, actor, policy_version), opened_ms,
   question{seq,text,options}, pull_request, failure, actions[CanAnswer|CanClose|CanRetry|CanPublish|CanStop]`
   (`session_view/project_board.gleam:107-189`). Board also carries `would` (what `observe` rules would have done), `rules`
@@ -427,7 +427,7 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
 | Observer can see counts but not decide | Any inbox surface drawing decide buttons must gate them like approval cards (owner/operator only, 600 ms arming, never auto-focus) | `approvals.md:261-299` |
 | No naked `Bool`, literate comments, lint R0-R22 | Module `////` prose, `///` on every public item, blank line above comments, bodies of at most about eight statements, `make check` is the gate (verify by its own exit code) | `CLAUDE.md` |
 | Pure-state-machine pattern for UI state | State machines as functions; process machinery via weft; no hand-rolled timers/pollers | `CLAUDE.md` ("Process machinery goes through weft"); `docs/weft.md` |
-| Region reads run off the runtime | Every list/read is a daemon task that returns at once and answers as a message, numbered so a stale answer is dropped (`reads`, `board_reads`); the runtime never waits | the home module's header and `web_view/home.gleam:899` |
+| Region reads run off the runtime | Every list/read is a daemon task that returns at once and answers as a message, numbered so a stale answer is dropped (`reads`, `board_reads`); the runtime never waits | the home module's header and `web_view/home.gleam:1132` |
 
 ---
 

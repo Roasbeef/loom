@@ -137,6 +137,8 @@ pub fn a_row_is_a_button_only_where_a_press_can_work_test() {
 
   // `B` and the peer `lint-census` are running and are not on screen, and
   // `C` is saved.
+  // The split gives one more than the buttons: the four of the session rows.
+  // The page has no way home, so its six folders are text and not buttons.
   assert list.length(string.split(sidebar, "<button")) == 5
   assert string.contains(sidebar, "class=\"session-open\"")
   assert string.contains(sidebar, "title=\"Open this session\"")
@@ -181,12 +183,21 @@ pub fn the_switch_element_is_the_centres_last_child_test() {
   let assert Ok(#(_, after_dock)) = string.split_once(html, "</footer>")
   assert string.starts_with(after_dock, "<loom-switch")
 
-  // The keyboard switcher follows it, as the last child, and holds no text and
-  // no attribute.
+  // The keyboard switcher follows it, and holds no text and no attribute. Only
+  // the live rail's phone sheet may come after both, so no path moves with it.
   assert string.starts_with(
     after_dock,
-    "<loom-switch hidden></loom-switch><loom-switcher></loom-switcher></main>",
+    "<loom-switch hidden></loom-switch><loom-switcher></loom-switcher>",
   )
+  let rest =
+    string.drop_start(
+      after_dock,
+      string.length(
+        "<loom-switch hidden></loom-switch><loom-switcher></loom-switcher>",
+      ),
+    )
+  assert string.starts_with(rest, "</main>")
+    || string.starts_with(rest, "<details class=\"lift-sheet\"")
 }
 
 // A refusal is worded in fixed words for its reason, in the composer's
@@ -389,7 +400,7 @@ pub fn only_a_page_opened_from_a_home_draws_the_home_button_test() {
   let model = homed(sessions.Ticketed(home_ticket), process.new_subject())
   list.each([element.to_string(component.view(model)), drawn(model)], fn(html) {
     assert string.contains(html, "class=\"home-link\"")
-    assert string.contains(html, ">Home</button>")
+    assert string.contains(html, ">‹ Inbox</button>")
   })
   let plain = page_fixture.start() |> component.new
   list.each([element.to_string(component.view(plain)), drawn(plain)], fn(html) {

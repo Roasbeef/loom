@@ -17,6 +17,7 @@ import lustre/effect
 import lustre/element.{type Element}
 import page_fixture
 import web_view/component
+import web_view/inbox_rule
 import web_view/listing as session_listing
 import web_view/operator_page
 import web_view/sessions.{type Entry, Entry, Live, Saved}
@@ -72,6 +73,19 @@ fn plain_page() -> sidebar.Page(Nil) {
     administering: None,
     managing: None,
     who: "",
+    watching: dict.new(),
+  )
+}
+
+// A page's folders when the test is not about them: the six of the inbox, with
+// no count and none marked.
+fn no_folders() -> sidebar.Folders(Nil) {
+  sidebar.Folders(
+    items: [#(inbox_rule.Everything, None)],
+    current: None,
+    pick: None,
+    note: "",
+    running: 0,
   )
 }
 
@@ -383,6 +397,8 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
     list.filter(handlers(operator_page.view(listed)), fn(key) {
       !list.contains(others, key)
     })
+  // The page has no way home, so the rail's six folders are text and add no
+  // handler; the session rows are the only buttons beneath the column.
   assert list.length(added) == 4
   assert list.all(added, fn(key) {
     string.starts_with(key, component.sidebar_path <> "\t")
@@ -450,6 +466,7 @@ pub fn the_current_row_draws_no_strand_bars_test() {
       fn(_) { Nil },
       resume.Never,
       archiving.Never,
+      no_folders(),
     ))
   assert !string.contains(drawn, "dots")
   assert !string.contains(drawn, "class=\"bar")
@@ -472,7 +489,7 @@ pub fn a_subtitle_is_a_quiet_line_under_the_name_test() {
   let assert Ok(sidebar) = sidebar_of(drawn)
   assert string.contains(
     sidebar,
-    "<span class=\"session-name\">vetting lint</span><span class=\"session-tag\">",
+    "<span class=\"session-name\">vetting lint</span><span class=\"session-watch\">",
   )
   assert string.contains(
     sidebar,
@@ -598,9 +615,11 @@ pub fn repositories_that_share_a_name_never_merge_test() {
 // folder is named.
 pub fn a_worktree_row_says_which_worktree_test() {
   let tree = "/src/btcd/.claude/worktrees/hungry-euclid-d93364"
+  // The rows are saved ones: a running row's second line is what its session
+  // is doing, and only the rows that run no process keep the placement tag.
   let rows = [
-    in_project("A", "/src/btcd", "/src/btcd", 100, Live),
-    in_project("B", tree, "/src/btcd", 200, Live),
+    in_project("A", "/src/btcd", "/src/btcd", 100, Saved),
+    in_project("B", tree, "/src/btcd", 200, Saved),
   ]
   let drawn = operator_html(listed_page(rows))
   assert string.contains(
@@ -706,9 +725,9 @@ pub fn the_toggle_counts_saved_and_blocked_rows_apart_test() {
   assert string.contains(sidebar, ">1 saved · 1 needs attention<")
 }
 
-// A worktree row that also has a subtitle says both: the tag names the worktree,
-// and the subtitle is its own third line as text, and the path is only ever in
-// the tag's title.
+// A worktree row that also has a subtitle says both: the second line is the
+// watching words with the project, and the subtitle is its own third line as
+// text. The worktree's path is never drawn on a running row.
 pub fn a_worktree_row_with_a_subtitle_says_both_test() {
   let tree = "/src/btcd/.claude/worktrees/calm-turing"
   let rows = [
@@ -721,11 +740,10 @@ pub fn a_worktree_row_with_a_subtitle_says_both_test() {
   let drawn = operator_html(listed_page(rows))
   assert string.contains(
     drawn,
-    "<span class=\"tag-code\" title=\""
-      <> tree
-      <> "\">btcd · calm-turing</span></span>"
+    "<span class=\"session-watch\">btcd · quiet</span>"
       <> "<span class=\"session-subtitle\">Fix the retry</span>",
   )
+  assert !string.contains(drawn, tree)
 }
 
 // A page whose transport answers the activity read with `rows`, after a list
@@ -992,4 +1010,63 @@ pub fn a_moving_row_says_where_it_goes_and_has_no_press_test() {
   assert list.length(string.split(sidebar, "title=\"Resume this session\""))
     == 2
   assert string.contains(sidebar, ">2 saved<")
+}
+
+// The rail's first line is the browser's clock, not a time the server holds: the
+// session page's own clock is monotonic and no Unix time at all, and a time
+// written when the page opened read 19:00 at 20:55. `now` asks the browser's
+// element (`web_client/time`) to draw the current time and keep it current, so
+// the server writes no instant, and nothing a negative or arbitrary server
+// value could print reaches the line.
+pub fn the_rail_time_is_a_clock_the_browser_keeps_current_test() {
+  let folders = sidebar.Folders(..no_folders(), running: 2)
+  let drawn =
+    element.to_string(sidebar.view(
+      sessions.grouped(listing()),
+      "A",
+      dict.new(),
+      plain_page(),
+      fn(_) { Nil },
+      resume.Never,
+      archiving.Never,
+      folders,
+    ))
+  assert string.contains(
+    drawn,
+    "<loom-time now>--:--</loom-time></span> · 2 running sessions",
+  )
+  assert !string.contains(drawn, "loom-time at=")
+}
+
+// The rail's folders go to the home page, so they are buttons only on a page
+// that has a way there, as "New session" is. Without one they are text: six
+// buttons that did nothing would only teach the person to stop pressing them.
+pub fn the_folders_are_buttons_only_where_a_press_can_work_test() {
+  let start =
+    component.Start(
+      ..laptop_start(),
+      transport: component.Transport(..laptop_start().transport, home: None),
+    )
+  let homed =
+    component.Start(
+      ..start,
+      transport: component.Transport(
+        ..start.transport,
+        home: Some(fn() { sessions.Declined(sessions.NoHome) }),
+      ),
+    )
+  let drawn_with = fn(start) {
+    let #(model, _) =
+      component.update(
+        component.new(start)
+          |> component.apply([lane_fixture.captured(10, None)]),
+        component.SessionsListed(listing()),
+      )
+    let assert Ok(sidebar) = sidebar_of(operator_html(model))
+    sidebar
+  }
+
+  // The six folders are the difference: buttons with a way home, text without.
+  let buttons = fn(drawn) { list.length(string.split(drawn, "<button")) }
+  assert buttons(drawn_with(homed)) == buttons(drawn_with(start)) + 7
 }

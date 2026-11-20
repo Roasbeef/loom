@@ -223,6 +223,9 @@ pub type Item {
   Step(
     /// The call's key: its group's block key and its index in the group.
     key: String,
+    /// The provider's id for the call (`ToolCall.id`), which an approval's
+    /// scope names (`approval.Review.call`). It is never drawn.
+    call: String,
     /// How the call stands.
     standing: Standing,
     /// What the call reads as: its verb, what it acted on and, for an edit,
@@ -474,6 +477,149 @@ pub fn pieces(
   })
   |> list.flatten
   |> merge_commentary
+}
+
+/// When each row of the lane happened, in Unix milliseconds, by the key the
+/// lane draws the row under (`piece_key`, and the key of each item in a
+/// fold). The time is the record's own: a message's entry time, and for a
+/// tool call the time its result was recorded, or the response that asked for
+/// it when the call has no result yet or was made inside a response that also
+/// spoke, whose block is then the call's. A turn's divider (`work:<input key>`)
+/// takes the time of the input that opened it. A row whose records carry no
+/// time (a notice, an advisor board, a turn that began before the window)
+/// has no entry, so a host draws no time for it and never invents one.
+///
+/// `blocks` are the blocks `pieces` was given. Where a turn is closed into a
+/// summary the blocks are dropped, so the host keeps this dictionary with the
+/// summary (`turn_ledger.Sealed.stamps`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.stamped([], []) == dict.new()
+/// ```
+pub fn stamped(pieces: List(Piece), blocks: List(Block)) -> Dict(String, Int) {
+  let recorded = list.fold(blocks, dict.new(), recorded_at)
+
+  list.fold(pieces, dict.new(), fn(found, piece) {
+    // A turn's work stands for its divider and for each item of its fold that
+    // is a row of its own; every other piece is one row.
+    let keys = case piece {
+      Work(key:, items:, ..) -> [key, ..list.filter_map(items, item_key)]
+      _ -> [piece_key(piece)]
+    }
+
+    list.fold(keys, found, fn(found, key) {
+      case list.find_map(sought(key), dict.get(recorded, _)) {
+        Ok(at) -> dict.insert(found, key, at)
+        Error(Nil) -> found
+      }
+    })
+  })
+}
+
+/// The keys whose time a row may take, best first: its own, which a call of a
+/// group has; for a divider, the block that opened its turn; and for a call
+/// made inside a response that also spoke, the response's block, so such a call
+/// has the time of the response that asked for it and not of its result.
+fn sought(key: String) -> List(String) {
+  case string.split_once(key, "work:"), string.split_once(key, "/") {
+    Ok(#("", input)), _ -> [key, input]
+    _, Ok(#(block, _)) -> [key, block]
+    _, _ -> [key]
+  }
+}
+
+/// The key of an item that is drawn as a row of its own, or nothing for the
+/// memory context, which is not.
+fn item_key(item: Item) -> Result(String, Nil) {
+  case item {
+    Narrated(block:, ..) -> Ok(block.key)
+    Step(key:, ..) -> Ok(key)
+    Memory(..) -> Error(Nil)
+  }
+}
+
+/// Adds the time of one block, and of each call of a tool group under the key
+/// `classify` gives the call.
+fn recorded_at(found: Dict(String, Int), block: Block) -> Dict(String, Int) {
+  // An entry has one time. A tool group has one per call: the time of its
+  // result, or of the response that asked for it while it has none.
+  case block.source {
+    transcript_lines.FromEntry(value) -> dict.insert(found, block.key, value.ts)
+    transcript_lines.FromTools(calls) ->
+      list.index_fold(calls, found, fn(found, call, index) {
+        // The result's own time wins over the asking response's.
+        let at = case call.outcome, call.asked {
+          Some(message.ToolResultMessage(timestamp:, ..)), _ -> Some(timestamp)
+          _, asked -> asked
+        }
+
+        // A call with neither time has no entry.
+        case at {
+          Some(at) ->
+            dict.insert(found, block.key <> "/" <> int.to_string(index), at)
+          None -> found
+        }
+      })
+    transcript_lines.FromNotice
+    | transcript_lines.FromAdvisor
+    | transcript_lines.FromSpacer -> found
+  }
+}
+
+/// Which request of the running turn the strand is generating: one more than
+/// the responses the turn has already recorded. The blocks are read back from
+/// the newest to the message that opened the turn, and a response is counted
+/// once by the time its record carries: a response with prose or reasoning is
+/// an entry of its own, and the calls it made are in a tool group whose calls
+/// carry the time of the response that asked for them (`Call.asked`), so a
+/// response that did both is one request and not two. Two responses recorded in
+/// the same millisecond count as one, which the records cannot tell apart. A
+/// window that begins inside the turn counts what it holds. A turn with
+/// nothing recorded yet is request 1.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.requests([]) == 1
+/// ```
+pub fn requests(blocks: List(Block)) -> Int {
+  1 + set.size(responses(list.reverse(blocks), set.new()))
+}
+
+/// The times of the responses back from the newest block to the message that
+/// opened the turn, which is the first user message met.
+fn responses(newest_first: List(Block), found: set.Set(Int)) -> set.Set(Int) {
+  case newest_first {
+    [] -> found
+    [block, ..rest] ->
+      case block.source {
+        transcript_lines.FromEntry(entry.MessageEntry(
+          message: message.UserMessage(..),
+          ..,
+        )) -> found
+        transcript_lines.FromEntry(entry.MessageEntry(
+          message: message.AssistantMessage(..),
+          ts:,
+          ..,
+        )) -> responses(rest, set.insert(found, ts))
+        transcript_lines.FromTools(calls) ->
+          responses(
+            rest,
+            list.fold(calls, found, fn(found, call) {
+              case call.asked {
+                Some(at) -> set.insert(found, at)
+                None -> found
+              }
+            }),
+          )
+        transcript_lines.FromEntry(_)
+        | transcript_lines.FromNotice
+        | transcript_lines.FromAdvisor
+        | transcript_lines.FromSpacer -> responses(rest, found)
+      }
+  }
 }
 
 /// The same pieces with each sender's role set on the messages they sent: a
@@ -1751,6 +1897,7 @@ fn step(
 
   Step(
     key:,
+    call: call.invocation.id,
     standing:,
     words: case standing {
       Pending -> step_words.pending(step_words.of_call(call))

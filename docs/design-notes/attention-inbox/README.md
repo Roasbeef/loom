@@ -3,7 +3,9 @@
 **Status: decided (2026-11-16).** The owner chose the final design that
 section 2 describes and [`final/mockup.html`](final/mockup.html) draws.
 Section 3 records the ruling on each open question, and section 4 orders the
-build. Nothing in the web view changes here.
+build. Sections 1 to 6 are the design as decided and are not rewritten;
+**built 2026-11-18 as stack #1290, awaiting the owner's sign-off**, and
+section 7 says what was built and where it departs from them.
 
 The owner asked for a web UI in the manner of a coordinator and an inbox,
 because "needing to read thru context is such a major drag vs surfacing
@@ -267,6 +269,12 @@ Recheck, Stop, Retry and Close, with Publish drawn disabled with the daemon's
 reason. `person/check` arrives by whichever route the owner picks for
 question 6, which is due before this phase starts.
 
+*As built (2026-11-18):* the thread shows the stage word (raw for `person/check`),
+the question and the PR, with Answer, Close, Retry and Stop drawn only for the
+actions the daemon lists. There is no check output and no Recheck, pending
+question 6. The board carries no branch or diff stat, so neither is drawn, and
+it carries no reason for a listed Publish, so no Publish is drawn.
+
 **Phase 3: the project view.** Creating a project and posting a request, the
 coordinator's context card, and the meta layer's decisions as threads per
 #1168.
@@ -308,3 +316,119 @@ The final mockup corrects the last two of these.
 - **D's dock** shows a question from `runner/pod-reach` above a reply box
   addressed to `storage/branch-index-repair`
   ([`screens/d-open-item.png`](https://raw.githubusercontent.com/Roasbeef/loom/8143a790f58993a7c04e594868c531b6811c0fee/docs/design-notes/attention-inbox/screens/d-open-item.png)).
+
+## 7. As built (2026-11-18)
+
+The build is stack #1290: ten PRs, #1275 at the bottom and #1294 at the top.
+Each was reviewed by an independent reviewer, and a final end-to-end drive with
+a real model and a real browser passed all 13 features. The stack is not
+merged. `docs/next.md` says what follows.
+
+### 7.1 What each phase delivered
+
+Section 4 planned four phases. Phase 1 was split across several PRs.
+
+- **Phase 0, existing signals (#1283, #1285).** Home's inbox is grouped by
+  need, with a reading pane and an outbox. A thread can send its session a
+  message, delivered as a prompt, or as a Queue or Steer entry when the session
+  is busy. A decision lands once. The harness writes a glance for `main`, so
+  Updates show current work. The live mode's rail is drawn from lane entries
+  (#1287).
+- **Phase 1, records and threads (#1286, #1288, #1289, #1292, #1293).** The
+  `ask` and `notice` tools exist with typed answer kinds and as code-mode
+  capabilities. The durable counts survive a restart. The feed
+  (`sessions.attention`, `attention.read`, `attention.close_find`) carries
+  identities and heads. Asks, finds, stuck strands and approval evidence are
+  threads on Home, and asks are answered in the rail. The review pane reads
+  `sessions.review` and has a one-Send outbox.
+- **Phase 2, project tickets as threads (#1294).** A ticket that waits on a
+  person is a thread under Needs you. Its controls are the ones the daemon
+  lists, and the earlier "As built" note under phase 2 lists what it omits.
+- **Phase 3, the project view.** Not built, and the meta layer still has no
+  design (section 3, question 7).
+- **Not in section 4.** The OKLCH palette and its contrast gate (#1275) came
+  with the build, and #1294 added Home's first-round landing rule.
+
+### 7.2 Where the build departs from the design
+
+- **A review thread has no message box of its own.** The review pane's one
+  Send outbox carries the verdict and the message together, so a review thread
+  does not stage a separate message as section 2.2 describes.
+- **Retry sends a fixed prompt.** It prompts the stuck strand itself, through
+  the path a message typed on the session's page takes, and the owner does not
+  edit the words.
+- **A fill-in answer has no separate Other.** Section 4 says every ask also
+  offers Other as free text. A fill-in ask is already free text, so every kind
+  except fill-in offers it.
+- **A saved session's row resumes it.** A saved session has no page to open,
+  so its row offers "Resume and open": the press resumes the session and then
+  opens its page, as the session list's resume does. A refused resume is shown
+  on that row, and an observer's row has no button.
+- **Home's landing follows a first-round rule.** Home decides once per page
+  load, after every first read it is due has answered: the session list, and
+  then the activity read, the catalogue summary, the attention feed and the
+  project board where they apply. If anything waits or runs it lands on the
+  inbox, and otherwise on the new-session form. Later reads never move it; only
+  the person's clicks do (`web_view/landing_rule`). Section 2.1 said only that
+  the inbox replaces the form when something waits or runs.
+
+- **Where the page departs from the mockup's pixels (the frame pass,
+  2026-11-19).** The frame, rail, bar, palette, rows, dots, titles and wording
+  are the mockup's. What differs is data the page lacks or a rule: a ticket's
+  check output and Recheck (`ticket_thread.Offer.check`); an approval's message starts a turn now and is not queued behind the
+  approval (`thread_send.hold_note`), so its words say that and not the mockup's;
+  the outbox bar's chips say `Message, as a steer` and do not echo the draft,
+  since the draft is not page state; a session's page draws the rail's folders
+  with no count and a press of one goes to Home without choosing it; a running
+  row's "N lifted" is read only where the page reads the feed, so a session's
+  page shows the state without it.
+
+- **Where the page departs after the data wiring (2026-11-19).** The times,
+  policy rows, peer messages, steps, coordinator card, last command, stuck
+  sentence and committed files are drawn from the data the daemon sends. What
+  still differs: an approval's title names the tool (`May bash reach the
+  network?`) because the escalation records no program call or command, and the
+  page says nothing of the escalation's sequence number; an update's title is
+  the session's head and not a summary of its message; an update's links are
+  "Watch it live" and the session's own open ask, since no record links a
+  session to a coordinator's ask; a live daemon reported `provider_error` for its failed runs, so the
+  rate-limited sentence is pinned by tests and not seen in a drive.
+
+- **Where the page departs after the fidelity polish (2026-11-19,
+  `web/fidelity-polish`).** The stuck row names the time it failed
+  (`Rate-limited at 13:52, has not retried`, a `<loom-time>` in the row's head);
+  a "To review" row reads `+412 −88, 7 files · 2 finds attached` from the scan's
+  read of the tree and falls back to the message's head until that read lands; a
+  turn's age reads `running, turn 14m` (`<loom-elapsed form="minutes">`); the
+  rail's first line is the browser's clock (`<loom-time now>`) and not a time the
+  server holds; the review's first file opens with its hunks, its last-command
+  chip shares the counts' line where there is room, and the agent's message is
+  labelled "last message", as the mockup does, though the field is still only the
+  last finished turn (protocol-change/121). On a phone the bar is `loom`,
+  `‹ Inbox`, the name, `● live` and the need pill; the strand panel is not drawn
+  above the stream, and the rail is a sheet whose header reads `Lifted from this
+  session · Close ▾`. What still differs: Home keeps the sidebar's toggle on a
+  phone, because the folders live in the sidebar; a session's page on a phone has
+  no Strands, Changes, Trace or Session panes, since the mockup draws none; the
+  review keeps a "Comment" verdict button, because a comment-only review is a
+  state of `review_stage_rule`; and the gutter's times for spawn and result rows
+  follow the rows' placement in the stream, which is the order the lane puts them
+  in, so a spawn's time can precede the tool lines drawn above it.
+
+Known gaps carried forward:
+
+- `person/check` is drawn as its raw stage word, pending question 6.
+- A `queued` answer delivery can be dropped by a later drain while the record
+  says answered (protocol-change/120, residual risk).
+
+### 7.3 Which protocol change covers what
+
+| Change | Covers |
+|---|---|
+| protocol-change/118 | The thread-send command for a message from Home. |
+| protocol-change/119 | The `ask` and `notice` tools, answer kinds and reserved records. |
+| protocol-change/120 | The attention feed, typed answers and strand sends, and the `approval.read` addendum. |
+| protocol-change/121 | The glance for `main`. |
+| protocol-change/122 | Catalogue version 22 and the durable attention counts. |
+| protocol-change/123 | `sessions.review` and the review hunks. |
+| 051 addenda | "The attention inbox on Home", "the live rail", "the live rail, answered", "the review pane" and "project tickets on Home", which cover the page's click paths. |

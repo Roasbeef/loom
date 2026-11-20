@@ -117,8 +117,10 @@ pub fn every_pane_is_drawn_in_a_fixed_order_on_both_pages_test() {
   // Notes is appended after the existing children on both pages, and the
   // Evolution pane after Notes on the operator's alone.
   assert in_order(panel_of(operator(quiet())), ["pane-notes", "pane-evolution"])
-  assert count(panel_of(operator(quiet())), "<section") == 7
-  assert count(panel_of(observer(quiet())), "<section") == 5
+  // The live rail adds a section and the one group it holds (the fixture
+  // lifts a peer message and a child's result, and no approval).
+  assert count(panel_of(operator(quiet())), "<section") == 9
+  assert count(panel_of(observer(quiet())), "<section") == 7
   assert !string.contains(panel_of(observer(quiet())), "pane-evolution")
 }
 
@@ -177,7 +179,9 @@ pub fn the_panel_carries_no_decision_control_test() {
 
   // The Session pane's Fork form, Notes Refresh and the Evolution tab's Read
   // again are the three other controls, and none decides anything.
-  assert count(panel, "<button") == count(panel, "chip-hit") + 3
+  // The live rail's rows are buttons too, and only scroll (`lifted_test`).
+  assert count(panel, "<button")
+    == count(panel, "chip-hit") + count(panel, "lift-press") + 3
   assert count(panel, "notes-refresh") == 1
   assert count(panel, "<form") == 1
 }
@@ -189,7 +193,8 @@ pub fn an_observers_panel_names_the_wait_and_holds_no_card_test() {
   assert !string.contains(html, "approval-card")
   let panel = panel_of(html)
   assert string.contains(panel, "Needs approval")
-  assert count(panel, "<button") == count(panel, "chip-hit") + 1
+  assert count(panel, "<button")
+    == count(panel, "chip-hit") + count(panel, "lift-press") + 1
   assert count(panel, "notes-refresh") == 1
 }
 

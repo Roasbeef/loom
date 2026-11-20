@@ -57,7 +57,8 @@ independent test oracle, including Unicode rejection and length boundaries.
   `catalogue_pools_schema`, `catalogue_moves_schema`,
   `catalogue_deletions_schema`, `catalogue_delegates_schema`, `catalogue_releases_schema`,
   `catalogue_spend_schema`, `catalogue_start_failures_schema`,
-  `catalogue_relayed_schema`, `catalogue_projects_schema`, `catalogue_agency_schema`), and
+  `catalogue_relayed_schema`, `catalogue_projects_schema`, `catalogue_agency_schema`,
+  `catalogue_session_attention_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -275,6 +276,7 @@ independent test oracle, including Unicode rejection and length boundaries.
   `relayed_page_limit` (64) with the name and placement, skipping archived sessions so the listing is bounded by the cap, and `delete`
   removes the row before the registration, which frees the place. The table is
   defined in `sql/catalogue_relayed.sql`.
+- `catalogue_session_attention(session_id, pending_approvals, open_asks, open_finds, oldest_open_at, updated_at)` (version 22, `protocol-change/122`, `sql/catalogue_session_attention.sql`) caches one session's attention counts so Home can read a saved session without opening it. `catalogue.record_attention` upserts it, `catalogue.attention` and `attention_for` read it (absence means never read, a zero row means nothing was open), and `catalogue.delete` removes the row before the registration because the schema has no cascade.
 - `catalogue_session_agency(session_id, fan_out, session_strands, depth_mode, depth_cap)` (version 21, `protocol-change/113`, `sql/catalogue_agency.sql`) stores optional per-session `AgencyLimits` overrides without changing `catalogue_sessions`. `domain.reserve_session_with_agency` writes the row atomically on non-default creations, `catalogue.agency_limits` returns `agency_limits.empty` when absent, and `catalogue.delete` deletes any row before deleting the session.
 - `catalogue.StartFailure(reason, at)` is why a reservation's start failed
   (protocol-change/093, catalogue version 18). `catalogue_start_failures(session_id,

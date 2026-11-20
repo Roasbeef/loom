@@ -173,7 +173,7 @@ heading.
 whose `Status` (`session_view/agent_view.gleam:52`) carries the glyph and
 `label` (`session_view/agent_view.gleam:625`) the word, and from `Line`
 (`session_view/agent_roster.gleam:84`), which adds elapsed time and context
-size; `lines` (`session_view/agent_roster.gleam:571`) is the order. The task,
+size; `lines` (`session_view/agent_roster.gleam:581`) is the order. The task,
 activity, latest update, pending input, recent tools and approvals are the
 `Row`'s own fields. Sent messages are `Item`
 (`session_view/agent_messages.gleam:52`), held in `agent_messages`
@@ -463,12 +463,12 @@ The way back is `Enter` on `main`, the first row, or `/strand main`.
 |---|---|---|---|
 | sub:tests focused, 120×40 | [standard-focus](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/C-fable-standard-focus-dark.png) | [light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/C-fable-standard-focus-light.png) | [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/C-fable-standard-focus.txt) |
 
-The gutter's hue comes from `hue` (`session_view/turns.gleam:308`), which
+The gutter's hue comes from `hue` (`session_view/turns.gleam:315`), which
 colours a strand by its position among the captured strands and never by its
 name, with `hues` (`session_view/turns.gleam:91`) sub-agent hues before they
 repeat. The terminal's row projection would carry a hue beside each row the
 way it carries anchors (`refresh_render_cache`, `tui/projection.gleam:79`),
-derived from `pieces` (`session_view/turns.gleam:374`), which already decides
+derived from `pieces` (`session_view/turns.gleam:382`), which already decides
 which strand a spawn, result, nudge or peer row belongs to. `tui/theme.gleam`
 needs five strand hue constants beside `advisor` (`tui/theme.gleam:17`),
 `signal` (`tui/theme.gleam:29`) and `current` (`tui/theme.gleam:32`), with
@@ -728,10 +728,10 @@ No single key sends a decision.
 | Region | Data | Exists | Where |
 |---|---|---|---|
 | Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:520` |
-| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:374`), `hue` (`session_view/turns.gleam:308`); new hue constants in `tui/theme.gleam` |
+| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:382`), `hue` (`session_view/turns.gleam:315`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2907`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:378`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
-| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:571`), `Line` (`session_view/agent_roster.gleam:103`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1434`) |
+| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:581`), `Line` (`session_view/agent_roster.gleam:103`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1434`) |
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |

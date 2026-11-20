@@ -1150,6 +1150,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     spawner: None,
     laptop: None,
     first_prompt: None,
+    attention_report: None,
     profile_desk: None,
     codemode_sockets: None,
     secrets: secret.env(),
