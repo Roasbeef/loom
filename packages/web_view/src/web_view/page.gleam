@@ -41,8 +41,10 @@
 ////    keeps the nonce and moves the tab to its keyed page.
 //// 4. `shell`, `home_shell` and `admin_shell` are the keyed pages, and
 ////    `refusal`, `home_refusal` and `admin_refusal` what a refused one gets.
-//// 5. `login_page` and `claim_page` are the two other documents with a form.
-////    `root_page` is the document at `/`, which has none.
+//// 5. `login_page` and `claim_page` are the two other documents with a form,
+////    and `signin_page` and `passkey_page` (protocol-change/127) are the two
+////    that ask the browser for a passkey. `root_page` is the document at `/`,
+////    which has none.
 //// 6. `content_security_policy_for` is the policy each is served under, and
 ////    `asset_path`, `static_file` and `runtime_file` say where the assets are.
 
@@ -78,6 +80,13 @@ pub const resume_asset = "web_view_resume.js"
 
 /// The script the root page runs to forward to a remembered login.
 pub const root_asset = "web_view_root.js"
+
+/// The script the passkey sign-in page runs to ask the browser for an assertion
+/// (protocol-change/127).
+pub const signin_asset = "web_view_signin.js"
+
+/// The script the passkey registration page runs to create a credential.
+pub const passkey_asset = "web_view_passkey.js"
 
 /// The tab icon: the woven mark of the logo, one SVG that switches its weft
 /// colour with the browser's colour scheme. Every document's `<head>` links it,
@@ -495,6 +504,7 @@ pub fn home_refusal(reason: Ending) -> String {
 type Way {
   GoBack
   ClaimLink
+  SigninLink
   NoWay
 }
 
@@ -546,6 +556,10 @@ fn way_control(way: Way) -> String {
       <> "\">"
       <> claim_path
       <> "</a>.</p>"
+    SigninLink ->
+      "<p class=\"ended-advice\">Or <a class=\"ended-link\" href=\""
+      <> signin_path
+      <> "\">try the passkey sign-in again</a>.</p>"
     NoWay -> ""
   }
 }
@@ -561,7 +575,8 @@ fn fresh_link_box(command: Option(String), way: Way) -> String {
 
       // Select explanation text depending on way navigation option.
       let words = case way {
-        ClaimLink -> "If you use loom, run this in a terminal for a fresh link."
+        ClaimLink | SigninLink ->
+          "If you use loom, run this in a terminal for a fresh link."
         GoBack | NoWay -> "Run this in a terminal for a fresh link."
       }
 
@@ -653,6 +668,9 @@ pub fn root_page(command: String) -> String {
   <> "<ul id=\"root-logins\" hidden></ul>"
   <> "<div id=\"root-help\" hidden>"
   <> fresh_link_box(Some(command), NoWay)
+  <> "<p class=\"ended-advice\">Or <a class=\"ended-link\" href=\""
+  <> signin_path
+  <> "\">sign in with a passkey</a> you added from a signed-in home.</p>"
   <> "</div>"
   <> "<noscript><p class=\"ended-advice\">"
   <> houdini.escape(root_script_notice(command))
@@ -713,6 +731,211 @@ pub fn login_refused() -> String {
       command: Some("loom ui"),
     ),
     ClaimLink,
+  )
+}
+
+/// Where the passkey sign-in lives and posts (protocol-change/127): `GET` draws
+/// the page that asks the browser for an assertion and `POST` verifies it.
+pub const signin_path = "/ui/signin"
+
+/// Where a home's registration page is: `/ui/p/<key>/passkey`, which `GET` draws
+/// and `POST` registers from. It is under the page's own key, so the page's
+/// cookie reaches it and no other path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.passkey_path("abc") == "/ui/p/abc/passkey"
+/// ```
+pub fn passkey_path(key: String) -> String {
+  keyed_prefix(key) <> "/passkey"
+}
+
+/// The passkey sign-in page: a fixed document with no inline script, which holds
+/// one form and the script that fills it. `challenge` is the one the daemon
+/// issued for this visit and `rp_id` the relying party id it expects, both
+/// written as data attributes and escaped; the document carries nothing the
+/// request said. The form posts the assertion to `signin_path`, so the document
+/// is served under the policy that lets a form submit to this origin.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let html = page.signin_page("c", "box.example")
+/// assert string.contains(html, "data-challenge=\"c\"")
+/// ```
+pub fn signin_page(challenge: String, rp_id: String) -> String {
+  "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+  <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+  <> "<title>Loom</title>"
+  <> icon_link()
+  <> "<link rel=\"stylesheet\" href=\""
+  <> asset_path(stylesheet_asset)
+  <> "\"></head><body><main class=\"ended-page\">"
+  <> "<section class=\"ended-document\">"
+  <> "<p class=\"ended-brand\">Loom</p>"
+  <> "<p class=\"claim-title\">Sign in with a passkey</p>"
+  <> "<p class=\"ended-advice\">"
+  <> houdini.escape(signin_words())
+  <> "</p><p class=\"ended-advice\" id=\"signin-status\" role=\"status\"></p>"
+  <> "<form class=\"claim-form\" id=\"signin-form\" method=\"post\" action=\""
+  <> signin_path
+  <> "\" data-challenge=\""
+  <> houdini.escape(challenge)
+  <> "\" data-rp-id=\""
+  <> houdini.escape(rp_id)
+  <> "\">"
+  <> "<input type=\"hidden\" name=\"id\" value=\"\">"
+  <> "<input type=\"hidden\" name=\"cdj\" value=\"\">"
+  <> "<input type=\"hidden\" name=\"ad\" value=\"\">"
+  <> "<input type=\"hidden\" name=\"sig\" value=\"\">"
+  <> "<button class=\"claim-submit\" id=\"signin-button\" type=\"button\">"
+  <> "Sign in with a passkey</button></form>"
+  <> "<noscript><p class=\"ended-advice\">"
+  <> houdini.escape(login_script_notice())
+  <> "</p></noscript>"
+  <> "</section></main><script src=\""
+  <> asset_path(signin_asset)
+  <> "\"></script></body></html>\n"
+}
+
+/// What the sign-in page says above its button: what a passkey does and where
+/// it came from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.signin_words(), "passkey")
+/// ```
+pub fn signin_words() -> String {
+  "Use a passkey you added from a signed-in Loom home. It signs this browser "
+  <> "in for up to thirty days, as loom ui does, and it opens your home but "
+  <> "not the admin page."
+}
+
+/// The document a passkey sign-in that was refused is answered with: fixed words
+/// and the way to try again or to sign in with `loom ui`, and nothing the request
+/// said. Every refusal reads the same, so the answer does not tell an unknown
+/// passkey from an expired challenge or a bad signature.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.signin_refused(), "loom ui")
+/// ```
+pub fn signin_refused() -> String {
+  ended_document(
+    "This passkey could not sign you in.",
+    ending.Advice(
+      lead: "The passkey is not one this daemon knows, the page was open too "
+        <> "long, or the sign-in did not verify.",
+      command: Some("loom ui"),
+    ),
+    SigninLink,
+  )
+}
+
+/// The passkey registration page for a home's page key: the same shape as the
+/// sign-in page, with the fields the browser needs to create a credential.
+/// `challenge` is the one the daemon issued for this page, `rp_id` the relying
+/// party id it expects, `user` the principal's opaque handle (43 base64url
+/// characters) and `name` the principal's display name, which the browser shows
+/// in its passkey chooser. `key` is the page's own key, which names the item the
+/// page's nonce is kept under. Each is escaped here.
+///
+/// The form has one visible field, the passkey's label, which the daemon judges.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let html = page.passkey_page("abc", "c", "box.example", "u", "Olive")
+/// assert string.contains(html, "action=\"/ui/p/abc/passkey\"")
+/// ```
+pub fn passkey_page(
+  key: String,
+  challenge: String,
+  rp_id: String,
+  user: String,
+  name: String,
+) -> String {
+  "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+  <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+  <> "<title>Add a passkey — Loom</title>"
+  <> icon_link()
+  <> "<link rel=\"stylesheet\" href=\""
+  <> asset_path(stylesheet_asset)
+  <> "\"></head><body><main class=\"ended-page\">"
+  <> "<section class=\"ended-document\">"
+  <> "<p class=\"ended-brand\">Loom</p>"
+  <> "<p class=\"claim-title\">Add a passkey</p>"
+  <> "<p class=\"ended-advice\">"
+  <> houdini.escape(passkey_words())
+  <> "</p><p class=\"ended-advice\" id=\"passkey-status\" role=\"status\"></p>"
+  <> "<form class=\"claim-form\" id=\"passkey-form\" method=\"post\" action=\""
+  <> houdini.escape(passkey_path(key))
+  <> "\" data-challenge=\""
+  <> houdini.escape(challenge)
+  <> "\" data-rp-id=\""
+  <> houdini.escape(rp_id)
+  <> "\" data-user=\""
+  <> houdini.escape(user)
+  <> "\" data-name=\""
+  <> houdini.escape(name)
+  <> "\" data-key=\""
+  <> houdini.escape(key)
+  <> "\">"
+  <> "<input type=\"hidden\" name=\"nonce\" value=\"\">"
+  <> "<input type=\"hidden\" name=\"id\" value=\"\">"
+  <> "<input type=\"hidden\" name=\"cdj\" value=\"\">"
+  <> "<input type=\"hidden\" name=\"ad\" value=\"\">"
+  <> "<input type=\"hidden\" name=\"pk\" value=\"\">"
+  <> "<label class=\"claim-field\"><span class=\"claim-label\">Name"
+  <> "</span><input class=\"claim-input\" type=\"text\" name=\"label\" "
+  <> "autocomplete=\"off\" maxlength=\"32\" placeholder=\"Phone\">"
+  <> "<span class=\"claim-hint\">One to 32 letters, digits or punctuation, "
+  <> "to tell your passkeys apart.</span></label>"
+  <> "<button class=\"claim-submit\" id=\"passkey-button\" type=\"button\">"
+  <> "Add a passkey</button></form>"
+  <> "<noscript><p class=\"ended-advice\">"
+  <> houdini.escape(login_script_notice())
+  <> "</p></noscript>"
+  <> "</section></main><script src=\""
+  <> asset_path(passkey_asset)
+  <> "\"></script></body></html>\n"
+}
+
+/// What the registration page says above its button.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.passkey_words(), "ES256")
+/// ```
+pub fn passkey_words() -> String {
+  "Your device creates a passkey for this address and Loom keeps its public "
+  <> "key. Loom accepts ES256 passkeys with user verification, which is what "
+  <> "phones, laptops and security keys offer. A passkey signs a browser in to "
+  <> "your home; it does not replace loom ui."
+}
+
+/// The document a registration that was refused is answered with: fixed words
+/// and nothing the request said.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.passkey_refused(), "loom ui")
+/// ```
+pub fn passkey_refused() -> String {
+  ended_document(
+    "No passkey was added.",
+    ending.Advice(
+      lead: "Passkeys are added from the owner's home, opened with loom ui "
+        <> "in the last eight hours, and the page may have been open too long "
+        <> "or the passkey may not be one Loom accepts.",
+      command: Some("loom ui"),
+    ),
+    NoWay,
   )
 }
 

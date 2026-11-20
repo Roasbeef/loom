@@ -1134,6 +1134,8 @@
   .home-signin-out:hover,.home-signin-all:hover,.home-signin-device:hover:not(:disabled),.home-device-done:hover{background:var(--color-bg-raised);}
   .home-signin-out:focus-visible,.home-signin-all:focus-visible,.home-signin-device:focus-visible,.home-device-done:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   .home-signin-device:disabled{opacity:.5;cursor:default;}
+  a.home-signin-device{display:inline-block;text-decoration:none;}
+  .home-passkeys{margin:12px 0 0 0;padding:12px 0 0 0;border-top:1px solid var(--color-divider);}
   .home-signin-actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px 0;}
   .home-signin-status{margin:0;min-height:1.4em;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   /* The "Your name" control, the account panel's first region, and the admin

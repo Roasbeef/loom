@@ -92,12 +92,15 @@ pub type Asking {
 /// everywhere". `bookmark` is the address the person keeps, when the page was
 /// opened by a remembered login. `notice` is the words of the last press.
 /// `name` is the "Your name" control (`view/your_name`), the panel's first
-/// region, or `element.none()` for a page that cannot rename.
+/// region, or `element.none()` for a page that cannot rename. `passkeys` is the
+/// panel's last region (`view/passkeys`, protocol-change/127), or
+/// `element.none()` for a page that holds no passkey capability; it is the last
+/// child, so no region before it moves.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // signins.view(rows, now, None, None, SigningOut, SigningOutAll, Never, None, element.none())
+/// // signins.view(rows, now, None, None, SigningOut, SigningOutAll, Never, None, element.none(), element.none())
 /// ```
 pub fn view(
   rows: List(Signin),
@@ -109,6 +112,7 @@ pub fn view(
   device: Device(message),
   notice: Option(String),
   name: Element(message),
+  passkeys: Element(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(rows),
@@ -118,6 +122,7 @@ pub fn view(
     element.ref(device),
     element.ref(notice),
     element.ref(name),
+    element.ref(passkeys),
   ])
   html.section(
     [
@@ -148,6 +153,7 @@ pub fn view(
       },
       controls(rows, everywhere, device),
       status(device, notice),
+      passkeys,
     ],
   )
 }

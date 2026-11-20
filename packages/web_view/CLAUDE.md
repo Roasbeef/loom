@@ -396,7 +396,16 @@ page keys and nonces, and the relay into the session's gateway.
   `naming` and `named`, and `Msg` gains `NameRead`, `NameSubmitted` and
   `NameAnswered`. `view/your_name` draws the "Your name" region as the account
   panel's first child (a text-node lead, `<loom-rename>`, one submit, keyed by
-  `named`), and `view/signins.view` takes it as its last argument. The submit is
+  `named`), and `view/signins.view` takes it as its second to last argument; its
+  last is the passkeys region (protocol-change/127): `web_view/passkeys` holds the
+  vocabulary (`Passkey`, `Listing`, `Answer`, `Reason`), `Start` gains `passkeys`
+  (`Passkeys(read, remove, add)`, `Some` only for the owner's operating home, and
+  `add`, the registration page's address, only for a fresh one), `Msg` gains
+  `PasskeysRead`, `PasskeyAsked`, `PasskeyConfirmed`, `PasskeyKept` and
+  `PasskeyAnswered` (the first press only asks for a second), and
+  `view/passkeys` draws the region beneath `home.signins_path`. `page` gains
+  `signin_page`, `passkey_page`, their refusals and `signin_asset` and
+  `passkey_asset`, whose scripts are in `packages/web_client/assets`. The submit is
   beneath `home.signins_path`, which the socket now admits for a submit as well as a
   click. On the admin page `grants.Action` gains `Rename(principal, name)`,
   `admin.Model` gains `editing`, `Msg` gains `Editing` and `EditCancelled`, and

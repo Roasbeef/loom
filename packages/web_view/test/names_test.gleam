@@ -71,6 +71,7 @@ fn start(
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self:,
+    passkeys: None,
     visiting: None,
     orchestrators: None,
     executors: [],

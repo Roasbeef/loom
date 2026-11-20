@@ -313,6 +313,7 @@ import web_view/listing
 import web_view/names
 import web_view/orchestrators
 import web_view/page
+import web_view/passkeys.{type Passkey}
 import web_view/placements
 import web_view/projects as feed
 import web_view/relayed
@@ -345,6 +346,7 @@ import web_view/view/inbox as inbox_view
 import web_view/view/inbox_parts
 import web_view/view/new_session
 import web_view/view/notice
+import web_view/view/passkeys as passkeys_view
 import web_view/view/projects as projects_view
 import web_view/view/relayed_session as relayed_view
 import web_view/view/resume.{type Resume}
@@ -647,6 +649,12 @@ pub type Start {
     /// function it is given, from the daemon's own task, as `NameAnswered`'s
     /// message.
     rename_self: Option(fn(String, fn(names.Answer) -> Nil) -> Nil),
+    /// The principal's passkeys (protocol-change/127): the read, the removal and,
+    /// on a fresh home, the address of the registration page. It is `Some` only
+    /// for the owner's operating page, and a page with `None` draws no passkeys
+    /// region and ignores the messages. The daemon checks the page, its ceiling
+    /// and the owner again, whatever this page said.
+    passkeys: Option(Passkeys),
     /// The session of another orchestrator this page was opened to show
     /// (protocol-change/094). It is `Some` only on the relayed session page of
     /// the owner's operating page, which the daemon decides before it starts the
@@ -891,6 +899,26 @@ pub type ActOutcome {
   Failed(words: String)
 }
 
+/// What the daemon hands the owner's operating home to manage passkeys with
+/// (protocol-change/127).
+pub type Passkeys {
+  Passkeys(
+    /// Starts the read of the owner's passkeys, with the page's own credential,
+    /// which the registry authenticates again, and returns at once; the daemon's
+    /// task delivers the listing, dispatched as `PasskeysRead`.
+    read: fn(fn(passkeys.Listing) -> Nil) -> Nil,
+    /// Removes one of the owner's passkeys, named by fingerprint: the daemon
+    /// checks the page, then asks the registry, which finds the passkey among
+    /// the owner's own and no other. It runs in the component's process when a
+    /// press asks, and must not run long.
+    remove: fn(String) -> passkeys.Answer,
+    /// The address of the registration page, which is `Some` only for a page a
+    /// `loom ui` exchange opened. The daemon refuses a registration from any
+    /// other page whatever this says.
+    add: Option(String),
+  )
+}
+
 /// Where a device link stands on the page.
 pub type Link {
   /// No link has been asked for, or the last one was dismissed.
@@ -1098,6 +1126,12 @@ pub opaque type Model {
     link: Link,
     /// What the page last said about a sign-out, in fixed words.
     signin_notice: Option(String),
+    /// The owner's passkeys as the last read gave them.
+    passkeys: List(Passkey),
+    /// The passkey whose "Remove" was pressed once and now waits for "Confirm".
+    passkey_asked: Option(String),
+    /// What the page last said about a passkey, in fixed words.
+    passkey_notice: Option(String),
     /// The principal's display name as the page last knew it: the name it was
     /// started with, then whatever a read or an answer to its own rename gave.
     name: String,
@@ -1665,6 +1699,25 @@ pub type Msg {
   /// The shown link's "Done" was pressed: hide it.
   DeviceDone
 
+  /// A read of the owner's passkeys answered. It is the effect's own message,
+  /// and no handler carries it.
+  PasskeysRead(listing: passkeys.Listing)
+
+  /// A passkey's "Remove" was pressed. It asks nothing: the row then offers
+  /// "Confirm". The fingerprint is the daemon's, fixed when the tree was drawn.
+  PasskeyAsked(fingerprint: String)
+
+  /// A passkey's "Confirm" was pressed: ask the daemon to remove it.
+  PasskeyConfirmed(fingerprint: String)
+
+  /// A passkey's "Cancel" was pressed: keep it.
+  PasskeyKept
+
+  /// The daemon answered a request to remove a passkey. It is the effect's own
+  /// message, and no handler carries it, so a browser cannot put an outcome in
+  /// the page that the daemon did not reach.
+  PasskeyAnswered(answer: passkeys.Answer)
+
   /// A read of the principal's display name answered. It is the effect's own
   /// message, and no handler carries it. `None` is a registry that did not
   /// answer, and leaves the name the page has.
@@ -1860,6 +1913,9 @@ pub fn new(start: Start) -> Model {
     signins: [],
     link: NoLink,
     signin_notice: None,
+    passkeys: [],
+    passkey_asked: None,
+    passkey_notice: None,
     name: start.name,
     naming: names.Ready,
     named: 0,
@@ -3621,6 +3677,54 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
     DeviceDone -> #(Model(..model, link: NoLink), effect.none())
 
+    // The passkeys a read gave replace the page's own, and a read the registry
+    // did not answer leaves them. A pending confirmation for a passkey that is no
+    // longer listed is dropped, so "Confirm" never names a row that is gone.
+    PasskeysRead(listing:) ->
+      case listing {
+        passkeys.Listed(rows:) -> #(listed_passkeys(model, rows), effect.none())
+        passkeys.Unread -> #(model, effect.none())
+      }
+
+    // The first press only asks for a second. A page with no passkey capability
+    // and one that ended ask nothing, as the daemon would refuse.
+    PasskeyAsked(fingerprint:) ->
+      case model.start.passkeys, model.status {
+        Some(_), Connected -> #(
+          Model(..model, passkey_asked: Some(fingerprint), passkey_notice: None),
+          effect.none(),
+        )
+        Some(_), Connecting | Some(_), Ended(_) | None, _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    // The second press asks the daemon, and only for the row that was asked
+    // about: a "Confirm" for any other fingerprint does nothing.
+    PasskeyConfirmed(fingerprint:) ->
+      case model.start.passkeys, model.status, model.passkey_asked {
+        Some(Passkeys(remove:, ..)), Connected, Some(asked)
+          if asked == fingerprint
+        -> #(
+          Model(..model, passkey_asked: None),
+          removing_passkey(fn() { remove(fingerprint) }),
+        )
+        _, _, _ -> #(model, effect.none())
+      }
+    PasskeyKept -> #(Model(..model, passkey_asked: None), effect.none())
+    PasskeyAnswered(answer:) ->
+      case answer {
+        passkeys.Removed -> #(
+          Model(..model, passkey_notice: Some("Removed that passkey.")),
+          reading_passkeys(model),
+        )
+        passkeys.Declined(reason:) -> #(
+          Model(..model, passkey_notice: Some(passkeys.reason_words(reason))),
+          reading_passkeys(model),
+        )
+      }
+
     // A name the read found replaces the page's, and the form is keyed anew so it
     // opens on it. A read the registry did not answer leaves the name.
     NameRead(name: Some(read)) if read != model.name -> #(
@@ -3736,6 +3840,46 @@ fn renaming_self(
 fn reading_signins(model: Model) -> Effect(Msg) {
   use dispatch <- effect.from
   model.start.signins(fn(read) { dispatch(SigninsRead(read)) })
+}
+
+// Asks the daemon to remove a passkey in the component's own process.
+fn removing_passkey(ask: fn() -> passkeys.Answer) -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(PasskeyAnswered(ask()))
+}
+
+/// The page with the passkeys a read gave, at most `passkeys.listed_limit` of
+/// them. A pending confirmation for a passkey that is no longer listed is
+/// dropped, so "Confirm" never names a row that is gone.
+fn listed_passkeys(model: Model, rows: List(Passkey)) -> Model {
+  let rows = list.take(rows, passkeys.listed_limit)
+  let still_listed = fn(fingerprint) {
+    list.any(rows, fn(row) { row.fingerprint == fingerprint })
+  }
+
+  // Only a confirmation whose row survived the read is kept.
+  let asked = case model.passkey_asked {
+    Some(fingerprint) ->
+      case still_listed(fingerprint) {
+        True -> model.passkey_asked
+        False -> None
+      }
+    None -> None
+  }
+
+  Model(..model, passkeys: rows, passkey_asked: asked)
+}
+
+/// Reads the owner's passkeys again, after one was removed.
+fn reading_passkeys(model: Model) -> Effect(Msg) {
+  use dispatch <- effect.from
+
+  // A page with no passkey capability has nothing to read.
+  case model.start.passkeys {
+    Some(Passkeys(read:, ..)) ->
+      read(fn(listing) { dispatch(PasskeysRead(listing)) })
+    None -> Nil
+  }
 }
 
 // Starts the daemon's task that mints an admin ticket and returns at once; the
@@ -5154,6 +5298,13 @@ fn following(model: Model, listing: Listing) -> Effect(Msg) {
           model.start.signins(fn(read) { dispatch(SigninsRead(read)) })
           model.start.who(fn(name) { dispatch(NameRead(name)) })
 
+          // The owner's passkeys are read with the list, when the page has them.
+          case model.start.passkeys {
+            Some(Passkeys(read:, ..)) ->
+              read(fn(listing) { dispatch(PasskeysRead(listing)) })
+            None -> Nil
+          }
+
           // Refresh folders list if available.
           case model.start.folders {
             Some(Folders(recent:, ..)) ->
@@ -5394,6 +5545,7 @@ pub fn view(model: Model) -> Element(Msg) {
         device_offer(model),
         model.signin_notice,
         your_name.view(model.name, name_offer(model)),
+        passkeys_view.view(passkey_offer(model)),
       ),
       switch.view(model.departure),
       switch.switcher(),
@@ -7209,6 +7361,26 @@ fn named_text() -> decode.Decoder(Msg) {
   case fields {
     [#("text", name)] -> decode.success(NameSubmitted(name))
     _ -> decode.failure(NameSubmitted(""), "name form")
+  }
+}
+
+/// What the passkeys region offers: nothing on a page the daemon handed no
+/// capability, and otherwise the owner's list, "Remove" with its second press and,
+/// when the daemon handed an address, "Add a passkey".
+fn passkey_offer(model: Model) -> passkeys_view.Offer(Msg) {
+  case model.start.passkeys {
+    None -> passkeys_view.Hidden
+    Some(Passkeys(add:, ..)) ->
+      passkeys_view.Shown(
+        rows: model.passkeys,
+        now: model.now,
+        add:,
+        ask: PasskeyAsked,
+        confirm: PasskeyConfirmed,
+        cancel: PasskeyKept,
+        asked: model.passkey_asked,
+        notice: model.passkey_notice,
+      )
   }
 }
 

@@ -133,6 +133,7 @@ fn owner(asked: Asked) -> home.Start {
     admin: Some(fn(_) { Nil }),
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    passkeys: None,
     visiting: None,
     orchestrators: None,
     executors: ["exec", "gpu"],
