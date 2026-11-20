@@ -622,6 +622,52 @@ pub fn missing_head_promisor_include_never_runs_transport_test() {
   worktrees.stop(rig.trees)
 }
 
+/// Asserts that an unreadable `core.excludesFile` is refused rather than
+/// treated as an empty ignore list.
+///
+/// Git exits zero and lists the ignored file as untracked, so the only
+/// evidence is the diagnostic on stderr. The helper first checks that the
+/// raw Git output carries `diagnostic`, then checks that the inventory and
+/// the snapshot both refuse and leave no snapshot directory behind.
+fn refuses_unreadable_excludes(
+  git: worktree_git.Git,
+  call: worktree_git.Capture,
+  rig: worktree_rig.Rig,
+  diagnostic: String,
+) -> Nil {
+  let assert Ok(unreadable) =
+    worktree_git.run_capture(
+      git,
+      worktree_git.Capture(..call, arguments: [
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+      ]),
+      30_000,
+    )
+  assert unreadable.code == 0
+  let assert Ok(stderr) = bit_array.to_string(unreadable.stderr)
+  assert string.contains(stderr, diagnostic)
+  let assert Ok(stdout) = bit_array.to_string(unreadable.stdout)
+  assert string.contains(stdout, "private-canary")
+  assert repository_snapshot.inventory(git, call, 30_000)
+    == Error("repository ignore rules could not be evaluated reliably")
+  assert repository_snapshot.capture(
+      git,
+      call,
+      rig.state <> "/repository-snapshots",
+      "unreadable-exclude",
+      git_identity.Identity(Some("Owner"), Some("owner@example.invalid")),
+      120_000,
+    )
+    == Error("repository ignore rules could not be evaluated reliably")
+  assert simplifile.is_directory(
+      rig.state <> "/repository-snapshots/unreadable-exclude",
+    )
+    == Ok(False)
+}
+
 pub fn source_tool_home_excludes_are_honored_and_unreadable_files_refused_test() {
   let rig = worktree_rig.rig("snapshot-tool-home-exclude")
   let scratch = rig.state <> "/discovery"
@@ -710,43 +756,35 @@ pub fn source_tool_home_excludes_are_honored_and_unreadable_files_refused_test()
       "core.excludesFile",
       home <> "/ignore",
     ])
+  // A mode 000 file is unreadable only to a process that cannot override
+  // file permissions. The signoff container runs as root, so the probe is
+  // an actual read and not a uid comparison. Where the read succeeds the
+  // permission case cannot be exercised, and the loop case below still
+  // proves the refusal. A declared SKIP is not available: the census would
+  // fail the root container for an undeclared skip, and a Linux declaration
+  // would go stale on non-root runners.
   let assert Ok(Nil) =
     simplifile.set_permissions_octal(home <> "/ignore", 0o000)
-  let assert Ok(unreadable) =
-    worktree_git.run_capture(
-      git,
-      worktree_git.Capture(..call, arguments: [
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-        "-z",
-      ]),
-      30_000,
-    )
-  assert unreadable.code == 0
-  let assert Ok(stderr) = bit_array.to_string(unreadable.stderr)
-  assert string.contains(stderr, "Permission denied")
-  let assert Ok(stdout) = bit_array.to_string(unreadable.stdout)
-  assert string.contains(stdout, "private-canary")
-  assert repository_snapshot.inventory(git, call, 30_000)
-    == Error("repository ignore rules could not be evaluated reliably")
-  assert repository_snapshot.capture(
-      git,
-      call,
-      rig.state <> "/repository-snapshots",
-      "unreadable-exclude",
-      git_identity.Identity(Some("Owner"), Some("owner@example.invalid")),
-      120_000,
-    )
-    == Error("repository ignore rules could not be evaluated reliably")
-  assert simplifile.is_directory(
-      rig.state <> "/repository-snapshots/unreadable-exclude",
-    )
-    == Ok(False)
+  case simplifile.read(home <> "/ignore") {
+    Error(_) -> refuses_unreadable_excludes(git, call, rig, "Permission denied")
+    Ok(_) -> Nil
+  }
   let assert Ok(Nil) =
     simplifile.set_permissions_octal(home <> "/ignore", 0o600)
   let assert Ok(info) = simplifile.file_info(home <> "/ignore")
   assert simplifile.file_info_permissions_octal(info) == 0o600
+
+  // A symbolic link that points at itself fails to open with ELOOP, which
+  // no process can bypass, root included. Git reports it on stderr the
+  // same way, so this case proves the refusal on every host.
+  let assert Ok(Nil) = simplifile.delete(home <> "/ignore")
+  let assert Ok(Nil) = simplifile.create_symlink("ignore", home <> "/ignore")
+  refuses_unreadable_excludes(
+    git,
+    call,
+    rig,
+    "Too many levels of symbolic links",
+  )
   let assert Ok(Nil) = worktree_git.stop(git)
   worktrees.stop(rig.trees)
 }
