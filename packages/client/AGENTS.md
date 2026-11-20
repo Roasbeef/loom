@@ -1327,6 +1327,33 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   compared with, since `now` is monotonic: a `Remembered` ticket whose login has
   ended is `UnknownTicket` before it makes room; a `Forgotten` one is not held to
   it.
+- `daemon/passkey` (protocol-change/127): the WebAuthn checks as pure functions of
+  bytes, with `kryptos` (a direct dependency of `client`, so `conformance` and
+  `eval` list it in their manifests) for the P-256 key and the ECDSA verify and
+  no `@external`. `challenge_of` reads the challenge out of client data;
+  `verify_assertion` checks `webauthn.get`, the issued challenge, the page's
+  origin byte for byte, the relying party hash, the user-present and
+  user-verified flags, a counter that rose (zero beside zero is accepted) and the
+  ES256 signature over `authData ++ sha256(clientData)`; `verify_registration`
+  does the same for `webauthn.create` with the attested credential id compared
+  and no signature (attestation `none`), and refuses any key that is not 91 bytes
+  of P-256 `SubjectPublicKeyInfo`.
+- `daemon/ui_passkey`: what the router does with a passkey form once the request
+  is checked. `sign_in` spends the challenge (`ui_sessions.answer`, which must be
+  a `SigningIn` one), finds the passkey (`manager.find_passkey`), requires the
+  owner, verifies, records the counter and sets a login (`ui_login.passkey`);
+  `register` spends this principal's `Registering` challenge, verifies, and
+  writes the passkey through `manager.add_passkey`, which re-authenticates the
+  caller as the owner. `may_register` is the router's test of a page: the owner's
+  `Home`, `Operator`, `Fresh`. `server.signin_page` and `signin_submit`,
+  `passkey_page` and `passkey_submit` are the four routes (`ui_http.SigninPage`,
+  `SigninSubmit`, `PasskeyPage`, `PasskeySubmit`); a passkey sign-in opens a
+  `ui_sessions.passkey_origin` (`Resumed`) home and sets the login cookie through
+  `enter_response`. `ui_sessions` holds the challenges (`challenge`, `answer`,
+  five minutes, at most 64, the oldest replaced at the bound). `ui_socket`'s
+  `home_passkeys_capability`, `passkeys_read` and `remove_passkey_for` are the
+  home's side: the capability is the owner's `Operator` home's and carries the
+  registration link only for a `Fresh` one.
 - `daemon/ui_http`: pure checks. `route` also routes the admin page's three
   (`AdminExchange` at `/ui/admin?ticket=`, `AdminPage`, `AdminSocket`) and the
   claim's two (`ClaimPage`, `ClaimSubmit` at `/ui/claim`); `posted_claim` reads

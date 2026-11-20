@@ -71,6 +71,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_http
 import client/daemon/ui_login
 import client/daemon/ui_origin
+import client/daemon/ui_passkey
 import client/daemon/ui_projects
 import client/daemon/ui_relay
 import client/daemon/ui_result
@@ -100,6 +101,7 @@ import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/bytes_tree
+import gleam/dict
 import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -654,6 +656,22 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
           ui_http.secured_for(claim_page(request), origin, page.OwnForms)
         ui_http.ClaimSubmit -> claim_submit(config, ui, request, origin)
 
+        // The passkey sign-in page (protocol-change/127) is a document that holds
+        // a form, served under the same policy, and carries a challenge. The
+        // registration page and its post are the owner's fresh home's; each
+        // handler secures its own answers, since the page that draws the form
+        // needs the policy that lets it post and a refusal does not.
+        ui_http.SigninPage ->
+          ui_http.secured_for(
+            signin_page(ui, request, origin),
+            origin,
+            page.OwnForms,
+          )
+        ui_http.PasskeyPage(key) ->
+          passkey_page(config, ui, request, origin, key)
+        ui_http.PasskeySubmit(key) ->
+          passkey_submit(config, ui, request, origin, key)
+
         // The three ticket exchanges share one path through `offered_exchange`
         // and `confirmed_exchange`, which secure their own answers because the
         // confirmation is a document that holds a form.
@@ -1183,6 +1201,9 @@ fn web_document(
     | ui_http.LoginPage(..)
     | ui_http.ClaimPage
     | ui_http.ClaimSubmit
+    | ui_http.SigninPage
+    | ui_http.PasskeyPage(..)
+    | ui_http.PasskeySubmit(..)
     | ui_http.Exchange(..)
     | ui_http.HomeExchange(..)
     | ui_http.AdminExchange(..)
@@ -1320,6 +1341,7 @@ fn web_document(
     // A browser's visit to its bookmark: the verification, and then a home page
     // the login mints (protocol-change/065, PR 8).
     ui_http.LoginResume(key) -> login_resume(config, ui, request, origin, key)
+    ui_http.SigninSubmit -> signin_submit(config, ui, request, origin)
   }
 }
 
@@ -1690,6 +1712,322 @@ fn resumed_page(
 // revoked or unknown row.
 fn document_refused() {
   document(401, "text/html; charset=utf-8", page.login_refused())
+}
+
+/// The passkey sign-in page (protocol-change/127), for a person who opens the
+/// address with no login. It is a navigation from outside any page or from this
+/// origin, as the resume page is, and it holds a challenge the daemon issued for
+/// this visit and the relying party id of the origin it was admitted under, and
+/// nothing the request said. A table that cannot issue is a daemon that is not
+/// serving.
+fn signin_page(ui: Ui(instance), request, origin: ui_http.PageOrigin) {
+  // A challenge is issued only to a navigation, so no other page can fill the
+  // table by fetching the address.
+  case ui_http.navigation_allowed(request) {
+    False -> plain(403, "forbidden navigation")
+    True ->
+      case ui_sessions.challenge(ui.sessions, ui_sessions.SigningIn) {
+        Error(Nil) -> plain(503, "daemon not ready")
+        Ok(challenge) ->
+          document(
+            200,
+            "text/html; charset=utf-8",
+            page.signin_page(challenge, ui_http.rp_id(origin)),
+          )
+      }
+  }
+}
+
+/// The passkey sign-in, a `POST` from the sign-in page (protocol-change/127). The
+/// checks run in the order the resume's do: the host was checked by the router,
+/// then this origin's own page as the sender, the form's declared size and type,
+/// a control-class parser permit, the body, and the assertion itself, whose
+/// challenge is spent before anything else is looked up. Every refusal of the
+/// assertion is the same `401` with a fixed document that echoes nothing.
+fn signin_submit(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+) {
+  case
+    ui_http.same_origin_post(request),
+    ui_http.form_declared_within(request, ui_http.max_passkey_form_bytes)
+  {
+    False, _ -> plain(403, "forbidden sender")
+    True, False -> plain(400, "bad request")
+    True, True ->
+      case
+        upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
+          root.acquire(config.daemon, root.Control, within: 1000)
+        })
+      {
+        Error(reason) -> {
+          upgrade_log.refused(upgrade_log.Page, "acquire", reason)
+          plain(503, "daemon not ready")
+        }
+        Ok(permit) -> {
+          let answer = signed_in(config, ui, request, origin)
+          root.release(config.daemon, permit)
+          answer
+        }
+      }
+  }
+}
+
+/// Reads the sign-in's body and answers with the home it opened or the fixed
+/// refusal.
+fn signed_in(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+) {
+  case mist.read_body(request, max_body_limit: ui_http.max_passkey_form_bytes) {
+    Error(_) -> plain(400, "bad request")
+    Ok(body) ->
+      case
+        ui_http.posted_fields(body.body, ["id", "cdj", "ad", "sig"], []),
+        ready(config, upgrade_log.Page)
+      {
+        Error(Nil), _ -> plain(400, "bad request")
+        Ok(_), Error(_) -> plain(503, "daemon not ready")
+        Ok(fields), Ok(state) ->
+          case
+            ui_passkey.sign_in(
+              ui.root_key,
+              ui.sessions,
+              state.registry,
+              origin,
+              fields,
+              bootstrap.system_time_ms(),
+            )
+          {
+            Error(Nil) ->
+              document(401, "text/html; charset=utf-8", page.signin_refused())
+            Ok(opened) -> passkey_home(ui, origin, opened)
+          }
+      }
+  }
+}
+
+/// What a passkey that verified opens: a `Home` page of the principal at
+/// `Operator` ceiling and with the origin the sign-in is ruled to have
+/// (`ui_sessions.passkey_origin`), opened by the login the sign-in set and
+/// carried by the page so the home marks "this browser". The ticket is minted and
+/// redeemed in this one request and is never seen by the browser. The response
+/// is the exchange page that keeps the page's nonce and the login's, as the
+/// resume's does.
+fn passkey_home(
+  ui: Ui(instance),
+  origin: ui_http.PageOrigin,
+  opened: ui_passkey.Opened,
+) {
+  let grant =
+    ui_sessions.Grant(
+      scope: ui_sessions.Home,
+      credential: opened.minted.digest,
+      principal: opened.principal.id,
+      ceiling: access.Operator,
+      reach: ui_sessions.Workspace,
+      origin: ui_sessions.passkey_origin,
+      remember: ui_sessions.Forgotten,
+    )
+  let redeemed = {
+    use issued <- result.try(
+      ui_sessions.mint_resumed(ui.sessions, grant, opened.minted.issuer)
+      |> result.replace_error(Nil),
+    )
+    ui_sessions.redeem(ui.sessions, issued.ticket, ui_sessions.HomeExchange)
+    |> result.replace_error(Nil)
+  }
+
+  // Branch on redemption success to hand the browser its page and its login.
+  case redeemed {
+    Error(Nil) -> plain(503, "daemon not ready")
+    Ok(redeemed) ->
+      enter_response(
+        origin,
+        redeemed,
+        page.home_path(redeemed.key),
+        Ok(option.Some(opened.minted)),
+      )
+  }
+}
+
+/// The registration page of an owner's fresh home (protocol-change/127): a
+/// navigation, from a page whose cookie is under `key` and which may register
+/// (`ui_passkey.may_register`). It holds a challenge for that principal, the
+/// relying party id, the principal's opaque handle and display name, and the
+/// page's key. A page that may not register is refused with one fixed `403`.
+fn passkey_page(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key: String,
+) {
+  // Only a navigation is answered with a page that holds a challenge, so no
+  // other page can fill the challenge table by fetching the address.
+  let drawn = case ui_http.navigation_allowed(request) {
+    False -> Error(Nil)
+    True -> {
+      use #(_state, _page, principal) <- result.try(registering(
+        config,
+        ui,
+        request,
+        origin,
+        key,
+      ))
+      use challenge <- result.map(ui_sessions.challenge(
+        ui.sessions,
+        ui_sessions.Registering(principal.id),
+      ))
+      document(
+        200,
+        "text/html; charset=utf-8",
+        page.passkey_page(
+          key,
+          challenge,
+          ui_http.rp_id(origin),
+          ui_passkey.user_handle(principal.id),
+          principal.display_name,
+        ),
+      )
+    }
+  }
+
+  // The page that draws the form needs the policy that lets it post; a refusal
+  // draws none.
+  case drawn {
+    Ok(drawn) -> ui_http.secured_for(drawn, origin, page.OwnForms)
+    Error(Nil) -> ui_http.secured(passkey_refusal(), origin)
+  }
+}
+
+/// The registration's `POST`: the sender, the declared size and type, the body,
+/// the page's standing and its nonce, and then the ceremony. A registration that
+/// verified moves the tab back to the home with a `303`; every refusal is one
+/// fixed `403` that echoes nothing.
+fn passkey_submit(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key: String,
+) {
+  // The sender and the declared form come before the body is read, as the
+  // resume's do, so an oversized or foreign post is refused unread.
+  let answer = case
+    ui_http.same_origin_post(request),
+    ui_http.form_declared_within(request, ui_http.max_passkey_form_bytes)
+  {
+    False, _ -> passkey_refusal()
+    True, False -> plain(400, "bad request")
+    True, True -> registration_body(config, ui, request, origin, key)
+  }
+
+  ui_http.secured(answer, origin)
+}
+
+/// Reads the registration's body, which is at most `max_passkey_form_bytes`, and
+/// hands the five encoded fields and the label to `registered`.
+fn registration_body(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key: String,
+) {
+  // A body that cannot be read, or is not exactly the form's fields, is a
+  // malformed request and not a refusal of the passkey.
+  case mist.read_body(request, max_body_limit: ui_http.max_passkey_form_bytes) {
+    Error(_) -> plain(400, "bad request")
+    Ok(body) ->
+      case
+        ui_http.posted_fields(body.body, ["nonce", "id", "cdj", "ad", "pk"], [
+          "label",
+        ])
+      {
+        Error(Nil) -> plain(400, "bad request")
+        Ok(fields) -> registered(config, ui, request, origin, key, fields)
+      }
+  }
+}
+
+/// The registration once its form is parsed: the page is the owner's fresh
+/// operating home and the nonce is the page's, and then `ui_passkey.register`.
+fn registered(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key: String,
+  fields,
+) {
+  let nonce = dict.get(fields, "nonce") |> result.unwrap("")
+
+  // The page's standing, then its nonce, then the ceremony: each refusal is the
+  // same fixed document, and a registration that verified returns to the home.
+  case registering(config, ui, request, origin, key) {
+    Error(Nil) -> passkey_refusal()
+    Ok(#(state, page, principal)) ->
+      case ui_sessions.admits(page, nonce) {
+        False -> passkey_refusal()
+        True -> {
+          let written =
+            ui_passkey.register(
+              ui.sessions,
+              state.registry,
+              origin,
+              state.epoch,
+              ui_sessions.grant(page).credential,
+              principal,
+              fields,
+              bootstrap.system_time_ms(),
+            )
+          registered_answer(written, key)
+        }
+      }
+  }
+}
+
+/// The answer to a registration: back to the home it was made from, or the fixed
+/// refusal.
+fn registered_answer(written: Result(Nil, Nil), key: String) {
+  // A `303` makes the browser fetch the home with a `GET`, whatever was posted.
+  case written {
+    Error(Nil) -> passkey_refusal()
+    Ok(Nil) ->
+      response.new(303)
+      |> response.set_header("location", page.home_path(key))
+      |> response.set_body(mist.Bytes(bytes_tree.new()))
+  }
+}
+
+/// The page and principal behind a registration request: the cookie names a live
+/// home under `key` whose credential still authenticates, and the page may
+/// register (`ui_passkey.may_register`).
+fn registering(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key: String,
+) -> Result(#(root.Ready(instance), ui_sessions.Page, access.Principal), Nil) {
+  case home_grant(config, ui, request, origin, key) {
+    Error(_) -> Error(Nil)
+    Ok(#(state, page, _cookie, principal)) ->
+      case ui_passkey.may_register(principal, ui_sessions.grant(page)) {
+        True -> Ok(#(state, page, principal))
+        False -> Error(Nil)
+      }
+  }
+}
+
+/// The one fixed answer to a registration that is refused.
+fn passkey_refusal() {
+  document(403, "text/html; charset=utf-8", page.passkey_refused())
 }
 
 // The fixed claim form, for a person who opens the address. It is a navigation
