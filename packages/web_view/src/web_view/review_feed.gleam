@@ -16,10 +16,13 @@
 //// `of_board` → `of_file` → `hunks_of` → `bounded_hunk` → `fit` → `encode`
 ////
 //// 1. `of_board` keeps the files whose path is workspace-relative, reads each
-////    with `of_file`, orders them with `order`, and totals the stat.
-//// 2. `of_file` reads the patch into lines (`session_view/diff_view`), counts
-////    what was added and removed, and splits the lines into hunks with
-////    `hunks_of`.
+////    with `of_file`, adds the files only the commits touched
+////    (`web_view/committed_patch`, through `of_entry`), orders them with
+////    `order`, and totals the stat.
+//// 2. `of_file` reads the patch into lines (`session_view/diff_view`), puts the
+////    commits' lines for the same path after them, counts what was added and
+////    removed, and splits the lines into hunks with `hunks_of`. `build` is the
+////    one place a file is made, for both kinds.
 //// 3. `bounded_hunk` cuts a hunk to the line and byte bounds below, and says
 ////    how many it cut.
 //// 4. `fit` drops files from the end until the encoded review is within the
@@ -61,6 +64,7 @@ import gleam/result
 import gleam/string
 import session_view/diff_view
 import session_view/worktree_view
+import web_view/committed_patch
 import web_view/utf8_window
 
 /// The most files a review holds. It is the observation's own bound, so the
@@ -216,7 +220,10 @@ pub type Review {
 }
 
 /// A review of a board: its files read into hunks, ordered, counted and fitted
-/// to `max_bytes`.
+/// to `max_bytes`. The commits the session made are part of it: each file they
+/// touched is a file of the review, and a file that is also changed in the
+/// working tree shows the working tree's hunks above the committed ones
+/// (`web_view/committed_patch`).
 ///
 /// ## Examples
 ///
@@ -224,39 +231,85 @@ pub type Review {
 /// // review_feed.of_board(board).stat
 /// ```
 pub fn of_board(board: worktree_view.Board) -> Review {
+  let committed = committed_patch.parse(board.committed.patch)
+
   // The module's own file bound holds for any board, whatever decoded it.
   let #(shown, past) = list.split(board.files, max_files)
   let #(kept, foreign) =
     list.partition(shown, fn(file) { workspace_relative(file.path) })
-  let files = list.map(kept, of_file) |> order
+  let working =
+    list.map(kept, fn(file) {
+      of_file(file, committed_lines(committed, file.path))
+    })
+
+  // A file only the commits touched follows the working tree's.
+  let kept_paths = list.map(kept, fn(file) { file.path })
+  let #(own, strange) =
+    list.filter(committed.entries, fn(entry) {
+      !list.contains(kept_paths, entry.path)
+    })
+    |> list.partition(fn(entry) { workspace_relative(entry.path) })
+  let only =
+    list.map(own, fn(entry) {
+      of_entry(entry, board.committed.extent, committed.last)
+    })
+
+  // The files past `max_files` after the commits' are added are not carried.
+  let #(carried, over) = list.split(list.append(working, only), max_files)
+  let files = order(carried)
   let stat =
     Stat(
-      files: board.total,
+      files: board.total + list.length(own),
       added: list.fold(files, 0, fn(sum, file) { sum + file.added }),
       removed: list.fold(files, 0, fn(sum, file) { sum + file.removed }),
     )
 
-  // The observation's own omissions, the files past `max_files` and the
-  // foreign paths are files read and not carried.
-  let omitted = board.omitted + list.length(past) + list.length(foreign)
+  // The observation's own omissions, the files past `max_files`, the foreign
+  // paths and the sections whose path could not be read are files read and not
+  // carried.
+  let omitted =
+    board.omitted
+    + list.length(past)
+    + list.length(foreign)
+    + list.length(over)
+    + list.length(strange)
+    + committed.skipped
   fit(Review(
     observed_at_ms: board.observed_at_ms,
     repository: repository_of(board.repository),
     stat:,
     files:,
     omitted:,
-    extent: board_extent(board.extent, omitted, files),
+    extent: board_extent(board.extent, board.committed.extent, omitted, files),
   ))
+}
+
+/// The lines the commits changed in one path, or none.
+fn committed_lines(
+  committed: committed_patch.Parsed,
+  path: String,
+) -> List(diff_view.Line) {
+  case list.find(committed.entries, fn(entry) { entry.path == path }) {
+    Ok(entry) -> entry.lines
+    Error(Nil) -> []
+  }
 }
 
 /// The review's extent: cut when the observation says it was, when any file
 /// was read and not carried, or when any carried file was cut.
-fn board_extent(observed: String, omitted: Int, files: List(File)) -> Extent {
+fn board_extent(
+  observed: String,
+  committed: String,
+  omitted: Int,
+  files: List(File),
+) -> Extent {
   let any_cut = list.any(files, fn(file) { file.extent == Cut })
 
-  // The observation's word is `limited` or `complete`; either way a file left
-  // out or cut is a cut.
-  case observed == "limited" || omitted > 0 || any_cut {
+  // The observation's word is `limited` or `complete`, for the working tree and
+  // for the commits; either way a file left out or cut is a cut.
+  case
+    observed == "limited" || committed == "limited" || omitted > 0 || any_cut
+  {
     True -> Cut
     False -> Whole
   }
@@ -395,23 +448,78 @@ pub fn decode(value: JsonValue) -> Result(Review, Nil) {
 
 /// One observed file, read into a reviewable one. The patch is read whole,
 /// because the observation already bounded it, and cut afterwards by this
-/// module's own bounds.
-fn of_file(file: worktree_view.File) -> File {
-  let lines = diff_view.of_lines(string.split(file.patch, "\n"))
-  let content = content_of(file.kind)
+/// module's own bounds. `committed` is what the commits changed in the same
+/// path, drawn after the working tree's hunks.
+fn of_file(file: worktree_view.File, committed: List(diff_view.Line)) -> File {
+  let working = diff_view.of_lines(string.split(file.patch, "\n"))
 
+  // The commits' text is shown even when the working tree's change to the file
+  // has none to show, such as a mode change on a file the commits edited.
+  let content = case content_of(file.kind), committed {
+    Text, _ -> Text
+    other, [] -> other
+    _, [_, ..] -> Text
+  }
+
+  build(
+    file.path,
+    change_of(file.index_status, file.worktree_status),
+    content,
+    list.append(working, committed),
+    file.extent,
+  )
+}
+
+/// A file the commits touched and the working tree did not, as the review's.
+/// When the commit stream was cut, the file its last section named is cut with
+/// it, since that section may have ended in the middle of a hunk.
+fn of_entry(
+  entry: committed_patch.Entry,
+  extent: String,
+  last: Option(String),
+) -> File {
+  build(
+    entry.path,
+    case entry.status {
+      committed_patch.Created -> Added
+      committed_patch.Removed -> Deleted
+      committed_patch.Changed -> Modified
+    },
+    case entry.body {
+      committed_patch.TextBody -> Text
+      committed_patch.BinaryBody -> Binary
+      committed_patch.ModeBody -> MetadataOnly
+    },
+    entry.lines,
+    case extent == "limited" && last == Some(entry.path) {
+      True -> "limited"
+      False -> "complete"
+    },
+  )
+}
+
+/// A file of the review from its parts: the lines are split into hunks, bounded
+/// and counted, and the cuts are carried.
+fn build(
+  path: String,
+  change: Change,
+  content: Content,
+  lines: List(diff_view.Line),
+  observed: String,
+) -> File {
   // A text file shows its hunks; every other kind is named and shows none.
   let #(hunks, hunks_omitted) = shown_hunks(content, hunks_of(lines))
+
   File(
-    path: file.path,
-    change: change_of(file.index_status, file.worktree_status),
-    section: section_of(file.path),
+    path:,
+    change:,
+    section: section_of(path),
     content:,
     added: count_kind(lines, diff_view.Added),
     removed: count_kind(lines, diff_view.Removed),
     hunks:,
     hunks_omitted:,
-    extent: file_extent(file.extent, hunks, hunks_omitted),
+    extent: file_extent(observed, hunks, hunks_omitted),
   )
 }
 

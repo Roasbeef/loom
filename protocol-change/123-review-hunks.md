@@ -287,3 +287,96 @@ carry a repository's words, so it is never forwarded.
 1. **Committed work.** Whether the review should wait for a per-file committed
    observation, or ship with the gap named, before the pane is the landing
    page.
+
+## Addendum: committed work in the review (2026-11-19)
+
+**Status**: IMPLEMENTED with the wiring of the final inbox mockup's data. It
+amends the statement under "What it costs" that committed work is not shown,
+and decision 1 below, which asked whether the review should wait for a per-file
+committed observation. It changes no command, frame, field or `loom.toml` key:
+the daemon's reply is the same shape, with more files in it.
+
+### The problem
+
+A session that committed everything it did showed an empty review, because
+`worktree_view.Board.committed.patch` is one string and `review_feed.of_board`
+read only the working tree. The final design's review lists the files the
+session changed, and an agent that commits as it goes has changed them in
+commits.
+
+### What was considered
+
+- **A per-file committed observation, as decision 1 asked.** It would split the
+  stream where it is made, in `client/worktree_diff`, and add a field to the
+  board. It changes a frozen observation and its wire shape for a gain the
+  reader can have without either: the stream already carries `diff --git`
+  sections, one for each file in each commit, because the observation runs
+  `git log -p` with renames and textconv off.
+- **Reading the stream in the page.** The page cannot read a worktree in the
+  first place, and the review is built in the daemon, so the page would see
+  nothing new.
+- **Parsing the stream in `review_feed.of_board`.** This is the decision. The
+  board is already in hand, no field is added, and the page and a control client
+  decode the same review as before.
+
+### The decision
+
+`web_view/committed_patch` reads the stream into files, and `review_feed.of_board`
+merges them into the review.
+
+- **The reading.** A `commit <hash>` line and the subject after it are dropped
+  as a pair. A `diff --git a/X b/X` line starts a section, and its path is the
+  one both sides name; the two sides are equal because renames are off, so the
+  line's length says where the path ends even when it holds a space. A quoted
+  name has no path, and its section is counted in the review's `omitted`. A
+  hunk is read by the counts its header gives, so a line inside a hunk is a hunk
+  line whatever it says, and a stream cut inside a hunk ends there with the
+  lines it has. The sections of one path, across commits, are one file, with the
+  oldest commit's lines first.
+- **The merge.** A file in both the working tree and the commits shows the
+  working tree's hunks first and the committed ones after them, under the
+  bounds that hold for any file: twelve hunks, eighty lines a hunk, 400 bytes a
+  line. Its counts are the sum of both. A file only the commits touched follows
+  the working tree's files and is created, removed or changed by what its
+  oldest and newest commits did to it, binary if any section said so, and a mode
+  change only if every section was one. The section order is unchanged: source,
+  then tests, then docs, and by path inside each. The files together still stop
+  at twenty-four, and a file past that is counted in `omitted`.
+- **The stat.** `files` counts the observation's files and the files only the
+  commits touched. `added` and `removed` count the lines the review shows.
+- **A cut stream.** When the observation says the commit patch is limited, the
+  review's extent is `Cut`, and the file the stream ended in is cut too, because
+  its last hunk may be short. The stream is 4096 bytes at most, so a session
+  with many commits shows what fits, newest first.
+
+The pane no longer says that committed work is not shown.
+
+### What it costs
+
+- **A few KiB more work for each review.** The stream is at most 4096 bytes and
+  the reader makes one pass over its lines. Merging is quadratic in the number of
+  sections, which that bound keeps to a few dozen.
+- **A subject that reads like a patch.** A commit subject is text the model
+  wrote. The pair rule and the counted hunks mean it is never read as a section
+  or a hunk line, and the test that pins this is below. Nothing outside a header,
+  a hunk or that pair is read.
+- **Order within a path is the commits'.** A file changed in three commits shows
+  three groups of hunks, each numbered as its own commit saw the file, not as
+  the file stands. A reader who wants the file as it stands opens the session.
+
+### Verification
+
+`web_view/committed_patch_test` reads a two-commit stream (files joined by path,
+a file created then changed, a file removed), a subject that reads like a diff
+header, a binary file and a mode change, a path with a space and a quoted path
+that is skipped, and a stream cut inside a hunk. It adds three qcheck properties
+on the fixed seed `20_261_124`: a stream of up to six commits touching up to ten
+paths with up to three hunks each reads back to exactly the counts that made it;
+a review built from such a stream holds every bound (files, hunks, lines, bytes a
+line, and the encoded size); and text drawn from patch-like lines in any order
+never breaks the reader or yields more lines than the stream held. It also checks
+that a file in both the working tree and the commits shows the working hunk
+first. The `review_feed_test` suite is unchanged and passes.
+
+Decision 1 is settled by this addendum: the review ships with committed work
+read from the existing stream.

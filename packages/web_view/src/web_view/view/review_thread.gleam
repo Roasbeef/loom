@@ -241,10 +241,9 @@ fn stat(review: Review, offer: Offer(message)) -> Element(message) {
     case review.extent {
       review_feed.Cut ->
         notice(
-          "Part of this diff was cut to fit, so its counts are lower bounds. Committed work is not shown.",
+          "Part of this diff was cut to fit, so its counts are lower bounds.",
         )
-      review_feed.Whole ->
-        notice("Committed work is not shown, only the files changed now.")
+      review_feed.Whole -> element.none()
     },
   ])
 }
