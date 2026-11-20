@@ -2558,3 +2558,15 @@ The daemon's half is tested with keys made in the tests. What a phone sends, and
 whether an iOS or Android browser offers `getPublicKey`, needs a phone: register
 from a fresh home at a listed `https` origin, sign out, and sign in again at
 `/ui/signin`. The registration page says when a browser cannot hand over the key.
+
+### Passkeys outlive logins
+
+A passkey is a row keyed by its principal, not a login, so nothing that ends
+logins ends a passkey: "Sign out everywhere", deleting the root key (which
+revokes every login at the next start, `ui_login.root_key`) and rotating the
+owner's credential all leave the table as it was. A passkey must be removed by
+hand, and the account panel's Passkeys list is where the owner checks for a key
+they do not recognise. Removing a passkey likewise does not end the logins it
+signed in; the notice after a removal says so, and those browsers are signed out
+from the Sign-ins list. Whether deleting the root key should also clear the table
+is an open question in `protocol-change/127-passkey-sign-in.md`.

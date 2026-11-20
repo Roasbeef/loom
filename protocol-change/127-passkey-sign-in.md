@@ -238,3 +238,21 @@ bypassed, or a passkey synced to a compromised account, opens no more than a
 stolen bookmark does. The ruling is one constant and this paragraph; to flip it,
 change `passkey_origin` to `Fresh` and amend the paragraph and 065's rule that
 only a `loom ui` exchange mints a fresh home.
+
+## Passkeys outlive logins
+
+A passkey is a row keyed by its principal, not a login. "Sign out everywhere",
+deleting the root key (which revokes every login at the next start) and rotating
+the owner's credential do not touch it, so a passkey must be removed by hand. The
+account panel's Passkeys list is where the owner checks for a key they do not
+recognise. Removing a passkey does not end the logins it signed in: those
+browsers stay signed in until they are signed out from the Sign-ins list, and the
+notice after a removal says so. This is deliberate. A login is the thirty-day
+credential a sign-in earned, and ending it with its passkey would need the login
+row to name the passkey, which it does not.
+
+## Open questions
+
+- Should deleting the root key, which revokes every login, also clear
+  `access_passkeys`? Today it does not, so a lost root key leaves every passkey
+  able to sign in again. The owner decides; the behaviour is left as it is.
