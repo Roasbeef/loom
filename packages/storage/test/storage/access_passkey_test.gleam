@@ -187,3 +187,29 @@ pub fn a_passkey_row_that_does_not_decode_is_not_a_passkey_test() {
   assert result.is_error(access.passkeys(store, owner.id))
   assert catalogue.close(store) == Ok(Nil)
 }
+
+// Two assertions verified against one stored counter cannot both record: the
+// write applies the counter rule again, in its own transaction.
+pub fn an_out_of_order_counter_write_is_refused_test() {
+  let #(_file, store, owner, _alice) = fixture("counter-order")
+  assert access.add_passkey(store, owner.id, id("A"), key(1), 0, "One", 100)
+    == Ok(Nil)
+  assert access.passkey_used(store, id("A"), 5, 200) == Ok(Nil)
+
+  // A lower, an equal and a zero counter are refused and write nothing.
+  assert access.passkey_used(store, id("A"), 4, 300)
+    == Error(catalogue.Conflict)
+  assert access.passkey_used(store, id("A"), 5, 300)
+    == Error(catalogue.Conflict)
+  assert access.passkey_used(store, id("A"), 0, 300)
+    == Error(catalogue.Conflict)
+  let assert Ok(row) = access.passkey(store, id("A")) as "the passkey exists"
+  assert row.sign_count == 5
+  assert row.last_used_ms == Some(200)
+
+  // A counter that never counts stays zero and is accepted.
+  assert access.add_passkey(store, owner.id, id("B"), key(1), 0, "Two", 100)
+    == Ok(Nil)
+  assert access.passkey_used(store, id("B"), 0, 300) == Ok(Nil)
+  assert catalogue.close(store) == Ok(Nil)
+}

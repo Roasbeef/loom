@@ -2096,7 +2096,11 @@ pub fn passkeys(
 }
 
 /// Records that a passkey signed a browser in: the counter the assertion
-/// reported and the instant. An unknown credential id is `Missing`.
+/// reported and the instant. An unknown credential id is `Missing`. The counter
+/// rule is applied again against the stored row in the same transaction as the
+/// write, so two assertions verified against one stored counter cannot both
+/// record: the one that does not satisfy the rule (both counters zero, or the new
+/// one greater) is `Conflict` and writes nothing.
 ///
 /// ## Examples
 ///
@@ -2112,7 +2116,8 @@ pub fn passkey_used(
 ) -> Result(Nil, Error) {
   use Nil <- result.try(passkey_count_shape(sign_count))
   catalogue.atomic(store, fn() {
-    use _found <- result.try(passkey(store, credential_id))
+    use found <- result.try(passkey(store, credential_id))
+    use Nil <- result.try(passkey_counter_rises(found.sign_count, sign_count))
     catalogue.statement(
       store,
       sql.use_access_passkey(sign_count, Some(now_ms), credential_id),
@@ -2184,6 +2189,16 @@ fn passkey_id_shape(value: String) -> Result(Nil, Error) {
   {
     True -> Ok(Nil)
     False -> Error(Invalid("a credential id is 16-512 base64url characters"))
+  }
+}
+
+/// The counter rule of a sign-in: zero beside zero is an authenticator that does
+/// not count, and any other pair must have gone up.
+fn passkey_counter_rises(stored: Int, reported: Int) -> Result(Nil, Error) {
+  // A counter that stayed or fell says another copy of the credential signed.
+  case stored == 0 && reported == 0 || reported > stored {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
   }
 }
 
