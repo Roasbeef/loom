@@ -200,6 +200,44 @@ and corruption refusal. Raw artifacts and the validator are in this tree's
 `.notes/profiles/2026-11-04/`. That profiling round made no production or implementation
 change. The older sections retain their historical workload/build limits.
 
+## Distributed runtime acceptance: where #1137 stands (2026-11-20)
+
+All four exit criteria have now been driven on two machines (a laptop and a
+Linux box over a DERP link of about 110 ms) at `4850c2274`, with real models and
+keyless executors. The [record](review/distributed-1137.md), section "Two-machine
+drive", has the numbers. Earlier claims in this file that every criterion had
+run on loopback only, or that two real machines were still to do, are out of
+date.
+
+- **Passed:** criterion 2 (move; the box needs an `[orchestrators.laptop]`
+  row), criterion 3 (eight children on eight executors, 106 s, 103 tests OK,
+  on run 2 after one prompt sentence naming `context: my_workspace`), and
+  criterion 4 (page parity; a held page reconnected 6 s after a box restart).
+- **Passed only as a stand-in:** criterion 1. The real lid close did not
+  overlap the child, so the laptop daemon was stopped for 10 min 19 s while a
+  child kept committing on the box; the parent then joined, merged and pushed.
+  A real lid close with a child running is not shown, so criterion 1 is not
+  ticked.
+- **Next work is the defects the drive found**, none fixed: `loom sessions move`
+  exits 0 on a refusal; provisioned plans omit `[orchestrators.<source>]` and
+  `[spawners.<name>.top_level]`; the relayed page cannot open a moved session;
+  a seeded child's snapshot commit carries the parent's untracked
+  `__pycache__`; a `--no-remember` box page navigated by hand says "This page
+  has ended" (cause unknown); a model that omits `context` gets unseeded
+  children (cause unverified).
+- **Landed or landing:** `loom vm up --workspace-mode shared|worktree` (#1299,
+  merged) lets a guest take worktree mode so a seeded spawn fits; it is opt-in
+  and the default stays shared, with an addendum in ADR-022. Four web fixes for
+  ended pages, outage banners, per-tab unavailable panes and the composer
+  draft across a reconnect are landing in #1300.
+- **Deferred:** phase 1 of
+  protocol-change/118 (chunked move transfer, draft PR #1297, not on main). Review on 2026-11-19 found three
+  correctness holes and no exit criterion depends on transfer speed; the slow
+  case is about the top 1 percent of session files on a link under about
+  4 Mbit/s. The timed two-machine move above was the measurement it waited for.
+- **Still blocked on the owner:** criterion 3 on a pool of untrusted microVM
+  guests (#85).
+
 ## TLS launch preflight (issue #1137)
 
 The owner approved this slice for code and isolated tests, not a live upgrade.
@@ -211,8 +249,8 @@ installed-update and full-gate evidence. At `074b22c6c`, both affected shards,
 raw hosted checks, strict skip censuses and Linux signoff passed. The current
 integration also includes merged #1148; that combined head requires fresh
 validation before merge. No live upgrade is authorized.
-Repository handoff, isolated child custody, movement, gateway, page relay and
-fleet work remain open under #1137.
+Repository handoff, child custody, movement and page relay have since been
+driven on two machines; the section above says what remains open under #1137.
 
 ## Owned memory sessions (PR #1171)
 
@@ -595,8 +633,9 @@ issues. Linux hosted gates passed; local census and macOS advisory results
 remain unresolved, with exact receipts on PR #1143. The owner selected an
 always-on trusted brain or gateway for model
 access, with remote executors remaining keyless. Repository handoff, per-spawn
-workspace custody, movement and full page relay remain open. The full page relay
-(#1135) is proposed in [protocol-change/108](../protocol-change/108-live-session-relay.md).
+workspace custody, movement and the full page relay (#1135,
+[protocol-change/108](../protocol-change/108-live-session-relay.md)) were open
+when this slice landed; the two-machine drive above has since exercised them.
 
 The next slice makes distributed observations honest: remote refusals reach the
 card, post-dispatch relay uncertainty survives later failures, and failed reads
