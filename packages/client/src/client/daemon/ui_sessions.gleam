@@ -281,6 +281,18 @@ pub type Origin {
   Resumed
 }
 
+/// The origin of the home a passkey sign-in opens (protocol-change/127). It is
+/// `Resumed`, which is the bookmark's, so a passkey opens a page that lists and
+/// opens sessions and cannot start the admin page or make a device link; those
+/// still need a `loom ui` exchange.
+///
+/// This is a provisional ruling. A user-verified assertion is stronger evidence
+/// of the owner than a bookmark is, and the owner may judge it fresh enough to
+/// open the admin page and make a device link. Flipping the ruling is this one
+/// constant and the paragraph of 127 that records it; every other site reads the
+/// origin from the grant it was handed.
+pub const passkey_origin = Resumed
+
 /// Whether exchanging a ticket sets a browser login as well as the page.
 pub type Remember {
   /// The exchange sets the login cookie and delivers the login nonce: a `loom

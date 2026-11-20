@@ -219,3 +219,22 @@ the one `[daemon] ui_origins` already lists.
   cookie, the login row is written, and the sign-ins list shows it.
 - The account panel lists, offers Add only on a fresh owner home, and removes only
   after the second press.
+
+## Provisional ruling: a passkey sign-in opens a resumed home
+
+A home that a passkey signs in is `Resumed`, the origin the bookmark gives, and
+not `Fresh` (`ui_sessions.passkey_origin`). It lists and opens sessions, and it
+can list and remove the owner's passkeys and sign browsers out. It cannot start the
+admin page, make a device link or register a passkey, which need a `loom ui`
+exchange in the last eight hours.
+
+The owner ruled on 2026-11-20 that this is provisional. The case for `Fresh` is
+that a user-verified assertion proves more than a `loom ui` ticket does, since it
+needs the authenticator and the person, and without it a phone that signed in with
+a passkey can never manage people or link another device without going back to a
+shell. The case for `Resumed` is that [065](065-web-workspace-mode.md) ruled that
+only a `loom ui` exchange is fresh, so a stolen phone with its biometric
+bypassed, or a passkey synced to a compromised account, opens no more than a
+stolen bookmark does. The ruling is one constant and this paragraph; to flip it,
+change `passkey_origin` to `Fresh` and amend the paragraph and 065's rule that
+only a `loom ui` exchange mints a fresh home.
