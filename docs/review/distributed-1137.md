@@ -544,3 +544,113 @@ tool result over 512 KiB; a box without the 108 revisions; the effect of an
 allowed approval on the file; whether the second drive's tab was in the
 background when it failed to reconnect, which is inferred from the third
 drive and was not measured at the time.
+
+## Two-machine drive (2026-11-19 and 20)
+
+All four exit criteria of #1137 were driven on two machines for the first time.
+Every earlier drive in this file ran on one Mac over loopback. Source baseline:
+`4850c2274` (origin/main), built on both machines with no product code changed
+and nothing pushed. The scripts, logs, screenshots and the full record are in
+the drive record kept outside the repository.
+
+**Result.** Criteria 2, 3 and 4 pass. Criterion 1 passes only as a stand-in:
+the real lid close did not overlap the child's run, so the stand-in stopped the
+laptop daemon for ten minutes instead. A real lid close with a child running is
+still not shown. The drive found seven defects and gaps (below); none is fixed
+here.
+
+### Topology
+
+A laptop orchestrator and a Linux box on the tailnet, reached through a DERP
+relay at about 110 ms, so every timing below includes that latency. The laptop
+orchestrator holds the provider key, with `[orchestrators.box]` and
+`checkout_executor = "e1"`. The box runs its own orchestrator (the second key
+holder), a pool of eight executors e1 to e8 and `[spawners.laptop]`; each
+executor has a worktree-mode `proj` workspace over its own clone. Executors are
+keyless: counts of environment entries over every process in each unit's
+cgroup were 0 for the provider key on e1 to e8 and for any GitHub token on all
+nodes, before and after every run. Provisioning used `loom distribution
+provision --static`, with the bundles verified by SHA-256 on both sides. The
+laptop's tailnet address changed after the first plan, so the whole deployment
+was re-provisioned once.
+
+### Results
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | Remote child, laptop away, push | Pass as a stand-in only |
+| 2 | Move | Pass |
+| 3 | Eight children on eight executors | Pass on run 2 |
+| 4 | Page parity and a dropped link | Pass |
+
+**Criterion 3.** Run 2 took 106 s from prompt to the end of the turn. One child
+ran on each of e1 to e8 with one commit each, all eight state sends and eight
+`remote_spawn.commits_applied` refs reached the parent, and the parent made one
+octopus merge with no conflict. `check.sh` then reported 103 tests OK. Box
+memory peaked at 1734 of 3909 MB, with no swap and no error-level log line.
+Run 1 failed (see deviations).
+
+**Criterion 2.** The CLI returned in 333 ms. The box answered a turn that read
+the dirty edits (`README.md` modified, `notes.txt` untracked) 15.9 s after the
+move began, a figure that includes a 2 s poll and one model turn with four tool
+calls. The move itself spent about 2.1 s in the four checkout steps. The laptop
+directory was left unchanged. A move back was refused with the same text as on
+loopback. The first attempt was refused by the box because it had no
+`[orchestrators.laptop]` row; the refusal text and the daemon log named it.
+
+**Criterion 4.** Conversation, Changes, Trace and Notes matched on both pages
+apart from chrome. Session and Evolution are shown on the box's page only, as
+protocol-change/108 says. With the box stopped for about 72 s, the relayed page
+showed "disconnected" and the first banner wording, kept its content and
+document, and read "connected" 6 s after the restart command, before the box
+logged "listening" (about 25 s). The two causes were not separated.
+
+**Criterion 1 (stand-in).** A parent on the laptop started one seeded child on
+the box that committed every 150 s, twelve commits. The laptop daemon and its
+client were stopped from 18:05:17Z to 18:15:36Z (10 min 19 s). Commit
+`progress 12` landed at 18:07:21Z, inside the window, and the child's next
+sleep also ran during it. After the restart `session/load` returned the parent,
+which joined the child, fast-forward merged twelve commits, ran 40 tests OK, and
+the push to the local origin succeeded. Link recovery took under two minutes.
+
+### Deviations
+
+1. **Criterion 3 prompt.** Run 1 used the previous drive's prompt verbatim and
+   failed: the model omitted `context: my_workspace`, so all eight children ran
+   as strands of one delegate session on e1, nothing came back as a ref, and the
+   parent wrote the files itself (117 tests passed, 465 s). Run 2 added one
+   sentence naming the argument. That deviation is the passing run.
+2. **Criterion 1.** The first attempt held a parent open and prepared a child,
+   but the lid was closed about twelve hours after the child had finished, so
+   no commit fell inside any sleep. The second attempt named `on` and `context`
+   in the prompt, and the owner was remote, so the laptop was taken away by
+   stopping only the drive's own daemon. Tailscale and the network stayed up.
+
+### Defects and gaps found
+
+1. **MEDIUM.** `loom sessions move` exits 0 on a refusal. A missing
+   `[orchestrators.<source>]` row on the receiving box was found only in the
+   daemon log.
+2. **MEDIUM.** Provisioned plans omit `[orchestrators.<source>]` on the
+   receiving node (needed for a move) and `[spawners.<name>.top_level]` (needed
+   for the relayed page).
+3. A relayed page reads only sessions the laptop's own request created, so a
+   moved session cannot be opened there.
+4. A model that omits `context` gets unseeded children in one delegate session
+   and no refs back. A guess, not verified: the model, not the product, is the
+   cause.
+5. A box page opened with `loom ui --no-remember` and navigated by hand to a
+   session showed "This page has ended". A link from `loom ui --session <id>`
+   worked. The cause was not found.
+6. A seeded child's `Working snapshot` commit carried the parent's untracked
+   `__pycache__` files, which collided with the parent's own untracked files at
+   merge. The parent removed them.
+7. After the laptop woke, it saw the box as down for under 30 s, then
+   recovered by itself.
+
+### Not verified
+
+A real lid close with a child running; the cause of defects 4 and 5; whether
+the 6 s reconnect preceded the box answering; eight executors on separate
+machines (all eight share the one box); untrusted microVM guests (blocked on
+#85); a session file large enough to need #1297's phase 1.
