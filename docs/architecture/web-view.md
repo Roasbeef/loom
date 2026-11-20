@@ -2568,5 +2568,5 @@ owner's credential all leave the table as it was. A passkey must be removed by
 hand, and the account panel's Passkeys list is where the owner checks for a key
 they do not recognise. Removing a passkey likewise does not end the logins it
 signed in; the notice after a removal says so, and those browsers are signed out
-from the Sign-ins list. Whether deleting the root key should also clear the table
-is an open question in `protocol-change/127-passkey-sign-in.md`.
+from the Sign-ins list. The owner ruled that deleting the root key leaves the table
+as it is (`protocol-change/127-passkey-sign-in.md`).

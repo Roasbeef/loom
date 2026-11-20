@@ -251,8 +251,11 @@ notice after a removal says so. This is deliberate. A login is the thirty-day
 credential a sign-in earned, and ending it with its passkey would need the login
 row to name the passkey, which it does not.
 
-## Open questions
+## The root key and the passkey table
 
-- Should deleting the root key, which revokes every login, also clear
-  `access_passkeys`? Today it does not, so a lost root key leaves every passkey
-  able to sign in again. The owner decides; the behaviour is left as it is.
+The owner ruled on 2026-11-20 that deleting the root key does not clear
+`access_passkeys`. A passkey is removed by hand from the account panel, and
+nothing else removes one. A lost root key therefore leaves every passkey able to
+sign in again, which is the point: the passkey is how the owner gets back in
+without a shell on the box. An owner who suspects a key they do not recognise
+removes it from the Passkeys list.
