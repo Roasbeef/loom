@@ -54,6 +54,7 @@ import gleam/result
 import kryptos/ec
 import kryptos/ecdsa
 import kryptos/hash
+import storage/access
 
 /// What the daemon requires of a ceremony, from its own state and never from
 /// the browser's claims.
@@ -167,13 +168,6 @@ type Ceremony {
   Get
 }
 
-/// Whether the call came from the page itself or from a frame of another origin
-/// inside it, which `crossOrigin` says.
-type CrossOrigin {
-  FromPage
-  FromFrame
-}
-
 // The user present, user verified and attested credential data flags.
 const present_flag = 0x01
 
@@ -181,9 +175,9 @@ const verified_flag = 0x04
 
 const attested_flag = 0x40
 
-// The size of a P-256 `SubjectPublicKeyInfo`, which the catalogue also holds
-// as the size of every stored key.
-const key_bytes = 91
+// The size of a P-256 `SubjectPublicKeyInfo`, which the catalogue holds as the
+// size of every stored key.
+const key_bytes = access.passkey_key_bytes
 
 /// The challenge the client data names, as text, for the server to look up
 /// among the challenges it issued. It judges nothing else: a value that is not
@@ -288,16 +282,19 @@ fn check_client_data(
   ceremony: Ceremony,
   client_data: BitArray,
 ) -> Result(Nil, Refusal) {
-  use #(kind, challenge, origin, cross) <- result.try(
+  use #(kind, challenge, claimed) <- result.try(
     json.parse_bits(client_data, {
       use kind <- decode.field("type", decode.string)
       use challenge <- decode.field("challenge", decode.string)
       use origin <- decode.field("origin", decode.string)
       use cross <- decode.optional_field("crossOrigin", False, decode.bool)
+
+      // A call a frame of another origin made has no origin that could equal the
+      // page's, whatever origin it names.
       decode.success(
-        #(kind, challenge, origin, case cross {
-          True -> FromFrame
-          False -> FromPage
+        #(kind, challenge, case cross {
+          True -> None
+          False -> Some(origin)
         }),
       )
     })
@@ -314,17 +311,7 @@ fn check_client_data(
   case kind == named, challenge == expected.challenge {
     False, _ -> Error(WrongCeremony)
     True, False -> Error(WrongChallenge)
-    True, True -> check_origin(expected, claimed_origin(origin, cross))
-  }
-}
-
-/// The origin the client data claims, or nothing when it says a frame of another
-/// origin made the call: such a call is for another page whatever origin it names.
-fn claimed_origin(origin: String, cross: CrossOrigin) -> Option(String) {
-  // A cross-origin call has no origin that could equal the page's.
-  case cross {
-    FromFrame -> None
-    FromPage -> Some(origin)
+    True, True -> check_origin(expected, claimed)
   }
 }
 
