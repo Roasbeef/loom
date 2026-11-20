@@ -723,6 +723,23 @@
   .inbox-quote-words{display:block;white-space:pre-wrap;overflow-wrap:anywhere;}
   .inbox-said{margin-top:8px;}
   .inbox-glances{margin:0;padding:0;list-style:none;font:12px/1.7 var(--font-mono);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  /* What a session's brief draws (view/brief_view): the last few steps as a
+     monospace card, and the coordinator's card of goal, counts and strands. A
+     step's outcome word is the added colour for a success and the danger colour
+     for a failure. */
+  .brief-steps{margin:0;padding:0;list-style:none;font:12px/1.7 var(--font-mono);color:var(--color-fg-quiet);}
+  .brief-steps li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;overflow-wrap:anywhere;}
+  .brief-tool{color:var(--color-fg);font-weight:500;}
+  .brief-words{flex:1 1 12em;min-width:0;}
+  .brief-ok{color:var(--color-added-text);}
+  .brief-bad{color:var(--color-danger-text);}
+  .brief-ctx{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}
+  .brief-ctx > div{font-size:12.5px;overflow-wrap:anywhere;}
+  .brief-ctx b{display:block;font-size:13.5px;font-weight:600;}
+  .brief-label,.brief-note{display:block;color:var(--color-fg-quiet);font-size:12px;}
+  .brief-strands{display:flex;flex-direction:column;gap:5px;margin:10px 0 0 0;padding:0;list-style:none;font-size:13px;}
+  .brief-strands li{display:flex;gap:8px;align-items:baseline;}
+  .brief-strand{min-width:104px;font:12px var(--font-mono);overflow-wrap:anywhere;}
   p.inbox-place{margin:6px 0 0 0;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .inbox-out{margin:0;padding:9px 12px;border-radius:8px;background:var(--color-code);font:12px/1.55 var(--font-mono);white-space:pre-wrap;overflow:hidden;}
   .inbox-acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
@@ -833,6 +850,7 @@
     .inbox-outbox-bar{flex-wrap:wrap;padding:10px 16px;}
     .inbox-title{font-size:17px;}
     table.inbox-kv td:first-child{width:90px;}
+    .brief-ctx{grid-template-columns:1fr 1fr;}
     .inbox-row,.inbox-btn,button.inbox-open{min-height:44px;}
     .inbox-row.inbox-selected{background:transparent;box-shadow:none;}
   }
