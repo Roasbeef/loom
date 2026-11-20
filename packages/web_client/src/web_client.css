@@ -2516,7 +2516,21 @@
     summary.lift-bar:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
     .lift-bar-need{color:var(--color-signal-text);font-weight:600;}
     .lift-bar-more{margin-left:auto;color:var(--color-current);}
-    details.lift-sheet[open] > .lift-sheet-body{position:absolute;left:0;right:0;bottom:100%;z-index:6;box-sizing:border-box;max-height:min(60dvh,28rem);overflow-y:auto;padding:12px 12px 20px 12px;border-top:1px solid var(--color-divider);border-radius:14px 14px 0 0;background:var(--color-bg-sunk);}
+    /* Closed, the bar says the counts and "Lifted ▴". Open, the bar is the
+       sheet's header, "Lifted from this session" and "Close ▾", and the sheet
+       sits over the dock from the stream's bottom edge: the details element
+       leaves the flow, a margin on the dock keeps the stream where it was, and
+       the body is the sheet's scrolling part. The sheet's height is bounded by
+       the centre, so it never rises under the top bar. */
+    .lift-bar-title,.lift-bar-close{display:none;}
+    main.centre{position:relative;}
+    main.centre:has(> details.lift-sheet[open]) > footer.dock{margin-top:44px;}
+    details.lift-sheet[open]{position:absolute;left:0;right:0;bottom:0;z-index:6;display:flex;flex-direction:column;box-sizing:border-box;max-height:calc(100% - 12px);border-top:1px solid var(--color-divider);border-radius:14px 14px 0 0;background:var(--color-bg-sunk);}
+    details.lift-sheet[open] > summary.lift-bar{flex:0 0 auto;border-top:0;background:transparent;padding:16px 16px 8px 16px;color:var(--color-fg);font:600 15px/1.4 var(--font-sans);}
+    details.lift-sheet[open] .lift-bar-need,details.lift-sheet[open] .lift-bar-count,details.lift-sheet[open] .lift-bar-more{display:none;}
+    details.lift-sheet[open] .lift-bar-title{display:inline;}
+    details.lift-sheet[open] .lift-bar-close{display:inline;margin-left:auto;color:var(--color-fg-quiet);font:400 14px/1.4 var(--font-sans);}
+    details.lift-sheet[open] > .lift-sheet-body{position:static;flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto;padding:4px 16px 20px 16px;border:0;border-radius:0;background:transparent;}
     .lift-sheet .lift-press{min-height:0;}
   }
   /* The phone keeps the stream's gutter and narrows its margins to 14px. */
@@ -2525,6 +2539,35 @@
     loom-follow.follow > *{padding-left:14px;padding-right:14px;}
     section.approvals,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
     form.composer{padding-left:14px;padding-right:14px;}
+  }
+
+  /* The phone's bar (final-phone-live, final-phone-inbox). Below 640px the bar
+     is `loom`, `‹ Inbox`, the session's name, `● live` and the pill that counts
+     what needs the owner, and nothing else: the chip that says who the page is
+     for, Search, Theme, the workspace and the panel's toggle are folded away. A
+     session's page also folds away the sidebar's toggle, since `‹ Inbox` is its
+     way to the other sessions, and the strand panel, whose Strands, Changes,
+     Trace and Session panes would otherwise stack above the stream; the
+     stream comes first, and the rail is the sheet above the composer. Home keeps
+     the sidebar's toggle because the folders live there. The name takes the
+     slack and ends in an ellipsis, so a long one never pushes the pill off. */
+  @media (max-width:640px){
+    :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme,:host(.loom-inbox) .toggle-panel{display:none;}
+    :host(.loom-session:not(.loom-home)) .toggle-sidebar,:host(.loom-session:not(.loom-home)) .region-panel{display:none;}
+    loom-shell.loom-inbox .session-head .role-chip,loom-shell.loom-inbox .session-head .home-who,loom-shell.loom-inbox .session-head .workspace{display:none;}
+    loom-shell.loom-inbox .session-head{gap:0 10px;padding-right:12px;}
+    loom-shell.loom-session:not(.loom-home) .session-head{padding-left:16px;}
+    loom-shell.loom-inbox .session-head .session-title{flex:0 1 auto;min-width:0;}
+    loom-shell.loom-inbox .session-head .session-title h1{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    loom-shell.loom-inbox .session-head .need-pill,loom-shell.loom-inbox .session-head .brand,loom-shell.loom-inbox .session-head .home-link,.live-mark{flex:0 0 auto;}
+  }
+  /* The review's count chips and the last command share one line where there is
+     room: the counts keep their size and the command's chip takes what is left,
+     cut with an ellipsis. On a phone the chips wrap as before. */
+  @media (min-width:641px){
+    .review-stat .inbox-pills{flex-wrap:nowrap;}
+    .review-stat .inbox-pill{flex:0 0 auto;}
+    .review-stat .inbox-pill.brief-command{flex:0 1 auto;}
   }
 }
 

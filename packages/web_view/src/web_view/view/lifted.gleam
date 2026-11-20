@@ -408,7 +408,8 @@ fn plural(count: Int, one: String, many: String) -> List(String) {
 /// The sheet bar's children: the count of rows that need the owner, set apart
 /// so the stylesheet can colour it, the count of insights after it, and the
 /// word and arrow at the right that say the bar opens upward. Each count is
-/// left out when it is zero, as `count_words` leaves it.
+/// left out when it is zero, as `count_words` leaves it. Two more children, the
+/// title and "Close ▾", are the bar's face once the sheet is open.
 fn bar(items: List(Item)) -> List(Element(message)) {
   let #(pinned, rest) = split(items)
   let need = plural(list.length(pinned), "1 needs you", " need you")
@@ -419,14 +420,23 @@ fn bar(items: List(Item)) -> List(Element(message)) {
       html.span([attribute.class("lift-bar-need")], [html.text(words)])
     }),
     list.map(known, fn(words) {
-      html.span([], [
+      html.span([attribute.class("lift-bar-count")], [
         html.text(case need {
           [] -> words
           [_, ..] -> "· " <> words
         }),
       ])
     }),
-    [html.span([attribute.class("lift-bar-more")], [html.text("Lifted ▴")])],
+    [
+      html.span([attribute.class("lift-bar-more")], [html.text("Lifted ▴")]),
+
+      // The open face: while the sheet is open the bar is its header, and the
+      // stylesheet swaps these two in for the counts and "Lifted ▴".
+      html.span([attribute.class("lift-bar-title")], [
+        html.text("Lifted from this session"),
+      ]),
+      html.span([attribute.class("lift-bar-close")], [html.text("Close ▾")]),
+    ],
   ])
 }
 

@@ -359,7 +359,7 @@ pub fn the_phone_bar_counts_what_needs_you_and_the_insights_test() {
   let html = operator(lifting())
   assert string.contains(
     html,
-    "<summary class=\"lift-bar\"><span class=\"lift-bar-need\">1 needs you</span><span>· 2 insights</span><span class=\"lift-bar-more\">Lifted ▴</span></summary>",
+    "<summary class=\"lift-bar\"><span class=\"lift-bar-need\">1 needs you</span><span class=\"lift-bar-count\">· 2 insights</span><span class=\"lift-bar-more\">Lifted ▴</span><span class=\"lift-bar-title\">Lifted from this session</span><span class=\"lift-bar-close\">Close ▾</span></summary>",
   )
   assert string.contains(
     observer(lifting()),
