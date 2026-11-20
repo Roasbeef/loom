@@ -137,9 +137,9 @@ pub fn a_row_is_a_button_only_where_a_press_can_work_test() {
 
   // `B` and the peer `lint-census` are running and are not on screen, and
   // `C` is saved.
-  // The split gives one more than the buttons: the four of the session rows
-  // and the six folders at the head of the column.
-  assert list.length(string.split(sidebar, "<button")) == 11
+  // The split gives one more than the buttons: the four of the session rows.
+  // The page has no way home, so its six folders are text and not buttons.
+  assert list.length(string.split(sidebar, "<button")) == 5
   assert string.contains(sidebar, "class=\"session-open\"")
   assert string.contains(sidebar, "title=\"Open this session\"")
   assert string.contains(sidebar, "title=\"Resume this session\"")
@@ -147,7 +147,7 @@ pub fn a_row_is_a_button_only_where_a_press_can_work_test() {
   // The names are text inside the buttons, and the three buttons are the only
   // handlers beneath the sidebar's path: the current row holds none.
   assert string.contains(sidebar, "vetting lint")
-  assert list.length(sidebar_clicks(handlers(operator_page.view(model)))) == 9
+  assert list.length(sidebar_clicks(handlers(operator_page.view(model)))) == 3
 }
 
 fn operator_page_answer() -> sessions.Answer {
@@ -535,7 +535,7 @@ pub fn the_resume_answer_departs_or_words_the_refusal_test() {
     assert component.notice(refused)
       == component.Warned(sessions.reason_words(reason))
     assert list.length(sidebar_clicks(handlers(operator_page.view(refused))))
-      == 9
+      == 3
   })
 }
 
@@ -571,6 +571,6 @@ pub fn a_blocked_row_is_text_test() {
         ),
       ]),
     )
-  assert list.length(sidebar_clicks(handlers(operator_page.view(model)))) == 7
+  assert list.length(sidebar_clicks(handlers(operator_page.view(model)))) == 1
   assert string.contains(drawn(model), "stuck")
 }

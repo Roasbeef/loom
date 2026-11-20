@@ -439,8 +439,12 @@ pub fn a_stuck_strand_is_worded_by_its_reason_code_test() {
   assert string.contains(html, "<loom-time at=\"98320000\"")
   assert string.contains(html, "coord/web-inbox")
 
-  // The row says what stopped without a time, since its age says how long ago.
-  assert string.contains(html, "Rate-limited, has not retried")
+  // The row says what stopped and when, and what has not happened since.
+  assert string.contains(
+    html,
+    "<span class=\"inbox-head\">Rate-limited at <loom-time at=\"98320000\"",
+  )
+  assert string.contains(html, "</loom-time>, has not retried</span>")
 }
 
 pub fn a_code_that_is_not_in_the_table_gets_the_generic_words_test() {
@@ -510,4 +514,23 @@ pub fn the_default_thread_of_an_approval_waits_for_its_evidence_test() {
 
   assert list.contains(made, #("A", raised))
   assert !list.contains(made, #("A", 0))
+}
+
+// An approvals read that fails says nothing about when the approval was raised,
+// so the thread's brief is not asked for again at another time: a flapping read
+// would otherwise swing the time to zero and back, and read the brief at each
+// swing inside the fifteen seconds `brief_rule.due` allows.
+pub fn a_failed_approvals_read_keeps_the_brief_time_test() {
+  let clock = process.new_subject()
+  let calls = process.new_subject()
+  process.send(clock, now)
+  let model = opened(start(clock, calls, full_evidence(), None))
+  assert list.contains(recorded(calls), #("A", raised))
+
+  // The evidence read fails, and a refresh a few seconds later asks for nothing.
+  let model = run(model, home.ApprovalsRead("A", Error("busy")))
+  assert recorded(calls) == []
+  set_clock(clock, now + 5000)
+  let _ = run(model, home.Ticked)
+  assert recorded(calls) == []
 }

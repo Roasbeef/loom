@@ -1240,7 +1240,6 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
     current: None,
     pick: None,
     note: "Counts are read on the inbox.",
-    at: 0,
     running: case model.snapshot {
       Some(snapshot) ->
         list.count(snapshot.sessions, fn(entry) {

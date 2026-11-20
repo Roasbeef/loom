@@ -53,6 +53,7 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
+import web_view/thread_words.{type Phrase}
 import web_view/view/phrase
 
 /// Whether the person has opened a row's thread on this page. The row says so
@@ -119,11 +120,25 @@ pub type Facts {
     age: Option(Age),
     /// The kind's word in the chip: "Approval", "Ask", "Review".
     kind: String,
-    /// The one-line head, cut with an ellipsis by the stylesheet.
-    head: String,
+    /// The one-line head, cut with an ellipsis by the stylesheet. It is a
+    /// phrase so a head can hold an instant (`Rate-limited at 13:52`) that the
+    /// browser words in its own zone; `words` makes one of plain text.
+    head: Phrase,
     /// Whether the row's pane is open.
     selection: Selection,
   )
+}
+
+/// A head of plain words, which is nearly every head: the text a session, a
+/// person or the page wrote, drawn as one text node.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert inbox_parts.words("Fix the retry") == [thread_words.Words("Fix the retry")]
+/// ```
+pub fn words(text: String) -> Phrase {
+  [thread_words.Words(text)]
 }
 
 /// A group's heading across the list: `title` and the count, when it has one,
@@ -267,7 +282,7 @@ fn lines(facts: Facts) -> List(Element(message)) {
     ]),
     html.span([attribute.class("inbox-r2")], [
       kind_chip(facts.kind),
-      html.span([attribute.class("inbox-head")], [html.text(facts.head)]),
+      html.span([attribute.class("inbox-head")], phrase.view(facts.head)),
     ]),
   ]
 }

@@ -373,3 +373,36 @@ pub fn a_refusal_for_the_allowance_is_not_a_try_test() {
   let again = scan.answered(failed, "a", "m", busy)
   assert dict.size(again) == 0
 }
+
+// The scan keeps the read's statistics with its verdict, for the message it was
+// read for and no other, so a row can say how large the change is without the
+// model holding the review.
+pub fn a_verdict_carries_the_stat_for_its_message_test() {
+  let read =
+    Review(
+      ..review(review_feed.Head, ["x", "y"], 0),
+      stat: Stat(files: 7, added: 412, removed: 88),
+    )
+  let seen = scan.answered(dict.new(), "a", "m1", Ok(read))
+  assert scan.stat_of(seen, "a", "m1") == Some(Stat(7, 412, 88))
+
+  // A message the read was not made for has no size to say.
+  assert scan.stat_of(seen, "a", "m2") == None
+  assert scan.stat_of(seen, "b", "m1") == None
+}
+
+// A clean tree has no size worth a row's words: the session leaves "To review".
+pub fn a_clean_read_has_no_stat_to_say_test() {
+  let seen =
+    scan.answered(dict.new(), "a", "m1", Ok(review(review_feed.Head, [], 0)))
+  assert scan.stat_of(seen, "a", "m1") == None
+}
+
+// The row reads `+412 −88, 7 files · 2 finds attached`, with the finds left out
+// when there are none and the singular for one.
+pub fn the_stat_words_name_the_size_and_the_finds_test() {
+  assert scan.stat_words(Stat(7, 412, 88), 2)
+    == "+412 −88, 7 files · 2 finds attached"
+  assert scan.stat_words(Stat(1, 3, 0), 1) == "+3 −0, 1 file · 1 find attached"
+  assert scan.stat_words(Stat(2, 0, 9), 0) == "+0 −9, 2 files"
+}

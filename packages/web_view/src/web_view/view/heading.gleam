@@ -314,8 +314,16 @@ fn workspace_element(
 }
 
 /// The last folder of a path, which is the name the final design's crumb gives
-/// the workspace. A path with no folder (the root) is shown whole.
-fn last_folder(path: String) -> String {
+/// the workspace and the stream's strip too. A path with no folder (the root) is
+/// shown whole.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert heading.last_folder("/src/loom/") == "loom"
+/// assert heading.last_folder("/") == "/"
+/// ```
+pub fn last_folder(path: String) -> String {
   case
     list.last(list.filter(string.split(path, "/"), fn(part) { part != "" }))
   {

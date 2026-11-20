@@ -52,7 +52,7 @@ import web_view/attention_feed
 import web_view/attention_rule.{type Item, type Key}
 import web_view/item_pane.{type State}
 import web_view/session_brief.{type Brief}
-import web_view/thread_words
+import web_view/thread_words.{type Phrase}
 import web_view/view/brief_view
 import web_view/view/inbox_parts as parts
 import web_view/view/phrase
@@ -219,10 +219,10 @@ pub fn saved_row(
       name: thread.name,
       age: None,
       kind: "Saved",
-      head: case attention_rule.saved_age(thread.saved, now) {
+      head: parts.words(case attention_rule.saved_age(thread.saved, now) {
         Some(age) -> words <> " · " <> age
         None -> words
-      },
+      }),
       selection: parts.Unselected,
     ),
     [
@@ -334,13 +334,17 @@ fn eyebrow(item: Item, session_name: String) -> String {
   }
 }
 
-/// A row's head: the model's cut words, or fixed words for a strand.
-fn head(item: Item) -> String {
+/// A row's head: the model's cut words, or fixed words for a strand, which name
+/// the time it failed when the daemon could read it (`Rate-limited at 13:52`).
+fn head(item: Item) -> Phrase {
   case item {
-    attention_rule.AskItem(ask:, ..) -> ask.head
-    attention_rule.FindItem(find:, ..) -> find.head
+    attention_rule.AskItem(ask:, ..) -> parts.words(ask.head)
+    attention_rule.FindItem(find:, ..) -> parts.words(find.head)
     attention_rule.StuckItem(stuck:, ..) ->
-      thread_words.stuck_head(thread_words.kind_of(stuck.reason))
+      thread_words.stuck_head(
+        thread_words.kind_of(stuck.reason),
+        stuck.failed_at,
+      )
   }
 }
 
@@ -350,7 +354,8 @@ fn title_of(item: Item) -> String {
   case item {
     attention_rule.StuckItem(stuck:, ..) ->
       thread_words.stuck_title(thread_words.kind_of(stuck.reason))
-    attention_rule.AskItem(..) | attention_rule.FindItem(..) -> head(item)
+    attention_rule.AskItem(ask:, ..) -> ask.head
+    attention_rule.FindItem(find:, ..) -> find.head
   }
 }
 

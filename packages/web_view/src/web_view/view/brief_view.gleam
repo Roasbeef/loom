@@ -101,7 +101,7 @@ pub fn stopped(brief: Brief) -> Element(message) {
 pub fn finished(text: String, at: Option(Int)) -> Element(message) {
   parts.quote_nodes(
     [
-      html.text("The agent's last finished turn, untrusted text"),
+      html.text("The agent's last message, untrusted text"),
       case at {
         Some(instant) ->
           element.fragment([html.text(" · "), phrase.clock(instant)])

@@ -5931,12 +5931,20 @@ fn briefing(
 }
 
 /// The time after which a session's peer messages are wanted: the oldest raise
-/// time among the pending approvals the page holds for it, or zero.
+/// time among the pending approvals the page holds for it, or zero. An approvals
+/// read that failed or has not answered says nothing, so the time of the last
+/// brief read stands: a flapping read would otherwise swing the time to zero and
+/// back, and each swing would ask for another brief before `brief_rule.due`'s
+/// pacing allowed it.
 fn brief_since(model: Model, session: String) -> Int {
   case dict.get(model.evidence, session) {
     Ok(approval_evidence.Seen(evidence:)) ->
       approval_evidence.oldest_raised(evidence) |> option.unwrap(0)
-    Ok(approval_evidence.Unseen(_)) | Error(Nil) -> 0
+    Ok(approval_evidence.Unseen(_)) | Error(Nil) ->
+      case dict.get(model.brief_reads, session) {
+        Ok(brief_rule.Read(since:, ..)) -> since
+        Error(Nil) -> 0
+      }
   }
 }
 
@@ -6411,6 +6419,7 @@ fn inbox_page(model: Model) -> Element(Msg) {
       attention: with_tickets(model, attention_threads(model)),
       review: review_offer(model),
       checking: checking_ids(model),
+      sized: sized_reviews(model),
       dated: dated_threads(model),
       briefs: fn(session) { shown_brief(model, session) },
       name_of: session_name(model, _),
@@ -6582,6 +6591,31 @@ fn checking_ids(model: Model) -> List(String) {
     Some(_) -> review_scan_rule.checking(scan_candidates(model), model.reviews)
     None -> []
   }
+}
+
+/// The head of each "To review" row whose tree was read at the session's current
+/// message: the change's size from that read and the number of finds the
+/// attention feed holds for the session. A session not read at its current
+/// message has none, so its row keeps the head of its message.
+fn sized_reviews(model: Model) -> List(#(String, String)) {
+  list.filter_map(scan_candidates(model), fn(candidate) {
+    let #(session, message) = candidate
+
+    // Only a read at the message now shown has a size worth saying.
+    case review_scan_rule.stat_of(model.reviews, session, message) {
+      Some(stat) -> {
+        // The finds are the feed's, which may not have been read yet: then
+        // the row says the size alone.
+        let finds = case dict.get(model.feed, session) {
+          Ok(row) -> list.length(row.finds.items)
+          Error(Nil) -> 0
+        }
+
+        Ok(#(session, review_scan_rule.stat_words(stat, finds)))
+      }
+      None -> Error(Nil)
+    }
+  })
 }
 
 /// How the page reads a worktree, or nothing for a page that may not: an
@@ -7452,7 +7486,6 @@ fn rail_folders(model: Model) -> Option(sidebar.Folders(Msg)) {
         current: Some(shown_folder(model)),
         pick: Some(FolderPicked),
         note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
-        at: model.now / 60_000 * 60_000,
         running: running_sessions(model),
       ))
     }

@@ -236,9 +236,11 @@ pub fn a_file_in_both_shows_the_working_tree_over_the_committed_hunks_test() {
   assert file.removed == 1
 }
 
-// A stream of commits that touch up to ten paths, each with up to three hunks.
-// A hunk has one context line, some removed lines and some added lines, so the
-// counts a stream should be read as are known from the numbers that made it.
+// A stream of commits that touch up to a hundred paths, each with up to three
+// hunks. A hunk has one context line, some removed lines and some added lines,
+// so the counts a stream should be read as are known from the numbers that made
+// it. The ranges reach past the review's bounds (`max_files` is 24 and
+// `max_hunk_lines` is 80), or the assertions on those bounds could not fail.
 type Made {
   Made(path: Int, hunks: List(#(Int, Int, Int)))
 }
@@ -246,19 +248,19 @@ type Made {
 fn made() -> qcheck.Generator(List(Made)) {
   let hunk =
     qcheck.map3(
-      qcheck.bounded_int(from: 0, to: 4),
-      qcheck.bounded_int(from: 0, to: 6),
+      qcheck.bounded_int(from: 0, to: 60),
+      qcheck.bounded_int(from: 0, to: 60),
       qcheck.bounded_int(from: 1, to: 600),
       fn(removed, added, width) { #(removed, added, width) },
     )
   let file =
     qcheck.map2(
-      qcheck.bounded_int(from: 0, to: 9),
+      qcheck.bounded_int(from: 0, to: 99),
       qcheck.generic_list(hunk, qcheck.bounded_int(from: 1, to: 3)),
       fn(path, hunks) { Made(path:, hunks:) },
     )
 
-  qcheck.generic_list(file, qcheck.bounded_int(from: 1, to: 6))
+  qcheck.generic_list(file, qcheck.bounded_int(from: 1, to: 60))
 }
 
 fn stream_of(files: List(Made)) -> String {
@@ -382,4 +384,42 @@ pub fn text_that_is_not_a_patch_never_breaks_the_reader_test() {
       list.length(entry.lines) <= list.length(text)
     })
   })
+}
+
+// A cut stream cuts the file its last section named, and that holds for a file
+// the working tree also changed: the working patch was whole, but the hunks
+// appended after it may have ended in the middle of a line.
+pub fn a_cut_stream_cuts_the_working_file_it_ended_in_test() {
+  let assert Some(last) = committed_patch.parse(two_commits).last
+  let working =
+    worktree_view.File(
+      path: last,
+      index_status: " ",
+      worktree_status: "M",
+      patch: "diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1,1 +1,1 @@
+-OLD
++NEW
+",
+      kind: "text",
+      extent: "complete",
+    )
+  let drawn = fn(extent) {
+    let review =
+      review_feed.of_board(
+        worktree_view.Board(
+          ..board(two_commits, extent),
+          files: [working],
+          total: 1,
+        ),
+      )
+    let assert Ok(file) =
+      list.find(review.files, fn(each) { each.path == last })
+    file.extent
+  }
+
+  assert drawn("limited") == review_feed.Cut
+  assert drawn("complete") == review_feed.Whole
 }

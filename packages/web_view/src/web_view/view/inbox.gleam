@@ -134,6 +134,11 @@ pub type Offer(message) {
     /// The sessions listed under "To review" whose tree has not been read yet:
     /// their rows say they are being checked in place of a count of changes.
     checking: List(String),
+    /// The head line of each "To review" row whose tree was read, by session:
+    /// the size of the change and how many finds are attached
+    /// (`review_scan_rule.stat_words`). A session with no entry keeps the head
+    /// of its last message.
+    sized: List(#(String, String)),
     /// The keys of the threads the person has opened since the page loaded, for
     /// the filled and hollow dot of a row. A session's thread is keyed by its
     /// identity, an attention item's by `attention_rule.opened_key` and a
@@ -260,7 +265,7 @@ type Part {
 /// ## Examples
 ///
 /// ```gleam
-/// // inbox.view(inbox.Offer(folder: inbox_rule.Everything, groups:, selected: None, opening: None, pick:, open:, back:, all_sessions:, new_session: None, presses: 0, field: None, attention: None, review: None, checking: [], waited: []))
+/// // inbox.view(inbox.Offer(folder: inbox_rule.Everything, groups:, selected: None, opening: None, pick:, open:, back:, all_sessions:, new_session: None, presses: 0, field: None, attention: None, review: None, checking: [], sized: [], waited: []))
 /// ```
 pub fn view(offer: Offer(message)) -> Element(message) {
   html.section([attribute.class("inbox")], [
@@ -507,7 +512,10 @@ fn row(
           }
       },
       kind: row_word(kind, which),
-      head: inbox_rule.thread_head(thread),
+      head: case which, list.key_find(offer.sized, thread.id) {
+        inbox_rule.ToReview, Ok(size) -> parts.words(size)
+        _, _ -> parts.words(inbox_rule.thread_head(thread))
+      },
       selection: case offer.selected, item_open(offer) {
         Some(pick), False if pick.session == thread.id -> parts.Selected
         Some(_), _ | None, _ -> parts.Unselected

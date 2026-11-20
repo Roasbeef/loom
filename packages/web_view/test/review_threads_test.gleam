@@ -408,11 +408,8 @@ pub fn a_changed_idle_session_is_under_to_review_test() {
 pub fn the_pane_says_what_it_cut_and_draws_text_only_test() {
   let html = drawn(settled_owner(process.new_subject(), home.Succeeded("ok")))
 
-  assert string.contains(
-      html,
-      "The agent&#39;s last finished turn, untrusted text",
-    )
-    || string.contains(html, "The agent's last finished turn, untrusted text")
+  assert string.contains(html, "The agent&#39;s last message, untrusted text")
+    || string.contains(html, "The agent's last message, untrusted text")
   assert string.contains(html, "Done &lt;b&gt;it&lt;/b&gt;.")
   assert string.contains(html, "Ready to review: +41 −9 across 5 files")
   assert string.contains(html, "3 files not shown")

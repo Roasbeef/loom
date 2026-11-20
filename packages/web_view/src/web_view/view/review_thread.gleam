@@ -255,25 +255,37 @@ fn file(
   index: Int,
   offer: Offer(message),
 ) -> Element(message) {
-  html.details([attribute.class("review-file")], [
-    html.summary([attribute.class("review-file-head")], [
-      html.span([attribute.class("review-path")], [html.text(each.path)]),
-      staged_mark(each.path, pins, offer),
-      html.span([attribute.class("review-change")], [
-        html.text(change_words(each) <> counts(each)),
+  html.details(
+    [
+      attribute.class("review-file"),
+      // The first file is open, so the review shows code on arrival and the
+      // reader opens the others. The browser owns the open state afterwards: the
+      // attribute is written once per tree and a later patch leaves it alone.
+      case index {
+        0 -> attribute.attribute("open", "")
+        _ -> attribute.none()
+      },
+    ],
+    [
+      html.summary([attribute.class("review-file-head")], [
+        html.span([attribute.class("review-path")], [html.text(each.path)]),
+        staged_mark(each.path, pins, offer),
+        html.span([attribute.class("review-change")], [
+          html.text(change_words(each) <> counts(each)),
+        ]),
       ]),
-    ]),
-    case pins.loose {
-      [] -> element.none()
-      ids ->
-        html.div(
-          [attribute.class("review-finds")],
-          list.filter_map(ids, fn(id) { find_of(id, offer) }),
-        )
-    },
-    content(each, pins, offer),
-    comment_form(each.path, index, offer),
-  ])
+      case pins.loose {
+        [] -> element.none()
+        ids ->
+          html.div(
+            [attribute.class("review-finds")],
+            list.filter_map(ids, fn(id) { find_of(id, offer) }),
+          )
+      },
+      content(each, pins, offer),
+      comment_form(each.path, index, offer),
+    ],
+  )
 }
 
 /// The file's body by what the observation could say of it.

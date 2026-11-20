@@ -25,7 +25,7 @@ fn drawn(turn) -> String {
 pub fn a_running_turn_says_how_long_it_has_run_test() {
   assert string.contains(
     drawn(Some(1_790_030_460_000)),
-    "running, turn <loom-elapsed since=\"1790030460000\"></loom-elapsed>",
+    "running, turn <loom-elapsed form=\"minutes\" since=\"1790030460000\"></loom-elapsed>",
   )
 }
 

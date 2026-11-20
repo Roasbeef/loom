@@ -45,15 +45,38 @@ pub fn time(at: Int, class: String) -> Element(message) {
   )
 }
 
-/// An instant as the UTC time of day, `14:20`.
+/// The instant as a `<loom-time>` with no class: what a sentence's time and a
+/// quote's source use. The words and attributes are `time`'s.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // stamp.plain(1_790_030_460_000)
+/// ```
+pub fn plain(at: Int) -> Element(message) {
+  let words = utc(at)
+
+  element.element(
+    "loom-time",
+    [
+      attribute.attribute("at", int.to_string(at)),
+      attribute.title(words <> " UTC"),
+    ],
+    [html.text(words)],
+  )
+}
+
+/// An instant as the UTC time of day, `14:20`. An instant before the epoch is
+/// the epoch, so a bad value reads `00:00` and never a sign in the digits.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert stamp.utc(1_790_030_460_000) == "22:41"
+/// assert stamp.utc(-5) == "00:00"
 /// ```
 pub fn utc(at: Int) -> String {
-  let minutes = at / 60_000
+  let minutes = int.max(at, 0) / 60_000
   let hours = minutes / 60 % 24
 
   pad(hours) <> ":" <> pad(minutes % 60)

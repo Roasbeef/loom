@@ -246,10 +246,6 @@ pub type Folders(message) {
     pick: Option(fn(Folder) -> message),
     /// The words under the sessions: what the counts read.
     note: String,
-    /// The instant the page last read the daemon, in Unix milliseconds and
-    /// floored to the minute, which the line at the top draws as a time of day in
-    /// the browser's own zone (`<loom-time>`). The minute keeps the memo stable.
-    at: Int,
     /// How many running sessions the page lists, for the line at the top.
     running: Int,
   )
@@ -292,7 +288,7 @@ pub fn view(
     element.ref(memoed(page)),
     element.ref(resume.pending(resume)),
     element.ref(archiving.stage(archiving)),
-    element.ref(#(folders.items, folders.note, folders.at, folders.running)),
+    element.ref(#(folders.items, folders.note, folders.running)),
   ])
 
   // Dispatch on view state.
@@ -359,7 +355,7 @@ pub fn home(
     element.ref(relayed.sections),
     element.ref(
       option.map(folders, fn(each) {
-        #(each.items, each.current, each.note, each.at, each.running)
+        #(each.items, each.current, each.note, each.running)
       }),
     ),
   ])
@@ -701,21 +697,16 @@ fn folder_element(
 }
 
 /// The line above the folders: the time of day in the browser's own zone and how
-/// many sessions run. The element's light text is the instant's UTC time, which
-/// shows until the browser has drawn the local one.
+/// many sessions run. The time is the browser's clock (`<loom-time now>`), which
+/// draws the current time and moves on each minute, so no time the server holds
+/// is used and a page that heard nothing for an hour still reads right. The
+/// element's light text, `--:--`, shows until the browser has drawn it.
 fn away(folders: Folders(message)) -> Element(message) {
-  let utc = clock(folders.at)
-
   html.p([attribute.class("rail-away")], [
     html.span([attribute.class("rail-time")], [
-      element.element(
-        "loom-time",
-        [
-          attribute.attribute("at", int.to_string(folders.at)),
-          attribute.title(utc <> " UTC"),
-        ],
-        [html.text(utc)],
-      ),
+      element.element("loom-time", [attribute.attribute("now", "")], [
+        html.text("--:--"),
+      ]),
     ]),
     html.text(
       " · "
@@ -726,22 +717,6 @@ fn away(folders: Folders(message)) -> Element(message) {
       },
     ),
   ])
-}
-
-/// An instant as the UTC time of day, `14:20`.
-fn clock(at: Int) -> String {
-  let minutes = at / 60_000
-  let hours = minutes / 60 % 24
-
-  pad(hours) <> ":" <> pad(minutes % 60)
-}
-
-/// A number of at most two digits, with a leading zero.
-fn pad(value: Int) -> String {
-  case value < 10 {
-    True -> "0" <> int.to_string(value)
-    False -> int.to_string(value)
-  }
 }
 
 /// What ends the inbox's column: the note on what the counts read, and the "New

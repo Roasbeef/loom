@@ -1102,7 +1102,7 @@ one for each group that holds a thread) narrow the list to a group through
 `FolderPicked`; the filter is the page's own and the daemon is told nothing
 (protocol-change/051, the addendum on the rail's folders). The reading pane shows
 the kind's chip, the session and its workspace and state, the last message under
-the label "The agent's last finished turn, untrusted text", and the strands'
+the label "The agent's last message, untrusted text", and the strands'
 glances. On a screen under 768px the list is the page and the pane covers it
 with a back control (`InboxClosed`). A pending approval is named and
 sent to the session's own page; nothing of the approval, and no deciding

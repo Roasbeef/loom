@@ -113,7 +113,7 @@ pub fn row(
         parts.Age(board.age_words(ticket.opened_ms, now), parts.Ordinary)
       }),
       kind: "Ticket",
-      head: board.title_words(ticket),
+      head: parts.words(board.title_words(ticket)),
       selection: case selected == Some(waiting.key) {
         True -> parts.Selected
         False -> parts.Unselected

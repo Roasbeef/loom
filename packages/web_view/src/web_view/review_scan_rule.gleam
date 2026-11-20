@@ -74,6 +74,9 @@ pub type Verdict {
     message: String,
     /// Whether the worktree held anything to review.
     changes: Changes,
+    /// What changed, in numbers, as the read counted it. The row words it
+    /// (`stat_words`), so a reader sees the size of the change before opening it.
+    stat: review_feed.Stat,
   )
 }
 
@@ -118,6 +121,59 @@ pub fn changes_in(review: Review) -> Changes {
     review_feed.NotRepository, _, _ -> Unchanged
     review_feed.Head, [], 0 | review_feed.Unborn, [], 0 -> Unchanged
     review_feed.Head, _, _ | review_feed.Unborn, _, _ -> Changed
+  }
+}
+
+/// The statistics a session's last read counted, for the message it was read for
+/// and no other: nothing for a session not yet read, or read at an older message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert review_scan_rule.stat_of(dict.new(), "a", "m") == None
+/// ```
+pub fn stat_of(
+  seen: Dict(String, Seen),
+  session: String,
+  message: String,
+) -> Option(review_feed.Stat) {
+  case verdict_of(seen, session) {
+    Some(Verdict(message: read, changes: Changed, stat:)) if read == message ->
+      Some(stat)
+    Some(_) | None -> None
+  }
+}
+
+/// A review's size as a row says it: `+412 −88, 7 files · 2 finds attached`. The
+/// count of finds is left out when the session has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert review_scan_rule.stat_words(Stat(7, 412, 88), 2)
+///   == "+412 −88, 7 files · 2 finds attached"
+/// assert review_scan_rule.stat_words(Stat(1, 3, 0), 0) == "+3 −0, 1 file"
+/// ```
+pub fn stat_words(stat: review_feed.Stat, finds: Int) -> String {
+  // One file is "1 file", and the plural is every other count.
+  let files = case stat.files {
+    1 -> "1 file"
+    many -> int.to_string(many) <> " files"
+  }
+
+  let size =
+    "+"
+    <> int.to_string(stat.added)
+    <> " −"
+    <> int.to_string(stat.removed)
+    <> ", "
+    <> files
+
+  // The finds are named only when there are some, in the singular for one.
+  case finds {
+    0 -> size
+    1 -> size <> " · 1 find attached"
+    many -> size <> " · " <> int.to_string(many) <> " finds attached"
   }
 }
 
@@ -218,7 +274,11 @@ pub fn answered(
         seen,
         session,
         Seen(
-          verdict: Some(Verdict(message:, changes: changes_in(review))),
+          verdict: Some(Verdict(
+            message:,
+            changes: changes_in(review),
+            stat: review.stat,
+          )),
           pending: NoRead,
         ),
       )
@@ -286,7 +346,7 @@ pub fn ready(
 
     // Only a verdict for the current message that found changes is ready.
     case verdict_of(seen, session) {
-      Some(Verdict(message: read, changes: Changed)) if read == message ->
+      Some(Verdict(message: read, changes: Changed, ..)) if read == message ->
         Ok(session)
       Some(_) | None -> Error(Nil)
     }
@@ -314,7 +374,7 @@ pub fn to_review(
 
     // Only a clean verdict for the current message sends a session to Waiting.
     case verdict_of(seen, session) {
-      Some(Verdict(message: read, changes: Unchanged)) if read == message ->
+      Some(Verdict(message: read, changes: Unchanged, ..)) if read == message ->
         Error(Nil)
       Some(_) | None -> Ok(session)
     }

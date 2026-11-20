@@ -609,7 +609,9 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
 /// The rail's folders on a session's page: the same six as the inbox's, each with
 /// no count, since this page does not read the attention feed. A press goes to the
 /// home page, the one way to the inbox this page has (`component.GoingHome`), and
-/// no folder is marked, because the session on screen is the row that is.
+/// no folder is marked, because the session on screen is the row that is. A page
+/// with no way home draws the folders as text, as "New session" is left out
+/// there, since a button that does nothing is worse than none.
 fn rail_folders(
   model: component.Model(socket),
 ) -> sidebar.Folders(Msg(socket)) {
@@ -623,9 +625,11 @@ fn rail_folders(
       #(inbox_rule.Projecting, None),
     ],
     current: None,
-    pick: Some(fn(_) { Observed(component.GoingHome) }),
+    pick: case component.can_go_home(model) {
+      True -> Some(fn(_) { Observed(component.GoingHome) })
+      False -> None
+    },
     note: "Counts are read on the inbox.",
-    at: component.rail_minute(model),
     running: component.running_count(model),
   )
 }

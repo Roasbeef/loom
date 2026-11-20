@@ -8679,6 +8679,10 @@ pub fn waiting_count(model: Model(socket)) -> Int {
 pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
   let activity = session_activity(model)
 
+  // The approvals the page holds are read once for the render, not once for
+  // each listed session.
+  let held = pending(model)
+
   listing.entries(model.view.groups)
   |> list.filter_map(fn(entry) {
     // Only a session a process runs has a line in "Watch live".
@@ -8686,10 +8690,7 @@ pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
       sessions.Live -> {
         // The session on screen knows its own approvals, which the activity
         // read may not have named yet.
-        let #(doing, pinned) = case
-          entry.id == model.shared.session,
-          pending(model)
-        {
+        let #(doing, pinned) = case entry.id == model.shared.session, held {
           True, [_, ..] as held -> #(Some(sessions.NeedsYou), list.length(held))
           _, _ -> #(dict.get(activity, entry.id) |> option.from_result, 0)
         }
@@ -8731,19 +8732,6 @@ pub fn running_count(model: Model(socket)) -> Int {
       | sessions.Moving(_) -> False
     }
   })
-}
-
-/// The instant the page last heard from the daemon, floored to the minute, in
-/// Unix milliseconds: the time of day the rail's first line draws. The floor keeps
-/// the rail's memo stable between minutes.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // component.rail_minute(model)
-/// ```
-pub fn rail_minute(model: Model(socket)) -> Int {
-  model.shared.stamp.transport_ms / 60_000 * 60_000
 }
 
 /// Whether the page can take its person to the home page, which is where a
@@ -9783,7 +9771,7 @@ pub fn stream_head(
   // The workspace is drawn as its last path segment, as the sidebar does, and
   // a page whose label was not read names no folder.
   let folder = case option.map(label, fn(label) { label.workspace }) {
-    Some(path) -> list.last(string.split(path, "/")) |> result.unwrap("")
+    Some(path) -> heading.last_folder(path)
     None -> ""
   }
 
@@ -9852,10 +9840,10 @@ fn turn_started(model: Model(socket)) -> Option(Int) {
 /// // component.session_title(model)
 /// ```
 pub fn session_title(model: Model(socket)) -> String {
-  case option.map(model.view.label, fn(label) { label.name }) {
-    Some(name) if name != "" -> name
-    Some(_) | None -> string.slice(model.shared.session, 0, 8)
-  }
+  heading.session_name(
+    model.shared.session,
+    option.map(model.view.label, fn(label) { label.name }),
+  )
 }
 
 /// The pinned goal in one line for the strip: its objective, its status and

@@ -122,7 +122,10 @@ pub fn state(words: String, turn: Option(Int)) -> Element(message) {
           html.text(words <> ", turn "),
           element.element(
             "loom-elapsed",
-            [attribute.attribute("since", int.to_string(since))],
+            [
+              attribute.attribute("since", int.to_string(since)),
+              attribute.attribute("form", "minutes"),
+            ],
             [],
           ),
         ],

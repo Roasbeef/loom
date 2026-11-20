@@ -124,8 +124,25 @@ pub fn a_reason_that_is_not_the_providers_says_nothing_of_a_retry_test() {
 pub fn every_failure_has_a_title_and_a_head_test() {
   assert thread_words.stuck_title(thread_words.RateLimited)
     == "The last turn failed on a provider rate limit, and nothing has retried."
-  assert thread_words.stuck_head(thread_words.RateLimited)
-    == "Rate-limited, has not retried"
-  assert thread_words.stuck_head(thread_words.Other)
-    == "Stopped on a failed run"
+  assert thread_words.stuck_head(thread_words.RateLimited, None)
+    == [Words("Rate-limited, has not retried")]
+  assert thread_words.stuck_head(thread_words.Other, Some(5))
+    == [Words("Stopped on a failed run")]
+}
+
+// The row names the time of the failure, so a reader sees `Rate-limited at
+// 13:52, has not retried` where the row's age alone said how long ago.
+pub fn a_stuck_head_names_the_time_it_failed_test() {
+  assert thread_words.stuck_head(thread_words.RateLimited, Some(1000))
+    == [
+      Words("Rate-limited at "),
+      Clock(1000),
+      Words(", has not retried"),
+    ]
+  assert thread_words.stuck_head(thread_words.TimedOut, Some(2000))
+    == [
+      Words("Provider timed out at "),
+      Clock(2000),
+      Words(", has not retried"),
+    ]
 }

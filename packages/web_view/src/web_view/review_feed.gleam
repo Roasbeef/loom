@@ -239,7 +239,11 @@ pub fn of_board(board: worktree_view.Board) -> Review {
     list.partition(shown, fn(file) { workspace_relative(file.path) })
   let working =
     list.map(kept, fn(file) {
-      of_file(file, committed_lines(committed, file.path))
+      of_file(
+        file,
+        committed_lines(committed, file.path),
+        stream_cut(board.committed.extent, committed.last, file.path),
+      )
     })
 
   // A file only the commits touched follows the working tree's.
@@ -450,7 +454,11 @@ pub fn decode(value: JsonValue) -> Result(Review, Nil) {
 /// because the observation already bounded it, and cut afterwards by this
 /// module's own bounds. `committed` is what the commits changed in the same
 /// path, drawn after the working tree's hunks.
-fn of_file(file: worktree_view.File, committed: List(diff_view.Line)) -> File {
+fn of_file(
+  file: worktree_view.File,
+  committed: List(diff_view.Line),
+  stream_extent: String,
+) -> File {
   let working = diff_view.of_lines(string.split(file.patch, "\n"))
 
   // The commits' text is shown even when the working tree's change to the file
@@ -466,8 +474,23 @@ fn of_file(file: worktree_view.File, committed: List(diff_view.Line)) -> File {
     change_of(file.index_status, file.worktree_status),
     content,
     list.append(working, committed),
-    file.extent,
+    // A cut stream cuts the file its last section named, even when the working
+    // tree's own patch for it was whole.
+    case stream_extent {
+      "limited" -> "limited"
+      _ -> file.extent
+    },
   )
+}
+
+/// `limited` when the stream of the commits' patch was cut and its last section
+/// is `path`, whose hunks may have ended in the middle of a line; otherwise
+/// nothing is added to the file's own extent.
+fn stream_cut(extent: String, last: Option(String), path: String) -> String {
+  case extent == "limited" && last == Some(path) {
+    True -> "limited"
+    False -> "complete"
+  }
 }
 
 /// A file the commits touched and the working tree did not, as the review's.

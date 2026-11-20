@@ -158,20 +158,37 @@ pub fn stuck_title(failure: Failure) -> String {
   }
 }
 
-/// The row's one line for a stuck strand: what stopped it, without a time,
-/// since a row's age already says how long ago.
+/// The row's one line for a stuck strand: what stopped it, and when it did when
+/// the daemon could read the time. The instant is a `Clock`, so the browser words
+/// it in its own zone; without one the line leaves it out, and the row's age
+/// says how long ago.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert thread_words.stuck_head(thread_words.RateLimited) == "Rate-limited, has not retried"
+/// assert thread_words.stuck_head(thread_words.RateLimited, Some(1000))
+///   == [
+///     thread_words.Words("Rate-limited at "),
+///     thread_words.Clock(1000),
+///     thread_words.Words(", has not retried"),
+///   ]
+/// assert thread_words.stuck_head(thread_words.RateLimited, None)
+///   == [thread_words.Words("Rate-limited, has not retried")]
 /// ```
-pub fn stuck_head(failure: Failure) -> String {
+pub fn stuck_head(failure: Failure, failed_at: Option(Int)) -> Phrase {
   case failure {
-    RateLimited -> "Rate-limited, has not retried"
-    Overloaded -> "Provider overloaded, has not retried"
-    TimedOut -> "Provider timed out, has not retried"
-    Other -> "Stopped on a failed run"
+    RateLimited -> timed("Rate-limited", failed_at, ", has not retried")
+    Overloaded -> timed("Provider overloaded", failed_at, ", has not retried")
+    TimedOut -> timed("Provider timed out", failed_at, ", has not retried")
+    Other -> [Words("Stopped on a failed run")]
+  }
+}
+
+/// A lead, the time of the failure when it is known, and the words after it.
+fn timed(lead: String, at: Option(Int), tail: String) -> Phrase {
+  case at {
+    Some(instant) -> [Words(lead <> " at "), Clock(instant), Words(tail)]
+    None -> [Words(lead <> tail)]
   }
 }
 

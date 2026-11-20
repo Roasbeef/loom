@@ -18,13 +18,11 @@
 //// 3. `clock` draws one instant, which the eyebrow and the quotes' sources use
 ////    on their own.
 
-import gleam/int
 import gleam/list
-import gleam/string
-import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import web_view/thread_words.{type Part, type Phrase}
+import web_view/view/stamp
 
 /// A phrase as nodes, in order.
 ///
@@ -54,26 +52,5 @@ fn part(each: Part) -> Element(message) {
 /// // phrase.clock(1_790_030_460_000)
 /// ```
 pub fn clock(at: Int) -> Element(message) {
-  let utc = utc_clock(at)
-
-  element.element(
-    "loom-time",
-    [
-      attribute.attribute("at", int.to_string(at)),
-      attribute.title(utc <> " UTC"),
-    ],
-    [html.text(utc)],
-  )
-}
-
-/// The UTC time of day of an instant as `HH:MM`.
-fn utc_clock(at: Int) -> String {
-  let minutes = int.max(at, 0) / 60_000
-
-  two({ minutes / 60 } % 24) <> ":" <> two(minutes % 60)
-}
-
-/// A number as two digits.
-fn two(value: Int) -> String {
-  string.pad_start(int.to_string(value), 2, "0")
+  stamp.plain(at)
 }

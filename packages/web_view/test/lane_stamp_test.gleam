@@ -15,6 +15,8 @@ import lustre/element
 import session_view/step_words
 import session_view/turns
 import web_view/view/lane
+import web_view/view/phrase
+import web_view/view/stamp
 
 fn call(key: String, call: String, standing: turns.Standing) -> turns.Item {
   turns.Step(
@@ -93,4 +95,14 @@ pub fn a_tool_line_carries_the_time_its_records_give_it_test() {
     "<loom-time at=\"1790030460000\" class=\"tl-time\" title=\"22:41 UTC\">22:41</loom-time>",
   )
   assert string.split(html, "<loom-time") |> list.length == 2
+}
+
+// A time is never drawn with a sign in its digits: an instant before the epoch,
+// which a monotonic or unset clock can produce, reads `00:00` through every
+// function that draws a `<loom-time>`.
+pub fn a_negative_instant_reads_as_the_epoch_test() {
+  assert stamp.utc(-5) == "00:00"
+  assert stamp.utc(-90_000_000) == "00:00"
+  assert element.to_string(phrase.clock(-60_000))
+    == "<loom-time at=\"-60000\" title=\"00:00 UTC\">00:00</loom-time>"
 }
