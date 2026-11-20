@@ -1579,3 +1579,79 @@ pub fn ending_every_login_of_a_principal_leaves_the_bearers_pages_test() {
   assert result.is_ok(looked_up(sessions, bearer.cookie))
   assert result.is_ok(looked_up(sessions, theirs.cookie))
 }
+
+// The passkey challenges (protocol-change/127): a challenge answers once, for
+// the purpose it was issued for, within `challenge_ms`, and the table is bounded.
+
+pub fn a_challenge_is_answered_once_for_its_purpose_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(signin) = ui_sessions.challenge(sessions, ui_sessions.SigningIn)
+    as "a sign-in challenge is issued"
+  let assert Ok(registering) =
+    ui_sessions.challenge(sessions, ui_sessions.Registering("owner"))
+    as "a registration challenge is issued"
+
+  // Forty-three base64url characters of 32 bytes, distinct for each issue.
+  assert string.length(signin) == 43
+  assert signin != registering
+  assert ui_sessions.answer(sessions, signin) == Ok(ui_sessions.SigningIn)
+  assert ui_sessions.answer(sessions, signin) == Error(Nil)
+  assert ui_sessions.answer(sessions, registering)
+    == Ok(ui_sessions.Registering("owner"))
+  assert ui_sessions.answer(sessions, registering) == Error(Nil)
+}
+
+pub fn a_challenge_that_was_never_issued_is_not_answered_test() {
+  let time = clock()
+  let sessions = table(time)
+  assert ui_sessions.answer(sessions, "not-a-challenge") == Error(Nil)
+  assert ui_sessions.answer(sessions, "") == Error(Nil)
+}
+
+pub fn a_challenge_expires_on_the_tables_clock_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(early) = ui_sessions.challenge(sessions, ui_sessions.SigningIn)
+    as "a challenge is issued"
+  let assert Ok(late) = ui_sessions.challenge(sessions, ui_sessions.SigningIn)
+    as "a challenge is issued"
+  process.send(time, Advance(ui_sessions.challenge_ms - 1))
+  assert ui_sessions.answer(sessions, early) == Ok(ui_sessions.SigningIn)
+  process.send(time, Advance(1))
+  assert ui_sessions.answer(sessions, late) == Error(Nil)
+}
+
+pub fn the_challenge_table_is_bounded_and_drops_the_oldest_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(first) = ui_sessions.challenge(sessions, ui_sessions.SigningIn)
+    as "the first challenge is issued"
+
+  // Each is issued a millisecond after the one before, so the first expires
+  // first and is the one a full table gives up.
+  let kept =
+    list.repeat(Nil, ui_sessions.max_challenges)
+    |> list.map(fn(_) {
+      process.send(time, Advance(1))
+      let assert Ok(next) =
+        ui_sessions.challenge(sessions, ui_sessions.SigningIn)
+        as "a challenge is issued"
+      next
+    })
+  assert ui_sessions.held_challenges(sessions) == Ok(ui_sessions.max_challenges)
+  assert ui_sessions.answer(sessions, first) == Error(Nil)
+  let assert [second, ..] = kept as "challenges were issued"
+  assert ui_sessions.answer(sessions, second) == Ok(ui_sessions.SigningIn)
+}
+
+pub fn the_sweep_reclaims_expired_challenges_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(_) = ui_sessions.challenge(sessions, ui_sessions.SigningIn)
+    as "a challenge is issued"
+  assert ui_sessions.held_challenges(sessions) == Ok(1)
+  process.send(time, Advance(ui_sessions.challenge_ms))
+  ui_sessions.sweep(sessions)
+  assert ui_sessions.held_challenges(sessions) == Ok(0)
+}
