@@ -110,9 +110,9 @@
 ////   `deploy/`, and for a second one a `link` record saying `distribution`;
 ////   neither is booted), and `vm up` and `vm ensure` each refuse it naming
 ////   `loom vm sync`, `loom vm rm --yes` and `loom vm up`, and change no file;
-////   `vm rm --yes` then removes it, taking the `up` guest's `[distribution]`
-////   table and trusted row out of a file that also holds an untrusted row,
-////   which stays with every other line.
+////   `vm rm --yes` then deletes each guest's directory, leaves the
+////   configuration file byte-identical, and prints what the operator removes
+////   by hand (the row, the cookie, the authority directory, the ledger revoke).
 ////
 //// ## Running it
 ////
@@ -624,6 +624,7 @@ fn drive(run: Run) -> Nil {
   assert_upgrade_results(requests)
 
   failing_script_fails_up(run)
+  worktree_mode_is_staged_and_kept(run)
   guests_are_removed(run)
   old_guests_are_refused(run)
   untrusted_guest(run)
@@ -1537,6 +1538,75 @@ fn failing_script_fails_up(run: Run) -> Nil {
   Nil
 }
 
+// The workspace mode a guest was given is written into its executor's
+// configuration and survives a later `up` with no flag. The failing-script
+// guest is used because `up` stages the configuration before it boots and then
+// stops at the failing script, so the step reads the staged files without a
+// second boot to wait for. A seeded child on a guest is not driven here: it
+// needs a spawner row and a state transfer.
+fn worktree_mode_is_staged_and_kept(run: Run) -> Nil {
+  let up_with = fn(flags: List(String)) {
+    vm(
+      run,
+      list.append(
+        [
+          "up",
+          "--name",
+          run.failing_name,
+          "--workspace",
+          run.repository,
+          "--config",
+          run.directory <> "/fail.toml",
+          "--github",
+          "off",
+        ],
+        flags,
+      ),
+    )
+  }
+  let staged =
+    run.vm_home <> "/" <> run.failing_name <> "/root/srv/loom-node/loom.toml"
+  let workspace = "[workspaces." <> remote_pair.workspace_name <> "]"
+
+  // Shared first, so that the staged file starts without a worktree mode and a
+  // later `worktree` is a real rewrite. The script still fails, so each `up`
+  // ends non-zero, and its output names the script only if `up` got as far as
+  // the boot, which is after staging.
+  let shared = up_with(["--workspace-mode", "shared"])
+  assert string.contains(shared.output, "LOOM-PROVISION-FAILED")
+    as { "the shared up reached the boot:\n" <> shared.output }
+  assert !string.contains(read_file(staged), "mode = \"worktree\"")
+  assert string.contains(read_file(staged), workspace)
+
+  let first = up_with(["--workspace-mode", "worktree"])
+  assert string.contains(first.output, "LOOM-PROVISION-FAILED")
+    as { "the worktree up reached the boot:\n" <> first.output }
+  assert string.contains(read_file(staged), "mode = \"worktree\"")
+    as { "the worktree mode is staged:\n" <> read_file(staged) }
+  assert string.contains(read_file(staged), "base = \"HEAD\"")
+  let status = vm(run, ["status", "--name", run.failing_name])
+  assert string.contains(status.output, "ws mode:    worktree")
+    as { "status names the mode:\n" <> status.output }
+
+  // No flag: the recorded mode is kept. The file was shared two steps ago and
+  // worktree one step ago, so keeping it means this `up` read the record and
+  // staged it again.
+  let second = up_with([])
+  assert string.contains(second.output, "LOOM-PROVISION-FAILED")
+    as { "the bare up reached the boot:\n" <> second.output }
+  assert string.contains(read_file(staged), "mode = \"worktree\"")
+    as { "a resume keeps the mode:\n" <> read_file(staged) }
+
+  // An unknown mode is refused before anything is touched.
+  let refused = up_with(["--workspace-mode", "tree"])
+  assert refused.status != 0
+  assert string.contains(
+    refused.output,
+    "--workspace-mode must be shared or worktree",
+  )
+  Nil
+}
+
 // --- guests made over distribution ---------------------------------------------
 
 // What a guest an older loom made over distribution leaves on the host, as
@@ -1589,8 +1659,8 @@ fn old_guest_snapshot(run: Run, names: List(String)) -> String {
 
 // A guest made over distribution is refused by `up` and by `ensure` before
 // anything is written, booted or sent, with one message naming the three
-// commands in the order a developer needs them, and `rm --yes` removes it with
-// the distribution teardown `rm` keeps. The `up` guest has bundles and no
+// commands in the order a developer needs them, and `rm --yes` deletes its
+// directory and leaves the configuration alone. The `up` guest has bundles and no
 // record, the shape every such guest has; the `ensure` guest is the one
 // `ensure` names after the repository, with a `link` record that says
 // `distribution` as well.
@@ -1601,8 +1671,7 @@ fn old_guests_are_refused(run: Run) -> Nil {
 
   // The file holds what a minted distribution guest installed, its
   // `[distribution]` table and trusted row under the node names `up` gave it,
-  // beside an untrusted row of another guest, which must not keep the
-  // deployment's table alive once its guest is removed.
+  // beside an untrusted row of another guest. `rm` must leave all of it.
   let names = vm_spec.names(up_name)
   let kept_text =
     remote_daemons.model_table("http://127.0.0.1:9")
@@ -1688,10 +1757,9 @@ fn old_guests_are_refused(run: Run) -> Nil {
   }
     as { "vm list names the old guest's link:\n" <> listed }
 
-  // `rm --yes` removes each one with the distribution teardown. The `up`
-  // guest's two tables leave the file; the untrusted row, the model table and
-  // every other line stay, because an untrusted row does not need
-  // `[distribution]`. The `ensure` guest has no table in it.
+  // `rm --yes` deletes each guest's directory and nothing else: the file is
+  // byte-identical afterwards, and the output names what the operator removes
+  // by hand and says that `up` refuses the name until the row is gone.
   list.each([up_name, ensure_name], fn(name) {
     let removed =
       expect_ok(
@@ -1701,16 +1769,25 @@ fn old_guests_are_refused(run: Run) -> Nil {
     io.println_error(label <> " vm rm (old guest " <> name <> "):\n" <> removed)
     assert simplifile.is_directory(run.vm_home <> "/" <> name) == Ok(False)
       as { "rm removed the old guest " <> name <> ":\n" <> removed }
+    list.each(
+      [
+        "[executors." <> name <> "]",
+        "~/.erlang.cookie",
+        "the guest held that cookie",
+        "/authority/",
+        "loom distribution revoke " <> name,
+        "`loom vm up --name " <> name <> "` refuses.",
+      ],
+      fn(leftover) {
+        assert string.contains(removed, leftover)
+          as { "rm names " <> leftover <> ":\n" <> removed }
+      },
+    )
   })
-  let after = read_file(config)
-  assert !string.contains(after, "[distribution]")
-    as { "the old guest's [distribution] left the file:\n" <> after }
-  assert !string.contains(after, "[executors." <> up_name <> "]")
-    as { "the old guest's row left the file:\n" <> after }
-  list.each(string.split(kept_text, "\n"), fn(line) {
-    assert string.contains(after, line)
-      as { "rm kept the line " <> line <> ":\n" <> after }
-  })
+  assert read_file(config) == model
+    as {
+      "rm rewrote the configuration of an old guest:\n" <> read_file(config)
+    }
 }
 
 // The refusal says why, and names `sync`, `rm` and `up` for the guest, in that
@@ -2463,6 +2540,14 @@ fn untrusted_guest(run: Run) -> Nil {
   assert !string.contains(placed, digests.other)
     as { "the further guest's call saw the first guest's leaf:\n" <> placed }
 
+  // That guest serves its workspace in worktree mode: the session ran in a
+  // tree of its own on a `loom/<session>` branch, not in the copy under
+  // `/srv/workspaces`.
+  assert string.contains(placed, "branch=loom/")
+    as { "the worktree guest's session is on its own branch:\n" <> placed }
+  assert !string.contains(placed, "tree=/srv/workspaces/")
+    as { "the worktree guest's session ran in the shared copy:\n" <> placed }
+
   let result = remote_daemons.result_text(requests, "untrusted-call")
   io.println_error(label <> " untrusted tool result:\n" <> result)
   assert_untrusted_turn(key, result)
@@ -2501,10 +2586,20 @@ fn second_guest_after_reload(
         False -> flag
       }
     })
+  // The further guest is also the one that boots in worktree mode, so an
+  // executor really starts with `mode = "worktree"` and a session gets a tree
+  // of its own: a seeded child needs exactly that of a guest.
   let output =
     expect_ok(
-      vm(run, ["up", "--link", "untrusted", ..second_flags]),
-      "loom vm up --link untrusted (second guest)",
+      vm(run, [
+        "up",
+        "--link",
+        "untrusted",
+        "--workspace-mode",
+        "worktree",
+        ..second_flags
+      ]),
+      "loom vm up --link untrusted --workspace-mode worktree (second guest)",
     )
   io.println_error(label <> " vm up (second untrusted guest):\n" <> output)
 
@@ -2591,9 +2686,13 @@ const placed_answer = "the further guest"
 
 // The SHA-256 of the certificate the executor presents, as `sha256sum` prints
 // it in the guest. The file is public; it names the guest because each guest
-// has its own leaf.
+// has its own leaf. The further guest runs in worktree mode, so the same call
+// also prints the branch its session's tree is on and where that tree is.
 fn leaf_digest_command() -> String {
-  "sha256sum " <> node_dir <> "/creds/cert.pem; true"
+  "sha256sum "
+  <> node_dir
+  <> "/creds/cert.pem; echo \"branch=$(git branch --show-current)\"; "
+  <> "echo \"tree=$PWD\"; true"
 }
 
 // The leaf digests of the guest a session was placed on and of another guest.

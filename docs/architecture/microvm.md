@@ -693,8 +693,8 @@ and a failed setup changes nothing (`vm_spec.manifest_action`). It records
 `--github` beside `--allow` in `<vm home>/<name>/github`; a resume with no flag
 keeps the recorded value, an explicit flag replaces it and `--fresh` returns to
 `gh` (`vm_spec.effective_github`). `loomd vm ensure` takes `--workspace`,
-`--github`, `--allow` and `--config`; the name, size, `--fresh` and `--provision`
-are `up`'s alone.
+`--github`, `--allow`, `--workspace-mode` and `--config`; the name, size,
+`--fresh` and `--provision` are `up`'s alone.
 
 Tests: `vm_one_flag_test` (names, the table of `ensure_step`, the github record),
 `vm_lifecycle_model_test` (a `statem` model of two guests, one of which can
@@ -796,7 +796,9 @@ firmware directories and the exported guest root. It then:
    worktree's branch (the ref is updated to the worktree's commit) or its
    detached commit, `origin` is set to the worktree's own `origin` URL (or
    removed when it has none, since the clone's `origin` is the host path), and
-   `git reset` makes the index match `HEAD`, so uncommitted edits show as edits.
+   `git reset` makes the index match `HEAD`, so uncommitted edits show as edits
+   in the checkout. Only a `shared` guest's sessions work in that checkout; a
+   `worktree` guest's sessions start from `HEAD` and do not see them.
    The remote-tracking refs are the source repository's local branches, not
    fetched state. A failed `cp`, `chmod`, Git step or config scrub removes the
    copy, because a later `up` keeps a copy that exists; a Git failure refuses
@@ -841,26 +843,38 @@ loomd: the guest NAME was made as a trusted distribution peer of your daemon, so
 
 The guest is not converted in place: its root and its state disk are rebuilt by
 the new `up`, and its commits survive through `sync`. `status`, `list`, `logs`,
-`down`, `sync` and `rm` treat it as they always did. `status` prints `link:
-distribution, retired` above its node and epmd lines, and `list` names its link
-in a column of its own. `rm` keeps the distribution teardown: it removes
-`[executors.<name>]`, and the `[distribution]` table and the home's
-`.erlang.cookie` only when they are this guest's deployment's and no other
-trusted `[executors.*]` table remains (`vm_spec.plan_teardown`; an untrusted row
-never needs `[distribution]`, so it does not keep the table, which would then
-name `orch/` credentials `rm` deletes); it deletes the sealed authority
-directory unless another guest's bundle names the same deployment; it revokes a
-guest that joined a ledger deployment with the key when that is on this
-machine, signing without the placement check (`ledger_cli.Forced`), since the
-guest can never serve a session again, and refusing with the `rm` to run again
-only when the key or its ledger copy cannot be used; it prints the revoke to
-run when the key is elsewhere; and it refuses a guest that minted a deployment
-others joined until they are removed. It deletes the guest's roots and state
-disk before the rest of its directory, so an interrupted `rm` leaves `deploy/`
-or the `link` record behind with nothing they classify, and the next command
-still reads the guest as an old one. The mint, join and staging code that `up`
-no longer reached was deleted on 2026-11-18; this teardown is deleted once an old
-guest can no longer exist.
+`down`, `sync` and `rm` accept it. `status` prints one line, `link:
+distribution, retired`, with no node or epmd line, and `list` names its link
+in a column of its own. `rm --yes` deletes its roots and state disk before the
+rest of its directory, so an interrupted `rm` leaves `deploy/` or the `link`
+record behind with nothing they classify, and the next command still reads the
+guest as an old one. It changes nothing else: it rewrites no configuration,
+removes no cookie or sealed key, and signs no ledger revoke. It prints fixed
+lines (`vm_spec.retired_leftovers`) naming what the operator removes by hand,
+for both shapes of old guest. A guest that minted its own deployment installed
+`[distribution]` pointing at `<vm home>/<name>/orch/`, which `rm` deleted, so
+the daemon will not start until that table and the `[executors.<name>]` table
+are removed from the configuration file, which also retires the deployment with
+no revoke. A guest that joined an operator's deployment has no
+`[executors.<name>]` row, because the daemon derives it from the ledger, and
+stays a member until `loom distribution revoke <name> --force
+--passphrase-file FILE` signs its revoke; the command looks for the key under
+`DIR/.loom/authority/<id>`, and a key `up` sealed is under
+`<vm home>/authority/<id>/`, so the line says to copy that directory there and
+pass `--home DIR`, and it comes before the line that deletes
+`<vm home>/authority/`. The other lines name `~/.erlang.cookie`, which the guest
+held and which is removed or rotated, and say that `loom vm up` with the same
+name refuses while a trusted `[executors.<name>]` row remains. For a guest that
+joined a ledger `up` writes an untrusted row instead and the daemon refuses
+`executors.reload` ("untrusted executor NAME has the name of an executor the
+ledger enrols") until the revoke lands. Without `--yes`, `rm` prints the same
+items under a heading in the future tense. The
+distribution teardown of `rm` was deleted on 2026-11-19 (ADR-022, the addendum
+of that date), after the mint, join and staging code on 2026-11-18. What stays
+is the detector (`vm_link.traces`, `made`, `settle`, `retired_refusal`) and the
+refusal in `up` and `ensure`, because without it a guest with no `link` record
+reads as new and `up` would keep its root, with the cookie and node key, as an
+untrusted guest.
 
 
 A second `up` with another `--workspace` while the guest is stopped adds that
@@ -1221,9 +1235,9 @@ paths, and a goal's check records exit status 0 with the guest's output. A
 third guest is read by the running orchestrator through `executors.reload`, and
 its jailed call sees that guest's own leaf. A step fabricates the host-side
 traces of two distribution guests and checks that `up` and `ensure` refuse them
-naming the commands and change no file, and that `rm --yes` removes them and
-takes one's `[distribution]` table and trusted row out of a file whose untrusted
-row stays. Another runs `loomd vm ensure` with no `--config` and the default vm
+naming the commands and change no file, and that `rm --yes` deletes each guest's
+directory, leaves the configuration file byte-identical and names what the
+operator removes by hand. Another runs `loomd vm ensure` with no `--config` and the default vm
 home (the isolated home's `~/.loom/vm`, since a daemon started with no
 `[executor_link]` takes a new table by reload only from there or the state
 root's `vm`), beside a daemon on that home's default file, and checks that the
@@ -1259,6 +1273,33 @@ ignores it. `--github` is recorded the same way in `<vm home>/<name>/github`
 `status` prints it. A guest first started with `--github off` therefore resumes
 with no credential proxy, where before the missing flag meant the default `gh`.
 A guest with no record takes `gh`.
+
+`--workspace-mode shared|worktree` is recorded the same way in
+`<vm home>/<name>/workspace-mode` (`vm_spec.encode_workspace_mode`,
+`decode_workspace_mode`, `effective_workspace_mode`) and `status` prints it as
+`ws mode:`. `shared`, the default, leaves the `[workspaces.NAME]` rows of the
+guest's `loom.toml` as `root` alone. `worktree` adds `mode = "worktree"` and
+`base = "HEAD"` to each row (`vm_spec.guest_config_with`), which a seeded child
+(`seed = "workspace"`) placed on the guest needs: without it
+`remote/workspace.state_fitness` refuses the child because a shared workspace has
+no tree of its own for it. Each session on such a guest works in its own
+worktree under the executor's state directory, not in the checkout. A guest
+with no record is `shared`. ADR-022's addendum of 2026-11-19 records the
+decision.
+
+What the mode does to uncommitted work. The copy of the operator's directory,
+uncommitted edits included, is made the same way in both modes, and only a
+`shared` session works in it. A `worktree` session starts from `HEAD` in a tree
+of its own and does not see those edits, so commit before using a worktree
+guest. Switching a resumed guest from `shared` to `worktree` leaves out of every
+new tree the edits earlier sessions made in the checkout, and switching back
+moves a reopened session from its tree to the checkout, because the ledger
+matches a session's workspace by name only (`storage/exec_ledger.gleam`). Commit,
+or run `loom vm sync`, before switching. `up` refuses `worktree` before it writes
+anything when a registered workspace is not the top of a Git checkout, when its
+repository has no commit, or when its name is one the executor's worktree
+directory cannot take (`vm_spec.worktree_refusal`), because the executor would
+otherwise fail to start after the guest was written and booted.
 
 `--provision SCRIPT` takes a host path to a script the developer wrote. Only
 this flag can supply one: the workspace is untrusted input and is never
@@ -1363,7 +1404,8 @@ whose recorded process is gone, is stopped; one whose pid file cannot be read is
 the home are not guests.
 
 `loom vm rm [--name NAME] [--config PATH] [--yes]` deletes a stopped guest and
-undoes its enrolment. A running guest is refused, naming `loom vm down`. Without
+undoes its untrusted enrolment (a guest made over the retired distribution link
+is deleted and its leftovers are named, see "Guests made over distribution"). A running guest is refused, naming `loom vm down`. Without
 `--yes` it changes nothing: it refuses with the guest's workspace names, then
 "Fetch committed work first with `loom vm sync`; uncommitted edits cannot be
 fetched. Run again with --yes to delete it.", then what `--yes` would do to
@@ -1373,25 +1415,25 @@ wrong after the developer followed the advice. `list` and `status` print
 `unreadable` for a workspaces directory that is a link or too large, and `none`
 only for an empty one. With `--yes`:
 
-- `[executors.<name>]` is removed when its `node` is this guest's executor node,
-  and left, with a line saying so, when it names another.
-- `[distribution]` (and the `[[distribution.peers]]` rows below it) and the home's
-  `.erlang.cookie` are removed only when they are this guest's deployment's and
-  no other `[executors.*]` table remains. The table is this guest's when its
-  `node` is the guest's orchestrator node; the cookie is when it equals the one
-  in `deploy/`. Otherwise both stay and the report says why. Both are shared by
-  every executor of the daemon.
+- An untrusted guest's `[executors.<name>]` row is removed only when its pin
+  is the guest's leaf's, and `[executor_link]` with the vm home's link
+  credentials when it is the last untrusted guest (see "The untrusted link").
 - The file is edited by `distribution_install.without_tables`, which parses the
   text first, removes the named sections line by line with every other line kept
   byte for byte, and parses the result again to prove each table is gone, so a
   file that cannot be parsed or a table the line edit cannot reach (a dotted key,
   an inline table) is refused with one line and nothing is removed. The file is
-  written atomically before the cookie and the guest's directory are removed.
+  written atomically before the guest's directory is removed.
 - `<vm home>/<name>/` is removed after `chmod -R u+rwX` (`remove_tree`), with
   `simplifile.delete_all`, which removes a link itself and does not follow it.
 
 Deleting a guest loses work that was not pushed, so a person who wants it first
-runs `loom vm sync`; uncommitted edits cannot be fetched and are lost.
+runs `loom vm sync`; uncommitted edits cannot be fetched and are lost. A
+`worktree` guest's sessions keep their uncommitted files in trees under the
+executor's state directory on `state.img`, not under `root/srv/workspaces/`, so
+copying files out of that directory does not reach them. Only committed work
+reaches the host: `sync` fetches the `loom/<session>` branches the sessions
+committed on.
 
 `loom vm sync [--name NAME] [--workspace NAME] [--checkout PATH]` fetches a copy's
 committed work, `loom/*` worktree branches included, into the developer's
@@ -1478,6 +1520,12 @@ the host are not in it.
 
 ## Known gaps
 
+- A `worktree` guest (`--workspace-mode worktree`) has not been run in a live
+  guest: no executor has been booted in that mode, no session attached and no
+  seeded child placed. Uncommitted files of its sessions are on `state.img` and
+  are not reachable from the host except through committed branches and `sync`.
+  A broken `git worktree add` in the guest would show only at a session's first
+  attach.
 - Nothing in the daemon places an executor into a guest. `loom --vm` (through
   `loom vm ensure`) starts one standing guest for the workspace from the
   command line; a broker or pool driver, a guest per session, and the bundle

@@ -11,7 +11,8 @@
 // view, which bwrap/Landlock already confine.
 //
 // Network mode "loopback" (protocol-change/115) uses a second program
-// that also allows IPv4 TCP sockets, for processes of one execution that
+// that also allows IPv4 TCP sockets and the route netlink socket
+// (NETLINK_ROUTE, for net.InterfaceAddrs), for processes of one execution that
 // talk to each other over the jail's own `lo`. It is sound only inside a
 // fresh network namespace, which the jail guarantees by refusing the mode
 // anywhere else.

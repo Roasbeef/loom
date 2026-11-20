@@ -157,13 +157,13 @@ wait is the caller's less one second. **The gateway**: at attach,
 and the attach's waiter records `Plane(broker, base_policy)` on the binding's
 proxy with the book's `Recorded` call before replying; `PlaneOf` answers it, and
 nothing for a binding not held or retired. Each `clear_call` runs in a **tunnel
-waiter** linked to its connection (`tunnelled`, `tunnel_waiter`): it clears
+waiter** run by weft under a scope linked to its connection (`tunnelled`, `tunnel_waiter`): it clears
 with `broker.over` under `cleared_spec` (the meet of the plane's base, writable
 roots also readable, with the spec's base; no grants; `Config.demand`), closes
 stdin, sends `cleared` first, and forwards each non-empty chunk and the
-settlement as `FromTunnel` messages. `cancelled` unlinks a tunnel waiter before
-killing it, and `stopped` unlinks and kills every tunnel waiter on each normal
-stop. **Tests**: `remote/tunnel_calls_model_test` (statem, hostile frames and
+settlement as `FromTunnel` messages. `tunnels` holds the `weft.Witnessed` of each; `cancelled`
+cancels the one run, and a stopped connection's exit reaches every linked scope, which kills
+its waiter, so no stop loop exists. **Tests**: `remote/tunnel_calls_model_test` (statem, hostile frames and
 both bounds), `remote/untrusted_link_test` (hand-driven hostile executor over
 TLS), `remote/untrusted_gateway_test` (production broker and helper),
 `remote/untrusted_end_to_end_test` (goal check, baseline, diff after a jailed
@@ -267,14 +267,14 @@ private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
 the artifact manifest decoder and revision check, the guest's `loom.toml`, the
 `loom-vm run` and `cp` argument lists, `scrub_git_config`, the pid-file codec,
-the `epmd -names` reader and the daily verbs' decisions (`printable`, the
-checkouts record, `fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
-`read_enrolment`, `plan_teardown`). `client/vm_link` holds the decisions of the
+the daily verbs' decisions (`printable`, the checkouts record,
+`fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
+`retired_leftovers`). `client/vm_link` holds the decisions of the
 untrusted link, which every guest `up` and `ensure` make is on
 (protocol-change/109; ADR-022, the addendum of 2026-11-17). `client/vm_cli`
 performs them with `vm_link_pki`, `distribution_install` (the table merge),
 `host/bootstrap` (`spawn_server`, `process_identity`, `reserve_loopback_port`),
-`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname`, `git` and `epmd`,
+`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname` and `git`,
 `host/access` (`raw_request`, `execute`) for the daemon's `status`,
 `executors.reload` and `daemon.shutdown`, and `weft/poll`. It adds no FFI.
 
@@ -294,13 +294,13 @@ link field: `--link untrusted` is accepted and changes nothing, and `--link
 distribution` is refused by the parser (`vm_spec.link_flag`). The verbs that only
 read a guest (`status`, `list`, `rm`) ask `vm_link.made` through
 `vm_cli.recorded_kind` and `made_kind`, so an old guest is shown as
-`distribution` and removed with the distribution teardown; a directory with no
+`distribution` and removed without undoing its enrolment; a directory with no
 record and no traces reads as untrusted, and `other_kinds` does not count it.
 `bring_up` calls `bring_up_linked` directly. The distribution half it once had
 (`deployment`, `enroll`, `stage`, `boot`, the mint, join and seal helpers,
 `vm_spec`'s `deployment_plan`, join decisions and `with_loopback_listener`) was
-deleted on 2026-11-18; what remains of that path is the teardown `rm` runs for an
-old guest and the classifier that refuses one.
+deleted on 2026-11-18, and the teardown `rm` ran for an old guest on 2026-11-19;
+what remains of that path is the classifier that refuses one.
 
 `bring_up_linked` chooses the port without recording it, works out the merge (a
 refusal leaves no guest), records the kind and port, writes the file, then runs
@@ -386,9 +386,9 @@ read with `executors.reload`, and its jailed call sees its own leaf's digest. A
 migration step fabricates the host-side traces of two distribution guests
 (bundles only, and a `link` record saying `distribution`), and checks that `up`
 and `ensure` refuse them naming the three commands and change no file, that
-`status` and `list` call them distribution guests, and that `rm --yes` removes
-them, taking one's `[distribution]` table and trusted row out of a file whose
-untrusted row and other lines stay. A default-daemon step runs `vm ensure` with
+`status` and `list` call them distribution guests, and that `rm --yes` deletes
+their directories, leaves the configuration byte-identical and names the
+leftovers. A default-daemon step runs `vm ensure` with
 no `--config` and the default vm home (`~/.loom/vm` of the isolated home)
 beside a daemon on that home's default file with no `[executor_link]`, and
 checks the answer line, that the reload was not refused, that the same daemon
@@ -416,7 +416,19 @@ running daemon to reload, and `vm_spec.restart_refusal` turns a daemon that
 cannot reload and is left running into one error sentence. `up` records
 `--github` in `<vm home>/<name>/github` (`vm_spec.effective_github`,
 `encode_github`, `decode_github`); `UpOptions.github` is an `Option`, `None`
-meaning not given. Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
+meaning not given. `--workspace-mode shared|worktree` is recorded the same way in
+`<vm home>/<name>/workspace-mode` (`vm_spec.GuestWorkspaceMode`,
+`effective_workspace_mode`, `encode_workspace_mode`, `decode_workspace_mode`;
+`UpOptions.workspace_mode` is an `Option`), and `vm_spec.guest_config_with`
+writes `mode = "worktree"` and `base = "HEAD"` into each `[workspaces.NAME]` for
+`GuestWorktree` and nothing more for `GuestShared`, so a seeded child can be
+placed on the guest (`remote/workspace.state_fitness`). `vm_cli.worktree_preflight` runs
+before anything is written and refuses `worktree` (the effective mode, a
+recorded one included) for a workspace that is not the top of a Git checkout, whose
+`HEAD` names no commit, or whose name `worktrees.safe_component` refuses
+(`vm_spec.worktree_refusal`), and on a resume checks every registered copy.
+`resolve_workspace_mode` and `record_workspace_mode` are `@internal` so the record
+is tested through its file. Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
 `statem` model over the pure decisions with a distribution guest in some
 starting configurations.
 
@@ -429,15 +441,12 @@ through `make_inside` and a rename, and guest text printed through
 `vm_spec.printable`. `up` records each copy's developer checkout in
 `<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
 `sync`; `--checkout PATH` overrides it and is required for a guest with no record.
-`rm` removes an untrusted guest's row (above), and for a guest made over
-distribution `[executors.<name>]`, and `[distribution]` and the home's cookie only
-when they are this guest's and no other trusted executor remains
-(`distribution_install.without_tables`, `vm_spec.plan_teardown`; `read_enrolment`
-leaves untrusted rows out of `other_executors`), with its sealed authority
-directory and ledger revoke as `removal_plan` decides. The revoke is signed with
-`ledger_cli.Forced` (`signed_revoke`, `vm_spec.unchecked_revoke_line`), since a
-guest `up` refuses serves no session again, and a key or ledger copy that cannot
-be used is worded by `vm_spec.rm_revoke_failure`. `apply_removal` deletes the
+`rm` removes an untrusted guest's row (above). For a guest made over
+distribution `planned_removal` makes a plan that rewrites nothing, and
+`apply_removal` prints `vm_spec.retired_leftovers`, the fixed lines naming what
+the operator removes by hand (the row and an unused `[distribution]` table, the
+cookie, `<vm home>/authority/`, `loom distribution revoke NAME`) and saying that
+`up` refuses the name until the row is gone. `apply_removal` deletes the
 roots and `state.img` before the rest of the directory, so the marker that
 classifies a guest outlives them. `list` counts a directory as a guest when
 `made_kind` is not `Ok(None)`, as `other_kinds` does. `rm` refuses a running
@@ -515,7 +524,7 @@ Invariants that break things when violated:
   `link-credentials/`, `root/`, `root.next/` (only during an upgrade),
   `root.building/` and `workspace.building/` (only while `up` makes a clone or
   a copy), `state.img`, `allow`, `github`, `checkouts`, `root-revision`,
-  `provision`, `loom-vm.pid` and `loom-vm.log`, and for a guest made over
+  `workspace-mode`, `provision`, `loom-vm.pid` and `loom-vm.log`, and for a guest made over
   distribution `deploy/` and `orch/`. The vm home's `link/` holds what every
   guest shares. `LOOM_VM_HOME` overrides `~/.loom/vm`.
 - `up` and `ensure` never bring a guest up over distribution: `vm_link.settle`
