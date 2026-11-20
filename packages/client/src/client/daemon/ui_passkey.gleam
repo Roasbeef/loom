@@ -188,6 +188,10 @@ pub fn register(
   use credential_id <- result.try(canonical(fields, "id", raw_id))
   use challenge <- result.try(passkey.challenge_of(client_data))
 
+  // The label is judged before the challenge is spent, so a label the person can
+  // correct does not cost them the challenge.
+  use label <- result.try(label(fields))
+
   // The challenge must be this principal's registration.
   use Nil <- result.try(spend_registration_challenge(
     sessions,
@@ -206,7 +210,6 @@ pub fn register(
     )
     |> result.map_error(refused(_, "register")),
   )
-  use label <- result.try(label(fields))
   use Nil <- result.map(
     manager.add_passkey(
       registry,

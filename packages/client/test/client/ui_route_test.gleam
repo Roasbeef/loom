@@ -11656,8 +11656,10 @@ pub fn a_replayed_passkey_assertion_is_refused_test() {
   fixture(fn(_, port, credential) {
     let #(_, authenticator) = registered_passkey(port, credential)
     let challenge = attribute(signin_page(port).body, "data-challenge")
-    assert passkey_assert(port, authenticator, challenge, 1, 5).status == 200
-    let again = passkey_assert(port, authenticator, challenge, 1, 5)
+    // The counter is zero beside a stored zero, which the counter rule accepts
+    // every time, so only the challenge's single use can refuse the second post.
+    assert passkey_assert(port, authenticator, challenge, 0, 5).status == 200
+    let again = passkey_assert(port, authenticator, challenge, 0, 5)
     assert again.status == 401
     assert string.contains(again.body, "This passkey could not sign you in.")
     assert !string.contains(again.body, authenticator.id)
@@ -11713,6 +11715,30 @@ pub fn a_passkey_sign_in_that_is_wrong_is_one_refusal_test() {
     let client =
       passkey_client_data("webauthn.get", challenge, "https://evil.example")
     let data = passkey_data(passkey_rp, 5, 1)
+    let message = <<data:bits, bootstrap.sha256(client):bits>>
+    refused(
+      post_form(
+        port,
+        "/ui/signin",
+        [
+          #("id", authenticator.id),
+          #("cdj", base64url(client)),
+          #("ad", base64url(data)),
+          #(
+            "sig",
+            base64url(ecdsa.sign(authenticator.private, message, hash.Sha256)),
+          ),
+        ],
+        [],
+      ),
+    )
+
+    // The right origin and a signature over authenticator data that hashes
+    // another relying party's id.
+    let challenge = fresh()
+    let client =
+      passkey_client_data("webauthn.get", challenge, passkey_address(port))
+    let data = passkey_data("evil.example", 5, 1)
     let message = <<data:bits, bootstrap.sha256(client):bits>>
     refused(
       post_form(
@@ -11821,15 +11847,25 @@ pub fn the_passkey_sign_in_post_is_checked_before_it_is_read_test() {
 // The registration page is the owner's fresh home's: a page a passkey signed in
 // is resumed, so it is refused the page and the post alike.
 pub fn a_resumed_home_cannot_register_a_passkey_test() {
-  fixture(fn(_, port, credential) {
+  fixture(fn(ready, port, credential) {
     let #(_, authenticator) = registered_passkey(port, credential)
     let challenge = attribute(signin_page(port).body, "data-challenge")
     let signed = signed_in(passkey_assert(port, authenticator, challenge, 1, 5))
     let page = passkey_page(port, signed.page)
     assert page.status == 403
     assert string.contains(page.body, "No passkey was added.")
-    let #(_, answer) = passkey_register(port, signed.page, "x", "Tablet")
+
+    // A live registration challenge, from a second fresh home of the same owner,
+    // posted with the resumed page's own cookie and nonce: only the page's
+    // standing can refuse it.
+    let second = sign_in(port, credential)
+    let live = attribute(passkey_page(port, second.page).body, "data-challenge")
+    let #(_, answer) = passkey_register(port, signed.page, live, "Tablet")
     assert answer.status == 403
+    let assert Ok(held) =
+      manager.list_passkeys(ready.registry, bearer_digest(credential))
+      as "the passkeys are listed"
+    assert list.length(held) == 1
 
     // The bookmark's resumed home is refused the same.
     let resumed = resume_as(port, signed)
@@ -11879,22 +11915,35 @@ pub fn a_registration_without_the_pages_standing_is_refused_test() {
     let signin = attribute(signin_page(port).body, "data-challenge")
     assert passkey_register(port, signed.page, signin, "A").1.status == 403
 
-    // Nothing was written by any of them.
+    // Nothing was written by any of them, and the original challenge was not
+    // spent by them: it still registers.
     assert manager.list_passkeys(ready.registry, bearer_digest(credential))
       == Ok([])
+    assert passkey_register(port, signed.page, challenge, "A").1.status == 303
+    let assert Ok(held) =
+      manager.list_passkeys(ready.registry, bearer_digest(credential))
+      as "the passkeys are listed"
+    assert list.length(held) == 1
   })
 }
 
 // A member's home is refused the registration page and the post.
 pub fn a_members_home_cannot_register_a_passkey_test() {
-  fixture(fn(ready, port, _) {
+  fixture(fn(ready, port, credential) {
     let session = create_session(ready, "member-passkey", 1301)
     let member_credential =
       member(ready, "ui-passkey", session, access.Operator)
     let signed = sign_in_as(port, member_credential)
     let page = passkey_page(port, signed.page)
     assert page.status == 403
-    assert passkey_register(port, signed.page, "x", "A").1.status == 403
+
+    // The owner's live registration challenge, posted with the member's own
+    // cookie and nonce, registers nothing for either of them.
+    let owner = sign_in(port, credential)
+    let live = attribute(passkey_page(port, owner.page).body, "data-challenge")
+    assert passkey_register(port, signed.page, live, "A").1.status == 403
+    assert manager.list_passkeys(ready.registry, bearer_digest(credential))
+      == Ok([])
   })
 }
 
@@ -11912,15 +11961,27 @@ pub fn a_passkey_label_is_judged_and_defaults_test() {
     // catalogue's rule, a blank label defaults, and a name of
     // spaces and punctuation is kept.
     assert register("bad\tlabel") == 400
+    assert label_refused_keeps_the_challenge(port, signed)
     assert register(string.repeat("x", 33)) == 403
     assert register("  ") == 303
     assert register("Work laptop (2026)") == 303
     let assert Ok(held) =
       manager.list_passkeys(ready.registry, bearer_digest(credential))
       as "the passkeys are listed"
-    assert list.map(held, fn(row) { row.label })
-      == ["Passkey", "Work laptop (2026)"]
+    assert list.sort(list.map(held, fn(row) { row.label }), string.compare)
+      == ["Kept", "Passkey", "Work laptop (2026)"]
   })
+}
+
+// A label the catalogue refuses does not spend the challenge: the same
+// challenge registers once the label is corrected.
+fn label_refused_keeps_the_challenge(port: Int, signed: Signed) -> Bool {
+  let page = passkey_page(port, signed.page)
+  let challenge = attribute(page.body, "data-challenge")
+  let first =
+    passkey_register(port, signed.page, challenge, string.repeat("x", 33))
+  let second = passkey_register(port, signed.page, challenge, "Kept")
+  first.1.status == 403 && second.1.status == 303
 }
 
 // An ES256 key is the only kind accepted: a registration with another curve's
