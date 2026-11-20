@@ -38,12 +38,15 @@ starts from a credential the daemon has already issued:
    new person, not for the owner, and the owner would need a `loomclaim_`
    token, which `loom` on the box also issues (`web-view.md:1740-1770`).
 
-So the first browser ever signed in must come from `loom ui` on the box, and
-every later browser must come either from a shell on the box again or from a
+So the first browser ever signed in must come from `loom ui` on the box. A
+later browser must come either from a shell on the box again or from a
 *fresh* home, which is a home the person opened with `loom ui` within the
 last eight hours. A laptop whose login was resumed from its bookmark
-cannot sign the phone in. In practice the owner is at a shell on the box
-whenever the phone needs access.
+cannot sign the phone in. A login also ends thirty days after it was
+issued, with a fixed expiry (`ui_login.gleam:160-168`, `:288`;
+`065-web-workspace-mode.md:753-757`), so every browser needs `loom ui` on
+the box again at least monthly. In practice the owner is at a shell on the
+box whenever the phone needs access.
 
 What the owner asked for: reach the daemon from the phone the way Tailscale
 login works, with the approval given by something already in the owner's
@@ -98,25 +101,39 @@ using a source address that Serve would have to pass along. I know of no
 header Serve sets for the second. *(inference.)*
 
 **How the daemon would tell a real Serve request from a forged one.** It
-cannot, from the request alone. The headers are ordinary request headers
-arriving on a listener that any process on the box can connect to. The
+cannot, from the request alone. Serve strips identity headers that a
+tailnet client tries to send and sets them itself, and it sets none for
+Funnel traffic or for tagged devices (Tailscale kb/1312). That protects
+against a forged header arriving *through* Serve. It does not protect
+the loopback listener behind Serve: any local process on the box can
+connect to it with a listed `Host` and write the header itself. The
 options are:
 
 1. *Trust the loopback listener.* Accept the headers, since Serve is the
-   only thing that is supposed to connect. This fails the 051 model: a
-   session whose tools have network access runs `curl -H
-   'Tailscale-User-Login: user@github' http://127.0.0.1:4100/...` with the
-   listed `Host`, and obtains the owner's login. A login for the owner is
-   owner authority (`protocol-change/065-web-workspace-mode.md:893-896`).
-   Sessions run with `--network off` would be safe, but that is not the
-   default.
+   only thing that is supposed to connect. Whether that fails the 051
+   model depends on the session's `network` setting. Under `network =
+   "full"`, which is the default (`bwrap.go:67-70`, `:225-236`;
+   `docs/architecture/effects.md:316-320`), a session's tools can run
+   `curl -H 'Tailscale-User-Login: user@github'
+   http://127.0.0.1:4100/...` with the listed `Host` and obtain the
+   owner's login, which is owner authority. Under `off`, `loopback` or
+   `proxy` that path is closed *(inference: I read the sandbox
+   settings, not their enforcement for loopback connects)*. So the
+   forgery premise holds for the default only.
+   - *The cheap variant.* Trust the header only when the daemon's
+     network setting is `off`, and mint the login as `Resumed`. It is
+     safe against the session's agent by the argument above, and a
+     `Resumed` login cannot mint device links or open the admin page.
+     It rarely helps: it needs every session on the box to run with no
+     network, which a coding agent that fetches dependencies and talks
+     to a model provider cannot do, and any other local process on the
+     box can still forge the header.
 2. *Serve to a unix socket.* Serve can forward to `unix:/path`. *(inference.)*
-   Filesystem permissions on the socket then replace the loopback port as
-   the gate, and the session sandbox, which jails the filesystem, would not
-   reach it. This requires the daemon to listen on a unix socket for the
-   view, and `mist`, the HTTP server it uses, to support that. I did not
-   check whether it does. If it does not, this is new listener code and
-   probably new FFI.
+   Filesystem permissions on the socket would then replace the loopback
+   port as the gate. The daemon cannot listen there today:
+   `glisten.bind` accepts an address, not a socket path
+   (`glisten.gleam:325-337`), so this means forking glisten and mist.
+   That is a large cost for one option.
 3. *Bind the tailnet address and verify with `whois`.* The daemon listens
    on the node's `100.x` address, reads the real peer address, and asks
    `tailscaled`. That is robust. It has no TLS, so the page is not a secure
@@ -126,7 +143,7 @@ options are:
 
 **What it trusts.** `tailscaled` on the box, the tailnet's own login and
 device authorization, and, in option 1, the absence of any hostile local
-process.
+process, including a session's agent under `network = "full"`.
 
 **Code it needs.** A config key and its validation; a source of the
 tailnet identity (a header read, or a call to `tailscale whois --json`
@@ -136,10 +153,9 @@ a route or an extra branch in `server.web_view` (`server.gleam:568`) that
 calls `ui_login.issue` for the owner; and tests.
 
 **Cost.** Smallest UX of any option, and the only one needing nothing from
-the owner's laptop. The cost is the trust in the headers. Unless the
-daemon listens where a hostile local process cannot reach it, a session's
-agent can obtain the owner's thirty-day login. I would not build 2a on the
-loopback listener.
+the owner's laptop. The cost is the trust in the headers. Under the
+default `network = "full"`, a session's agent can obtain the owner's
+thirty-day login. I would not build 2a on the loopback listener.
 
 ### 2b. Passkeys (WebAuthn)
 
@@ -184,28 +200,32 @@ At registration the daemon additionally parses the attested credential
 data. It accepts attestation `none` only: there is no vendor trust to
 establish for a single-owner daemon.
 
-**What OTP provides.** `crypto:verify(ecdsa, sha256, Message, DerSignature,
-[PublicPoint, secp256r1])` verifies an ES256 signature, and
-`crypto:hash(sha256, _)` does the hashing. `gleam_crypto`, which both
-`client` and `storage` already depend on (`packages/client/gleam.toml:38`,
-`packages/storage/gleam.toml:12`), covers hashing and HMAC; I do not
-believe it exposes ECDSA verification *(inference; check `go doc`-style
-with `gleam docs` before settling)*. So the design needs **one**
-`@external`, to `crypto:verify`, in one `internal/ffi_*.gleam` module with
-the comment the style rule requires. That is the minimum the rule allows:
-gleam_stdlib, gleam_erlang, gleam_otp and weft cannot verify a signature.
-No new Hex dependency is needed.
+**What provides the cryptography.** `kryptos` 1.5.0 is already locked
+for `client` (`packages/client/manifest.toml:55`), pulled in through
+`gose`. It provides `kryptos/ec.public_key_from_der(der) ->
+Result(PublicKey, Nil)`, which takes SPKI DER of a named curve;
+`kryptos/ec.public_key_curve(key)`, to check the curve is `P256`; and
+`kryptos/ecdsa.verify(public_key, message, signature, hash)`, which takes
+a DER signature and a hash algorithm and returns `Bool`. I read these in
+the kryptos 1.5.0 source in another package's build directory
+(`packages/conformance/build/packages/kryptos/src/kryptos/`), since
+`packages/client` has no build directory in this worktree. So the plan is
+to add `kryptos` as a direct dependency of `client` (and hand-update any
+downstream `manifest.toml` requirements line, as the path-dependency
+hazard notes), hash with `gleam_crypto`, and write **no `@external`** and
+no `.erl` file. That meets the style rule that custom FFI is a last
+resort (`docs/gleam-style.md:1522-1532`).
 
-Parsing is where a dependency could be avoided. The browser's
+The browser removes the need for a CBOR or COSE decoder. Its
 `AuthenticatorAttestationResponse.getPublicKey()` returns the credential
-public key as SubjectPublicKeyInfo DER, and `getAuthenticatorData()` returns
-the authenticator data bytes, so the page can send both and the daemon does
-not need a CBOR or COSE decoder. A fixed-prefix check of the 91-byte P-256
-SPKI, then the 65-byte uncompressed point, is a pure-Gleam function.
-Browsers new enough for passkeys ship both methods *(inference)*. If the
-owner wants to support an authenticator that returns another algorithm, a
-COSE reader is needed; I would refuse everything but ES256 and say so on the
-registration page.
+public key as SubjectPublicKeyInfo DER, and `getAuthenticatorData()`
+returns the authenticator data bytes, so the page sends both and the
+daemon passes the key to `public_key_from_der`, requires curve `P256`, and
+stores the DER. Browsers new enough for passkeys ship both methods
+*(inference)*. At sign-in the daemon verifies the signature over
+`authenticatorData ++ sha256(clientDataJSON)`. I would refuse everything
+but ES256 and say so on the registration page; supporting another
+algorithm would need a COSE reader.
 
 **What it trusts.** The browser's WebAuthn implementation and the platform
 authenticator; the rpId and origin check; the Serve certificate (the
@@ -246,14 +266,16 @@ own actor; three routes (`GET /ui/signin`, `POST` for options and for the
 assertion) with `Sec-Fetch-Site: same-origin` rules as the resume has
 (`ui_http.same_origin_post`, `ui_http.gleam:581`); two pure modules in
 `web_view/host` for the byte parsing and checks (property-tested on both
-targets, like `host/login`); the single FFI function; one asset script and
+targets, like `host/login`); the kryptos dependency and no FFI; one asset
+script and
 its policy; a "Passkeys" list with delete in the account panel beside
 "Sign-ins" (`web-view.md:1700-1708`); the root page's text for a browser
 with no login (`web-view.md:1964-1990`) pointing at the sign-in page.
 
 **Cost.** The largest build here: a migration, a new credential class
 beside `bearer` and `browser` (065 added the kind column so this is
-anticipated, `065-web-workspace-mode.md:893-896`), an FFI function, and
+anticipated; the kind column is described in the same review addendum,
+`065-web-workspace-mode.md:880-921`), a new direct dependency, and
 real browser testing on iOS and desktop. The failure modes are a lost
 passkey with no recovery other than `loom ui` on the box (which stays), and
 a synced passkey that is only as safe as the owner's cloud account.
@@ -268,38 +290,52 @@ the QR code with the phone, and presses the confirmation button
 
 **Why it was refused.** Protocol-change/065 states the rule in two places
 (`:191-193`, `:389`, `:467`) and gives the reason in its review addendum
-(`:880-921`): "A stolen fresh home is worth a login", and the generalisation
-that a *resumed* home able to make another login lets one stolen bookmark
-mint a second credential, which the owner cannot tell from the first except
-in the sign-in list. The owner ruled the `Fresh | Resumed` origin on
-2026-10-04 (`:910`, `:921`). The cost section names the limit: a stolen
-login can do everything a resumed home can for thirty days "but no admin
-page and no device link, which only a fresh home mints" (`:755-757`).
+(`:880-921`): a device link from any home turned a stolen eight-hour page
+into a thirty-day credential, and an admin page re-mintable from a resumed
+home made the fifteen minutes a page lifetime rather than a credential
+bound. The Cost section says a stolen *fresh* home is worth a login
+(`:758`), and that a stolen login does everything a resumed home can for
+thirty days "but no admin page and no device link, which only a fresh home
+mints" (`:753-757`). The owner ruled the `Fresh | Resumed` origin on
+2026-10-04 (`:910`, `:921`).
 
 **What has changed since.** The review also fixed the part of the risk
 that was about lifetime. A device-link login inherits the issuing login's
 expiry and names it as parent (`ui_socket.gleam:3200-3210` doc, passing
 `standing.login` at `:3274-3280`; `065:921`), and the grant allowance
 (three an hour) applies (`:757-759`). So a stolen bookmark cannot extend
-its own thirty days by minting children. What remains is that the thief
-holds a *second row* that survives the owner revoking the first, unless
-revocation of a parent also ends its children. I have not verified whether
-`revoke_login` follows the parent link, and that decides how serious
-the residual is. *(open: see section 4.)*
+its own thirty days by minting children.
+
+What remains is that revoking a login does **not** cascade.
+`access.gleam:1477-1497` revokes only the one row, and the `EndLogin` case
+in `ui_sessions` (`:1296-1306`) ends only that login's own pages. A thief
+who mints a child before the owner revokes the parent keeps the child. So
+2c needs a transitive `issued_by` cascade, in the registry and in the page
+tables, built first.
+
+Two more constraints. The new device link must keep `origin:
+standing.origin`; `device_link_for` mints `Fresh` today (`ui_socket.gleam:3268`),
+which is correct only because a `Resumed` page cannot reach it. If the
+`Resumed` arm is removed and that line is left alone, a stolen bookmark
+yields a `Fresh` home with admin access. And the phone's login expires with
+its parent, so at most thirty days after the laptop's login both need
+`loom ui` on the box again.
 
 **What it trusts.** That the person holding a resumed home is the owner. It
 adds no new factor; it moves trust from "was at a shell within eight
 hours" to "has a laptop whose bookmark is valid".
 
 **Code it needs.** Remove the `Resumed` arm in `device_link_for`
-(`ui_socket.gleam:3231-3236`), let the home draw the control
-(`view/signins`), update the tests that assert a resumed home is refused,
-and amend 065 with an addendum for the new ruling. No storage change.
+(`ui_socket.gleam:3231-3236`) and pass `origin: standing.origin` instead of
+`Fresh` at `:3268`, so the minted ticket stays `Resumed`; let the home draw
+the control (`view/signins`); update the tests that assert a resumed home
+is refused; add the revocation cascade above; and amend 065 with an
+addendum for the new ruling. No storage change beyond the cascade query.
 
-**Cost.** Small. It solves the phone only when some browser of the owner
-already has a login, and the very first browser still needs `loom ui` on
-the box once. It also weakens the 2026-10-04 ruling, which is the owner's
-to change.
+**Cost.** Medium once the cascade is counted. It solves the phone only when
+some browser of the owner already has a login, and it lasts at most thirty
+days from that login, after which `loom ui` on the box is needed again. It
+also weakens the 2026-10-04 ruling, which is the owner's to change.
 
 ### 2d. Approval from a signed-in browser (a pairing code)
 
@@ -349,32 +385,31 @@ authority.
 
 ## 3. Recommendation
 
-1. **Now: 2c, if the owner reverses the 2026-10-04 ruling; otherwise skip
-   to 2b.** It is a deletion plus tests, and it answers the stated case
-   when any laptop browser is already signed in. It needs an **addendum to
-   `protocol-change/065`** (the ruling is its own) and no new number. I
-   would only do it after confirming that revoking a login also ends its
-   children (section 4, question 2), because that is what makes the
-   weakening bounded.
-2. **Next: 2b, passkeys.** It is the option that matches the request ("use my
-   passkey"), needs no shell and no already-signed-in browser, and defends
-   against the agent threat model that rules out 2a. It needs a **new
-   protocol-change at the next free number** (127 if branch 126 lands first;
-   check `ls protocol-change` at filing): the credential table and
-   catalogue migration, the three routes, the challenge lifetime, the
-   `Fresh` ruling for a passkey sign-in, and the one FFI function with its
-   justification. Staged as: pure verification and the FFI with property
-   tests; the table and registration from a fresh home; the sign-in page
-   and the account panel list.
-3. **Not now: 2a**, until the daemon can be reached by Serve through a
-   socket that a session's tools cannot connect to. If a unix-socket
-   listener is added for other reasons, 2a becomes a small addition on top
-   and would be its own protocol-change.
+1. **Build 2b, passkeys, now.** It matches the request ("use my passkey"),
+   needs no shell and no already-signed-in browser, and defends against the
+   agent threat model, since a signature cannot be forged from the
+   loopback listener. It uses `kryptos` and `gleam_crypto` and needs no
+   FFI. It needs a **new protocol-change at the next free number** (127 if
+   branch 126 lands first; check `ls protocol-change` at filing): the
+   credential table and catalogue migration, the three routes, the
+   challenge lifetime, the `Fresh` ruling for a passkey sign-in, and the
+   kryptos dependency. Staged as: pure verification with property tests;
+   the table and registration from a fresh home; the sign-in page and the
+   account panel list.
+2. **2c only as a stopgap**, if the owner reverses the 2026-10-04 ruling,
+   and only with the two fixes above: the transitive `issued_by`
+   revocation cascade, and `origin: standing.origin` on the minted ticket.
+   It needs an **addendum to `protocol-change/065`**, not a new number.
+3. **2a stays rejected** under `network = "full"`. The `off`-only,
+   `Resumed` variant is safe against the agent but rarely applicable. A
+   unix-socket Serve target would mean forking glisten and mist.
 4. **2d only if** the owner wants the phone to initiate. It is 2c with more
-   code and the same trust.
+   code and the same trust, and needs the same cascade.
 
 Whatever is built, `loom ui` on the box stays as the recovery path for a
-lost passkey and as the only way to sign in the very first browser.
+lost passkey and as the way to sign in the first browser. Whether a
+passkey sign-in counts as `Fresh`, with user verification required, is the
+owner's ruling (section 4, question 3).
 
 ## 4. Open questions for the owner
 
@@ -382,10 +417,10 @@ lost passkey and as the only way to sign in the very first browser.
    link (065 `:193`)? If the answer is yes for the owner principal only,
    the rule can read "`Fresh` or the owner's own resumed home", which keeps
    a member's stolen bookmark unable to mint.
-2. **Does revoking a login end the logins it issued?** I did not trace
-   `manager.revoke_login`. If it does not, 2c lets a stolen bookmark leave a
-   surviving row after the owner revokes, and the answer to question 1 should
-   depend on it.
+2. **Build the revocation cascade?** Revoking a login does not end the
+   logins it issued (`access.gleam:1477-1497`; `ui_sessions` `EndLogin`,
+   `:1296-1306`). 2c is unsafe without a transitive `issued_by` cascade.
+   Is that worth building for a stopgap, given passkeys do not need it?
 3. **Should a passkey sign-in be `Fresh`?** If not, a phone signed in with a
    passkey cannot open the admin page or mint a device link without going
    back to `loom ui`. If yes, a stolen unlocked phone with Face ID bypass
@@ -398,10 +433,11 @@ lost passkey and as the only way to sign in the very first browser.
 5. **One owner or several?** The proposal registers passkeys against a
    principal, so members could also use them. Restrict to the owner at
    first?
-6. **Is `--network off` the default for sessions you run** on this box? It
-   decides whether 2a on loopback is tolerable at all. I assumed not.
-7. **Unix-socket listener for the view.** Is it worth building for 2a? I
-   did not check that `mist` supports it.
+6. **Do you run sessions on this box with a network setting other than
+   `full`?** The default is `full`, which makes 2a on loopback unsafe. I
+   assumed you use the default.
+7. **Unix-socket listener for the view.** Worth forking glisten and mist for
+   2a? I assumed not.
 8. **The ts.net name stability.** A passkey is bound to the rpId. Renaming
    the node or the tailnet orphans every passkey. Is a fixed name
    acceptable, or should the daemon keep the list of rpIds it has issued?
