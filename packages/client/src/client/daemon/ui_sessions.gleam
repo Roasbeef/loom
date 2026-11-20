@@ -1634,7 +1634,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Challenge(purpose:, reply:) -> {
       let issued =
         state.settings.entropy(32) |> bit_array.base64_url_encode(False)
-      let room = with_room_for_challenge(state.challenges, now)
+      let room = with_room_for_challenge(state.challenges, purpose, now)
       process.send(reply, issued)
       actor.continue(
         State(
@@ -1697,36 +1697,62 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-/// The live challenges, with room for one more: an expired one is dropped, and at
-/// `max_challenges` the one that expires first is dropped as well.
+/// The live challenges, with room for one more of `purpose`: an expired one is
+/// dropped, and at `max_challenges` the one of the same kind that expires first
+/// is dropped as well, so a flood of sign-in pages cannot push out a
+/// registration's challenge. A table holding no challenge of that kind drops the
+/// oldest of any.
 fn with_room_for_challenge(
   table: Dict(String, Entry(Purpose)),
+  purpose: Purpose,
   now: Int,
 ) -> Dict(String, Entry(Purpose)) {
   let kept = dict.filter(table, fn(_, entry) { entry.expires_at > now })
 
   // A table under its bound keeps every live challenge.
   case dict.size(kept) >= max_challenges {
-    True -> without_oldest(kept)
+    True -> without_oldest(kept, purpose)
     False -> kept
   }
 }
 
-/// The challenges without the one that expires first.
+/// The challenges without the one that expires first among those of `purpose`'s
+/// kind, or among all of them when none is of that kind.
 fn without_oldest(
   table: Dict(String, Entry(Purpose)),
+  purpose: Purpose,
 ) -> Dict(String, Entry(Purpose)) {
+  let same =
+    dict.filter(table, fn(_, entry) { same_kind(entry.value, purpose) })
+
+  // Only a table with none of that kind falls back to all of them.
+  let pool = case dict.is_empty(same) {
+    True -> table
+    False -> same
+  }
+
   let oldest =
-    dict.to_list(table)
-    |> list.sort(fn(a, b) {
-      int.compare({ a.1 }.expires_at, { b.1 }.expires_at)
+    dict.fold(pool, Error(Nil), fn(found, key, entry) {
+      case found {
+        Ok(#(_, at)) if at <= entry.expires_at -> found
+        Ok(_) | Error(Nil) -> Ok(#(key, entry.expires_at))
+      }
     })
-    |> list.first
 
   // An empty table has nothing to drop.
   case oldest {
     Ok(#(key, _)) -> dict.delete(table, key)
     Error(Nil) -> table
+  }
+}
+
+/// Whether two purposes are the same kind of ceremony, whoever a registration
+/// is for.
+fn same_kind(a: Purpose, b: Purpose) -> Bool {
+  // A sign-in's challenge and a registration's are the two kinds.
+  case a, b {
+    SigningIn, SigningIn | Registering(_), Registering(_) -> True
+    SigningIn, Registering(_) | Registering(_), SigningIn -> False
   }
 }
 

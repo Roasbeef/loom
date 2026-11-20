@@ -1655,3 +1655,23 @@ pub fn the_sweep_reclaims_expired_challenges_test() {
   ui_sessions.sweep(sessions)
   assert ui_sessions.held_challenges(sessions) == Ok(0)
 }
+
+// A flood of sign-in challenges never pushes out a registration's: at the bound a
+// new challenge replaces the oldest of its own kind.
+pub fn a_flood_of_sign_in_challenges_keeps_a_registration_challenge_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(registering) =
+    ui_sessions.challenge(sessions, ui_sessions.Registering("owner"))
+    as "a registration challenge is issued"
+  list.repeat(Nil, ui_sessions.max_challenges * 2)
+  |> list.each(fn(_) {
+    process.send(time, Advance(1))
+    let assert Ok(_) = ui_sessions.challenge(sessions, ui_sessions.SigningIn)
+      as "a challenge is issued"
+    Nil
+  })
+  assert ui_sessions.held_challenges(sessions) == Ok(ui_sessions.max_challenges)
+  assert ui_sessions.answer(sessions, registering)
+    == Ok(ui_sessions.Registering("owner"))
+}
