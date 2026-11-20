@@ -354,9 +354,6 @@ Section 4 planned four phases. Phase 1 was split across several PRs.
 - **A review thread has no message box of its own.** The review pane's one
   Send outbox carries the verdict and the message together, so a review thread
   does not stage a separate message as section 2.2 describes.
-- **Approvals have no age.** An escalation record carries no raise time
-  (`runtime/escalation.gleam`), so an approval thread shows no wait time.
-  Section 4 expected ages from phase 1.
 - **Retry sends a fixed prompt.** It prompts the stuck strand itself, through
   the path a message typed on the session's page takes, and the owner does not
   edit the words.
@@ -377,11 +374,8 @@ Section 4 planned four phases. Phase 1 was split across several PRs.
 
 - **Where the page departs from the mockup's pixels (the frame pass,
   2026-11-19).** The frame, rail, bar, palette, rows, dots, titles and wording
-  are the mockup's. What differs is data the page lacks or a rule: an approval's
-  age and "waiting since" (no raise time, `inbox.Offer.waited`); a ticket's check
-  output and Recheck (`ticket_thread.Offer.check`); "In this session since it
-  asked" (no peer message is read); "Last few steps" is "What its strands are
-  doing"; an approval's message starts a turn now and is not queued behind the
+  are the mockup's. What differs is data the page lacks or a rule: a ticket's
+  check output and Recheck (`ticket_thread.Offer.check`); an approval's message starts a turn now and is not queued behind the
   approval (`thread_send.hold_note`), so its words say that and not the mockup's;
   the outbox bar's chips say `Message, as a steer` and do not echo the draft,
   since the draft is not page state; a session's page draws the rail's folders
@@ -389,10 +383,24 @@ Section 4 planned four phases. Phase 1 was split across several PRs.
   row's "N lifted" is read only where the page reads the feed, so a session's
   page shows the state without it.
 
+- **Where the page departs after the data wiring (2026-11-19).** The times,
+  policy rows, peer messages, steps, coordinator card, last command, stuck
+  sentence and committed files are drawn from the data the daemon sends. What
+  still differs: an approval's title names the tool (`May bash reach the
+  network?`) because the escalation records no program call or command, and the
+  page says nothing of the escalation's sequence number; an update's title is
+  the session's head and not a summary of its message; an update's links are
+  "Watch it live" and the session's own open ask, since no record links a
+  session to a coordinator's ask; a stuck row says "Rate-limited, has not
+  retried" without the time, which its age and the pane's eyebrow carry; the
+  review's last-command chip is cut to one line and sits on its own row; the
+  agent's message is labelled "last finished turn" and not "last message"; and
+  a live daemon reported `provider_error` for its failed runs, so the
+  rate-limited sentence is pinned by tests and not seen in a drive.
+
 Known gaps carried forward:
 
 - `person/check` is drawn as its raw stage word, pending question 6.
-- Committed work is not shown in the review pane (protocol-change/123).
 - A `queued` answer delivery can be dropped by a later drain while the record
   says answered (protocol-change/120, residual risk).
 
