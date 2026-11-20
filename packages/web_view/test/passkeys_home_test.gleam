@@ -228,7 +228,10 @@ pub fn the_second_press_removes_only_the_asked_row_test() {
   assert process.receive(asked, 0) == Error(Nil)
   let model = run(model, home.PasskeyConfirmed("aaaaaaaaaaaaaaaa"))
   assert process.receive(asked, 0) == Ok("aaaaaaaaaaaaaaaa")
-  assert string.contains(drawn(model), "Removed that passkey.")
+  assert string.contains(
+    drawn(model),
+    "Removed that passkey. Browsers it signed in stay signed in until you sign them out.",
+  )
   assert !string.contains(drawn(model), "Confirm")
 
   // A confirmation with no first press asks nothing.

@@ -3716,7 +3716,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     PasskeyAnswered(answer:) ->
       case answer {
         passkeys.Removed -> #(
-          Model(..model, passkey_notice: Some("Removed that passkey.")),
+          Model(
+            ..model,
+            passkey_notice: Some(
+              "Removed that passkey. Browsers it signed in stay signed in until you sign them out.",
+            ),
+          ),
           reading_passkeys(model),
         )
         passkeys.Declined(reason:) -> #(
