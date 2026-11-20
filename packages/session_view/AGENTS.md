@@ -321,6 +321,14 @@ pieces and the register's reviews and lifts what needs the owner.
   collected in a first pass over the lines, into a map, before any block
   is parsed.
 
+- `turns.stamped(pieces, blocks)`: when each row happened, in Unix ms, by the
+  key the lane draws it under (a message's entry time, a grouped call's result
+  time, a call made inside a response that spoke takes the response's, a turn's
+  divider the input's); a row with no record time has no entry. The blocks are
+  dropped when a turn is sealed, so `Sealed.stamps` keeps the dictionary.
+  `turns.requests(blocks)` is which request of the running turn is generating
+  (distinct response times back to the newest user message, plus one). A
+  `Step` carries the provider's `call` id, never drawn.
 - `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
   host that draws more than rows (the web view): `Plain` blocks, `Prompt` for a
   person's message (the sender is a field, not a `name:` line of the text;
@@ -445,6 +453,9 @@ pieces and the register's reviews and lifts what needs the owner.
 - `approval.Review.raised_at` (protocol-change/124): `Option(Int)` Unix ms from
   the local record's `raised_at`; `None` for an older record and for a remote
   child's request, and a negative or mistyped value is `None` and does not fail the review.
+- `approval.Review.call`: `Option(String)`, the provider's id of the tool call
+  the question was raised for (the escalation scope's `callId`), joined by the
+  web lane to `turns.Step.call` so a held call says `needs approval`.
 - `approval.wants(tool)`: the fixed words for what a request asks to do
   (`run a command`), shared by the cards.
 - `approval.Review.remote`: a child's request on another orchestrator

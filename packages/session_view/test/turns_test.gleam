@@ -1780,3 +1780,72 @@ pub fn a_long_sibling_message_keeps_its_whole_text_and_weighs_its_closed_form_te
   let blocks = transcript.blocks(cut(items), view(1, []), "main", [])
   assert fold_budget.weigh(blocks, strands()).base < 10
 }
+
+fn blocks_of(items: List(snapshot.Item)) -> List(transcript_lines.Block) {
+  transcript.blocks(cut(items), view(list.length(items), []), "main", [])
+}
+
+// The key the lane draws the first piece of this shape under, so the stamps
+// can be asked about it.
+fn key_of(laid: List(turns.Piece), shaped: String) -> String {
+  let assert Ok(piece) = list.find(laid, fn(piece) { shape(piece) == shaped })
+  case piece {
+    turns.Prompt(block:, ..) | turns.Plain(block:, ..) -> block.key
+    turns.Work(key:, ..) | turns.Peer(key:, ..) -> key
+    _ -> panic as "this test names no other piece"
+  }
+}
+
+pub fn each_row_is_stamped_with_its_records_time_test() {
+  let blocks = blocks_of(items())
+  let laid = turns.pieces(blocks, strands(), turns.Settled, turns.Skip)
+  let stamps = turns.stamped(laid, blocks)
+
+  // A message is stamped with its entry's time, and the divider with the time
+  // of the input that opened its turn, which `worked` counts from.
+  assert dict.get(stamps, key_of(laid, "prompt:Alice:review the patch"))
+    == Ok(10_000)
+  assert dict.get(stamps, key_of(laid, "work:folded")) == Ok(10_000)
+  assert dict.get(stamps, key_of(laid, "plain:Done: two files.")) == Ok(58_000)
+  assert dict.get(stamps, key_of(laid, "peer:lint-census")) == Ok(60_000)
+}
+
+pub fn a_step_is_stamped_with_the_time_of_its_result_test() {
+  let blocks = blocks_of(list.take(items(), 7))
+  let laid =
+    turns.pieces(
+      blocks,
+      strands(),
+      turns.Running,
+      turns.Expand(fn(lines) { lines }),
+    )
+  let stamps = turns.stamped(laid, blocks)
+  let assert [_, turns.Work(items:, ..), ..] = laid
+  let times =
+    list.filter_map(items, fn(item) {
+      case item {
+        turns.Step(key:, ..) -> dict.get(stamps, key)
+        turns.Narrated(..) | turns.Memory(..) -> Error(Nil)
+      }
+    })
+  // The two edits were made inside the response that reasoned, so they take
+  // its time; the wait is a group's call, and takes its result's.
+  assert times == [11_000, 11_000, 40_000]
+}
+
+pub fn a_row_with_no_record_has_no_time_test() {
+  assert turns.stamped([], blocks_of(items())) == dict.new()
+}
+
+pub fn requests_count_responses_not_calls_test() {
+  // Two responses are recorded in the turn: the one that reasoned and made
+  // three calls, and the one that waited. The turn is generating its third.
+  assert turns.requests(blocks_of(list.take(items(), 7))) == 3
+  assert turns.requests([]) == 1
+}
+
+pub fn requests_restart_at_each_input_test() {
+  // The first turn's responses are behind the peer's message, which opens
+  // another turn.
+  assert turns.requests(blocks_of(items())) == 1
+}

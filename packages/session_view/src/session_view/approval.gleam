@@ -100,6 +100,12 @@ pub type Review {
     /// non-negative number, and for a child's request on another orchestrator,
     /// which carries no time. A page that has no time draws none.
     raised_at: Option(Int),
+    /// The provider's id of the tool call the question was raised for, from
+    /// the escalation's captured scope (`callId`), or `None` for a question
+    /// with no call scope and for a child's request on another orchestrator.
+    /// A page joins it to the call's line in the lane, which says `needs
+    /// approval` while the call waits.
+    call: Option(String),
   )
 }
 
@@ -327,6 +333,7 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
     None,
     Some(Remote(orchestrator:, child:, outside:)),
     None,
+    None,
   ))
 }
 
@@ -381,14 +388,8 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
   }
 
   // Handle the `decode_local` branch dispatch.
-  let strand = case list.key_find(fields, "scope") {
-    Ok(json.Object(scope)) ->
-      case list.key_find(scope, "strand") {
-        Ok(json.String(strand)) if strand != "" -> Some(strand)
-        _ -> None
-      }
-    _ -> None
-  }
+  let strand = scoped(fields, "strand")
+  let call = scoped(fields, "callId")
 
   Ok(Review(
     id,
@@ -401,7 +402,24 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     strand,
     None,
     raised_at,
+    call,
   ))
+}
+
+/// One text field of the escalation's captured scope, or nothing when the
+/// record has no scope or the field is absent or empty.
+fn scoped(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> Option(String) {
+  case list.key_find(fields, "scope") {
+    Ok(json.Object(scope)) ->
+      case list.key_find(scope, name) {
+        Ok(json.String(text)) if text != "" -> Some(text)
+        _ -> None
+      }
+    _ -> None
+  }
 }
 
 /// Matches exact approval target specifications.

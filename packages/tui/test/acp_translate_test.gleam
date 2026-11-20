@@ -284,6 +284,7 @@ fn review(grants: List(json.JsonValue)) -> approval.Review {
     strand: Some("main"),
     remote: None,
     raised_at: None,
+    call: None,
   )
 }
 

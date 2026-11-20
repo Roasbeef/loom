@@ -37,6 +37,7 @@ fn step(
   detail: List(transcript_line.Line),
 ) -> turns.Item {
   turns.Step(
+    call: "call-1",
     key: "ignored",
     standing:,
     words: step_words.Words("Run", step_words.Mono("make check"), None),
@@ -75,6 +76,7 @@ fn review(
     strand: None,
     remote: None,
     raised_at: None,
+    call: None,
   )
 }
 

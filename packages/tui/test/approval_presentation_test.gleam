@@ -35,6 +35,7 @@ fn review(path) {
     strand: None,
     remote: option.None,
     raised_at: None,
+    call: None,
   )
 }
 
@@ -353,6 +354,7 @@ pub fn unavailable_approval_can_only_select_deny_test() {
       strand: None,
       remote: option.None,
       raised_at: None,
+      call: None,
     )
   let panel = approval_panel.new(record)
   let assert approval_panel.Continue(selected) =

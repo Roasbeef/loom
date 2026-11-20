@@ -247,6 +247,23 @@ pub fn a_closed_turn_is_its_prompt_its_divider_and_its_answer_test() {
   assert third.end.seq == 236
 }
 
+// The records of a closed turn are dropped, so the times its rows need are kept
+// with the summary: each of its pieces has one, for the page to draw in the
+// gutter after the blocks are gone.
+pub fn a_closed_turn_keeps_the_times_of_its_rows_test() {
+  let assert [_, second, _] = closed(reading([3, 110, 2]))
+  let keyed =
+    list.filter_map(second.pieces, fn(piece) {
+      case piece {
+        turns.Plain(block:, ..) -> Ok(block.key)
+        turns.Work(key:, ..) -> Ok(key)
+        _ -> Error(Nil)
+      }
+    })
+  assert list.length(keyed) == 3
+  assert list.all(keyed, dict.has_key(second.stamps, _))
+}
+
 // Each turn ends at the record its successor has as its parent, which is how a
 // read of the turns below one starts from the right record, and a turn that is
 // followed by nothing ends at the newest record.
