@@ -259,7 +259,7 @@ export function tag_name(node) {
 }
 
 export function attribute(node, name) {
-  return found(node.getAttribute?.(name));
+  return found(node?.getAttribute?.(name));
 }
 
 export function is_content_editable(node) {

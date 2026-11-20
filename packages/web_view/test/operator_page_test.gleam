@@ -365,11 +365,12 @@ pub fn the_refused_count_rises_only_when_the_draft_is_kept_test() {
     )
 
   // The lane's admission check: a mutation on a closed connection keeps the
-  // draft, and the count says so.
+  // draft, and the count says so. The connection fails with an ending that may
+  // clear, since a page that ended for good draws no composer to read the count.
   let closed =
     send(other, [
       operator_page.Observed(
-        component.Arrived([connection_event.Closed("access was revoked")]),
+        component.Arrived([connection_event.Closed("the connection failed")]),
       ),
       operator_page.Observed(component.Ticked),
       operator_page.Submitted("again", operator.Prompt, []),

@@ -513,7 +513,7 @@ pub fn a_lane_that_fails_on_a_relayed_route_draws_the_waiting_state_test() {
     == component.Ended(ending.PeerUnreachable)
   let html = element.to_string(simulate.view(relayed))
   assert string.contains(html, ending.headline(ending.PeerUnreachable))
-  assert string.contains(html, "This page will reconnect.")
+  assert string.contains(html, "reconnects by itself when it answers")
   assert !string.contains(html, ending.headline(ending.ConnectionFailed))
   assert !string.contains(html, "loom ui")
 }
@@ -530,7 +530,8 @@ pub fn a_lane_that_breaks_on_a_relayed_route_is_a_failed_connection_test() {
   assert component.status(simulate.model(broken))
     == component.Ended(ending.ConnectionFailed)
   let html = element.to_string(simulate.view(broken))
-  assert string.contains(html, "Reconnecting automatically")
+  assert string.contains(html, "reconnects by itself when it answers")
+  assert !string.contains(html, "Reconnecting automatically")
   assert !string.contains(html, "Reload this page")
   assert !string.contains(html, ending.headline(ending.PeerUnreachable))
 }
