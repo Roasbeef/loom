@@ -77,6 +77,7 @@ import web_view/completion
 import web_view/component
 import web_view/evolution as evolving
 import web_view/image
+import web_view/inbox_rule
 import web_view/invites
 import web_view/peer_links
 import web_view/remembered
@@ -407,17 +408,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 
   shell.view(
     shell.Operator,
-    component.heading(
-      model,
-      Observed(component.GoingHome),
-      context_breakdown.Actions(
-        refresh: Observed(component.ContextRefreshRequested),
-        compact: case component.route(model) {
-          component.Local -> Some(Controlled(component.CompactStrand))
-          component.Relayed(..) -> None
-        },
-      ),
-    ),
+    component.heading(model, Observed(component.GoingHome), shell.Operator),
     sidebar_place(model),
     [
       component.crumb(model),
@@ -486,7 +477,16 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 
       // The strip above the stream is drawn last and ordered first by the
       // stylesheet, for the same reason.
-      component.stream_head(model),
+      component.stream_head(
+        model,
+        context_breakdown.Actions(
+          refresh: Observed(component.ContextRefreshRequested),
+          compact: case component.route(model) {
+            component.Local -> Some(Controlled(component.CompactStrand))
+            component.Relayed(..) -> None
+          },
+        ),
+      ),
     ],
     component.panel(
       model,
@@ -601,8 +601,33 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
         Opening,
         resume.Offered(Resuming, component.resuming_session(model)),
         archive_offer(model),
+        rail_folders(model),
       ))
   }
+}
+
+/// The rail's folders on a session's page: the same six as the inbox's, each with
+/// no count, since this page does not read the attention feed. A press goes to the
+/// home page, the one way to the inbox this page has (`component.GoingHome`), and
+/// no folder is marked, because the session on screen is the row that is.
+fn rail_folders(
+  model: component.Model(socket),
+) -> sidebar.Folders(Msg(socket)) {
+  sidebar.Folders(
+    items: [
+      #(inbox_rule.Everything, None),
+      #(inbox_rule.Needing, None),
+      #(inbox_rule.Reviewing, None),
+      #(inbox_rule.Finding, None),
+      #(inbox_rule.Updating, None),
+      #(inbox_rule.Projecting, None),
+    ],
+    current: None,
+    pick: Some(fn(_) { Observed(component.GoingHome) }),
+    note: "Counts are read on the inbox.",
+    at: component.rail_minute(model),
+    running: component.running_count(model),
+  )
 }
 
 /// What the sidebar's top and foot offer. "New session" goes to the home page,
@@ -623,6 +648,7 @@ fn sidebar_page(model: component.Model(socket)) -> sidebar.Page(Msg(socket)) {
     administering: None,
     managing: None,
     who: "",
+    watching: component.session_watching(model),
   )
 }
 

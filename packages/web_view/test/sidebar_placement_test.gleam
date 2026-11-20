@@ -8,7 +8,6 @@
 //// that the admin page's sidebar is text with pills that narrow it in place.
 
 import gleam/erlang/process
-import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import lane_fixture
@@ -161,20 +160,18 @@ pub fn new_session_goes_to_the_home_page_test() {
     )
   let html = drawn(model)
   assert string.contains(html, "New session</button>")
-  assert string.contains(html, "<p class=\"brand\"><span>Loom</span>")
+  assert string.contains(html, "<h3 class=\"rail-heading\">Watch live</h3>")
   assert !string.contains(html, "waiting=")
 }
 
-// The tag of every row names the machine that runs the agent, and a row on an
-// executor says the executor and its workspace.
-pub fn every_row_is_tagged_with_its_placement_test() {
+// A running row's second line is what its session is doing, in the final
+// design's words, and the saved rows keep the tag that names the machine that
+// runs the agent. A session's placement is on its own page's strip, and on the
+// home's list.
+pub fn a_running_row_says_what_it_is_doing_and_a_saved_one_its_placement_test() {
   let html = drawn(page(rows()))
-  assert list.length(string.split(
-      html,
-      "<span class=\"tag-agent\">laptop</span>",
-    ))
-    == 5
-  assert string.contains(html, "<span class=\"tag-code\">exec · repo</span>")
+  assert string.contains(html, "<span class=\"session-watch\">")
+  assert string.contains(html, "<span class=\"tag-agent\">laptop</span>")
 }
 
 // Every row of the sidebar is keyed by the session's catalogue identity, since a

@@ -553,6 +553,20 @@ pub type Key {
   Key(sort: Sort, session: String, id: String)
 }
 
+/// The key under which the page records that the person opened an item's
+/// thread, for the row's filled and hollow dot. It is a string the page builds
+/// from the item's own session and identity, and the browser never sends it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_rule.opened_key(attention_rule.Key(attention_rule.StuckSort, "s", "main"))
+///   == "item:s/main"
+/// ```
+pub fn opened_key(key: Key) -> String {
+  "item:" <> key.session <> "/" <> key.id
+}
+
 /// The key of an item.
 ///
 /// ## Examples

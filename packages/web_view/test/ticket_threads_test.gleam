@@ -707,7 +707,10 @@ pub fn a_ticket_only_page_lands_on_the_inbox_test() {
   let html = drawn(model)
 
   assert string.contains(html, "<span class=\"inbox-kind\">Ticket</span>")
-  assert string.contains(html, "<span class=\"need-pill\">4 need you</span>")
+
+  // Two of the four tickets are a check and a review, which sit under "To
+  // review" and are read, not answered, so two wait under "Needs you".
+  assert string.contains(html, "<span class=\"need-pill\">2 need you</span>")
 }
 
 // A page whose first board read held nothing settles on the composer, and a

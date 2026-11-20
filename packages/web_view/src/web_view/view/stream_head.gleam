@@ -1,19 +1,25 @@
-//// The one-line strip above a session's stream: a dot for the state, the
-//// session's name, and the facts a reader wants before reading the rows.
+//// The strip above a session's stream: a dot for the state, the session's name,
+//// and the facts a reader wants before reading the rows.
 ////
 //// The live mode (`docs/design-notes/attention-inbox/README.md`, section 2.3)
 //// is for watching one session, and the strip says which session and what it
-//// is doing without opening a panel: `ws-1a6368 · main · work · running`,
-//// then the goal and the context figure when the page has them. It repeats
-//// nothing the top bar carries as controls. It is a label, with no handler
-//// and no marker, so the strip adds no path to the page socket's admitted
-//// set.
+//// is doing without opening a panel: `ws-1a6368 · main · work · running`, then
+//// the goal when the page has one, then the session's figures (the context
+//// estimate, the cost and the output speed, `view/figures`) and, at the end, the
+//// two chips that say where the agent runs and where its commands run
+//// (`view/placement`). The figures and the chips were the top bar's second row;
+//// the final design gives every page one 44px bar and puts them here.
 ////
-//// The module decides nothing about the session. `component.stream_head`
-//// reads the page's own fields and words them; this module draws them. Every
-//// field is text the catalogue, the daemon or the engine wrote, so each is a
-//// text node and none reaches an attribute. The dot's colour comes from
-//// `Tone`, a closed type, never from the words.
+//// The strip is a label with one exception: the context figure opens a
+//// breakdown whose Refresh button has a handler. That handler's path is
+//// `component.context_refresh_path`, so the strip's children are fixed in
+//// number and order (the dot, the name, the place, the state, the goal or an
+//// empty node, the figures, the chips) and the strip is the centre's last
+//// child on both pages. The module decides nothing about the session.
+//// `component.stream_head` reads the page's own fields and words them; this
+//// module draws them. Every field is text the catalogue, the daemon or the
+//// engine wrote, so each is a text node and none reaches an attribute. The
+//// dot's colour comes from `Tone`, a closed type, never from the words.
 ////
 //// ## Missing data
 ////
@@ -26,7 +32,6 @@
 //// `view` draws the strip, `state_words` joins the state and the turn's time,
 //// and `fact` draws each remaining fact after a separator.
 
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
@@ -66,35 +71,33 @@ pub type Head {
     /// The pinned goal in one line (`goal: Ship it · active · 4k of 9k
     /// tokens`), or `None` when no goal is pinned.
     goal: Option(String),
-    /// The context figure the top bar shows (`ctx ~2%`), or empty when the
-    /// bar has none.
-    context: String,
   )
 }
 
-/// The strip: the dot, the name in semibold, and the quiet facts after it.
+/// The strip: the dot, the name in semibold, the quiet facts after it, then the
+/// figures and the placement chips the caller drew.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // stream_head.view(Head("ws-1a6368", "main · loom", Running, "running", None, None, ""))
+/// // stream_head.view(Head("ws-1a6368", "main · loom", Running, "running", None, None), figures, chips)
 /// ```
-pub fn view(head: Head) -> Element(message) {
+pub fn view(
+  head: Head,
+  figures: Element(message),
+  chips: Element(message),
+) -> Element(message) {
   html.div([attribute.class("stream-head")], [
     html.span([attribute.class("stream-dot"), tone_class(head.tone)], []),
     html.b([attribute.class("stream-name")], [html.text(head.name)]),
     html.span([attribute.class("stream-fact")], [html.text(head.place)]),
     fact(state_words(head.state, head.turn)),
-    ..list.flatten([
-      case head.goal {
-        Some(words) -> [fact(words)]
-        None -> []
-      },
-      case head.context {
-        "" -> []
-        words -> [fact(words)]
-      },
-    ])
+    case head.goal {
+      Some(words) -> fact(words)
+      None -> element.none()
+    },
+    figures,
+    chips,
   ])
 }
 

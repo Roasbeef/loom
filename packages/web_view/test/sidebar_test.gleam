@@ -17,6 +17,7 @@ import lustre/effect
 import lustre/element.{type Element}
 import page_fixture
 import web_view/component
+import web_view/inbox_rule
 import web_view/listing as session_listing
 import web_view/operator_page
 import web_view/sessions.{type Entry, Entry, Live, Saved}
@@ -72,6 +73,20 @@ fn plain_page() -> sidebar.Page(Nil) {
     administering: None,
     managing: None,
     who: "",
+    watching: dict.new(),
+  )
+}
+
+// A page's folders when the test is not about them: the six of the inbox, with
+// no count and none marked.
+fn no_folders() -> sidebar.Folders(Nil) {
+  sidebar.Folders(
+    items: [#(inbox_rule.Everything, None)],
+    current: None,
+    pick: None,
+    note: "",
+    at: 0,
+    running: 0,
   )
 }
 
@@ -383,7 +398,8 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
     list.filter(handlers(operator_page.view(listed)), fn(key) {
       !list.contains(others, key)
     })
-  assert list.length(added) == 4
+  // The six folders of the rail are buttons beneath the column as well.
+  assert list.length(added) == 10
   assert list.all(added, fn(key) {
     string.starts_with(key, component.sidebar_path <> "\t")
     && string.ends_with(key, "\nclick")
@@ -394,7 +410,7 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
   assert !string.contains(sidebar, "<form")
   assert !string.contains(sidebar, "href")
   assert !string.contains(sidebar, "onclick")
-  assert list.length(string.split(sidebar, "<button")) == 6
+  assert list.length(string.split(sidebar, "<button")) == 12
 }
 
 // The markup of the sidebar alone: from its opening tag to the first closing
@@ -450,6 +466,7 @@ pub fn the_current_row_draws_no_strand_bars_test() {
       fn(_) { Nil },
       resume.Never,
       archiving.Never,
+      no_folders(),
     ))
   assert !string.contains(drawn, "dots")
   assert !string.contains(drawn, "class=\"bar")
@@ -472,7 +489,7 @@ pub fn a_subtitle_is_a_quiet_line_under_the_name_test() {
   let assert Ok(sidebar) = sidebar_of(drawn)
   assert string.contains(
     sidebar,
-    "<span class=\"session-name\">vetting lint</span><span class=\"session-tag\">",
+    "<span class=\"session-name\">vetting lint</span><span class=\"session-watch\">",
   )
   assert string.contains(
     sidebar,
@@ -598,9 +615,11 @@ pub fn repositories_that_share_a_name_never_merge_test() {
 // folder is named.
 pub fn a_worktree_row_says_which_worktree_test() {
   let tree = "/src/btcd/.claude/worktrees/hungry-euclid-d93364"
+  // The rows are saved ones: a running row's second line is what its session
+  // is doing, and only the rows that run no process keep the placement tag.
   let rows = [
-    in_project("A", "/src/btcd", "/src/btcd", 100, Live),
-    in_project("B", tree, "/src/btcd", 200, Live),
+    in_project("A", "/src/btcd", "/src/btcd", 100, Saved),
+    in_project("B", tree, "/src/btcd", 200, Saved),
   ]
   let drawn = operator_html(listed_page(rows))
   assert string.contains(
@@ -706,9 +725,9 @@ pub fn the_toggle_counts_saved_and_blocked_rows_apart_test() {
   assert string.contains(sidebar, ">1 saved · 1 needs attention<")
 }
 
-// A worktree row that also has a subtitle says both: the tag names the worktree,
-// and the subtitle is its own third line as text, and the path is only ever in
-// the tag's title.
+// A worktree row that also has a subtitle says both: the second line is the
+// watching words with the project, and the subtitle is its own third line as
+// text. The worktree's path is never drawn on a running row.
 pub fn a_worktree_row_with_a_subtitle_says_both_test() {
   let tree = "/src/btcd/.claude/worktrees/calm-turing"
   let rows = [
@@ -721,11 +740,10 @@ pub fn a_worktree_row_with_a_subtitle_says_both_test() {
   let drawn = operator_html(listed_page(rows))
   assert string.contains(
     drawn,
-    "<span class=\"tag-code\" title=\""
-      <> tree
-      <> "\">btcd · calm-turing</span></span>"
+    "<span class=\"session-watch\">btcd · quiet</span>"
       <> "<span class=\"session-subtitle\">Fix the retry</span>",
   )
+  assert !string.contains(drawn, tree)
 }
 
 // A page whose transport answers the activity read with `rows`, after a list

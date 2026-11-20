@@ -634,8 +634,7 @@ pub fn the_sidebar_groups_tags_and_filters_test() {
   assert string.contains(html, "state-working")
   assert string.contains(html, "state-idle")
   assert string.contains(html, "1 saved")
-  assert string.contains(html, "<span class=\"tag-agent\">laptop</span>")
-  assert string.contains(html, "<span class=\"tag-code\">exec · repo</span>")
+  assert string.contains(html, "<span class=\"session-watch\">")
 
   // One executor is in use, so there is a pill for it and one for All; the
   // daemon's own would match every row and is not drawn.

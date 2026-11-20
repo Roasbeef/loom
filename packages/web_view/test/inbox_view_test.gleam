@@ -359,7 +359,7 @@ pub fn each_state_offers_its_own_buttons_test() {
   let approval = drawn(model)
   assert string.contains(
     approval,
-    "This session is waiting on an approval. A message starts a new turn now; it does not decide the approval.",
+    "A message here starts a new turn now, and the session does not wait behind the approval for it. The approval itself is decided on its page.",
   )
   assert string.contains(approval, ">Send</button>")
   assert !string.contains(approval, ">Steer</button>")
@@ -372,9 +372,10 @@ pub fn each_state_offers_its_own_buttons_test() {
   assert !string.contains(idle, "waiting on an approval")
 
   let working = drawn(run(model, home.InboxOpened("C")))
-  assert string.contains(working, ">Queue</button>")
-  assert string.contains(working, ">Steer</button>")
-  assert !string.contains(working, ">Send</button>")
+  // Queue and Steer are the radios of the form, and its one button is Send.
+  assert string.contains(working, "<span>Queue</span>")
+  assert string.contains(working, "<span>Steer</span>")
+  assert string.contains(working, ">Send</button>")
 }
 
 // A button names its delivery, and the box carries a fixed label, so no session

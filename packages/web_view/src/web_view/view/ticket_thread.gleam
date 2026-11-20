@@ -40,6 +40,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/set.{type Set}
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -93,19 +94,20 @@ pub type Offer(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// // ticket_thread.row(waiting, now, None, Picked)
+/// // ticket_thread.row(waiting, now, None, set.new(), Picked)
 /// ```
 pub fn row(
   waiting: Waiting,
   now: Int,
   selected: Option(Key),
+  opened: Set(String),
   pick: fn(Key) -> message,
 ) -> Element(message) {
   let ticket = waiting.ticket
 
   parts.row(
     parts.Facts(
-      dot: parts.Waiting,
+      reading: parts.reading(opened, ticket_rule.opened_key(waiting.key)),
       name: ticket.id <> " · " <> board.stage_word(ticket.stage),
       age: option.map(ticket.opened_ms, fn(_) {
         parts.Age(board.age_words(ticket.opened_ms, now), parts.Ordinary)

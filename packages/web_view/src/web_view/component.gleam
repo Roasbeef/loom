@@ -241,6 +241,7 @@ import web_view/view/crumb
 import web_view/view/ended
 import web_view/view/evolution as evolution_view
 import web_view/view/expansion
+import web_view/view/figures
 import web_view/view/heading
 import web_view/view/lane
 import web_view/view/lifted as lifted_view
@@ -261,6 +262,7 @@ import web_view/view/strip
 import web_view/view/switch
 import web_view/view/todo_panel
 import web_view/view/trace
+import web_view/watch_rule
 import web_view/worktrees
 
 /// The most frames one `Arrived` carries: the frame the selector matched
@@ -477,8 +479,12 @@ pub const peers_refresh_ms = 15_000
 pub const home_path = "0\t0\t1"
 
 /// The Lustre event path of the Refresh button in the context breakdown, on
-/// both pages: the top bar's figures are its sixth child, the context figure
-/// is the figures' first child (a `<details>`), its panel (`view/context_breakdown`)
+/// both pages: the stream's strip (`view/stream_head`) is the eighth child of the
+/// centre, which is the frame's third child (`view/shell`), and the observer's
+/// page keeps an empty node in the sixth child's place, where the operator's
+/// page draws its switcher, so the strip has the same index on both pages. The strip's figures are its sixth child, the
+/// context figure is the figures' first child (a `<details>`), its panel
+/// (`view/context_breakdown`)
 /// the figure's second child, the panel's row of buttons the panel's first
 /// child, and Refresh the row's first. The observer's socket admits a `click` at
 /// exactly this path (`client/daemon/ui_socket.observer_accepts`), since the
@@ -487,7 +493,7 @@ pub const home_path = "0\t0\t1"
 /// the row's second child and is drawn only on the operator's page, where the
 /// socket admits it like any click. `page_events_test` fails if the view moves
 /// the button.
-pub const context_refresh_path = "0\t0\t5\t0\t1\t0\t0"
+pub const context_refresh_path = "0\t2\t7\t5\t0\t1\t0\t0"
 
 /// The Lustre event path of the operator's session controls, the goal's
 /// buttons and the Fork form: the fourth child of the Session pane, after the
@@ -8584,6 +8590,86 @@ pub fn waiting_count(model: Model(socket)) -> Int {
   |> list.length
 }
 
+/// The second line of each running session's row in the rail, by identity, in
+/// the words of `watch_rule`. The page reads no attention feed, so a line says
+/// what the session is doing and its project and nothing of the live rail's
+/// count: `running`, `approval`, `aegis · quiet`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_watching(model)
+/// ```
+pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
+  let activity = session_activity(model)
+
+  listing.entries(model.view.groups)
+  |> list.filter_map(fn(entry) {
+    // Only a session a process runs has a line in "Watch live".
+    case entry.residency {
+      sessions.Live -> {
+        // The session on screen knows its own approvals, which the activity
+        // read may not have named yet.
+        let #(doing, pinned) = case
+          entry.id == model.shared.session,
+          pending(model)
+        {
+          True, [_, ..] as held -> #(Some(sessions.NeedsYou), list.length(held))
+          _, _ -> #(dict.get(activity, entry.id) |> option.from_result, 0)
+        }
+
+        Ok(#(
+          entry.id,
+          watch_rule.words(watch_rule.Facts(
+            activity: doing,
+            pinned:,
+            asks: 0,
+            review: watch_rule.NothingToRead,
+            project: option.map(entry.project, creations.folder),
+          )),
+        ))
+      }
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> Error(Nil)
+    }
+  })
+  |> dict.from_list
+}
+
+/// How many sessions the rail lists as running, for the line above its folders.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.running_count(model)
+/// ```
+pub fn running_count(model: Model(socket)) -> Int {
+  list.count(listing.entries(model.view.groups), fn(entry) {
+    case entry.residency {
+      sessions.Live -> True
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> False
+    }
+  })
+}
+
+/// The instant the page last heard from the daemon, floored to the minute, in
+/// Unix milliseconds: the time of day the rail's first line draws. The floor keeps
+/// the rail's memo stable between minutes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.rail_minute(model)
+/// ```
+pub fn rail_minute(model: Model(socket)) -> Int {
+  model.shared.stamp.transport_ms / 60_000 * 60_000
+}
+
 /// Whether the page can take its person to the home page, which is where a
 /// session is started: the daemon handed it a way home.
 ///
@@ -9057,11 +9143,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 
   shell.view(
     shell.Observer,
-    heading(
-      model,
-      GoingHome,
-      context_breakdown.Actions(refresh: ContextRefreshRequested, compact: None),
-    ),
+    heading(model, GoingHome, shell.Observer),
     shell.Unlisted,
     [
       crumb(model),
@@ -9095,13 +9177,25 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         None -> element.none()
       },
 
-      // The phone's sheet is the centre's last child, so no admitted path
-      // moves with it; the stylesheet orders it above the bar.
+      // The operator's page draws its session switcher here. The observer's
+      // has none, and the empty node keeps the strip at the index it has on
+      // the operator's page, so one path admits the context figure's Refresh
+      // on both.
+      element.none(),
+
+      // The phone's sheet is the centre's last child but one, so no admitted
+      // path moves with it; the stylesheet orders it above the bar.
       sheet(model, lift, fn(message) { message }),
 
       // The strip above the stream is drawn last and ordered first by the
       // stylesheet, for the same reason.
-      stream_head(model),
+      stream_head(
+        model,
+        context_breakdown.Actions(
+          refresh: ContextRefreshRequested,
+          compact: None,
+        ),
+      ),
     ],
     panel(
       model,
@@ -9500,11 +9594,11 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// the words as plain values, because it cannot import the types this module
 /// defines.
 ///
-/// `context_actions` are the two messages the context breakdown's buttons
-/// send (`view/context_breakdown`): the observer's page offers Refresh alone,
-/// and the operator's page adds Compact now, since only it may run `/compact`.
+/// `audience` is who the page is drawn for, which words the chip at the bar's
+/// right (`owner · operating`, `member · watching`) together with the page's
+/// principal (`role_words`).
 ///
-/// `going_home` is the message the bar's "Home" button sends, which the page's
+/// `going_home` is the message the bar's "‹ Inbox" button sends, which the page's
 /// own message type wraps. The button is drawn only when the transport has the
 /// capability to go home, and otherwise the bar's second child is an empty
 /// node.
@@ -9512,12 +9606,12 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.heading(model, GoingHome, context_breakdown.Actions(Refresh, None))
+/// // component.heading(model, GoingHome, shell.Observer)
 /// ```
 pub fn heading(
   model: Model(socket),
   going_home: message,
-  context_actions: context_breakdown.Actions(message),
+  audience: shell.Audience,
 ) -> Element(message) {
   heading.view(
     session_id: model.shared.session,
@@ -9530,19 +9624,6 @@ pub fn heading(
     model: model_of(model.shared, agent_roster.primary),
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
-    context: context_figure(model),
-    breakdown: context_breakdown.panel_with_remote(
-      model.shared.context,
-      model.shared.remote_usage,
-      context_actions,
-    ),
-    // A page with no content has no cost to estimate, and `est $0.00` would
-    // state one.
-    cost: case content_unavailable(model) {
-      True -> ""
-      False -> transcript_lines.cost_words(model.shared.usage)
-    },
-    rate: session_model.output_rate_tps(model.shared),
     notice: case model.view.route {
       Local -> ended.view(ended_ending(model.view.status), model.shared.session)
 
@@ -9550,23 +9631,64 @@ pub fn heading(
       // daemon holds, so a command naming it would mint nothing.
       Relayed(..) -> ended.relayed(ended_ending(model.view.status))
     },
-    placement: placement.view(model.view.machine, current_code(model)),
+    doing: stream_tone(model),
+    needing: waiting_count(model),
+    role: role_words(model, audience),
   )
 }
 
-/// The strip above the stream (`view/stream_head`): the session's name, the
-/// strand on screen with the workspace's last segment, what the strand is
-/// doing, the pinned goal when there is one, and the context figure. Every
-/// field is one the page already holds. It is drawn as the centre column's
-/// last child and ordered first by the stylesheet, so no path the socket
-/// admits moves.
+/// The words of the chip at the bar's right: who holds the page and whether it
+/// may send. They are the page's own fixed words, never the principal's name.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.stream_head(model)
+/// // component.role_words(model, shell.Observer)
 /// ```
-pub fn stream_head(model: Model(socket)) -> Element(message) {
+pub fn role_words(model: Model(socket), audience: shell.Audience) -> String {
+  // The daemon's owner and a member hold a page differently, and the chip says so.
+  let holder = case model.view.reader {
+    DaemonOwner -> "owner"
+    Participant -> "member"
+  }
+
+  // Dispatch on role_words state.
+  case audience {
+    shell.Observer -> holder <> " · watching"
+    shell.Operator | shell.Home -> holder <> " · operating"
+  }
+}
+
+/// What the session is doing, for the dot of the bar's `live` mark and the
+/// strip's dot: an approval that waits wins over a running turn.
+fn stream_tone(model: Model(socket)) -> stream_head_view.Tone {
+  case pending(model) != [], activity(model) {
+    True, _ -> stream_head_view.Waiting
+    False, Busy -> stream_head_view.Running
+    False, Idle -> stream_head_view.Quiet
+  }
+}
+
+/// The strip above the stream (`view/stream_head`): the session's name, the
+/// strand on screen with the workspace's last segment, what the strand is
+/// doing, the pinned goal when there is one, then the session's figures and the
+/// two placement chips. Every field is one the page already holds. It is drawn
+/// as the centre column's last child and ordered first by the stylesheet, so no
+/// path the socket admits moves.
+///
+/// `context_actions` are the two messages the context breakdown's buttons send
+/// (`view/context_breakdown`): the observer's page offers Refresh alone, and the
+/// operator's page adds Compact now, since only it may run `/compact`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.stream_head(model, context_breakdown.Actions(Refresh, None))
+/// ```
+pub fn stream_head(
+  model: Model(socket),
+  context_actions: context_breakdown.Actions(message),
+) -> Element(message) {
   let waiting = pending(model) != []
   let label = model.view.label
   let name = session_title(model)
@@ -9580,26 +9702,39 @@ pub fn stream_head(model: Model(socket)) -> Element(message) {
 
   let strand = agent_roster.short_name(model.shared.active_strand)
 
-  stream_head_view.view(stream_head_view.Head(
-    name:,
-    place: case folder {
-      "" -> strand
-      folder -> strand <> " · " <> folder
-    },
-    tone: case waiting, activity(model) {
-      True, _ -> stream_head_view.Waiting
-      False, Busy -> stream_head_view.Running
-      False, Idle -> stream_head_view.Quiet
-    },
-    state: case waiting, activity(model) {
-      True, _ -> "waiting for a decision"
-      False, Busy -> "running"
-      False, Idle -> "idle"
-    },
-    turn: None,
-    goal: goal_words(goal(model)),
-    context: context_figure(model),
-  ))
+  stream_head_view.view(
+    stream_head_view.Head(
+      name:,
+      place: case folder {
+        "" -> strand
+        folder -> strand <> " · " <> folder
+      },
+      tone: stream_tone(model),
+      state: case waiting, activity(model) {
+        True, _ -> "waiting for a decision"
+        False, Busy -> "running"
+        False, Idle -> "idle"
+      },
+      turn: None,
+      goal: goal_words(goal(model)),
+    ),
+    figures.view(
+      context_figure(model),
+      context_breakdown.panel_with_remote(
+        model.shared.context,
+        model.shared.remote_usage,
+        context_actions,
+      ),
+      // A page with no content has no cost to estimate, and `est $0.00` would
+      // state one.
+      case content_unavailable(model) {
+        True -> ""
+        False -> transcript_lines.cost_words(model.shared.usage)
+      },
+      session_model.output_rate_tps(model.shared),
+    ),
+    placement.view(model.view.machine, current_code(model)),
+  )
 }
 
 /// The page's name for its session: the catalogue's label, or the identity's

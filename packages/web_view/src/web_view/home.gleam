@@ -284,6 +284,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import lustre
 import lustre/attribute
@@ -349,6 +350,7 @@ import web_view/view/signins as signins_view
 import web_view/view/switch
 import web_view/view/ticket_thread
 import web_view/view/your_name
+import web_view/watch_rule
 
 /// The Lustre event path of the sidebar on the home page: it is the second
 /// child of the page's frame (`view/shell`), as on a session's page
@@ -943,6 +945,11 @@ pub opaque type Model {
     /// How many threads the person has pressed, which keys the element that
     /// scrolls the reading pane into view, so each press does.
     presses: Int,
+    /// The keys of the threads the person has opened since the page loaded, for
+    /// the filled and hollow dot of each row (`view/inbox_parts.Reading`). It is
+    /// the page's own state: it is not saved, the daemon is told nothing of it,
+    /// and opening a thread never takes it out of the list.
+    opened: Set(String),
     /// The rail folder the inbox's list is narrowed to. It is the page's own
     /// state: it is not saved and the daemon is told nothing of it, and a folder
     /// whose group has emptied draws as `Everything` (`shown_folder`).
@@ -1778,6 +1785,7 @@ pub fn new(start: Start) -> Model {
     reports: dict.new(),
     selected: Unchosen,
     presses: 0,
+    opened: set.new(),
     folder: inbox_rule.Everything,
     shown: None,
     centre_choice: Awaiting,
@@ -2128,6 +2136,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ..model,
           selected: Pressed(session),
           presses: model.presses + 1,
+          opened: set.insert(model.opened, session),
           item: item_pane.closed(),
           review: case model.review.loaded, model.review.session {
             review_pane.Unavailable(_), Some(held) if held == session ->
@@ -2388,7 +2397,15 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             thread_send.Refused(_) -> model.review_presses
           },
         )
-      #(next, attending(next))
+
+      // "Send & next" moves to the thread that follows in "To review" once the
+      // send was delivered, and stays on the receipt when none follows or the
+      // send was refused. Opening the next thread is a press on its row.
+      case answer, following_review(next, model.review.session) {
+        thread_send.Delivered(_), Some(following) ->
+          update(next, InboxOpened(following))
+        _, _ -> #(next, attending(next))
+      }
     }
 
     // An item's press opens its thread, for an item the last read still holds.
@@ -2405,6 +2422,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               ..model,
               item: state,
               item_presses: model.item_presses + 1,
+              opened: set.insert(model.opened, attention_rule.opened_key(key)),
               ticket: None,
             ),
             case reading {
@@ -2631,6 +2649,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             Model(
               ..model,
               item: item_pane.closed(),
+              opened: set.insert(model.opened, ticket_rule.opened_key(key)),
               ticket: Some(thread_reopened(model.ticket, key)),
             ),
             key,
@@ -5250,10 +5269,7 @@ pub fn status(model: Model) -> Status {
 /// ```
 pub fn view(model: Model) -> Element(Msg) {
   shell.view(
-    case landed_inbox(model) {
-      True -> shell.Inbox
-      False -> shell.Home
-    },
+    shell.Home,
     home_bar.with(
       title: case model.pane, landed_inbox(model) {
         NewSession, True | SessionList, True -> "Inbox"
@@ -5971,10 +5987,14 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
       let now = model.now
       let selected = model.item.key
       let row = fn(item) {
-        attention_thread.row(item, now, selected, ItemPicked, session_name(
-          model,
-          _,
-        ))
+        attention_thread.row(
+          item,
+          now,
+          selected,
+          model.opened,
+          ItemPicked,
+          session_name(model, _),
+        )
       }
 
       // A saved session's summary is counted in the headline, so each one that
@@ -6003,6 +6023,7 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
             ),
           ),
           tickets: [],
+          reviews: [],
           finds: list.append(
             list.map(attention_rule.finds(items), row),
             list.map(
@@ -6010,6 +6031,11 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
               saved_row(attention_thread.SavedFinding),
             ),
           ),
+          titles: list.filter_map(dict.to_list(model.evidence), fn(entry) {
+            attention_thread.approval_title(entry.1)
+            |> option.map(fn(nodes) { #(entry.0, nodes) })
+            |> option.to_result(Nil)
+          }),
           evidence: list.map(dict.to_list(model.evidence), fn(entry) {
             #(entry.0, attention_thread.evidence(entry.1))
           }),
@@ -6068,8 +6094,10 @@ fn with_tickets(
         inbox_view.Threads(
           needs: [],
           tickets: [],
+          reviews: [],
           finds: [],
           pane: None,
+          titles: [],
           evidence: [],
         ),
         waiting,
@@ -6092,9 +6120,30 @@ fn ticketed(
 
   inbox_view.Threads(
     ..held,
-    tickets: list.map(waiting, fn(each) {
-      ticket_thread.row(each, model.now, selected, TicketThreadPicked)
-    }),
+    tickets: list.map(
+      ticket_rule.in_lane(waiting, ticket_rule.Answering),
+      fn(each) {
+        ticket_thread.row(
+          each,
+          model.now,
+          selected,
+          model.opened,
+          TicketThreadPicked,
+        )
+      },
+    ),
+    reviews: list.map(
+      ticket_rule.in_lane(waiting, ticket_rule.Reviewing),
+      fn(each) {
+        ticket_thread.row(
+          each,
+          model.now,
+          selected,
+          model.opened,
+          TicketThreadPicked,
+        )
+      },
+    ),
     pane: case shown {
       Some(#(opened, ticket)) ->
         Some(
@@ -6144,6 +6193,7 @@ fn inbox_page(model: Model) -> Element(Msg) {
         None -> None
       },
       presses: model.presses,
+      opened: model.opened,
       field: case model.start.thread_send {
         Some(_) ->
           Some(inbox_view.Field(
@@ -6159,6 +6209,22 @@ fn inbox_page(model: Model) -> Element(Msg) {
       waited: [],
     ),
   )
+}
+
+/// The session whose thread follows `current` in "To review", or nothing when
+/// `current` is the last one or is not listed there. It is what "Send & next"
+/// moves to.
+fn following_review(model: Model, current: Option(String)) -> Option(String) {
+  case list.key_find(model_groups(model), inbox_rule.ToReview), current {
+    Ok(threads), Some(session) ->
+      threads
+      |> list.map(fn(thread) { thread.id })
+      |> list.drop_while(fn(id) { id != session })
+      |> list.drop(1)
+      |> list.first
+      |> option.from_result
+    Error(Nil), _ | _, None -> None
+  }
 }
 
 /// The inbox's groups: the threads of the last reads, with the idle sessions
@@ -7044,9 +7110,14 @@ fn rail_folders(model: Model) -> Option(sidebar.Folders(Msg)) {
       }
 
       Some(sidebar.Folders(
-        items: [#(inbox_rule.Everything, 0), ..folder_counts(model)],
-        current: shown_folder(model),
-        pick: FolderPicked,
+        items: [
+          #(inbox_rule.Everything, Some(0)),
+          ..list.map(folder_counts(model), fn(entry) {
+            #(entry.0, Some(entry.1))
+          })
+        ],
+        current: Some(shown_folder(model)),
+        pick: Some(FolderPicked),
         note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
         at: model.now / 60_000 * 60_000,
         running: running_sessions(model),
@@ -7058,7 +7129,9 @@ fn rail_folders(model: Model) -> Option(sidebar.Folders(Msg)) {
 /// The folders with something in them and their counts, in the rail's order. A
 /// count is the number of rows the group's band draws, so a folder and its band
 /// agree: "Needs you" holds the asks, stuck strands, saved sessions' needs, the
-/// sessions with an approval pending and the tickets that wait on a person.
+/// sessions with an approval pending and the tickets that wait on an answer. "To
+/// review" holds the finished sessions and the tickets whose work waits to be
+/// read (`ticket_rule.lane`).
 fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
   let groups = model_groups(model)
   let in_group = fn(which) {
@@ -7067,14 +7140,23 @@ fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
       Error(Nil) -> 0
     }
   }
+
+  // The reads the counts are made from: the feed's items, the saved sessions'
+  // summaries and the tickets that wait on a person.
   let items = current_items(model)
   let saved = saved_threads(model)
   let tickets = waiting_tickets(model)
+  let reading =
+    list.length(ticket_rule.in_lane(
+      ticket_rule.waiting(model.boards),
+      ticket_rule.Reviewing,
+    ))
   let needing =
     in_group(inbox_rule.NeedsYou)
     + list.length(attention_rule.needs_you(items))
     + list.length(attention_rule.saved_needing(saved))
     + tickets
+    - reading
   let finds =
     list.length(attention_rule.finds(items))
     + list.length(attention_rule.saved_finding(saved))
@@ -7082,7 +7164,7 @@ fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
   list.filter(
     [
       #(inbox_rule.Needing, needing),
-      #(inbox_rule.Reviewing, in_group(inbox_rule.ToReview)),
+      #(inbox_rule.Reviewing, in_group(inbox_rule.ToReview) + reading),
       #(inbox_rule.Finding, finds),
       #(inbox_rule.Updating, in_group(inbox_rule.Updates)),
       #(inbox_rule.Projecting, tickets),
@@ -7161,7 +7243,57 @@ fn sidebar_page(model: Model) -> sidebar.Page(Msg) {
       Some(_), _ | _, Some(_) -> Some(ShowingList)
     },
     who: model.name,
+    watching: watching(model),
   )
+}
+
+/// The second line of each running session's row in the rail, in the words of
+/// `watch_rule`: its activity, how many records the live rail pins for it, an
+/// open ask, a tree waiting to be read, and its project. The pinned count is the
+/// feed row's asks and stuck strands and one for a pending approval.
+fn watching(model: Model) -> Dict(String, String) {
+  let reviewing = reviewing_ids(model)
+
+  listing.entries(model.groups)
+  |> list.filter_map(fn(entry) {
+    // Only a session a process runs has a line; the rest are not "Watch live".
+    case entry.residency {
+      Live -> {
+        let activity = dict.get(model.activity, entry.id) |> option.from_result
+
+        // A running session whose feed row was not read pins nothing.
+        let #(asks, stuck) = case dict.get(model.feed, entry.id) {
+          Ok(row) -> #(row.asks.count, row.stuck.count)
+          Error(Nil) -> #(0, 0)
+        }
+
+        // A pending approval is pinned in the rail like an ask.
+        let approval = case activity {
+          Some(NeedsYou) -> 1
+          Some(_) | None -> 0
+        }
+
+        Ok(#(
+          entry.id,
+          watch_rule.words(watch_rule.Facts(
+            activity:,
+            pinned: asks + stuck + approval,
+            asks:,
+            review: case list.contains(reviewing, entry.id) {
+              True -> watch_rule.ToRead
+              False -> watch_rule.NothingToRead
+            },
+            project: option.map(entry.project, creations.folder),
+          )),
+        ))
+      }
+      sessions.Saved
+      | sessions.Blocked
+      | sessions.FailedStart(_)
+      | sessions.Moving(_) -> Error(Nil)
+    }
+  })
+  |> dict.from_list
 }
 
 // What the bar says of the page's ceiling: nothing for an operating page, which

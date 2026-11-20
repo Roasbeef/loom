@@ -187,7 +187,7 @@ pub fn with(
   html.header(
     [attribute.class("session-head"), attribute.attribute("slot", "bar")],
     [
-      html.span([attribute.class("brand")], [html.text("Loom")]),
+      html.span([attribute.class("brand")], [html.text("loom")]),
       html.h1([], [html.text(title)]),
       who,
       html.p(

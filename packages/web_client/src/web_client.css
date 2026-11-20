@@ -293,26 +293,22 @@
   .session-head .status{box-sizing:border-box;flex:0 0 auto;height:26px;margin:0;padding:0 10px;border:1px solid transparent;border-radius:6px;line-height:1;}
   .session-head .workspace{flex:0 1 auto;min-width:0;max-width:34ch;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .session-head .workspace::after{content:" /";content:" /" / "";}
-  .session-head .figures{display:flex;flex-wrap:wrap;align-items:center;flex:0 0 auto;gap:0 14px;margin-left:auto;color:var(--color-fg-quiet);font:12px/26px var(--font-sans);font-variant-numeric:tabular-nums;}
-  .session-head .figure{white-space:nowrap;}
-  .session-head .figure .num{color:var(--color-fg);font:500 12px/1.4 var(--font-mono);}
+  .stream-head .figures{display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:0 10px;color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);font-variant-numeric:tabular-nums;}
+  .stream-head .figure{white-space:nowrap;}
+  .stream-head .figure:not(.ctx)::before,.stream-head details.ctx > summary::before{content:"\00b7\00a0";}
+  .stream-head details.ctx{display:inline-block;}
+  .stream-head details.ctx > summary{display:inline;}
+  .stream-head .figure .num{color:var(--color-fg);font:500 12px/1.4 var(--font-mono);}
   /* The speed's slot keeps its width whether or not a generation has been
      timed, so the figures beside it do not move when the first sample lands.
      With no sample it shows a dash in the quiet colour. */
-  .session-head .figure.rate{display:inline-block;min-width:10ch;text-align:right;}
-  .session-head .figure.rate.idle .num{color:inherit;}
-  @media (max-width:1099px){
-    .session-head .figures{flex:1 0 100%;margin-left:0;}
-  }
+  .stream-head .figure.rate{display:inline-block;min-width:10ch;text-align:left;}
+  .stream-head .figure.rate.idle .num{color:inherit;}
   @media (max-width:899px){
     .session-head .workspace{display:none;}
   }
   @media (max-width:639px){
-    .session-head .brand{display:none;}
-    .session-head .session-title{flex:1 0 100%;order:2;}
-    .session-head .figures{order:3;gap:0 12px;}
-    .session-head .ended-notice,.session-head .placement-strip{order:4;}
-    .session-head .figure.rate{min-width:0;}
+    .stream-head .figure.rate{min-width:0;}
   }
   /* The context figure is a native details element: its summary is the
      `ctx ~41%` words and its body is the breakdown (web_view/view/context_breakdown).
@@ -320,11 +316,11 @@
      wrapping and the columns' clipping cannot cut it, and it is at most the
      viewport's width less a gutter. It has a hairline border and no shadow. The
      browser opens and closes it, so the server never renders for that. */
-  .session-head details.ctx > summary{cursor:pointer;list-style:none;border-radius:4px;}
-  .session-head details.ctx > summary::-webkit-details-marker{display:none;}
-  .session-head details.ctx > summary:hover{color:var(--color-fg);}
-  .session-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
-  .ctx-panel{position:fixed;z-index:40;top:48px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
+  .stream-head details.ctx > summary{cursor:pointer;list-style:none;border-radius:4px;}
+  .stream-head details.ctx > summary::-webkit-details-marker{display:none;}
+  .stream-head details.ctx > summary:hover{color:var(--color-fg);}
+  .stream-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .ctx-panel{position:fixed;z-index:40;top:92px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
   /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is as wide as --panel-width, which <loom-shell> sets on its frame (340px until the reader drags the grip, 0px while the panel is closed) but never so wide that the 360px transcript floor is crossed, since the column shrinks to that floor where the window cannot hold the saved width, with the page's 12px margin beyond it. */
   @media (min-width:980px){.ctx-panel{right:calc(min(var(--panel-width,344px),100vw - 372px) + 12px);width:min(420px,calc(100vw - min(var(--panel-width,344px),100vw - 372px) - 24px));}}
   .ctx-actions{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px 0;}
@@ -690,11 +686,9 @@
   .inbox-age.inbox-age-overdue{color:var(--color-signal-text);font-weight:600;}
   .inbox-r2{display:flex;gap:8px;align-items:baseline;min-width:0;margin-top:2px;}
   .inbox-head{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font-size:13px;}
-  .inbox-dot{position:absolute;left:12px;top:15px;width:8px;height:8px;box-sizing:border-box;border-radius:50%;}
-  .inbox-dot-waiting{background:var(--color-signal);}
-  .inbox-dot-running{background:var(--color-current);}
-  .inbox-dot-failing{background:var(--color-danger);}
-  .inbox-dot-resting{border:1px solid var(--color-fg-faint);background:transparent;}
+  .inbox-dot{position:absolute;left:12px;top:15px;width:8px;height:8px;box-sizing:border-box;border-radius:50%;background:var(--color-current);}
+  .inbox-seen .inbox-dot{border:1px solid var(--color-fg-faint);background:transparent;}
+  .inbox-seen .inbox-name{font-weight:500;}
   .inbox-kind{flex:0 0 auto;padding:0 6px;border:1px solid var(--color-divider);border-radius:6px;color:var(--color-fg-quiet);font-size:11px;font-weight:600;line-height:18px;white-space:nowrap;}
   .inbox-row-static button.inbox-open{margin-top:6px;}
   .inbox-row-static .notice-line,.inbox-row-static .notice-refusal{margin:6px 0 0 0;}
@@ -712,6 +706,7 @@
   .inbox-back{display:none;}
   .inbox-eyebrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0;color:var(--color-fg-quiet);font:12.5px/1.45 var(--font-sans);overflow-wrap:anywhere;}
   .inbox-title{margin:8px 0 6px;font:620 20px/1.3 var(--font-sans);letter-spacing:-.005em;overflow-wrap:anywhere;}
+  .inbox-title code{font:12px var(--font-mono);letter-spacing:0;}
   .inbox-meta,.inbox-standing{margin:0;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);}
   .inbox-section{margin:0;}
   .inbox-label{margin:22px 0 8px;color:var(--color-fg-quiet);font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;}
@@ -749,6 +744,8 @@
   form.inbox-form{margin:0;}
   .inbox-form .inbox-acts{margin-top:8px;}
   .inbox-msg{margin-top:22px;padding-top:4px;border-top:1px solid var(--color-divider);}
+  .inbox-message{flex:0 0 auto;box-sizing:border-box;width:100%;max-width:820px;margin:0;padding:0 32px 20px;border-top:1px solid var(--color-divider);}
+  .inbox-message .inbox-msg{margin-top:0;padding-top:0;border-top:0;}
   .inbox-send{margin:0;}
   .inbox-hold{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .inbox-outbox{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
@@ -757,6 +754,19 @@
   .inbox-outbox-to b{color:var(--color-fg);font-weight:600;}
   .inbox-outbox-items{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px;}
   .inbox-staged{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 8px;border:1px solid color-mix(in srgb,var(--color-current) 50%,var(--color-divider));border-radius:10px;background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));color:var(--color-fg);font-size:12px;}
+  .inbox-how{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;}
+  .inbox-deliver{position:relative;display:inline-block;}
+  .inbox-deliver input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer;}
+  .inbox-deliver span{display:inline-block;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:550 12px/1.45 var(--font-sans);}
+  .inbox-deliver:hover span{border-color:var(--color-fg-faint);}
+  .inbox-deliver input:checked + span{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
+  .inbox-deliver input:checked + span::before{content:"\2713  ";color:var(--color-current);}
+  .inbox-deliver input:focus-visible + span{outline:2px solid var(--color-current);outline-offset:1px;}
+  .inbox-staged-msg{display:none;}
+  .inbox-reading:has(.inbox-send .inbox-ta:not(:placeholder-shown)):has(input[value="prompt"]:checked) .inbox-staged-queue{display:inline-block;}
+  .inbox-reading:has(.inbox-send .inbox-ta:not(:placeholder-shown)):has(input[value="steer"]:checked) .inbox-staged-steer{display:inline-block;}
+  .inbox-reading:has(.inbox-send .inbox-ta:not(:placeholder-shown)) .inbox-says{display:none;}
+  .inbox-reading:has(.inbox-send .inbox-ta:placeholder-shown) .inbox-primary{border-color:var(--color-divider);background:transparent;color:var(--color-fg-quiet);opacity:.7;pointer-events:none;}
   .inbox-outbox-buttons{display:flex;gap:8px;flex:0 0 auto;}
   .inbox-primary{margin:0;padding:8px 16px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-current);color:var(--color-bg-raised);font:600 14px/1.45 var(--font-sans);white-space:nowrap;cursor:pointer;}
   .inbox-primary:disabled{border-color:var(--color-divider);background:transparent;color:var(--color-fg-quiet);opacity:.7;cursor:default;}
@@ -788,6 +798,14 @@
   .review-file > *:not(summary){margin:0 14px 10px 14px;}
   .review-file > .review-hunks{margin-top:4px;}
   .review-hunk .diff{overflow:hidden;border-radius:8px;background:var(--color-code);}
+  .diff-review .diff-row{display:grid;grid-template-columns:34px 22px 1fr;font:12px/1.55 var(--font-mono);}
+  .diff-review .diff-no{color:var(--color-fg-quiet);text-align:right;padding-right:8px;user-select:none;}
+  .diff-review .diff-pin{display:flex;align-items:center;justify-content:center;}
+  .diff-review .diff-text{padding:0 8px 0 0;}
+  .diff-review .diff-hunk{display:block;padding:5px 10px;font:12px var(--font-mono);}
+  .diff-review .diff-hunk .diff-text{padding:0;}
+  .diff-review .diff-marked{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-signal) 55%,transparent);}
+  .diff-pin-mark{display:inline-block;width:16px;height:16px;border-radius:50%;background:var(--color-signal);color:var(--color-on-signal);font:600 10px/16px var(--font-sans);text-align:center;}
   .review-hunk .diff-row{background:var(--color-code);line-height:1.55;}
   .review-hunk .diff-row.diff-added{background:var(--color-added-bg);}
   .review-hunk .diff-row.diff-removed{background:var(--color-removed-bg);}
@@ -817,26 +835,47 @@
     table.inbox-kv td:first-child{width:90px;}
     .inbox-row,.inbox-btn,button.inbox-open{min-height:44px;}
     .inbox-row.inbox-selected{background:transparent;box-shadow:none;}
-    loom-shell.loom-inbox .session-head .status{display:none;}
   }
-  /* The inbox's frame: a 44px bar and a 184px rail, as the final design draws
-     them. The host class is `loom-inbox` (view/shell); a session's page, the
-     other pages of the home and the admin page keep the frame they had. */
+  /* The frame, on every page: a 44px bar and a 184px rail, as the final design
+     draws them. The host class is `loom-inbox` (view/shell), which every
+     audience carries, so Home, a session's page and the admin page share the
+     bar's one row and the rail's width. The bar reads `loom  ‹ Inbox  workspace /
+     name  live`, then the pill that counts what needs the owner, then at the
+     right the chip that says who the page is for, a ghost Search with its
+     shortcut and a ghost Theme. The connection's pill is drawn only when the
+     page is not connected. */
   :host(.loom-inbox) .region-sidebar{width:184px;}
-  :host(.loom-inbox) .shell-toggle{height:43px;}
+  :host(.loom-inbox) .shell-bar{align-items:center;box-sizing:border-box;height:44px;background:var(--color-bg);}
+  :host(.loom-inbox) .shell-toggle{align-self:center;height:43px;}
   :host(.loom-inbox) .toggle-sidebar{width:44px;}
   :host(.loom-inbox) .toggle-hint{display:none;}
-  :host(.loom-inbox) .shell-theme{margin:8px 12px 0 0;}
-  loom-shell.loom-inbox .session-head{min-height:43px;gap:6px 14px;padding:8px 16px 8px 4px;}
-  loom-shell.loom-inbox .session-head > *{order:3;}
-  loom-shell.loom-inbox[sidebar="listed"] .session-head .brand{display:block;order:0;font:650 14px/26px var(--font-sans);letter-spacing:.01em;}
+  :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:center;box-sizing:border-box;width:auto;height:auto;margin:0 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  :host(.loom-inbox) .shell-theme{margin-right:12px;}
+  :host(.loom-inbox) .bar-search:hover,:host(.loom-inbox) .shell-theme:hover{background:var(--color-bg-raised);color:var(--color-fg);}
+  loom-shell.loom-inbox .session-head{flex-wrap:nowrap;align-items:center;gap:0 14px;min-height:43px;padding:0 16px 0 4px;overflow:hidden;}
+  loom-shell.loom-inbox .session-head > *{order:3;flex:0 0 auto;}
+  loom-shell.loom-inbox .session-head .brand{display:block;order:0;font:650 14px/26px var(--font-sans);letter-spacing:.01em;}
   loom-shell.loom-inbox .session-head > h1{order:1;flex:0 1 auto;color:var(--color-fg-quiet);font:400 14px/26px var(--font-sans);}
+  loom-shell.loom-inbox .session-head .home-link{order:1;height:auto;padding:0;border:0;background:none;color:var(--color-current);font:13px/26px var(--font-sans);}
+  loom-shell.loom-inbox .session-head .home-link:hover{background:none;text-decoration:underline;text-underline-offset:2px;}
+  loom-shell.loom-inbox .session-head .workspace{order:1;flex:0 1 auto;max-width:24ch;color:var(--color-fg-quiet);font:14px/26px var(--font-sans);}
+  loom-shell.loom-inbox .session-head .session-title{order:1;flex:0 1 auto;align-items:center;gap:10px;}
+  loom-shell.loom-inbox .session-head .session-title h1{color:var(--color-fg);font:600 14px/26px var(--font-sans);}
+  loom-shell.loom-inbox .session-head .session-model{display:none;}
+  .live-mark{display:inline-flex;align-items:center;gap:6px;color:var(--color-fg-quiet);font:14px/26px var(--font-sans);white-space:nowrap;}
+  loom-shell.loom-inbox .session-head .status.online{display:none;}
+  loom-shell.loom-inbox .session-head .status{height:auto;padding:0 10px;font:12px/22px var(--font-sans);}
+  .role-chip{margin-left:auto;padding:2px 8px;border:1px solid var(--color-divider);border-radius:10px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);white-space:nowrap;}
+  loom-shell.loom-inbox .session-head .home-who{order:4;margin-left:auto;}
+  loom-shell.loom-inbox .session-head .home-who-button{padding:2px 8px;border:1px solid var(--color-divider);border-radius:10px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  loom-shell.loom-inbox .session-head .home-who-button:hover,loom-shell.loom-inbox .session-head .home-who-button[aria-expanded="true"]{background:var(--color-bg-raised);}
+  loom-shell.loom-inbox .session-head .role-chip{order:4;}
   .need-pill{order:2;flex:0 0 auto;padding:2px 8px;border:1px solid color-mix(in srgb,var(--color-signal) 40%,transparent);border-radius:10px;background:var(--color-pill-wait-bg);color:var(--color-signal-text);font:600 12px/1.45 var(--font-sans);white-space:nowrap;}
   /* The rail: the folders at its top, the running sessions under "Watch live"
      in the mockup's two-line rows, then what the counts read and "New session". */
   .rail-folders{flex:0 0 auto;display:flex;flex-direction:column;padding:14px 10px 0;}
   .rail-away{margin:0 8px 12px 8px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
-  .rail-away b{color:var(--color-fg);font-weight:600;}
+  .rail-away .rail-time{color:var(--color-fg);font-weight:600;}
   .folder{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;box-sizing:border-box;margin:0;padding:6px 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--color-fg);font:13.5px/1.45 var(--font-sans);text-align:left;cursor:pointer;}
   .folder:hover{background:var(--color-bg-raised);}
   .folder[aria-pressed="true"]{border-color:var(--color-divider);background:var(--color-bg-raised);}
@@ -849,9 +888,14 @@
   loom-shell.loom-inbox section.state-group{margin:0;}
   loom-shell.loom-inbox li.session{min-height:0;border-radius:6px;font-size:13px;}
   loom-shell.loom-inbox li.session:hover{background:var(--color-bg-raised);}
-  loom-shell.loom-inbox li.session.current{background:var(--color-bg-raised);}
+  loom-shell.loom-inbox li.session{border:1px solid transparent;}
+  loom-shell.loom-inbox li.session.current{background:var(--color-bg-raised);border-color:var(--color-divider);}
   loom-shell.loom-inbox .session-open,loom-shell.loom-inbox li.session:not(:has(>.session-open)){gap:8px;min-height:0;padding:5px 8px;}
   loom-shell.loom-inbox .session-tag{font-size:11.5px;}
+  .session-watch{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:11.5px/1.4 var(--font-sans);}
+  loom-shell.loom-inbox .session-name{font-size:13px;}
+  :host(.loom-inbox) .toggle-sidebar{position:relative;}
+  @media (min-width:1212px){:host(.loom-inbox[waiting]) .toggle-sidebar::after{display:none;}}
   loom-shell.loom-inbox .tag-agent{color:var(--color-fg-quiet);font-weight:400;}
   loom-shell.loom-inbox .tag-arrow,loom-shell.loom-inbox .tag-code{display:none;}
   loom-shell.loom-inbox .session-subtitle{display:none;}
@@ -2247,8 +2291,9 @@
      its commands run, on a row of its own beneath the title, from the same left
      edge as the Home chip. The tags are the bar's chips: 26px tall, 6px radius,
      a hairline and no fill. */
-  .placement-strip{display:flex;flex-wrap:wrap;gap:6px;flex:1 0 100%;margin:0;}
-  .placement-tag{display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;height:26px;padding:0 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;font:12px/1 var(--font-sans);}
+  .placement-strip{display:inline-flex;flex-wrap:wrap;gap:0 10px;margin:0;}
+  .placement-tag{display:inline-flex;align-items:baseline;gap:6px;box-sizing:border-box;padding:0;border:0;background:transparent;font:12.5px/1.45 var(--font-sans);}
+  .placement-tag::before{content:"\00b7";color:var(--color-fg-quiet);}
   .placement-tag{max-width:100%;min-width:0;}
   .placement-label{flex:0 0 auto;color:var(--color-fg-quiet);white-space:nowrap;}
   .placement-where{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -2280,9 +2325,6 @@
      session switcher lists it as a place and presses it. The bar's product name is
      the sidebar's top line where the sidebar is a column. */
   .session-head .home-admin{display:none;}
-  @media (min-width:1212px){
-    loom-shell[sidebar="listed"] .session-head .brand{display:none;}
-  }
   /* The narrow frames. Below 1212px the sidebar's column is dropped, and the
      sidebar is a 232px drawer over the page, opened by its bar button or the
      shortcut, behind a scrim that a click closes (web_client/shell). The

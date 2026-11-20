@@ -438,7 +438,8 @@ pub fn finds_are_pinned_at_their_lines_or_listed_at_the_top_test() {
 
   let added = index_of(html, "loop(base * 2)")
   let pinned = index_of(html, "No backoff in &lt;i&gt;retry&lt;/i&gt;.")
-  let hunk = index_of(html, "@@ -40,2 +40,3 @@ pub fn retry(")
+  // The review's hunk header is the function the hunk sits in.
+  let hunk = index_of(html, "<span class=\"diff-text\">pub fn retry(</span>")
   assert hunk > 0 && hunk < added && added < pinned
 
   // The loose find precedes the hunks of its file, and the unplaced one the files.

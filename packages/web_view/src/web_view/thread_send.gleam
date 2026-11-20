@@ -180,7 +180,7 @@ pub fn hold_note(kind: Kind) -> Option(String) {
   case kind {
     inbox_rule.ApprovalPending ->
       Some(
-        "This session is waiting on an approval. A message starts a new turn now; it does not decide the approval.",
+        "A message here starts a new turn now, and the session does not wait behind the approval for it. The approval itself is decided on its page.",
       )
     inbox_rule.Idle
     | inbox_rule.Failed

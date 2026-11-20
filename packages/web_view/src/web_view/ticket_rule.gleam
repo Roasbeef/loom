@@ -173,6 +173,63 @@ pub type Press {
   Nothing
 }
 
+/// Which list of the inbox a waiting ticket sits in.
+pub type Lane {
+  /// The worker waits for an answer or a decision the person owes it: under
+  /// "Needs you".
+  Answering
+
+  /// The work is finished and waits to be read, `person/review` or `person/check`:
+  /// under "To review", as the final design draws a ticket whose check has run.
+  Reviewing
+}
+
+/// The lane of a waiting ticket. A review or a check is read, and every other
+/// stage that needs a person is a question or a failure the person answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ticket_rule.lane(waiting) == ticket_rule.Answering
+/// ```
+pub fn lane(waiting: Waiting) -> Lane {
+  case waiting.ticket.stage {
+    board.PersonReview | board.UnknownStage("person/check") -> Reviewing
+    board.PersonDelivery
+    | board.PersonAnswer
+    | board.PersonBlocked
+    | board.PersonFailed
+    | board.Queued
+    | board.Idle
+    | board.Working
+    | board.Ended(_)
+    | board.UnknownStage(_) -> Answering
+  }
+}
+
+/// The waiting tickets that sit in `lane`, in the order given.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ticket_rule.in_lane([], ticket_rule.Reviewing) == []
+/// ```
+pub fn in_lane(waiting: List(Waiting), wanted: Lane) -> List(Waiting) {
+  list.filter(waiting, fn(each) { lane(each) == wanted })
+}
+
+/// The key under which the page records that the person opened a ticket's
+/// thread, for the row's filled and hollow dot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ticket_rule.opened_key(ticket_rule.Key("p", "T-1")) == "ticket:p/T-1"
+/// ```
+pub fn opened_key(key: Key) -> String {
+  "ticket:" <> key.project <> "/" <> key.ticket
+}
+
 /// The tickets that need a person, project by project in the order the page
 /// holds them, and within a project in the board's order (stage urgency, then
 /// newest). A project whose board did not decode has none.

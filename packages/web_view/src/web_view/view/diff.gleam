@@ -18,10 +18,18 @@
 //// holds no handler, so an observer's page draws it as an operator's does.
 //// The parser bounds the lines; a cut is drawn as a line saying how many were
 //// left out.
+////
+//// The review pane draws the same lines in a variant (`view_review`), which the
+//// final design shows for a file's hunk: one line-number column, a column for the
+//// marker of a find, and the function's name as the hunk's header. It is the same
+//// drawer with the same colours: the tints and the red and the green are the
+//// classes every diff takes, so a change to them reaches the review pane too. Only
+//// the gutter's layout differs, and only through the class `diff-review`.
 
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -65,6 +73,119 @@ pub fn view_with(
     |> list.flatten
 
   html.div([attribute.class("diff")], list.append(rows, note(cut)))
+}
+
+/// The review pane's variant of the drawer. Each line has one number, the line's
+/// number in the new file, or in the old file for a removed line, then a cell for
+/// the marker of a find, then the sign and the text. `marker` says, for the line
+/// at a position, the glyph of the find that is pinned to it, which also rings the
+/// line. A hunk's header is the name of the function it sits in, which the parser
+/// keeps after the second `@@`, and is the range itself when there is none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // diff.view_review(lines, 0, fn(_, _) { None }, fn(_, _) { [] })
+/// ```
+pub fn view_review(
+  lines: List(Line),
+  cut: Int,
+  marker: fn(Int, Line) -> Option(String),
+  after: fn(Int, Line) -> List(Element(message)),
+) -> Element(message) {
+  let rows =
+    lines
+    |> list.index_map(fn(line, index) {
+      case review_row(line, marker(index, line)) {
+        Ok(drawn) -> [drawn, ..after(index, line)]
+        Error(Nil) -> []
+      }
+    })
+    |> list.flatten
+
+  html.div(
+    [attribute.class("diff"), attribute.class("diff-review")],
+    list.append(rows, note(cut)),
+  )
+}
+
+/// One line of the review variant, or nothing for a file header.
+fn review_row(
+  line: Line,
+  marker: Option(String),
+) -> Result(Element(message), Nil) {
+  case line.kind {
+    diff_view.FileHeader -> Error(Nil)
+    diff_view.Added | diff_view.Removed | diff_view.Context ->
+      Ok(
+        html.div(
+          [
+            attribute.class("diff-row"),
+            kind_class(line.kind),
+            case marker {
+              Some(_) -> attribute.class("diff-marked")
+              None -> attribute.none()
+            },
+          ],
+          [
+            html.span([attribute.class("diff-no")], [
+              html.text(
+                diff_view.number_text(case line.kind {
+                  diff_view.Removed -> line.old
+                  _ -> line.new
+                }),
+              ),
+            ]),
+            html.span([attribute.class("diff-pin")], [
+              case marker {
+                Some(glyph) ->
+                  html.span([attribute.class("diff-pin-mark")], [
+                    html.text(glyph),
+                  ])
+                None -> element.none()
+              },
+            ]),
+            html.span([attribute.class("diff-text")], [
+              html.text(sign(line.kind) <> line.text),
+            ]),
+          ],
+        ),
+      )
+    diff_view.Hunk ->
+      Ok(
+        html.div([attribute.class("diff-row"), kind_class(line.kind)], [
+          html.span([attribute.class("diff-text")], [
+            html.text(function_name(line.text)),
+          ]),
+        ]),
+      )
+    diff_view.NoNewline ->
+      Ok(
+        html.div([attribute.class("diff-row"), kind_class(line.kind)], [
+          html.span([attribute.class("diff-text")], [html.text(line.text)]),
+        ]),
+      )
+  }
+}
+
+/// The name a hunk header carries after its range (`@@ -1,4 +1,6 @@ replay_from`),
+/// or the header itself when it carries none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert diff.function_name("@@ -1,4 +1,6 @@ replay_from") == "replay_from"
+/// assert diff.function_name("@@ -1,4 +1,6 @@") == "@@ -1,4 +1,6 @@"
+/// ```
+pub fn function_name(header: String) -> String {
+  case string.split(header, "@@") {
+    ["", _range, name] ->
+      case string.trim(name) {
+        "" -> header
+        found -> found
+      }
+    _ -> header
+  }
 }
 
 /// A diff read from its text, drawn bounded (`diff_view.max_lines`).

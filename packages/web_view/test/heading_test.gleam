@@ -1,24 +1,26 @@
 //// The top bar's location and status: how a workspace path is shortened,
-//// when the location is left out, and which class the status pill takes.
+//// when the location is left out, which class the status pill takes, and what
+//// the `live` mark, the pill that counts and the audience's chip draw.
 ////
-//// These tests pin that the path is drawn whole with the home directory
-//// written as `~`, that the bar never repeats the session's name as its
-//// location, that the pill's class follows the connection's tone, and that
-//// the cost figure carries no `session` prefix.
+//// These tests pin that the workspace is drawn as its last folder with the
+//// whole path in a title, that the bar never repeats the session's name as its
+//// location, that the pill's class follows the connection's tone, and that the
+//// figures the bar once carried are not here: they are the stream's strip's
+//// (`figures_test`).
 
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import lustre/element
 import web_view/view/heading
+import web_view/view/stream_head
 
 fn drawn(
   name: option.Option(String),
   workspace: option.Option(String),
   tone: heading.Tone,
-  cost: String,
 ) -> String {
-  modelled(name, workspace, None, tone, cost)
+  modelled(name, workspace, None, tone)
 }
 
 fn modelled(
@@ -26,7 +28,6 @@ fn modelled(
   workspace: option.Option(String),
   model: option.Option(String),
   tone: heading.Tone,
-  cost: String,
 ) -> String {
   heading.view(
     session_id: "0192ab34cd",
@@ -36,12 +37,10 @@ fn modelled(
     model:,
     status: "connected",
     tone:,
-    context: "ctx ~2%",
-    breakdown: element.none(),
-    cost:,
-    rate: None,
     notice: element.none(),
-    placement: element.none(),
+    doing: stream_head.Running,
+    needing: 0,
+    role: "owner · operating",
   )
   |> element.to_string
 }
@@ -58,19 +57,18 @@ pub fn a_path_under_the_home_directory_is_shortened_test() {
   assert heading.shorten_path("/home/me/src/loom/") == "~/src/loom"
 }
 
-// The location is the shortened path and then the name, as two spans, with
-// the whole path as the first one's title.
-pub fn the_location_is_the_path_and_then_the_name_test() {
+// The location is the workspace's last folder and then the name, as two spans,
+// with the shortened whole path as the first one's title.
+pub fn the_location_is_the_folder_and_then_the_name_test() {
   let bar =
     drawn(
       Some("ws · main"),
-      Some("/Users/ada/loom-drives/webrev/ws"),
+      Some("/Users/ada/loom-drives/webrev/project"),
       heading.Live,
-      "est —",
     )
   assert string.contains(
     bar,
-    "<span class=\"workspace\" title=\"/Users/ada/loom-drives/webrev/ws\">~/loom-drives/webrev/ws</span>",
+    "<span class=\"workspace\" title=\"~/loom-drives/webrev/project\">project</span>",
   )
   assert string.contains(bar, ">ws · main</h1>")
 }
@@ -78,11 +76,11 @@ pub fn the_location_is_the_path_and_then_the_name_test() {
 // A location that is only the name's first word is left out, and so is an
 // unknown one.
 pub fn a_location_that_repeats_the_name_is_left_out_test() {
-  let repeated = drawn(Some("ws · main"), Some("ws"), heading.Live, "est —")
+  let repeated = drawn(Some("ws · main"), Some("/src/ws"), heading.Live)
   assert !string.contains(repeated, "class=\"workspace\"")
   assert string.contains(repeated, ">ws · main</h1>")
 
-  let unknown = drawn(Some("docs"), None, heading.Live, "est —")
+  let unknown = drawn(Some("docs"), None, heading.Live)
   assert !string.contains(unknown, "class=\"workspace\"")
 }
 
@@ -92,131 +90,73 @@ pub fn the_pill_class_follows_the_tone_test() {
   assert heading.tone_class(heading.Pending) == "pending"
   assert heading.tone_class(heading.Closed) == "ended"
 
-  let live = drawn(None, None, heading.Live, "est —")
+  let live = drawn(None, None, heading.Live)
   assert string.contains(live, "class=\"status pill online\"")
-  let pending = drawn(None, None, heading.Pending, "est —")
+  let pending = drawn(None, None, heading.Pending)
   assert string.contains(pending, "class=\"status pill pending\"")
-  let ended = drawn(None, None, heading.Closed, "est —")
+  let ended = drawn(None, None, heading.Closed)
   assert string.contains(ended, "class=\"status pill ended\"")
 }
 
-// The figures are a word and an emphasised number, and the cost no longer
-// says `session`, which read as `session est $0.00`.
-pub fn the_figures_emphasise_the_number_test() {
-  let bar = drawn(None, None, heading.Live, "est $0.04")
-  assert string.contains(bar, "ctx <span class=\"num\">~2%</span>")
-  assert string.contains(bar, "est <span class=\"num\">$0.04</span>")
-  assert !string.contains(bar, "session est")
-
+// The `live` mark is drawn while the page is connected, with a dot that takes
+// its class from what the session is doing, and is left out otherwise, so the
+// mark and the status pill never both speak.
+pub fn the_live_mark_follows_the_connection_test() {
+  let live = drawn(Some("docs"), None, heading.Live)
   assert string.contains(
-    bar,
-    "title=\"Estimated context use of the strand shown. Open for the breakdown.\"",
+    live,
+    "<span class=\"live-mark\"><span class=\"stream-dot stream-run\"></span>live</span>",
   )
+
+  list.each([heading.Pending, heading.Closed], fn(tone) {
+    assert !string.contains(drawn(Some("docs"), None, tone), "live-mark")
+  })
 }
 
-// A cost with qualifiers before the marker keeps them in the label, so the
-// emphasised element holds only the amount.
-pub fn a_qualified_cost_emphasises_only_the_amount_test() {
-  let partial = drawn(None, None, heading.Live, "API ref partial est $1.00")
-  assert string.contains(
-    partial,
-    "API ref partial est <span class=\"num\">$1.00</span>",
-  )
-  assert !string.contains(partial, "<span class=\"num\">ref")
-
-  let mixed = drawn(None, None, heading.Live, "mixed rates est $2.10")
-  assert string.contains(
-    mixed,
-    "mixed rates est <span class=\"num\">$2.10</span>",
-  )
-}
-
-// The context disclosure carries the fixed mark `<loom-dismiss>` reads, and the
-// element follows it as a sibling, so the panel's buttons keep their tree paths
-// (`component.context_refresh_path`).
-pub fn the_context_disclosure_can_be_dismissed_test() {
-  let bar = drawn(None, None, heading.Live, "est $0.04")
-  assert string.contains(bar, "data-dismiss=\"keep\"")
-  assert string.contains(bar, "</details><loom-dismiss></loom-dismiss>")
-}
-
-// A model with no price has no estimate, and the bar does not draw a dash
-// for it; the context figure is still drawn beside where it would have been.
-pub fn an_unpriced_session_draws_no_estimate_test() {
-  let unpriced = drawn(None, None, heading.Live, "est —")
-  assert !string.contains(unpriced, "est ")
-  assert !string.contains(unpriced, "No priced usage yet")
-  assert string.contains(unpriced, "ctx <span class=\"num\">~2%</span>")
-}
-
-// A figure with no value is not drawn, so a first turn that has not
-// committed shows no `ctx` and no `est` and not two dashes. Only the speed
-// keeps its slot, which is why the figures area holds just that one.
-pub fn a_figure_with_no_value_is_not_drawn_test() {
+// The pill that counts what needs the owner is drawn only above none, and the
+// audience's chip is always drawn, both after the hidden title element so no
+// child before it moves.
+pub fn the_pill_and_the_chip_follow_the_title_element_test() {
   let bar =
     heading.view(
       session_id: "0192ab34cd",
       home: element.none(),
-      name: None,
+      name: Some("docs"),
       workspace: None,
       model: None,
       status: "connected",
       tone: heading.Live,
-      context: "",
-      breakdown: element.none(),
-      cost: "est —",
-      rate: None,
       notice: element.none(),
-      placement: element.none(),
+      doing: stream_head.Waiting,
+      needing: 4,
+      role: "owner · operating",
     )
     |> element.to_string
 
-  assert !string.contains(bar, "ctx")
-  assert !string.contains(bar, "est")
-  assert string.contains(bar, "class=\"figure rate idle\"")
-}
+  assert string.contains(
+    bar,
+    "<loom-title hidden></loom-title><span class=\"need-pill\">4 need you</span>"
+      <> "<span class=\"role-chip\">owner · operating</span></header>",
+  )
+  assert string.contains(bar, "stream-dot stream-wait")
 
-// The output speed is drawn as the number and the unit once a generation has
-// been timed. Before that the slot is kept with a dimmed dash, so the bar
-// does not lose the item when a page opens, reconnects or focuses a strand
-// with no sample (the cause of the owner's "tok/s disappears" report).
-pub fn the_output_rate_slot_is_kept_before_a_generation_is_timed_test() {
-  let bar = fn(rate) {
-    heading.view(
-      session_id: "0192ab34cd",
-      home: element.none(),
-      name: None,
-      workspace: None,
-      model: None,
-      status: "connected",
-      tone: heading.Live,
-      context: "",
-      breakdown: element.none(),
-      cost: "",
-      rate:,
-      notice: element.none(),
-      placement: element.none(),
-    )
-    |> element.to_string
-  }
-
-  assert string.contains(bar(Some(87)), "<span class=\"num\">87</span> tok/s")
-  assert !string.contains(bar(Some(87)), "idle")
-
-  let idle = bar(None)
-  assert string.contains(idle, "<span class=\"num\">—</span> tok/s")
-  assert string.contains(idle, "class=\"figure rate idle\"")
+  let none = drawn(Some("docs"), None, heading.Live)
+  assert !string.contains(none, "need-pill")
+  assert string.contains(
+    none,
+    "<span class=\"role-chip\">owner · operating</span>",
+  )
 }
 
 // The tab's title is set by `<loom-title>` from the name the bar draws. The
-// element is the bar's last child, hidden, empty and with no attribute that
-// could carry a name, so a hostile session name reaches the page only as the
-// heading's escaped text and its inert `title` attribute.
-pub fn the_bar_ends_with_an_empty_title_element_test() {
+// element is hidden, empty and has no attribute that could carry a name, so a
+// hostile session name reaches the page only as the heading's escaped text and
+// its inert `title` attribute.
+pub fn the_title_element_is_empty_test() {
   let hostile = "</title><script>alert(1)</script>"
-  let bar = drawn(Some(hostile), None, heading.Live, "est $0.04")
+  let bar = drawn(Some(hostile), None, heading.Live)
 
-  assert string.ends_with(bar, "<loom-title hidden></loom-title></header>")
+  assert string.contains(bar, "<loom-title hidden></loom-title>")
   assert !string.contains(bar, "<script>")
   assert !string.contains(bar, "</title><")
   assert string.contains(
@@ -230,41 +170,36 @@ pub fn the_bar_ends_with_an_empty_title_element_test() {
 // tab's title from it) and every child after the wrapper keeps its place. The
 // name of the model is a text node, and the upstream identifier is not drawn.
 pub fn the_main_strands_model_sits_beside_the_name_test() {
-  let bar =
-    modelled(
-      Some("docs"),
-      None,
-      Some("baseten-glm-5-3"),
-      heading.Live,
-      "est $0.04",
-    )
+  let bar = modelled(Some("docs"), None, Some("baseten-glm-5-3"), heading.Live)
   assert string.contains(
     bar,
     "<span class=\"session-title\"><h1 title=\"0192ab34cd\">docs</h1>"
       <> "<span class=\"session-model\" title=\"Model the main strand runs on\">"
-      <> "baseten-glm-5-3</span></span>",
+      <> "baseten-glm-5-3</span>",
   )
 }
 
 // A model name is the owner's catalogue entry, but it is still drawn only as
 // text: markup in it is escaped.
 pub fn a_model_name_is_drawn_as_text_test() {
-  let bar = modelled(None, None, Some("<b>x</b>"), heading.Live, "est $0.04")
+  let bar = modelled(None, None, Some("<b>x</b>"), heading.Live)
   assert string.contains(bar, ">&lt;b&gt;x&lt;/b&gt;</span>")
   assert !string.contains(bar, "<b>x")
 }
 
 // While the capture holds no model, or an empty name, the wrapper is still
-// drawn and holds the name alone, so no later child moves.
+// drawn and holds the name, so no later child moves.
 pub fn an_unknown_model_draws_nothing_but_the_name_test() {
   list.each([None, Some("")], fn(model) {
-    let bar = modelled(Some("docs"), None, model, heading.Live, "est $0.04")
+    let bar = modelled(Some("docs"), None, model, heading.Pending)
     assert !string.contains(bar, "session-model")
-    assert string.contains(
-      bar,
-      "<span class=\"session-title\"><h1 title=\"0192ab34cd\">docs</h1></span>",
-    )
   })
+
+  let bar = modelled(Some("docs"), None, None, heading.Pending)
+  assert string.contains(
+    bar,
+    "<span class=\"session-title\"><h1 title=\"0192ab34cd\">docs</h1></span>",
+  )
 }
 
 pub fn a_whitespace_only_name_falls_back_to_the_id_test() {

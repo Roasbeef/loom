@@ -64,6 +64,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/set.{type Set}
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -131,6 +132,11 @@ pub type Offer(message) {
     /// The sessions listed under "To review" whose tree has not been read yet:
     /// their rows say they are being checked in place of a count of changes.
     checking: List(String),
+    /// The keys of the threads the person has opened since the page loaded, for
+    /// the filled and hollow dot of a row. A session's thread is keyed by its
+    /// identity, an attention item's by `attention_rule.opened_key` and a
+    /// ticket's by `ticket_rule.opened_key`.
+    opened: Set(String),
     /// How long a session's thread has waited, in the page's words, by session.
     /// The activity read carries no raise time for an approval, so the page
     /// passes none today and a row draws no age; a later layer that reads one
@@ -164,11 +170,19 @@ pub type Threads(message) {
     /// One row for each project ticket that waits on a person. They follow the
     /// asks in "Needs you", and are the "Projects" folder.
     tickets: List(Element(message)),
+    /// One row for each project ticket whose work waits to be read, `person/review`
+    /// and `person/check`. They follow the finished sessions in "To review", and
+    /// are in the "Projects" folder too.
+    reviews: List(Element(message)),
     /// One row for each open find, under their own heading.
     finds: List(Element(message)),
     /// The pane of the open item thread, which replaces the session's reading
     /// pane while one is open.
     pane: Option(Element(message)),
+    /// The composed title of a session's pending approval, by session, which the
+    /// pane draws in place of the page's own sentence when the evidence has one
+    /// (`attention_thread.approval_title`).
+    titles: List(#(String, List(Element(message)))),
     /// The evidence of a session's pending approval, by session, drawn in that
     /// session's thread above the one control that leads to its page.
     evidence: List(#(String, Element(message))),
@@ -292,7 +306,16 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
   // A page with no feed has no attention threads, which is an empty set of them.
   let attention = case offer.attention {
     Some(threads) -> threads
-    None -> Threads(needs: [], tickets: [], finds: [], pane: None, evidence: [])
+    None ->
+      Threads(
+        needs: [],
+        tickets: [],
+        reviews: [],
+        finds: [],
+        pane: None,
+        titles: [],
+        evidence: [],
+      )
   }
 
   let groups = offer.groups
@@ -312,7 +335,8 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
   html.div([attribute.class("inbox-list")], [
     nothing_waits(offer),
     case offer.folder {
-      inbox_rule.Projecting -> projects_group(attention.tickets)
+      inbox_rule.Projecting ->
+        projects_group(list.append(attention.tickets, attention.reviews))
       _ ->
         draw(
           NeedsPart,
@@ -320,7 +344,7 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
           list.append(attention.needs, attention.tickets),
         )
     },
-    draw(ReviewPart, inbox_rule.ToReview, []),
+    draw(ReviewPart, inbox_rule.ToReview, attention.reviews),
     draw(WaitingPart, inbox_rule.Waiting, []),
     case visible(offer.folder, FindsPart) {
       True -> finds_group(attention.finds)
@@ -444,7 +468,11 @@ fn row(
 
   parts.row(
     parts.Facts(
-      dot: dot_of(kind),
+      reading: case parts.reading(offer.opened, thread.id), offer.selected {
+        parts.Read, _ -> parts.Read
+        parts.Unread, Some(pick) if pick.session == thread.id -> parts.Read
+        parts.Unread, Some(_) | parts.Unread, None -> parts.Unread
+      },
       name: inbox_rule.shown_name(thread),
       age: case which, list.contains(offer.checking, thread.id) {
         inbox_rule.ToReview, True ->
@@ -471,18 +499,6 @@ fn item_open(offer: Offer(message)) -> Bool {
   case offer.attention {
     Some(Threads(pane: Some(_), ..)) -> True
     Some(Threads(pane: None, ..)) | None -> False
-  }
-}
-
-/// The dot a kind draws: the owner is waited on, a finished session is open to
-/// read, a failure is marked, and a session that works or has nothing to say
-/// waits on no one.
-fn dot_of(kind: Kind) -> parts.Dot {
-  case kind {
-    inbox_rule.ApprovalPending -> parts.Waiting
-    inbox_rule.Failed -> parts.Failing
-    inbox_rule.Idle -> parts.Running
-    inbox_rule.Working | inbox_rule.Settled -> parts.Resting
   }
 }
 
@@ -525,7 +541,7 @@ fn reading(
   let #(compose_body, bar) = compose(thread, kind, offer)
   let review = review_of(thread, offer)
 
-  parts.pane(
+  parts.pane_with(
     case pick {
       Default(_) -> parts.ByDefault
       Pressed(_) -> parts.ByPress
@@ -542,16 +558,17 @@ fn reading(
           eyebrow(thread, kind),
           option.from_result(list.key_find(offer.waited, thread.id)),
         ),
-        parts.title(case review {
-          Some(Reviewed(title: Some(words), ..)) -> words
-          Some(_) | None -> title(kind, thread)
-        }),
+        case review, composed_title(thread, kind, offer) {
+          Some(Reviewed(title: Some(words), ..)), _ -> parts.title(words)
+          _, Some(nodes) -> parts.title_nodes(nodes)
+          _, None -> parts.title(title(kind, thread))
+        },
       ],
       [standing(thread, kind, offer), said(thread, kind)],
       [strands(thread.report.glances), reviewed(thread, offer)],
       [acts(thread, kind, offer)],
-      compose_body,
     ]),
+    compose_body,
     bar,
   )
 }
@@ -594,6 +611,20 @@ fn reveal(pick: Pick, presses: Int) -> Element(message) {
   }
 }
 
+/// The composed title of an approval's thread, when the evidence the page read
+/// gives one. Any other kind has none.
+fn composed_title(
+  thread: Thread,
+  kind: Kind,
+  offer: Offer(message),
+) -> Option(List(Element(message))) {
+  case kind, offer.attention {
+    inbox_rule.ApprovalPending, Some(threads) ->
+      list.key_find(threads.titles, thread.id) |> option.from_result
+    _, _ -> None
+  }
+}
+
 /// The thread's message field and its outbox bar. The field is a form with one
 /// box, in the pane, under the label "Message" and the thread's name. The bar is
 /// at the pane's foot and holds the buttons the kind offers, which submit the
@@ -621,7 +652,6 @@ fn compose(
               message_form(thread, kind, field),
             ),
           ]),
-          delivery_hint(kind),
         ]),
       ],
       bar(thread, kind, field),
@@ -629,10 +659,14 @@ fn compose(
   }
 }
 
-/// The form: one box and nothing else. Its submit buttons are in the outbox bar.
+/// The form: one box and, for a working session, the choice of how to deliver the
+/// message. Its one submit button is in the outbox bar. A radio is part of the
+/// form, so the draft and the delivery travel in one submit and nothing is
+/// sent until Send: the choice is staged by the radio's own state and the page
+/// holds none.
 fn message_form(
   thread: Thread,
-  _kind: Kind,
+  kind: Kind,
   field: Field(message),
 ) -> Element(message) {
   html.form(
@@ -648,86 +682,129 @@ fn message_form(
           attribute.name("draft"),
           attribute.class("inbox-ta"),
           attribute.aria_label("Message this session"),
-          attribute.placeholder("Talk to it directly…"),
+          attribute.placeholder(placeholder(kind)),
           attribute.attribute("rows", "3"),
           attribute.attribute("maxlength", int.to_string(composer.prompt_limit)),
         ],
         "",
       ),
+      delivery_choice(kind),
     ],
   )
 }
 
-/// What Queue and Steer do, under the box of a working session's thread. No
-/// other kind offers the choice.
-fn delivery_hint(kind: Kind) -> Element(message) {
+/// What the box says before anything is typed. The words say what a message does
+/// for this kind, and the approval's say that it starts a turn now, which is what
+/// the gateway does (`thread_send.hold_note`), not that it waits behind the
+/// approval.
+fn placeholder(kind: Kind) -> String {
+  case kind {
+    inbox_rule.ApprovalPending ->
+      "It is waiting on the approval; a message here starts a new turn now…"
+    inbox_rule.Working
+    | inbox_rule.Idle
+    | inbox_rule.Failed
+    | inbox_rule.Settled -> "Talk to it directly…"
+  }
+}
+
+/// "Deliver as Queue or Steer", for a working session, as two radios styled as
+/// toggles with a check on the staged one. Queue is chosen to begin with. Another
+/// kind offers no choice, so it draws nothing.
+fn delivery_choice(kind: Kind) -> Element(message) {
   case thread_send.choices(kind) {
     [thread_send.Queue, thread_send.Steer] ->
-      html.p([attribute.class("inbox-hint")], [
-        html.text(
-          "Queue waits for this turn to end. Steer stops the current turn and runs first.",
-        ),
+      html.div([attribute.class("inbox-how")], [
+        html.span([attribute.class("inbox-hint")], [html.text("Deliver as")]),
+        delivery_radio("prompt", "Queue", [attribute.checked(True)]),
+        delivery_radio("steer", "Steer", []),
+        html.span([attribute.class("inbox-hint")], [
+          html.text(
+            "Queue waits for this turn to end. Steer stops the current turn and runs first.",
+          ),
+        ]),
       ])
     _ -> element.none()
   }
 }
 
+/// One delivery's radio: the input carries the wire word the form reads back, and
+/// the label around it is what the person presses and sees.
+fn delivery_radio(
+  word: String,
+  label: String,
+  extra: List(attribute.Attribute(message)),
+) -> Element(message) {
+  html.label([attribute.class("inbox-deliver")], [
+    html.input([
+      attribute.type_("radio"),
+      attribute.name("delivery"),
+      attribute.value(word),
+      ..extra
+    ]),
+    html.span([], [html.text(label)]),
+  ])
+}
+
 /// The outbox bar: what has been sent to whom in fixed words, or that nothing has
-/// and what a message here does, and the buttons the kind offers at the right.
-/// The buttons are disabled while a send is out, so a second press sends nothing.
+/// and what a message here does, and the one Send button at the right. A working
+/// session's bar also holds a chip for each delivery, which the stylesheet shows
+/// for the radio that is checked once the box holds a draft, and Send looks
+/// disabled while it is empty. The button is disabled while a send is out, so a
+/// second press sends nothing.
 fn bar(thread: Thread, kind: Kind, field: Field(message)) -> Element(message) {
   let said = thread_send.words(field.outbox, thread.id, thread.name)
   let choices = thread_send.choices(kind)
 
-  parts.outbox_bar(
+  parts.outbox_bar_with(
     case said {
       "" -> "Not sent."
       words -> words
     },
     case said {
       "" ->
-        case thread_send.hold_note(kind) {
-          Some(note) -> note
-          None -> "Nothing is sent until you press a button."
+        case thread_send.hold_note(kind), choices {
+          Some(note), _ -> note
+          None, [thread_send.Queue, thread_send.Steer] ->
+            "Write a message, choose how to deliver it, and press Send."
+          None, _ -> "Nothing is sent until you press Send."
         }
       _ -> ""
     },
-    [],
-    html.div(
-      [attribute.class("inbox-outbox-buttons")],
-      list.map(choices, send_button(_, field.outbox, list.length(choices))),
-    ),
+    case choices {
+      [thread_send.Queue, thread_send.Steer] -> [
+        html.span(
+          [attribute.class("inbox-staged inbox-staged-msg inbox-staged-queue")],
+          [html.text("Message, as a queued prompt")],
+        ),
+        html.span(
+          [attribute.class("inbox-staged inbox-staged-msg inbox-staged-steer")],
+          [html.text("Message, as a steer")],
+        ),
+      ]
+      _ -> []
+    },
+    html.div([attribute.class("inbox-outbox-buttons")], [
+      send_button(field.outbox),
+    ]),
   )
 }
 
-/// One button of the bar: a submit button that names its delivery and belongs to
-/// the message form. When the kind offers two, the second is the primary one.
-fn send_button(
-  choice: thread_send.Choice,
-  outbox: Outbox,
-  offered: Int,
-) -> Element(message) {
+/// The one button of the bar: a submit button that belongs to the message form
+/// through its `form` attribute. It names no delivery: a working session's radio
+/// carries it, and any other kind sends a prompt.
+fn send_button(outbox: Outbox) -> Element(message) {
   html.button(
     [
       attribute.type_("submit"),
       attribute.attribute("form", form_id),
-      attribute.name("delivery"),
-      attribute.value(case thread_send.delivery(choice) {
-        operator.Prompt -> "prompt"
-        operator.Steer -> "steer"
-      }),
-      attribute.class(case choice, offered {
-        thread_send.Queue, 2 -> "inbox-btn"
-        _, _ -> "inbox-primary"
-      }),
-      // A send that is out, for any thread, disables every button: there is one
-      // outbox, and a second press would be refused by the page anyway.
+      attribute.class("inbox-primary"),
       attribute.disabled(case outbox {
         thread_send.Sending(..) -> True
         thread_send.Unsent | thread_send.Settled(..) -> False
       }),
     ],
-    [html.text(thread_send.label(choice))],
+    [html.text("Send")],
   )
 }
 

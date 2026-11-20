@@ -39,6 +39,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/set.{type Set}
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -101,12 +102,13 @@ pub type Offer(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// // attention_thread.row(item, now, selected, pick, name_of)
+/// // attention_thread.row(item, now, selected, opened, pick, name_of)
 /// ```
 pub fn row(
   item: Item,
   now: Int,
   selected: Option(Key),
+  opened: Set(String),
   pick: fn(Key) -> message,
   name_of: fn(String) -> String,
 ) -> Element(message) {
@@ -114,7 +116,7 @@ pub fn row(
 
   parts.row(
     parts.Facts(
-      dot: dot_of(item),
+      reading: parts.reading(opened, attention_rule.opened_key(key)),
       name: name_of(attention_rule.session_of(item)),
       age: aged(item, now),
       kind: kind_word(item),
@@ -140,16 +142,6 @@ fn aged(item: Item, now: Int) -> Option(parts.Age) {
         }),
       )
     _, _ -> None
-  }
-}
-
-/// The dot a record draws: an ask waits on the owner, a stuck strand failed, and
-/// a find waits on no one.
-fn dot_of(item: Item) -> parts.Dot {
-  case item {
-    attention_rule.AskItem(..) -> parts.Waiting
-    attention_rule.StuckItem(..) -> parts.Failing
-    attention_rule.FindItem(..) -> parts.Resting
   }
 }
 
@@ -216,10 +208,7 @@ pub fn saved_row(
 
   parts.static_row(
     parts.Facts(
-      dot: case side {
-        SavedNeeding -> parts.Waiting
-        SavedFinding -> parts.Resting
-      },
+      reading: parts.Unread,
       name: thread.name,
       age: None,
       kind: "Saved",
@@ -879,6 +868,70 @@ pub fn evidence(seen: Seen) -> Element(message) {
           ],
         ]),
       )
+  }
+}
+
+/// The title of an approval's thread, composed from the evidence the page read:
+/// `May this program run <command> with write access to <path>?` when a write
+/// grant is wanted, and `May <tool> reach the network?` for a network grant. The
+/// command, the path and the tool are text a model's call carried, so each is a
+/// text node, in `<code>` where the final design draws code, and none reaches an
+/// attribute. An approval that wants neither, or whose evidence was not read, has
+/// no composed title and the page uses its own sentence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_thread.approval_title(approval_evidence.Unseen("not answered")) == None
+/// ```
+pub fn approval_title(seen: Seen) -> Option(List(Element(message))) {
+  case seen {
+    approval_evidence.Unseen(..) -> None
+    approval_evidence.Seen(evidence: read) ->
+      case read.items {
+        [first, ..] -> composed_title(first)
+        [] -> None
+      }
+  }
+}
+
+/// The title one pending approval composes, or nothing when it wants no grant the
+/// final design words.
+fn composed_title(
+  item: approval_evidence.Item,
+) -> Option(List(Element(message))) {
+  let write =
+    list.find(item.wanted, fn(grant) { grant.kind == "writable_root" })
+  let network = list.find(item.wanted, fn(grant) { grant.kind == "network" })
+
+  // A write grant is worded first, since it names the place the call may change.
+  case write, network, item.preview {
+    Ok(grant), _, Some(command) ->
+      Some([
+        html.text("May this program run "),
+        html.code([], [html.text(command)]),
+        html.text(" with write access to "),
+        html.code([], [html.text(grant.detail)]),
+        html.text("?"),
+      ])
+    Ok(grant), _, None ->
+      Some([
+        html.text("May this program have write access to "),
+        html.code([], [html.text(grant.detail)]),
+        html.text("?"),
+      ])
+    Error(Nil), Ok(_), _ ->
+      Some([
+        html.text("May "),
+        html.code([], [
+          html.text(case item.tool {
+            "" -> "this program"
+            tool -> tool
+          }),
+        ]),
+        html.text(" reach the network?"),
+      ])
+    Error(Nil), Error(Nil), _ -> None
   }
 }
 

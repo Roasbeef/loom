@@ -12,7 +12,8 @@
 //// module calls them with its own words. A change to a row's look is a change
 //// to this module and the stylesheet's `inbox` section, and to no other.
 ////
-//// A **row** has two lines. The first is a status dot, the session's or
+//// A **row** has two lines. The first is a dot that says whether the thread has
+//// been opened, the session's or
 //// strand's name, and an age at the right when the data has one. The second is
 //// a small bordered chip with the kind's word and the one-line head, cut with
 //// an ellipsis. A thread that is a button (`row`) and a saved session's, which
@@ -47,24 +48,24 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/set.{type Set}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 
-/// What a row's dot says about its thread.
-pub type Dot {
-  /// The thread waits on the owner: an approval, an ask, a ticket.
-  Waiting
+/// Whether the person has opened a row's thread on this page. The row says so
+/// by its dot and the weight of its name, as the final design draws it: an
+/// unopened thread has the filled dot and a semibold name, an opened one a
+/// hollow dot and a name of weight 500. Opening a thread never clears it from
+/// the list (`docs/design-notes/attention-inbox/README.md`, section 2.1); it
+/// only says the person has looked.
+pub type Reading {
+  /// The thread has not been opened since the page loaded.
+  Unread
 
-  /// The thread is open and active: a finished session to read, a running one.
-  Running
-
-  /// The thread stopped on a failure.
-  Failing
-
-  /// The thread waits on no one: a find, an update, a saved session.
-  Resting
+  /// The person opened the thread. The page holds this and nothing persists it.
+  Read
 }
 
 /// Whether a row is the one whose pane is open.
@@ -108,8 +109,8 @@ pub type Standing {
 /// text nodes.
 pub type Facts {
   Facts(
-    /// The status dot's meaning.
-    dot: Dot,
+    /// Whether the thread has been opened.
+    reading: Reading,
     /// The session's or strand's name, in the first line.
     name: String,
     /// How long the thread has waited, when the data says. A thread whose data
@@ -179,6 +180,21 @@ pub fn group(
   ])
 }
 
+/// Whether a thread's key is in the set of those the page has been asked to
+/// open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert inbox_parts.reading(set.from_list(["a"]), "a") == inbox_parts.Read
+/// ```
+pub fn reading(opened: Set(String), key: String) -> Reading {
+  case set.contains(opened, key) {
+    True -> Read
+    False -> Unread
+  }
+}
+
 /// A thread's row: a button that sends `press`.
 ///
 /// ## Examples
@@ -193,6 +209,7 @@ pub fn row(facts: Facts, press: message) -> Element(message) {
         attribute.type_("button"),
         attribute.class("inbox-row"),
         selected_class(facts.selection),
+        reading_class(facts.reading),
         event.on_click(press),
       ],
       lines(facts),
@@ -218,6 +235,7 @@ pub fn static_row(
       [
         attribute.class("inbox-row inbox-row-static"),
         selected_class(facts.selection),
+        reading_class(facts.reading),
       ],
       list.append(lines(facts), extra),
     ),
@@ -229,7 +247,7 @@ pub fn static_row(
 fn lines(facts: Facts) -> List(Element(message)) {
   [
     html.span([attribute.class("inbox-r1")], [
-      html.span([attribute.class("inbox-dot"), dot_class(facts.dot)], []),
+      html.span([attribute.class("inbox-dot")], []),
       html.span([attribute.class("inbox-name")], [html.text(facts.name)]),
       case facts.age {
         Some(Age(words:, standing:)) ->
@@ -253,14 +271,12 @@ fn lines(facts: Facts) -> List(Element(message)) {
   ]
 }
 
-/// The class that says what a dot means.
-fn dot_class(dot: Dot) -> attribute.Attribute(message) {
-  attribute.class(case dot {
-    Waiting -> "inbox-dot-waiting"
-    Running -> "inbox-dot-running"
-    Failing -> "inbox-dot-failing"
-    Resting -> "inbox-dot-resting"
-  })
+/// The class that marks a row whose thread has been opened.
+fn reading_class(reading: Reading) -> attribute.Attribute(message) {
+  case reading {
+    Unread -> attribute.none()
+    Read -> attribute.class("inbox-seen")
+  }
 }
 
 /// The class that marks the row whose pane is open.
@@ -337,6 +353,26 @@ pub fn pane(
   body: List(Element(message)),
   outbox: Element(message),
 ) -> Element(message) {
+  pane_with(opening, back, body, [], outbox)
+}
+
+/// A reading pane with a message block after the body. The block is a sibling of
+/// the body and not inside it, so the rule that sets it off runs from the pane's
+/// own edge and not from the body's padding, as the final design draws the line
+/// above "Or message ...".
+///
+/// ## Examples
+///
+/// ```gleam
+/// // inbox_parts.pane_with(inbox_parts.ByPress, Closed, [title], [message], bar)
+/// ```
+pub fn pane_with(
+  opening: Opening,
+  back: message,
+  body: List(Element(message)),
+  message_block: List(Element(message)),
+  outbox: Element(message),
+) -> Element(message) {
   html.section(
     [
       attribute.class("inbox-reading"),
@@ -357,6 +393,10 @@ pub fn pane(
         ),
         ..body
       ]),
+      case message_block {
+        [] -> element.none()
+        block -> html.div([attribute.class("inbox-message")], block)
+      },
       outbox,
     ],
   )
@@ -396,6 +436,19 @@ pub fn eyebrow(
 /// ```
 pub fn title(words: String) -> Element(message) {
   html.h1([attribute.class("inbox-title")], [html.text(words)])
+}
+
+/// The thread's title as nodes, for a title that holds a command or a path in
+/// `<code>`. Each node is the caller's: text, or text in a code element, and
+/// never markup built from a session's text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // inbox_parts.title_nodes([html.text("May "), html.code([], [html.text("bash")]), html.text(" reach the network?")])
+/// ```
+pub fn title_nodes(nodes: List(Element(message))) -> Element(message) {
+  html.h1([attribute.class("inbox-title")], nodes)
 }
 
 /// A section: a small-caps label over its parts. The label is the page's own
@@ -482,19 +535,39 @@ pub fn outbox_bar(
   staged: List(String),
   send: Element(message),
 ) -> Element(message) {
+  outbox_bar_with(
+    to,
+    says,
+    list.map(staged, fn(each) {
+      html.span([attribute.class("inbox-staged")], [html.text(each)])
+    }),
+    send,
+  )
+}
+
+/// The same bar with the staged items drawn by the caller, for a bar whose chips
+/// the stylesheet shows and hides by what the form holds (`inbox-staged-msg`).
+/// `says` is in its own span (`inbox-says`), so a stylesheet can leave it out
+/// while a chip says what is staged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // inbox_parts.outbox_bar_with("Not sent.", "Write a message.", [], send_button)
+/// ```
+pub fn outbox_bar_with(
+  to: String,
+  says: String,
+  staged: List(Element(message)),
+  send: Element(message),
+) -> Element(message) {
   html.div([attribute.class("inbox-outbox-bar")], [
     html.div([attribute.class("inbox-outbox-to"), attribute.role("status")], [
       html.b([], [html.text(to)]),
-      html.text(" " <> says),
+      html.span([attribute.class("inbox-says")], [html.text(" " <> says)]),
       case staged {
         [] -> element.none()
-        chips ->
-          html.div(
-            [attribute.class("inbox-outbox-items")],
-            list.map(chips, fn(each) {
-              html.span([attribute.class("inbox-staged")], [html.text(each)])
-            }),
-          )
+        chips -> html.div([attribute.class("inbox-outbox-items")], chips)
       },
     ]),
     send,

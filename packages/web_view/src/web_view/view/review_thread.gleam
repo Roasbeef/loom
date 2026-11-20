@@ -325,11 +325,21 @@ fn hunk(
     )
 
   html.div([attribute.class("review-hunk")], [
-    diff.view_with([header, ..each.lines], each.omitted, fn(index, _line) {
-      // The header is not one of the hunk's lines, so the lines count from one.
-      review_pin_rule.at_line(pins, number, index - 1)
-      |> list.filter_map(fn(id) { find_of(id, offer) })
-    }),
+    diff.view_review(
+      [header, ..each.lines],
+      each.omitted,
+      fn(index, _line) {
+        // The header is not one of the hunk's lines, so the lines count from one.
+        case review_pin_rule.at_line(pins, number, index - 1) {
+          [first, ..] -> Some(marker_of(first, offer))
+          [] -> None
+        }
+      },
+      fn(index, _line) {
+        review_pin_rule.at_line(pins, number, index - 1)
+        |> list.filter_map(fn(id) { find_of(id, offer) })
+      },
+    ),
     case each.shortened {
       0 -> element.none()
       cut ->
@@ -342,6 +352,19 @@ fn hunk(
         )
     },
   ])
+}
+
+/// The glyph in the pin column for a find: `!` for a risk and `i` for any other
+/// kind, as the final design draws them.
+fn marker_of(id: String, offer: Offer(message)) -> String {
+  case list.find(offer.finds, fn(find) { find.id == id }) {
+    Ok(find) ->
+      case attention.find_kind_name(find.kind) {
+        "risk" -> "!"
+        _ -> "i"
+      }
+    Error(Nil) -> "i"
+  }
 }
 
 /// One find, drawn where it is placed: its kind, its text as untrusted, its
@@ -653,7 +676,7 @@ fn outbox(offer: Offer(message)) -> Element(message) {
               attribute.disabled(!review_pane.has_staged(state) || sending),
               event.on_click(acting.send),
             ],
-            [html.text("Send")],
+            [html.text("Send & next ›")],
           ),
         ]),
       )

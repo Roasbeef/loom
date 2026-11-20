@@ -714,7 +714,7 @@ pub fn the_frame_is_bar_centre_panel_test() {
   let #(model, _) = page("operator", pending())
   let html = element.to_string(operator_page.view(model))
   assert in_order(html, [
-    "<loom-shell class=\"loom-session operator\"",
+    "<loom-shell class=\"loom-session loom-inbox operator\"",
     "class=\"session-head\"",
     "<main class=\"centre\">",
     "<loom-follow class=\"follow\" data-strand-key=\"",

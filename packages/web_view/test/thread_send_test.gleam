@@ -32,7 +32,7 @@ pub fn each_state_offers_the_buttons_that_make_sense_test() {
 
   assert thread_send.hold_note(inbox_rule.ApprovalPending)
     == Some(
-      "This session is waiting on an approval. A message starts a new turn now; it does not decide the approval.",
+      "A message here starts a new turn now, and the session does not wait behind the approval for it. The approval itself is decided on its page.",
     )
   assert thread_send.hold_note(inbox_rule.Working) == None
   assert thread_send.hold_note(inbox_rule.Idle) == None
