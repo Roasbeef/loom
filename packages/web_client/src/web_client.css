@@ -733,6 +733,7 @@
   .brief-words{flex:1 1 12em;min-width:0;}
   .brief-ok{color:var(--color-added-text);}
   .brief-bad{color:var(--color-danger-text);}
+  .inbox-pill.brief-command{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .brief-ctx{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}
   .brief-ctx > div{font-size:12.5px;overflow-wrap:anywhere;}
   .brief-ctx b{display:block;font-size:13.5px;font-weight:600;}
