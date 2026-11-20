@@ -53,20 +53,38 @@ fn reports() -> List(#(String, Report)) {
   [
     #(
       "B",
-      Report(sessions.NeedsYou, Some("Approve the push?\nIt is ready."), []),
+      Report(
+        sessions.NeedsYou,
+        Some("Approve the push?\nIt is ready."),
+        [],
+        last_message_at: None,
+        turn_started_at: None,
+      ),
     ),
     #(
       "A",
-      Report(sessions.Idle, Some("<script>alert(1)</script> finished"), [
-        Glance("s1", "Lint", "all green"),
-      ]),
+      Report(
+        sessions.Idle,
+        Some("<script>alert(1)</script> finished"),
+        [
+          Glance("s1", "Lint", "all green"),
+        ],
+        last_message_at: None,
+        turn_started_at: None,
+      ),
     ),
     #(
       "C",
-      Report(sessions.Working, None, [
-        Glance("s2", "", "reading the spec"),
-        Glance("s3", "Tests", "waiting on CI"),
-      ]),
+      Report(
+        sessions.Working,
+        None,
+        [
+          Glance("s2", "", "reading the spec"),
+          Glance("s3", "Tests", "waiting on CI"),
+        ],
+        last_message_at: None,
+        turn_started_at: None,
+      ),
     ),
   ]
 }
@@ -205,7 +223,18 @@ pub fn a_press_for_an_unlisted_folder_changes_nothing_test() {
 // is never blank under a filter the rail no longer offers.
 pub fn an_emptied_folder_draws_as_everything_test() {
   let narrowed = run(opened(start()), home.FolderPicked(inbox_rule.Updating))
-  let quiet = [#("C", Report(sessions.Idle, None, []))]
+  let quiet = [
+    #(
+      "C",
+      Report(
+        sessions.Idle,
+        None,
+        [],
+        last_message_at: None,
+        turn_started_at: None,
+      ),
+    ),
+  ]
   let html = drawn(run(narrowed, home.Observed(quiet)))
 
   assert !string.contains(html, "<span class=\"nm\">Updates</span>")
@@ -220,7 +249,18 @@ pub fn the_bar_counts_what_waits_on_the_owner_test() {
     "<span class=\"need-pill\">1 need you</span>",
   )
 
-  let calm = [#("C", Report(sessions.Working, None, []))]
+  let calm = [
+    #(
+      "C",
+      Report(
+        sessions.Working,
+        None,
+        [],
+        last_message_at: None,
+        turn_started_at: None,
+      ),
+    ),
+  ]
   assert !string.contains(
     drawn(opened(start_with(home.OperatorCeiling, calm))),
     "need-pill",

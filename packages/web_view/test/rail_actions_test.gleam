@@ -50,7 +50,15 @@ fn row() -> attention_feed.Row {
         line: None,
       ),
     ]),
-    stuck: Section(count: 1, items: [Stuck(strand:, failed_at: Some(3))]),
+    stuck: Section(count: 1, items: [
+      Stuck(
+        strand:,
+        failed_at: Some(3),
+        reason: None,
+        retry_after_ms: None,
+        parent: None,
+      ),
+    ]),
   )
 }
 
