@@ -204,11 +204,12 @@ fn peer(each: Peer, name_of: fn(String) -> String) -> Element(message) {
   )
 }
 
-/// The coordinator's card: the goal's objective and status, the strands' counts,
-/// the tokens spent of the budget, and a line for each strand with its state and
-/// the time it began. Nothing when the session has neither a goal nor a strand
-/// to list. The objective and the strands' names are text a person or a session
-/// chose, drawn as text nodes.
+/// The coordinator's card: the goal's objective and status, the delegates'
+/// counts, the tokens spent of the budget, and a line for each delegate with its
+/// state and the time it began. A delegate is a strand other than `main`, which
+/// is the session's own and says nothing a thread does not already say.
+/// Nothing when the session has neither a goal nor a delegate. The objective and
+/// the strands' names are text a person or a session chose, drawn as text nodes.
 ///
 /// ## Examples
 ///
@@ -216,19 +217,24 @@ fn peer(each: Peer, name_of: fn(String) -> String) -> Element(message) {
 /// // brief_view.coordinator(brief)
 /// ```
 pub fn coordinator(brief: Brief) -> Element(message) {
-  case brief.goal, brief.strands {
+  let delegates = list.filter(brief.strands, fn(each) { each.name != "main" })
+
+  // A session with no goal and no delegate has no coordinator to draw.
+  case brief.goal, delegates {
     None, [] -> element.none()
-    goal, strands ->
+    goal, _ ->
       parts.section("The coordinator", [
         parts.card(
           list.flatten([
-            [html.div([attribute.class("brief-ctx")], context(goal, strands))],
-            case strands {
+            [
+              html.div([attribute.class("brief-ctx")], context(goal, delegates)),
+            ],
+            case delegates {
               [] -> []
               _ -> [
                 html.ul(
                   [attribute.class("brief-strands")],
-                  list.map(strands, strand),
+                  list.map(delegates, strand),
                 ),
               ]
             },
@@ -260,7 +266,7 @@ fn context(
     },
     case strands {
       [] -> []
-      _ -> [column("Strands", thread_words.delegates(strands), "")]
+      _ -> [column("Delegates", thread_words.delegates(strands), "")]
     },
     case goal {
       Some(held) if held.token_budget > 0 -> [

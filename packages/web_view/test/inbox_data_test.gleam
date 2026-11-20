@@ -17,6 +17,7 @@ import web_view/home
 import web_view/session_brief.{Brief}
 import web_view/sessions.{type Entry, Entry, Live, Report}
 import web_view/signins
+import web_view/view/brief_view
 
 const now = 100_000_000
 
@@ -409,6 +410,22 @@ pub fn an_ask_draws_the_coordinator_and_where_it_stopped_test() {
   assert string.contains(html, "sub:mockup-a")
   assert string.contains(html, "Where it stopped")
   assert !string.contains(html, "phase")
+}
+
+pub fn a_session_with_only_its_own_strand_has_no_coordinator_test() {
+  let lone =
+    Brief(..the_brief(), goal: None, strands: [
+      session_brief.Strand("main", session_brief.Working, Some(now)),
+    ])
+
+  // No goal and no delegate: nothing to draw.
+  assert element.to_string(brief_view.coordinator(lone)) == ""
+
+  // A goal alone is a card of the goal and the tokens, with no delegate lines.
+  let with_goal = Brief(..lone, goal: the_brief().goal)
+  let html = element.to_string(brief_view.coordinator(with_goal))
+  assert string.contains(html, "Ship the attention inbox")
+  assert !string.contains(html, "brief-strands")
 }
 
 pub fn a_stuck_strand_is_worded_by_its_reason_code_test() {

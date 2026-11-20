@@ -598,7 +598,12 @@ fn reading(
         },
       ],
       [
-        activity(thread, kind, brief),
+        // A review's pane says what changed, so neither the steps nor the
+        // coordinator are drawn above it.
+        case review {
+          Some(_) -> element.none()
+          None -> activity(thread, kind, brief)
+        },
         case review {
           Some(_) -> element.none()
           None -> coordinator(kind, brief)
@@ -918,10 +923,15 @@ fn eyebrow(thread: Thread, kind: Kind, dated: Option(Dated)) -> String {
     workspace -> base <> " · " <> heading.shorten_path(workspace)
   }
 
-  // What the data says the session is doing replaces the kind's own word.
-  case option.then(dated, fn(each) { each.state }) {
-    Some(words) -> placed <> " · " <> words
-    None -> placed <> " · " <> state_words(kind)
+  // What the data says the session is doing replaces the kind's own word, and a
+  // dated thread needs none, since "waiting since" and "finished" say it.
+  case
+    option.then(dated, fn(each) { each.state }),
+    option.then(dated, fn(each) { each.moment })
+  {
+    Some(words), _ -> placed <> " · " <> words
+    None, Some(_) -> placed
+    None, None -> placed <> " · " <> state_words(kind)
   }
 }
 
