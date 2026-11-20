@@ -60,6 +60,8 @@ import web_view/review_outbox_rule
 import web_view/review_pane.{type State}
 import web_view/review_pin_rule
 import web_view/review_stage_rule.{type Verdict}
+import web_view/session_brief.{type Command}
+import web_view/view/brief_view
 import web_view/view/diff
 import web_view/view/inbox_parts as parts
 
@@ -96,6 +98,12 @@ pub type Offer(message) {
     presses: Int,
     /// The messages of the controls, or nothing for a page that may only read.
     acting: Option(Acting(message)),
+    /// The last shell command the session ran and how it ended, from its brief.
+    /// The pane states it as a fact beside the counts.
+    command: Option(Command),
+    /// The agent's last message under its label, drawn between the counts and
+    /// the verdict as the final design places it, or nothing.
+    message: Element(message),
   )
 }
 
@@ -162,7 +170,8 @@ fn body(review: Review, offer: Offer(message)) -> Element(message) {
   let placed = review_pin_rule.place(review.files, pins)
 
   html.div([attribute.class("review-body")], [
-    stat(review),
+    stat(review, offer),
+    offer.message,
     verdict_control(offer),
     case placed.unplaced {
       [] -> element.none()
@@ -200,7 +209,7 @@ fn body(review: Review, offer: Offer(message)) -> Element(message) {
 }
 
 /// The count pills and every statement of what was not shown.
-fn stat(review: Review) -> Element(message) {
+fn stat(review: Review, offer: Offer(message)) -> Element(message) {
   html.div([attribute.class("review-stat")], [
     html.p([attribute.class("inbox-pills")], [
       html.span([attribute.class("inbox-pill inbox-pill-ok")], [
@@ -215,6 +224,7 @@ fn stat(review: Review) -> Element(message) {
           <> plural(review.stat.files, " file", " files"),
         ),
       ]),
+      brief_view.command(offer.command),
     ]),
     case review.repository {
       review_feed.Unborn ->

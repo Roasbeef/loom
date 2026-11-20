@@ -74,8 +74,10 @@ import lustre/event
 import session_view/operator.{type Delivery}
 import web_view/composer
 import web_view/inbox_rule.{type Folder, type Group, type Kind, type Thread}
+import web_view/session_brief.{type Brief}
 import web_view/sessions.{type Glance}
 import web_view/thread_send.{type Outbox}
+import web_view/view/brief_view
 import web_view/view/heading
 import web_view/view/inbox_parts as parts
 
@@ -137,12 +139,33 @@ pub type Offer(message) {
     /// identity, an attention item's by `attention_rule.opened_key` and a
     /// ticket's by `ticket_rule.opened_key`.
     opened: Set(String),
-    /// How long a session's thread has waited, in the page's words, by session.
-    /// The activity read carries no raise time for an approval, so the page
-    /// passes none today and a row draws no age; a later layer that reads one
-    /// fills this and the row and the pane's eyebrow draw it as the final design
-    /// does ("1h 22m", "waiting since 12:58").
-    waited: List(#(String, String)),
+    /// What the page knows of when a session's thread began, by session: the
+    /// age its row says, the time its eyebrow dates and what it says the session
+    /// is doing. A session whose data holds no time has no entry and draws none.
+    dated: List(#(String, Dated)),
+    /// The brief of a session, as its thread may draw it, or nothing when none
+    /// was read (`web_view/brief_rule.shown`).
+    briefs: fn(String) -> Option(Brief),
+    /// A session's name in the page's own words, which a peer message names its
+    /// sender by.
+    name_of: fn(String) -> String,
+    /// The press that opens the open ask of a session, when it has one.
+    ask_of: fn(String) -> Option(message),
+  )
+}
+
+/// What the page knows of when a session's thread began. Every part is optional
+/// because each comes from a different record, and a part that is not known is
+/// not drawn: the page never invents a time.
+pub type Dated {
+  Dated(
+    /// The age the row's first line says, with whether it is a long wait.
+    age: Option(parts.Age),
+    /// The time the eyebrow dates: `waiting since 12:58`, `finished 12:31`.
+    moment: Option(parts.Moment),
+    /// What the eyebrow says the session is doing in place of the kind's word:
+    /// `working, 14 min into a turn`.
+    state: Option(String),
   )
 }
 
@@ -478,9 +501,10 @@ fn row(
         inbox_rule.ToReview, True ->
           Some(parts.Age("Checking for changes…", parts.Ordinary))
         _, _ ->
-          list.key_find(offer.waited, thread.id)
-          |> option.from_result
-          |> option.map(parts.Age(_, parts.Ordinary))
+          case list.key_find(offer.dated, thread.id) {
+            Ok(Dated(age:, ..)) -> age
+            Error(Nil) -> None
+          }
       },
       kind: row_word(kind, which),
       head: inbox_rule.thread_head(thread),
@@ -540,6 +564,8 @@ fn reading(
   let kind = inbox_rule.kind(thread.report)
   let #(compose_body, bar) = compose(thread, kind, offer)
   let review = review_of(thread, offer)
+  let dated = list.key_find(offer.dated, thread.id) |> option.from_result
+  let brief = offer.briefs(thread.id)
 
   parts.pane_with(
     case pick {
@@ -555,8 +581,8 @@ fn reading(
             Some(_) -> "Review"
             None -> inbox_rule.words(kind)
           },
-          eyebrow(thread, kind),
-          option.from_result(list.key_find(offer.waited, thread.id)),
+          eyebrow(thread, kind, dated),
+          option.then(dated, fn(each) { each.moment }),
         ),
         case review, composed_title(thread, kind, offer) {
           Some(Reviewed(title: Some(words), ..)), _ -> parts.title(words)
@@ -564,8 +590,21 @@ fn reading(
           _, None -> parts.title(title(kind, thread))
         },
       ],
-      [standing(thread, kind, offer), said(thread, kind)],
-      [strands(thread.report.glances), reviewed(thread, offer)],
+      [
+        standing(thread, kind, brief, offer),
+        case review {
+          Some(_) -> element.none()
+          None -> said(thread, kind, brief)
+        },
+      ],
+      [
+        activity(thread, kind, brief),
+        case review {
+          Some(_) -> element.none()
+          None -> coordinator(kind, brief)
+        },
+        reviewed(thread, offer),
+      ],
       [acts(thread, kind, offer)],
     ]),
     compose_body,
@@ -868,8 +907,9 @@ fn form_field() -> decode.Decoder(#(String, String)) {
 
 /// The eyebrow's quiet words: the session's name, its workspace as the host's
 /// text with the home directory shortened when the row has one, and what the
-/// session is doing in the page's own word.
-fn eyebrow(thread: Thread, kind: Kind) -> String {
+/// session is doing in the page's own word, or in the words the data gives when
+/// it dates the turn (`working, 14 min into a turn`).
+fn eyebrow(thread: Thread, kind: Kind, dated: Option(Dated)) -> String {
   let base = inbox_rule.shown_name(thread)
 
   // A row with no workspace has no third part.
@@ -878,7 +918,11 @@ fn eyebrow(thread: Thread, kind: Kind) -> String {
     workspace -> base <> " · " <> heading.shorten_path(workspace)
   }
 
-  placed <> " · " <> state_words(kind)
+  // What the data says the session is doing replaces the kind's own word.
+  case option.then(dated, fn(each) { each.state }) {
+    Some(words) -> placed <> " · " <> words
+    None -> placed <> " · " <> state_words(kind)
+  }
 }
 
 /// What a kind says about the session's state, in the eyebrow.
@@ -912,12 +956,17 @@ fn title(kind: Kind, thread: Thread) -> String {
 fn standing(
   thread: Thread,
   kind: Kind,
+  brief: Option(Brief),
   offer: Offer(message),
 ) -> Element(message) {
   case kind {
     inbox_rule.ApprovalPending ->
       html.div([attribute.class("inbox-standing")], [
         evidence_of(thread.id, offer),
+        case brief {
+          Some(read) -> brief_view.peers(read.peers, offer.name_of)
+          None -> element.none()
+        },
         parts.section("Decide", [
           html.div([attribute.class("inbox-acts")], [
             open_button(
@@ -950,22 +999,49 @@ fn evidence_of(session: String, offer: Offer(message)) -> Element(message) {
   }
 }
 
-/// The main strand's last finished message under a label that says it is not
-/// current work and not the page's words. It is a text node: the message is
-/// model text. An approval's thread leaves it out, as the approval is what the
-/// thread is about.
-fn said(thread: Thread, kind: Kind) -> Element(message) {
-  case kind, thread.report.last_message {
-    inbox_rule.ApprovalPending, _ -> element.none()
-    _, Some(text) ->
+/// What the agent last said. A working session whose brief was read shows the
+/// brief's latest message, which may belong to the turn still running, with the
+/// time it was written. Any other thread shows the main strand's last finished
+/// message under a label that says it is not current work and not the page's
+/// words. Both are text nodes: the message is model text. An approval's thread
+/// leaves it out, as the approval is what the thread is about, and a review's
+/// thread draws it itself, between its counts and its verdict.
+fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
+  case kind, brief, thread.report.last_message {
+    inbox_rule.ApprovalPending, _, _ -> element.none()
+    inbox_rule.Working, Some(read), _ -> brief_view.latest(read)
+    _, _, Some(text) ->
       case string.trim(text) {
         "" -> element.none()
         _ ->
           html.div([attribute.class("inbox-said")], [
-            parts.quote("The agent's last finished turn, untrusted text", text),
+            brief_view.finished(text, thread.report.last_message_at),
           ])
       }
-    _, None -> element.none()
+    _, _, None -> element.none()
+  }
+}
+
+/// What the session is doing: its last few steps when the brief has them, and
+/// otherwise what its strands say they are doing, one line each, as text nodes.
+fn activity(
+  thread: Thread,
+  kind: Kind,
+  brief: Option(Brief),
+) -> Element(message) {
+  case kind, brief {
+    inbox_rule.ApprovalPending, _ -> element.none()
+    _, Some(read) if read.steps != [] -> brief_view.steps(read)
+    _, _ -> strands(thread.report.glances)
+  }
+}
+
+/// The coordinator's card, for a thread that is not an approval and whose
+/// brief has a goal or strands to list.
+fn coordinator(kind: Kind, brief: Option(Brief)) -> Element(message) {
+  case kind, brief {
+    inbox_rule.ApprovalPending, _ | _, None -> element.none()
+    _, Some(read) -> brief_view.coordinator(read)
   }
 }
 
@@ -1001,13 +1077,33 @@ fn glance_line(glance: Glance) -> String {
 fn acts(thread: Thread, kind: Kind, offer: Offer(message)) -> Element(message) {
   case kind {
     inbox_rule.ApprovalPending -> element.none()
-    inbox_rule.Failed
-    | inbox_rule.Idle
-    | inbox_rule.Working
-    | inbox_rule.Settled ->
+    inbox_rule.Working ->
+      html.div([attribute.class("inbox-acts")], [
+        open_button("Watch it live ›", thread.id, offer, Plain),
+        ask_button(thread.id, offer),
+      ])
+    inbox_rule.Failed | inbox_rule.Idle | inbox_rule.Settled ->
       html.div([attribute.class("inbox-acts")], [
         open_button("Open session ›", thread.id, offer, Plain),
+        ask_button(thread.id, offer),
       ])
+  }
+}
+
+/// The button that opens the session's own open ask in the inbox, when it has
+/// one. The ask is another thread of the same list, and its press is the row's.
+fn ask_button(session: String, offer: Offer(message)) -> Element(message) {
+  case offer.ask_of(session) {
+    Some(press) ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("inbox-open"),
+          event.on_click(press),
+        ],
+        [html.text("Its open ask ›")],
+      )
+    None -> element.none()
   }
 }
 

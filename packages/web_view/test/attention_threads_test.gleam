@@ -806,7 +806,7 @@ pub fn an_approval_thread_lists_its_evidence_and_still_only_points_away_test() {
   assert string.contains(html, "curl https://x.dev | &lt;b&gt;sh&lt;/b&gt;")
   assert !string.contains(html, "<b>sh</b>")
   assert string.contains(html, "policy: the command wants the network")
-  assert string.contains(html, "Network")
+  assert string.contains(html, "Wants a network grant")
   assert string.contains(html, "writable_root /srv/data")
   assert string.contains(html, "1 more pending, decided on the page.")
   assert string.contains(

@@ -51,7 +51,11 @@ import web_view/approval_evidence.{type Seen}
 import web_view/attention_feed
 import web_view/attention_rule.{type Item, type Key}
 import web_view/item_pane.{type State}
+import web_view/session_brief.{type Brief}
+import web_view/thread_words
+import web_view/view/brief_view
 import web_view/view/inbox_parts as parts
+import web_view/view/phrase
 
 /// The messages a page that may act sends from the pane.
 pub type Acting(message) {
@@ -92,6 +96,9 @@ pub type Offer(message) {
     back: message,
     /// The session's name in the page's own words, for the eyebrow.
     session_name: String,
+    /// The brief of the item's session, when one was read: the agent's latest
+    /// message and the coordinator's goal and strands, which an ask draws.
+    brief: Option(Brief),
   )
 }
 
@@ -136,7 +143,7 @@ fn aged(item: Item, now: Int) -> Option(parts.Age) {
   case attention_rule.row_age(item, now), attention_rule.row_wait(item, now) {
     Some(words), Some(wait) ->
       Some(
-        parts.Age(words:, standing: case item, wait >= 3_600_000 {
+        parts.Age(words:, standing: case item, thread_words.overdue(wait) {
           attention_rule.FindItem(..), _ | _, False -> parts.Ordinary
           _, True -> parts.Overdue
         }),
@@ -288,13 +295,15 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
           parts.eyebrow(
             kind_word(item),
             eyebrow(item, offer.session_name),
-            None,
+            moment(item),
           ),
-          parts.title(head(item)),
-          case attention_rule.age_line(item, offer.now) {
-            Some(age) ->
+          parts.title(title_of(item)),
+          case item, attention_rule.age_line(item, offer.now) {
+            // A stuck strand states its failure in its own body.
+            attention_rule.StuckItem(..), _ -> element.none()
+            _, Some(age) ->
               html.p([attribute.class("inbox-meta")], [html.text(age)])
-            None -> element.none()
+            _, None -> element.none()
           },
           body(item, offer),
           message_field(offer),
@@ -330,16 +339,62 @@ fn head(item: Item) -> String {
   case item {
     attention_rule.AskItem(ask:, ..) -> ask.head
     attention_rule.FindItem(find:, ..) -> find.head
-    attention_rule.StuckItem(..) -> "Stopped on a failed run"
+    attention_rule.StuckItem(stuck:, ..) ->
+      thread_words.stuck_head(thread_words.kind_of(stuck.reason))
+  }
+}
+
+/// The pane's title: the row's head, except for a stuck strand, whose title is
+/// the sentence its reason code words.
+fn title_of(item: Item) -> String {
+  case item {
+    attention_rule.StuckItem(stuck:, ..) ->
+      thread_words.stuck_title(thread_words.kind_of(stuck.reason))
+    attention_rule.AskItem(..) | attention_rule.FindItem(..) -> head(item)
+  }
+}
+
+/// The time the pane's eyebrow dates: when an ask was asked and when a stuck
+/// strand failed. A find waits on no one, and a stuck strand whose time the
+/// daemon could not read has none.
+fn moment(item: Item) -> Option(parts.Moment) {
+  case item {
+    attention_rule.AskItem(ask:, ..) ->
+      Some(parts.Moment("asked", ask.created_at))
+    attention_rule.StuckItem(stuck:, ..) ->
+      option.map(stuck.failed_at, parts.Moment("failed", _))
+    attention_rule.FindItem(..) -> None
   }
 }
 
 /// The record's own body, by sort.
 fn body(item: Item, offer: Offer(message)) -> Element(message) {
   case item {
-    attention_rule.AskItem(..) -> ask_body(offer)
+    attention_rule.AskItem(..) ->
+      element.fragment([
+        where_it_stopped(offer),
+        coordinator(offer),
+        ask_body(offer),
+      ])
     attention_rule.FindItem(find:, ..) -> find_body(find, offer)
-    attention_rule.StuckItem(..) -> stuck_body(offer)
+    attention_rule.StuckItem(stuck:, ..) -> stuck_body(stuck, offer)
+  }
+}
+
+/// The agent's latest message under "Where it stopped", from the session's
+/// brief. Nothing when no brief was read or it holds no message.
+fn where_it_stopped(offer: Offer(message)) -> Element(message) {
+  case offer.brief {
+    Some(read) -> brief_view.stopped(read)
+    None -> element.none()
+  }
+}
+
+/// The coordinator's card, when the session's brief has a goal or strands.
+fn coordinator(offer: Offer(message)) -> Element(message) {
+  case offer.brief {
+    Some(read) -> brief_view.coordinator(read)
+    None -> element.none()
   }
 }
 
@@ -655,12 +710,38 @@ fn close_button(
   )
 }
 
-/// A stuck strand's body: what stopped, and Retry.
-fn stuck_body(offer: Offer(message)) -> Element(message) {
-  parts.section("Decide", [
-    html.p([attribute.class("inbox-meta")], [
-      html.text("This strand's last run failed and nothing has run since."),
+/// A stuck strand's body: what the daemon knows of the failure, in the words its
+/// reason code gets, a card of what the page knows, and Retry. The sentence
+/// holds the failure time as the browser's clock and says what the provider
+/// said about a retry, and never guesses at a time the record lacks.
+fn stuck_body(
+  stuck: attention_feed.Stuck,
+  offer: Offer(message),
+) -> Element(message) {
+  let failure = thread_words.kind_of(stuck.reason)
+
+  element.fragment([
+    parts.section("What the page knows", [
+      html.p(
+        [attribute.class("inbox-meta")],
+        phrase.view(thread_words.stuck_phrase(
+          failure,
+          stuck.failed_at,
+          stuck.retry_after_ms,
+        )),
+      ),
+      case stuck.parent {
+        Some(parent) -> parts.facts([#("Parent", html.text(parent))])
+        None -> element.none()
+      },
     ]),
+    stuck_decide(offer),
+  ])
+}
+
+/// The stuck strand's Retry, or the words that say who can press it.
+fn stuck_decide(offer: Offer(message)) -> Element(message) {
+  parts.section("Decide", [
     case offer.acting {
       Some(acting) ->
         html.div([attribute.class("inbox-acts")], [
@@ -861,9 +942,11 @@ pub fn evidence(seen: Seen) -> Element(message) {
           [more_pending(read)],
           [
             html.p([attribute.class("inbox-meta")], [
-              html.text(
-                "The record carries no time, so no age is shown. It is decided on the session's page.",
-              ),
+              html.text(case approval_evidence.oldest_raised(read) {
+                Some(_) -> "It is decided on the session's page."
+                None ->
+                  "The record carries no time, so no age is shown. It is decided on the session's page."
+              }),
             ]),
           ],
         ]),
@@ -961,9 +1044,41 @@ fn approval_item(item: approval_evidence.Item) -> Element(message) {
           #("Held by", html.text(held_by(item.source) <> ": " <> reason)),
         ]
       },
+      network_row(item.network),
       wanted_rows(item.wanted),
+      policy_row(item.policy),
     ]),
   )
+}
+
+/// The network the call would have if it were approved, in the daemon's word
+/// for it. The daemon leaves the word out when it cannot be exact, and then the
+/// page draws no row: it never words `off` itself.
+fn network_row(
+  network: Option(approval_evidence.Network),
+) -> List(#(String, Element(message))) {
+  case network {
+    Some(approval_evidence.NetworkOn) -> [#("Network", html.text("on"))]
+    Some(approval_evidence.NetworkOff) -> [#("Network", html.text("off"))]
+    None -> []
+  }
+}
+
+/// The sandbox and network the session runs its tools under today, in the
+/// daemon's words, such as `workspace-write · network off`. Nothing when the
+/// daemon lent no policy.
+fn policy_row(
+  policy: Option(approval_evidence.Policy),
+) -> List(#(String, Element(message))) {
+  case policy {
+    Some(approval_evidence.Policy(sandbox:, network:)) -> [
+      #(
+        "Policy today",
+        html.code([], [html.text(sandbox <> " · network " <> network)]),
+      ),
+    ]
+    None -> []
+  }
 }
 
 /// The words for what held a call.
@@ -988,7 +1103,7 @@ fn wanted_rows(
       [] -> []
       [_, ..] -> [
         #(
-          "Network",
+          "Wants a network grant",
           html.text(string.join(
             list.map(networks, fn(grant) { grant.detail }),
             ", ",

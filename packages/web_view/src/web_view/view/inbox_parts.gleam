@@ -53,6 +53,7 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
+import web_view/view/phrase
 
 /// Whether the person has opened a row's thread on this page. The row says so
 /// by its dot and the weight of its name, as the final design draws it: an
@@ -402,25 +403,39 @@ pub fn pane_with(
   )
 }
 
+/// An instant a thread's eyebrow dates, with the words that say what happened
+/// at it.
+pub type Moment {
+  Moment(
+    /// The fixed words before the time: `waiting since`, `finished`, `failed`.
+    label: String,
+    /// The instant, in Unix milliseconds. The browser draws it as a time of day
+    /// in its own zone.
+    at: Int,
+  )
+}
+
 /// The eyebrow above a thread's title: its kind chip and quiet words that say
 /// where it comes from, and, when the data has a time, when it began to wait.
-/// `since` is a seam: a thread whose data has no raise time passes `None`.
+/// The time is drawn as a `<loom-time>`, so it is the browser's zone and not the
+/// server's. A thread whose data has no time passes `None` and draws none.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // inbox_parts.eyebrow("Approval", "storage/branch-index-repair · main", None)
+/// // inbox_parts.eyebrow("Approval", "storage/branch-index-repair · main", Some(Moment("waiting since", 1_790_000_000_000)))
 /// ```
 pub fn eyebrow(
   kind: String,
   meta: String,
-  since: Option(String),
+  since: Option(Moment),
 ) -> Element(message) {
   html.p([attribute.class("inbox-eyebrow")], [
     kind_chip(kind),
     html.span([], [html.text(meta)]),
     case since {
-      Some(words) -> html.span([], [html.text("· waiting since " <> words)])
+      Some(Moment(label:, at:)) ->
+        html.span([], [html.text("· " <> label <> " "), phrase.clock(at)])
       None -> element.none()
     },
   ])
@@ -513,8 +528,24 @@ pub fn facts(rows: List(#(String, Element(message)))) -> Element(message) {
 /// // inbox_parts.quote("The agent's last message, untrusted text", "Done.")
 /// ```
 pub fn quote(source: String, words: String) -> Element(message) {
+  quote_nodes([html.text(source)], words)
+}
+
+/// The same box with a source that holds nodes, for a source that names a time,
+/// which the browser draws in its own zone. The nodes are the page's fixed words
+/// and its `<loom-time>`; a name a session chose is a text node among them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // inbox_parts.quote_nodes([html.text("Latest message · "), phrase.clock(0)], "Done.")
+/// ```
+pub fn quote_nodes(
+  source: List(Element(message)),
+  words: String,
+) -> Element(message) {
   html.div([attribute.class("inbox-quote")], [
-    html.b([attribute.class("inbox-quote-source")], [html.text(source)]),
+    html.b([attribute.class("inbox-quote-source")], source),
     html.span([attribute.class("inbox-quote-words")], [html.text(words)]),
   ])
 }

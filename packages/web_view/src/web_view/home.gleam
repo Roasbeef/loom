@@ -281,7 +281,6 @@ import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -302,6 +301,7 @@ import web_view/answer_rule
 import web_view/approval_evidence
 import web_view/attention_feed
 import web_view/attention_rule
+import web_view/brief_rule
 import web_view/composer
 import web_view/creations.{type Sharing}
 import web_view/elsewhere
@@ -329,9 +329,11 @@ import web_view/sessions.{
 }
 import web_view/signins.{type Signin}
 import web_view/thread_send
+import web_view/thread_words
 import web_view/ticket_rule
 import web_view/view/archiving
 import web_view/view/attention_thread
+import web_view/view/brief_view
 import web_view/view/create.{type Create}
 import web_view/view/elsewhere as elsewhere_view
 import web_view/view/ended
@@ -340,6 +342,7 @@ import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
 import web_view/view/inbox as inbox_view
+import web_view/view/inbox_parts
 import web_view/view/new_session
 import web_view/view/notice
 import web_view/view/projects as projects_view
@@ -999,6 +1002,13 @@ pub opaque type Model {
     /// The brief of each session whose thread was shown, by session, replaced by
     /// each read (protocol-change/125).
     briefs: Dict(String, session_brief.Seen),
+    /// The last brief read the page started of each session, which
+    /// `brief_rule.due` counts the next read from.
+    brief_reads: Dict(String, brief_rule.Read),
+    /// The time each held brief's read named as the start of the peer messages
+    /// it wanted, so a thread draws them only under a label they fit
+    /// (`brief_rule.shown`).
+    brief_since: Dict(String, Int),
     /// The open item thread and what is staged in it.
     item: item_pane.State,
     /// How many item threads have been opened, which keys their forms so each
@@ -1263,8 +1273,13 @@ pub type Msg {
   /// The catalogue's summary rows the daemon read for the saved sessions.
   SavedRead(rows: List(Saved))
 
-  /// The daemon's answer to the read of a session's brief.
-  BriefRead(session: String, read: Result(session_brief.Brief, String))
+  /// The daemon's answer to the read of a session's brief. `since` is the time
+  /// the read asked peer messages after.
+  BriefRead(
+    session: String,
+    since: Int,
+    read: Result(session_brief.Brief, String),
+  )
 
   /// The daemon's answer to the read of a session's approval evidence.
   ApprovalsRead(
@@ -1815,6 +1830,8 @@ pub fn new(start: Start) -> Model {
     saved: dict.new(),
     evidence: dict.new(),
     briefs: dict.new(),
+    brief_reads: dict.new(),
+    brief_since: dict.new(),
     item: item_pane.closed(),
     item_presses: 0,
     reviews: dict.new(),
@@ -1936,11 +1953,9 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Answered(serial:, listing:) ->
       case serial == model.reads {
         True -> {
-          let model = answered(model, listing)
-          #(
-            model,
-            effect.batch([observing(model), attending(model), approving(model)]),
-          )
+          let #(model, reads) =
+            approving(answered(model, listing), brief_rule.Refreshed)
+          #(model, effect.batch([observing(model), attending(model), reads]))
         }
         False -> #(model, effect.none())
       }
@@ -1959,12 +1974,13 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               elsewhere_reads: model.elsewhere_reads + 1,
               board_reads: model.board_reads + 1,
             )
+          let #(model, reads) = approving(model, brief_rule.Refreshed)
           #(
             model,
             effect.batch([
               observing(model),
               attending(model),
-              approving(model),
+              reads,
               following(model, listing),
             ]),
           )
@@ -1979,7 +1995,8 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Connecting | Connected -> {
           let next = observed(model, rows)
           let #(reviewed, reading) = reviewing(next)
-          #(reviewed, effect.batch([approving(reviewed), reading]))
+          let #(reviewed, reads) = approving(reviewed, brief_rule.Refreshed)
+          #(reviewed, effect.batch([reads, reading]))
         }
       }
 
@@ -2163,7 +2180,8 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ticket: None,
         )
       let #(reviewed, reading) = reviewing(next)
-      #(reviewed, effect.batch([approving(reviewed), reading]))
+      let #(reviewed, reads) = approving(reviewed, brief_rule.Opened)
+      #(reviewed, effect.batch([reads, reading]))
     }
 
     // A send asks the daemon in a task of its own. A draft with nothing in it
@@ -2266,38 +2284,62 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     // The brief replaces what the page held for that session, kept for each
-    // session whose thread was shown and so bounded by the sessions viewed.
-    BriefRead(session:, read:) ->
+    // session whose thread was shown and so bounded by the sessions viewed. A
+    // refusal leaves a brief the page already holds, since the daemon allows six
+    // reads in four seconds and a refused read says nothing about what the
+    // session did.
+    BriefRead(session:, since:, read:) ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> #(
-          Model(
-            ..model,
-            briefs: dict.insert(model.briefs, session, case read {
-              Ok(brief) -> session_brief.Seen(brief)
-              Error(words) -> session_brief.Unseen(words)
-            }),
-          ),
-          effect.none(),
-        )
+        Connecting | Connected ->
+          case read, dict.get(model.briefs, session) {
+            Ok(brief), _ -> #(
+              Model(
+                ..model,
+                briefs: dict.insert(
+                  model.briefs,
+                  session,
+                  session_brief.Seen(brief),
+                ),
+                brief_since: dict.insert(model.brief_since, session, since),
+              ),
+              effect.none(),
+            )
+            Error(words), Error(Nil)
+            | Error(words), Ok(session_brief.Unseen(_))
+            -> #(
+              Model(
+                ..model,
+                briefs: dict.insert(
+                  model.briefs,
+                  session,
+                  session_brief.Unseen(words),
+                ),
+              ),
+              effect.none(),
+            )
+            Error(_), Ok(session_brief.Seen(_)) -> #(model, effect.none())
+          }
       }
 
     // The evidence replaces what the page held for that session. It is kept
     // for each session whose thread was shown, so it is bounded by the sessions
-    // the page has viewed.
+    // the page has viewed. A thread whose brief waited for the evidence reads it
+    // now, and one whose read asked after another time reads again.
     ApprovalsRead(session:, read:) ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> #(
-          Model(
-            ..model,
-            evidence: dict.insert(model.evidence, session, case read {
-              Ok(evidence) -> approval_evidence.Seen(evidence)
-              Error(words) -> approval_evidence.Unseen(words)
-            }),
-          ),
-          effect.none(),
-        )
+        Connecting | Connected ->
+          briefing(
+            Model(
+              ..model,
+              evidence: dict.insert(model.evidence, session, case read {
+                Ok(evidence) -> approval_evidence.Seen(evidence)
+                Error(words) -> approval_evidence.Unseen(words)
+              }),
+            ),
+            brief_rule.Refreshed,
+          )
       }
 
     // A scan's answer is kept as what it found and the review is dropped. A
@@ -2451,23 +2493,32 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       {
         Some(reads), Some(_) -> {
           let #(state, reading) = item_pane.pick(model.item, key)
+          let #(next, brief) =
+            briefing(
+              Model(
+                ..model,
+                item: state,
+                item_presses: model.item_presses + 1,
+                opened: set.insert(model.opened, attention_rule.opened_key(key)),
+                ticket: None,
+              ),
+              brief_rule.Opened,
+            )
+
           #(
-            Model(
-              ..model,
-              item: state,
-              item_presses: model.item_presses + 1,
-              opened: set.insert(model.opened, attention_rule.opened_key(key)),
-              ticket: None,
-            ),
-            case reading {
-              item_pane.ReadRecord -> {
-                use dispatch <- effect.from
-                reads.record(key.session, key.id, fn(read) {
-                  dispatch(RecordRead(key, read))
-                })
-              }
-              item_pane.SkipRead -> effect.none()
-            },
+            next,
+            effect.batch([
+              case reading {
+                item_pane.ReadRecord -> {
+                  use dispatch <- effect.from
+                  reads.record(key.session, key.id, fn(read) {
+                    dispatch(RecordRead(key, read))
+                  })
+                }
+                item_pane.SkipRead -> effect.none()
+              },
+              brief,
+            ]),
           )
         }
         Some(_), None | None, _ -> #(model, effect.none())
@@ -5771,40 +5822,111 @@ fn approval_session(model: Model) -> Option(String) {
 }
 
 /// Starts the reads of the shown session that its thread draws: its pending
-/// approvals and its brief. Both return at once and answer later.
-fn approving(model: Model) -> Effect(Msg) {
-  effect.batch([approval_read(model), briefing(model)])
+/// approvals and its brief. Both return at once and answer later. The model
+/// comes back with the time the brief read was started, which the next read
+/// counts from.
+fn approving(
+  model: Model,
+  trigger: brief_rule.Trigger,
+) -> #(Model, Effect(Msg)) {
+  let #(model, brief) = briefing(model, trigger)
+  #(model, effect.batch([approval_read(model), brief]))
 }
 
-/// Starts the read of the shown running session's brief and returns at once; the
-/// answer arrives later as `BriefRead`. The time after which peer messages are
-/// wanted is the raise time of the session's oldest pending approval when the
-/// page holds its evidence, and zero otherwise. A page that reads no feed, one
-/// that has not connected or has ended, and a thread that is no running
-/// session's ask nothing.
-fn briefing(model: Model) -> Effect(Msg) {
-  let groups = model_groups(model)
-  let shown = inbox_rule.selection(groups, selected_session(model.selected))
-
-  // Only a running session, which the activity read has a report for, has a
-  // brief to read.
-  case model.start.attention, model.status, shown {
-    Some(reads), Connected, Some(session) ->
-      case dict.get(model.reports, session) {
-        Ok(_) -> {
-          let since = brief_since(model, session)
-          use dispatch <- effect.from
-          reads.brief(session, since, fn(read) {
-            dispatch(BriefRead(session, read))
-          })
-        }
-        Error(Nil) -> effect.none()
+/// The session whose brief the open thread's pane draws, or nothing when the
+/// pane has none to draw. An ask's pane draws the coordinator and where the
+/// session stopped, and a session's thread draws its approval's peer messages,
+/// its latest message and steps, or its review's last command. A stuck strand,
+/// a find, a ticket, a failed run and a session with nothing to say draw no
+/// brief, so none is read for them, and no thread that is not open is read.
+fn brief_session(model: Model) -> Option(String) {
+  // An open item thread decides first, then an open ticket, then the session
+  // thread the list shows.
+  case model.item.key, model.ticket {
+    Some(key), _ ->
+      case attention_rule.find_item(current_items(model), key) {
+        Some(attention_rule.AskItem(session:, ..)) -> Some(session)
+        Some(attention_rule.FindItem(..))
+        | Some(attention_rule.StuckItem(..))
+        | None -> None
       }
-    Some(_), Connected, None
+    None, Some(_) -> None
+    None, None -> {
+      let groups = model_groups(model)
+      let shown = inbox_rule.selection(groups, selected_session(model.selected))
+
+      // A session thread draws a brief for every kind but a failed or settled one.
+      case option.map(shown, dict.get(model.reports, _)) {
+        Some(Ok(report)) ->
+          case inbox_rule.kind(report) {
+            inbox_rule.Failed | inbox_rule.Settled -> None
+            inbox_rule.ApprovalPending | inbox_rule.Idle | inbox_rule.Working ->
+              shown
+          }
+        Some(Error(Nil)) | None -> None
+      }
+    }
+  }
+}
+
+/// Whether a session's thread is an approval whose evidence the page has not
+/// received. Its brief waits for the evidence, because the time its peer
+/// messages are counted from is the approval's raise time.
+fn evidence_awaited(model: Model, session: String) -> Bool {
+  case dict.get(model.reports, session), dict.get(model.evidence, session) {
+    Ok(sessions.Report(activity: NeedsYou, ..)), Error(Nil) -> True
+    _, _ -> False
+  }
+}
+
+/// Starts the read of the open thread's session's brief and returns at once; the
+/// answer arrives later as `BriefRead`. The time after which peer messages are
+/// wanted is the raise time of the session's oldest pending approval, so a
+/// session whose approval evidence has not arrived waits for it: a read made
+/// before it would carry messages the thread's label does not describe. A page
+/// that reads no feed, one that has not connected or has ended, and a thread
+/// that has no brief to draw ask nothing, and so does a thread whose last read
+/// is too recent (`brief_rule.due`).
+fn briefing(
+  model: Model,
+  trigger: brief_rule.Trigger,
+) -> #(Model, Effect(Msg)) {
+  // Only a connected page that reads the feed, with a thread open that has a
+  // brief to draw, reads one.
+  case model.start.attention, model.status, brief_session(model) {
+    Some(reads), Connected, Some(session) -> {
+      let since = brief_since(model, session)
+      let now = model.start.now()
+      let last = option.from_result(dict.get(model.brief_reads, session))
+
+      // The read waits for the evidence and for its own turn.
+      case
+        evidence_awaited(model, session),
+        brief_rule.due(last, now, since, trigger)
+      {
+        False, True -> #(
+          Model(
+            ..model,
+            brief_reads: dict.insert(
+              model.brief_reads,
+              session,
+              brief_rule.Read(started: now, since:),
+            ),
+          ),
+          effect.from(fn(dispatch) {
+            reads.brief(session, since, fn(read) {
+              dispatch(BriefRead(session, since, read))
+            })
+          }),
+        )
+        True, _ | False, False -> #(model, effect.none())
+      }
+    }
+    Some(_), Connected, _
     | Some(_), Connecting, _
     | Some(_), Ended(_), _
     | None, _, _
-    -> effect.none()
+    -> #(model, effect.none())
   }
 }
 
@@ -5813,11 +5935,7 @@ fn briefing(model: Model) -> Effect(Msg) {
 fn brief_since(model: Model, session: String) -> Int {
   case dict.get(model.evidence, session) {
     Ok(approval_evidence.Seen(evidence:)) ->
-      list.filter_map(evidence.items, fn(item) {
-        option.to_result(item.raised_at, Nil)
-      })
-      |> list.reduce(int.min)
-      |> result.unwrap(0)
+      approval_evidence.oldest_raised(evidence) |> option.unwrap(0)
     Ok(approval_evidence.Unseen(_)) | Error(Nil) -> 0
   }
 }
@@ -6149,6 +6267,7 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
                   open: Opening,
                   back: InboxClosed,
                   session_name: session_name(model, key.session),
+                  brief: shown_brief(model, key.session),
                 )),
               )
           },
@@ -6292,9 +6411,118 @@ fn inbox_page(model: Model) -> Element(Msg) {
       attention: with_tickets(model, attention_threads(model)),
       review: review_offer(model),
       checking: checking_ids(model),
-      waited: [],
+      dated: dated_threads(model),
+      briefs: fn(session) { shown_brief(model, session) },
+      name_of: session_name(model, _),
+      ask_of: fn(session) { ask_press(model, session) },
     ),
   )
+}
+
+/// What the page knows of when each session's thread began. An approval's age is
+/// counted from the raise time of its oldest pending approval, and says
+/// `waiting since` that time; a finished session's from the time of its last
+/// message, and says `finished`; a working session's from the start of the turn
+/// now running, and says how long it has gone on. A session whose data holds no
+/// such time has no entry, and the row and the pane draw none: the page never
+/// words an age the record lacks.
+fn dated_threads(model: Model) -> List(#(String, inbox_view.Dated)) {
+  let now = model.now
+
+  list.filter_map(inbox_threads(model), fn(thread) {
+    case inbox_rule.kind(thread.report) {
+      inbox_rule.ApprovalPending ->
+        case dict.get(model.evidence, thread.id) {
+          Ok(approval_evidence.Seen(evidence:)) ->
+            case approval_evidence.oldest_raised(evidence) {
+              Some(raised) ->
+                Ok(#(
+                  thread.id,
+                  inbox_view.Dated(
+                    age: Some(aged(now - raised)),
+                    moment: Some(inbox_parts.Moment("waiting since", raised)),
+                    state: None,
+                  ),
+                ))
+              None -> Error(Nil)
+            }
+          Ok(approval_evidence.Unseen(_)) | Error(Nil) -> Error(Nil)
+        }
+      inbox_rule.Idle ->
+        case thread.report.last_message_at {
+          Some(at) ->
+            Ok(#(
+              thread.id,
+              inbox_view.Dated(
+                age: Some(aged(now - at)),
+                moment: Some(inbox_parts.Moment("finished", at)),
+                state: None,
+              ),
+            ))
+          None -> Error(Nil)
+        }
+      inbox_rule.Working ->
+        case thread.report.turn_started_at {
+          Some(started) ->
+            Ok(#(
+              thread.id,
+              inbox_view.Dated(
+                age: Some(aged(now - started)),
+                moment: None,
+                state: Some(
+                  "working, " <> thread_words.turn_words(started, now),
+                ),
+              ),
+            ))
+          None -> Error(Nil)
+        }
+      inbox_rule.Failed | inbox_rule.Settled -> Error(Nil)
+    }
+  })
+}
+
+/// A wait as a row's age: its short words, marked when it is an hour or more.
+fn aged(wait: Int) -> inbox_parts.Age {
+  inbox_parts.Age(
+    words: thread_words.short_age(wait),
+    standing: case thread_words.overdue(wait) {
+      True -> inbox_parts.Overdue
+      False -> inbox_parts.Ordinary
+    },
+  )
+}
+
+/// The brief a thread draws for a session: what the page holds of it, with the
+/// peer messages kept only for an approval whose brief was read after that
+/// approval's raise time (`brief_rule.shown`).
+fn shown_brief(model: Model, session: String) -> Option(session_brief.Brief) {
+  // The raise time is the oldest pending approval's, when the page has read one.
+  let raised = case dict.get(model.evidence, session) {
+    Ok(approval_evidence.Seen(evidence:)) ->
+      approval_evidence.oldest_raised(evidence)
+    Ok(approval_evidence.Unseen(_)) | Error(Nil) -> None
+  }
+
+  brief_rule.shown(
+    option.from_result(dict.get(model.briefs, session)),
+    option.from_result(dict.get(model.brief_since, session)),
+    raised,
+  )
+}
+
+/// The press that opens a session's own open ask, when the last feed read holds
+/// one.
+fn ask_press(model: Model, session: String) -> Option(Msg) {
+  list.find_map(current_items(model), fn(item) {
+    case item {
+      attention_rule.AskItem(session: owner, ..) if owner == session ->
+        Ok(ItemPicked(attention_rule.key_of(item)))
+      attention_rule.AskItem(..)
+      | attention_rule.FindItem(..)
+      | attention_rule.StuckItem(..) -> Error(Nil)
+    }
+  })
+  |> option.from_result
 }
 
 /// The session whose thread follows `current` in "To review", or nothing when
@@ -6629,38 +6857,57 @@ fn review_offer(model: Model) -> Option(inbox_view.Reviewed(Msg)) {
         True ->
           Some(reviewed_with(
             session,
-            review_view.pane(
-              review_view.Offer(
-                state: model.review,
-                name: case
-                  list.find(inbox_threads(model), fn(thread) {
-                    thread.id == session
-                  })
-                {
-                  Ok(thread) -> thread.name
-                  Error(Nil) -> "this session"
-                },
-                finds: case dict.get(model.feed, session) {
-                  Ok(row) -> row.finds.items
-                  Error(Nil) -> []
-                },
-                presses: model.review_presses,
-                acting: case acting(model) {
-                  Some(_) ->
-                    Some(review_view.Acting(
-                      verdict: ReviewVerdictChosen,
-                      comment: ReviewCommented,
-                      find: ReviewFindStaged,
-                      unstage: ReviewCleared,
-                      send: ReviewSent,
-                    ))
-                  None -> None
-                },
-              ),
-            ),
+            review_view.pane(review_view.Offer(
+              state: model.review,
+              name: case
+                list.find(inbox_threads(model), fn(thread) {
+                  thread.id == session
+                })
+              {
+                Ok(thread) -> thread.name
+                Error(Nil) -> "this session"
+              },
+              finds: case dict.get(model.feed, session) {
+                Ok(row) -> row.finds.items
+                Error(Nil) -> []
+              },
+              presses: model.review_presses,
+              acting: case acting(model) {
+                Some(_) ->
+                  Some(review_view.Acting(
+                    verdict: ReviewVerdictChosen,
+                    comment: ReviewCommented,
+                    find: ReviewFindStaged,
+                    unstage: ReviewCleared,
+                    send: ReviewSent,
+                  ))
+                None -> None
+              },
+              command: case shown_brief(model, session) {
+                Some(read) -> read.command
+                None -> None
+              },
+              message: review_message(model, session),
+            )),
           ))
       }
     _, _ -> None
+  }
+}
+
+/// The agent's last message under its label, for the review's pane, which draws
+/// it between the counts and the verdict. Nothing when the session said none.
+fn review_message(model: Model, session: String) -> Element(Msg) {
+  case dict.get(model.reports, session) {
+    Ok(sessions.Report(last_message: Some(text), last_message_at: at, ..)) ->
+      case string.trim(text) {
+        "" -> element.none()
+        _ ->
+          html.div([attribute.class("inbox-said")], [
+            brief_view.finished(text, at),
+          ])
+      }
+    Ok(_) | Error(Nil) -> element.none()
   }
 }
 
