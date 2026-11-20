@@ -57,10 +57,15 @@ reach beyond its own `lo`. Stage 2 installs a second program, built from the
 same architecture check and x32 kill as the off program, which allows what
 the off program allows and also `socket(AF_INET, type, protocol)` when the
 type, masked with `0xf` (so `SOCK_NONBLOCK` and `SOCK_CLOEXEC` do not
-matter), is `SOCK_STREAM` and the protocol is 0 or `IPPROTO_TCP`. It refuses
+matter), is `SOCK_STREAM` and the protocol is 0 or `IPPROTO_TCP`. It also
+allows `socket(AF_NETLINK, type, protocol)` when the type, masked the same
+way, is `SOCK_RAW` or `SOCK_DGRAM` and the protocol is 0 (`NETLINK_ROUTE`),
+per the owner's ruling of 2026-11-15 (see "Evidence"). It refuses
 `setsockopt(IPPROTO_TCP, TCP_ULP)`. Everything else about sockets stays
 `EPERM`: `AF_INET6`, datagram, raw, SCTP and MPTCP, `AF_PACKET`, every
-netlink family, and `socketpair` outside `AF_UNIX`. The off program is
+other netlink protocol (generic, netfilter, audit, kobject uevent, sock
+diag and the rest), a netlink socket of any other type, and `socketpair`
+outside `AF_UNIX`. The off program is
 unchanged, and a test pins its instructions.
 
 **Where it runs.** Only on Linux under bwrap. `jail.Start` refuses the mode,
@@ -108,16 +113,26 @@ with `ENETUNREACH`.
 The host kernel's TCP code becomes reachable from jailed code, through
 `socket`, `bind`, `listen`, `connect`, `accept`, `sendmsg` and `setsockopt`
 on IPv4 stream sockets. That is new kernel attack surface for
-model-influenced code, and it is the whole cost. Netlink, raw and packet
-sockets, UDP, SCTP, MPTCP and the kernel TLS upgrade stay closed. The
+model-influenced code. The second cost is the route netlink socket, below.
+Raw and packet sockets, UDP, SCTP, MPTCP, every other netlink protocol and
+the kernel TLS upgrade stay closed. The
 namespace is fresh per execution, so the jail cannot reach the host's
 loopback, the runner's address or another jail's listeners. The jail's
 ceilings are unchanged, and there is none on descriptors, ports or
 connections; sockets are charged to the memory cgroup where one is attached.
 
-One thing this change does not fix, and it is true of `off` today: a host
-that runs lnd's integration tests needs a `NETLINK_ROUTE` socket. See the
-evidence below.
+The route netlink socket is a cost of its own. `socket(AF_NETLINK, ...,
+NETLINK_ROUTE)` reaches the kernel's rtnetlink code, which is larger than
+TCP's request surface. What bounds it: loopback mode runs only in an
+unshared user namespace holding no capabilities, so every rtnetlink request
+that mutates state (addresses, links, routes, rules, neighbours) fails the
+kernel's `CAP_NET_ADMIN` check; the socket sees only the fresh network
+namespace, whose one interface is `lo`; and the program matches the type
+and the protocol exactly, so no other netlink protocol is reachable. A read
+of `lo`'s address is what `net.InterfaceAddrs` needs, and that is all the
+mode is meant to grant. The residual risk is a kernel bug in rtnetlink's
+unprivileged request paths. This is an addendum of 2026-11-15; see
+"Addendum: NETLINK_ROUTE".
 
 The seccomp programs for `off` and `loopback` both fail `io_uring_setup`,
 `io_uring_enter` and `io_uring_register` with `EPERM`. The network programs
@@ -159,9 +174,8 @@ namespace with `lo` up:
   stream sockets in `itest.test` fail with `EPERM` and nothing depends on
   them.
 
-Whether to admit `NETLINK_ROUTE` is a decision this proposal leaves to the
-owner. The proposal as written refuses every netlink family, which means an
-lnd integration test does not run under it.
+Whether to admit `NETLINK_ROUTE` was left to the owner, who ruled on
+2026-11-15 to allow it; the addendum below records how.
 
 ## Tests
 
@@ -174,6 +188,29 @@ codec round trip, the golden fixture and the rejection of a stray key.
 Refusal of the mode on Darwin, on an unsupported platform and without bwrap.
 On a Linux host with bwrap, in a real jail: a listener on `127.0.0.1` and a
 connection to it; a host listener at the same port is refused; a connect to a
-non-loopback address fails; UDP, IPv6, raw and netlink sockets and `TCP_ULP`
-get `EPERM`; two jails cannot reach each other; and an `off` jail still
+non-loopback address fails; UDP, IPv6 and raw sockets, netlink sockets other than
+`NETLINK_ROUTE`, and `TCP_ULP` get `EPERM`; `net.InterfaceAddrs` succeeds; two jails cannot reach each other; and an `off` jail still
 refuses the TCP socket.
+
+## Addendum: NETLINK_ROUTE
+
+Owner ruling, 2026-11-15: allow it, because lnd's integration tests call
+Go's `net.InterfaceAddrs`, which opens a route netlink socket, and the proof
+arm that runs them needs it.
+
+The match is exactly this, in the loopback program only, on both
+architectures. For `socket(2)` with domain `AF_NETLINK` (16): the type, after
+masking with `0xf`, must be `SOCK_RAW` (3) or `SOCK_DGRAM` (2), and the
+protocol must be 0 (`NETLINK_ROUTE`). Domain, type and protocol are each
+compared as the low 32-bit word, as the kernel reads them. Every other
+netlink socket, whatever the protocol or type, is `EPERM`. `socketpair` stays
+`AF_UNIX` only, and the off program is unchanged: a test pins its bytes, and
+a real-jail test pins that `NETLINK_ROUTE` is still `EPERM` in an off jail.
+
+The preconditions the allowance rests on are the loopback preconditions and
+nothing new: the unshared user namespace with no capabilities, the active
+seccomp filter, io_uring denied, and a proxy grant that never widens. Real
+jail tests prove `net.InterfaceAddrs` succeeds in a loopback jail and that
+`NETLINK_GENERIC`, `NETLINK_NETFILTER`, `NETLINK_AUDIT`,
+`NETLINK_KOBJECT_UEVENT`, a stream-typed netlink socket and every netlink
+socket in an off jail fail with `EPERM`.

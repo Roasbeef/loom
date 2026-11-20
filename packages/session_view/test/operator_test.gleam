@@ -23,6 +23,8 @@ fn record(seq: Int, status: approval.Status) -> approval.Review {
     ]),
     strand: None,
     remote: option.None,
+    raised_at: None,
+    call: None,
   )
 }
 

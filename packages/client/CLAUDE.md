@@ -157,13 +157,13 @@ wait is the caller's less one second. **The gateway**: at attach,
 and the attach's waiter records `Plane(broker, base_policy)` on the binding's
 proxy with the book's `Recorded` call before replying; `PlaneOf` answers it, and
 nothing for a binding not held or retired. Each `clear_call` runs in a **tunnel
-waiter** linked to its connection (`tunnelled`, `tunnel_waiter`): it clears
+waiter** run by weft under a scope linked to its connection (`tunnelled`, `tunnel_waiter`): it clears
 with `broker.over` under `cleared_spec` (the meet of the plane's base, writable
 roots also readable, with the spec's base; no grants; `Config.demand`), closes
 stdin, sends `cleared` first, and forwards each non-empty chunk and the
-settlement as `FromTunnel` messages. `cancelled` unlinks a tunnel waiter before
-killing it, and `stopped` unlinks and kills every tunnel waiter on each normal
-stop. **Tests**: `remote/tunnel_calls_model_test` (statem, hostile frames and
+settlement as `FromTunnel` messages. `tunnels` holds the `weft.Witnessed` of each; `cancelled`
+cancels the one run, and a stopped connection's exit reaches every linked scope, which kills
+its waiter, so no stop loop exists. **Tests**: `remote/tunnel_calls_model_test` (statem, hostile frames and
 both bounds), `remote/untrusted_link_test` (hand-driven hostile executor over
 TLS), `remote/untrusted_gateway_test` (production broker and helper),
 `remote/untrusted_end_to_end_test` (goal check, baseline, diff after a jailed
@@ -267,14 +267,14 @@ private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
 the artifact manifest decoder and revision check, the guest's `loom.toml`, the
 `loom-vm run` and `cp` argument lists, `scrub_git_config`, the pid-file codec,
-the `epmd -names` reader and the daily verbs' decisions (`printable`, the
-checkouts record, `fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
-`read_enrolment`, `plan_teardown`). `client/vm_link` holds the decisions of the
+the daily verbs' decisions (`printable`, the checkouts record,
+`fetch_arguments`, `bundle_arguments`, `unpushed_branches`,
+`retired_leftovers`). `client/vm_link` holds the decisions of the
 untrusted link, which every guest `up` and `ensure` make is on
 (protocol-change/109; ADR-022, the addendum of 2026-11-17). `client/vm_cli`
 performs them with `vm_link_pki`, `distribution_install` (the table merge),
 `host/bootstrap` (`spawn_server`, `process_identity`, `reserve_loopback_port`),
-`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname`, `git` and `epmd`,
+`ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`, `uname` and `git`,
 `host/access` (`raw_request`, `execute`) for the daemon's `status`,
 `executors.reload` and `daemon.shutdown`, and `weft/poll`. It adds no FFI.
 
@@ -294,13 +294,13 @@ link field: `--link untrusted` is accepted and changes nothing, and `--link
 distribution` is refused by the parser (`vm_spec.link_flag`). The verbs that only
 read a guest (`status`, `list`, `rm`) ask `vm_link.made` through
 `vm_cli.recorded_kind` and `made_kind`, so an old guest is shown as
-`distribution` and removed with the distribution teardown; a directory with no
+`distribution` and removed without undoing its enrolment; a directory with no
 record and no traces reads as untrusted, and `other_kinds` does not count it.
 `bring_up` calls `bring_up_linked` directly. The distribution half it once had
 (`deployment`, `enroll`, `stage`, `boot`, the mint, join and seal helpers,
 `vm_spec`'s `deployment_plan`, join decisions and `with_loopback_listener`) was
-deleted on 2026-11-18; what remains of that path is the teardown `rm` runs for an
-old guest and the classifier that refuses one.
+deleted on 2026-11-18, and the teardown `rm` ran for an old guest on 2026-11-19;
+what remains of that path is the classifier that refuses one.
 
 `bring_up_linked` chooses the port without recording it, works out the merge (a
 refusal leaves no guest), records the kind and port, writes the file, then runs
@@ -386,9 +386,9 @@ read with `executors.reload`, and its jailed call sees its own leaf's digest. A
 migration step fabricates the host-side traces of two distribution guests
 (bundles only, and a `link` record saying `distribution`), and checks that `up`
 and `ensure` refuse them naming the three commands and change no file, that
-`status` and `list` call them distribution guests, and that `rm --yes` removes
-them, taking one's `[distribution]` table and trusted row out of a file whose
-untrusted row and other lines stay. A default-daemon step runs `vm ensure` with
+`status` and `list` call them distribution guests, and that `rm --yes` deletes
+their directories, leaves the configuration byte-identical and names the
+leftovers. A default-daemon step runs `vm ensure` with
 no `--config` and the default vm home (`~/.loom/vm` of the isolated home)
 beside a daemon on that home's default file with no `[executor_link]`, and
 checks the answer line, that the reload was not refused, that the same daemon
@@ -416,7 +416,19 @@ running daemon to reload, and `vm_spec.restart_refusal` turns a daemon that
 cannot reload and is left running into one error sentence. `up` records
 `--github` in `<vm home>/<name>/github` (`vm_spec.effective_github`,
 `encode_github`, `decode_github`); `UpOptions.github` is an `Option`, `None`
-meaning not given. Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
+meaning not given. `--workspace-mode shared|worktree` is recorded the same way in
+`<vm home>/<name>/workspace-mode` (`vm_spec.GuestWorkspaceMode`,
+`effective_workspace_mode`, `encode_workspace_mode`, `decode_workspace_mode`;
+`UpOptions.workspace_mode` is an `Option`), and `vm_spec.guest_config_with`
+writes `mode = "worktree"` and `base = "HEAD"` into each `[workspaces.NAME]` for
+`GuestWorktree` and nothing more for `GuestShared`, so a seeded child can be
+placed on the guest (`remote/workspace.state_fitness`). `vm_cli.worktree_preflight` runs
+before anything is written and refuses `worktree` (the effective mode, a
+recorded one included) for a workspace that is not the top of a Git checkout, whose
+`HEAD` names no commit, or whose name `worktrees.safe_component` refuses
+(`vm_spec.worktree_refusal`), and on a resume checks every registered copy.
+`resolve_workspace_mode` and `record_workspace_mode` are `@internal` so the record
+is tested through its file. Tests: `vm_one_flag_test`, and `vm_lifecycle_model_test`, a
 `statem` model over the pure decisions with a distribution guest in some
 starting configurations.
 
@@ -429,15 +441,12 @@ through `make_inside` and a rename, and guest text printed through
 `vm_spec.printable`. `up` records each copy's developer checkout in
 `<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
 `sync`; `--checkout PATH` overrides it and is required for a guest with no record.
-`rm` removes an untrusted guest's row (above), and for a guest made over
-distribution `[executors.<name>]`, and `[distribution]` and the home's cookie only
-when they are this guest's and no other trusted executor remains
-(`distribution_install.without_tables`, `vm_spec.plan_teardown`; `read_enrolment`
-leaves untrusted rows out of `other_executors`), with its sealed authority
-directory and ledger revoke as `removal_plan` decides. The revoke is signed with
-`ledger_cli.Forced` (`signed_revoke`, `vm_spec.unchecked_revoke_line`), since a
-guest `up` refuses serves no session again, and a key or ledger copy that cannot
-be used is worded by `vm_spec.rm_revoke_failure`. `apply_removal` deletes the
+`rm` removes an untrusted guest's row (above). For a guest made over
+distribution `planned_removal` makes a plan that rewrites nothing, and
+`apply_removal` prints `vm_spec.retired_leftovers`, the fixed lines naming what
+the operator removes by hand (the row and an unused `[distribution]` table, the
+cookie, `<vm home>/authority/`, `loom distribution revoke NAME`) and saying that
+`up` refuses the name until the row is gone. `apply_removal` deletes the
 roots and `state.img` before the rest of the directory, so the marker that
 classifies a guest outlives them. `list` counts a directory as a guest when
 `made_kind` is not `Ok(None)`, as `other_kinds` does. `rm` refuses a running
@@ -515,7 +524,7 @@ Invariants that break things when violated:
   `link-credentials/`, `root/`, `root.next/` (only during an upgrade),
   `root.building/` and `workspace.building/` (only while `up` makes a clone or
   a copy), `state.img`, `allow`, `github`, `checkouts`, `root-revision`,
-  `provision`, `loom-vm.pid` and `loom-vm.log`, and for a guest made over
+  `workspace-mode`, `provision`, `loom-vm.pid` and `loom-vm.log`, and for a guest made over
   distribution `deploy/` and `orch/`. The vm home's `link/` holds what every
   guest shares. `LOOM_VM_HOME` overrides `~/.loom/vm`.
 - `up` and `ensure` never bring a guest up over distribution: `vm_link.settle`
@@ -1534,6 +1543,20 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   `Start.rename`, and a home that holds either gets `home_owner_accepts` (a
   `submit` beneath `home.table_path`, plus the clicks `home_accepts` takes), one
   rule for both forms; every other home gets `home_accepts`.
+  The owner's home also messages a session it holds from the inbox
+  (protocol-change/118). `home_thread_send_capability` is built as the creation
+  capability is and passed as `Start.thread_send`; `thread_send_for` re-derives
+  the page (`authorized_owner`) and the bound (`thread_send.sendable`) at the
+  press, and `thread_send_task` runs it in a weft run with a 20 s inner
+  deadline, delivering `NotAccepted` if the send misses it. The send is
+  `message_to(attachment, gateway_of)`: `manager.session_authority` (`NotHeld`),
+  a resident incarnation and its gateway (`NotResident`), a binding capped at
+  Operator, then `send_message`, the old `first_prompt` generalised to `Prompt`
+  or `Steer` on strand `main`, which answers a closed `thread_send.Answer`
+  (`admitted` is `Admitted`, `queued` is `Queued`, the `conflict` carrying
+  `gateway.queue_full_message` is `QueueFull`, anything else `NotAccepted`).
+  A new session's first message from the home composer goes through the same
+  function with `Prompt` (`first_message_for` wraps it).
   `create_for(standing, tickets, open, create, folder, place, name, sharing,
   within:)` re-derives the page from the grant: `authorized_owner` (open, the
   epoch check, Operator ceiling, the credential authenticates as the page's
@@ -3387,6 +3410,21 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   and retires the storage actor on success or failure. A store written while a distillation pipeline existed can hold
   distillate rows and `distill/*` cells; nothing reads them and nothing
   deletes them.
+- `client/attention.{Report, silent, reporter, settled, summary, summarize}` — the writer side of the catalogue summary (protocol-change/122). A `Report` is `fn(api.Runtime) -> Nil`, told after a record commits: `escalate.raise` after a claim that leaves a record pending (`Config.report`), the gateway after an operator approve or deny (`Options.attention_report`, `gateway.with_attention_report`), the gateway after `remote_decision.admit` and `admit_relayed` return, and `ask`/`notice` after an insertion (`Wiring.report`). `serve.Settings.attention_report`, set by `daemon/main`, sends the summary to the registry as `manager.record_attention`, a cast that calls `catalogue.record_attention`; `serve` also reports once after the runtime opens, which rewrites the row from the records. `attention.settled(report, runtime)` is the call the settle path of protocol-change/120 makes after an answer or a close. `server.home_saved_attention` reads the rows for the sessions a credential holds as `web_view/saved_attention.Saved`.
+- `client/attention.{Wiring, seam, ask, notice, asks, finds}` — the host side
+  of the `ask` and `notice` tools and of `attention.*` in code mode
+  (protocol-change/119). It writes `core/attention` records as reserved
+  `attention/ask/<id>` and `attention/find/<id>` cells in the session store,
+  with the header taken from the driver's own `Caller`, the session clock
+  and the strand's lineage. An insertion reads the prefix's guard cell, counts
+  the open records, refuses past 32 asks or 128 finds, and commits the record,
+  the guard's replacement (guarded by the seq read first, so two racers cannot
+  both take the last slot) and the removal of any retired settled record in one
+  `api.edit_reserved_facts`; `RaceLost` re-reads. A named `to` must be a strand
+  of the session. `Wiring.runtime` borrows the runtime through the Agency's
+  holder. `contributions.attention_tools` registers both tools after
+  `propose`; `project_jail.worker_tools.refused_names` refuses `ask` to a
+  project worker, which keeps `notice`.
 - `client/proposals.{rules_file, key_prefix, lease_owner, max_rules_bytes,
   max_listed, Kind, State, Decision, Source, Proposal, Listing, Wiring, Admin,
   seam, admin, channel, submit, listing, decide, rules, read_rules,
@@ -3426,7 +3464,11 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   summarizer, hooks, context_of, is_watched, start, supervised}` — the
   glance loop, one **`weft/state_machine`** per session that writes a
   `core/glance` cell under `client/glance/{strand}` for every running
-  strand but `main` and `advisor`. `hooks(built, name)` wraps the `usage`
+  strand but `advisor`; `main` is included only on a `Cheap` route
+  (`glance.route`: `summarize` or `subagent` routed, never `main` alone,
+  carried in `Wiring.route`; `is_watched(strand, route)`), so the web
+  view's attention inbox can show current work without a request to the
+  main model (`protocol-change/121`), and the terminal skips it. `hooks(built, name)` wraps the `usage`
   slot with a cast of `Stepped(operation, context)` and captures only the
   name and the inner slot, because the hooks are copied into every strand
   driver. The machine resolves the strand through `notes.strand_of`, asks
@@ -7217,6 +7259,67 @@ each request, `peer_links_capability` hands the capability to an `Owning` page
 alone, and `owner_accepts` alone admits events beneath `component.peers_path`.
 `server.Attachment.peers` is the daemon's `peers.Directory`.
 
+Attention feed (protocol-change/120). `client/attention_feed` builds one session's
+`sessions.attention` row from one listing each of the ask and find prefixes, the
+strand-state register and the last-result register, so a row costs a fixed number
+of store calls: counts and short items for open owner-routed asks, open finds and
+stuck strands (a non-main, non-advisor strand with no current operation whose last
+result is a failed run), shed to 2,300 bytes in the order finds, stuck, asks,
+oldest first, never reducing a count. `peer_mail.AttentionFeed`, `AttentionRead`
+and `AttentionSettle` are the Agency commands; `AttentionRead` answers the stored
+record with its revision (the cell's seq) and `AttentionSettle` rewrites an open
+record under that revision through `client/attention.settle`, which writes that
+one cell only; `try_insert` retires settled records. `server.resident_rows` is the fan-out
+`sessions.activity` and `sessions.attention` share. `daemon/attention_door` is the
+walk of `attention.read`, `attention.close_find` and the home's answer: authority
+from the registry (`forbidden` for an observer, `not_found` for a non-holder),
+residency (`not_resident`), the record, state, revision, then for an answer
+`core/attention_answer.check`, one `Prompt` to the asking strand through the
+injected send, and only then the settle, so a refused delivery leaves the ask open.
+`attention.answer` has no control command because the control socket holds no
+gateway; `ui_socket.answer_ask_for` and `close_find_for` are the home's acts, and
+`server.home_attention` and `HomeAttachment.attention` are the home's typed feed
+(`web_view/attention_feed`). `ui_socket.send_to_strand` and `message_to_strand`
+take a strand; `send_message` and `message_to` stay the main-strand defaults, and
+the gateway's `unknown_strand` is `thread_send.UnknownStrand`.
+
+Stuck items (addendum to 120) carry `reason` (the run's error code if it is a short
+lower-case word, else `failed`), `retry_after_ms` and `failed_at` from the failed
+response entry the run's leaf names (an assistant entry with `Errored`; any other
+leaf gives no time), and `parent` from the `runtime/lineage` ledger; `Evidence` is
+read once per row, only when a strand is stuck. `approval_evidence.read(runtime,
+today)` adds `raised_at`, `network`, `policy` (`today_of` the session's base policy,
+lent through `agency.Config.approval_today`, set from the assembled
+`plane.census.base_policy` when `serve` starts the Agency; the Agency answers
+`ApprovalRead` itself for that reason). The remembered-grants cell is read at each
+read and a remembered full network makes the item `on`; a word that cannot be
+exact (no policy, unreadable grants, loopback) is left out and `off` is never a
+guess. The call and command inside a `code_mode` program are not read from its
+source (a decoy would mislead) and the record holds none. `Overview` adds
+`last_message_at` and `turn_started_at` (050 addendum).
+
+`session.brief` (protocol-change/125): `client/session_brief` is the resident side
+(`peer_mail.SessionBrief(since)`): one scan of main's last 80 message entries
+(`of_window`), the roster from the strand-state and last-result registers, the goal
+cell, shed to 12,000 bytes. `daemon/brief_door` is the walk: authority at any role
+(`attention_door.held`), one `Allowance.reserve` from `ui_sessions.reserve_brief_read`
+(six per four seconds per credential; `server.brief_allowance`), then the resident's
+endpoint. `server.home_brief` is the home's typed read, `HomeAttachment.brief`.
+
+`daemon/review_door` is the walk of `sessions.review` (protocol-change/123): the
+registry's authority at the call (owner or an Operator member; `forbidden` for an
+observer, as the Changes tab refuses one; `not_found` for a non-holder), residency (`not_resident` for a saved session or a
+resident with no observation), one `Reach.reserve` from the credential's workspace
+reads (the Changes tab's count, `ui_sessions.reserve_worktree_read`), then the
+resident's own observation (`server.Config.worktree` projects `Resident.worktree`,
+the `worktree_diff.capture_since` closure, which clears its Git calls through the
+session's broker in its sandbox) in a weft run with a 14 s deadline. The board is
+decoded with `worktree_view.decode` and built into a `web_view/review_feed.Review`;
+a failure is `unavailable` in fixed words, never the observation's text. The daemon
+runs no Git and reads no workspace byte itself (Rule Zero). `server.home_review` is
+the home's in-process read; the control socket spends from the web view's allowance
+when `config.ui` is set and from none when it is not.
+
 Epoch-checked `sessions.activity` (`protocol.SessionActivity`)
 takes 1 to 24 distinct canonical ids and reports what each resident is doing.
 The owner is answered for any id; a member only for ids its credential holds a
@@ -7230,8 +7333,10 @@ under a 2,000 ms deadline; any outcome other than an answer becomes a
 actor and derives `state` (`needs_you` for a pending escalation or a failed,
 stopped main; else `working` when any strand has a current operation; else
 `idle`), counts, main's last run outcome, final assistant text, model, and at
-most four glances whose operation is still current. The recipient bounds its
-row to `peer_mail.overview_row_bytes` (2,300) by shedding glances, then the
+most four glances whose operation is still current, `main`'s first when it
+has one and the others newest first. The recipient bounds its
+row to `peer_mail.overview_row_bytes` (2,300) by shedding glances from the
+end, so `main`'s is the last to go, then the
 message; the server re-checks 2,400 bytes per row and 60,000 per reply.
 
 See [async collaboration](../../docs/async-collaboration.md) for bounds and

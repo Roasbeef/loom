@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:533-187`).
+Source: `handle` (`client/daemon/server.gleam:590-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:2700`).
+`hello_view` (`client/daemon/server.gleam:2772`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -569,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4735`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4915`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1080,9 +1080,9 @@ it (section 3.27).
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
+`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `attention.read`, `approval.read`, `session.brief`, `sessions.review`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:3072-1130`).
+`control_use` (`client/daemon/server.gleam:3144-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1222,6 +1222,8 @@ opens a saved session and never reads its database.
 | `approvals` | integer | optional | Number of pending escalation records. |
 | `last_outcome` | string or null | optional | How main's last run ended: `completed`, `failed`, or `aborted`. `null` when main has not finished a run, or its latest terminal result is a compaction or navigation. |
 | `last_message` | string or null | optional | Main's final assistant text for that run, on one line, at most 280 bytes. |
+| `last_message_at` | integer or null | optional | Unix milliseconds of the entry behind `last_message`; `null` whenever `last_message` is. See [Protocol 050](../protocol-change/050-session-activity.md), the addendum on times. |
+| `turn_started_at` | integer or null | optional | Unix milliseconds at which the turn now open on main began; `null` while main runs nothing. |
 | `model` | string or null | optional | Main's configured model identity, at most 64 bytes. |
 | `glances` | array | optional | At most four glances of strands whose operation is still current (`main` included), newest first, each with `strand` (at most 96 bytes), `title` (at most 60), and `summary` (at most 160, possibly empty). |
 
@@ -1252,7 +1254,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1531`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1621`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -2064,6 +2066,133 @@ A daemon that predates the command answers `bad_request`, which a client reads a
 "this daemon predates the command". `client/executor_reload.decode` reads the
 reply.
 
+### 3.34 `sessions.attention`, `attention.read` and `attention.close_find`
+
+What a person has to decide in a set of resident sessions, one record in full,
+and the closing of a find. All three take the current `epoch` and are refused
+with `stale_epoch` when it is old. `attention.answer` is not a control command:
+the home page answers an ask in process (`ui_socket.answer_ask_for`), because
+delivering the answer needs the session's gateway, which the control socket does
+not hold. See [Protocol 120](../protocol-change/120-attention-feed.md).
+
+`sessions.attention` takes `sessions`, 1 to 24 distinct canonical ids, exactly
+as `sessions.activity` does, and is answered for the owner on every id and for a
+member on the ids it holds at any role. Reply:
+
+```json
+{"v":2,"reply_to":1,"event":"sessions.attention","body":{"attention":[{"session_id":"0198c0de-0000-7000-8000-000000000001","state":"ok","waiting_since":1763400000000,"asks":{"count":2,"items":[{"id":"ask-3f9c01a2b4","strand":"main","created_at":1763400000000,"head":"Which branch should the fix target?","questions":2}]},"finds":{"count":5,"items":[{"id":"find-77d0a1c9e2","strand":"sub:main/audit-1a2b","kind":"bug","created_at":1763401000000,"head":"The retry loop never backs off.","path":"src/retry.gleam","line":88}]},"stuck":{"count":1,"items":[{"strand":"sub:main/audit-1a2b","failed_at":1763402000000}]}}]}}
+```
+
+A `count` is the number of records the session read and `items` may be shorter:
+a row over 2,300 bytes sheds its oldest finds, then its oldest stuck strands,
+then its oldest asks, and never reduces a count. `asks` lists only open asks
+routed to the owner. `waiting_since` is the smallest `created_at` of those and
+is absent when there is none. A strand is stuck when it is not `main` or the
+advisor, has no current operation, and its latest terminal result is a failed
+run; `failed_at` is the time of that result's last entry, a lower bound on the
+failure, and is absent when the result has no leaf. A resident that does not
+answer in 2,000 ms, or answers a row over 2,400 bytes, is a row with only
+`session_id` and `state: "unknown"`.
+
+`attention.read` takes `session` and `id` (an ask or find identifier) and
+answers the record in full: `kind`, `id`, `revision` (the sequence number of its
+cell), `status`, `strand`, `created_at`, `anchor`, and for an ask `routing`,
+`why`, `questions` and, once answered, `answer` with `by` and `at`, and
+`may_answer`; for a find `find_kind`, `text`, `path`, `line` and, once closed,
+`closure` with `outcome`, `at` and `by`, and `may_close`. An observer is told
+`false` for both. `bad_request` is an id with no record's shape, `not_found` a
+record that is absent or not decodable or a session the credential does not hold,
+and `not_resident` a session that is not running.
+
+`attention.close_find` takes `session`, `find`, `revision` and `outcome`
+(`dismissed`, `fixed` or `filed`) and answers `{"find","revision"}` with the new
+revision. The owner and an Operator member may close; an observer is `forbidden`.
+A find that is already closed, or whose revision is not the one given, is
+`conflict`. Nothing is sent to any strand.
+
+`approval.read` takes `session` and answers `{"approvals": {"count", "items"}}`:
+the session's pending approvals as evidence, at most four items, oldest id first,
+with `count` the number pending. Each item is `id`, `revision` (the sequence
+number of the record's cell), `tool`, `preview` (a bounded rendering of the
+call's arguments, or `null`), `source` (`policy` or `execution`), `reason` (the
+denial's, at most 300 bytes), `wanted` (at most six `{kind, detail}` grants, the
+detail at most 160 bytes) and `asked`. An item also carries, when it has them:
+`raised_at` (Unix milliseconds, [Protocol 126](../protocol-change/126-escalation-raise-time.md);
+absent for a record written before the field), `network` (`on` or `off`, the
+network the call would have), `policy` (`{sandbox, network}`, the assembled base policy with the remembered
+grants folded in, at the moment of the read; each of the two is left out when it
+cannot be exact), as the addendum to
+[Protocol 120](../protocol-change/120-attention-feed.md) words them. The owner and a member at any role
+read; `not_found` is a session the credential does not hold and `not_resident` a
+session that is not running. It never decides, claims or consumes an approval,
+which is decided on the session's own page.
+
+A `stuck.items` entry of `sessions.attention` also carries `reason` (the run's
+error code, a fixed word), `retry_after_ms` (the provider's wait, when it named
+one) and `parent` (the spawning strand), and its `failed_at` is the exact time of
+the failed response entry the run ended on, absent when there is no such entry.
+
+All four are reads or settle one record, and the three reads remain available
+during a drain.
+
+`session.brief` takes `session`, an optional `since` (Unix milliseconds, default
+0) and the current `epoch`, and answers `{"brief": {...}}`: a bounded account of
+the session's recent work for Home ([Protocol 125](../protocol-change/125-session-brief.md)).
+Its members, each omitted when it has nothing: `assistant` (`{text, trust, at}`,
+the latest assistant text even mid-turn, at most 600 bytes), `steps` (at most four
+`{at, tool, words, trust, outcome}`, newest first, `outcome` being `running`,
+`succeeded` or `failed`), `strands` (at most twelve `{name, state, since}`, `state`
+being `working`, `idle` or `stopped`), `goal` (`{objective, status, tokens_used,
+token_budget}`), `peers` (at most three `{session, strand, at, text, trust}`
+recorded after `since`, newest first) and `command` (`{command, trust, exit,
+at}`, the last `bash` call with an exit status). Every `trust` is `untrusted`:
+that text was written by a model or another session. The owner and a member at
+any role read, as `attention.read`; a session the credential does not hold is
+`not_found`, a saved session `not_resident`, and a credential past six reads in
+four seconds is `unavailable`.
+
+### 3.35 `sessions.review`
+
+A session's worktree as a review: the files its workspace changed, each file's
+hunks and a diff stat, in the order a reviewer reads them. It takes `session` (a
+canonical identity) and the current `epoch`, and is refused `stale_epoch` when
+it is old. The owner, and a member holding the session as an Operator, are answered; an
+observer is `forbidden`, as the Changes tab refuses an observer's page. See [Protocol 123](../protocol-change/123-review-hunks.md).
+
+The daemon does not run Git. It calls the resident session's own observation of
+its workspace, which clears a fixed set of Git calls through the session's
+broker inside its sandbox, and reads the answer into hunks. Reply:
+
+```json
+{"v":2,"reply_to":1,"event":"sessions.review","body":{"observed_at_ms":1763400000000,"repository":"head","stat":{"files":3,"added":41,"removed":9},"omitted":0,"extent":"whole","files":[{"path":"src/retry.gleam","change":"modified","section":"source","content":"text","added":30,"removed":9,"hunks_omitted":0,"extent":"whole","hunks":[{"header":"@@ -80,6 +80,9 @@ pub fn retry(","omitted":0,"shortened":0,"lines":[{"k":" ","o":80,"n":80,"t":"let wait = base"},{"k":"-","o":81,"t":"loop(base)"},{"k":"+","n":81,"t":"loop(base * 2)"}]}]}]}}
+```
+
+`repository` is `head`, `unborn` or `not_repository`. `files` is ordered source,
+then tests, then docs, and by path inside each; every `path` is relative to the
+workspace. A file's `change` is `added`, `modified` or `deleted` (the observation
+does not detect renames, so a moved file is a removal and an addition),
+`content` is `text`, `binary`, `no_net_change` or `metadata_only` (a binary file
+carries no hunks), and `extent` is `whole` or `cut`. A line's `k` is `+`, `-`, a
+space or `\`; `o` and `n` are its line numbers in the old and new file when the
+hunk header gave them; `t` is its text, which is the repository's own and is
+drawn as text.
+
+Everything is bounded and every cut is counted: at most 24 files (`omitted` is
+the files read and not carried), 12 hunks a file (`hunks_omitted`), 80 lines a
+hunk (a hunk's `omitted`), 400 bytes a line (`shortened`), and 48,000 encoded
+bytes, whose last files go first. `stat.files` counts every file the observation
+read; line counts are lower bounds on a `cut` file. Commits made since the
+session began are not shown.
+
+Refusals: `stale_epoch`; `bad_request` (not a canonical identity); `forbidden` (an
+observer); `not_found` (an
+unknown session, or one the credential does not hold); `not_resident` (the
+session is saved, opening, stopping or has no observation); `unavailable` (the
+credential's workspace reads, counted with the web view's Changes tab, were
+spent, or the observation failed or ran past its deadline, in fixed words that
+never carry the repository's own). The read waits up to 14 s. The home page
+reads the same review in process (`server.home_review`).
+
 ## 4. The session endpoint
 
 ### 4.1 Attachment and admission
@@ -2322,7 +2451,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2831`).
+`wrong_session`. Source: (`client/gateway.gleam:2859`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -2667,7 +2796,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:8027`).
+   is `stale_approval`. Source: (`client/gateway.gleam:8061`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -4708,14 +4837,14 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:5004`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:5032`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:619`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:670`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

@@ -105,6 +105,7 @@ import web_view/creations
 import web_view/elsewhere as peers
 import web_view/ending.{type Ending}
 import web_view/grants.{type Action, type Answer, type Claim, type Reading}
+import web_view/inbox_rule
 import web_view/invites
 import web_view/listing
 import web_view/machines
@@ -1175,6 +1176,7 @@ pub fn view(model: Model) -> Element(Msg) {
       tone: status_tone(model.status),
       notice: ended.admin(ended_ending(model.status)),
       trailing: back_home(),
+      needing: 0,
     ),
     sidebar_place(model),
     [element.none(), body(model)],
@@ -1210,13 +1212,48 @@ fn sidebar_place(model: Model) -> shell.Sidebar(Msg) {
               administering: None,
               managing: None,
               who: model.start.name,
+              watching: dict.new(),
             ),
             fn(_) { Widening },
             resume.Never,
             archiving.Never,
+            rail_folders(model),
           ))
       }
   }
+}
+
+/// The rail's folders on the admin page: the inbox's six, drawn as they are on
+/// every page. The admin page's rows say what a session is and do nothing when
+/// pressed (`sidebar.RowsShown`), and its folders are the same: the page has no
+/// way to the inbox but the bar's Home, so a press changes nothing.
+fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
+  sidebar.Folders(
+    items: [
+      #(inbox_rule.Everything, None),
+      #(inbox_rule.Needing, None),
+      #(inbox_rule.Reviewing, None),
+      #(inbox_rule.Finding, None),
+      #(inbox_rule.Updating, None),
+      #(inbox_rule.Projecting, None),
+    ],
+    current: None,
+    pick: None,
+    note: "Counts are read on the inbox.",
+    running: case model.snapshot {
+      Some(snapshot) ->
+        list.count(snapshot.sessions, fn(entry) {
+          case entry.residency {
+            sessions.Live -> True
+            sessions.Saved
+            | sessions.Blocked
+            | sessions.FailedStart(_)
+            | sessions.Moving(_) -> False
+          }
+        })
+      None -> 0
+    },
+  )
 }
 
 /// Returns the count of sessions awaiting operator decision.

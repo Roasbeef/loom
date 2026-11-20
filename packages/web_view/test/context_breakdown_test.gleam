@@ -14,7 +14,8 @@ import session_view/context_view
 import session_view/remote_usage
 import web_view/component
 import web_view/view/context_breakdown
-import web_view/view/heading
+import web_view/view/figures
+import web_view/view/stream_head
 
 @external(erlang, "page_events_ffi", "handlers")
 fn every_handler(view: Element(message)) -> List(String)
@@ -229,28 +230,42 @@ pub fn no_board_says_so_and_offers_refresh_test() {
   )
 }
 
-// The bar as the page draws it, wrapped so that its paths read from the same
-// root the page's do: the frame is the root and the bar its first child.
+// The strip as the page draws it, wrapped so that its paths read from the same
+// root the page's do: the frame is the root, the centre is its third child and
+// the strip is the centre's eighth.
 fn bar(compact: option.Option(Nil)) -> Element(Nil) {
   html.div([], [
-    heading.view(
-      session_id: "0192ab34cd",
-      home: element.none(),
-      name: None,
-      workspace: None,
-      model: Some("baseten-glm-5-3"),
-      status: "connected",
-      tone: heading.Live,
-      context: "ctx ~55%",
-      breakdown: context_breakdown.panel(
-        observed(board([])),
-        context_breakdown.Actions(refresh: Nil, compact:),
+    element.none(),
+    element.none(),
+    html.main([], [
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+      element.none(),
+      stream_head.view(
+        stream_head.Head(
+          name: "docs",
+          place: "main · loom",
+          tone: stream_head.Quiet,
+          state: "idle",
+          turn: None,
+          goal: None,
+        ),
+        figures.view(
+          "ctx ~55%",
+          context_breakdown.panel(
+            observed(board([])),
+            context_breakdown.Actions(refresh: Nil, compact:),
+          ),
+          "est $0.04",
+          None,
+        ),
+        element.none(),
       ),
-      cost: "est $0.04",
-      rate: None,
-      notice: element.none(),
-      placement: element.none(),
-    ),
+    ]),
   ])
 }
 

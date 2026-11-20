@@ -82,6 +82,9 @@ pub type Sealed {
     /// What the page draws for the turn with its fold closed: the prompt, the
     /// divider and the answer. The divider holds no steps.
     pieces: List(turns.Piece),
+    /// When each of the pieces' rows happened (`turns.stamped`), kept here
+    /// because the records it was read from are dropped when the turn closes.
+    stamps: Dict(String, Int),
     /// What the turn costs the page, with the rows its fold may add capped at
     /// what a read of the fold keeps (`fold_budget.fold_rows`).
     weight: fold_budget.Weight,
@@ -512,6 +515,7 @@ fn sealed(
 
   Ok(Sealed(
     pieces:,
+    stamps: turns.stamped(pieces, group),
     weight: weighed(group, strands),
     first_seq: first,
     parent: option.map(opening.parent, ids.entry_id_to_string),

@@ -1,11 +1,10 @@
 # Reaching microVM guests over the untrusted link
 
 **Status**: proposed 2026-11-13 and ruled by the owner the same day (section 10:
-questions 1, 2, 3 and 5 as recommended). Slices 1 to 4 are built, and so is the
-first two parts of slice 5, which delete the distribution bring-up from
-`loom vm` and then from the launcher and the guest script (2026-11-18). The
-remaining part of slice 5 deletes the `rm` teardown of guests
-an older loom made, once such guests cannot exist. The ruling is recorded in
+questions 1, 2, 3 and 5 as recommended). Slices 1 to 4 are built, and so are the
+three parts of slice 5, which delete the distribution bring-up from
+`loom vm` and then from the launcher and the guest script (2026-11-18), and
+the `rm` teardown of guests an older loom made (2026-11-19). The ruling is recorded in
 ADR-022's addendum of 2026-11-17, which supersedes the link of the first
 2026-11-01 addendum and the developer-path addendum's ruling that the local
 daemon becomes a loopback-bound distribution member. The sections below are the
@@ -154,15 +153,15 @@ census the link sets to `Uncompiled`.
 | Background jobs and their notices | works | works: `NotifyCall`, `WakeCall`, `StrandActivityCall` need only the binding; `live_jobs` reads the orchestrator's own store | nothing |
 | MCP, orchestrator-run servers | works | works: `McpPlanCall`, then capability callbacks during a program | nothing |
 | MCP, the guest's own `[mcp.<name>]` | works | works (the census's `mcp` statuses cross) | nothing |
-| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4399` (`There`)) | same | same as today |
+| Extensions discovered in the workspace | not offered for a remote workspace (`client/serve.gleam:4438` (`There`)) | same | same as today |
 | Extensions' owner-bound calls | works | works (capability callbacks under `about_work`) | nothing |
 | Project hooks | works: `hookrunner` clears each command through the census broker (`clear_call` at `client/hookrunner.gleam:250`, wired by `hookrunner.Context` at `client/serve.gleam:329`) | refused: every hook run is `RunError.Refused`; still refused after the tunnel (protocol-change/117, "Hooks stay refused") | a later change, after 117's preconditions |
-| Goal checks | works (`client/serve.gleam:6961` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
-| Changes tab (worktree diff) | works (`client/serve.gleam:4778` (`observe_worktree`)) | carried by the tunnel (protocol-change/117; refused before it, with the broker's refusal in the tab) | nothing |
-| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4767` (`prepare`)) | carried by the tunnel for a new session (protocol-change/117); a session that stored `Unavailable` before it keeps that (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | nothing for a new session |
+| Goal checks | works (`client/serve.gleam:7027` (`goal_check_wiring`)) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
+| Changes tab (worktree diff) | works (`client/serve.gleam:4824` (`observe_worktree`)) | carried by the tunnel (protocol-change/117; refused before it, with the broker's refusal in the tab) | nothing |
+| Session Git baseline | works: probed once at the first open (`client/serve.gleam:4813` (`prepare`)) | carried by the tunnel for a new session (protocol-change/117); a session that stored `Unavailable` before it keeps that (`start` at `client/session_git.gleam:59`, `starting_revision` at `client/worktree_diff.gleam:298`) | nothing for a new session |
 | Peer view of the worktree (multiplayer) | works (`worktree_diff.peer_observation`) | carried by the tunnel (protocol-change/117; refused before it) | nothing |
 | Agent spawn, `fresh` or `my_conversation` | works (orchestrator side) | works | nothing |
-| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3526` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
+| Agent spawn, `my_workspace` | refused for any workspace on an executor (`client/serve.gleam:3539` (`remote_workspace_refusal`)) | same | same as today (107's relay) |
 | State transport (107) | works | works, pulled piece by piece (`untrusted_state_test`) | nothing |
 | Placed blobs, outcomes over 32 MiB (110) | works | works | nothing |
 | Remote evolution | works when the guest's census says `Compiles` | refused: the link sets `Uncompiled` | 109 slice 4 |
@@ -259,7 +258,7 @@ What the daemon needs, read from the code:
 ### The guest side
 
 `vm_spec.guest_config` stops calling `distribution_bundle.config_tables`
-(the function is deleted; `client/vm_spec.gleam:2267` (`guest_config_with`) takes
+(the function is deleted; `client/vm_spec.gleam:2252` (`guest_config_with`) takes
 the link's tables) and writes instead:
 
 ```toml
@@ -298,7 +297,7 @@ release that changes `up`.
 
 The daemon reads `[executors.*]` and `[executor_link]` once at start and never
 rereads them (`client/daemon/main.gleam:278` (`untrusted`)); links start only
-there (`client/daemon/main.gleam:4877` (`start_untrusted`)). No daemon-wide
+there (`client/daemon/main.gleam:4884` (`start_untrusted`)). No daemon-wide
 configuration reload exists: `limits` validates its keys again on a catalogue
 reload and never rebinds (`client/daemon/limits.gleam:138` (`listen_address`)),
 and `gateway`'s reload is a session's model catalogue. What does exist is the
@@ -306,7 +305,7 @@ mechanism ledger mode uses for rows that change while the daemon runs, a
 `Roster` read at each use (`client/roster.gleam:51` (`reading`)), and the
 precedent of an owner-only control command that changes rows without a
 restart, `ledger.append`, whose owner check is in
-`ledger_command` (`client/daemon/server.gleam:3826`).
+`ledger_command` (`client/daemon/server.gleam:4003`).
 
 Three options:
 
@@ -328,7 +327,7 @@ the next `reload`.
 `up` and `ensure` write the file first, then send `reload` if a daemon is
 running. When none is, the next `loom` starts one that reads the file. Either
 way no daemon is stopped, which removes `vm_spec.daemon_step` and the stop
-step (`client/vm_spec.gleam:2893` (`daemon_step`)).
+step (`client/vm_spec.gleam:2900` (`daemon_step`)).
 
 A new control command is a change to the client control protocol, so this
 needs **protocol-change/116**.
@@ -336,7 +335,7 @@ needs **protocol-change/116**.
 ### (b) A stable address
 
 The row names `host:port`, and `boot` reserves a fresh loopback port on every
-boot today (`client/vm_cli.gleam:1747` (`reserve_loopback_port`)), which epmd
+boot today (`client/vm_cli.gleam:1826` (`reserve_loopback_port`)), which epmd
 made harmless.
 
 | Option | Daemon restart | Port taken while the guest is down | Cost |
@@ -455,24 +454,26 @@ sealed authority key under `<vm home>/authority/<id>/`.
 |---|---|---|
 | Convert in place | needs the teardown code (`plan_teardown`, revoke through the sealed key) to run one last time inside `up`, plus deleting creds from a guest-written root | the most code, for a feature about two weeks old with few guests |
 | Keep the old path working forever | all of today's mint, join and teardown machinery stays | the exposure this note exists to remove stays on every old guest |
-| Refuse and name the way on | a resumed `up` on a guest with `deploy/` refuses, naming `loom vm sync` (to keep work), `loom vm rm <name> --yes` (which already removes the tables, the cookie when it is the guest's, the authority directory and the membership) and `loom vm up` | the guest's root and state disk are rebuilt |
+| Refuse and name the way on | a resumed `up` on a guest with `deploy/` refuses, naming `loom vm sync` (to keep work), `loom vm rm <name> --yes` (which deleted the guest and, when this table was written, also undid its enrolment; it now prints what the operator removes by hand) and `loom vm up` | the guest's root and state disk are rebuilt |
 
-**Recommended: refuse and name the way on.** `rm` keeps its distribution
-teardown for one release so old guests can be removed, then it goes with the
-rest.
+**Recommended: refuse and name the way on.** This note first proposed that
+`rm` keep its distribution teardown for one release. The owner had it deleted on
+2026-11-19 instead (ADR-022, the addendum of that date): `rm` now deletes the
+guest's directory and prints what the operator removes by hand.
 
 Deleted once the migration is complete. The first part of this table, the
 bring-up of a distribution guest, was deleted on 2026-11-18, the day after the
 default flipped, instead of after a release: `vm_link.settle` answers no
 `Distribution`, so no input reached it. The teardown rows (the revoke and cookie
-half of `rm`, `read_enrolment`, `plan_teardown`, the cookie state, the daemon
-observation and the stop step) stay until an old guest can no longer exist. The
-line numbers below describe the file before that deletion.
+half of `rm`, `read_enrolment`, `plan_teardown`, the cookie state) were deleted
+on 2026-11-19; the daemon observation and the stop step stay, since the
+untrusted path uses them. The line numbers below describe the file before the
+first deletion.
 
 | Module | What goes | Lines, roughly |
 |---|---|---|
 | `client/vm_cli.gleam` | `deployment`, `begin`, `join`, `sealed_authority`, the ledger helpers, `provision`, `seal_authority`, `write_bundles`, `config_of`'s deployment half, `enroll`, `install`, from `deployment` (line 809 before the deletion) to about line 1520; `stage_ledger`; the daemon observation and stop step (`stop_daemon` and its neighbours, about lines 2615 to 2790); `epmd_line`; the revoke and cookie half of `rm` | 1,250 |
-| `client/vm_spec.gleam` | `deployment_plan`, `DeploymentState` and the join decisions (lines 2132 to about 2036 before the deletion); `with_loopback_listener`; `daemon_step` and its types; `registered_port`; `read_enrolment`, the cookie state and `plan_teardown` (`client/vm_spec.gleam:3938` (`plan_teardown`)) | 800 |
+| `client/vm_spec.gleam` | `deployment_plan`, `DeploymentState` and the join decisions (lines 2132 to about 2036 before the deletion); `with_loopback_listener`; `daemon_step` and its types; `registered_port`; `read_enrolment`, the cookie state and `plan_teardown` | 800 |
 | `test/client/vm_cli_test.gleam` | about 35 of its 155 tests: node names, epmd, loopback listener, deployment state, enrolment, ledger staging, authority sealing, revoke, cookie and teardown | 600 |
 | `test/client/daemon_shipped_microvm_test.gleam` | the ledger and authority assertions, the idle-daemon stop step, the second-guest refusal | 250 |
 
@@ -551,10 +552,20 @@ Each slice ships alone and is listed in merge order.
    one readiness rule, which prints `LOOM-EXECUTOR-READY untrusted` once the
    log holds `daemon.executor_serving` and `daemon.untrusted_listener`; it
    renders no options file and touches no cookie.
-   **Last part, open:** the `rm` teardown, the daemon observation and stop
-   step (still used by the untrusted path when a running daemon cannot
-   reload), `epmd_line` and the old-guest classifier, once old guests cannot
-   exist. **Exit**: `make check` green.
+   **`rm` part, built (2026-11-19):** the owner asked to finish deleting the
+   distribution path, so the teardown went without waiting a release. `rm
+   --yes` on an old guest deletes its directory and rewrites nothing: it
+   prints what the operator removes by hand (the `[executors.NAME]` row and
+   an unused `[distribution]` table, `~/.erlang.cookie` or its rotation, the
+   authority directory, `loom distribution revoke NAME`) and says that `up`
+   refuses the name until the row is gone. `status` prints the one `link:`
+   line for such a guest, without `node:` or `epmd:`. What stays is the
+   detector (`vm_link.traces`, `made`, `settle`, `retired_refusal`, `DeployTrace`,
+   `LinkKind.Distribution`) and the refusal in `up` and `ensure`, because
+   without them a guest with no `link` record reads as new and `up` would keep
+   its root, cookie and node key, as an untrusted guest. The daemon observation
+   and stop step is still used by the untrusted path when a running daemon
+   cannot reload. **Exit**: `make check` green.
 
 The one-flag work lands on top of slice 4 or rebases onto it; its surface does
 not change.

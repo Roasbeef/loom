@@ -319,3 +319,20 @@ ON CONFLICT(session_id) DO UPDATE SET
 
 -- name: DeleteSessionAgencyLimits :exec
 DELETE FROM catalogue_session_agency WHERE session_id = ?;
+
+-- name: SessionAttention :many
+SELECT pending_approvals, open_asks, open_finds, oldest_open_at, updated_at
+FROM catalogue_session_attention WHERE session_id = ?;
+
+-- name: SetSessionAttention :exec
+INSERT INTO catalogue_session_attention (session_id, pending_approvals, open_asks, open_finds, oldest_open_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET
+  pending_approvals = excluded.pending_approvals,
+  open_asks = excluded.open_asks,
+  open_finds = excluded.open_finds,
+  oldest_open_at = excluded.oldest_open_at,
+  updated_at = excluded.updated_at;
+
+-- name: DeleteSessionAttention :exec
+DELETE FROM catalogue_session_attention WHERE session_id = ?;

@@ -425,3 +425,27 @@ pub fn a_long_unbroken_name_is_cut_in_the_preview_test() {
   let heading = line_with(shown, "│ loom · an-unbroken")
   assert string.ends_with(string.trim_end(string.drop_end(heading, 1)), "…")
 }
+
+// The daemon writes a glance for `main` for the web view's inbox
+// (`protocol-change/121`). The picker describes a session's `main` from the
+// row's own data, so that glance is not listed beside the sub-agents'.
+pub fn the_glance_for_main_is_not_listed_in_the_preview_test() {
+  let with_main = fn(now) {
+    let state = session_selector.new(page(now), "s-main")
+    let rows =
+      list.map(activity(), fn(row) {
+        case row.session_id == "s-main" {
+          True ->
+            protocol.Activity(..row, glances: [
+              protocol.GlanceLine("main", "Refactor", "Editing router.go"),
+              ..row.glances
+            ])
+          False -> row
+        }
+      })
+    session_selector.observe(state, session_selector.resident_ids(state), rows)
+  }
+  let lines = painted(with_main, 120, 40) |> frame.buffer_to_lines
+  assert list.any(lines, string.contains(_, "bootstrap"))
+  assert !list.any(lines, string.contains(_, "Editing router.go"))
+}

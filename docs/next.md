@@ -1,51 +1,84 @@
 # Current handoff
 
-The session hot-path section is re-baselined on November 13 against source
-`3e28c16f4` and its recorded local gates. Other sections retain their upstream
-baselines; this scoped update does not revalidate their hosted CI or live status.
+The attention inbox section is written on November 18 against stack #1290 at
+`89e81cd42` and its recorded local gates. The session hot-path section was
+re-baselined on November 13 against source `3e28c16f4`. Other sections retain
+their upstream baselines; this scoped update does not revalidate their hosted
+CI or live status.
 
-## The attention inbox: the final design is chosen
+## The attention inbox: built, awaiting the owner's sign-off
 
-The owner wants the web view to surface what needs them instead of making them
-read transcripts, in the manner of a coordinator and an inbox.
-[`design-notes/attention-inbox/`](design-notes/attention-inbox/README.md) holds
-the bracket that answered it (four concepts, two critiques, a ranking) and the
-final design the owner chose on 2026-11-16. Its section 2 describes it, and
-[`final/mockup.html`](design-notes/attention-inbox/final/mockup.html) draws it.
+The web view now surfaces what needs the owner, grouped by need on Home, with
+a reading pane for evidence and a rail on a session's page.
+[`design-notes/attention-inbox/`](design-notes/attention-inbox/README.md)
+holds the design, and its section 7 says what was built and where the build
+departs from it.
 
-- **The inbox is the landing page.** It is concept C's thread list, grouped by
-  need, with a reading pane that carries the evidence: the agent's last
-  message, worktree hunks with finds at their lines, and one outbox that names
-  what goes to whom. It replaces the home form only when something waits or
-  runs.
-- **Every thread can message its session.** The message stages into the same
-  outbox and is delivered as a prompt, or as a queue or steer entry when the
-  session is busy. An Updates group lists working sessions for this.
-- **The live mode is for watching one session.** The stream stays live and
-  central, and a rail beside it lifts out asks, approvals and stuck strands
-  (pinned until answered) and finds, checks, sub-agent results, errors and peer
-  messages (folded once read).
-- **Rulings:**
-  - An approval is decided only from the dock on its own session's page. It
-    echoes the full action text, grants and seq (`echo_matches`) and has no
-    undo.
-  - The feed carries identities and heads, never decision content.
-  - Every count says what it read, because `sessions.activity` never reads
-    saved sessions.
-- **Next:** phase 0 of the README's section 4. Stop dropping `last_message` and
-  `glances` at `state_of` in `client/daemon/server.gleam`. Add the inbox region
-  of Home and the live rail's classifier over lane entries in `session_view`.
-  Propose the thread-send command and the inbox's addendum to
-  protocol-change/051.
-- **Not done:**
-  - Nothing is built.
-  - Before phase 2, the owner rules on how `person/check` reaches `main`: re-cut
-    the pure half of `project/visible-failures`, or merge
-    `project/warm-template` first (README section 3, question 6). Until then
-    the inbox draws the raw stage word.
-  - The project meta layer (router, Mandate, `observe`, verdicts and `auto`,
-    publishing inferred work, the attention budget, settings proposals; see
-    #1168) has no design.
+**Where it is.** Stack #1290 holds ten PRs, bottom to top. The top is
+`web/ticket-threads` (#1294). None is merged.
+
+1. #1275 `web/oklch-tokens`: the OKLCH palette and a contrast gate (WCAG,
+   APCA, colour-vision deficiency and gamut) whose self-test plants violations
+   by token name.
+2. #1283 `client/main-glance`: a glance for `main` (protocol-change/121).
+3. #1285 `web/attention-inbox-phase0`: Home's inbox grouped by need, direct
+   messages from threads with Queue and Steer, and decide-once landing
+   (protocol-change/118 and the 051 addendum "the attention inbox on Home").
+4. #1286 `tools/attention-records`: the `ask` and `notice` tools with typed
+   answer kinds, their code-mode capabilities, and reserved records
+   (protocol-change/119).
+5. #1288 `storage/attention-summary`: catalogue version 22, so a restart still
+   counts pending approvals (protocol-change/122), with the feed's design in
+   protocol-change/120.
+6. #1287 `web/live-rail`: the live mode's rail (051 addendum "the live rail").
+7. #1289 `client/attention-feed`: `sessions.attention`, `attention.read`,
+   `attention.close_find`, typed answers and strand sends
+   (protocol-change/120).
+8. #1292 `web/attention-threads`: asks, finds, stuck strands and approval
+   evidence (`approval.read`, an addendum to 120) on Home, with asks answered
+   in the rail.
+9. #1293 `web/review-pane`: `sessions.review` (protocol-change/123) and the
+   review pane with a one-Send outbox.
+10. #1294 `web/ticket-threads`: project tickets as threads (051 addendum
+    "project tickets on Home"), Home's first-round landing rule
+    (`landing_rule`) and the fixes the end-to-end drive found.
+
+**How it was verified.**
+
+- Each PR was reviewed by an independent Fable reviewer, and every finding was
+  fixed or dispositioned on the PR.
+- Each PR passed its own package gates locally. The gated signoff box
+  (`gilgamesh-signoff`) was unreachable from this machine throughout, so no PR
+  has a signoff and the stack has not been through `make check` as one unit.
+- A Sonnet agent drove a freshly built daemon at the stack's top with a real
+  model and a real browser, and all 13 features (a to m) passed. Screenshots
+  are on each PR.
+
+**Left open on purpose.**
+
+- `person/check` is drawn as its raw stage word and the drive did not reach it
+  live. The owner rules on README question 6 (re-cut the pure half of
+  `project/visible-failures`, or merge `project/warm-template` first), and
+  until then there is no check output or Recheck.
+- The review pane does not show committed work (protocol-change/123's known
+  gap). A session that committed everything shows an empty review.
+- An approval carries no raise time, so an approval thread shows no age.
+- A `queued` answer delivery can be dropped by a later drain while the record
+  says answered (protocol-change/120, residual risk). It is rare, since an ask
+  ends its run.
+- Phase 3 (creating a project and posting a request from the web), the
+  project view and the project meta layer (#1168) are out of scope and have no
+  design.
+
+**Next.**
+
+1. The owner signs off on the stack.
+2. Land it in one go: `gh stack merge`, or a queue PR cut at the signed top
+   per the repository's practice, since a stack needs signoff on every head.
+3. On the merged `main`, run `make check` and `make doc-check`, and fix
+   whatever the unified tree shows.
+4. Re-run the end-to-end drive against a daemon built from `main`.
+5. Rule on question 6, then start phase 2's `person/check` thread.
 
 ## Platform-selected JSON decoding
 

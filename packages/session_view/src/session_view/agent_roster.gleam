@@ -418,9 +418,20 @@ pub fn remote_row(agent: RemoteAgent) -> agent_view.Row {
   )
 }
 
+/// The strand a capture cell's glance describes, when the roster shows it.
+/// The daemon writes a glance for `main` so the attention inbox can say what
+/// a working session is doing now (`protocol-change/121`), but a strip draws
+/// `main` from its own row, so that glance is left out of the roster.
 fn glance_strand(cell: snapshot_view.Cell) -> Result(String, Nil) {
   case cell.namespace == register.FactCustom {
-    True -> glance.strand_of(cell.key)
+    True ->
+      glance.strand_of(cell.key)
+      |> result.try(fn(strand) {
+        case strand == primary {
+          True -> Error(Nil)
+          False -> Ok(strand)
+        }
+      })
     False -> Error(Nil)
   }
 }

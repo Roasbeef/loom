@@ -75,6 +75,8 @@ fn page(
     activity: fn(_, _) { Nil },
     rename: None,
     manage: None,
+    thread_send: None,
+    attention: None,
     create:,
     folders: None,
     elsewhere: None,

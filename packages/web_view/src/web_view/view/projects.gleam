@@ -505,7 +505,12 @@ fn answer_form(page: Page(message), seq: Int) -> Element(message) {
 
   keyed.div([attribute.class("relayed-reply")], [
     #(
-      "answer-" <> int.to_string(page.answered),
+      "answer-"
+        <> page.ticket.id
+        <> "-"
+        <> int.to_string(seq)
+        <> "-"
+        <> int.to_string(page.answered),
       html.form(
         [
           attribute.class("place-composer"),

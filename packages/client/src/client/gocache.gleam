@@ -87,6 +87,7 @@
 
 import broker/policy
 import client/internal/ffi_os
+import filepath
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -174,6 +175,7 @@ pub fn locate(
 ) -> Option(GoCaches) {
   let workspace = strip_trailing_slash(workspace)
   option.map(cache, strip_trailing_slash)
+  |> option.then(cleaned)
   |> option.then(fn(place) {
     case policy.covers(root: workspace, path: place) {
       True -> None
@@ -185,6 +187,19 @@ pub fn locate(
         ))
     }
   })
+}
+
+/// The cache place with its `.` and `..` segments expanded, or `None` when
+/// it cannot be: a place that climbs above `/`, or one that is not absolute.
+/// The place comes from `XDG_CACHE_HOME`, which an operator can spell
+/// `/home/u/../cache`; the helper cleans every root, so an uncleaned root
+/// would be judged and bound as two different paths, and `policy.validate`
+/// refuses a `..` segment in a root (`protocol-change/124`).
+fn cleaned(place: String) -> Option(String) {
+  case string.starts_with(place, "/"), filepath.expand(place) {
+    True, Ok(path) -> Some(path)
+    _, _ -> None
+  }
 }
 
 fn strip_trailing_slash(path: String) -> String {

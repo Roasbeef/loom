@@ -171,7 +171,7 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 `start_effect_plane_in` (`client/workspace_plane.gleam:1566`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2434`),
+fatal child of the instance (`instance_children`, `client/serve.gleam:2442`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is
@@ -865,7 +865,7 @@ its own execution ceiling. The other numbers are fixed literals and not knobs:
 | Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:367`: the checkout wait, the relay's init wait, the run call and a second of slack |
 | Relay's ask to settle | 5000 ms | `settle_wait_ms`, `broker/relay.gleam:253` |
 | Relay's ask to cancel | 5000 ms | `cancel_wait_ms`, `broker/relay.gleam:272` |
-| Output per stream | `policy.limits.output_bytes`; 0 means unlimited | The helper (`limiter.go`). A session lease whose output is a wire runs with 0 (`session_lease`, `broker/policy.gleam:425`). |
+| Output per stream | `policy.limits.output_bytes`; 0 means unlimited | The helper (`limiter.go`). A session lease whose output is a wire runs with 0 (`session_lease`, `broker/policy.gleam:447`). |
 | Frame payload | 16 MiB | Both framing codecs. |
 
 The issue also asks for bounded behaviour under a slow output consumer. The
@@ -893,7 +893,7 @@ caps are 4 MiB for the workspace default (`workspace_default`,
 `broker/policy.gleam`), 1 MiB for hooks and goal checks and 4 MiB for the
 language-server manager. A session lease whose output is a wire runs with
 `output_bytes` of 0, which the helper reads as no cap: `session_lease` zeroes it
-for `OutputIsWire` (`broker/policy.gleam:425`), and the language-server jail is
+for `OutputIsWire` (`broker/policy.gleam:410`), and the language-server jail is
 the one caller. For those long-lived streams the mailbox is bounded only by the
 consumer, and a consumer that stops reading grows without limit. That is a
 deliberate trade, since a cap sized for one command would cut a live server's

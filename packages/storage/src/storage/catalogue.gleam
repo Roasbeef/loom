@@ -89,6 +89,7 @@ import storage/catalogue_projects_schema
 import storage/catalogue_recent_folders_schema
 import storage/catalogue_relayed_schema
 import storage/catalogue_releases_schema
+import storage/catalogue_session_attention_schema
 import storage/catalogue_spend_schema
 import storage/catalogue_start_failures_schema
 import storage/catalogue_subtitles_schema
@@ -310,7 +311,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 21
+pub const current_version = 22
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -337,6 +338,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(19, catalogue_relayed_schema.schema),
     #(20, catalogue_projects_schema.schema),
     #(21, catalogue_agency_schema.schema),
+    #(22, catalogue_session_attention_schema.schema),
   ]
 }
 
@@ -3028,6 +3030,10 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
       catalogue,
       sql.delete_session_agency_limits(id),
     ))
+
+    // The attention summary (version 22) names the registration too, and a
+    // later session that reuses the identity must not inherit its counts.
+    use Nil <- result.try(statement(catalogue, sql.delete_session_attention(id)))
     use Nil <- result.try(statement(catalogue, sql.delete_registration(id)))
 
     // The revision moves so an open listing page is refused rather than
@@ -3353,11 +3359,12 @@ pub fn statement(catalogue: Catalogue, generated: #(String, List(dev.Param))) {
   query(catalogue, #(text, params, decode.success(Nil))) |> result.replace(Nil)
 }
 
-// These queries bind only non-null strings and integers. Parrot types a
-// parameter that assigns a nullable column as `ParamNullable`, as the claim
-// binding does; a present value binds as itself, and an absent one is refused
-// rather than silently binding NULL, because no catalogue write clears a
-// column. A future generator change must add an explicit conversion here.
+// These queries bind strings, integers and nullable values of those. Parrot
+// types a parameter that assigns a nullable column as `ParamNullable`: a
+// present value binds as itself and an absent one binds NULL. The attention
+// summary relies on that to clear `oldest_open_at` when nothing is open. Any
+// other parameter type is refused, so a generator change that introduces one
+// must add an explicit conversion here.
 /// Converts an internal query parameter into an sqlight value.
 fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
   case param {
@@ -4239,6 +4246,121 @@ fn encode_depth_cap(
     Some(UnlimitedDepth) -> #("unlimited", None)
     Some(BoundedDepth(depth)) -> #("bounded", Some(depth))
   }
+}
+
+/// One session's attention figures as the catalogue stores them
+/// (protocol-change/122).
+///
+/// The summary is a cache of the session's own records, written when a record
+/// commits so that a count survives a daemon restart and covers a session
+/// that is saved. The records stay the truth; opening a session rewrites its
+/// row from them.
+pub type AttentionSummary {
+  AttentionSummary(
+    /// Escalation records whose status is pending.
+    pending_approvals: Int,
+    /// Open asks routed to the owner.
+    open_asks: Int,
+    /// Open finds.
+    open_finds: Int,
+    /// Unix milliseconds of the oldest open ask or find, or `None` when there
+    /// is none. Approvals carry no raise time and never lower it.
+    oldest_open_at: Option(Int),
+    /// Unix milliseconds on the daemon's clock when the row was written.
+    updated_at: Int,
+  )
+}
+
+/// Writes `summary` as the attention row for `id`, replacing any earlier one.
+///
+/// The write is an upsert on the session id, so repeating it is idempotent
+/// and the last write wins. A negative count is refused by the table's CHECK
+/// constraints and surfaces as `Database`. An identity with no registration
+/// is refused by the foreign key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.record_attention(catalogue, id, summary) == Ok(Nil)
+/// ```
+pub fn record_attention(
+  catalogue: Catalogue,
+  id: String,
+  summary: AttentionSummary,
+) -> Result(Nil, Error) {
+  statement(
+    catalogue,
+    sql.set_session_attention(
+      session_id: id,
+      pending_approvals: summary.pending_approvals,
+      open_asks: summary.open_asks,
+      open_finds: summary.open_finds,
+      oldest_open_at: summary.oldest_open_at,
+      updated_at: summary.updated_at,
+    ),
+  )
+}
+
+/// Reads the attention row for `id`, or `None` when the session's summary has
+/// never been made. A row of zeros is `Some`: it says the records were read
+/// and nothing was open, which absence does not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.attention(catalogue, id) == Ok(None)
+/// ```
+pub fn attention(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Option(AttentionSummary), Error) {
+  use rows <- result.try(query(catalogue, sql.session_attention(id)))
+
+  // No row is a summary never made. One row is the answer, and a second would
+  // mean the primary key failed.
+  case rows {
+    [] -> Ok(None)
+    [row] ->
+      Ok(
+        Some(AttentionSummary(
+          pending_approvals: row.pending_approvals,
+          open_asks: row.open_asks,
+          open_finds: row.open_finds,
+          oldest_open_at: row.oldest_open_at,
+          updated_at: row.updated_at,
+        )),
+      )
+    [_, _, ..] -> Error(Invalid("duplicate session attention"))
+  }
+}
+
+/// Reads the attention rows for `ids`, pairing each identity that has one with
+/// its summary and omitting the rest, in the order of `ids`.
+///
+/// The caller bounds `ids`: Home passes one listing page, at most 100
+/// identities. A member's caller filters `ids` to the sessions the member
+/// holds before this runs, so the read never widens what it may learn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.attention_for(catalogue, ["a", "b"]) == Ok([#("a", summary)])
+/// ```
+pub fn attention_for(
+  catalogue: Catalogue,
+  ids: List(String),
+) -> Result(List(#(String, AttentionSummary)), Error) {
+  list.try_fold(ids, [], fn(found, id) {
+    use row <- result.try(attention(catalogue, id))
+
+    // A session with a row is kept, and one without is left out rather than
+    // given zeros, so absence stays distinct from "nothing was open".
+    case row {
+      Some(summary) -> Ok([#(id, summary), ..found])
+      None -> Ok(found)
+    }
+  })
+  |> result.map(list.reverse)
 }
 
 fn execute(connection: sqlight.Connection, sql: String) -> Result(Nil, Error) {

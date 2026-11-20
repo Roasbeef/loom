@@ -789,6 +789,7 @@ fn check_staged(guest: Int) -> Result(Nil, statem.Violation) {
       vm_spec.guest_files(),
       pin_of(9),
       ["proj"],
+      vm_spec.GuestShared,
       vm_spec.GitHubOff,
       [],
     )

@@ -615,6 +615,7 @@ pub fn the_guest_listens_admits_one_pin_and_has_no_distribution_test() {
       vm_spec.guest_files(),
       pin_a,
       ["proj"],
+      vm_spec.GuestShared,
       vm_spec.GitHubOff,
       [],
     )

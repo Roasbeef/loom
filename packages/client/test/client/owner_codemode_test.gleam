@@ -29,6 +29,7 @@ import codemode/identity
 import codemode/orchestration
 import codemode/satellite
 import codemode/vet/policy as vet_policy
+import core/attention as records
 import core/clock
 import core/ids
 import core/json
@@ -40,6 +41,7 @@ import gleam/option.{None}
 import gleam/string
 import support/remote_fixtures as fixtures
 import tools/agent
+import tools/attention as attention_tool
 import tools/codemode as codemode_tool
 import tools/directory_access
 import tools/evolution as evolution_tool
@@ -861,5 +863,234 @@ pub fn an_executor_that_cannot_observe_an_identity_offers_nothing_test() {
 
   let assert Error(_) = configured.identity
   assert configured.host.evolution == option.None
+  broker.stop(broker_actor)
+}
+
+// --- attention.* -----------------------------------------------------------------
+
+// A seam that records what it was asked, as a line per call, and answers a
+// fixed id.
+fn recording_attention(seen: Subject(String)) -> attention_tool.Attention {
+  attention_tool.Attention(
+    ask: fn(caller: agent.Caller, request: attention_tool.AskRequest) {
+      process.send(
+        seen,
+        "ask "
+          <> caller.strand
+          <> " "
+          <> int.to_string(list.length(request.questions))
+          <> " "
+          <> string.inspect(caller.minter),
+      )
+      Ok("ask-0123456789")
+    },
+    notice: fn(caller: agent.Caller, request: attention_tool.NoticeRequest) {
+      process.send(
+        seen,
+        "notice "
+          <> caller.strand
+          <> " "
+          <> records.find_kind_name(request.kind),
+      )
+      Ok("find-0123456789")
+    },
+  )
+}
+
+fn confirm_args() -> msgpack.MsgPackValue {
+  msgpack.MapValue([
+    pair(
+      "questions",
+      msgpack.ArrayValue([
+        msgpack.MapValue([
+          pair("prompt", string("Retry the build?")),
+          pair("kind", string("confirm")),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+fn notice_args() -> msgpack.MsgPackValue {
+  msgpack.MapValue([
+    pair("kind", string("bug")),
+    pair("text", string("No backoff.")),
+  ])
+}
+
+fn attending_over(
+  broker_actor: broker.Broker,
+  agency: agent.Agency,
+  seam: attention_tool.Attention,
+) -> codemode.Config {
+  config_for(broker_actor)
+  |> codemode.serving(codemode.BothSeams, over: agency)
+  |> codemode.attending(over: seam)
+}
+
+pub fn a_programs_ask_records_and_returns_its_id_test() {
+  let broker_actor = idle_broker()
+  let seen = process.new_subject()
+  let config =
+    attending_over(
+      broker_actor,
+      agency_over(process.new_subject()),
+      recording_attention(seen),
+    )
+
+  // The reply is the id, as `{id}`. It is a plain `CapOk`: nothing in a
+  // capability reply can end the `code_mode` call's run, whose outcome stays
+  // `ContinueRun` as it is for every program.
+  list.each(
+    [codemode_tool.WorkspaceSeam, codemode_tool.OrchestrationSeam],
+    fn(seam) {
+      assert routed(config, seam, "attention.ask", confirm_args())
+        == framing.CapOk(
+          msgpack.MapValue([pair("id", string("ask-0123456789"))]),
+        )
+    },
+  )
+
+  // The caller is the dispatching strand, and the minter is the program's
+  // ordinal rather than the planned call itself.
+  let assert Ok(line) = process.receive(seen, 100)
+  assert line == "ask main 1 Program(4)"
+  broker.stop(broker_actor)
+}
+
+pub fn a_programs_notice_records_a_find_the_same_way_test() {
+  let broker_actor = idle_broker()
+  let seen = process.new_subject()
+  let config =
+    attending_over(
+      broker_actor,
+      agency_over(process.new_subject()),
+      recording_attention(seen),
+    )
+  assert routed(
+      config,
+      codemode_tool.WorkspaceSeam,
+      "attention.notice",
+      notice_args(),
+    )
+    == framing.CapOk(msgpack.MapValue([pair("id", string("find-0123456789"))]))
+  assert process.receive(seen, 100) == Ok("notice main bug")
+  broker.stop(broker_actor)
+}
+
+pub fn a_program_is_refused_in_the_tools_words_test() {
+  let broker_actor = idle_broker()
+  let config =
+    attending_over(
+      broker_actor,
+      agency_over(process.new_subject()),
+      recording_attention(process.new_subject()),
+    )
+  let outcome =
+    routed(
+      config,
+      codemode_tool.WorkspaceSeam,
+      "attention.ask",
+      msgpack.MapValue([pair("questions", msgpack.ArrayValue([]))]),
+    )
+  let assert framing.CapErr(code: "invalid_argument", message:) = outcome
+  assert message == "`questions` needs at least one question"
+  broker.stop(broker_actor)
+}
+
+pub fn a_program_on_a_strand_without_ask_is_refused_and_notice_still_works_test() {
+  let broker_actor = idle_broker()
+  let worker =
+    agent.Agency(..agency_over(process.new_subject()), holds: fn(_caller, tool) {
+      case tool {
+        "ask" -> Error(agent.ToolNotHeld(tool:))
+        _ -> Ok(Nil)
+      }
+    })
+  let config =
+    attending_over(
+      broker_actor,
+      worker,
+      recording_attention(process.new_subject()),
+    )
+  let assert framing.CapErr(code: "tool_not_held", ..) =
+    routed(config, codemode_tool.WorkspaceSeam, "attention.ask", confirm_args())
+  let assert framing.CapOk(_) =
+    routed(
+      config,
+      codemode_tool.WorkspaceSeam,
+      "attention.notice",
+      notice_args(),
+    )
+  broker.stop(broker_actor)
+}
+
+pub fn the_module_is_admitted_only_where_the_door_is_wired_test() {
+  let broker_actor = idle_broker()
+  let agency = agency_over(process.new_subject())
+  let with =
+    attending_over(
+      broker_actor,
+      agency,
+      recording_attention(process.new_subject()),
+    )
+  let without =
+    config_for(broker_actor)
+    |> codemode.serving(codemode.BothSeams, over: agency)
+  let admits = fn(config, seam) {
+    vet_policy.contains(codemode.seam_allowlist(config, seam), "cap/attention")
+  }
+  assert admits(with, vet_policy.WorkspaceSeam)
+  assert admits(with, vet_policy.OrchestrationSeam)
+  assert !admits(with, vet_policy.ExtensionSeam)
+  assert !admits(with, vet_policy.ResidentSeam)
+  assert !admits(without, vet_policy.WorkspaceSeam)
+  assert list.contains(
+    codemode.seam_caps_on(with, vet_policy.WorkspaceSeam),
+    "attention.ask",
+  )
+  assert !list.contains(
+    codemode.seam_caps_on(without, vet_policy.WorkspaceSeam),
+    "attention.ask",
+  )
+  broker.stop(broker_actor)
+}
+
+pub fn a_remote_program_gets_the_owners_attention_answers_as_a_local_one_does_test() {
+  let broker_actor = idle_broker()
+  let seen = process.new_subject()
+  let agency = agency_over(process.new_subject())
+  let wiring = mailbox(process.new_subject())
+  let side =
+    codemode.owner_serving(codemode.BothSeams, over: agency, schedules: None)
+    |> codemode.owner_attending(over: recording_attention(seen))
+  let services =
+    owner_services.OwnerServices(
+      ..fixtures.quiet_services(),
+      capability: owner_codemode.answering(side, peers: wiring),
+      holds: agency.holds,
+    )
+  let #(port, link, linked_services) = linked(services)
+  let remote = executor_over(broker_actor, linked_services)
+  let local =
+    attending_over(
+      broker_actor,
+      agency,
+      recording_attention(process.new_subject()),
+    )
+  list.each(
+    [
+      #("attention.ask", confirm_args()),
+      #("attention.ask", msgpack.MapValue([])),
+      #("attention.notice", notice_args()),
+    ],
+    fn(call) {
+      let #(cap, args) = call
+      assert routed(remote, codemode_tool.WorkspaceSeam, cap, args)
+        == routed(local, codemode_tool.WorkspaceSeam, cap, args)
+    },
+  )
+  owner_link.stop(link)
+  owner_port.stop(port)
   broker.stop(broker_actor)
 }

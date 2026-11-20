@@ -48,8 +48,8 @@
 //// 3. `view` lays the page out: the heading, the lane, the approval cards
 ////    (`approvals`), the dock, and the panel whose controls (invitation,
 ////    rename, remembered permissions, peer links) each have a fixed place.
-//// 4. `composer` draws the draft, with `busy_mark` and `hint` saying that a
-////    turn is running, and the buttons `actions` offers.
+//// 4. `composer` draws the draft, with `hint` saying what Queue and Steer do
+////    while a turn is running, and the buttons `actions` offers.
 //// 5. `composition` decodes the one submit a browser sends, totally.
 
 import core/json
@@ -77,6 +77,7 @@ import web_view/completion
 import web_view/component
 import web_view/evolution as evolving
 import web_view/image
+import web_view/inbox_rule
 import web_view/invites
 import web_view/peer_links
 import web_view/remembered
@@ -87,6 +88,7 @@ import web_view/view/controls
 import web_view/view/ended
 import web_view/view/evolution as evolution_view
 import web_view/view/lane
+import web_view/view/lifted as lifted_view
 import web_view/view/memory as memory_view
 import web_view/view/peer_links as peer_links_view
 import web_view/view/proposals as proposals_view
@@ -399,19 +401,14 @@ pub fn update(
 /// // element.to_string(operator_page.view(model))
 /// ```
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
+  // The lane's pieces are read once and shared by the lane, the rail and the
+  // sheet.
+  let pieces = component.pieces(model)
+  let lift = component.lift(model, pieces, lifted_view.InDock)
+
   shell.view(
     shell.Operator,
-    component.heading(
-      model,
-      Observed(component.GoingHome),
-      context_breakdown.Actions(
-        refresh: Observed(component.ContextRefreshRequested),
-        compact: case component.route(model) {
-          component.Local -> Some(Controlled(component.CompactStrand))
-          component.Relayed(..) -> None
-        },
-      ),
-    ),
+    component.heading(model, Observed(component.GoingHome), shell.Operator),
     sidebar_place(model),
     [
       component.crumb(model),
@@ -419,7 +416,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         True -> ended.content_unavailable()
         False ->
           lane.navigable(
-            component.pieces(model),
+            pieces,
             component.live(model),
             component.top(model),
             Observed(component.OlderRequested),
@@ -434,7 +431,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
                 component.queue_row(model, input) |> element.map(Observed)
               },
             ),
-            component.marks(model),
+            component.marked(model, lift),
             lane.Folds(
               fn(fold) { Observed(component.FoldToggled(fold)) },
               fn(key) { Observed(component.MessageToggled(key)) },
@@ -479,6 +476,23 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       // centre's last child, so no admitted path moves with it.
       component.switch(model),
       switch.switcher(),
+
+      // The phone's sheet comes last so no admitted path moves; the
+      // stylesheet orders it above the dock.
+      component.sheet(model, lift, Observed),
+
+      // The strip above the stream is drawn last and ordered first by the
+      // stylesheet, for the same reason.
+      component.stream_head(
+        model,
+        context_breakdown.Actions(
+          refresh: Observed(component.ContextRefreshRequested),
+          compact: case component.route(model) {
+            component.Local -> Some(Controlled(component.CompactStrand))
+            component.Relayed(..) -> None
+          },
+        ),
+      ),
     ],
     component.panel(
       model,
@@ -568,6 +582,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         component.Relayed(..) ->
           evolution_view.elsewhere(component.session_machine(model))
       },
+      lift,
     ),
     component.needing(model),
     component.proposals_pending(model),
@@ -592,8 +607,37 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
         Opening,
         resume.Offered(Resuming, component.resuming_session(model)),
         archive_offer(model),
+        rail_folders(model),
       ))
   }
+}
+
+/// The rail's folders on a session's page: the same six as the inbox's, each with
+/// no count, since this page does not read the attention feed. A press goes to the
+/// home page, the one way to the inbox this page has (`component.GoingHome`), and
+/// no folder is marked, because the session on screen is the row that is. A page
+/// with no way home draws the folders as text, as "New session" is left out
+/// there, since a button that does nothing is worse than none.
+fn rail_folders(
+  model: component.Model(socket),
+) -> sidebar.Folders(Msg(socket)) {
+  sidebar.Folders(
+    items: [
+      #(inbox_rule.Everything, None),
+      #(inbox_rule.Needing, None),
+      #(inbox_rule.Reviewing, None),
+      #(inbox_rule.Finding, None),
+      #(inbox_rule.Updating, None),
+      #(inbox_rule.Projecting, None),
+    ],
+    current: None,
+    pick: case component.can_go_home(model) {
+      True -> Some(fn(_) { Observed(component.GoingHome) })
+      False -> None
+    },
+    note: "Counts are read on the inbox.",
+    running: component.running_count(model),
+  )
 }
 
 /// What the sidebar's top and foot offer. "New session" goes to the home page,
@@ -614,6 +658,7 @@ fn sidebar_page(model: component.Model(socket)) -> sidebar.Page(Msg(socket)) {
     administering: None,
     managing: None,
     who: "",
+    watching: component.session_watching(model),
   )
 }
 
@@ -929,8 +974,10 @@ fn button(
   )
 }
 
-/// The composer, as a card of three rows: whom it addresses, the editor, and
-/// a footer holding the hint, the attach button, who the page acts as and the
+/// The composer, as three parts: the line above the editor that says whom it
+/// addresses (`To <session> · <strand>`, then `running` or `waiting on the
+/// approval` when that is so), the editor in a bordered box of its own, and a
+/// footer holding the hint, the attach button, who the page acts as and the
 /// actions. The editor is uncontrolled and keyed by how many drafts have been
 /// sent, so a sent draft is replaced by an empty editor and a refused one
 /// stays as the operator left it. The attach element is keyed the same way, so
@@ -954,12 +1001,9 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
         keyed.div([attribute.class("attach-slot")], [
           #("attach-" <> sent, attach()),
         ]),
-        html.span(
-          [attribute.class("hint")],
-          list.append(busy_mark(component.activity(model)), [
-            html.text(hint(component.activity(model))),
-          ]),
-        ),
+        html.span([attribute.class("hint")], [
+          html.text(hint(component.activity(model))),
+        ]),
         keyed.div([attribute.class("notice-slot")], [
           #(
             int.to_string(component.notice_serial(model)),
@@ -975,28 +1019,14 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
   )
 }
 
-/// A pulsing dot before the hint while a turn runs, so a long turn between
-/// tool calls, or one waiting on the model, never looks stuck. It says nothing
-/// about which of the two it is, since the page does not know, and the hint's own
-/// words are the plain word. The dot is decoration, hidden from assistive
-/// technology, and the stylesheet stills it under reduced motion.
-fn busy_mark(activity: component.Activity) -> List(Element(Msg(socket))) {
-  case activity {
-    component.Idle -> []
-    component.Busy -> [
-      html.span([attribute.class("busy-dot"), attribute.aria_hidden(True)], [
-        html.text("●"),
-      ]),
-    ]
-  }
-}
-
-// The footer's hint: the key that sends, and that the turn is busy when it
-// is.
+/// The footer's hint: the key that sends while the strand is idle, and what the
+/// two buttons of a busy strand do (protocol-change/022). The line above the
+/// editor says that the turn is running, so the hint does not repeat it.
 fn hint(activity: component.Activity) -> String {
   case activity {
     component.Idle -> "Cmd+Enter to send"
-    component.Busy -> "Turn is busy · Cmd+Enter to send"
+    component.Busy ->
+      "Queue waits for this turn to end. Steer stops the current turn and runs first."
   }
 }
 
@@ -1104,8 +1134,19 @@ fn addressing(model: component.Model(socket)) -> Element(Msg(socket)) {
         attribute.class("to-tag"),
         strip.hue_class(hue(model)),
       ],
-      [html.text(addressee(model))],
+      [html.text(component.session_title(model) <> " · " <> addressee(model))],
     ),
+    ..case component.pending(model), component.activity(model) {
+      [_, ..], _ -> [
+        html.span([attribute.class("to-state")], [
+          html.text("· waiting on the approval"),
+        ]),
+      ]
+      [], component.Busy -> [
+        html.span([attribute.class("to-state")], [html.text("· running")]),
+      ]
+      [], component.Idle -> []
+    }
   ])
 }
 
@@ -1163,9 +1204,9 @@ fn role_text(role: snapshot.Role) -> String {
 }
 
 /// An idle strand takes one Send; a busy one takes a Queue, which the daemon
-/// holds and runs after the current operation, or a Steer, which folds into
-/// it. Each is a submit button naming its delivery, so the one pressed
-/// travels with the form.
+/// holds and runs after the current operation, or a Steer, which stops the
+/// operation and runs first (protocol-change/022). Each is a submit button
+/// naming its delivery, so the one pressed travels with the form.
 fn actions(activity: component.Activity) -> List(Element(Msg(socket))) {
   case activity {
     component.Idle -> [submit_button("prompt", "Send", "send")]

@@ -44,9 +44,7 @@
 //// `attach_file` | `log` | `import_file`
 ////
 //// `enroll_member` and `revoke_member` are the signing bodies of `enroll` and
-//// `revoke` apart from the command line, with `unlock_at` for the key, so
-//// a standing microVM guest is enrolled by `loom vm up` and revoked by
-//// `loom vm rm` through the same steps.
+//// `revoke` apart from the command line, with `unlock_at` for the key.
 ////
 //// 1. `run` hands the command to `run_with` with the socket as the way to reach
 ////    a daemon (`socket_daemon`); a test passes a ledger process of its own.
@@ -546,8 +544,7 @@ fn unlock(parsed: Parsed) -> Result(Authority, String) {
 /// Unlocks the authority kept in `directory`, whose last segment is the
 /// deployment id. The passphrase is read from `passphrase_file` when one is
 /// given and asked for on the terminal otherwise. `enroll` and `revoke` reach
-/// it through their flags, and `loom vm up` and `rm` call it with the
-/// directory and the passphrase file they sealed.
+/// it through their flags.
 ///
 /// ## Examples
 ///
@@ -953,63 +950,6 @@ pub fn revoke_member(
     },
     fn(_, _) { Ok(Nil) },
   )
-}
-
-/// The daemon at `where_` took the entry, or why it did not. A signed entry
-/// that no daemon took is in the operator's copy only, and the error names the
-/// file and the command that carries it to a member.
-///
-/// ## Examples
-///
-/// ```gleam
-/// ledger_cli.delivered(signed) // -> Ok("the daemon on this host")
-/// ```
-pub fn delivered(signed: Signed) -> Result(String, String) {
-  case signed.delivery {
-    Delivered(where_:, ..) -> Ok(where_)
-    Offline(reason:) ->
-      Error(
-        "no daemon took entry "
-        <> int.to_string(signed.entry.entry.seq)
-        <> " ("
-        <> reason
-        <> "). It is in the operator's copy of the ledger, "
-        <> membership_store.path(signed.store)
-        <> "; run `loom distribution import FILE` on a member's machine.",
-      )
-  }
-}
-
-/// Whether the operator's copy of the ledger already records `name` as
-/// revoked. A revoke of such a member is refused by the fold, so a caller that
-/// only wants the member gone treats it as done. A copy that cannot be read
-/// says nothing, and the answer is `False`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// ledger_cli.is_revoked(authority, "vm2")
-/// ```
-pub fn is_revoked(authority: Authority, name: String) -> Bool {
-  let path = authority.directory <> "/" <> authority_key.ledger_file
-
-  // An unreadable copy is no evidence of a revocation.
-  case membership_store.open(path, authority.verifier) {
-    Ok(opened) ->
-      membership_ledger.enrollment(opened.ledger, name)
-      == membership_ledger.Revoked
-    Error(_) -> False
-  }
-}
-
-/// The sequence number of the signed entry.
-pub fn entry_seq(signed: Signed) -> Int {
-  signed.entry.entry.seq
-}
-
-/// The way the commands reach a daemon through its control socket.
-pub fn socket_connect() -> Connect {
-  socket_daemon
 }
 
 const distribution_provision_extension = ".loombundle"

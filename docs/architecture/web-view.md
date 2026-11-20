@@ -274,12 +274,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:572`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:629`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:7657`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:8600`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1066,10 +1066,88 @@ What each running session is doing is a second read, started by every list that
 answers: `Start.activity` hands the ids (at most 24) to
 `ui_socket.activity_task`, a weft run linked to the runtime that calls
 `server.home_activity`, which is the control command's `sessions.activity`
-(protocol-change/050) reduced to one state word per session. The runtime never
-waits for it, the answer comes back as `Observed`, and the read covers only
-the ids the page's credential holds, re-derived in the registry at each read
-(050's addendum on members).
+(protocol-change/050) as one `sessions.Report` per session: the activity, the
+final text of the main strand's last finished run (`last_message`, clipped to 280
+bytes) and the strands' `Glance`s. The runtime never waits for it, the answer
+comes back as `Observed`, and the read covers only the ids the page's credential
+holds, re-derived in the registry at each read (050's addendum on members). The
+session page's sidebar and the admin page's dots stay on the narrow state word
+(`server.session_activity`), so the message and the glances reach the home page
+alone. Every field a report holds that a session wrote is untrusted model text,
+and the home draws it only as text nodes.
+
+#### The attention inbox
+
+The home's centre lands on an inbox when something waits or runs
+(`web_view/inbox_rule.landing`): a full-height split of a 388px thread list and
+a reading pane, each scrolling on its own, with no card and no maximum width
+(`view/inbox`, drawn into the centre's body, so it sits at `home.table_path`).
+The frame carries the class `loom-inbox` while it shows (`shell.Inbox`), which
+gives it a 44px bar and a 184px rail; every other page of the home keeps its
+frame. A group's band is sticky across the list, with its name and count at the
+left and a gloss at the right (`inbox_rule.gloss`), and a row is two lines: a dot,
+the name and an age when the data has one, then a kind chip and the head. Rows,
+bands, the pane's frame and the outbox bar pinned to its foot are one module
+(`view/inbox_parts`), which `view/attention_thread`, `view/ticket_thread`,
+`view/review_thread` and the session threads all call.
+The groups are `Needs you` (an approval is pending, or the last run failed),
+`Waiting` (idle with a last message, phase 0's stand-in for asks and review: the
+page words it as the last thing said and never claims a question), `Updates`
+(working) and `Quiet` (idle and silent, folded to one line of names). A thread
+is ordered by session name, because phase 0 has no times and prints no age. What
+the counts read is the note under the rail's folders ("Counts read 6 running
+sessions. Saved sessions are not checked."), and the number that wait on the
+owner is the pill in the top bar. The rail's folders ("Everything, by need" and
+one for each group that holds a thread) narrow the list to a group through
+`FolderPicked`; the filter is the page's own and the daemon is told nothing
+(protocol-change/051, the addendum on the rail's folders). The reading pane shows
+the kind's chip, the session and its workspace and state, the last message under
+the label "The agent's last message, untrusted text", and the strands'
+glances. On a screen under 768px the list is the page and the pane covers it
+with a back control (`InboxClosed`). A pending approval is named and
+sent to the session's own page; nothing of the approval, and no deciding
+control, is drawn on Home.
+
+The centre is decided once per page load (`Model.centre_choice`), when the last
+read of the first round has answered (`web_view/landing_rule`): the list, the
+activity read of the running sessions, the catalogue summaries of the saved ones,
+the projects' boards and the feed, each due only when the page asks it, in any
+order. The round puts the inbox there when anything across them waits or runs,
+and the composer otherwise; an unreadable, overtaken or empty answer counts as an
+answer. No later read changes it, so a missed or late read, or a session that starts working later,
+never replaces a pane or a composer the person is using. Only clicks change it:
+"New session", the list link, a composer control, and the "Inbox" control, which
+is drawn whenever the inbox has a thread and the centre is elsewhere. An inbox
+whose threads all go away says "Nothing waits on you right now" and offers "New
+session"; it does not switch by itself. The sentence is never drawn beside an
+attention row. A saved session whose catalogue summary holds a pending approval
+or an open ask is a row under "Needs you", and one with open finds a row under
+"Finds", so every count the headline takes from the catalogue is a row the person
+can act on; the row names the session, words its counts and the oldest open age,
+and its one action is `Opening`. The thread shown by default stays shown.
+An observer's page lands on the same inbox read-only. Pressing a
+thread is `InboxOpened`; "Open session" and "Decide on the session's page" send
+`Opening`, the message a list row sends, and every handler is a click beneath
+`home.table_path`, which `ui_socket.home_accepts` already admits, so the inbox
+adds no admission rule and no frame.
+
+Each thread of the owner's operating home ends in a message field
+(protocol-change/118): one box in the pane, and in the outbox bar at the pane's
+foot the buttons the session's state offers, which belong to the form through
+their `form` attribute (Send
+for idle or failed, Queue and Steer for working, Send with a note that a message
+starts a new turn and does not decide it for a pending approval, since the
+approval parks and the strand is idle). The press is a submit beneath
+`home.table_path`, which `home_owner_accepts` admits for the owner's home and
+`home_accepts` does not, so a member's home and an observer's draw no field and
+the socket would drop the event. The daemon re-derives the page's standing and
+the 16,384-byte bound at the press, resolves the session as the page's principal,
+and sends a `Prompt` or a `Steer` on strand `main` as a message typed on the
+session's own page. The bar says "Not sent." before a send, then "Sending…", "Delivered to
+(session) · admitted", "· queued" or "· steering: …", or one of five fixed refusals; none
+carries text from the session or the gateway. Once the person has chosen the
+list or the composer, an "Inbox" control returns to the landing centre while the
+inbox has content.
 
 ### Navigation: home to session and back
 
@@ -2368,3 +2446,14 @@ and SVG stay inside the frame. Failures without diagnostics and timeouts keep
 the generic fallback. The TUI still shows source; future
 terminal graphics work is scoped separately in the
 [terminal graphics note](../design-notes/mermaid-terminal-graphics.md).
+
+## One frame on every page (2026-11-19)
+
+Every page draws the final design's frame: a 44px bar and a 184px rail, with the
+class `loom-inbox` on `<loom-shell>`. A session's bar is `loom ‹ Inbox
+folder / name ● live`, the need pill and a role chip. The context and cost
+figures and the placement chips are the stream strip's (`view/stream_head`,
+`view/figures`), which moved `component.context_refresh_path`. The rail on a
+session's page has the same folders (without counts) and "Watch live" list as
+Home's, with `watch_rule`'s second lines. See protocol-change/051, the addendum
+"one frame on every page".

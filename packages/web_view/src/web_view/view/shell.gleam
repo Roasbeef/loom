@@ -175,13 +175,19 @@ fn frame_attributes(
   case audience {
     Operator -> [
       attribute.class("loom-session"),
+      attribute.class("loom-inbox"),
       attribute.class("operator"),
       ..facts
     ]
-    Observer -> [attribute.class("loom-session"), ..facts]
+    Observer -> [
+      attribute.class("loom-session"),
+      attribute.class("loom-inbox"),
+      ..facts
+    ]
     Home -> [
       attribute.class("loom-session"),
       attribute.class("loom-home"),
+      attribute.class("loom-inbox"),
       ..facts
     ]
   }

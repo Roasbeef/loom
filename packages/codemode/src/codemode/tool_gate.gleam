@@ -79,6 +79,10 @@ import tools/agent.{type Caller, type Refusal}
 /// - `notes.put` writes the same blackboard cell `agent_note` writes,
 ///   through the same Agency closure, so it needs `agent_note`. The three
 ///   `notes` reads see the same cells `agent_notes` reads, so they need it.
+/// - `attention.ask` and `attention.notice` record through the closures the
+///   `ask` and `notice` tools hold, so each needs its tool. A strand without
+///   `ask`, a project worker, can record a find from a program and cannot put
+///   a question.
 /// - `lsp.rename` lands edits to files, which is what `fs_edit` does.
 /// - `workflow.step` mints a child strand, which is what `agent_spawn`
 ///   does.
@@ -130,6 +134,8 @@ pub fn required_tool(cap: String) -> Option(String) {
     "notes.get" -> Some("agent_notes")
     "notes.list" -> Some("agent_notes")
     "notes.read" -> Some("agent_notes")
+    "attention.ask" -> Some("ask")
+    "attention.notice" -> Some("notice")
     "lsp.rename" -> Some("fs_edit")
     "workflow.step" -> Some("agent_spawn")
     "peer.send" -> Some("peer_send")

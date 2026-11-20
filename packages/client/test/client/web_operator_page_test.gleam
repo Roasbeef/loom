@@ -117,6 +117,7 @@ fn start_page(
         rename: None,
         shareable: None,
         peers: None,
+        attention: None,
         worktree: None,
         logins: None,
         manage: None,

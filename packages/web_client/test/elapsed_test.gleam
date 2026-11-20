@@ -47,3 +47,19 @@ pub fn a_start_in_the_future_is_no_time_test() {
   assert duration.since_offset(now: 100, since: 900) == 0
   assert duration.since_offset(now: 900, since: 900) == 0
 }
+
+// The inbox's turn age drops the seconds once a minute has passed, so a turn
+// that has run fourteen minutes reads `14m` and not `14m 05s`.
+pub fn the_minutes_form_drops_seconds_past_a_minute_test() {
+  assert duration.minutes(59) == "59s"
+  assert duration.minutes(60) == "1m"
+  assert duration.minutes(14 * 60 + 59) == "14m"
+  assert duration.minutes(3599) == "59m"
+}
+
+// From an hour the two forms agree, and the default form is unchanged.
+pub fn the_minutes_form_agrees_with_the_default_from_an_hour_test() {
+  assert duration.minutes(3600) == duration.format(3600)
+  assert duration.minutes(3600 + 22 * 60 + 9) == "1h 22m"
+  assert duration.format(14 * 60 + 5) == "14m 05s"
+}

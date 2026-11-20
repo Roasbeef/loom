@@ -253,6 +253,8 @@ fn review_of(
     permission:,
     strand: Some(record.strand),
     remote: Some(approval.Remote(orchestrator:, child: record.strand, outside:)),
+    raised_at: None,
+    call: None,
   )
 }
 

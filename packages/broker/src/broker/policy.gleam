@@ -69,6 +69,7 @@
 
 import core/corruption.{type CorruptionReport}
 import core/msgpack.{type MsgPackValue}
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/result
@@ -282,6 +283,17 @@ pub type PolicyError {
   /// another.
   MountPathParentSegment(path: String)
 
+  /// A readable root, a writable root or a host-path scratch contains a
+  /// ".." segment (`protocol-change/124`). `covers` compares roots as
+  /// text, so `/w/..` is kept under a plane root `/w`, and the helper
+  /// cleans it to `/` when it builds the jail, which grants more than
+  /// the plane holds. A scratch of `/x/..` reaches the same whole-
+  /// filesystem Landlock grant as `ScratchIsRoot` once cleaned. Only
+  /// the ".." segment is refused: `.`, `//` and a trailing slash name
+  /// the same region and never widen. The test is lexical and judges
+  /// bytes.
+  RootPathParentSegment(path: String)
+
   /// A read-only mount names a writable root or an ancestor of one
   /// (`protocol-change/057`). The two platforms disagree about what that
   /// document means. On Linux every explicit mount is emitted after every
@@ -449,9 +461,11 @@ pub fn session_lease(
 }
 
 /// Checks the invariants the wire shape demands: absolute paths
-/// everywhere, non-negative limits, a scratch that is not the literal
-/// host root (`ScratchIsRoot` — issue #59; see the module doc's layering
-/// note in `packages/sandbox/CLAUDE.md`), and a mount list that names
+/// everywhere, no `..` segment in a readable root, writable root or
+/// scratch path (`RootPathParentSegment`, `protocol-change/124`),
+/// non-negative limits, a scratch that does not clean to the host root
+/// (`ScratchIsRoot` — issue #59, and `//` and `/.` count as the root; see
+/// the module doc's layering note in `packages/sandbox/CLAUDE.md`), and a mount list that names
 /// each region once, canonically, never a region a protected entry
 /// also names, and never a read-only region at or above a writable root
 /// (`MountShadowsWritableRoot`, `protocol-change/057`).
@@ -471,6 +485,10 @@ pub fn session_lease(
 ///
 pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
   use _ <- result.try(refuse_scratch_root(policy.scratch))
+
+  // This runs before the absolute-path check, so a relative root that
+  // also spells ".." reports RootPathParentSegment and not RelativePath.
+  use _ <- result.try(refuse_parent_segment_roots(policy))
   let paths =
     list.flatten([
       policy.writable_roots,
@@ -511,18 +529,89 @@ pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
   })
 }
 
-// A scratch of the literal host root would make Landlock grant
-// read-write over the whole filesystem (issue #59): Landlock has no
-// deny rules, so nothing at that layer can carve a hole back out of
-// "/". Refusing it here — at the one place every policy passes through
-// before dispatch — keeps the mount layer free to go on binding exactly
-// what the policy names, which is its own job (4b4983d), and makes sure
-// the policy never names this.
+/// A scratch of the literal host root would make Landlock grant
+/// read-write over the whole filesystem (issue #59): Landlock has no
+/// deny rules, so nothing at that layer can carve a hole back out of
+/// "/". Refusing it here — at the one place every policy passes through
+/// before dispatch — keeps the mount layer free to go on binding exactly
+/// what the policy names, which is its own job (4b4983d), and makes sure
+/// the policy never names this.
 fn refuse_scratch_root(scratch: Scratch) -> Result(Nil, PolicyError) {
   case scratch {
-    ScratchPath(path: "/") -> Error(ScratchIsRoot)
-    ScratchPath(_) | ScratchTmpfs -> Ok(Nil)
+    // A path with no named segment cleans to the root however it is
+    // spelled, so "//" and "/." are the root too.
+    ScratchPath(path:) ->
+      case string.starts_with(path, "/") && !has_named_segment(path) {
+        True -> Error(ScratchIsRoot)
+        False -> Ok(Nil)
+      }
+
+    ScratchTmpfs -> Ok(Nil)
   }
+}
+
+// Whether any segment of the path is neither empty nor ".". The walk
+// reads bytes, as the meet's prefix test and the helper's cleaning do.
+fn has_named_segment(path: String) -> Bool {
+  list.any(byte_segments(path), fn(segment) {
+    segment != <<>> && segment != <<".">>
+  })
+}
+
+// Whether any segment of the path is "..", judged by bytes. A split of
+// the text would match grapheme clusters, and a slash followed by a
+// combining mark is one cluster, so a ".." segment before such a mark
+// would pass while the helper cleans it away.
+fn has_parent_segment(path: String) -> Bool {
+  list.contains(byte_segments(path), <<"..">>)
+}
+
+// The path's segments as byte strings, split at every slash byte.
+fn byte_segments(path: String) -> List(BitArray) {
+  segment_bytes(bit_array.from_string(path), <<>>, [])
+}
+
+/// Accumulates the bytes of the current segment and closes it at a slash.
+fn segment_bytes(
+  bytes: BitArray,
+  segment: BitArray,
+  done: List(BitArray),
+) -> List(BitArray) {
+  case bytes {
+    <<>> -> [segment, ..done]
+
+    <<"/", rest:bits>> -> segment_bytes(rest, <<>>, [segment, ..done])
+
+    <<byte, rest:bits>> -> segment_bytes(rest, <<segment:bits, byte>>, done)
+
+    _unaligned -> [segment, ..done]
+  }
+}
+
+/// A root that spells ".." is kept by the meet's text prefix test under
+/// a plane root it lies outside once the helper cleans it, and a scratch
+/// that spells it can reach the root. Only ".." is refused, because
+/// ".", "//" and a trailing slash never widen and an honest daemon with
+/// HOME=/ produces "//.loom/vm" (`protocol-change/124`).
+fn refuse_parent_segment_roots(
+  policy: SandboxPolicy,
+) -> Result(Nil, PolicyError) {
+  let paths =
+    list.flatten([
+      policy.readable_roots,
+      policy.writable_roots,
+      case policy.scratch {
+        ScratchTmpfs -> []
+        ScratchPath(path:) -> [path]
+      },
+    ])
+
+  list.try_each(paths, fn(path) {
+    case has_parent_segment(path) {
+      True -> Error(RootPathParentSegment(path:))
+      False -> Ok(Nil)
+    }
+  })
 }
 
 /// Refuses uncanonical mount paths containing trailing slashes or parent segments.
@@ -537,7 +626,7 @@ fn refuse_uncanonical_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
     })
 
     // Refuse parent segment navigation inside mount paths.
-    case list.contains(string.split(mount.path, "/"), "..") {
+    case has_parent_segment(mount.path) {
       True -> Error(MountPathParentSegment(path: mount.path))
       False -> Ok(Nil)
     }

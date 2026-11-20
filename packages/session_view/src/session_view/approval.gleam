@@ -95,6 +95,17 @@ pub type Review {
     /// Where the question comes from when it is a child's on another
     /// orchestrator, or `None` for this session's own.
     remote: Option(Remote),
+    /// Unix milliseconds at which the question was put to a person, or `None`
+    /// for a row written before protocol-change/126, for a value that is not a
+    /// non-negative number, and for a child's request on another orchestrator,
+    /// which carries no time. A page that has no time draws none.
+    raised_at: Option(Int),
+    /// The provider's id of the tool call the question was raised for, from
+    /// the escalation's captured scope (`callId`), or `None` for a question
+    /// with no call scope and for a child's request on another orchestrator.
+    /// A page joins it to the call's line in the lane, which says `needs
+    /// approval` while the call waits.
+    call: Option(String),
   )
 }
 
@@ -321,6 +332,8 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
     permission,
     None,
     Some(Remote(orchestrator:, child:, outside:)),
+    None,
+    None,
   ))
 }
 
@@ -360,6 +373,14 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     |> result.replace_error("invalid escalation decision origin"),
   )
 
+  // A missing or null time is an older record. A negative or mistyped one is no
+  // time, and it does not cost the review: a time only words an age, and a card
+  // that cannot be drawn leaves a pending approval nobody can decide.
+  let raised_at = case list.key_find(fields, "raised_at") {
+    Ok(json.Int(at)) if at >= 0 -> Some(at)
+    Ok(_) | Error(Nil) -> None
+  }
+
   // Handle the `decode_local` branch dispatch.
   let permission = case exact(fields) {
     Ok(permission) -> permission
@@ -367,14 +388,8 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
   }
 
   // Handle the `decode_local` branch dispatch.
-  let strand = case list.key_find(fields, "scope") {
-    Ok(json.Object(scope)) ->
-      case list.key_find(scope, "strand") {
-        Ok(json.String(strand)) if strand != "" -> Some(strand)
-        _ -> None
-      }
-    _ -> None
-  }
+  let strand = scoped(fields, "strand")
+  let call = scoped(fields, "callId")
 
   Ok(Review(
     id,
@@ -386,7 +401,25 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     permission,
     strand,
     None,
+    raised_at,
+    call,
   ))
+}
+
+/// One text field of the escalation's captured scope, or nothing when the
+/// record has no scope or the field is absent or empty.
+fn scoped(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> Option(String) {
+  case list.key_find(fields, "scope") {
+    Ok(json.Object(scope)) ->
+      case list.key_find(scope, name) {
+        Ok(json.String(text)) if text != "" -> Some(text)
+        _ -> None
+      }
+    _ -> None
+  }
 }
 
 /// Matches exact approval target specifications.

@@ -93,6 +93,18 @@ pub type Row {
   /// The answer so far, as the transcript's line for an assistant answer.
   Answer(line: Line)
 
+  /// The line under what the provider is writing: `generating · 8 s ·
+  /// request 3 of this turn`. It is drawn while the strand's generation runs,
+  /// after the rows it describes and before the inputs the daemon holds.
+  Generating(
+    /// How long the generation had run, as in `Thinking`. `None` until the
+    /// generation clock starts, and then the line leaves the time out.
+    elapsed_ms: Option(Int),
+    /// Which request of the turn this is, counted from the turn's pieces
+    /// (`session_view/turns.requests`).
+    request: Int,
+  )
+
   /// An input the daemon holds for the strand (`snapshot_view.PendingInput`):
   /// a steer not yet folded in, or a prompt queued behind the turn.
   Held(
@@ -143,6 +155,7 @@ pub fn with_queue(
     list.index_map(rows, fn(item, index) {
       case item {
         Pending(input) -> #("held-" <> input.id, held(input))
+        Generating(..) -> #("generating", row(item, draw))
         _ -> #("stream-" <> int.to_string(index), row(item, draw))
       }
     }),
@@ -155,6 +168,17 @@ fn row(item: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
     Pending(input) ->
       row(Held(input.text, transcript_lines.held_words(input.kind)), draw)
     Answer(line:) -> draw(line)
+
+    // The facts are the engine's and the clock's, so the line is text and a
+    // `<loom-elapsed>`. It sits in the stream's quiet face under the rows it
+    // describes, and the browser counts the seconds on.
+    Generating(elapsed_ms:, request:) ->
+      html.p([attribute.class("generating")], [
+        html.text("generating"),
+        ..list.append(elapsed(elapsed_ms), [
+          html.text(" · request " <> int.to_string(request) <> " of this turn"),
+        ])
+      ])
 
     // The person's words and, beneath them, how the daemon will run them.
     // Both are text nodes: the words are the daemon's excerpt of a message

@@ -142,7 +142,7 @@ pub fn an_operator_submits_a_prompt_to_main_test() {
   assert component.drafts(model) == 1
 }
 
-// A steer is folded into the operation that is running, so the page offers
+// A steer stops the operation that is running and runs first, so the page offers
 // it only while one is, and the engine sends one only then: on an idle
 // strand the same words are an ordinary prompt.
 pub fn a_steer_is_sent_as_a_steer_test() {
@@ -715,7 +715,7 @@ pub fn the_frame_is_bar_centre_panel_test() {
   let #(model, _) = page("operator", pending())
   let html = element.to_string(operator_page.view(model))
   assert in_order(html, [
-    "<loom-shell class=\"loom-session operator\"",
+    "<loom-shell class=\"loom-session loom-inbox operator\"",
     "class=\"session-head\"",
     "<main class=\"centre\">",
     "<loom-follow class=\"follow\" data-strand-key=\"",
@@ -939,21 +939,21 @@ pub fn the_composer_is_a_to_line_an_editor_and_a_footer_test() {
   ])
   assert !string.contains(form, "identity")
   assert !string.contains(form, "role-badge")
-  assert !string.contains(form, "Turn is busy")
-  assert !string.contains(form, "busy-dot")
+  assert !string.contains(form, "Queue waits")
+  assert !string.contains(form, "to-state")
 }
 
-pub fn a_busy_turn_says_so_in_the_footer_and_offers_queue_and_steer_test() {
+pub fn a_busy_turn_says_what_queue_and_steer_do_and_offers_queue_and_steer_test() {
   let #(model, _) = running("operator")
   let form = composer_of(element.to_string(operator_page.view(model)))
-  assert string.contains(form, "Turn is busy · Cmd+Enter to send")
-
-  // A pulsing dot stands before the words, decoration only, so a long turn
-  // never looks stuck.
   assert string.contains(
     form,
-    "<span aria-hidden=\"true\" class=\"busy-dot\">●</span>Turn is busy",
+    "Queue waits for this turn to end. Steer stops the current turn and runs first.",
   )
+
+  // The line above the editor says the turn is running.
+  assert string.contains(form, "<span class=\"to-state\">· running</span>")
+  assert !string.contains(form, "Cmd+Enter to send")
   assert in_order(form, ["class=\"queue\"", "class=\"steer\""])
   assert !string.contains(form, "class=\"send\"")
 }
@@ -1028,6 +1028,8 @@ pub fn a_denied_approval_leaves_a_who_line_in_the_lane_test() {
       approval.Unavailable("this decision is already resolved"),
       strand: None,
       remote: option.None,
+      raised_at: None,
+      call: None,
     )
   }
   let model =
@@ -1066,6 +1068,8 @@ fn decided_record(id, seq, status, tool, strand) {
     approval.Unavailable("this decision is already resolved"),
     strand:,
     remote: option.None,
+    raised_at: None,
+    call: None,
   )
 }
 

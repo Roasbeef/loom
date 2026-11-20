@@ -180,9 +180,10 @@ pub fn role_words(role: Role) -> String {
 ///   == "Session 0198a2f4"
 /// ```
 pub fn label(entry: Entry) -> String {
-  case entry.name {
+  // A name of only whitespace is no name, wherever the label is drawn.
+  case string.trim(entry.name) {
     "" -> "Session " <> string.slice(entry.id, 0, 8)
-    named -> named
+    _ -> entry.name
   }
 }
 
@@ -204,6 +205,59 @@ pub type Activity {
 
   /// Nothing is pending and nothing is running.
   Idle
+}
+
+/// One line a strand of a running session wrote about what it is doing, as the
+/// daemon's `sessions.activity` row carries it (protocol-change/050): which
+/// strand, an optional title the strand chose, and a one-line summary. The
+/// harness writes glances for strands it spawns and none for `main` today, so a
+/// session with no helper strands has none. All three fields are untrusted model
+/// text: a page draws them as text nodes and nowhere else, never as an
+/// attribute, a class, a key or a title.
+pub type Glance {
+  Glance(
+    /// The strand the line is about.
+    strand: String,
+    /// The title the strand gave its work, which may be empty.
+    title: String,
+    /// What the strand is doing now, on one line.
+    summary: String,
+  )
+}
+
+/// Everything the home page learns about a running session from the daemon's
+/// activity read: what it is doing, the last words of its main strand, and what
+/// its other strands report.
+///
+/// `last_message` is the final assistant text of the main strand's last
+/// finished run, clipped to 280 bytes by `peer_mail.final_message`. It is what
+/// the agent said when it last stopped, not what it is doing now: a session that
+/// is `Working` shows the previous run's words until the current one ends, and
+/// the page never claims it is a question, only that it is the last thing said.
+/// `glances` are the per-strand summaries the harness writes, newest first, at
+/// most four. Both are untrusted model text, drawn only as text nodes.
+///
+/// `last_message_at` and `turn_started_at` are the two times the row carries
+/// (protocol-change/050, the addendum on times), in Unix milliseconds. The page
+/// formats them; the daemon never does.
+pub type Report {
+  Report(
+    /// What the session is doing, as the sidebar's dots say it.
+    activity: Activity,
+    /// The last finished run's final text, or nothing before the first run
+    /// ended or when the row had to drop it to fit the daemon's bound.
+    last_message: Option(String),
+    /// What the session's strands say they are doing, which may be empty.
+    glances: List(Glance),
+    /// When the entry behind `last_message` was written, or nothing when there
+    /// is no message or the daemon predates the field. It dates the words, so it
+    /// is never present without them.
+    last_message_at: Option(Int),
+    /// When the turn now running began, from the mint time of its operation, or
+    /// nothing while the main strand is idle. It is the start of the current
+    /// turn and never the end of the last one.
+    turn_started_at: Option(Int),
+  )
 }
 
 /// The activity a state word of the daemon's `sessions.activity` reply names,

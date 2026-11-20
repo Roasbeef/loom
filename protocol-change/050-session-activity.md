@@ -130,3 +130,37 @@ its own page of that session shows it. It learns nothing about any other
 session, and cannot tell whether one exists or runs. The cost is as above, for at
 most 24 sessions the member holds, and a member's registry check adds up to 24
 registry calls to a request.
+
+## Addendum: two times on the activity row (2026-11-19)
+
+**Status**: IMPLEMENTED with the data layer of the final inbox mockup.
+
+### The problem
+
+A row's `last_message` is the words of the main strand's last finished run, and
+the page cannot say when they were written, nor when the run now going began.
+The mockup dates both ("said at 13:15", "working for 4 minutes"). Neither time
+is in the row.
+
+### The decision
+
+The row gains two members, both Unix milliseconds, both `null` when there is
+nothing to date:
+
+| Member | Meaning |
+|---|---|
+| `last_message_at` | The `ts` of the entry behind `last_message`, the final assistant entry of main's last run. `null` whenever `last_message` is `null`, so a time is never present without the words it dates. |
+| `turn_started_at` | The mint time of the operation now open on main (`ids.op_id_timestamp_ms`). `null` while main runs nothing. It is the start of the current turn and never the end of the last one. |
+
+The resident computes them in `Overview` from reads it already makes: the entry
+it reads for the text, and the strand-state listing. When the row is over its
+bound, `fit_overview` drops the message and its time together. The daemon's
+decoder (`server.report_of`) reads both as whole non-negative numbers and takes
+anything else, or a row from a resident that predates them, as no time. Both
+reach the page as `web_view/sessions.Report.last_message_at` and
+`turn_started_at`, `Option(Int)`. The daemon formats no time.
+
+### What it costs
+
+About fifty bytes in a row that is bounded at 2,300. No new store read: the
+text's entry is read already, and the operation id is in the strand-state cell.

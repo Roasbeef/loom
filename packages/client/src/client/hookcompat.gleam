@@ -701,6 +701,9 @@ fn parse_group(
 /// // -> Ok(config), the same model the equivalent JSON produces
 /// ```
 pub fn parse_loom(text: String, source: Source) -> Result(Config, String) {
+  // The text is not byte-capped here, so a change that makes a TOML location
+  // reachable from executor bytes must first bound it (protocol-change/117,
+  // "Hooks stay refused").
   use document <- result.try(
     tom.parse(text)
     |> result.map_error(describe_toml_error),

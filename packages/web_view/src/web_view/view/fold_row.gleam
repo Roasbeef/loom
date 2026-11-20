@@ -85,7 +85,11 @@ pub fn step(
   let state =
     html.span([attribute.class("sr-only")], [html.text(state(standing))])
   openable(
-    [attribute.class("step"), standing_class(standing)],
+    [
+      attribute.class("step"),
+      attribute.class("tool-line"),
+      standing_class(standing),
+    ],
     list.flatten([head, running_time(standing, words, since), [state]]),
     body,
   )
