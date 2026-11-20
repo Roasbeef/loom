@@ -2446,3 +2446,14 @@ and SVG stay inside the frame. Failures without diagnostics and timeouts keep
 the generic fallback. The TUI still shows source; future
 terminal graphics work is scoped separately in the
 [terminal graphics note](../design-notes/mermaid-terminal-graphics.md).
+
+## One frame on every page (2026-11-19)
+
+Every page draws the final design's frame: a 44px bar and a 184px rail, with the
+class `loom-inbox` on `<loom-shell>`. A session's bar is `loom ‹ Inbox
+folder / name ● live`, the need pill and a role chip. The context and cost
+figures and the placement chips are the stream strip's (`view/stream_head`,
+`view/figures`), which moved `component.context_refresh_path`. The rail on a
+session's page has the same folders (without counts) and "Watch live" list as
+Home's, with `watch_rule`'s second lines. See protocol-change/051, the addendum
+"one frame on every page".

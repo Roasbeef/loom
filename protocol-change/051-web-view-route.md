@@ -4981,6 +4981,7 @@ rules. A real drive in a browser has not been run.
 
 Phase 2 of the attention inbox draws a project ticket that waits on a person as
 a thread under "Needs you"
+(revised 2026-11-19: a ticket at `person/check` or `person/review` is under "To review"; see the addendum "one frame on every page")
 (`docs/design-notes/attention-inbox/README.md`, phase 2 and ruling 6). The rows
 follow the attention rows. A press opens a pane with the ticket's stage, title,
 age, mandate, question and pull request. The pane has no check output and no
@@ -5305,3 +5306,58 @@ in a batch, and at the neighbouring paths, and the capability is withheld from a
 observer. `client/test/client/ui_route_test.gleam` pins that a close needs an open
 page and the door's authority and that a retry sends the fixed prompt. A drive in a
 browser is recorded in the commit that adds the shots.
+
+## Addendum: one frame on every page (2026-11-19)
+
+The final design (`docs/design-notes/attention-inbox/final/mockup.html`) draws one
+frame for every page: a bar of one 44px row and a 184px rail. Until this change
+only Home's inbox had it. The session page, the admin page and every other page
+of the home now draw it. No handler is added and no admission rule changes, but
+one admitted path moves, and the rail on a session's page gains six buttons
+beneath a path the operator's socket already admits.
+
+### What it changes in the markup
+
+- **The frame's class.** `<loom-shell>` carries `loom-inbox` on every page. The
+  `Inbox` audience of `view/shell` is gone, since it differed from `Home` only by
+  that class.
+- **The bar.** A session's bar reads `loom  ‹ Inbox  <folder> / <name>  ● live`,
+  then `N need you`, then a chip that says who the page is for
+  (`owner · operating`, `member · watching`). The "Home" button is now "‹ Inbox"
+  and keeps its place as the bar's second child (`component.home_path`). The
+  connection's pill is drawn as before and the stylesheet shows it only when the
+  page is not connected. The theme control is a ghost button with the word
+  "Theme", and Search is a ghost button with `⌘K`.
+- **The strip.** The context, cost and speed figures and the two placement
+  chips left the bar for the stream's strip (`view/stream_head`, `view/figures`).
+  The strip is the centre's eighth child on both pages: the observer's page keeps
+  an empty node in the sixth place, where the operator's page draws its switcher,
+  so one index serves both.
+- **The rail.** A session's page draws the same six folders and the same "Watch
+  live" list as Home. Its folders carry no count, since that page does not read
+  the attention feed, and a press of one is `GoingHome`, the press the bar's
+  "‹ Inbox" sends. A running row's second line is `view/watch_rule`'s words:
+  `running · 2 lifted`, `approval · 1 lifted`, `aegis · asked`,
+  `finished · to review`. The admin page draws the folders as text, since its
+  socket admits no press beneath its rail.
+
+### Paths
+
+| Path | Before | After |
+|---|---|---|
+| `component.context_refresh_path` | `0\t0\t5\t0\t1\t0\t0` | `0\t2\t7\t5\t0\t1\t0\t0` |
+
+The Compact now button is still the row's second child. The observer's socket
+admits the same one path for Refresh and nothing else is added: the folders are
+beneath `sidebar_path`, which only an operator's page draws, and the operator's
+socket admits any click that is not an owner's control. `ui_socket_test`,
+`ui_route_test`, `daemon_server_test` and the `admin_*` tests pass.
+
+### Project tickets
+
+A ticket at `person/check` or `person/review` is a finished piece of work that
+waits to be read. It sits under "To review", as the mockup draws it, and counts
+in that folder. A ticket at any other stage that needs a person
+(`person/answer`, `person/blocked`, `person/failed`) stays under "Needs you".
+The "Projects" folder lists both. This revises the addendum "project tickets on
+Home" (2026-11-18), which put every ticket under "Needs you".
