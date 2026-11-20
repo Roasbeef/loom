@@ -133,3 +133,21 @@ FROM access_memberships AS m
 JOIN access_principals AS p ON p.principal_id = m.principal_id
 WHERE m.session_id = ? AND m.principal_id > ?
 ORDER BY m.principal_id LIMIT 101;
+
+-- name: InsertAccessPasskey :exec
+INSERT INTO access_passkeys(credential_id, principal_id, public_key, sign_count, label, created_at_ms)
+VALUES (?, ?, ?, ?, ?, ?);
+
+-- name: AccessPasskey :many
+SELECT credential_id, principal_id, public_key, sign_count, label, created_at_ms, last_used_ms
+FROM access_passkeys WHERE credential_id = ?;
+
+-- name: PrincipalPasskeys :many
+SELECT credential_id, principal_id, public_key, sign_count, label, created_at_ms, last_used_ms
+FROM access_passkeys WHERE principal_id = ? ORDER BY created_at_ms, credential_id;
+
+-- name: UseAccessPasskey :exec
+UPDATE access_passkeys SET sign_count = ?, last_used_ms = ? WHERE credential_id = ?;
+
+-- name: DeleteAccessPasskey :exec
+DELETE FROM access_passkeys WHERE credential_id = ? AND principal_id = ?;

@@ -49,7 +49,9 @@
 //// 7. `revoke_member` and `revoke_credential` close the loop, leaving
 ////    tombstones so an old digest cannot be reactivated.
 
+import gleam/bit_array
 import gleam/bool
+import gleam/crypto
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -1905,5 +1907,328 @@ fn absent(found: Result(a, Error)) -> Result(Nil, Error) {
     Error(Missing) -> Ok(Nil)
     Error(error) -> Error(error)
     Ok(_) -> Error(Conflict)
+  }
+}
+
+/// The most passkeys one principal may hold. A person has a phone, a laptop and
+/// a hardware key; eight leaves room for each to be replaced once without a
+/// removal first, and bounds what a sign-in's lookup and a listing read.
+pub const passkey_limit = 8
+
+/// The size in bytes of an ES256 public key in `SubjectPublicKeyInfo` DER: the
+/// fixed header of a P-256 key and its 65-byte uncompressed point. Every key
+/// the daemon stores has exactly this size, so a row of any other size was not
+/// written by `add_passkey`.
+pub const passkey_key_bytes = 91
+
+/// One WebAuthn credential a principal registered (protocol-change/127).
+pub type Passkey {
+  Passkey(
+    /// The credential id the authenticator chose, in base64url without padding.
+    /// The browser presents it at sign-in, so it identifies the row and
+    /// authenticates nothing by itself.
+    credential_id: String,
+    /// The principal the passkey signs in as.
+    principal_id: String,
+    /// The public key, `SubjectPublicKeyInfo` DER of a P-256 key.
+    public_key: BitArray,
+    /// The signature counter of the last accepted assertion, or the one the
+    /// registration reported. Zero for an authenticator that does not count.
+    sign_count: Int,
+    /// A name the owner chose, to tell their passkeys apart.
+    label: String,
+    /// When the passkey was registered, in Unix milliseconds.
+    created_at_ms: Int,
+    /// When it last signed a browser in, if it has.
+    last_used_ms: Option(Int),
+  )
+}
+
+/// The first sixteen hexadecimal digits of the SHA-256 of a credential id. It
+/// names a passkey in the account panel's Remove control without putting the
+/// credential id in a page, and it authenticates nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.passkey_fingerprint("AAAAAAAAAAAAAAAA") -> "9c1e0f2ab3d4e5f6"
+/// ```
+@internal
+pub fn passkey_fingerprint(credential_id: String) -> String {
+  crypto.hash(crypto.Sha256, bit_array.from_string(credential_id))
+  |> bit_array.base16_encode
+  |> string.lowercase
+  |> string.slice(0, 16)
+}
+
+/// Judges the label a person typed for a passkey: trimmed, one to thirty-two
+/// printable ASCII characters. The refusal is the caller's to word; a label
+/// that passes is returned trimmed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert access.passkey_label("  Phone ") == Ok("Phone")
+/// ```
+@internal
+pub fn passkey_label(typed: String) -> Result(String, Error) {
+  let label = string.trim(typed)
+  let printable =
+    list.all(string.to_utf_codepoints(label), fn(point) {
+      let code = string.utf_codepoint_to_int(point)
+      code >= 32 && code <= 126
+    })
+
+  // A label is one to thirty-two printable characters, or it is not a label.
+  case string.length(label) >= 1 && string.length(label) <= 32 && printable {
+    True -> Ok(label)
+    False ->
+      Error(Invalid("a passkey label is 1-32 printable ASCII characters"))
+  }
+}
+
+/// Records a passkey for `principal_id`: the credential id the authenticator
+/// chose, its public key (`SubjectPublicKeyInfo` DER, `passkey_key_bytes` long),
+/// the counter the registration reported, and a label. The principal must exist,
+/// the credential id must be unused, and the principal must hold fewer than
+/// `passkey_limit`; any of them wrong writes nothing. Whether the principal may
+/// hold a passkey is the daemon's decision and not made here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.add_passkey(store, "owner", id, der, 0, "Phone", now_ms)
+/// ```
+@internal
+pub fn add_passkey(
+  store: Catalogue,
+  principal_id: String,
+  credential_id: String,
+  public_key: BitArray,
+  sign_count: Int,
+  label: String,
+  now_ms: Int,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(valid_id(principal_id))
+  use Nil <- result.try(passkey_id_shape(credential_id))
+  use label <- result.try(passkey_label(label))
+  use Nil <- result.try(passkey_key_size(public_key))
+  use Nil <- result.try(passkey_count_shape(sign_count))
+
+  catalogue.atomic(store, fn() {
+    use _found <- result.try(get(store, principal_id))
+    use Nil <- result.try(absent(passkey(store, credential_id)))
+    use held <- result.try(passkeys(store, principal_id))
+    use Nil <- result.try(passkey_room(list.length(held)))
+    catalogue.statement(
+      store,
+      sql.insert_access_passkey(
+        credential_id,
+        principal_id,
+        bit_array.base64_url_encode(public_key, False),
+        sign_count,
+        label,
+        now_ms,
+      ),
+    )
+  })
+}
+
+/// Reads the passkey with `credential_id`, or `Missing`. A row that does not
+/// decode, whatever the reason, is `Invalid` and never a passkey.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.passkey(store, "AAAAAAAAAAAAAAAA")
+/// ```
+@internal
+pub fn passkey(
+  store: Catalogue,
+  credential_id: String,
+) -> Result(Passkey, Error) {
+  use Nil <- result.try(passkey_id_shape(credential_id))
+  use rows <- result.try(catalogue.query(
+    store,
+    sql.access_passkey(credential_id),
+  ))
+  use row <- result.try(one(rows))
+  decoded_passkey(
+    row.credential_id,
+    row.principal_id,
+    row.public_key,
+    row.sign_count,
+    row.label,
+    row.created_at_ms,
+    row.last_used_ms,
+  )
+}
+
+/// Reads every passkey of one principal, oldest first, at most `passkey_limit`
+/// of them (the table is written through `add_passkey`, which holds that bound).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.passkeys(store, "owner")
+/// ```
+@internal
+pub fn passkeys(
+  store: Catalogue,
+  principal_id: String,
+) -> Result(List(Passkey), Error) {
+  use Nil <- result.try(valid_id(principal_id))
+  use rows <- result.try(catalogue.query(
+    store,
+    sql.principal_passkeys(principal_id),
+  ))
+  list.try_map(rows, fn(row) {
+    decoded_passkey(
+      row.credential_id,
+      row.principal_id,
+      row.public_key,
+      row.sign_count,
+      row.label,
+      row.created_at_ms,
+      row.last_used_ms,
+    )
+  })
+}
+
+/// Records that a passkey signed a browser in: the counter the assertion
+/// reported and the instant. An unknown credential id is `Missing`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.passkey_used(store, "AAAAAAAAAAAAAAAA", 7, now_ms)
+/// ```
+@internal
+pub fn passkey_used(
+  store: Catalogue,
+  credential_id: String,
+  sign_count: Int,
+  now_ms: Int,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(passkey_count_shape(sign_count))
+  catalogue.atomic(store, fn() {
+    use _found <- result.try(passkey(store, credential_id))
+    catalogue.statement(
+      store,
+      sql.use_access_passkey(sign_count, Some(now_ms), credential_id),
+    )
+  })
+}
+
+/// Removes the passkey of `principal_id` whose `passkey_fingerprint` is
+/// `fingerprint`. A fingerprint that names none of the principal's passkeys is
+/// `Missing`, so one principal can never remove another's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.remove_passkey(store, "owner", "9c1e0f2ab3d4e5f6")
+/// ```
+@internal
+pub fn remove_passkey(
+  store: Catalogue,
+  principal_id: String,
+  fingerprint: String,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(fingerprint_shape(fingerprint))
+  catalogue.atomic(store, fn() {
+    use held <- result.try(passkeys(store, principal_id))
+    use found <- result.try(
+      list.find(held, fn(row) {
+        passkey_fingerprint(row.credential_id) == fingerprint
+      })
+      |> result.replace_error(Missing),
+    )
+    catalogue.statement(
+      store,
+      sql.delete_access_passkey(found.credential_id, principal_id),
+    )
+  })
+}
+
+/// A public key is the size of a P-256 `SubjectPublicKeyInfo`, which is the one
+/// size the daemon stores. The curve is the daemon's to check, not the table's.
+fn passkey_key_size(public_key: BitArray) -> Result(Nil, Error) {
+  // A key of any other size was not made by the daemon's registration.
+  case bit_array.byte_size(public_key) == passkey_key_bytes {
+    True -> Ok(Nil)
+    False -> Error(Invalid("a passkey public key is a 91-byte P-256 key"))
+  }
+}
+
+/// A principal that holds `held` passkeys has room for one more.
+fn passkey_room(held: Int) -> Result(Nil, Error) {
+  // The bound is what keeps a sign-in's lookup and a listing small.
+  case held < passkey_limit {
+    True -> Ok(Nil)
+    False -> Error(Invalid("the principal holds the most passkeys allowed"))
+  }
+}
+
+/// A credential id is the authenticator's choice, between 16 and 512 base64url
+/// characters: the table's own CHECK, applied before a statement is built.
+fn passkey_id_shape(value: String) -> Result(Nil, Error) {
+  // Anything outside the length or the alphabet is not an id a browser presents.
+  case
+    string.byte_size(value) >= 16
+    && string.byte_size(value) <= 512
+    && ascii_in(
+      value,
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-",
+    )
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid("a credential id is 16-512 base64url characters"))
+  }
+}
+
+/// A signature counter is an unsigned 32-bit integer in authenticator data.
+fn passkey_count_shape(count: Int) -> Result(Nil, Error) {
+  // The range is the table's own CHECK.
+  case count >= 0 && count <= 4_294_967_295 {
+    True -> Ok(Nil)
+    False -> Error(Invalid("a signature counter is an unsigned 32-bit integer"))
+  }
+}
+
+/// A passkey row read back: every field is checked as `add_passkey` checked it,
+/// and the key is decoded to the bytes the daemon verifies against. A row that
+/// fails fails closed, so a hand-edited table cannot sign anyone in.
+fn decoded_passkey(
+  credential_id: String,
+  principal_id: String,
+  public_key: String,
+  sign_count: Int,
+  label: String,
+  created_at_ms: Int,
+  last_used_ms: Option(Int),
+) -> Result(Passkey, Error) {
+  use Nil <- result.try(passkey_id_shape(credential_id))
+  use Nil <- result.try(valid_id(principal_id))
+  use Nil <- result.try(passkey_count_shape(sign_count))
+  use label <- result.try(passkey_label(label))
+  use key <- result.try(
+    bit_array.base64_url_decode(public_key)
+    |> result.replace_error(Invalid("a stored passkey key is not base64url")),
+  )
+
+  // The decoded key is the size `add_passkey` writes.
+  case bit_array.byte_size(key) == passkey_key_bytes {
+    True ->
+      Ok(Passkey(
+        credential_id:,
+        principal_id:,
+        public_key: key,
+        sign_count:,
+        label:,
+        created_at_ms:,
+        last_used_ms:,
+      ))
+    False -> Error(Invalid("a stored passkey key is the wrong size"))
   }
 }

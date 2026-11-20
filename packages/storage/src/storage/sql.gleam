@@ -608,6 +608,126 @@ pub fn session_members_decoder() -> decode.Decoder(SessionMembers) {
   decode.success(SessionMembers(principal_id:, display_name:, role:))
 }
 
+pub fn insert_access_passkey(
+  credential_id credential_id: String,
+  principal_id principal_id: String,
+  public_key public_key: String,
+  sign_count sign_count: Int,
+  label label: String,
+  created_at_ms created_at_ms: Int,
+) {
+  let sql =
+    "INSERT INTO access_passkeys(credential_id, principal_id, public_key, sign_count, label, created_at_ms)
+VALUES (?, ?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(credential_id),
+    dev.ParamString(principal_id),
+    dev.ParamString(public_key),
+    dev.ParamInt(sign_count),
+    dev.ParamString(label),
+    dev.ParamInt(created_at_ms),
+  ])
+}
+
+pub type AccessPasskey {
+  AccessPasskey(
+    credential_id: String,
+    principal_id: String,
+    public_key: String,
+    sign_count: Int,
+    label: String,
+    created_at_ms: Int,
+    last_used_ms: Option(Int),
+  )
+}
+
+pub fn access_passkey(credential_id credential_id: String) {
+  let sql =
+    "SELECT credential_id, principal_id, public_key, sign_count, label, created_at_ms, last_used_ms
+FROM access_passkeys WHERE credential_id = ?"
+  #(sql, [dev.ParamString(credential_id)], access_passkey_decoder())
+}
+
+pub fn access_passkey_decoder() -> decode.Decoder(AccessPasskey) {
+  use credential_id <- decode.field(0, decode.string)
+  use principal_id <- decode.field(1, decode.string)
+  use public_key <- decode.field(2, decode.string)
+  use sign_count <- decode.field(3, decode.int)
+  use label <- decode.field(4, decode.string)
+  use created_at_ms <- decode.field(5, decode.int)
+  use last_used_ms <- decode.field(6, decode.optional(decode.int))
+  decode.success(AccessPasskey(
+    credential_id:,
+    principal_id:,
+    public_key:,
+    sign_count:,
+    label:,
+    created_at_ms:,
+    last_used_ms:,
+  ))
+}
+
+pub type PrincipalPasskeys {
+  PrincipalPasskeys(
+    credential_id: String,
+    principal_id: String,
+    public_key: String,
+    sign_count: Int,
+    label: String,
+    created_at_ms: Int,
+    last_used_ms: Option(Int),
+  )
+}
+
+pub fn principal_passkeys(principal_id principal_id: String) {
+  let sql =
+    "SELECT credential_id, principal_id, public_key, sign_count, label, created_at_ms, last_used_ms
+FROM access_passkeys WHERE principal_id = ? ORDER BY created_at_ms, credential_id"
+  #(sql, [dev.ParamString(principal_id)], principal_passkeys_decoder())
+}
+
+pub fn principal_passkeys_decoder() -> decode.Decoder(PrincipalPasskeys) {
+  use credential_id <- decode.field(0, decode.string)
+  use principal_id <- decode.field(1, decode.string)
+  use public_key <- decode.field(2, decode.string)
+  use sign_count <- decode.field(3, decode.int)
+  use label <- decode.field(4, decode.string)
+  use created_at_ms <- decode.field(5, decode.int)
+  use last_used_ms <- decode.field(6, decode.optional(decode.int))
+  decode.success(PrincipalPasskeys(
+    credential_id:,
+    principal_id:,
+    public_key:,
+    sign_count:,
+    label:,
+    created_at_ms:,
+    last_used_ms:,
+  ))
+}
+
+pub fn use_access_passkey(
+  sign_count sign_count: Int,
+  last_used_ms last_used_ms: Option(Int),
+  credential_id credential_id: String,
+) {
+  let sql =
+    "UPDATE access_passkeys SET sign_count = ?, last_used_ms = ? WHERE credential_id = ?"
+  #(sql, [
+    dev.ParamInt(sign_count),
+    dev.ParamNullable(option.map(last_used_ms, fn(v) { dev.ParamInt(v) })),
+    dev.ParamString(credential_id),
+  ])
+}
+
+pub fn delete_access_passkey(
+  credential_id credential_id: String,
+  principal_id principal_id: String,
+) {
+  let sql =
+    "DELETE FROM access_passkeys WHERE credential_id = ? AND principal_id = ?"
+  #(sql, [dev.ParamString(credential_id), dev.ParamString(principal_id)])
+}
+
 pub fn initialize_catalogue_revision() {
   let sql =
     "
