@@ -391,12 +391,29 @@ Section 4 planned four phases. Phase 1 was split across several PRs.
   page says nothing of the escalation's sequence number; an update's title is
   the session's head and not a summary of its message; an update's links are
   "Watch it live" and the session's own open ask, since no record links a
-  session to a coordinator's ask; a stuck row says "Rate-limited, has not
-  retried" without the time, which its age and the pane's eyebrow carry; the
-  review's last-command chip is cut to one line and sits on its own row; the
-  agent's message is labelled "last finished turn" and not "last message"; and
-  a live daemon reported `provider_error` for its failed runs, so the
+  session to a coordinator's ask; a live daemon reported `provider_error` for its failed runs, so the
   rate-limited sentence is pinned by tests and not seen in a drive.
+
+- **Where the page departs after the fidelity polish (2026-11-19,
+  `web/fidelity-polish`).** The stuck row names the time it failed
+  (`Rate-limited at 13:52, has not retried`, a `<loom-time>` in the row's head);
+  a "To review" row reads `+412 −88, 7 files · 2 finds attached` from the scan's
+  read of the tree and falls back to the message's head until that read lands; a
+  turn's age reads `running, turn 14m` (`<loom-elapsed form="minutes">`); the
+  rail's first line is the browser's clock (`<loom-time now>`) and not a time the
+  server holds; the review's first file opens with its hunks, its last-command
+  chip shares the counts' line where there is room, and the agent's message is
+  labelled "last message", as the mockup does, though the field is still only the
+  last finished turn (protocol-change/121). On a phone the bar is `loom`,
+  `‹ Inbox`, the name, `● live` and the need pill; the strand panel is not drawn
+  above the stream, and the rail is a sheet whose header reads `Lifted from this
+  session · Close ▾`. What still differs: Home keeps the sidebar's toggle on a
+  phone, because the folders live in the sidebar; a session's page on a phone has
+  no Strands, Changes, Trace or Session panes, since the mockup draws none; the
+  review keeps a "Comment" verdict button, because a comment-only review is a
+  state of `review_stage_rule`; and the gutter's times for spawn and result rows
+  follow the rows' placement in the stream, which is the order the lane puts them
+  in, so a spawn's time can precede the tool lines drawn above it.
 
 Known gaps carried forward:
 
