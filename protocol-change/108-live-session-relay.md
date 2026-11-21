@@ -1181,3 +1181,73 @@ draws the unavailable notice until the box answers. Showing the evolution board 
 relayed page needs a new revision of the exchange, an `evolution` read carried as
 `108.worktree.1` carries the workspace, with its own authority rule on the box, and is
 not built.
+
+## Addendum: a session moved from the spawner is reachable by its page (2026-11-20)
+
+**The problem.** The drive of #1137 (criterion 4) moved a laptop session to the box
+with `loom sessions move` and found that the laptop's relayed page could not open
+it. "The owner's own sessions" above had left every session the owner did not create
+through the page outside `catalogue_relayed_sessions`, and with it outside every
+door of 094 and of this proposal (`NotRelayed`). A moved session is the one case in
+that set whose origin the box knows: the receiver records the orchestrator it came
+from (`Imported(op, from)`, protocol-change/107). Leaving it unreachable made the
+two pages differ for the same session, against #1137's criterion that every session
+looks and behaves the same from either machine's page.
+
+**What was considered.** A `reach` key on `top_level`, as the section above
+proposes for every session the owner started on the box, was rejected for this case:
+it adds a configuration key and a policy to decide something the move already
+decided. Deriving reachability at read time from the import row was rejected: the
+listing query (`relayed_page`) and every `relayed_of` reader would each need a
+second source and a mapping from the orchestrator's name to the spawner's, where a
+row makes both the same read. The security model does not forbid the row. The
+session was the page owner's own until the move, the page's owner chose the move,
+the sender is a pinned peer that 094 already trusts with `top_level`, and every door
+keeps its ceiling, so the set of sessions the page's stolen cookie reaches grows by
+sessions that peer itself sent.
+
+**The decision.** When the receiver imports a session, it writes the same
+`catalogue_relayed_sessions` row a create writes if, and only if, a
+`[spawners.<name>]` table has the sender's node and has a `top_level` table
+(`session_importer.page_of` names the spawner, `manager.Import.relay_to` carries it,
+`domain.import_relaying` and `catalogue.relay_import_in_transaction` write the row).
+The row is written in the same transaction that records the `Imported` custody, so
+the session and its row commit together and no later step can leave a committed
+import unreachable. The row's request id is `moved-` and the move's `op`, with `_`
+written as `-`. The write ignores `max_sessions` and `max_per_hour`: the owner of the
+other orchestrator chose the move, and an import the cap refused would leave a
+session the sender already retired. The row counts toward both caps afterwards, so a
+spawner that moves sessions here has fewer places to create. A session that already
+has a row keeps it, so a repeat of the import writes nothing. From then on the
+session is listed by `TopSessions` and served by every door of 094 and 108 as one the
+page created: the same ceiling, the same table of commands, the same archive.
+
+**What it costs.** A spawner's table must exist before the move: a `top_level` table
+added later does not reach sessions imported before. A session moved before this
+change has no row. A session that moves on from here keeps its row, and while its
+custody is `moved` nothing archives it (the box's own archive and the page's both
+refuse a moved session, as they did for a session the page created), so
+`TopSessions` lists it as an idle row and it holds one of the spawner's
+`max_sessions` places until the session comes back or is deleted where it went. It
+takes an onward move from here, since a move back to a directory on the origin is
+refused today, and it is not fixed here: the listing and the count would need to
+leave out moved sessions. The
+activation's `from_node` names the orchestrator row and so the spawner, which is why
+the port now compares it with the node the message came from
+(`orchestrator_port`, the `Activate` arm) and refuses a mismatch with
+`UnknownSource(node)` before the importer runs, as the spawn messages judge their
+requester by the transport's node. A peer that declares another node than the
+one it sends from is refused. The check is as strong as the spawn messages' and no
+stronger: the node is read from the pid in the message's reply subject, which the
+sender supplies, so a peer that also forges that pid (a live pid on the node it
+names) passes. Distribution authenticates the connection and gives a receiver no
+sender identity inside a message, and no binding of that kind exists in the tree.
+The fixture of
+`orchestrator_port_test` that declared a node other than the test's own now declares
+its own node, and `an_activation_declaring_another_nodes_name_is_refused_test`
+pins the refusal.
+
+**Tests.** `session_importer_test` (`a_moved_session_is_reachable_by_the_senders_page_test`,
+`a_moved_session_stays_private_without_a_page_for_the_sender_test`) and
+`relayed_test` (`an_imported_session_gets_a_row_beside_the_caps_and_only_one_test`,
+`an_import_with_no_page_writes_no_row_test`), and `orchestrator_port_test` for the node check.

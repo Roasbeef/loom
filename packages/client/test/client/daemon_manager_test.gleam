@@ -2532,6 +2532,8 @@ fn imported(seed: Int, directory: String, received: String) -> manager.Import {
     from: "desk",
     received:,
     subtitle: option.Some("first words"),
+    relay_to: option.None,
+    relayed_at_ms: 0,
   )
 }
 

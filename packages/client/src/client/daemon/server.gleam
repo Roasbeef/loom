@@ -2435,7 +2435,7 @@ fn page_grant(
   // Verify that the retrieved grant matches the requested session scope.
   use Nil <- result.try(case grant.scope == ui_sessions.Session(id) {
     True -> Ok(Nil)
-    False -> Error(refused_page(403, ending.PageEnded, id))
+    False -> Error(refused_page(403, ending.OtherPage, id))
   })
 
   use state <- result.try(
@@ -6231,6 +6231,12 @@ fn move_asker(
 
 /// The control command `sessions.move`, which begins a move. The asker must be
 /// the owner with a current epoch, and a refusal says why it was refused.
+///
+/// The command then waits up to `session_movers.settle_wait_ms` for the move to
+/// end. A move the receiver refuses ends within seconds, and it is answered as
+/// the refusal it is, with the receiver's words, so a script that asked for the
+/// move is told that nothing moved. A move that is still going when the wait is
+/// spent, or that finished, is answered with its identity as before.
 fn move_command(
   config: Config(instance),
   state: root.Ready(instance),
@@ -6241,10 +6247,11 @@ fn move_command(
   supplied: String,
 ) -> Result(#(String, JsonValue), Refused) {
   use Nil <- result.try(move_asker(state, principal, supplied))
-  use begun <- result.map(
+  use begun <- result.try(
     move_session(config, state.registry, digest, supplied, id, to)
     |> result.map_error(move_refused),
   )
+  use Nil <- result.map(await_move_end(config, id, begun))
   #(
     "sessions.move",
     json.Object([
@@ -6254,6 +6261,26 @@ fn move_command(
       #("state", json.String("moving")),
     ]),
   )
+}
+
+/// Waits for a move the registry accepted to end, up to
+/// `session_movers.settle_wait_ms`, and turns an abort into the refusal that
+/// carries the receiver's reason. A move that finished, or is still going when
+/// the wait is spent, is not a refusal.
+fn await_move_end(
+  config: Config(instance),
+  id: String,
+  begun: MoveBegun,
+) -> Result(Nil, Refused) {
+  let move = catalogue.Pending(session: id, op: begun.op, to: begun.to)
+
+  // An abort is the only end that is a refusal: nothing moved, and the reason
+  // is the receiver's own words.
+  case config.movers.settled(move, session_movers.settle_wait_ms) {
+    session_movers.Abandoned(reason:) ->
+      Error(move_refused(Declined(manager.AdminNotMovable(reason))))
+    session_movers.InFlight | session_movers.Completed -> Ok(Nil)
+  }
 }
 
 /// The control command `sessions.move` with `abandon`, which gives a move up. A

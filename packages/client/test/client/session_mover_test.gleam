@@ -200,6 +200,7 @@ fn owned_daemon(
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
       orchestrators: roster.fixed([orchestrators.plain(peer, node_name())]),
+      spawners: [],
       executors: roster.fixed(listed),
       logger: log.discard(),
     )
@@ -1209,6 +1210,7 @@ fn importer_context(rig: Rig) -> session_importer.Context(String) {
     domain_configuration: "",
     clock: clock.fixed(at: 5000),
     orchestrators: roster.fixed([orchestrators.plain("alpha", node_name())]),
+    spawners: [],
     executors: roster.fixed(receiver_knows_box()),
     logger: log.discard(),
   )
@@ -1313,6 +1315,29 @@ pub fn a_receiver_without_the_executor_refuses_and_the_session_returns_test() {
   assert file_exists(source_file(rig))
   let assert Ok(manager.Opening(_)) =
     manager.open(rig.source.registry, rig.session)
+  finish(rig)
+}
+
+// The movers record how a move ended, so the control command that began it can
+// answer a refusal. A move of another operation has not ended.
+pub fn the_movers_report_a_refused_move_to_the_command_that_began_it_test() {
+  let rig =
+    start(
+      "settled",
+      25,
+      Recorded,
+      protocol.AllRetired,
+      [executors.plain("other", "other@10.0.0.9")],
+      0,
+    )
+  let assert Ok(control) = session_movers.start(plain(rig), 100, no_holder)
+  let move = begin(rig)
+  control.begin(move)
+  let assert session_movers.Abandoned(reason) = control.settled(move, 20_000)
+  assert string.contains(reason, "no executor named box")
+  assert custody(rig.source, rig.session) == catalogue.Resident
+  assert control.settled(catalogue.Pending(..move, op: "another-op"), 0)
+    == session_movers.InFlight
   finish(rig)
 }
 
@@ -1870,6 +1895,7 @@ fn receiver_listing(
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
       orchestrators: roster.fixed([orchestrators.plain("alpha", node_name())]),
+      spawners: [],
       executors: roster.fixed(listed),
       logger: log.discard(),
     )

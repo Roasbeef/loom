@@ -394,3 +394,76 @@ pub fn version_eighteen_catalogue_gains_the_relayed_table_test() {
     == Ok([catalogue.current_version])
   assert sqlight.close(check) == Ok(Nil)
 }
+
+// A session that arrived by a move gets a row with no create behind it, in the
+// transaction that records the import. The write ignores both caps, keeps an
+// existing row, and counts afterwards.
+pub fn an_imported_session_gets_a_row_beside_the_caps_and_only_one_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let assert Ok(catalogue.RelayedMade(registration: held, ..)) =
+    create(store, "laptop", 1, 1, limits(1, 1, 5000))
+  let arrived = registration(2, "moved", "0192f3c1")
+  let incoming = mapping(arrived)
+  let op = "0192_f3c1"
+
+  let assert Ok(catalogue.Imported(op:, from: "laptop")) =
+    domain.import_relaying(
+      store,
+      arrived,
+      incoming,
+      op:,
+      from: "laptop",
+      relay_to: Some("laptop"),
+      now_ms: 6000,
+    )
+  let assert Ok(Some(row)) = catalogue.relayed_of(store, arrived.id)
+  assert row.spawner == "laptop"
+  assert row.request_id == "moved-0192-f3c1"
+  assert row.created_at == 6000
+  assert catalogue.relayed_held(store, "laptop") == Ok(2)
+
+  // A repeat of the import and a session that already has a row of its own
+  // write nothing.
+  let assert Ok(_) =
+    domain.import_relaying(
+      store,
+      arrived,
+      incoming,
+      op:,
+      from: "laptop",
+      relay_to: Some("other"),
+      now_ms: 7000,
+    )
+  assert catalogue.relayed_of(store, arrived.id) == Ok(Some(row))
+  let assert Ok(Nil) =
+    catalogue.atomic(store, fn() {
+      catalogue.relay_import_in_transaction(
+        store,
+        "other",
+        held.id,
+        op: "x",
+        now_ms: 7000,
+      )
+    })
+  let assert Ok(Some(kept)) = catalogue.relayed_of(store, held.id)
+  assert kept.spawner == "laptop"
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// An import with no page for the sender writes no row.
+pub fn an_import_with_no_page_writes_no_row_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let arrived = registration(3, "moved", "0192f3c2")
+  let assert Ok(_) =
+    domain.import_relaying(
+      store,
+      arrived,
+      mapping(arrived),
+      op: "0192f3c2",
+      from: "laptop",
+      relay_to: None,
+      now_ms: 6000,
+    )
+  assert catalogue.relayed_of(store, arrived.id) == Ok(None)
+  assert catalogue.close(store) == Ok(Nil)
+}

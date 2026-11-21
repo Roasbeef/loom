@@ -34,6 +34,19 @@
 //// every line must verify and extend the chain, the genesis must name this CA,
 //// and the node's own entry must carry its role, its node name and the pin of
 //// its certificate. Its peers are then the pin table the ledger gives it.
+////
+//// ## Flow
+////
+//// A bundle is written by `encode` and read back by `decode`, and the install
+//// writes the daemon's configuration from it with `config_tables`.
+////
+//// 1. `decode` checks the keys (`known_keys`), reads the fields (`raw_decoder`)
+////    and hands them to `validate`.
+//// 2. `validate` builds the typed bundle (`assemble`) and checks it in order:
+////    the node (`node_of`), the trust (`valid_trust`), the role tables
+////    (`valid_role_tables`), the directory (`valid_directory`), the cookie
+////    and the credentials (`valid_credentials`).
+//// 3. `config_tables` renders the tables the install merges into the daemon's configuration.
 
 import client/distribution.{type CredentialFiles, type PeerPin}
 import client/distribution_plan.{type Role, type Workspace}
@@ -41,6 +54,7 @@ import client/executors.{type Executor as ExecutorRow}
 import client/internal/ffi_pki
 import client/membership_ledger
 import client/membership_signing
+import client/orchestrators.{type Orchestrator as OrchestratorRow}
 import filepath
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -80,6 +94,17 @@ pub type Trust {
   SignedLedger(lines: List(String))
 }
 
+/// An orchestrator that may start sessions on this node: the plan's terms and
+/// the Erlang node name the `[spawners.<name>]` table needs.
+pub type Relay {
+  Relay(
+    /// The plan's terms for it.
+    spawner: distribution_plan.Spawner,
+    /// The spawning orchestrator's full node name.
+    node: String,
+  )
+}
+
 /// One node's complete provisioning.
 pub type Bundle {
   Bundle(
@@ -101,6 +126,13 @@ pub type Bundle {
     executors: List(ExecutorRow),
     /// An executor's `[workspaces.<name>]` rows.
     workspaces: List(Workspace),
+    /// An orchestrator's `[orchestrators.<name>]` rows, one for each other
+    /// orchestrator it peers with. A `/2` bundle carries none, because a daemon
+    /// that runs from a ledger derives them.
+    orchestrators: List(OrchestratorRow),
+    /// An orchestrator's `[spawners.<name>]` rows, with the `top_level` table
+    /// below each, for the orchestrators the plan lets start sessions on it.
+    spawners: List(Relay),
     /// The Erlang node names of the session directory's members, this node's
     /// included, when this node is one of them (protocol-change/083); empty
     /// otherwise.
@@ -150,6 +182,17 @@ pub fn encode(bundle: Bundle) -> String {
         #("executors", json.array(bundle.executors, executor_json)),
         #("workspaces", json.array(bundle.workspaces, workspace_json)),
       ],
+      // The two tables a plan may add on an orchestrator are left out when they
+      // are empty, as `directory` is, so a bundle without them is byte for byte
+      // what an older provisioner wrote.
+      case bundle.orchestrators {
+        [] -> []
+        rows -> [#("orchestrators", json.array(rows, orchestrator_json))]
+      },
+      case bundle.spawners {
+        [] -> []
+        rows -> [#("spawners", json.array(rows, relay_json))]
+      },
       // A bundle for a node outside any directory carries no `directory` key,
       // so it is byte for byte what an older provisioner wrote.
       case bundle.directory {
@@ -247,6 +290,46 @@ pub fn config_tables(bundle: Bundle, files: CredentialFiles) -> List(Table) {
     ]
   }
 
+  let peers =
+    list.map(bundle.orchestrators, fn(row) {
+      Table(
+        ["orchestrators", row.name],
+        "[orchestrators."
+          <> toml_key(row.name)
+          <> "]\nnode = "
+          <> toml_string(row.node)
+          <> "\n",
+      )
+    })
+
+  // The page of the spawning orchestrator may start sessions on the executor
+  // that its spawner table places them on, with the profile that table names.
+  let spawners =
+    list.map(bundle.spawners, fn(relay) {
+      let spawner = relay.spawner
+      let key = toml_key(spawner.name)
+      Table(
+        ["spawners", spawner.name],
+        "[spawners."
+          <> key
+          <> "]\nnode = "
+          <> toml_string(relay.node)
+          <> "\nexecutor = "
+          <> toml_string(spawner.executor)
+          <> "\nworkspace = "
+          <> toml_string(spawner.workspace)
+          <> "\nprofile = "
+          <> toml_string(spawner.profile)
+          <> "\n\n[spawners."
+          <> key
+          <> ".top_level]\nexecutors = ["
+          <> toml_string(spawner.executor)
+          <> "]\nfolders = \"none\"\nprofiles = ["
+          <> toml_string(spawner.profile)
+          <> "]\n",
+      )
+    })
+
   let rows =
     list.map(bundle.executors, fn(row) {
       Table(
@@ -287,6 +370,8 @@ pub fn config_tables(bundle: Bundle, files: CredentialFiles) -> List(Table) {
     [Table(["distribution"], string.concat([head, ..trust]))],
     rows,
     workspaces,
+    peers,
+    spawners,
     directory,
   ])
 }
@@ -391,6 +476,24 @@ fn executor_json(row: ExecutorRow) -> json.Json {
   ])
 }
 
+fn orchestrator_json(row: OrchestratorRow) -> json.Json {
+  json.object([
+    #("name", json.string(row.name)),
+    #("node", json.string(row.node)),
+  ])
+}
+
+/// The JSON object of one `spawners` entry: the plan's terms and the node name.
+fn relay_json(relay: Relay) -> json.Json {
+  json.object([
+    #("name", json.string(relay.spawner.name)),
+    #("node", json.string(relay.node)),
+    #("profile", json.string(relay.spawner.profile)),
+    #("executor", json.string(relay.spawner.executor)),
+    #("workspace", json.string(relay.spawner.workspace)),
+  ])
+}
+
 fn workspace_json(workspace: Workspace) -> json.Json {
   json.object([
     #("name", json.string(workspace.name)),
@@ -402,14 +505,14 @@ fn workspace_json(workspace: Workspace) -> json.Json {
 
 const static_keys = [
   "format", "name", "role", "erlang_node", "host", "listen_port", "bundle_dir",
-  "peers", "executors", "workspaces", "directory", "ca", "certificate", "key",
-  "cookie",
+  "peers", "executors", "workspaces", "orchestrators", "spawners", "directory",
+  "ca", "certificate", "key", "cookie",
 ]
 
 const ledger_keys = [
   "format", "name", "role", "erlang_node", "host", "listen_port", "bundle_dir",
-  "ledger", "executors", "workspaces", "directory", "ca", "certificate", "key",
-  "cookie",
+  "ledger", "executors", "workspaces", "orchestrators", "spawners", "directory",
+  "ca", "certificate", "key", "cookie",
 ]
 
 /// Rejects unrecognized configuration keys in a bundle document based on format version.
@@ -448,6 +551,16 @@ type RawTrust {
   RawLedger(List(String))
 }
 
+type RawRelay {
+  RawRelay(
+    name: String,
+    node: String,
+    profile: String,
+    executor: String,
+    workspace: String,
+  )
+}
+
 type Raw {
   Raw(
     marker: String,
@@ -460,6 +573,8 @@ type Raw {
     trust: RawTrust,
     executors: List(#(String, String)),
     workspaces: List(#(String, String)),
+    orchestrators: List(#(String, String)),
+    spawners: List(RawRelay),
     directory: List(String),
     ca: String,
     certificate: String,
@@ -524,6 +639,16 @@ fn raw_decoder() -> decode.Decoder(Raw) {
     [],
     decode.list(pair_decoder("name", "root")),
   )
+  use orchestrators <- decode.optional_field(
+    "orchestrators",
+    [],
+    decode.list(pair_decoder("name", "node")),
+  )
+  use spawners <- decode.optional_field(
+    "spawners",
+    [],
+    decode.list(relay_decoder()),
+  )
   use directory <- decode.optional_field(
     "directory",
     [],
@@ -544,12 +669,24 @@ fn raw_decoder() -> decode.Decoder(Raw) {
     trust:,
     executors:,
     workspaces:,
+    orchestrators:,
+    spawners:,
     directory:,
     ca:,
     certificate:,
     key:,
     cookie:,
   ))
+}
+
+/// Reads one `spawners` entry, every key required, before `validate` judges it.
+fn relay_decoder() -> decode.Decoder(RawRelay) {
+  use name <- decode.field("name", decode.string)
+  use node <- decode.field("node", decode.string)
+  use profile <- decode.field("profile", decode.string)
+  use executor <- decode.field("executor", decode.string)
+  use workspace <- decode.field("workspace", decode.string)
+  decode.success(RawRelay(name:, node:, profile:, executor:, workspace:))
 }
 
 /// Formats JSON decoding errors into readable error descriptions.
@@ -641,6 +778,20 @@ fn assemble(raw: Raw) -> Result(Bundle, String) {
     workspaces: list.map(raw.workspaces, fn(pair) {
       distribution_plan.Workspace(name: pair.0, root: pair.1)
     }),
+    orchestrators: list.map(raw.orchestrators, fn(pair) {
+      orchestrators.plain(pair.0, pair.1)
+    }),
+    spawners: list.map(raw.spawners, fn(row) {
+      Relay(
+        spawner: distribution_plan.Spawner(
+          name: row.name,
+          profile: row.profile,
+          executor: row.executor,
+          workspace: row.workspace,
+        ),
+        node: row.node,
+      )
+    }),
     directory: raw.directory,
     ca: raw.ca,
     certificate: raw.certificate,
@@ -660,6 +811,7 @@ fn node_of(bundle: Bundle) -> distribution_plan.Node {
     bundle_dir: bundle.bundle_dir,
     executors: list.map(bundle.executors, fn(row) { row.name }),
     workspaces: bundle.workspaces,
+    spawners: list.map(bundle.spawners, fn(relay) { relay.spawner }),
   )
 }
 
@@ -809,6 +961,44 @@ fn valid_role_tables(
   bundle: Bundle,
   nodes: List(String),
 ) -> Result(Nil, String) {
+  use Nil <- result.try(
+    list.try_each(bundle.orchestrators, fn(row) {
+      case
+        catalogue.is_orchestrator_name(row.name),
+        list.contains(nodes, row.node)
+      {
+        True, True -> Ok(Nil)
+        False, _ ->
+          Error(
+            "bundle orchestrators.name is not an orchestrator name: "
+            <> row.name,
+          )
+        _, False ->
+          Error(
+            "bundle orchestrators "
+            <> row.name
+            <> " names "
+            <> row.node
+            <> ", which is not one of its peers",
+          )
+      }
+    }),
+  )
+  use Nil <- result.try(
+    list.try_each(bundle.spawners, fn(relay) {
+      case list.contains(nodes, relay.node) {
+        True -> Ok(Nil)
+        False ->
+          Error(
+            "bundle spawners "
+            <> relay.spawner.name
+            <> " names "
+            <> relay.node
+            <> ", which is not one of its peers",
+          )
+      }
+    }),
+  )
   list.try_each(bundle.executors, fn(row) {
     case catalogue.is_executor_name(row.name), list.contains(nodes, row.node) {
       True, True -> Ok(Nil)

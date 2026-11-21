@@ -785,7 +785,10 @@ pub fn a_tampered_bundle_is_refused_and_installs_nothing_test() {
     "role",
   )
   refused_text(string.slice(text, 0, 80), "not complete JSON")
-  refused_text(string.replace(text, "orchestrator", "overlord"), "role must be")
+  refused_text(
+    string.replace(text, "\"role\":\"orchestrator\"", "\"role\":\"overlord\""),
+    "role must be",
+  )
 
   // Installing a tampered bundle writes nothing.
   let tampered =

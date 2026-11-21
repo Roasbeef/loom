@@ -51,6 +51,13 @@
 //// node's monotonic clock and never a timestamp, since the node that reads the
 //// report has a different clock.
 ////
+//// A move that ends is not forgotten at once. The actor keeps, for each session,
+//// how its latest move ended (`Settlement`), so that the control command that
+//// began the move can wait a few seconds for the end and answer a refusal with
+//// its cause instead of an acceptance (`Control.settled`). The record is one
+//// entry per session, replaced by the session's next move, and it is memory
+//// only: a restart loses it, and the move's own row is what a restart reads.
+////
 //// The entry is a map from session to the move, and a session has one row, so
 //// one session can have only one move. A `Begin` carrying another operation
 //// replaces the entry, which can only happen after the earlier move ended and
@@ -74,6 +81,7 @@ import host/bootstrap
 import storage/catalogue
 import weft
 import weft/actor
+import weft/poll
 
 /// How long a stalled mover waits before it runs again, in milliseconds.
 pub const retry_ms = 5000
@@ -85,6 +93,28 @@ pub const give_up_after_ms = 1_800_000
 /// How long `Control.moves` waits for the actor to list its entries. The actor
 /// answers from memory between runs, so a wait this long means it is wedged.
 pub const moves_wait_ms = 2000
+
+/// How long `Control.settled` lets a caller wait for a move to end, in
+/// milliseconds. It sits under the ten seconds the terminal allows a control
+/// request, so a move that is still going answers before the request times out.
+pub const settle_wait_ms = 7000
+
+/// How often `Control.settled` asks the actor while it waits, in milliseconds.
+pub const settle_every_ms = 50
+
+/// How the latest move of a session stands, as the movers know it.
+pub type Settlement {
+  /// The move has not ended: its mover is running or waiting to retry.
+  InFlight
+
+  /// The receiver took the session and the source retired it.
+  Completed
+
+  /// The move was abandoned and the session stayed where it was. The reason is
+  /// the mover's own words, cut to `node_report.max_reason_bytes`; it is the
+  /// receiver's refusal when the receiver refused.
+  Abandoned(reason: String)
+}
 
 /// What the rest of the daemon holds to start moves: the orchestrators a move
 /// may go to, and the one way to tell the movers a move has begun.
@@ -115,6 +145,10 @@ pub type Control {
     /// waits for its answer, so a stuck actor ends the caller's turn instead of
     /// being reported as a daemon with no moves.
     moves: fn() -> List(MoveFacts),
+    /// Waits up to the given milliseconds for the move to end and answers how
+    /// it stands: `InFlight` when it has not ended by then. A move that ended
+    /// before the call answers at once.
+    settled: fn(catalogue.Pending, Int) -> Settlement,
   )
 }
 
@@ -143,6 +177,7 @@ type Message {
   Cover
   Forget(session: String)
   Moves(reply: Subject(List(MoveFacts)))
+  Settled(move: catalogue.Pending, reply: Subject(Settlement))
 
   // A pass of the upkeep ended. `covered` is the request count the pass wrote
   // the local records for, when it was asked to and succeeded.
@@ -191,6 +226,9 @@ type State(instance) {
     environment: Environment(instance),
     inbox: Subject(Message),
     entries: Dict(String, Entry),
+    // How the latest move of each session that ended stands, by session. Only
+    // the ended ones are here, and the operation says which move it is about.
+    ended: Dict(String, #(String, Settlement)),
     give_up_after_ms: Int,
     upkeep: Upkeep,
     sweep: Sweep,
@@ -232,6 +270,7 @@ pub fn idle() -> Control {
     cover: fn() { Nil },
     forget: fn(_session) { Nil },
     moves: fn() { [] },
+    settled: fn(_move, _wait) { InFlight },
   )
 }
 
@@ -275,6 +314,7 @@ pub fn start_with(
           environment:,
           inbox:,
           entries: dict.new(),
+          ended: dict.new(),
           give_up_after_ms: give_up_after,
           upkeep:,
           sweep: Resting,
@@ -300,6 +340,7 @@ pub fn start_with(
           cover: fn() { process.send(inbox, Cover) },
           forget: fn(session) { process.send(inbox, Forget(session)) },
           moves: fn() { process.call(inbox, moves_wait_ms, Moves) },
+          settled: fn(move, wait) { await_end(inbox, move, wait) },
         ),
       )
     }
@@ -407,6 +448,14 @@ fn handle(
       actor.continue(state)
     }
 
+    // The answer is read here, in the actor's turn, from the record of how the
+    // session's latest move ended. A record of another operation is an older
+    // move's, so this one has not ended.
+    Settled(move:, reply:) -> {
+      process.send(reply, settlement_of(state, move))
+      actor.continue(state)
+    }
+
     // The removal runs on its own and reports nothing: a record left behind
     // names this daemon, which answers `not_found` for the session.
     Forget(session:) -> {
@@ -433,10 +482,13 @@ fn handle(
 
     Ended(move:, outcome:) ->
       case outcome {
-        Finished | Aborted(..) ->
-          actor.continue(
-            State(..state, entries: dict.delete(state.entries, move.session)),
-          )
+        Finished -> actor.continue(ended(state, move, Completed))
+        Aborted(reason:) ->
+          actor.continue(ended(
+            state,
+            move,
+            Abandoned(node_report.cut_reason(reason)),
+          ))
         Stalled(reason:) -> {
           // Decide how to handle let since =  dict.get(state.entries, move.session) {.
           let since = case dict.get(state.entries, move.session) {
@@ -449,6 +501,60 @@ fn handle(
         }
         Deferred(reason:) -> actor.continue(stalled(state, move, None, reason))
       }
+  }
+}
+
+// A move that ended leaves the entries and is remembered as it ended, so a
+// caller that asks after the end still gets the answer.
+
+/// Removes the move's entry and records how it ended.
+fn ended(
+  state: State(instance),
+  move: catalogue.Pending,
+  settlement: Settlement,
+) -> State(instance) {
+  State(
+    ..state,
+    entries: dict.delete(state.entries, move.session),
+    ended: dict.insert(state.ended, move.session, #(move.op, settlement)),
+  )
+}
+
+/// How the move stands: as it ended when the record is of this operation, and
+/// in flight otherwise.
+fn settlement_of(
+  state: State(instance),
+  move: catalogue.Pending,
+) -> Settlement {
+  case dict.get(state.ended, move.session) {
+    Ok(#(op, settlement)) if op == move.op -> settlement
+    Ok(_) | Error(Nil) -> InFlight
+  }
+}
+
+// Asks the actor until the move has ended or the wait is spent. The asking is
+// a poll in the caller's own process, because the actor answers from memory and
+// must never block on a move.
+
+/// Waits for the move to end, up to `wait` milliseconds.
+fn await_end(
+  inbox: Subject(Message),
+  move: catalogue.Pending,
+  wait: Int,
+) -> Settlement {
+  let outcome =
+    poll.until(within: wait, every: settle_every_ms, attempt: fn() {
+      case process.call(inbox, moves_wait_ms, Settled(move, _)) {
+        InFlight -> poll.Retry
+        settled -> poll.Done(settled)
+      }
+    })
+
+  // Only a poll that saw the move end has an answer; every other result is a
+  // move that is still going.
+  case outcome {
+    poll.Answered(value:) -> value
+    poll.Expired | poll.Failed(..) -> InFlight
   }
 }
 

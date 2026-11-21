@@ -78,6 +78,15 @@ pub type Ending {
   /// seconds after it closed, so a reload can meet the limit and clear on its
   /// own. It is a wait and not a failure, so the browser retries.
   PeerCrowded
+
+  /// The page key in the address belongs to a page that was opened for
+  /// something else: the home, another session or the admin page. A page key
+  /// is minted for the one page a link opened, and a login made with
+  /// `loom ui --no-remember` reaches no other page, so an address built by hand
+  /// from that key names a session the key was never issued for. The key is
+  /// live and so the page is not `PageEnded`; a link that names the session
+  /// is the fix.
+  OtherPage
 }
 
 /// How the page's WebSocket should end, for the client runtime that reads
@@ -110,6 +119,7 @@ pub fn all() -> List(Ending) {
     ConnectionFailed,
     PeerUnreachable,
     PeerCrowded,
+    OtherPage,
   ]
 }
 
@@ -134,6 +144,7 @@ pub fn reason(ending: Ending) -> String {
     ConnectionFailed -> "the connection failed"
     PeerUnreachable -> "the orchestrator is not answering"
     PeerCrowded -> "the orchestrator has no room for another page"
+    OtherPage -> "the page key was issued for another page"
   }
 }
 
@@ -176,7 +187,8 @@ pub fn close(ending: Ending) -> Close {
     | ConnectionFailed
     | PeerUnreachable
     | PeerCrowded -> Retry
-    PageEnded | AccessRevoked | SessionStopped | LinkExpired -> Final
+    PageEnded | AccessRevoked | SessionStopped | LinkExpired | OtherPage ->
+      Final
   }
 }
 
@@ -200,6 +212,7 @@ pub fn headline(ending: Ending) -> String {
       "The orchestrator that runs this session is not answering."
     PeerCrowded ->
       "The orchestrator that runs this session has all the live pages it allows."
+    OtherPage -> other_page_headline
   }
 }
 
@@ -272,6 +285,13 @@ pub fn advised(ending: Ending, session_id: String) -> Advice {
         None,
       )
     PeerUnreachable -> Advice("This page will reconnect.", None)
+    OtherPage ->
+      Advice(
+        "A page key opens only the page its link was made for, and a link from "
+          <> "loom ui --no-remember reaches no other page. Open the session "
+          <> "from the page that link opened.",
+        command,
+      )
     PeerCrowded ->
       Advice(
         "This machine has the most live pages that the orchestrator running this session allows it, across all its sessions. One frees within a few seconds of closing, and this page keeps trying.",
@@ -324,7 +344,8 @@ pub fn home_headline(ending: Ending) -> String {
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded -> "The connection to the daemon failed."
+    | PeerCrowded
+    | OtherPage -> "The connection to the daemon failed."
   }
 }
 
@@ -361,7 +382,8 @@ pub fn home_advised(ending: Ending) -> Advice {
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded ->
+    | PeerCrowded
+    | OtherPage ->
       Advice(
         "Reload this page. If it fails again, it needs a new link.",
         command,
@@ -399,9 +421,15 @@ pub fn relayed_advice(ending: Ending) -> String {
     | SessionStopped
     | NotOpen
     | DaemonNotReady
-    | LinkExpired -> home_advice(ending)
+    | LinkExpired
+    | OtherPage -> home_advice(ending)
   }
 }
+
+/// The one sentence a page key used on the wrong page is refused with. It names
+/// no key, session or page, so nothing the address held reaches the document.
+const other_page_headline =
+  "This link was opened for a different page, not for this session."
 
 /// What a relayed page says while it waits for its orchestrator.
 const relayed_wait_advice =
@@ -426,7 +454,8 @@ pub fn admin_headline(ending: Ending) -> String {
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded -> "The connection to the daemon failed."
+    | PeerCrowded
+    | OtherPage -> "The connection to the daemon failed."
   }
 }
 
@@ -467,7 +496,8 @@ pub fn admin_advised(ending: Ending) -> Advice {
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded ->
+    | PeerCrowded
+    | OtherPage ->
       Advice(
         "Reload this page. If it fails again, it needs a new link." <> fresh,
         command,
