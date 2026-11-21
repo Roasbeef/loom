@@ -217,6 +217,8 @@ fn imported(ready: root.Ready(String), seed: Int) -> String {
         from: "desk",
         received:,
         subtitle: None,
+        relay_to: None,
+        relayed_at_ms: 0,
       ),
     )
     as "the session is imported"

@@ -24,7 +24,7 @@
 ////    (`NotRelayed`). A session the owner started, or another spawner did, is
 ////    refused whatever its state, so the table is the whole of what a page can
 ////    reach. A session that spawner moved here is in the table too: the
-////    importer writes its row (`session_importer.reachable`).
+////    importer writes its row with the import (`session_importer.page_of`).
 ////
 //// ## A create is two steps and a resend finishes it
 ////

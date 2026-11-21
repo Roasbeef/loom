@@ -2587,7 +2587,10 @@ pub fn relayed_for(
 
 /// Makes a session that another orchestrator moved here reachable by that
 /// orchestrator's page, as a session its page asked for is
-/// (protocol-change/108, the addendum on moved sessions).
+/// (protocol-change/108, the addendum on moved sessions), inside the caller's
+/// transaction. `domain.import_session` calls it after the `Imported` row, so
+/// the session, its custody and its relayed row commit together and no later
+/// step can leave the session unreachable.
 ///
 /// The row is the one `claim_relayed` writes, with a request id made from the
 /// move's `op` because no create asked for the session. It is written without
@@ -2595,16 +2598,20 @@ pub fn relayed_for(
 /// and an import that a cap refused would leave a session the sender had
 /// already retired. The row still counts toward `max_sessions` and
 /// `max_per_hour` for later creates. A session that already has a row, of any
-/// spawner, is left as it is, so a repeat of the import and a session that
-/// returns after moving away both succeed and write nothing.
+/// spawner, keeps it, so a repeat of the import writes nothing. A session that
+/// had no row and returns after moving away gets one then.
+///
+/// It must never be called outside an enclosing catalogue transaction.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // catalogue.relay_import(store, "laptop", session_id, op: "0192f3c1", now_ms: 1_000)
-/// // == Ok(Nil)
+/// // catalogue.atomic(store, fn() {
+/// //   catalogue.relay_import_in_transaction(store, "laptop", id, op: "0192f3c1", now_ms: 1_000)
+/// // })
 /// ```
-pub fn relay_import(
+@internal
+pub fn relay_import_in_transaction(
   catalogue: Catalogue,
   spawner: String,
   session_id: String,
@@ -2613,20 +2620,17 @@ pub fn relay_import(
 ) -> Result(Nil, Error) {
   let request_id = "moved-" <> string.replace(op, "_", "-")
   use Nil <- result.try(validate_relayed(spawner, request_id))
+  use found <- result.try(relayed_of(catalogue, session_id))
 
-  atomic(catalogue, fn() {
-    use found <- result.try(relayed_of(catalogue, session_id))
-
-    // Only a session with no row gets one.
-    case found {
-      Some(_) -> Ok(Nil)
-      None ->
-        statement(
-          catalogue,
-          sql.insert_relayed_session(request_id, spawner, session_id, now_ms),
-        )
-    }
-  })
+  // Only a session with no row gets one.
+  case found {
+    Some(_) -> Ok(Nil)
+    None ->
+      statement(
+        catalogue,
+        sql.insert_relayed_session(request_id, spawner, session_id, now_ms),
+      )
+  }
 }
 
 /// Reads the relayed row of a session, or `None` for a session no orchestrator

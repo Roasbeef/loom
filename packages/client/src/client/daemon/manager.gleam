@@ -771,10 +771,6 @@ type Message(instance) {
   /// The relayed row of a session, without waking it.
   RelayedOfSession(String, Subject(Result(Option(catalogue.Relayed), Error)))
 
-  /// Makes a session that arrived by a move reachable by a spawner's page: the
-  /// spawner, the session, the move's op and the time.
-  RelayImported(String, String, String, Int, Subject(Result(Nil, Error)))
-
   /// One page of a spawner's relayed sessions: the spawner, the identity the
   /// page follows and the most rows.
   RelayedSessions(
@@ -1216,6 +1212,13 @@ pub type Import {
     /// The first-prompt subtitle the source showed, kept so a listing reads the
     /// same on this side.
     subtitle: Option(String),
+    /// The spawner whose page may read the session, because it came from that
+    /// spawner's orchestrator and the spawner has a `top_level` table. Its
+    /// relayed row commits with the import (protocol-change/108, the addendum on
+    /// moved sessions).
+    relay_to: Option(String),
+    /// The time the relayed row is stamped with, in Unix milliseconds.
+    relayed_at_ms: Int,
   )
 }
 
@@ -2199,34 +2202,6 @@ pub fn relayed_of(
 ) -> Result(Option(catalogue.Relayed), Error) {
   call.try_call(manager.commands, waiting: 5000, sending: RelayedOfSession(
     id,
-    _,
-  ))
-  |> result.unwrap(Error(Unavailable))
-}
-
-/// Makes a session that another orchestrator moved here reachable by the page
-/// of the spawner whose node sent it (protocol-change/108, the addendum on
-/// moved sessions). A session that already has a relayed row keeps it, so a
-/// repeat of the same import writes nothing.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // manager.relay_imported(registry, "laptop", session_id, op: "0192f3c1", now_ms: 1_000)
-/// ```
-@internal
-pub fn relay_imported(
-  manager: Manager(instance),
-  spawner: String,
-  id: String,
-  op op: String,
-  now_ms now_ms: Int,
-) -> Result(Nil, Error) {
-  call.try_call(manager.commands, waiting: 5000, sending: RelayImported(
-    spawner,
-    id,
-    op,
-    now_ms,
     _,
   ))
   |> result.unwrap(Error(Unavailable))
@@ -4131,14 +4106,6 @@ fn handle(
       )
       sm.keep(book)
     }
-    RelayImported(spawner, id, op, now_ms, reply) -> {
-      process.send(
-        reply,
-        catalogue.relay_import(book.catalogue, spawner, id, op:, now_ms:)
-          |> result.map_error(Catalogue),
-      )
-      sm.keep(book)
-    }
     RelayedSessions(spawner, after, limit, reply) -> {
       process.send(reply, relayed_page_now(book, spawner, after, limit))
       sm.keep(book)
@@ -4803,12 +4770,14 @@ fn import_now(
   })
 
   use custody <- result.try(
-    domain.import_session(
+    domain.import_relaying(
       book.catalogue,
       incoming.registration,
       incoming.mapping,
       op: incoming.op,
       from: incoming.from,
+      relay_to: incoming.relay_to,
+      now_ms: incoming.relayed_at_ms,
     )
     |> result.map_error(AdminMetadata),
   )

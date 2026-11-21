@@ -1206,27 +1206,38 @@ the sender is a pinned peer that 094 already trusts with `top_level`, and every 
 keeps its ceiling, so the set of sessions the page's stolen cookie reaches grows by
 sessions that peer itself sent.
 
-**The decision.** When the receiver commits an import, it writes the same
+**The decision.** When the receiver imports a session, it writes the same
 `catalogue_relayed_sessions` row a create writes if, and only if, a
 `[spawners.<name>]` table has the sender's node and has a `top_level` table
-(`session_importer.reachable`, `catalogue.relay_import`, `manager.relay_imported`).
-The row's request id is `moved-` and the move's `op`, with `_` written as `-`. The
-write ignores `max_sessions` and `max_per_hour`: the owner of the other
-orchestrator chose the move, and an import the cap refused would leave a session the
-sender already retired. The row counts toward both caps afterwards, so a spawner
-that moves sessions here has fewer places to create. A session that already has a
-row keeps it, so a resent activation, which runs the write again, writes nothing, and
-a failure of the write answers `Failed`, never a refusal, because the import has
-committed and the sender asks again. From then on the session is listed by
-`TopSessions` and served by every door of 094 and 108 as one the page created: the
-same ceiling, the same table of commands, the same archive.
+(`session_importer.page_of` names the spawner, `manager.Import.relay_to` carries it,
+`domain.import_relaying` and `catalogue.relay_import_in_transaction` write the row).
+The row is written in the same transaction that records the `Imported` custody, so
+the session and its row commit together and no later step can leave a committed
+import unreachable. The row's request id is `moved-` and the move's `op`, with `_`
+written as `-`. The write ignores `max_sessions` and `max_per_hour`: the owner of the
+other orchestrator chose the move, and an import the cap refused would leave a
+session the sender already retired. The row counts toward both caps afterwards, so a
+spawner that moves sessions here has fewer places to create. A session that already
+has a row keeps it, so a repeat of the import writes nothing. From then on the
+session is listed by `TopSessions` and served by every door of 094 and 108 as one the
+page created: the same ceiling, the same table of commands, the same archive.
 
 **What it costs.** A spawner's table must exist before the move: a `top_level` table
-added later does not reach sessions imported before. A session moved from here to a
-third orchestrator keeps its row, and `TopSessions` lists the tombstone as an idle
-row until the owner archives it on the box. A session moved before this change has no
-row.
+added later does not reach sessions imported before. A session moved before this
+change has no row. A session that moves on from here keeps its row, and while its
+custody is `moved` nothing archives it (the box's own archive and the page's both
+refuse a moved session, as they did for a session the page created), so
+`TopSessions` lists it as an idle row and it holds one of the spawner's
+`max_sessions` places until the session comes back or is deleted where it went. That
+is the round trip laptop to box and back, so it is the common case, and it is not
+fixed here: the listing and the count would need to leave out moved sessions. The
+activation's `from_node` is the sender's own statement, and the port does not compare
+it with the node the message came from, so a pinned peer could claim another
+spawner's node for a session it authored. That needs a misbehaving peer on the
+distribution link and reaches no existing session, but the comparison is one line
+and is left for a follow-up.
 
 **Tests.** `session_importer_test` (`a_moved_session_is_reachable_by_the_senders_page_test`,
 `a_moved_session_stays_private_without_a_page_for_the_sender_test`) and
-`relayed_test` (`an_imported_session_gets_a_row_beside_the_caps_and_only_one_test`).
+`relayed_test` (`an_imported_session_gets_a_row_beside_the_caps_and_only_one_test`,
+`an_import_with_no_page_writes_no_row_test`).
