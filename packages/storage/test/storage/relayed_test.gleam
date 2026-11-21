@@ -394,3 +394,43 @@ pub fn version_eighteen_catalogue_gains_the_relayed_table_test() {
     == Ok([catalogue.current_version])
   assert sqlight.close(check) == Ok(Nil)
 }
+
+// A session that arrived by a move gets a row with no create behind it. The
+// write ignores both caps, keeps an existing row, and counts afterwards.
+pub fn an_imported_session_gets_a_row_beside_the_caps_and_only_one_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let assert Ok(catalogue.RelayedMade(registration: held, ..)) =
+    create(store, "laptop", 1, 1, limits(1, 1, 5000))
+  let arrived = registration(2, "moved", "0192f3c1")
+  let assert Ok(_) = catalogue.reserve(store, arrived)
+
+  let assert Ok(Nil) =
+    catalogue.relay_import(
+      store,
+      "laptop",
+      arrived.id,
+      op: "0192_f3c1",
+      now_ms: 6000,
+    )
+  let assert Ok(Some(row)) = catalogue.relayed_of(store, arrived.id)
+  assert row.spawner == "laptop"
+  assert row.request_id == "moved-0192-f3c1"
+  assert row.created_at == 6000
+  assert catalogue.relayed_held(store, "laptop") == Ok(2)
+
+  // A repeat and a session that already has a row of its own write nothing.
+  assert catalogue.relay_import(
+      store,
+      "other",
+      arrived.id,
+      op: "0192_f3c1",
+      now_ms: 7000,
+    )
+    == Ok(Nil)
+  assert catalogue.relayed_of(store, arrived.id) == Ok(Some(row))
+  assert catalogue.relay_import(store, "other", held.id, op: "x", now_ms: 7000)
+    == Ok(Nil)
+  let assert Ok(Some(kept)) = catalogue.relayed_of(store, held.id)
+  assert kept.spawner == "laptop"
+  assert catalogue.close(store) == Ok(Nil)
+}

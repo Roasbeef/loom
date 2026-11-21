@@ -2585,6 +2585,50 @@ pub fn relayed_for(
   }
 }
 
+/// Makes a session that another orchestrator moved here reachable by that
+/// orchestrator's page, as a session its page asked for is
+/// (protocol-change/108, the addendum on moved sessions).
+///
+/// The row is the one `claim_relayed` writes, with a request id made from the
+/// move's `op` because no create asked for the session. It is written without
+/// the spawner's two caps: the owner of the other orchestrator chose the move,
+/// and an import that a cap refused would leave a session the sender had
+/// already retired. The row still counts toward `max_sessions` and
+/// `max_per_hour` for later creates. A session that already has a row, of any
+/// spawner, is left as it is, so a repeat of the import and a session that
+/// returns after moving away both succeed and write nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.relay_import(store, "laptop", session_id, op: "0192f3c1", now_ms: 1_000)
+/// // == Ok(Nil)
+/// ```
+pub fn relay_import(
+  catalogue: Catalogue,
+  spawner: String,
+  session_id: String,
+  op op: String,
+  now_ms now_ms: Int,
+) -> Result(Nil, Error) {
+  let request_id = "moved-" <> string.replace(op, "_", "-")
+  use Nil <- result.try(validate_relayed(spawner, request_id))
+
+  atomic(catalogue, fn() {
+    use found <- result.try(relayed_of(catalogue, session_id))
+
+    // Only a session with no row gets one.
+    case found {
+      Some(_) -> Ok(Nil)
+      None ->
+        statement(
+          catalogue,
+          sql.insert_relayed_session(request_id, spawner, session_id, now_ms),
+        )
+    }
+  })
+}
+
 /// Reads the relayed row of a session, or `None` for a session no orchestrator
 /// asked for.
 ///
