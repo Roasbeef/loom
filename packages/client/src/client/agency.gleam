@@ -1975,7 +1975,7 @@ fn create(
 
   // State what the branch decides before dispatching.
   use fork_point <- result.try(case request.context {
-    agent.Fresh -> Ok(None)
+    agent.Fresh | agent.Unstated -> Ok(None)
     agent.MyConversation ->
       api.leaf(api.on_strand(runtime, caller.strand))
       |> result.map_error(fn(error) {
@@ -4217,6 +4217,11 @@ const remote_join_slack_ms = 10_000
 /// and holds the gate that keeps it quiet.
 pub type Seeding {
   Seeding(
+    /// Whether `capture` can succeed in principle, known without running it.
+    /// `Unstated` context is refused for a session that offers a workspace, so
+    /// that a child on another orchestrator never starts without one by
+    /// accident (protocol-change/129).
+    offer: Offer,
     /// Captures the workspace into this node's state store and answers the
     /// state's description and the directory it was captured from, or why it
     /// cannot, in words for the parent's model. It holds the workspace's gate
@@ -4246,6 +4251,16 @@ pub type Seed {
   )
 }
 
+/// Whether a session has a workspace it could send with a spawn.
+pub type Offer {
+  /// The workspace is on this machine and a capture is set up for it.
+  Offered
+
+  /// Embedded hosts, a workspace on an executor, or no state store: a capture
+  /// would be refused, so there is nothing to send by default or otherwise.
+  NotOffered
+}
+
 /// The seeding of a session that has no workspace it can send: embedded hosts and
 /// any session the assembly did not equip. A spawn that asks for a workspace is
 /// refused with the reason.
@@ -4257,6 +4272,7 @@ pub type Seed {
 /// ```
 pub fn unseeded() -> Seeding {
   Seeding(
+    offer: NotOffered,
     capture: fn() {
       Error("this session has no workspace it can send to another orchestrator")
     },
@@ -4276,6 +4292,21 @@ const local_workspace_refusal =
 // program's own call holds the workspace, so the copy could never be made.
 const program_workspace_refusal =
   "a program cannot start a child with `context: my_workspace`: the program is a tool call that holds the workspace the copy would wait for. Start the child from a tool call instead"
+
+/// Refuses a tool call that named no context when it could have sent its
+/// workspace, so a child on another orchestrator is never unseeded by omission.
+/// An explicit `fresh` passes, and so does a session with nothing to send.
+fn refuse_unstated_context(
+  config: Config,
+  caller: Caller,
+  request: agent.SpawnRequest,
+) -> Result(Nil, Refusal) {
+  case request.context, caller.minter, config.seeding.offer {
+    agent.Unstated, agent.ToolCall, Offered ->
+      Error(agent.InvalidArgument(reason: unstated_refusal))
+    _, _, _ -> Ok(Nil)
+  }
+}
 
 /// The state of the workspace a remote spawn starts its child from, or nothing
 /// when it asks for none.
@@ -4298,7 +4329,7 @@ fn seeded(
       config.seeding.capture()
       |> result.map(Some)
       |> result.map_error(fn(reason) { agent.InvalidArgument(reason:) })
-    agent.Fresh, _ | agent.MyConversation, _ -> Ok(None)
+    agent.Fresh, _ | agent.Unstated, _ | agent.MyConversation, _ -> Ok(None)
   }
 }
 
@@ -4322,6 +4353,7 @@ fn spawn_elsewhere(
     orchestrator,
     custody,
   ))
+  use Nil <- result.try(refuse_unstated_context(config, caller, request))
   use seed <- result.try(seeded(config, caller, request))
   use #(key, stub) <- result.try(
     process.call(subject, config.holder_timeout_ms, fn(reply) {
@@ -4346,6 +4378,14 @@ const background_refusal =
 
 const forking_refusal =
   "`context: my_conversation` is not available with `on`: it would copy this conversation to another machine"
+
+// The words a tool call that left `context` out is refused with, when its
+// workspace could have been sent. The receiving orchestrator's `seed` ceiling is
+// its owner's and unknown here, so this side cannot pick a default for the
+// model: a copy costs a capture, and a refusal where the owner takes none, while
+// a child with no copy cannot see the files. The model is told to choose.
+const unstated_refusal =
+  "`on` needs `context` to be named. Pass `context: \"my_workspace\"` to start the child from a copy of your workspace as it is now, which is what a child that works on your files needs, or `context: \"fresh\"` to start it with no files"
 
 const shared_refusal =
   "a child can be started on another orchestrator only in a session that you hold alone"
@@ -5038,10 +5078,11 @@ fn returned_report(
   // A final answer is written once; a reason to wait is only told.
   case answered {
     None -> report
-    Some(Known(returned)) -> joined_text(report, returned_sentence(returned))
+    Some(Known(returned)) ->
+      joined_text(report, returned_sentence(returned, sent_dirtiness(target)))
     Some(Decided(returned)) -> {
       let _recorded = remote_child.returned(runtime, target.key, returned)
-      joined_text(report, returned_sentence(returned))
+      joined_text(report, returned_sentence(returned, sent_dirtiness(target)))
     }
     Some(Deferred(reason)) ->
       joined_text(
@@ -5073,8 +5114,26 @@ fn joined_text(report: String, sentence: String) -> String {
   }
 }
 
+/// Whether the workspace this spawn sent held uncommitted work, which the
+/// child's history then carries as its first commit.
+fn sent_dirtiness(target: Target) -> state_object.Dirtiness {
+  case target.stub.request.state {
+    Some(sent) -> sent.dirty
+    None -> state_object.Clean
+  }
+}
+
 /// The sentence for what became of a child's returned commits.
-fn returned_sentence(returned: remote_child.Returned) -> String {
+///
+/// When the sent workspace was dirty, the ref's history starts with a `Working
+/// snapshot` commit holding the parent's uncommitted files, including untracked
+/// ones that are still untracked in the parent's checkout. `git merge` of the ref
+/// would try to create those files and stop on every one that exists, so the
+/// sentence names the range of the child's own commits to cherry-pick instead.
+fn returned_sentence(
+  returned: remote_child.Returned,
+  sent: state_object.Dirtiness,
+) -> String {
   case returned {
     remote_child.Applied(ref:, commits:) ->
       "The child committed "
@@ -5087,9 +5146,20 @@ fn returned_sentence(returned: remote_child.Returned) -> String {
       <> ref
       <> "`, and nothing in your checkout changed. Inspect them with `git log "
       <> ref
-      <> "`, then bring them in with `git cherry-pick` or `git merge "
-      <> ref
-      <> "`."
+      <> case sent {
+        state_object.Clean ->
+          "`, then bring them in with `git cherry-pick` or `git merge "
+          <> ref
+          <> "`."
+        state_object.Dirty ->
+          "`, then bring them in with `git cherry-pick "
+          <> ref
+          <> "~"
+          <> int.to_string(commits)
+          <> ".."
+          <> ref
+          <> "`. Do not `git merge` it: the history under the ref starts with a `Working snapshot` commit that holds the uncommitted files your workspace had when the child started, and a merge stops on each of those files that is still untracked in your checkout."
+      }
     remote_child.NotApplied(reason:) ->
       "Its commits reached this machine and were not applied to your repository: "
       <> bounded_reason(reason)
