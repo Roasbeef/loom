@@ -90,6 +90,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    passkeys: None,
     visiting: None,
     orchestrators: None,
     executors: [],

@@ -25,6 +25,12 @@
 //// claim, with the same thirty-day expiry `issue` records, and the token is
 //// signed only after that transaction names the principal.
 ////
+//// A login is last set by a passkey sign-in (`passkey`, protocol-change/127):
+//// the owner's browser proved possession of a registered credential, and the
+//// login is an `Operator` one with no parent. Its row, token and cookie are
+//// exactly those of `issue`, and the `Minted` answer carries the row's digest so
+//// the home the sign-in opens authenticates as it.
+////
 //// The root key is read when the daemon starts (`root_key`). A missing file is
 //// the owner's whole-daemon revocation: every login row is revoked first and a
 //// new key written after, so a start that stops between the two finds no file
@@ -64,6 +70,8 @@ pub type Minted {
     /// The login as the page table knows it, which the page the exchange opened
     /// is the browser of.
     issuer: ui_sessions.Issuer,
+    /// The login row's digest, which a page the login mints authenticates as.
+    digest: access.Digest,
   )
 }
 
@@ -165,8 +173,45 @@ pub fn issue(
   // Reject logins whose parent has already expired before writing rows.
   case expires_at_ms > now_ms {
     False -> Error(ParentEnded)
-    True -> write(root, registry, grant, parent, now_ms, expires_at_ms)
+    True ->
+      write(
+        root,
+        registry,
+        grant.principal,
+        grant.ceiling,
+        parent,
+        now_ms,
+        expires_at_ms,
+      )
   }
+}
+
+/// Sets a login for `principal_id` at `Operator` ceiling, ending `login.lifetime_ms`
+/// from `now_ms`, for a passkey sign-in (protocol-change/127). It is `issue` for
+/// a sign-in that has no grant and no parent: the assertion the daemon verified
+/// is the whole of what authorizes it. The answer carries the login's digest,
+/// which the home page the sign-in opens authenticates as.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_login.passkey(root, registry, "owner", now_ms)
+/// ```
+pub fn passkey(
+  root: login.RootKey,
+  registry: manager.Manager(instance),
+  principal_id: String,
+  now_ms: Int,
+) -> Result(Minted, Unset) {
+  write(
+    root,
+    registry,
+    principal_id,
+    access.Operator,
+    None,
+    now_ms,
+    now_ms + login.lifetime_ms,
+  )
 }
 
 /// Draws fresh login secrets, signs the capability token, and writes the login row
@@ -174,7 +219,8 @@ pub fn issue(
 fn write(
   root: login.RootKey,
   registry: manager.Manager(instance),
-  grant: ui_sessions.Grant,
+  principal_id: String,
+  role: access.Role,
   parent: Option(ui_sessions.Issuer),
   now_ms: Int,
   expires_at_ms: Int,
@@ -184,15 +230,14 @@ fn write(
   let key = login.fresh_key(entropy)
   let nonce = login.fresh_nonce(entropy)
 
-  // The token's ceiling is the grant's, so every page the login mints is held to
-  // what the page this exchange opened was.
-  let ceiling = case grant.ceiling {
+  // The token's ceiling is the exchange's, so every page the login mints is held
+  // to what the page this exchange opened was.
+  let ceiling = case role {
     access.Operator -> login.Operator
     access.Observer -> login.Observer
   }
 
-  let signed =
-    seal(root, id, grant.principal, ceiling, expires_at_ms, key, nonce)
+  let signed = seal(root, id, principal_id, ceiling, expires_at_ms, key, nonce)
 
   // The row is keyed by the digest of the identifier, as the kind only a login's
   // lookup asks for.
@@ -201,7 +246,7 @@ fn write(
   use Nil <- result.map(
     manager.issue_login(
       registry,
-      grant.principal,
+      principal_id,
       digest,
       now_ms,
       expires_at_ms,
@@ -211,11 +256,11 @@ fn write(
   )
   let fingerprint = access.fingerprint(digest)
   log.info(logger(), "daemon.login_issued", [
-    field.ident("principal_id", grant.principal),
+    field.ident("principal_id", principal_id),
     field.ident("login", fingerprint),
     ..parent_field(from)
   ])
-  minted(signed, key, nonce, now_ms, expires_at_ms, fingerprint)
+  minted(signed, key, nonce, now_ms, expires_at_ms, digest)
 }
 
 /// Cryptographically seals and signs the login capability token with the root key.
@@ -248,14 +293,19 @@ fn minted(
   nonce: String,
   now_ms: Int,
   expires_at_ms: Int,
-  fingerprint: String,
+  digest: access.Digest,
 ) -> Minted {
   Minted(
     token: signed,
     key:,
     nonce:,
     max_age_s: int.max({ expires_at_ms - now_ms } / 1000, 1),
-    issuer: ui_sessions.Issuer(fingerprint:, expires_at_ms:, key:),
+    issuer: ui_sessions.Issuer(
+      fingerprint: access.fingerprint(digest),
+      expires_at_ms:,
+      key:,
+    ),
+    digest:,
   )
 }
 
@@ -323,7 +373,7 @@ pub fn claim(
   Claimed(
     principal: bound.principal,
     digest:,
-    minted: minted(signed, key, nonce, now_ms, expires_at_ms, fingerprint),
+    minted: minted(signed, key, nonce, now_ms, expires_at_ms, digest),
   )
 }
 

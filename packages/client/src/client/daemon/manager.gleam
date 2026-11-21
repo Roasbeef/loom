@@ -724,6 +724,36 @@ type Message(instance) {
     Subject(Result(#(String, Int), AdminError)),
   )
 
+  /// A passkey and its principal, found by the credential id a browser
+  /// presented (protocol-change/127). It is the daemon's own lookup at a
+  /// sign-in, so it carries no credential.
+  FindPasskey(
+    String,
+    Subject(Result(#(access.Passkey, access.Principal), Error)),
+  )
+
+  /// Records that a passkey signed a browser in: its counter and the instant.
+  UsePasskey(String, Int, Int, Subject(Result(Nil, Error)))
+
+  /// The owner's passkeys, read as the owner's own credential.
+  ListPasskeys(access.Digest, Subject(Result(List(access.Passkey), AdminError)))
+
+  /// A passkey registered for the owner: the caller, the epoch, the credential
+  /// id, the key, the counter, the label and the instant.
+  AddPasskey(
+    access.Digest,
+    String,
+    String,
+    BitArray,
+    Int,
+    String,
+    Int,
+    Subject(Result(Nil, AdminError)),
+  )
+
+  /// One passkey of the owner removed, named by its fingerprint.
+  RemovePasskey(access.Digest, String, String, Subject(Result(Nil, AdminError)))
+
   /// One principal's display name changed, as that principal or the owner
   /// (protocol-change/065, PR 10). The name is the unjudged text the caller
   /// typed; the catalogue trims and checks it in the transaction that writes.
@@ -1476,6 +1506,132 @@ pub fn revoke_logins(
     caller,
     epoch,
     target,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Finds the passkey a browser presented by its credential id, with the
+/// principal it signs in as. The daemon calls it at a sign-in, before it has any
+/// caller; the answer authorizes nothing until the assertion has verified. An
+/// unknown id is `Catalogue(Missing)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.find_passkey(registry, "AAAAAAAAAAAAAAAAAAAAAA")
+/// ```
+@internal
+pub fn find_passkey(
+  manager: Manager(instance),
+  credential_id: String,
+) -> Result(#(access.Passkey, access.Principal), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: FindPasskey(
+    credential_id,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Records that a passkey signed a browser in, at `now_ms`, with the counter the
+/// assertion reported.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.use_passkey(registry, "AAAAAAAAAAAAAAAAAAAAAA", 7, now_ms)
+/// ```
+@internal
+pub fn use_passkey(
+  manager: Manager(instance),
+  credential_id: String,
+  sign_count: Int,
+  now_ms: Int,
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: UsePasskey(
+    credential_id,
+    sign_count,
+    now_ms,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Lists the owner's passkeys, as the owner's own credential. A caller that is
+/// not the owner is `AdminForbidden`, so a member's page reads none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.list_passkeys(registry, caller)
+/// ```
+@internal
+pub fn list_passkeys(
+  manager: Manager(instance),
+  caller: access.Digest,
+) -> Result(List(access.Passkey), AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: ListPasskeys(
+    caller,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Registers a passkey for the owner. The caller and the epoch are checked in
+/// the same dispatch as the write, and the caller must be the owner. The key,
+/// counter, label and credential id are the verified registration's; the
+/// catalogue checks their shape again and refuses a ninth passkey or a repeated
+/// credential id, as `AdminMetadata`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.add_passkey(registry, caller, epoch, id, key, 0, "Phone", now_ms)
+/// ```
+@internal
+pub fn add_passkey(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  credential_id: String,
+  public_key: BitArray,
+  sign_count: Int,
+  label: String,
+  now_ms: Int,
+) -> Result(Nil, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: AddPasskey(
+    caller,
+    epoch,
+    credential_id,
+    public_key,
+    sign_count,
+    label,
+    now_ms,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Removes one of the owner's passkeys, named by its fingerprint, under the same
+/// rules as `add_passkey`. A fingerprint that names none is
+/// `AdminMetadata(Missing)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.remove_passkey(registry, caller, epoch, "9c1e0f2ab3d4e5f6")
+/// ```
+@internal
+pub fn remove_passkey(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  fingerprint: String,
+) -> Result(Nil, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: RemovePasskey(
+    caller,
+    epoch,
+    fingerprint,
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
@@ -3997,6 +4153,88 @@ fn handle(
         |> result.map_error(AdminMetadata)
       }
       let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+
+    // The passkey messages. A sign-in's two are the daemon's own acts and name no
+    // caller. The other three are the owner's, so the caller is authenticated as
+    // the owner in the dispatch that reads or writes, as every administration is.
+    FindPasskey(credential_id, reply) -> {
+      let outcome = {
+        use found <- result.try(
+          access.passkey(book.catalogue, credential_id)
+          |> result.map_error(Catalogue),
+        )
+        use principal <- result.map(
+          access.get(book.catalogue, found.principal_id)
+          |> result.map_error(Catalogue),
+        )
+        #(found, principal)
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    UsePasskey(credential_id, sign_count, now_ms, reply) -> {
+      process.send(
+        reply,
+        access.passkey_used(book.catalogue, credential_id, sign_count, now_ms)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    ListPasskeys(caller, reply) -> {
+      let outcome = {
+        use Nil <- result.try(authenticated_owner(book, caller))
+        use principal <- result.try(
+          principal_of(book, caller) |> result.replace_error(AdminForbidden),
+        )
+        access.passkeys(book.catalogue, principal.id)
+        |> result.map_error(AdminMetadata)
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    AddPasskey(
+      caller,
+      epoch,
+      credential_id,
+      public_key,
+      sign_count,
+      label,
+      now_ms,
+      reply,
+    ) -> {
+      let outcome = {
+        use Nil <- result.try(current_epoch(phase, book, epoch))
+        use Nil <- result.try(authenticated_owner(book, caller))
+        use principal <- result.try(
+          principal_of(book, caller) |> result.replace_error(AdminForbidden),
+        )
+        access.add_passkey(
+          book.catalogue,
+          principal.id,
+          credential_id,
+          public_key,
+          sign_count,
+          label,
+          now_ms,
+        )
+        |> result.map_error(AdminMetadata)
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    RemovePasskey(caller, epoch, fingerprint, reply) -> {
+      let outcome = {
+        use Nil <- result.try(current_epoch(phase, book, epoch))
+        use Nil <- result.try(authenticated_owner(book, caller))
+        use principal <- result.try(
+          principal_of(book, caller) |> result.replace_error(AdminForbidden),
+        )
+        access.remove_passkey(book.catalogue, principal.id, fingerprint)
+        |> result.map_error(AdminMetadata)
+      }
       process.send(reply, outcome)
       sm.keep(book)
     }

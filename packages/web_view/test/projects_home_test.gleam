@@ -210,6 +210,7 @@ fn start_with(projects: option.Option(home.Projects)) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    passkeys: None,
     visiting: None,
     orchestrators: None,
     executors: [],
