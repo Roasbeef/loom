@@ -282,3 +282,14 @@ pub fn the_other_refusals_a_move_meets_keep_their_code_and_words_test() {
     == "not_movable: request refused"
   assert words("conflict", "request refused") == "conflict: request refused"
 }
+
+// A receiver's refusal reaches the terminal as the refusal the daemon sent, in
+// the daemon's words. The terminal prints it on standard error under `loom
+// sessions` and exits nonzero, as every refused subcommand does.
+pub fn a_refusal_by_the_receiver_prints_its_cause_test() {
+  let cause =
+    "this orchestrator does not list the node twolaptop@100.75.241.68 as an "
+    <> "orchestrator"
+  assert selection.failure_for(session, daemon.Refused("not_movable", cause))
+    == "not_movable: " <> cause
+}

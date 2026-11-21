@@ -260,6 +260,7 @@ fn plan_of(name: String) -> distribution_plan.Plan {
             bundle_dir: Some("/vm/" <> name <> "/orch"),
             executors: [names.name],
             workspaces: [],
+            spawners: [],
           ),
           distribution_plan.Node(
             name: names.name,
@@ -270,6 +271,7 @@ fn plan_of(name: String) -> distribution_plan.Plan {
             bundle_dir: None,
             executors: [],
             workspaces: [],
+            spawners: [],
           ),
         ],
         directory: [],

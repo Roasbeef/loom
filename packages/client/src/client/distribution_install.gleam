@@ -41,6 +41,7 @@ import client/distribution_provision.{
 import client/executors
 import client/membership_entry
 import client/membership_provision
+import client/orchestrators
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/list
@@ -694,10 +695,19 @@ fn accepted(
   // table, which is the check the daemon makes at start.
   use Nil <- result.try(case bundle.trust {
     distribution_bundle.SignedLedger(_) -> Ok(Nil)
-    distribution_bundle.StaticPeers(_) ->
-      executors.from_document(document)
+    distribution_bundle.StaticPeers(_) -> {
+      use Nil <- result.try(
+        executors.from_document(document)
+        |> result.replace(Nil)
+        |> result.map_error(fn(reason) { path <> ": " <> reason }),
+      )
+
+      // The rows the bundle writes beside any the operator added by hand must
+      // still name distinct nodes, or the daemon refuses the file at start.
+      orchestrators.from_document(document)
       |> result.replace(Nil)
       |> result.map_error(fn(reason) { path <> ": " <> reason })
+    }
   })
 
   // Ensure the merged document declares an active distribution configuration.
