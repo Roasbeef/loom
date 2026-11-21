@@ -2485,7 +2485,7 @@ open the admin page. That is a provisional ruling recorded in
 
 | Route | What it does |
 |---|---|
-| `GET /ui/signin` | Draws the sign-in page: a fixed document with one form, a challenge from `ui_sessions.challenge` and the relying party id, as data attributes. It needs no login. |
+| `GET /ui/signin` | Draws the sign-in page: a fixed document with one form, a challenge from `ui_sessions.challenge` and the relying party id, as data attributes. It needs no login, and it opens from a link in another app: any top-level document navigation (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`) is admitted whatever its `Sec-Fetch-Site`, and a script's `fetch` or an embedded request is refused (`ui_http.signin_navigation_allowed`, protocol-change/127 addendum). |
 | `POST /ui/signin` | `server.signin_submit`: the sender, the declared form, a control-class permit, then `ui_passkey.sign_in`. A good assertion answers like `login_resume` does: the exchange page of a new home, with the page cookie and the login cookie. Every refusal is one `401` document. |
 | `GET /ui/p/<key>/passkey` | Draws the registration page for a page that `ui_passkey.may_register` accepts. |
 | `POST /ui/p/<key>/passkey` | `server.passkey_submit`: the same checks, the page's nonce, then `ui_passkey.register`. A good registration answers `303` to the home; every refusal is one `403`. |

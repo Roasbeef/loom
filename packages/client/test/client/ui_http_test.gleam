@@ -65,6 +65,50 @@ pub fn only_a_first_party_navigation_may_open_a_keyed_page_test() {
   assert !ui_http.navigation_allowed(get("/ui/p/k/sessions/s", []))
 }
 
+// The sign-in page also admits a top-level document navigation from any site,
+// because its owner arrives from a link in another app. A request another
+// page's script can make silently, or one that names no mode and destination,
+// is refused, and the keyed pages' check is not widened.
+pub fn the_sign_in_page_admits_any_top_level_navigation_test() {
+  let from = fn(site, mode, dest) {
+    ui_http.signin_navigation_allowed(
+      get("/ui/signin", [
+        #("sec-fetch-site", site),
+        #("sec-fetch-mode", mode),
+        #("sec-fetch-dest", dest),
+      ]),
+    )
+  }
+  assert from("cross-site", "navigate", "document")
+  assert from("same-site", "navigate", "document")
+  assert from("none", "navigate", "document")
+  assert !from("cross-site", "cors", "empty")
+  assert !from("cross-site", "no-cors", "document")
+  assert !from("cross-site", "navigate", "iframe")
+  assert !from("cross-site", "navigate", "image")
+  assert !from("cross-site", "nested-navigate", "document")
+
+  // The first-party cases are admitted as before, with or without the mode
+  // and destination, and a request with no headers at all is not.
+  assert ui_http.signin_navigation_allowed(
+    get("/ui/signin", [#("sec-fetch-site", "none")]),
+  )
+  assert ui_http.signin_navigation_allowed(
+    get("/ui/signin", [#("sec-fetch-site", "same-origin")]),
+  )
+  assert !ui_http.signin_navigation_allowed(get("/ui/signin", []))
+  assert !ui_http.signin_navigation_allowed(
+    get("/ui/signin", [#("sec-fetch-site", "cross-site")]),
+  )
+  assert !ui_http.navigation_allowed(
+    get("/ui/p/k/sessions/s", [
+      #("sec-fetch-site", "cross-site"),
+      #("sec-fetch-mode", "navigate"),
+      #("sec-fetch-dest", "document"),
+    ]),
+  )
+}
+
 pub fn only_a_first_party_navigation_may_exchange_a_ticket_test() {
   let site = fn(value) {
     ui_http.exchange_allowed(
