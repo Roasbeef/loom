@@ -422,7 +422,8 @@ cannot be combined with a nondefault shard, and invalid or empty shards fail.
 `scripts/check.sh client` with no shard requested runs the same three shards
 one after another, each under `scripts/test.sh`'s own 1200 s bound, because the
 whole package no longer fits one bound. That covers the signoff client lane,
-the affected gate and `make check-client`. Naming a shard runs only that shard.
+the affected gate, `make check-client` and `make check`. Naming a shard runs only that
+shard, and `LOOM_CLIENT_TEST_SHARD=1/1` restores the single run.
 
 `LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote` runs the same gate
 inside a fresh container on the remote box, and only there; there is
