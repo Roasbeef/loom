@@ -153,6 +153,17 @@ fn moving_listing(
   listed: List(orchestrators.Orchestrator),
   run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
 ) {
+  moving_settling(desk_says, listed, fn(_, _) { session_movers.InFlight }, run)
+}
+
+// `moving_listing` with the answer the movers give when asked how a move ended.
+// The movers here never run a move, so this is where a test says it ended.
+fn moving_settling(
+  desk_says: process.Subject(Origin),
+  listed: List(orchestrators.Orchestrator),
+  settled: fn(catalogue.Pending, Int) -> session_movers.Settlement,
+  run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
+) {
   let told = recorder()
   let asking =
     Directory(
@@ -169,6 +180,7 @@ fn moving_listing(
       cover: fn() { Nil },
       forget: fn(_) { Nil },
       moves: fn() { [] },
+      settled:,
     )
   wire.fixture_moving(
     limits.defaults,
@@ -1026,4 +1038,42 @@ pub fn a_selection_beside_the_session_files_also_stops_a_move_test() {
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
+}
+
+// A receiver that refuses a move ends it within seconds, and the command that
+// asked for the move is answered as a refusal that carries the receiver's words,
+// so a script is told that nothing moved. A move that is still going, or that
+// finished, is answered as before.
+pub fn a_move_the_receiver_refuses_is_answered_as_a_refusal_with_its_cause_test() {
+  let refusal =
+    "the receiving orchestrator does not list this node as an orchestrator"
+  let settled = fn(move: catalogue.Pending, _wait) {
+    case move.to {
+      "laptop" -> session_movers.Abandoned(refusal)
+      _ -> session_movers.Completed
+    }
+  }
+  moving_settling(
+    origin(),
+    [laptop(), orchestrators.plain("desk", "desk@10.0.0.8")],
+    settled,
+    fn(ready, port, credential, _recorder) {
+      let refused = remote(ready, "refused")
+      let finished = remote(ready, "finished")
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+
+      // The refusal is an error frame, which the terminal turns into a
+      // nonzero exit status, and it carries the cause in words.
+      let refusal_frame = move(socket, 1, refused, "laptop", ready.epoch)
+      assert code(refusal_frame) == json.String("not_movable")
+      assert words(refusal_frame) == refusal
+
+      // A move that finished is answered with its identity, as it always was.
+      let accepted = move(socket, 2, finished, "desk", ready.epoch)
+      assert field(accepted, "event") == json.String("sessions.move")
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
 }

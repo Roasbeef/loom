@@ -764,6 +764,17 @@ each bundle (`loom-distribution-bundle/1`) lists its peers' pins, the key is
 dropped when `provision` returns, and adding a node or renewing a certificate
 means provisioning again and reinstalling every bundle.
 
+A static bundle of an orchestrator also writes `[orchestrators.<name>]` for each other
+orchestrator it peers with (`distribution_provision.listed_orchestrators`), because a daemon
+accepts a move only from an orchestrator it lists and the plan already says they know each
+other. A ledger bundle writes none, since the daemon derives them. Letting another
+orchestrator start sessions here is not implied by a plan: it needs a profile and a
+placement. A `[node.spawners.<name>]` table on an orchestrator node says it, with `profile`,
+`executor` and `workspace`, and the bundle then writes `[spawners.<name>]` and
+`[spawners.<name>.top_level]` (`distribution_bundle.config_tables`), in both trust modes. The
+profile must still be defined in the node's `[profiles.<name>]`, which the plan does not
+write.
+
 ## One tool call, end to end
 
 A remote call goes through four stages: the session open attaches once, each
@@ -1564,9 +1575,15 @@ the executor, the laptop's registration still names the old directory, and the r
 checkout is not built, so the laptop's activation refuses the session with a sentence that
 says its work is on the executor, that moving it back is not supported yet, that nothing
 moved, and that its commits are on the executor's branch `loom/<session>`. `loom sessions
-move` does not wait for the outcome, so the refusal appears in the source's daemon log as
-`daemon.move_aborted`; neither `loom sessions list --all` nor `loom deployment status`
-reports an aborted move, and the session simply stays where it was.
+move` waits up to seven seconds for the move to end (`session_movers.settle_wait_ms`),
+and a move that ended in that time as an abort is answered as a `not_movable` refusal
+carrying the receiver's sentence, so the command prints it and exits 1. The movers keep
+how the latest move of each session ended in memory (`session_movers.Settlement`), and
+`server.move_command` asks for it after the registry accepts the move. A move that is still
+going when the wait ends is answered as before, with its operation, and a refusal that
+comes later appears only in the source's daemon log as `daemon.move_aborted`. Neither
+`loom sessions list --all` nor `loom deployment status` reports an aborted move, and the
+session stays where it was.
 
 ### The executor fence
 

@@ -1378,8 +1378,12 @@ loom sessions move 0198c0de-0000-7000-8000-000000000001 --to bravo
 
 It prints `moving 0198c0de-0000-7000-8000-000000000001 to bravo (operation
 <id>)` and returns. That means the daemon has stopped the session, recorded the
-move, and will carry it out. The command does not wait. Asking again for the same
-destination prints the same operation. Naming a destination that is not in the
+move, and will carry it out. The command waits up to seven seconds for the move to end:
+a move the receiving orchestrator refuses in that time exits 1 and prints the
+receiver's reason, for example that it lists no `[orchestrators.<name>]` for this
+node. A move still going after the wait prints the line above and exits 0, and a
+refusal that comes later is only in the daemon log as `daemon.move_aborted`. Asking
+again for the same destination prints the same operation. Naming a destination that is not in the
 `[orchestrators.<name>]` tables is refused with `orchestrator_unknown`. A local
 session is refused with `not_movable` when the destination's table names no
 `checkout_executor` and `checkout_workspace`, and so is a session that was moved here

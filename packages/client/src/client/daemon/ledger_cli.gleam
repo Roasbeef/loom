@@ -1355,6 +1355,8 @@ fn write_bundle(
         _ -> rows
       },
       workspaces: request.workspaces,
+      orchestrators: [],
+      spawners: [],
       directory: [],
       ca: authority.certificate,
       certificate:,
@@ -1444,6 +1446,8 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
             trust: distribution_bundle.SignedLedger(lines_of(signed.store)),
             executors: [],
             workspaces: [],
+            orchestrators: [],
+            spawners: [],
             directory: [],
             ca: authority.certificate,
             certificate:,
