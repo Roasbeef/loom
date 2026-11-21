@@ -51,6 +51,7 @@
 //// eight starting configurations.
 
 import client/distribution_install
+import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/vm_link.{LinkFiles, Row}
 import client/vm_spec.{type LinkKind, Distribution, Untrusted}
 import gleam/dict
@@ -65,6 +66,18 @@ import statem
 import tom
 
 const seed = 20_261_114
+
+/// How long one campaign may take, in seconds. A campaign is CPU-bound TOML
+/// work that takes two to four seconds on an idle machine and up to fifty on a
+/// hosted client shard that shares the emulator with daemon fixtures. eunit's
+/// unchosen default, 5 s scaled to 50 by gleeunit, sat at that edge, so a busy
+/// runner reported a timeout and not a property failure.
+const campaign_budget_seconds = 300
+
+/// gleeunit runs eunit with `ScaleTimeouts(10)`, and that scale multiplies a
+/// generator's own timeout too, so the number handed to eunit is the number
+/// wanted divided by ten.
+const gleeunit_timeout_scale = 10
 
 const first_port = 40_000
 
@@ -1235,26 +1248,30 @@ fn spec(start: Start) -> statem.Spec(Model, Command, World) {
   )
 }
 
-fn campaign(start: Start) -> Nil {
-  let config =
-    statem.default_config(seed:)
-    |> statem.with_test_count(300)
-    |> statem.with_max_commands(40)
+// A campaign is a generator with its own budget rather than a plain test,
+// because only a `*_test_` generator can ask eunit for more than the default.
+fn campaign(start: Start) -> EunitTest {
+  Timeout(campaign_budget_seconds / gleeunit_timeout_scale, fn() {
+    let config =
+      statem.default_config(seed:)
+      |> statem.with_test_count(300)
+      |> statem.with_max_commands(40)
 
-  case statem.check(spec(start), config) {
-    Ok(Nil) -> Nil
-    Error(failure) -> {
-      io.println_error(statem.report(failure, describe))
-      panic as "stateful property failed"
+    case statem.check(spec(start), config) {
+      Ok(Nil) -> Nil
+      Error(failure) -> {
+        io.println_error(statem.report(failure, describe))
+        panic as "stateful property failed"
+      }
     }
-  }
+  })
 }
 
-pub fn guests_follow_the_model_in_an_empty_file_test() {
+pub fn guests_follow_the_model_in_an_empty_file_test_() -> EunitTest {
   campaign(Start(NoDeployment, NoSquatter, NothingOfTheOperators, NoOldGuest))
 }
 
-pub fn guests_follow_the_model_beside_a_ledger_deployment_test() {
+pub fn guests_follow_the_model_beside_a_ledger_deployment_test_() -> EunitTest {
   campaign(Start(
     LedgerDeployment,
     NoSquatter,
@@ -1263,7 +1280,7 @@ pub fn guests_follow_the_model_beside_a_ledger_deployment_test() {
   ))
 }
 
-pub fn guests_follow_the_model_when_a_trusted_row_has_the_first_guests_name_test() {
+pub fn guests_follow_the_model_when_a_trusted_row_has_the_first_guests_name_test_() -> EunitTest {
   campaign(Start(
     NoDeployment,
     TrustedRowForFirst,
@@ -1272,7 +1289,7 @@ pub fn guests_follow_the_model_when_a_trusted_row_has_the_first_guests_name_test
   ))
 }
 
-pub fn guests_follow_the_model_beside_a_ledger_and_a_squatting_row_test() {
+pub fn guests_follow_the_model_beside_a_ledger_and_a_squatting_row_test_() -> EunitTest {
   campaign(Start(
     LedgerDeployment,
     TrustedRowForFirst,
@@ -1281,15 +1298,15 @@ pub fn guests_follow_the_model_beside_a_ledger_and_a_squatting_row_test() {
   ))
 }
 
-pub fn guests_follow_the_model_beside_an_operators_own_link_table_test() {
+pub fn guests_follow_the_model_beside_an_operators_own_link_table_test_() -> EunitTest {
   campaign(Start(LedgerDeployment, NoSquatter, OperatorLink, NoOldGuest))
 }
 
-pub fn guests_follow_the_model_beside_an_operators_own_untrusted_row_test() {
+pub fn guests_follow_the_model_beside_an_operators_own_untrusted_row_test_() -> EunitTest {
   campaign(Start(NoDeployment, NoSquatter, OperatorRow, NoOldGuest))
 }
 
-pub fn guests_follow_the_model_beside_a_stopped_distribution_guest_test() {
+pub fn guests_follow_the_model_beside_a_stopped_distribution_guest_test_() -> EunitTest {
   campaign(Start(
     LedgerDeployment,
     NoSquatter,
@@ -1298,7 +1315,7 @@ pub fn guests_follow_the_model_beside_a_stopped_distribution_guest_test() {
   ))
 }
 
-pub fn guests_follow_the_model_beside_a_running_distribution_guest_test() {
+pub fn guests_follow_the_model_beside_a_running_distribution_guest_test_() -> EunitTest {
   campaign(Start(
     LedgerDeployment,
     TrustedRowForFirst,
