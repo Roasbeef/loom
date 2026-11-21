@@ -413,12 +413,16 @@ bodies beyond N. Modules that touch a VM-global resource are held back and
 run alone, declared with a reason in `scripts/serial-tests`. It defaults to 8;
 `SIGNOFF_PARALLEL=1` reproduces the sequential run when a failure has
 to be told apart from a concurrency effect. The hosted macOS full gate uses
-`LOOM_CLIENT_TEST_PARALLEL=4` with `LOOM_CLIENT_TEST_SHARD=1/2` or `2/2`
-to partition only the client package across two runners. `LOOM_TEST_SHARD=i/n`
-selects every nth module from the sorted full collection; both client shards
+`LOOM_CLIENT_TEST_PARALLEL=4` with `LOOM_CLIENT_TEST_SHARD=1/3`, `2/3` or
+`3/3` to partition only the client package across three runners. `LOOM_TEST_SHARD=i/n`
+selects every nth module from the sorted full collection; the three client shards
 cover each module once, including the isolated serial modules. Other packages
-and the full-gate checks run unchanged in both matrix members. Focused filters
+and the full-gate checks run unchanged in every matrix member. Focused filters
 cannot be combined with a nondefault shard, and invalid or empty shards fail.
+`scripts/check.sh client` with no shard requested runs the same three shards
+one after another, each under `scripts/test.sh`'s own 1200 s bound, because the
+whole package no longer fits one bound. That covers the signoff client lane,
+the affected gate and `make check-client`. Naming a shard runs only that shard.
 
 `LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote` runs the same gate
 inside a fresh container on the remote box, and only there; there is

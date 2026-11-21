@@ -98,11 +98,29 @@ for pkg in "${targets[@]}"; do
     gleam format --check "${format_paths[@]}"
     # The hosted client suite needs concurrency to fit its aggregate budget.
     # Keep that opt-in local to this package and preserve the global runner knob.
+    #
+    # The client suite no longer fits one run under test.sh's 1200 s bound.
+    # With no shard requested, the package runs as the same three shards
+    # hosted CI runs, one after another, each under its own bound; a caller
+    # that names a shard (CI, a retry of one shard) gets exactly that shard.
+    # Doing it here covers every caller of `check.sh client` at once: the
+    # signoff lane, the affected gate and `make check-client`.
+    shards=("")
     if [ "$pkg" = "client" ]; then
       export LOOM_TEST_PARALLEL="${LOOM_CLIENT_TEST_PARALLEL:-${LOOM_TEST_PARALLEL:-1}}"
-      export LOOM_TEST_SHARD="${LOOM_CLIENT_TEST_SHARD:-${LOOM_TEST_SHARD:-1/1}}"
+      requested="${LOOM_CLIENT_TEST_SHARD:-${LOOM_TEST_SHARD:-}}"
+      if [ -n "$requested" ]; then
+        shards=("$requested")
+      else
+        shards=(1/3 2/3 3/3)
+      fi
     fi
-    bash ../../scripts/test.sh "$pkg"
+    for shard in "${shards[@]}"; do
+      if [ -n "$shard" ]; then
+        export LOOM_TEST_SHARD="$shard"
+      fi
+      bash ../../scripts/test.sh "$pkg"
+    done
     # These portable suites and the platform codec promise both targets;
     # the gate holds them to it (scripts/portable_js_test.sh says why).
     case "$pkg" in
