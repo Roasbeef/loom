@@ -932,6 +932,8 @@ fn serving_check(output: String) -> home.Model {
       },
       answer: fn(_, _, _, _, deliver) { deliver(feed.Recorded) },
       close: fn(_, _, deliver) { deliver(feed.Closed) },
+      stop: fn(_, _, deliver) { deliver(feed.Acted) },
+      retry: fn(_, _, deliver) { deliver(feed.Acted) },
     )
   run(opened(start_with(Some(projects))), home.OpeningTicket("p1", "t-chk"))
 }

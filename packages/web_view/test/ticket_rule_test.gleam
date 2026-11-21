@@ -27,6 +27,7 @@ fn ticket(
     question: Some(board.Question(seq: 7, text: "which database?", options: [])),
     pull_request: None,
     failure: None,
+    check: None,
     actions:,
   )
 }
@@ -61,7 +62,7 @@ pub fn only_tickets_waiting_on_a_person_are_threads_test() {
     board_of([
       ticket("t-work", board.Working, []),
       ticket("t-ask", board.PersonAnswer, []),
-      ticket("t-check", board.UnknownStage("person/check"), []),
+      ticket("t-check", board.PersonCheck, []),
       ticket("t-odd", board.UnknownStage("triage"), []),
     ]),
   ]
@@ -77,7 +78,7 @@ pub fn only_tickets_waiting_on_a_person_are_threads_test() {
 // word, and an action this client does not know draws nothing.
 pub fn controls_follow_the_daemons_list_and_never_the_stage_test() {
   let listed =
-    ticket("t-check", board.UnknownStage("person/check"), [
+    ticket("t-check", board.PersonCheck, [
       board.CanClose,
       board.CanStop,
       board.UnknownAction("recheck"),
@@ -86,7 +87,7 @@ pub fn controls_follow_the_daemons_list_and_never_the_stage_test() {
 
   // The same stage with a different list draws a different set.
   let other =
-    ticket("t-check", board.UnknownStage("person/check"), [
+    ticket("t-check", board.PersonCheck, [
       board.CanRetry,
     ])
   assert ticket_rule.controls(other, Operating) == [Retry]

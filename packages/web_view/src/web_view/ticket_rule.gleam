@@ -194,7 +194,7 @@ pub type Lane {
 /// ```
 pub fn lane(waiting: Waiting) -> Lane {
   case waiting.ticket.stage {
-    board.PersonReview | board.UnknownStage("person/check") -> Reviewing
+    board.PersonReview | board.PersonCheck -> Reviewing
     board.PersonDelivery
     | board.PersonAnswer
     | board.PersonBlocked
