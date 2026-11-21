@@ -2137,7 +2137,11 @@ same shape for delegate sessions).
 
 Every other message names a session, which must have a row for this spawner
 (`NotRelayed`). A session the owner started, or another spawner did, is
-unreachable by this door. A message about a saved session opens it first, within a
+unreachable by this door. A session this spawner moved here is reachable: the
+receiver of a move writes the row when the sender's node is a spawner with a
+`top_level` table, outside the two caps (protocol-change/108, the addendum on moved
+sessions), so the laptop's page opens a session that `loom sessions move` sent to the
+box the way it opens one it created. A message about a saved session opens it first, within a
 budget inside the laptop's seven seconds. A listing opens nothing: a saved session
 is listed idle with no requests, and its requests are read when the page opens it.
 A failed resident overview or a transitional instance refuses the listing rather

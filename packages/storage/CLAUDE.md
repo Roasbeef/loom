@@ -272,7 +272,7 @@ independent test oracle, including Unicode rejection and length boundaries.
   registration (key `relayed_key`), binds its session-only domain mapping and
   inserts the row, all or none. A request id that belongs to another spawner is
   `Conflict`. `relayed_for`, `relayed_of`, `relayed_held` and `relayed_since` are
-  the reads, `relayed_page` lists a spawner's rows newest first in pages of at most
+  the reads, `domain.import_relaying` writes, in the import's own transaction, the same row for a session that arrived by a move (`relay_import_in_transaction`: outside the two caps and only when it has none) (protocol-change/108, the addendum on moved sessions), and `relayed_page` lists a spawner's rows newest first in pages of at most
   `relayed_page_limit` (64) with the name and placement, skipping archived sessions so the listing is bounded by the cap, and `delete`
   removes the row before the registration, which frees the place. The table is
   defined in `sql/catalogue_relayed.sql`.

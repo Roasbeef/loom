@@ -1858,6 +1858,17 @@ the real helper and `support/state_rig`. `state_apply_test` fires a hostile
 hook, fsmonitor program and ext transport rewrite natively first, so a missing
 canary afterwards is the apply's doing.
 
+## A moved session on the sender's relayed page
+
+`session_importer.Context.spawners` is the `[spawners.<name>]` list. When an import is
+made, `page_of` finds the orchestrator the session came from, then the spawner whose
+node is that orchestrator's node, and when that spawner has a `top_level` table its
+name goes in `manager.Import.relay_to`. `domain.import_relaying` then writes the
+relayed row in the import's own transaction (`catalogue.relay_import_in_transaction`,
+outside the two caps, nothing when a row exists), so every door of `top_host` serves
+the session as one the page created and no later step can leave it unreachable
+(protocol-change/108, the addendum of 2026-11-20).
+
 ## Repository states: pieces on the wire and the commit author
 
 Slice 2 of protocol-change/107 moves a state across a link and adds the identity

@@ -200,6 +200,7 @@ fn owned_daemon(
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
       orchestrators: roster.fixed([orchestrators.plain(peer, node_name())]),
+      spawners: [],
       executors: roster.fixed(listed),
       logger: log.discard(),
     )
@@ -1209,6 +1210,7 @@ fn importer_context(rig: Rig) -> session_importer.Context(String) {
     domain_configuration: "",
     clock: clock.fixed(at: 5000),
     orchestrators: roster.fixed([orchestrators.plain("alpha", node_name())]),
+    spawners: [],
     executors: roster.fixed(receiver_knows_box()),
     logger: log.discard(),
   )
@@ -1870,6 +1872,7 @@ fn receiver_listing(
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
       orchestrators: roster.fixed([orchestrators.plain("alpha", node_name())]),
+      spawners: [],
       executors: roster.fixed(listed),
       logger: log.discard(),
     )
