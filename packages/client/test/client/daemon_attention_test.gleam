@@ -1303,12 +1303,15 @@ pub fn members_answer_by_their_role_over_the_control_socket_test() {
   })
 }
 
-pub fn the_web_views_answer_path_still_delivers_and_settles_test() {
+// This pins `strand_sender`, the function the page's `message_to_strand` calls
+// and the control socket's `strand_send` is built from. A page's attachment has
+// too many fields to build here, so the page's own wrapper is covered by
+// `ui_socket_test` and `ui_route_test`.
+pub fn the_strand_sender_the_page_shares_delivers_and_settles_test() {
   with_rig(fn(registry, _port, _credential, epoch, rig, principal) {
     add_audit_strand(rig)
 
-    // The home page's answer, built from the same sender the control socket's
-    // is (`ui_socket.strand_sender`), as `message_to_strand` builds it.
+    // The send a home page's answer is made with, over the owner's credential.
     let send =
       ui_socket.strand_sender(registry, rig.owner, epoch, fn(_) {
         Ok(rig.harness.hub)
@@ -1361,8 +1364,19 @@ fn saved_request(
 
 pub fn saved_counts_are_read_for_the_sessions_a_credential_holds_test() {
   with_rig(fn(registry, port, credential, epoch, rig, _principal) {
-    // Only the saved session has a row. The write is a cast and the read queues
-    // behind it in the registry's turn.
+    // Both sessions have a row. The writes are casts and the read queues behind
+    // them in the registry's turn.
+    manager.record_attention(
+      registry,
+      rig.session,
+      catalogue.AttentionSummary(
+        pending_approvals: 0,
+        open_asks: 1,
+        open_finds: 0,
+        oldest_open_at: None,
+        updated_at: 50,
+      ),
+    )
     manager.record_attention(
       registry,
       rig.saved,
@@ -1377,21 +1391,33 @@ pub fn saved_counts_are_read_for_the_sessions_a_credential_holds_test() {
     let #(socket, _) = connect(port, credential, "/v2/control")
     let _hello = frame(socket, within_ms: 1000)
 
-    // The row answers for the session that has one, and the resident session
-    // that was never summarised leaves no entry.
+    // Each row answers in the order asked, with `oldest_open_at` absent where
+    // nothing is open.
+    let resident_row =
+      json.Object([
+        #("session_id", json.String(rig.session)),
+        #("pending_approvals", json.Int(0)),
+        #("open_asks", json.Int(1)),
+        #("open_finds", json.Int(0)),
+        #("updated_at", json.Int(50)),
+      ])
+    let saved_row =
+      json.Object([
+        #("session_id", json.String(rig.saved)),
+        #("pending_approvals", json.Int(1)),
+        #("open_asks", json.Int(0)),
+        #("open_finds", json.Int(2)),
+        #("oldest_open_at", json.Int(30)),
+        #("updated_at", json.Int(40)),
+      ])
     let saved = saved_request(socket, 1, [rig.session, rig.saved], epoch)
     assert field(saved, "event") == json.String("sessions.saved_attention")
-    assert body(saved, "saved")
-      == json.Array([
-        json.Object([
-          #("session_id", json.String(rig.saved)),
-          #("pending_approvals", json.Int(1)),
-          #("open_asks", json.Int(0)),
-          #("open_finds", json.Int(2)),
-          #("oldest_open_at", json.Int(30)),
-          #("updated_at", json.Int(40)),
-        ]),
-      ])
+    assert body(saved, "saved") == json.Array([resident_row, saved_row])
+    assert body(
+        saved_request(socket, 6, [rig.saved, rig.session], epoch),
+        "saved",
+      )
+      == json.Array([saved_row, resident_row])
 
     // The batch bound is `sessions.attention`'s, and so is the epoch rule.
     assert code(saved_request(socket, 2, [], epoch))
@@ -1428,15 +1454,12 @@ pub fn saved_counts_are_read_for_the_sessions_a_credential_holds_test() {
       )
     let #(held_socket, _) = connect(port, holder, "/v2/control")
     let _ = frame(held_socket, within_ms: 1000)
-    assert list.length({
-        let assert json.Array(rows) =
-          body(
-            saved_request(held_socket, 1, [rig.session, rig.saved], epoch),
-            "saved",
-          )
-        rows
-      })
-      == 1
+    // Both sessions have a row, and the member holds only the saved one.
+    assert body(
+        saved_request(held_socket, 1, [rig.session, rig.saved], epoch),
+        "saved",
+      )
+      == json.Array([saved_row])
     assert body(saved_request(held_socket, 2, [rig.session], epoch), "saved")
       == json.Array([])
     let _ = ffi_ws.tcp_close(held_socket)
