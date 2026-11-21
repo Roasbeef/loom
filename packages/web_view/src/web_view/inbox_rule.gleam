@@ -28,7 +28,8 @@
 //// 2. `group` places a kind in one of four groups, and `grouped` collects
 ////    threads into the groups, each ordered by session name.
 ////    `grouped_with` also moves the idle sessions whose worktree holds changes
-////    into "To review".
+////    into "To review", and keeps a quiet session that has a row in the
+////    attention feed out of "Quiet", where it would be drawn a second time.
 //// 3. `selection` names the thread the reading pane shows, and `head` words a
 ////    thread's one line.
 //// 4. `landing` and `headline` summarise every report the page holds.
@@ -218,28 +219,38 @@ pub fn landing(reports: List(Report)) -> Landing {
 /// assert inbox_rule.grouped([]) == []
 /// ```
 pub fn grouped(threads: List(Thread)) -> List(#(Group, List(Thread))) {
-  grouped_with(threads, [])
+  grouped_with(threads, [], [])
 }
 
 /// The threads collected as `grouped` does, with the idle threads named in
-/// `reviewing` moved from "Waiting" to "To review". Only an idle thread moves:
-/// a session that is working, failed or waiting on an approval is where its
-/// report puts it whatever its tree holds.
+/// `reviewing` moved from "Waiting" to "To review", and the threads named in
+/// `attending` left out of "Quiet". Only an idle thread moves: a session that is
+/// working, failed or waiting on an approval is where its report puts it
+/// whatever its tree holds.
+///
+/// `attending` is the sessions that have a row in the attention feed: an open
+/// ask, a stuck strand or a find. Such a session may say nothing and be idle,
+/// which its report files as quiet, yet the feed draws its row under "Needs you"
+/// or "Finds". The quiet line's gloss says no one is waiting on the owner, so
+/// the session is not on that line as well; the feed's row is where it appears.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert inbox_rule.grouped_with([], ["a"]) == []
+/// assert inbox_rule.grouped_with([], ["a"], ["b"]) == []
 /// ```
 pub fn grouped_with(
   threads: List(Thread),
   reviewing: List(String),
+  attending: List(String),
 ) -> List(#(Group, List(Thread))) {
   [NeedsYou, ToReview, Waiting, Updates, Quiet]
   |> list.filter_map(fn(wanted) {
     let members =
       threads
-      |> list.filter(fn(thread) { placed(thread, reviewing) == wanted })
+      |> list.filter(fn(thread) {
+        placed(thread, reviewing, attending) == Ok(wanted)
+      })
       |> list.sort(by_name)
 
     // A group with no thread is not listed, so the page draws no empty header.
@@ -250,11 +261,21 @@ pub fn grouped_with(
   })
 }
 
-/// The group a thread is drawn in once the sessions to review are known.
-fn placed(thread: Thread, reviewing: List(String)) -> Group {
+/// The group a thread is drawn in once the sessions to review and the sessions
+/// with a feed row are known, or nothing when the feed's row is its only place.
+fn placed(
+  thread: Thread,
+  reviewing: List(String),
+  attending: List(String),
+) -> Result(Group, Nil) {
   case group(thread.report), list.contains(reviewing, thread.id) {
-    Waiting, True -> ToReview
-    other, _ -> other
+    Waiting, True -> Ok(ToReview)
+    Quiet, _ ->
+      case list.contains(attending, thread.id) {
+        True -> Error(Nil)
+        False -> Ok(Quiet)
+      }
+    other, _ -> Ok(other)
   }
 }
 

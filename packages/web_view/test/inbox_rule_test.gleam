@@ -305,11 +305,32 @@ pub fn only_an_idle_session_with_changes_moves_to_review_test() {
   let other = thread("b", "other", report(sessions.Idle, Some("Done.")))
   let working = thread("c", "busy", report(sessions.Working, Some("Doing.")))
 
-  let groups = inbox_rule.grouped_with([idle, other, working], ["a", "c", "z"])
+  let groups =
+    inbox_rule.grouped_with([idle, other, working], ["a", "c", "z"], [])
   assert list.map(groups, fn(entry) { entry.0 })
     == [inbox_rule.ToReview, inbox_rule.Waiting, inbox_rule.Updates]
   assert list.map(groups, fn(entry) { list.map(entry.1, fn(t) { t.id }) })
     == [["a"], ["b"], ["c"]]
   assert inbox_rule.group_words(inbox_rule.ToReview) == "To review"
-  assert inbox_rule.grouped_with([idle], []) == inbox_rule.grouped([idle])
+  assert inbox_rule.grouped_with([idle], [], []) == inbox_rule.grouped([idle])
+}
+
+// A quiet session with a row in the attention feed is drawn by that row, so the
+// folded line leaves it out. Only a quiet session is affected: a session the
+// report places elsewhere stays where it is.
+pub fn a_quiet_session_with_a_feed_row_is_not_folded_test() {
+  let asking = thread("a", "asking", report(sessions.Idle, None))
+  let silent = thread("b", "silent", report(sessions.Idle, None))
+  let working = thread("c", "busy", report(sessions.Working, None))
+
+  let groups =
+    inbox_rule.grouped_with([asking, silent, working], [], ["a", "c"])
+
+  assert list.map(groups, fn(entry) {
+      #(entry.0, list.map(entry.1, fn(each) { each.id }))
+    })
+    == [#(inbox_rule.Updates, ["c"]), #(inbox_rule.Quiet, ["b"])]
+
+  // With every quiet session attended, the folded group is not listed at all.
+  assert inbox_rule.grouped_with([asking], [], ["a"]) == []
 }
