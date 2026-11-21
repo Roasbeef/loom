@@ -1463,6 +1463,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "projects.answer"
     | "projects.close"
     | "projects.retry"
+    | "projects.recheck"
     | "projects.publish"
     | "projects.requeue"
     | "projects.set_mode"

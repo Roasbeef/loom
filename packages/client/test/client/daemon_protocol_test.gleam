@@ -13,6 +13,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import qcheck
 import storage/access
 import storage/domain
 
@@ -1066,6 +1067,138 @@ pub fn creation_agency_limits_decode_valid_and_reject_invalid_test() {
     ],
     fn(bad) {
       assert result.is_error(decode_with(bad))
+    },
+  )
+}
+
+// --- the attention control commands (protocol-change/128) ------------------
+
+// The seed the attention decoders' properties are drawn from, and how many
+// cases each checks. It is fixed so that a red run is the same red run
+// everywhere.
+const attention_seed = 1281
+
+const attention_cases = 200
+
+fn answer_object() -> json.JsonValue {
+  json.Object([#("answers", json.Object([#("q1", json.Bool(True))]))])
+}
+
+fn answer_body(
+  revision: json.JsonValue,
+  answer: json.JsonValue,
+) -> List(#(String, json.JsonValue)) {
+  [
+    #("session", json.String(session_id())),
+    #("ask", json.String("ask-3f9c01a2b4")),
+    #("revision", revision),
+    #("answer", answer),
+    #("epoch", json.String("ep-1")),
+  ]
+}
+
+pub fn attention_answer_decodes_every_nonnegative_revision_test() {
+  qcheck.default_config()
+  |> qcheck.with_test_count(attention_cases)
+  |> qcheck.with_seed(qcheck.seed(attention_seed))
+  |> qcheck.run(qcheck.bounded_int(0, 1_000_000_000), fn(revision) {
+    assert protocol.decode(envelope(
+        4,
+        "attention.answer",
+        answer_body(json.Int(revision), answer_object()),
+      ))
+      == Ok(protocol.Request(
+        4,
+        protocol.AnswerAsk(
+          session_id(),
+          "ask-3f9c01a2b4",
+          revision,
+          answer_object(),
+          "ep-1",
+        ),
+      ))
+  })
+}
+
+pub fn attention_answer_refuses_a_negative_revision_test() {
+  qcheck.default_config()
+  |> qcheck.with_test_count(attention_cases)
+  |> qcheck.with_seed(qcheck.seed(attention_seed))
+  |> qcheck.run(qcheck.bounded_int(-1_000_000, -1), fn(revision) {
+    let assert Error(fault) =
+      protocol.decode(envelope(
+        4,
+        "attention.answer",
+        answer_body(json.Int(revision), answer_object()),
+      ))
+    assert fault.code == "bad_request"
+  })
+}
+
+pub fn attention_answer_refuses_an_answer_that_is_not_an_object_test() {
+  list.each(
+    [
+      json.Null,
+      json.Bool(True),
+      json.Int(7),
+      json.String("yes"),
+      json.Array([answer_object()]),
+    ],
+    fn(bad) {
+      let assert Error(fault) =
+        protocol.decode(envelope(
+          4,
+          "attention.answer",
+          answer_body(json.Int(1), bad),
+        ))
+      assert fault.code == "bad_request"
+    },
+  )
+
+  // A body with no `answer` member at all is refused the same way.
+  let without =
+    list.filter(answer_body(json.Int(1), json.Null), fn(field) {
+      field.0 != "answer"
+    })
+  let assert Error(fault) =
+    protocol.decode(envelope(4, "attention.answer", without))
+  assert fault.code == "bad_request"
+}
+
+pub fn saved_attention_takes_the_batch_of_sessions_attention_test() {
+  let one = json.Array([json.String(session_id())])
+  assert protocol.decode(
+      envelope(5, "sessions.saved_attention", [
+        #("sessions", one),
+        #("epoch", json.String("ep-1")),
+      ]),
+    )
+    == Ok(protocol.Request(5, protocol.SavedAttention([session_id()], "ep-1")))
+
+  // The bound is `sessions.attention`'s: none, a repeat and more than the
+  // limit are all refused.
+  let many =
+    list.repeat(Nil, protocol.activity_limit + 1)
+    |> list.index_map(fn(_, seed) {
+      let #(id, _) =
+        ids.mint_session(ids.generator(clock.fixed(at: 1), seed: seed))
+      json.String(ids.session_id_to_string(id))
+    })
+  list.each(
+    [
+      json.Array([]),
+      json.Array([json.String(session_id()), json.String(session_id())]),
+      json.Array(many),
+    ],
+    fn(sessions) {
+      let assert Error(fault) =
+        protocol.decode(
+          envelope(5, "sessions.saved_attention", [
+            #("sessions", sessions),
+            #("epoch", json.String("ep-1")),
+          ]),
+        )
+      assert fault.code == "bad_request"
     },
   )
 }

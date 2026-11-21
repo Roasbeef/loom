@@ -6,6 +6,7 @@
 import client/daemon/ui_http
 import client/daemon/ui_origin
 import client/daemon/ui_sessions
+import gleam/dict
 import gleam/http
 import gleam/http/request
 import gleam/http/response
@@ -700,4 +701,88 @@ pub fn only_a_key_and_a_canonical_identity_make_a_relayed_target_test() {
   })
   assert ui_http.relayed_target("box", relayed_session)
   assert ui_http.relayed_target("box-2_x", relayed_session)
+}
+
+// The passkey routes (protocol-change/127): the sign-in page and its post, the
+// registration page and its post, and the two scripts, and nothing else beneath
+// them is a route.
+pub fn the_passkey_routes_are_the_pages_and_their_posts_test() {
+  assert ui_http.route(get("/ui/signin", [])) == ui_http.SigninPage
+  assert ui_http.route(post("/ui/signin", [])) == ui_http.SigninSubmit
+  assert ui_http.route(get("/ui/p/k1/passkey", [])) == ui_http.PasskeyPage("k1")
+  assert ui_http.route(post("/ui/p/k1/passkey", []))
+    == ui_http.PasskeySubmit("k1")
+  assert ui_http.route(get("/ui/signin/x", [])) == ui_http.Unknown
+  assert ui_http.route(post("/ui/signin/x", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/p/k1/passkey/x", [])) == ui_http.Unknown
+  assert ui_http.route(request.set_method(get("/ui/signin", []), http.Put))
+    == ui_http.Unknown
+  assert ui_http.route(get("/ui/assets/" <> page.signin_asset, []))
+    == ui_http.Asset(ui_http.SigninScript)
+  assert ui_http.route(get("/ui/assets/" <> page.passkey_asset, []))
+    == ui_http.Asset(ui_http.PasskeyScript)
+}
+
+// The relying party id is the host of the admitted origin without a port, in
+// lowercase, and is never read from a header the request adds.
+pub fn the_relying_party_id_is_the_admitted_hosts_name_test() {
+  assert ui_http.rp_id(ui_http.Loopback("localhost:4000")) == "localhost"
+  assert ui_http.rp_id(ui_http.Loopback("Loom.LOCALHOST:7440"))
+    == "loom.localhost"
+  assert ui_http.rp_id(ui_http.Loopback("127.0.0.1:4000")) == "127.0.0.1"
+  assert ui_http.rp_id(ui_http.Loopback("[::1]:4000")) == "[::1]"
+  let assert Ok(listed) = ui_origin.parse("https://box.tail0a99b.ts.net")
+  assert ui_http.rp_id(ui_http.Remote(listed)) == "box.tail0a99b.ts.net"
+  let assert Ok(ported) = ui_origin.parse("https://box.example:8443")
+  assert ui_http.rp_id(ui_http.Remote(ported)) == "box.example"
+}
+
+// A passkey form may declare up to its own bound, which is larger than the
+// resume's, and is declared as the resume's is.
+pub fn the_passkey_form_is_declared_within_its_own_bound_test() {
+  let form = [#("content-type", "application/x-www-form-urlencoded")]
+  let declared = fn(headers) {
+    ui_http.form_declared_within(
+      post("/ui/signin", headers),
+      ui_http.max_passkey_form_bytes,
+    )
+  }
+  assert declared([#("content-length", "1025"), ..form])
+  assert declared([#("content-length", "4096"), ..form])
+  assert !declared([#("content-length", "4097"), ..form])
+  assert !declared([#("content-length", "100")])
+  assert !declared([
+    #("content-length", "100"),
+    #("transfer-encoding", "chunked"),
+    ..form
+  ])
+}
+
+// A passkey form holds exactly the fields asked for, once each, with base64url
+// values in the encoded ones and no control character in the typed ones.
+pub fn a_passkey_form_holds_exactly_its_fields_test() {
+  let posted = fn(body: String, encoded, typed) {
+    ui_http.posted_fields(<<body:utf8>>, encoded, typed)
+  }
+  let assert Ok(fields) =
+    posted("id=AAAA-_&cdj=BBBB&label=Work+laptop", ["id", "cdj"], ["label"])
+  assert dict_get(fields, "id") == Ok("AAAA-_")
+  assert dict_get(fields, "label") == Ok("Work laptop")
+
+  // A missing field, an extra one, a repeat, an empty or ill-formed encoded
+  // value, a value over the bound, and a control character in a typed value.
+  assert posted("id=AAAA", ["id", "cdj"], []) == Error(Nil)
+  assert posted("id=AAAA&cdj=BBBB&x=1", ["id", "cdj"], []) == Error(Nil)
+  assert posted("id=AAAA&id=BBBB", ["id"], []) == Error(Nil)
+  assert posted("id=", ["id"], []) == Error(Nil)
+  assert posted("id=AA%2BA", ["id"], []) == Error(Nil)
+  assert posted("id=" <> string.repeat("A", 2049), ["id"], []) == Error(Nil)
+  assert posted("label=a%09b", [], ["label"]) == Error(Nil)
+  assert posted("label=" <> string.repeat("x", 257), [], ["label"])
+    == Error(Nil)
+  assert posted("label=", [], ["label"]) != Error(Nil)
+}
+
+fn dict_get(fields, name: String) {
+  list.key_find(dict.to_list(fields), name)
 }

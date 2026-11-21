@@ -83,6 +83,7 @@ import storage/catalogue_logins_schema
 import storage/catalogue_models_schema
 import storage/catalogue_moves_schema
 import storage/catalogue_names_schema
+import storage/catalogue_passkeys_schema
 import storage/catalogue_pools_schema
 import storage/catalogue_profiles_schema
 import storage/catalogue_projects_schema
@@ -311,7 +312,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 22
+pub const current_version = 23
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -339,6 +340,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(20, catalogue_projects_schema.schema),
     #(21, catalogue_agency_schema.schema),
     #(22, catalogue_session_attention_schema.schema),
+    #(23, catalogue_passkeys_schema.schema),
   ]
 }
 

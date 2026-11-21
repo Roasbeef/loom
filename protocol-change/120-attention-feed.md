@@ -587,7 +587,9 @@ the code does.
   over `daemon/attention_door.answer`, for the home page; `sessions.attention`,
   `attention.read` and `attention.close_find` are control commands as specified.
   A control-socket answer needs a gateway accessor added to `server.Config` and is
-  left to the slice that draws the answer.
+  left to the slice that draws the answer. *Addendum 2026-11-20:*
+  [128](128-attention-control-reads.md) added it, as `attention.answer` on the
+  control socket over the same door and the same send as the page's.
 - **The reserved strand names are restated in `client/attention_feed`.**
   `client/advisor` reaches `peer_mail` through `remote_child`, and `peer_mail`
   calls the feed, so importing `advisor.primary` and `advisor.strand` would be a

@@ -149,6 +149,7 @@ fn start(visiting: option.Option(home.Visit)) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    passkeys: None,
     visiting:,
     orchestrators: None,
     executors: [],

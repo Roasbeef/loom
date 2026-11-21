@@ -558,6 +558,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
             ledger_path: ledger,
             helper_path: here() <> "/../sandbox/loom-exec",
             credentials: [],
+            path: "",
             demand: settings.demand,
             logger: log.discard(),
           ),
@@ -578,6 +579,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
   let config =
     server.Config(
       worktree: fn(_) { None },
+      strand_send: wire.refusing_strand_send,
       peer_endpoint: fn(resident: serve.Resident) { Some(resident.peer) },
       daemon:,
       domain_configuration: "",

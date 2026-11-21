@@ -270,6 +270,7 @@ import web_view/names
 import web_view/operator_page
 import web_view/orchestrators as relayed_roster
 import web_view/page
+import web_view/passkeys
 import web_view/peer_links
 import web_view/placements
 import web_view/projects as page_projects
@@ -1289,6 +1290,18 @@ pub fn upgrade_home(
       rename_self: home_rename_self_capability(ceiling, fn(name, deliver) {
         rename_self_task(standing, open, epoch, name, deliver)
       }),
+      passkeys: home_passkeys_capability(
+        attachment.principal,
+        ceiling,
+        seen.grant.origin,
+        seen.key,
+        fn(deliver) {
+          read_task(deliver, fn() { passkeys_read(standing, open) })
+        },
+        fn(fingerprint) {
+          remove_passkey_for(standing, epoch, open, fingerprint)
+        },
+      ),
     )
 
   // A page opened on a session of another orchestrator (protocol-change/094) is
@@ -2008,6 +2021,7 @@ type Signing {
     device: Option(fn() -> signins.Answer),
     who: fn() -> Option(String),
     rename_self: Option(fn(String, fn(names.Answer) -> Nil) -> Nil),
+    passkeys: Option(home.Passkeys),
   )
 }
 
@@ -3131,6 +3145,7 @@ fn admit_home(
       admin: administering,
       who: read_task_for(signing.who),
       rename_self: signing.rename_self,
+      passkeys: signing.passkeys,
       visiting:,
       orchestrators: orchestrating,
     )
@@ -4053,6 +4068,140 @@ fn sign_out_reason(error: manager.AdminError) -> signins.Reason {
     | manager.AdminMoved(..)
     | manager.AdminNotMovable(..)
     | manager.AdminFailed(..) -> signins.Unavailable
+  }
+}
+
+/// The capability to manage passkeys that a home page minted for `principal` at
+/// `ceiling` and reached as `origin` is handed (protocol-change/127): the owner's
+/// operating home has it, and every other page, a member's, an observer's and a
+/// read-only link, has none. `read` and `remove` are the daemon's own questions,
+/// each of which authenticates the page's credential again. The address of the
+/// registration page, `page.passkey_path(key)`, is offered only to a page a
+/// `loom ui` exchange opened, because that is the only page the registration
+/// route accepts; a passkey's or a bookmark's own home lists and removes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_passkeys_capability(member, access.Operator, ui_sessions.Fresh, "k", read, remove) == None
+/// ```
+@internal
+pub fn home_passkeys_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  origin: ui_sessions.Origin,
+  key: String,
+  read: fn(fn(passkeys.Listing) -> Nil) -> Nil,
+  remove: fn(String) -> passkeys.Answer,
+) -> Option(home.Passkeys) {
+  case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator ->
+      Some(
+        home.Passkeys(read:, remove:, add: case origin {
+          ui_sessions.Fresh -> Some(page.passkey_path(key))
+          ui_sessions.Resumed -> None
+        }),
+      )
+    access.OwnerPrincipal, access.Observer | access.MemberPrincipal, _ -> None
+  }
+}
+
+/// The owner's passkeys, read with the page's credential, or `Unread` when the
+/// page has ended or the registry did not answer. The registry authenticates the
+/// credential as the owner again and reads only that principal's rows. Each row
+/// is drawn by its fingerprint and label; the credential id and the key stay in
+/// the catalogue.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.passkeys_read(standing, open)
+/// ```
+@internal
+pub fn passkeys_read(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+) -> passkeys.Listing {
+  case open() {
+    Error(Nil) -> passkeys.Unread
+    Ok(_) ->
+      case manager.list_passkeys(standing.registry, standing.digest) {
+        Ok(rows) -> passkeys.Listed(list.map(rows, listed_passkey))
+        Error(_) -> passkeys.Unread
+      }
+  }
+}
+
+/// A passkey as the catalogue holds it, as the page draws it.
+fn listed_passkey(row: access.Passkey) -> passkeys.Passkey {
+  passkeys.Passkey(
+    fingerprint: access.passkey_fingerprint(row.credential_id),
+    label: row.label,
+    created_at_ms: row.created_at_ms,
+    last_used_ms: row.last_used_ms,
+  )
+}
+
+/// Removes one of the owner's passkeys, named by `fingerprint`. The page must
+/// still be open and at `Operator` ceiling, and the registry authenticates its
+/// credential as the owner and checks the daemon's epoch in the same turn as the
+/// write, and finds the passkey among this principal's own and no other. It is
+/// logged as `daemon.passkey_removed` with the fingerprint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.remove_passkey_for(standing, epoch, open, "9c1e0f2ab3d4e5f6")
+/// ```
+@internal
+pub fn remove_passkey_for(
+  standing: Standing(instance),
+  epoch: String,
+  open: fn() -> Result(Int, Nil),
+  fingerprint: String,
+) -> passkeys.Answer {
+  case open(), standing.ceiling {
+    Error(Nil), _ -> passkeys.Declined(passkeys.Unavailable)
+    Ok(_), access.Observer -> passkeys.Declined(passkeys.NotAllowed)
+    Ok(_), access.Operator ->
+      case
+        manager.remove_passkey(
+          standing.registry,
+          standing.digest,
+          epoch,
+          fingerprint,
+        )
+      {
+        Ok(Nil) -> {
+          log.info(log.erlang(threshold: level.Info), "daemon.passkey_removed", [
+            field.ident("principal_id", standing.principal),
+            field.ident("passkey", fingerprint),
+          ])
+          passkeys.Removed
+        }
+        Error(error) -> passkeys.Declined(remove_reason(error))
+      }
+  }
+}
+
+/// A refused removal in the page's words. A fingerprint the owner does not hold
+/// is the one the person can act on, and a caller that is not the owner is told
+/// so; every other refusal is the daemon's.
+fn remove_reason(error: manager.AdminError) -> passkeys.Reason {
+  case error {
+    manager.AdminMetadata(catalogue.Missing)
+    | manager.AdminMetadata(catalogue.Invalid(_)) -> passkeys.NotFound
+    manager.AdminForbidden -> passkeys.NotAllowed
+    manager.AdminMetadata(_)
+    | manager.IsolationRequired
+    | manager.AdminStaleEpoch
+    | manager.AdminUnavailable
+    | manager.AdminBusy
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> passkeys.Unavailable
   }
 }
 
@@ -8836,10 +8985,33 @@ pub fn message_to_strand(
 ) -> fn(String, String, String, operator.Delivery) -> thread_send.Answer {
   // The page keeps this closure for as long as it is open, so it holds the
   // three values it reads and not the whole attachment.
-  let registry = attachment.registry
-  let digest = attachment.digest
-  let epoch = attachment.epoch
+  strand_sender(
+    attachment.registry,
+    attachment.digest,
+    attachment.epoch,
+    gateway_of,
+  )
+}
 
+/// What `message_to_strand` is made of, for a caller that holds a credential
+/// and not a page: the registry that answers authority and residency, the
+/// credential the authority is read for, and the daemon epoch the binding
+/// carries. The control socket's `attention.answer` delivers its prompt through
+/// this (protocol-change/128), so a prompt sent from a page and one sent from a
+/// native client take one path, under the same binding and the same cap.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.strand_sender(registry, digest, epoch, gateway_of)("01HX", "main", "retry", operator.Prompt)
+/// ```
+@internal
+pub fn strand_sender(
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  epoch: String,
+  gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
+) -> fn(String, String, String, operator.Delivery) -> thread_send.Answer {
   fn(session, strand, text, delivery) {
     let sent = {
       use #(principal, authority) <- result.try(
@@ -8869,6 +9041,11 @@ pub fn message_to_strand(
       use hub <- result.map(
         gateway_of(instance) |> result.replace_error(thread_send.NotResident),
       )
+
+      // The control socket's `attention.answer` shares this binding, so its
+      // prompts carry `PageDoor` and a `web-send-` connection id. That is
+      // harmless: the only reader of `door` is `gateway.evolution_via`, which a
+      // prompt never reaches.
       let binding =
         gateway.Binding(
           session_id: session,

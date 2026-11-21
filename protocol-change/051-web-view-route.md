@@ -5361,3 +5361,25 @@ in that folder. A ticket at any other stage that needs a person
 (`person/answer`, `person/blocked`, `person/failed`) stays under "Needs you".
 The "Projects" folder lists both. This revises the addendum "project tickets on
 Home" (2026-11-18), which put every ticket under "Needs you".
+
+## Addendum: the passkey routes (2026-11-20)
+
+[127](127-passkey-sign-in.md) adds four routes and two assets to the web view.
+This addendum says what each is checked for, so that the checks in this note
+are the ones that apply to them, and says what is not widened.
+
+| Route | Checked, in order |
+|---|---|
+| `GET /ui/signin` | The router's host check; `Sec-Fetch-Site` of `none` or `same-origin` (`navigation_allowed`). It names no session and holds no credential, as `/ui/claim` does. |
+| `POST /ui/signin` | The host check; `Sec-Fetch-Site: same-origin` (`same_origin_post`); a declared form of at most 4096 bytes with no `Transfer-Encoding`; a control-class parser permit; the challenge in the client data, redeemed once; then the credential. Every refusal is one fixed `401`. |
+| `GET /ui/p/<key>/passkey` | The host check; a navigation; the page cookie under `<key>`, whose UI session must be a home of the owner at `Operator` ceiling opened by a fresh exchange. |
+| `POST /ui/p/<key>/passkey` | The host check; `same_origin_post`; a declared form of at most 4096 bytes; the same page standing as the `GET`; the page nonce compared in constant time; the challenge, redeemed once and for that principal. Every refusal is one fixed `403`. |
+
+The documents are served under the resume page's policy (`script-src 'self'`,
+`form-action 'self'`, no `connect-src` beyond what every document has). The
+scripts are fixed assets under `/ui/assets/`. Nothing here widens a socket's
+admission. The home's "Passkeys" region is beneath `home.signins_path`, where the
+home socket already admits a click, and "Add a passkey" is a link and not an
+event. The registration page's cookie is the page's own, scoped to
+`/ui/p/<key>`, so it reaches the route and no other path. The sign-in page has
+no cookie and no key in its address.

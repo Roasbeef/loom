@@ -67,6 +67,13 @@
 //// asked for with `--no-remember`) is the bearer's alone, and neither call
 //// touches it.
 ////
+//// The same mailbox holds the passkey challenges (protocol-change/127), for the
+//// reason it holds tickets: a challenge is a single-use secret with a deadline,
+//// and its use must be one message that removes it. `challenge` issues one for a
+//// sign-in or for a principal's registration and `answer` spends it. The table
+//// is bounded (`max_challenges`) because the sign-in page issues one to a
+//// visitor with no login.
+////
 //// ## Flow
 ////
 //// `start` → `mint` → `redeem` → `attach_login` → `lookup` → `still_open` →
@@ -281,6 +288,41 @@ pub type Origin {
   Resumed
 }
 
+/// The origin of the home a passkey sign-in opens (protocol-change/127). It is
+/// `Resumed`, which is the bookmark's, so a passkey opens a page that lists and
+/// opens sessions and cannot start the admin page or make a device link; those
+/// still need a `loom ui` exchange.
+///
+/// This is a provisional ruling. A user-verified assertion is stronger evidence
+/// of the owner than a bookmark is, and the owner may judge it fresh enough to
+/// open the admin page and make a device link. Flipping the ruling is this one
+/// constant and the paragraph of 127 that records it; every other site reads the
+/// origin from the grant it was handed.
+pub const passkey_origin = Resumed
+
+/// How long a passkey challenge can be answered, in milliseconds: five minutes,
+/// which is long enough to find a phone and use its biometric and short enough
+/// that an unused challenge is not a standing credential.
+pub const challenge_ms = 300_000
+
+/// The most passkey challenges the table holds at once. A challenge is issued
+/// to anyone who loads the sign-in page, so the bound is what keeps a stranger
+/// from growing the table: at the bound a new challenge replaces the one that
+/// would expire first, so a person who loaded the page before a flood must
+/// reload it.
+pub const max_challenges = 64
+
+/// What a passkey challenge was issued for (protocol-change/127). A challenge
+/// answers the ceremony it was issued for and no other, so a registration's
+/// cannot sign anyone in.
+pub type Purpose {
+  /// A sign-in, from the page that needs no login.
+  SigningIn
+
+  /// A registration, for the principal whose fresh home asked for it.
+  Registering(principal: String)
+}
+
 /// Whether exchanging a ticket sets a browser login as well as the page.
 pub type Remember {
   /// The exchange sets the login cookie and delivers the login nonce: a `loom
@@ -488,6 +530,9 @@ type Message {
   Register(cookie: String, scope: String, images: Images)
   Read(cookie: String, scope: String, reply: Subject(Result(Images, Nil)))
   Sizes(reply: Subject(#(Int, Int)))
+  Challenge(purpose: Purpose, reply: Subject(String))
+  Answer(challenge: String, reply: Subject(Result(Purpose, Nil)))
+  Challenges(reply: Subject(Int))
   Reserve(
     allowance: Allowance,
     credential: String,
@@ -529,6 +574,8 @@ type State {
     reads: Dict(String, List(Int)),
     /// The same for the brief reads inside `brief_read_window_ms`.
     briefs: Dict(String, List(Int)),
+    /// The passkey challenges issued and not yet answered, by their text.
+    challenges: Dict(String, Entry(Purpose)),
   )
 }
 
@@ -568,6 +615,7 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
       dict.new(),
       dict.new(),
       0,
+      dict.new(),
       dict.new(),
       dict.new(),
       dict.new(),
@@ -1131,6 +1179,49 @@ pub fn sizes(sessions: Sessions) -> Result(#(Int, Int), Nil) {
   |> result.replace_error(Nil)
 }
 
+/// Issues a passkey challenge for `purpose`: 32 bytes from the table's entropy
+/// as 43 base64url characters, good for `challenge_ms` and for one `answer`. The
+/// table holds at most `max_challenges`; at the bound the oldest is replaced.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(challenge) = ui_sessions.challenge(sessions, ui_sessions.SigningIn)
+/// ```
+pub fn challenge(sessions: Sessions, purpose: Purpose) -> Result(String, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Challenge(purpose, _))
+  |> result.replace_error(Nil)
+}
+
+/// Answers a challenge: the purpose it was issued for when it is live, and
+/// `Error(Nil)` for one that was never issued, has expired, or was answered
+/// before. The challenge is removed by the call, so it can be answered once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.answer(sessions, challenge) == Ok(ui_sessions.SigningIn)
+/// ```
+pub fn answer(sessions: Sessions, challenge: String) -> Result(Purpose, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Answer(challenge, _))
+  |> result.replace_error(Nil)
+  |> result.flatten
+}
+
+/// How many challenges the table holds, expired or not, for a test that checks
+/// the bound and the sweep.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.held_challenges(sessions) == Ok(0)
+/// ```
+@internal
+pub fn held_challenges(sessions: Sessions) -> Result(Int, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Challenges)
+  |> result.replace_error(Nil)
+}
+
 /// Sweeps now rather than at the next period, for a test.
 ///
 /// ## Examples
@@ -1537,6 +1628,41 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(State(..state, invites: held))
     }
 
+    // A challenge is filed under its own text. At the bound the one that would
+    // expire first is dropped, and since every challenge lives the same time
+    // that is the oldest.
+    Challenge(purpose:, reply:) -> {
+      let issued =
+        state.settings.entropy(32) |> bit_array.base64_url_encode(False)
+      let room = with_room_for_challenge(state.challenges, purpose, now)
+      process.send(reply, issued)
+      actor.continue(
+        State(
+          ..state,
+          challenges: dict.insert(
+            room,
+            issued,
+            Entry(value: purpose, expires_at: now + challenge_ms),
+          ),
+        ),
+      )
+    }
+
+    // An answer removes the challenge whether or not it was live, so a challenge
+    // that is presented twice, or after it expired, is found missing the second
+    // time and the table never keeps one a stranger tried.
+    Answer(challenge:, reply:) -> {
+      process.send(reply, live(state.challenges, challenge, now))
+      actor.continue(
+        State(..state, challenges: dict.delete(state.challenges, challenge)),
+      )
+    }
+
+    Challenges(reply:) -> {
+      process.send(reply, dict.size(state.challenges))
+      actor.continue(state)
+    }
+
     Sweep -> {
       let sessions =
         dict.filter(state.sessions, fn(_, entry) { entry.expires_at > now })
@@ -1558,6 +1684,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           tickets: dict.filter(state.tickets, fn(_, entry) {
             entry.expires_at > now
           }),
+          challenges: dict.filter(state.challenges, fn(_, entry) {
+            entry.expires_at > now
+          }),
           sessions:,
           readers: dict.filter(state.readers, fn(cookie, _) {
             dict.has_key(sessions, cookie)
@@ -1565,6 +1694,65 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         ),
       )
     }
+  }
+}
+
+/// The live challenges, with room for one more of `purpose`: an expired one is
+/// dropped, and at `max_challenges` the one of the same kind that expires first
+/// is dropped as well, so a flood of sign-in pages cannot push out a
+/// registration's challenge. A table holding no challenge of that kind drops the
+/// oldest of any.
+fn with_room_for_challenge(
+  table: Dict(String, Entry(Purpose)),
+  purpose: Purpose,
+  now: Int,
+) -> Dict(String, Entry(Purpose)) {
+  let kept = dict.filter(table, fn(_, entry) { entry.expires_at > now })
+
+  // A table under its bound keeps every live challenge.
+  case dict.size(kept) >= max_challenges {
+    True -> without_oldest(kept, purpose)
+    False -> kept
+  }
+}
+
+/// The challenges without the one that expires first among those of `purpose`'s
+/// kind, or among all of them when none is of that kind.
+fn without_oldest(
+  table: Dict(String, Entry(Purpose)),
+  purpose: Purpose,
+) -> Dict(String, Entry(Purpose)) {
+  let same =
+    dict.filter(table, fn(_, entry) { same_kind(entry.value, purpose) })
+
+  // Only a table with none of that kind falls back to all of them.
+  let pool = case dict.is_empty(same) {
+    True -> table
+    False -> same
+  }
+
+  let oldest =
+    dict.fold(pool, Error(Nil), fn(found, key, entry) {
+      case found {
+        Ok(#(_, at)) if at <= entry.expires_at -> found
+        Ok(_) | Error(Nil) -> Ok(#(key, entry.expires_at))
+      }
+    })
+
+  // An empty table has nothing to drop.
+  case oldest {
+    Ok(#(key, _)) -> dict.delete(table, key)
+    Error(Nil) -> table
+  }
+}
+
+/// Whether two purposes are the same kind of ceremony, whoever a registration
+/// is for.
+fn same_kind(a: Purpose, b: Purpose) -> Bool {
+  // A sign-in's challenge and a registration's are the two kinds.
+  case a, b {
+    SigningIn, SigningIn | Registering(_), Registering(_) -> True
+    SigningIn, Registering(_) | Registering(_), SigningIn -> False
   }
 }
 

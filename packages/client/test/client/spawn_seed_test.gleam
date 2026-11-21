@@ -58,6 +58,7 @@ fn node_at(rig: Rig, name: String) -> Node {
       scratch: root <> "/state-git",
       state_root: root,
       credentials: [],
+      path: "",
       demand: exec.BestEffort,
     ))
   Node(

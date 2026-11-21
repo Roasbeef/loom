@@ -114,6 +114,7 @@ fn home_start(manage: Option(Ask)) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    passkeys: None,
     visiting: None,
     orchestrators: None,
     executors: [],

@@ -96,6 +96,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    passkeys: None,
     visiting: None,
     orchestrators: None,
     executors: [],

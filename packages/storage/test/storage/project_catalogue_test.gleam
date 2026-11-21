@@ -102,11 +102,11 @@ fn user_version(path: String) -> List(Int) {
   result.unwrap(versions, [])
 }
 
-pub fn the_catalogue_is_at_version_twenty_two_test() {
-  assert catalogue.current_version == 22
+pub fn the_catalogue_is_at_version_twenty_three_test() {
+  assert catalogue.current_version == 23
   let #(path, store, _) = catalogue_with("project-version", [])
   assert catalogue.close(store) == Ok(Nil)
-  assert user_version(path) == [22]
+  assert user_version(path) == [23]
 }
 
 pub fn version_nineteen_catalogue_gains_the_project_tables_test() {
@@ -120,7 +120,7 @@ pub fn version_nineteen_catalogue_gains_the_project_tables_test() {
   let assert Ok(Nil) =
     raw(
       path,
-      "DROP TABLE catalogue_session_attention; DROP TABLE catalogue_session_agency; DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; PRAGMA user_version=19",
+      "DROP TABLE access_passkeys; DROP TABLE catalogue_session_attention; DROP TABLE catalogue_session_agency; DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; PRAGMA user_version=19",
     )
     |> result.replace_error(Nil)
   assert user_version(path) == [19]

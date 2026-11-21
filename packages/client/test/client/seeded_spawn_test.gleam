@@ -68,6 +68,7 @@ fn receiver_at(rig: Rig) -> Receiver {
       scratch: root <> "/state-git",
       state_root: root,
       credentials: [],
+      path: "",
       demand: exec.BestEffort,
     ))
   let logs = process.new_subject()
