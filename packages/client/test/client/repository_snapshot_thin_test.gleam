@@ -11,6 +11,7 @@ import gleam/crypto
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import simplifile
 import support/state_rig
 import support/worktree_rig
@@ -168,6 +169,32 @@ pub fn uncommitted_work_thin_against_head_ships_one_commit_test() {
   assert worktree_rig.git(thin.child, ["rev-parse", "HEAD^"]) == head
   assert header_of(thin.bundle).prerequisites == [head]
   assert size_of(thin.bundle) * 10 < size_of(full.bundle)
+  state_rig.stop(rig)
+}
+
+// The snapshot honours the repository's ignore rules for untracked files, and
+// takes every untracked file they do not name. A repository that never ignored
+// `__pycache__` therefore sends it, which is what the two-machine drive of #1137
+// met; one that does ignore it sends nothing of the kind.
+pub fn untracked_files_follow_the_repositorys_ignore_rules_test() {
+  let rig = state_rig.rig("ignore-rules")
+  worktree_rig.write(rig.root <> "/pkg/__pycache__/m.pyc", "bytecode\n")
+  worktree_rig.write(rig.root <> "/pkg/m.py", "print(1)\n")
+
+  // Nothing ignores the cache directory, so the snapshot commit holds it.
+  let unignored = state_rig.capture(rig, "unignored", Full)
+  let held =
+    worktree_rig.git(unignored.child, ["ls-tree", "-r", "--name-only", "HEAD"])
+  assert string.contains(held, "pkg/__pycache__/m.pyc")
+  assert string.contains(held, "pkg/m.py")
+
+  // With a rule that names it, only the cache directory is left out.
+  worktree_rig.write(rig.root <> "/.gitignore", "__pycache__/\n")
+  let ignored = state_rig.capture(rig, "ignored", Full)
+  let kept =
+    worktree_rig.git(ignored.child, ["ls-tree", "-r", "--name-only", "HEAD"])
+  assert !string.contains(kept, "__pycache__")
+  assert string.contains(kept, "pkg/m.py")
   state_rig.stop(rig)
 }
 

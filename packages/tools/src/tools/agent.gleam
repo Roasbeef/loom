@@ -312,6 +312,14 @@ pub type Provenance {
   /// At the root of the tree: the child reads its brief and nothing else.
   Fresh
 
+  /// The call did not name a context. It is `Fresh` for a child of this
+  /// session. For a child on another orchestrator the Agency refuses it when the
+  /// caller could have sent its workspace, because the model then chose nothing
+  /// and the child would silently start without the files it was meant to work
+  /// on (protocol-change/129). Only the `agent_spawn` tool produces it; a
+  /// program's call always names its context.
+  Unstated
+
   /// At the caller's current leaf, copying the caller's entire
   /// conversation into the child's context window.
   MyConversation
@@ -1712,7 +1720,7 @@ pub fn spawn_tool(
 /// for a strand of this session.
 fn context_property(orchestrator_names: List(String)) -> JsonValue {
   let base =
-    "fresh (default) starts the child at the root of the tree. "
+    "fresh (default, except with `on`) starts the child at the root of the tree. "
     <> "my_conversation forks at your current leaf, copying your "
     <> "entire conversation into the child's context window"
 
@@ -1729,7 +1737,10 @@ fn context_property(orchestrator_names: List(String)) -> JsonValue {
           <> "own under that orchestrator's workspace; your own checkout is "
           <> "not touched and nothing is pushed. The orchestrator's owner "
           <> "decides whether it takes a workspace, and a refusal names the "
-          <> "setting. While the copy is made, your other tool calls wait",
+          <> "setting. While the copy is made, your other tool calls wait. "
+          <> "With `on`, name the context: a call that leaves it out is "
+          <> "refused when your workspace could have been sent, so that a "
+          <> "child never starts without the files by accident",
       )
   }
 }
@@ -1888,7 +1899,7 @@ fn decode_result_schema(
 fn decode_provenance(args: JsonValue) -> Result(Provenance, String) {
   case tool.optional_string(args, "context") {
     Error(reason) -> Error(reason)
-    Ok(None) -> Ok(Fresh)
+    Ok(None) -> Ok(Unstated)
     Ok(Some("fresh")) -> Ok(Fresh)
     Ok(Some("my_conversation")) -> Ok(MyConversation)
     Ok(Some("my_workspace")) -> Ok(MyWorkspace)

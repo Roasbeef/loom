@@ -305,7 +305,10 @@ was asked.
   (`orchestrator_names` is not empty). The Agency captures the workspace and the
   receiving orchestrator's `[spawners.<name>] seed` decides whether it takes it; a local
   spawn that asks for it is refused. The unknown-context refusal still reads "fresh or
-  my_conversation".
+  my_conversation". An omitted `context` decodes to `Unstated`
+  (protocol-change/129): fresh for a local child, and refused for a child on another
+  orchestrator when the Agency's `Seeding.offer` says the workspace could have been
+  sent. A program's call always names its context, so it is never `Unstated`.
 - **Spawn selection is a catalogue name.** `SpawnRequest.model` is optional;
   the Agency resolves an explicit name before creating the child. Omission
   retains host routing. `Spawned.model` and `model_id` report the child's
