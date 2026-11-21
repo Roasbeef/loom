@@ -115,12 +115,22 @@ for pkg in "${targets[@]}"; do
         shards=(1/3 2/3 3/3)
       fi
     fi
+    # Every shard runs even after one fails. Stopping at the first red shard
+    # would hide the later shards' failures, and the skip census reading this
+    # log would then report their skips as stale declarations.
+    failed_shards=()
     for shard in "${shards[@]}"; do
       if [ -n "$shard" ]; then
         export LOOM_TEST_SHARD="$shard"
       fi
-      bash ../../scripts/test.sh "$pkg"
+      if ! bash ../../scripts/test.sh "$pkg"; then
+        failed_shards+=("${shard:-all}")
+      fi
     done
+    if [ "${#failed_shards[@]}" -gt 0 ]; then
+      echo "==> $pkg: failed shard(s): ${failed_shards[*]}" >&2
+      exit 1
+    fi
     # These portable suites and the platform codec promise both targets;
     # the gate holds them to it (scripts/portable_js_test.sh says why).
     case "$pkg" in
