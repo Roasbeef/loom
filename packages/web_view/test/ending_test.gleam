@@ -26,7 +26,8 @@ pub fn every_ending_survives_its_reason_string_test() {
       | ending.DaemonNotReady
       | ending.LinkExpired
       | ending.PeerUnreachable
-      | ending.PeerCrowded -> ending.ConnectionFailed
+      | ending.PeerCrowded
+      | ending.OtherPage -> ending.ConnectionFailed
     }
     assert ending.from_reason(ending.reason(reason), otherwise: other) == reason
   })
@@ -106,7 +107,8 @@ pub fn the_advice_names_the_command_for_the_session_test() {
       | ending.AccessRevoked
       | ending.NotOpen
       | ending.DaemonNotReady
-      | ending.LinkExpired -> {
+      | ending.LinkExpired
+      | ending.OtherPage -> {
         assert string.contains(advice, "loom ui --session 0192ab34cd")
       }
     }
@@ -230,4 +232,20 @@ pub fn a_failed_connection_on_a_relayed_page_says_what_the_page_does_test() {
   assert !string.contains(advice, "Reconnecting automatically")
   assert !string.contains(advice, "Reload this page")
   assert !string.contains(advice, "loom ui")
+}
+
+// A page key used on an address it was not issued for is not an ended page.
+// The words say the link was opened for another page and that a no-remember
+// link reaches no other, and the socket is final because a reconnect would be
+// refused the same way.
+pub fn a_key_for_another_page_is_not_an_ended_page_test() {
+  assert ending.close(ending.OtherPage) == ending.Final
+  assert ending.headline(ending.OtherPage)
+    == "This link was opened for a different page, not for this session."
+  assert ending.headline(ending.OtherPage) != ending.headline(ending.PageEnded)
+  assert string.contains(
+    ending.advice(ending.OtherPage, "0192ab34cd"),
+    "loom ui --no-remember reaches no other page",
+  )
+  assert !string.contains(ending.advice(ending.OtherPage, "S"), "ended")
 }

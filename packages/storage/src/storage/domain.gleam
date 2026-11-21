@@ -10,6 +10,7 @@
 import core/agency_limits
 import core/ids
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import storage/catalogue.{type Catalogue, type Error, Conflict, Invalid, Missing}
@@ -214,6 +215,28 @@ pub fn import_session(
   op op: String,
   from from: String,
 ) -> Result(catalogue.Custody, Error) {
+  import_relaying(store, record, mapping, op:, from:, relay_to: None, now_ms: 0)
+}
+
+/// `import_session` that also gives the session to a spawner's page: `relay_to`
+/// names the spawner whose page may read it, and the row that says so is written
+/// in the same transaction (`catalogue.relay_import_in_transaction`), stamped
+/// `now_ms`. With `None` it is `import_session`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // domain.import_relaying(store, record, mapping, op: "0192f3c1", from: "desk", relay_to: Some("desk"), now_ms: 1_000)
+/// ```
+pub fn import_relaying(
+  store: Catalogue,
+  record: catalogue.Registration,
+  mapping: Domain,
+  op op: String,
+  from from: String,
+  relay_to relay_to: Option(String),
+  now_ms now_ms: Int,
+) -> Result(catalogue.Custody, Error) {
   catalogue.atomic(store, fn() {
     // Ensure the session is registered and bound before importing.
     use Nil <- result.try(case catalogue.get(store, record.id) {
@@ -227,7 +250,27 @@ pub fn import_session(
       Error(error) -> Error(error)
     })
 
-    catalogue.import_in_transaction(store, record.id, op:, from:)
+    use custody <- result.try(catalogue.import_in_transaction(
+      store,
+      record.id,
+      op:,
+      from:,
+    ))
+
+    // The spawner whose page may read the session, when there is one, gets its
+    // row in the same transaction as the custody.
+    case relay_to {
+      Some(spawner) ->
+        catalogue.relay_import_in_transaction(
+          store,
+          spawner,
+          record.id,
+          op:,
+          now_ms:,
+        )
+        |> result.replace(custody)
+      None -> Ok(custody)
+    }
   })
 }
 

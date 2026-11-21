@@ -1657,6 +1657,7 @@ pub fn start_orchestrator_port(
           domain_configuration:,
           clock: clock.from_function(ffi_os.system_time_ms),
           orchestrators: orchestrator_roster(config),
+          spawners: config.spawners,
           executors: executor_roster(config),
           logger:,
         ))

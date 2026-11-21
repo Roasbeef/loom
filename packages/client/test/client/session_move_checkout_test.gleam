@@ -242,6 +242,7 @@ fn daemon(directory: String, name: String, peer: String) -> Daemon {
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
       orchestrators: roster.fixed([orchestrators.plain(peer, node_name())]),
+      spawners: [],
       executors: roster.fixed([
         executors.plain("box", "box@10.0.0.9"),
       ]),

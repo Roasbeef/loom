@@ -2086,7 +2086,7 @@ fn page_grant(
   // Verify that the retrieved grant matches the requested session scope.
   use Nil <- result.try(case grant.scope == ui_sessions.Session(id) {
     True -> Ok(Nil)
-    False -> Error(refused_page(403, ending.PageEnded, id))
+    False -> Error(refused_page(403, ending.OtherPage, id))
   })
 
   use state <- result.try(
