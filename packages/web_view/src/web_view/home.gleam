@@ -7209,6 +7209,10 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
     target: composer.chosen(model.compose, offered, recent),
     recent:,
     waiting: listing.waiting(entries, model.activity),
+    history: case entries {
+      [] -> new_session.NoSessions
+      [_, ..] -> new_session.HasSessions
+    },
     presses: new_session.Presses(
       toggle: fn(chip) { Composed(composer.Toggled(chip)) },
       agent: fn(agent) { Composed(composer.ChoseAgent(agent)) },

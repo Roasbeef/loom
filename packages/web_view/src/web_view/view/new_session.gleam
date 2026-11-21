@@ -63,17 +63,43 @@
 //// whole path is a `title` Lustre escapes. The only strings that become classes
 //// are fixed words chosen by `case`.
 ////
+//// ## The first run
+////
+//// A daemon with no session yet gets a pane of its own words (`History`): a
+//// heading that says this is the first session, one line about what will be
+//// listed once sessions exist, and, while the daemon's configuration lists no
+//// model, a note that says what the page can and cannot know about that. The
+//// page is given only the model keys a `loom.toml` names
+//// (`docs/configuration.md`, "Choosing a model for one session"). A daemon with
+//// no file builds one catalogue entry from the `LOOM_*` environment variables,
+//// and that entry is not in the list, so an empty list does not prove that a
+//// start would fail. The note therefore informs and does not block Start. What
+//// does block it is a fact the page holds: no folder is chosen yet, and a start
+//// with no target is a press that does nothing. The button is disabled and the
+//// reason is written beside it.
+////
+//// ## The advanced limits
+////
+//// The subagent limits are behind an "Advanced" disclosure under the chips,
+//// with plain labels and the daemon's own defaults (`core/agency_limits`) as
+//// field values. The fields sit outside the `form` element in the tree and
+//// belong to it through the `form` attribute, so the submit carries them and
+//// the decoder's rule (`fields_with_limits`) is the one it always was.
+////
 //// ## Flow
 ////
-//// `view` → `banner` → `recent` → `form` → `chips` → `summary`
+//// `view` → `banner` → `recent` → `form` → `chips` → `advanced` → `summary`
 ////
-//// 1. `view` lays the pane out: the banner, the heading, then the rest.
+//// 1. `view` lays the pane out: the banner, the links to the other lists, the
+////    heading, then the rest.
 //// 2. `banner` is the phone's line for the session that needs the person, and
 ////    `recent` is the places a session worked in.
 //// 3. `form` draws the message box, the field the target needs and Start, with
-////    `start_fields_with_limits` as its submit's decoder and `fields` as its one rule.
+////    `start_fields_with_limits` as its submit's decoder and `fields` as its one
+////    rule. `readiness` decides whether Start can be pressed and why not.
 //// 4. `chips` draws the three chips, each with its list while open
-////    (`agent_list`, `code_list`, `model_list`), and `summary` the sentence.
+////    (`agent_list`, `code_list`, `model_list`), `advanced` the limits
+////    disclosure, and `summary` the sentence once a folder is chosen.
 //// 5. `refusal` and `unsent` say what a refused or half-done start left.
 ////
 //// ## Examples
@@ -82,6 +108,7 @@
 //// // new_session.view(pane)
 //// ```
 
+import core/agency_limits
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -151,10 +178,43 @@ pub type Pane(message) {
     /// The sessions waiting on an approval, newest first. The phone's banner
     /// names the first.
     waiting: List(Entry),
+    /// Whether the daemon has any session to list yet.
+    history: History,
     /// What the page's buttons send.
     presses: Presses(message),
   )
 }
+
+/// Whether the daemon lists a session yet. A daemon with none is on its first
+/// run, and the pane says what will appear here once one exists.
+pub type History {
+  /// The list is empty: the first run.
+  NoSessions
+
+  /// The list has at least one session, running or saved.
+  HasSessions
+}
+
+/// Whether Start can be pressed, and when it cannot, why.
+pub type Readiness {
+  /// The press would create a session.
+  Startable
+
+  /// A creation is already out, so the button waits for its answer.
+  Starting
+
+  /// The press would do nothing yet, for the reason written here.
+  Held(reason: String)
+}
+
+/// The id the form carries, so fields drawn outside it can belong to it.
+const form_id = "new-session-form"
+
+/// The id of the sentence that says why Start is disabled.
+const reason_id = "start-reason"
+
+/// The id of the advanced limits, which the disclosure's button controls.
+const advanced_id = "advanced-limits"
 
 /// Which extra field a target needs the form to carry.
 pub type Needs {
@@ -300,51 +360,106 @@ pub fn view(pane: Pane(message)) -> Element(message) {
     banner(pane),
     html.div([attribute.class("new-wrap")], [
       html.div([attribute.class("new-col")], [
-        html.h1([], [html.text("What should the agent work on?")]),
-        html.p([attribute.class("lede")], [
-          html.text(
-            "Choose where the agent runs and where the code is, then describe the task.",
-          ),
-        ]),
+        links(pane),
+        heading(pane.history),
+        setup_note(pane),
         recent(pane),
         form(pane),
         chips(pane),
+        advanced(pane),
         summary(pane),
         refusal(pane.state),
         unsent(pane),
-        html.p([attribute.class("new-old")], [
-          html.button(
-            [
-              attribute.type_("button"),
-              attribute.class("link-button"),
-              event.on_click(pane.presses.listing),
-            ],
-            [html.text("Show the full session list")],
-          ),
-          ..inbox_link(pane.presses.inbox)
-        ]),
       ]),
     ]),
   ])
 }
 
-/// The link back to the inbox, drawn after the link to the full list when the
-/// page has an inbox to return to, and nothing otherwise.
-fn inbox_link(inbox: Option(message)) -> List(Element(message)) {
-  // The control exists only on a page that has an inbox to return to.
-  case inbox {
-    None -> []
-    Some(back) -> [
-      html.text(" · "),
-      html.button(
-        [
-          attribute.type_("button"),
-          attribute.class("link-button"),
-          event.on_click(back),
-        ],
-        [html.text("Back to the inbox")],
-      ),
+/// The heading and the one line under it. A daemon with no session says what
+/// will be listed once there is one; a daemon with sessions asks the question
+/// and needs nothing more, since the chips below say where the agent runs and
+/// where the code is.
+fn heading(history: History) -> Element(message) {
+  // The first run has a line about what the page becomes.
+  case history {
+    NoSessions ->
+      html.div([attribute.class("new-head")], [
+        html.h1([], [html.text("Start your first session")]),
+        html.p([attribute.class("lede")], [
+          html.text(
+            "Sessions you start are listed in the sidebar, with the ones that need you first.",
+          ),
+        ]),
+      ])
+    HasSessions ->
+      html.div([attribute.class("new-head")], [
+        html.h1([], [html.text("What should the agent work on?")]),
+      ])
+  }
+}
+
+/// The links to the other lists, in a row above the heading: the full session
+/// list once there are sessions to list, and the way back to the inbox when the
+/// page has an inbox to return to. A daemon with neither draws no row.
+fn links(pane: Pane(message)) -> Element(message) {
+  // The list link has something to list only once a session exists.
+  let to_list = case pane.history {
+    NoSessions -> []
+    HasSessions -> [
+      link("All sessions", pane.presses.listing),
     ]
+  }
+
+  // The inbox link exists only on a page that has an inbox to return to.
+  let to_inbox = case pane.presses.inbox {
+    Some(back) -> [link("Back to the inbox", back)]
+    None -> []
+  }
+
+  // A row with no link in it takes no room.
+  case list.append(to_list, to_inbox) {
+    [] -> element.none()
+    row -> html.nav([attribute.class("new-links")], row)
+  }
+}
+
+/// One link-styled button of the row above the heading.
+fn link(words: String, press: message) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("link-button"),
+      event.on_click(press),
+    ],
+    [html.text(words)],
+  )
+}
+
+/// What the page knows about models on a first run, drawn only for a daemon with
+/// no session whose configuration lists no model. The page sees the keys of
+/// `[models.<name>]` tables and nothing else, so it cannot tell a daemon with no
+/// model from one that reads the `LOOM_*` environment variables
+/// (`docs/configuration.md`, "How the file is found"). The note says both, and
+/// Start is left to the folder rule.
+fn setup_note(pane: Pane(message)) -> Element(message) {
+  case
+    pane.history,
+    pane.offers.models,
+    pane.offers.profiles,
+    pane.state.agent
+  {
+    NoSessions, [], [], composer.Here ->
+      html.div([attribute.class("setup-note"), attribute.role("note")], [
+        html.p([attribute.class("setup-title")], [
+          html.text("No model is listed in a loom.toml"),
+        ]),
+        html.p([], [
+          html.text(
+            "A session uses the model that the LOOM_MODEL, LOOM_BASE_URL and API-key environment variables name, if they are set; this page cannot see them. To choose models, add a [models.<name>] table to your loom.toml and start loomd or loom with --config <path>. docs/configuration.md lists every key.",
+          ),
+        ]),
+      ])
+    _, _, _, _ -> element.none()
   }
 }
 
@@ -472,16 +587,11 @@ fn form(pane: Pane(message)) -> Element(message) {
     ]
   }
 
-  // Only local sessions expose configurable subagent limits.
-  let limits_ui = case pane.state.agent {
-    composer.Here -> [limits_disclosure(pane)]
-    composer.Orchestrator(_) -> []
-  }
-
-  let body = list.append(extra, list.append(limits_ui, [cbar(pane)]))
+  let body = list.append(extra, [cbar(pane)])
 
   html.form(
     [
+      attribute.id(form_id),
       attribute.class("place-composer"),
       event.on(
         "submit",
@@ -510,24 +620,63 @@ fn form(pane: Pane(message)) -> Element(message) {
   )
 }
 
-/// Renders the submit bar of the new-session composer form.
+/// Whether Start can be pressed. A creation that is out waits for its answer.
+/// With no folder chosen the press would do nothing at all (`composer.started`
+/// returns without a creation), so the page says so instead of offering it. The
+/// words are fixed here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // new_session.readiness(pane) == new_session.Held("Choose a folder first.")
+/// ```
+pub fn readiness(pane: Pane(message)) -> Readiness {
+  case pane.state.sending, pane.target {
+    composer.Out, _ -> Starting
+    composer.Ready, None -> Held("Choose a folder first.")
+    composer.Ready, Some(_) -> Startable
+  }
+}
+
+/// Renders the submit bar of the new-session composer form: the reason Start is
+/// disabled, when it is, at the left, and the button at the right.
 fn cbar(pane: Pane(message)) -> Element(message) {
-  let working = pane.state.sending == composer.Out
+  let ready = readiness(pane)
+
+  // The reason is written only while Start is held.
+  let reason = case ready {
+    Held(words) -> [
+      html.span([attribute.id(reason_id), attribute.class("send-reason")], [
+        html.text(words),
+      ]),
+    ]
+    Startable | Starting -> []
+  }
+
+  // The button names the reason so a screen reader reads it with the button.
+  let described = case ready {
+    Held(_) -> [attribute.attribute("aria-describedby", reason_id)]
+    Startable | Starting -> []
+  }
 
   html.div([attribute.class("cbar")], [
+    html.span([attribute.class("cbar-note")], reason),
     html.button(
-      [
-        attribute.type_("submit"),
-        attribute.class("place-send"),
-        attribute.disabled(working),
-        attribute.aria_label("Start session"),
-      ],
+      list.append(
+        [
+          attribute.type_("submit"),
+          attribute.class("place-send"),
+          attribute.disabled(ready != Startable),
+          attribute.aria_label("Start session"),
+        ],
+        described,
+      ),
       [
         icon(Send),
         html.span([attribute.class("send-word")], [
-          html.text(case pane.state.sending {
-            composer.Out -> "Starting"
-            composer.Ready -> "Start"
+          html.text(case ready {
+            Starting -> "Starting"
+            Startable | Held(_) -> "Start"
           }),
         ]),
       ],
@@ -535,72 +684,126 @@ fn cbar(pane: Pane(message)) -> Element(message) {
   ])
 }
 
-/// Renders the collapsed or expanded Subagent limits disclosure inside the form.
-fn limits_disclosure(pane: Pane(message)) -> Element(message) {
+/// The Advanced disclosure under the chips: a button, and while it is open the
+/// four subagent limits in plain words. Only a session on this daemon has them.
+fn advanced(pane: Pane(message)) -> Element(message) {
   let expanded = pane.state.limits == composer.LimitsOpen
-  let toggle_button =
+
+  let toggle =
     html.button(
       [
         attribute.type_("button"),
-        attribute.class("place-chip"),
+        attribute.class("adv-toggle"),
         attribute.aria_expanded(expanded),
+        attribute.attribute("aria-controls", advanced_id),
         event.on_click(pane.presses.toggle_limits),
       ],
-      [html.text("Subagent limits")],
+      [
+        html.text("Advanced"),
+        html.span(
+          [attribute.class("adv-chevron"), attribute.aria_hidden(True)],
+          [
+            icon(Chevron),
+          ],
+        ),
+      ],
     )
 
-  // Draw limit inputs only while the disclosure is expanded.
-  case pane.state.limits {
-    composer.LimitsClosed ->
-      html.div([attribute.class("cbar")], [toggle_button])
-    composer.LimitsOpen ->
-      html.div([], [
-        html.div([attribute.class("cbar")], [toggle_button]),
-        html.div([attribute.class("limits-grid")], [
-          limit_number_input("fan_out", "Fan-out (100)", "1", "10000"),
-          limit_number_input(
-            "session_strands",
-            "Session strands (256)",
-            "1",
-            "10000",
-          ),
-          depth_mode_select(),
-          limit_number_input("depth_cap", "Max depth (1)", "1", "256"),
-        ]),
-      ])
+  // Only a session on this daemon has limits to set, and they are drawn only
+  // while the disclosure is open.
+  case pane.state.agent, pane.state.limits {
+    composer.Orchestrator(_), _ -> element.none()
+    composer.Here, composer.LimitsClosed ->
+      html.div([attribute.class("adv")], [toggle])
+    composer.Here, composer.LimitsOpen ->
+      html.div([attribute.class("adv")], [toggle, limits_fields()])
   }
 }
 
-/// Renders one uncontrolled numeric input inside the Subagent limits disclosure.
-fn limit_number_input(
-  name: String,
-  placeholder: String,
-  min: String,
-  max: String,
-) -> Element(message) {
-  html.input([
-    attribute.type_("number"),
-    attribute.name(name),
-    attribute.class("composer-typed"),
-    attribute.aria_label(placeholder),
-    attribute.placeholder(placeholder),
-    attribute.attribute("min", min),
-    attribute.attribute("max", max),
+/// The four limits, each a label, a control showing the value in force and a line
+/// that says what it does. The values are the daemon's own defaults, so a start
+/// that leaves them alone asks for what it would have got.
+fn limits_fields() -> Element(message) {
+  html.div([attribute.id(advanced_id), attribute.class("limits-grid")], [
+    limit_field(
+      "Subagents at once",
+      "How many subagents may run at the same time.",
+      limit_number_input(
+        "fan_out",
+        agency_limits.default_fan_out,
+        agency_limits.max_fan_out,
+      ),
+    ),
+    limit_field(
+      "Subagents per session",
+      "How many subagents one session may start in all.",
+      limit_number_input(
+        "session_strands",
+        agency_limits.default_session_strands,
+        agency_limits.max_session_strands,
+      ),
+    ),
+    limit_field(
+      "Nesting",
+      "Whether a subagent may start subagents of its own.",
+      depth_mode_select(),
+    ),
+    limit_field(
+      "Levels of nesting",
+      "Used when nesting is limited to a number of levels.",
+      limit_number_input(
+        "depth_cap",
+        agency_limits.default_depth_cap,
+        agency_limits.max_depth_cap,
+      ),
+    ),
   ])
 }
 
-/// Renders the depth mode selector (`default`, `bounded`, `unlimited`).
+/// One labelled limit: the label's words above, its control, and the line under.
+fn limit_field(
+  label: String,
+  help: String,
+  control: Element(message),
+) -> Element(message) {
+  html.label([attribute.class("adv-field")], [
+    html.span([attribute.class("adv-label")], [html.text(label)]),
+    control,
+    html.span([attribute.class("adv-help")], [html.text(help)]),
+  ])
+}
+
+/// Renders one uncontrolled numeric input of the limits, showing its default as
+/// a value. It belongs to the composer's form by the `form` attribute.
+fn limit_number_input(name: String, value: Int, max: Int) -> Element(message) {
+  html.input([
+    attribute.type_("number"),
+    attribute.name(name),
+    attribute.attribute("form", form_id),
+    attribute.class("adv-input"),
+    attribute.value(int.to_string(value)),
+    attribute.attribute("min", "1"),
+    attribute.attribute("max", int.to_string(max)),
+  ])
+}
+
+/// Renders the nesting selector (`default`, `bounded`, `unlimited`).
 fn depth_mode_select() -> Element(message) {
   html.select(
     [
       attribute.name("depth_mode"),
-      attribute.class("composer-typed"),
-      attribute.aria_label("Depth mode"),
+      attribute.attribute("form", form_id),
+      attribute.class("adv-input"),
     ],
     [
-      html.option([attribute.value("default")], "Depth: default (1)"),
-      html.option([attribute.value("bounded")], "Depth: bounded"),
-      html.option([attribute.value("unlimited")], "Depth: unlimited"),
+      html.option(
+        [attribute.value("default")],
+        "Default ("
+          <> int.to_string(agency_limits.default_depth_cap)
+          <> " level)",
+      ),
+      html.option([attribute.value("bounded")], "Limit to the levels below"),
+      html.option([attribute.value("unlimited")], "No limit"),
     ],
   )
 }
@@ -687,7 +890,7 @@ fn chips(pane: Pane(message)) -> Element(message) {
         "Code",
         case pane.target {
           Some(target) -> composer.target_words(target)
-          None -> "choose"
+          None -> "Choose a folder…"
         },
         code_list(pane),
       ),
@@ -1293,13 +1496,22 @@ fn selected(pick: Pick) -> Bool {
 
 /// The sentence under the chips, with the names it is about in heavier weight.
 fn summary(pane: Pane(message)) -> Element(message) {
-  html.p(
-    [attribute.class("sum")],
-    list.map(
-      composer.sentence_for(pane.state.agent, pane.offers.machine, pane.target),
-      piece,
-    ),
-  )
+  // The Code chip already asks for a folder, so the sentence waits for one.
+  case pane.target {
+    None -> element.none()
+    Some(_) ->
+      html.p(
+        [attribute.class("sum")],
+        list.map(
+          composer.sentence_for(
+            pane.state.agent,
+            pane.offers.machine,
+            pane.target,
+          ),
+          piece,
+        ),
+      )
+  }
 }
 
 fn piece(piece: Piece) -> Element(message) {
