@@ -1720,7 +1720,7 @@ pub fn spawn_tool(
 /// for a strand of this session.
 fn context_property(orchestrator_names: List(String)) -> JsonValue {
   let base =
-    "fresh (default) starts the child at the root of the tree. "
+    "fresh (default, except with `on`) starts the child at the root of the tree. "
     <> "my_conversation forks at your current leaf, copying your "
     <> "entire conversation into the child's context window"
 

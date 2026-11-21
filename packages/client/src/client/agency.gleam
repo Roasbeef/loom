@@ -4353,7 +4353,6 @@ fn spawn_elsewhere(
     orchestrator,
     custody,
   ))
-  use Nil <- result.try(refuse_unstated_context(config, caller, request))
   use seed <- result.try(seeded(config, caller, request))
   use #(key, stub) <- result.try(
     process.call(subject, config.holder_timeout_ms, fn(reply) {
@@ -4473,6 +4472,10 @@ fn admit_remote(
     // resend sends.
     None -> {
       use Nil <- result.try(refuse_if_fenced(runtime, released_key(), caller))
+
+      // A call site that already has a stub is reconciled above and never
+      // refused here, so a replayed spawn still finds its child.
+      use Nil <- result.try(refuse_unstated_context(config, caller, request))
       let #(now, _clock) = clock.read(config.clock)
       use request <- result.try(within_parent(
         ledger,
@@ -5079,10 +5082,10 @@ fn returned_report(
   case answered {
     None -> report
     Some(Known(returned)) ->
-      joined_text(report, returned_sentence(returned, sent_dirtiness(target)))
+      joined_text(report, returned_sentence(returned, snapshot_tip(target)))
     Some(Decided(returned)) -> {
       let _recorded = remote_child.returned(runtime, target.key, returned)
-      joined_text(report, returned_sentence(returned, sent_dirtiness(target)))
+      joined_text(report, returned_sentence(returned, snapshot_tip(target)))
     }
     Some(Deferred(reason)) ->
       joined_text(
@@ -5114,12 +5117,12 @@ fn joined_text(report: String, sentence: String) -> String {
   }
 }
 
-/// Whether the workspace this spawn sent held uncommitted work, which the
-/// child's history then carries as its first commit.
-fn sent_dirtiness(target: Target) -> state_object.Dirtiness {
+/// The snapshot commit this spawn sent, when the workspace held uncommitted
+/// work, which the child's history then carries as its first commit.
+fn snapshot_tip(target: Target) -> Option(String) {
   case target.stub.request.state {
-    Some(sent) -> sent.dirty
-    None -> state_object.Clean
+    Some(state_object.State(dirty: state_object.Dirty, tip:, ..)) -> Some(tip)
+    Some(_) | None -> None
   }
 }
 
@@ -5130,9 +5133,11 @@ fn sent_dirtiness(target: Target) -> state_object.Dirtiness {
 /// ones that are still untracked in the parent's checkout. `git merge` of the ref
 /// would try to create those files and stop on every one that exists, so the
 /// sentence names the range of the child's own commits to cherry-pick instead.
+/// The range starts at the snapshot's id, which is exact for any shape of the
+/// child's history, where a count of commits is not once the child has merged.
 fn returned_sentence(
   returned: remote_child.Returned,
-  sent: state_object.Dirtiness,
+  snapshot: Option(String),
 ) -> String {
   case returned {
     remote_child.Applied(ref:, commits:) ->
@@ -5146,19 +5151,17 @@ fn returned_sentence(
       <> ref
       <> "`, and nothing in your checkout changed. Inspect them with `git log "
       <> ref
-      <> case sent {
-        state_object.Clean ->
+      <> case snapshot {
+        None ->
           "`, then bring them in with `git cherry-pick` or `git merge "
           <> ref
           <> "`."
-        state_object.Dirty ->
+        Some(tip) ->
           "`, then bring them in with `git cherry-pick "
-          <> ref
-          <> "~"
-          <> int.to_string(commits)
+          <> tip
           <> ".."
           <> ref
-          <> "`. Do not `git merge` it: the history under the ref starts with a `Working snapshot` commit that holds the uncommitted files your workspace had when the child started, and a merge stops on each of those files that is still untracked in your checkout."
+          <> "`. Do not `git merge` it: the history under the ref starts with a `Working snapshot` commit that holds the uncommitted files your workspace had when the child started, and a merge stops on each of those files that is still untracked or modified in your checkout. Commit your own uncommitted work first, so that your tree matches what the child started from."
       }
     remote_child.NotApplied(reason:) ->
       "Its commits reached this machine and were not applied to your repository: "

@@ -6593,7 +6593,7 @@ pub fn the_report_warns_off_a_merge_only_when_the_sent_tree_was_dirty_test() {
   let dirty = report_for(a_workspace_state(), 0)
   assert string.contains(
     dirty,
-    "git cherry-pick " <> child_ref <> "~2.." <> child_ref,
+    "git cherry-pick " <> a_workspace_state().tip <> ".." <> child_ref,
   )
   assert string.contains(dirty, "Working snapshot")
   assert !string.contains(dirty, "or `git merge")
@@ -6759,11 +6759,7 @@ pub fn a_child_with_no_returned_state_is_reported_as_it_was_test() {
 pub fn an_unstated_context_with_on_is_refused_when_a_workspace_is_offered_test() {
   let box = fake_orchestrators.start("box", fake_orchestrators.Up)
   let #(harness, _queued) =
-    start_remote(
-      Hangs,
-      [box],
-      seeded_by(fn() { panic as "a refused spawn must not capture" }),
-    )
+    start_remote(Hangs, [box], seeded_by(fn() { Ok(a_workspace_state()) }))
   let caller = caller_on("main", "turn-1:tools", 0)
   let assert Error(agent.InvalidArgument(reason:)) =
     harness.seam.spawn(
@@ -6801,6 +6797,26 @@ pub fn a_named_context_passes_the_unstated_check_test() {
   assert list.length(states) == 2
   assert list.contains(states, None)
   assert list.contains(states, Some(a_workspace_state()))
+  close(harness)
+}
+
+// A call site that already has a stub is reconciled and not refused, so a
+// replayed spawn whose child exists still finds it.
+pub fn a_replayed_call_site_with_a_stub_is_not_refused_as_unstated_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], seeded_by(fn() { Ok(a_workspace_state()) }))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(first) = harness.seam.spawn(caller, on_box("plain"))
+    as "the first call names fresh"
+  let assert Ok(again) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(..on_box("plain"), context: agent.Unstated),
+    )
+    as "the replay finds the stub"
+  assert again.handle == first.handle
+  assert list.length(stubs_of(harness)) == 1
   close(harness)
 }
 

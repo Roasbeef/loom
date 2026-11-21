@@ -53,8 +53,8 @@ this session, `Unstated` is `Fresh`, as before. The tool description says so.
 
 A call with `on` and no `context` that worked before is now refused once, for a
 session with a capturable workspace. A recovered session that replays such a call
-before its stub is found is refused as well; the model's next call names the
-context. A spawner with `seed = "none"` is reached with `context: "fresh"`. The
+before its stub is found is not affected: the check runs only when a new stub
+would be written, so a replayed call still finds its child. A spawner with `seed = "none"` is reached with `context: "fresh"`. The
 receiving side is unchanged: a request without a state under `seed =
 "workspace"` is still accepted, because a fresh child there is a legitimate
 choice, and the owner's setting is a ceiling.
