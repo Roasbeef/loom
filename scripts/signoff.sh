@@ -37,7 +37,9 @@
 #                            some of those builds read a Go build-cache
 #                            object that was zero from some offset on;
 #                            now no lane compiles the helper.
-#   client                   scripts/check.sh client tui, then
+#   client                   scripts/check.sh client tui (client runs as the
+#                            three shards hosted CI runs, one after another,
+#                            each under test.sh's own 1200 s bound), then
 #                            scripts/e2e_client_bootstrap.sh: the native
 #                            TUI bootstrap and the shipped-daemon fixtures.
 #                            The long pole, and sequential on purpose: the
@@ -172,6 +174,9 @@ if ! $retry make codemode-seed build binaries server-shipment 2>&1 | tee "$logs/
 	verdict=1
 fi
 
+# `check.sh client` runs the client package as the same three shards hosted
+# CI runs, one after another, each under scripts/test.sh's own 1200 s bound
+# (the single run outgrew it: b75f1c807, vm_link_model_test, 2026-11-20).
 lane_client() {
 	$retry bash scripts/check.sh client tui &&
 		$retry bash scripts/e2e_client_bootstrap.sh
