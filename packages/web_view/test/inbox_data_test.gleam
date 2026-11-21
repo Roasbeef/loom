@@ -535,3 +535,56 @@ pub fn a_failed_approvals_read_keeps_the_brief_time_test() {
   let _ = run(model, home.Ticked)
   assert recorded(calls) == []
 }
+
+// A session that is idle and has said nothing, yet holds an open ask, is a
+// quiet session by its report. The feed draws its ask under "Needs you", so the
+// folded line, whose gloss says no one is waiting, must not name it again.
+pub fn a_quiet_session_with_an_open_ask_is_drawn_once_test() {
+  let clock = process.new_subject()
+  let calls = process.new_subject()
+  process.send(clock, now)
+
+  let base = start(clock, calls, full_evidence(), None)
+  let assert Some(attention) = base.attention
+    as "the fixture's start reads the feed"
+
+  let asking =
+    Row(
+      waiting_since: Some(now - 600_000),
+      asks: Section(count: 1, items: [
+        Ask(
+          id: ask_id,
+          strand: "main",
+          created_at: now - 600_000,
+          head: "Which branch do I cut?",
+          questions: 1,
+        ),
+      ]),
+      finds: Section(count: 0, items: []),
+      stuck: Section(count: 0, items: []),
+    )
+
+  let html =
+    drawn(opened(
+      home.Start(
+        ..base,
+        sessions: fn(deliver) {
+          deliver(home.Listed([entry("Q", "quiet-with-ask")]))
+        },
+        activity: fn(_, deliver) {
+          deliver([#("Q", Report(sessions.Idle, None, [], None, None))])
+        },
+        attention: Some(
+          home.Attention(..attention, feed: fn(_, deliver) {
+            deliver([#("Q", asking)])
+          }),
+        ),
+      ),
+    ))
+
+  // The ask's row is there, and the folded line and its gloss are not.
+  assert string.contains(html, "Which branch do I cut?")
+  assert string.contains(html, "agents stopped for you")
+  assert !string.contains(html, "inbox-folded-names")
+  assert !string.contains(html, "no one is waiting on you")
+}

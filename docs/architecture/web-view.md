@@ -1093,7 +1093,9 @@ bands, the pane's frame and the outbox bar pinned to its foot are one module
 The groups are `Needs you` (an approval is pending, or the last run failed),
 `Waiting` (idle with a last message, phase 0's stand-in for asks and review: the
 page words it as the last thing said and never claims a question), `Updates`
-(working) and `Quiet` (idle and silent, folded to one line of names). A thread
+(working) and `Quiet` (idle and silent, folded to one line of names, and never a
+session that has a row in the attention feed: `inbox_rule.grouped_with` leaves it
+out, because the feed draws its ask, stuck strand or find). A thread
 is ordered by session name, because phase 0 has no times and prints no age. What
 the counts read is the note under the rail's folders ("Counts read 6 running
 sessions. Saved sessions are not checked."), and the number that wait on the
