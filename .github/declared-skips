@@ -50,3 +50,12 @@ declared|darwin|SKIP lsp manager rust-analyzer: rust-analyzer does not run|macOS
 # runs on a developer's Apple Silicon Mac with LOOM_VM and its companions set.
 declared|linux|SKIP shipped microvm executor: LOOM_VM is unset|The microVM fixture needs a hypervisor and a built guest root; CI and the signoff container have neither, and it runs on a developer machine.
 declared|darwin|SKIP shipped microvm executor: LOOM_VM is unset|The hosted macOS runner has no libkrun runner or guest root; the fixture runs on a developer's Apple Silicon Mac.
+
+# The project template's copy-on-write fixture
+# (`client/project_template_test`) runs only where `git-cow` is installed.
+# Neither the signoff container nor a hosted runner carries it, and git-cow's
+# Linux reflink path is unmeasured. The plain-copy fallback, which is what a
+# host without git-cow uses, runs everywhere in the same module
+# (`a_program_that_cannot_run_falls_back_to_the_plain_copy_test`). Remove this
+# line once the container installs a pinned git-cow.
+declared|linux|SKIP project_template: git-cow is not installed|git-cow is not installed in the signoff container or on hosted runners; the plain-copy fallback runs in the same module.
