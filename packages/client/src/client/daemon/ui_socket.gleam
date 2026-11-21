@@ -8892,6 +8892,11 @@ pub fn strand_sender(
       use hub <- result.map(
         gateway_of(instance) |> result.replace_error(thread_send.NotResident),
       )
+
+      // The control socket's `attention.answer` shares this binding, so its
+      // prompts carry `PageDoor` and a `web-send-` connection id. That is
+      // harmless: the only reader of `door` is `gateway.evolution_via`, which a
+      // prompt never reaches.
       let binding =
         gateway.Binding(
           session_id: session,
