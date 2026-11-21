@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:590-187`).
+Source: `handle` (`client/daemon/server.gleam:601-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:2772`).
+`hello_view` (`client/daemon/server.gleam:2783`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -569,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4915`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4960`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1080,9 +1080,9 @@ it (section 3.27).
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `attention.read`, `approval.read`, `session.brief`, `sessions.review`,
+`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`, `sessions.attention`, `sessions.saved_attention`, `attention.read`, `approval.read`, `session.brief`, `sessions.review`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:3144-1130`).
+`control_use` (`client/daemon/server.gleam:3155-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1189,18 +1189,21 @@ is an observation; subsequent sends still check the current grant. See
 
 ### 3.21 `sessions.activity`
 
-An owner reads what a set of resident sessions are doing. The request carries
-the current `epoch` and `sessions`, an array of 1 to 24 distinct canonical
-session ids:
+The owner, and a member for the sessions it holds, read what a set of resident
+sessions are doing. The request carries the current `epoch` and `sessions`, an
+array of 1 to 24 distinct canonical session ids:
 
 ```json
 {"v":2,"id":11,"cmd":"sessions.activity","body":{"sessions":["0198c0de-0000-7000-8000-000000000001","0198c0de-0000-7000-8000-000000000002"],"epoch":"ep-7f3a"}}
 ```
 
 An empty array, more than 24 ids, a repeated id, or an id that is not
-canonical is refused with `bad_request`. A member credential is refused with
-`forbidden`, and an old epoch with `stale_epoch`, before any session is
-resolved.
+canonical is refused with `bad_request`, and an old epoch with `stale_epoch`,
+before any session is resolved. A member credential is not refused: it is
+answered for the ids it holds at any role, and an id it does not hold is dropped
+as an unknown one is, so the reply never tells the two apart
+([Protocol 050](../protocol-change/050-session-activity.md), the addendum on
+members; the handler calls `held` and never `owner`).
 
 Reply:
 
@@ -1254,7 +1257,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1621`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1662`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -2066,21 +2069,23 @@ A daemon that predates the command answers `bad_request`, which a client reads a
 "this daemon predates the command". `client/executor_reload.decode` reads the
 reply.
 
-### 3.34 `sessions.attention`, `attention.read` and `attention.close_find`
+### 3.34 `sessions.attention`, `sessions.saved_attention`, `attention.read`, `attention.answer` and `attention.close_find`
 
-What a person has to decide in a set of resident sessions, one record in full,
-and the closing of a find. All three take the current `epoch` and are refused
-with `stale_epoch` when it is old. `attention.answer` is not a control command:
-the home page answers an ask in process (`ui_socket.answer_ask_for`), because
-delivering the answer needs the session's gateway, which the control socket does
-not hold. See [Protocol 120](../protocol-change/120-attention-feed.md).
+What a person has to decide in a set of resident sessions, what the catalogue
+remembers of a set of saved ones, one record in full, the answer to an ask and
+the closing of a find. All five take the current `epoch` and are refused with
+`stale_epoch` when it is old. The answer is delivered through the session's
+gateway by the same send the web view's home page uses
+(`ui_socket.strand_sender`), which `server.Config` carries as `strand_send`. See
+[Protocol 120](../protocol-change/120-attention-feed.md) and
+[Protocol 128](../protocol-change/128-attention-control-reads.md).
 
 `sessions.attention` takes `sessions`, 1 to 24 distinct canonical ids, exactly
 as `sessions.activity` does, and is answered for the owner on every id and for a
 member on the ids it holds at any role. Reply:
 
 ```json
-{"v":2,"reply_to":1,"event":"sessions.attention","body":{"attention":[{"session_id":"0198c0de-0000-7000-8000-000000000001","state":"ok","waiting_since":1763400000000,"asks":{"count":2,"items":[{"id":"ask-3f9c01a2b4","strand":"main","created_at":1763400000000,"head":"Which branch should the fix target?","questions":2}]},"finds":{"count":5,"items":[{"id":"find-77d0a1c9e2","strand":"sub:main/audit-1a2b","kind":"bug","created_at":1763401000000,"head":"The retry loop never backs off.","path":"src/retry.gleam","line":88}]},"stuck":{"count":1,"items":[{"strand":"sub:main/audit-1a2b","failed_at":1763402000000}]}}]}}
+{"v":2,"reply_to":1,"event":"sessions.attention","body":{"attention":[{"session_id":"0198c0de-0000-7000-8000-000000000001","state":"ok","waiting_since":1763400000000,"asks":{"count":2,"items":[{"id":"ask-3f9c01a2b4","strand":"main","created_at":1763400000000,"head":"Which branch should the fix target?","questions":2}]},"finds":{"count":5,"items":[{"id":"find-77d0a1c9e2","strand":"sub:main/audit-1a2b","kind":"bug","created_at":1763401000000,"head":"The retry loop never backs off.","path":"src/retry.gleam","line":88}]},"stuck":{"count":1,"items":[{"strand":"sub:main/audit-1a2b","reason":"provider_error","failed_at":1763402000000,"retry_after_ms":30000,"parent":"main"}]}}]}}
 ```
 
 A `count` is the number of records the session read and `items` may be shorter:
@@ -2089,10 +2094,41 @@ then its oldest asks, and never reduces a count. `asks` lists only open asks
 routed to the owner. `waiting_since` is the smallest `created_at` of those and
 is absent when there is none. A strand is stuck when it is not `main` or the
 advisor, has no current operation, and its latest terminal result is a failed
-run; `failed_at` is the time of that result's last entry, a lower bound on the
-failure, and is absent when the result has no leaf. A resident that does not
-answer in 2,000 ms, or answers a row over 2,400 bytes, is a row with only
-`session_id` and `state: "unknown"`.
+run. A stuck item is `strand` and `reason` (the run's error code, a fixed word),
+and, when it has them, `failed_at` (Unix milliseconds of the failed response
+entry the run ended on, absent when there is no such entry), `retry_after_ms`
+(the provider's wait, when it named one) and `parent` (the spawning strand). A
+resident that does not answer in 2,000 ms, or answers a row over 2,400 bytes, is
+a row with only `session_id` and `state: "unknown"`.
+
+`sessions.saved_attention` takes `sessions`, 1 to 24 distinct canonical ids,
+exactly as `sessions.attention` does, and answers the summary the catalogue keeps
+for each session among them that the credential holds, saved or resident
+([Protocol 122](../protocol-change/122-attention-catalogue-summary.md)). The
+owner is answered for every id and a member for the ids it holds, at any role.
+It reads the summary table only and never opens a session. Request and reply:
+
+```json
+{"v":2,"id":4,"cmd":"sessions.saved_attention","body":{"sessions":["0198c0de-0000-7000-8000-000000000001","0198c0de-0000-7000-8000-000000000002"],"epoch":"ep-7f3a"}}
+{"v":2,"reply_to":4,"event":"sessions.saved_attention","body":{"saved":[{"session_id":"0198c0de-0000-7000-8000-000000000002","pending_approvals":1,"open_asks":0,"open_finds":2,"oldest_open_at":1763400000000,"updated_at":1763400100000}]}}
+```
+
+`saved` holds one row for each requested session that has one, in request order.
+A session with no row (never summarised since the upgrade), one the credential
+does not hold and an unknown id leave no entry, so a client cannot tell the
+last two from the first. A row is a cache of the session's own records and can lag
+them, so a client that draws it says it came from the catalogue; for a resident
+session the live `sessions.attention` and `sessions.activity` are current.
+`pending_approvals`, `open_asks` and `open_finds` are counts of at least zero,
+`oldest_open_at` is Unix milliseconds of the oldest open ask or find and is
+absent when there is none (it says nothing of approvals, which carry a time only
+through `approval.read`), and `updated_at` is Unix milliseconds on the daemon's
+clock when the row was written. Errors: `bad_request` for the batch rules,
+`stale_epoch`, and `unavailable` when the summary read fails, which is not
+answered as an empty `saved`. A failed membership check is different: the
+registry's check that the credential holds an id leaves that id out, so a
+membership read that fails can answer `{"saved":[]}`, and a client treats an
+absent id as not read, never as nothing open.
 
 `attention.read` takes `session` and `id` (an ask or find identifier) and
 answers the record in full: `kind`, `id`, `revision` (the sequence number of its
@@ -2103,6 +2139,45 @@ cell), `status`, `strand`, `created_at`, `anchor`, and for an ask `routing`,
 `false` for both. `bad_request` is an id with no record's shape, `not_found` a
 record that is absent or not decodable or a session the credential does not hold,
 and `not_resident` a session that is not running.
+
+`attention.answer` takes `session`, `ask` (an ask identifier), `revision` (a
+nonnegative integer, the `revision` of the `attention.read` the person answered
+from) and `answer` (a JSON object, the answer of
+[Protocol 119](../protocol-change/119-attention-records.md), "The answer", without
+its `ask` key, which the daemon adds). It delivers one prompt to the asking strand
+and settles the ask as answered by the caller. Request and reply:
+
+```json
+{"v":2,"id":5,"cmd":"attention.answer","body":{"session":"0198c0de-0000-7000-8000-000000000001","ask":"ask-3f9c01a2b4","revision":41,"answer":{"answers":{"q1":true,"q2":"Retry"}},"epoch":"ep-7f3a"}}
+{"v":2,"reply_to":5,"event":"attention.answer","body":{"ask":"ask-3f9c01a2b4","delivery":"admitted","revision":42}}
+```
+
+`delivery` is `admitted` (the strand was idle and the prompt started its next run)
+or `queued` (the strand was busy and holds the prompt behind its turn), and
+`revision` is the ask's new revision. The owner, and a member holding the session
+as an Operator, may answer; an observer is `forbidden`, and a member that does
+not hold the session is `not_found`. The daemon checks, in order, the epoch,
+authority, that the session is resident, the record, that the ask is open and
+routed to the owner, that `revision` is the one it reads now, and the answer
+against the stored ask, then delivers, then settles. Refusals, with the ask left
+as it was unless the message says the prompt may have arrived:
+
+| Code | Cause |
+|---|---|
+| `stale_epoch` | The epoch is old. |
+| `bad_request` | A malformed body, a record that is a find or an ask routed to a strand, or an answer that fails validation; the message names the first failing key, as `q2: not one of the options`. |
+| `forbidden` | The caller holds the session as an Observer. |
+| `not_found` | The session is not held by the credential, the ask is absent, or the asking strand no longer exists. |
+| `not_resident` | The session is saved, opening, stopping, or has no gateway. |
+| `conflict` | The ask is already answered, `revision` is not the one read now, the strand's queue is full, or the settling write lost a race after delivery (the message is `delivered; the record changed`). |
+| `unavailable` | The gateway did not take the prompt or did not answer in time (the prompt may have arrived, and the ask is still open), or the settling write failed after delivery. |
+
+A prompt is delivered before the ask is settled, so a failure between the two
+leaves the ask open with the prompt in the strand's transcript, and a second
+answer to an ask that is still open is accepted, the later one standing. On a
+`conflict` or `unavailable` whose message says `delivered`, a client reads the
+record again before offering another answer. The command is a mutation and is
+refused while the daemon drains.
 
 `attention.close_find` takes `session`, `find`, `revision` and `outcome`
 (`dismissed`, `fixed` or `filed`) and answers `{"find","revision"}` with the new
@@ -2127,13 +2202,9 @@ read; `not_found` is a session the credential does not hold and `not_resident` a
 session that is not running. It never decides, claims or consumes an approval,
 which is decided on the session's own page.
 
-A `stuck.items` entry of `sessions.attention` also carries `reason` (the run's
-error code, a fixed word), `retry_after_ms` (the provider's wait, when it named
-one) and `parent` (the spawning strand), and its `failed_at` is the exact time of
-the failed response entry the run ended on, absent when there is no such entry.
-
-All four are reads or settle one record, and the three reads remain available
-during a drain.
+`sessions.attention`, `sessions.saved_attention`, `attention.read` and
+`approval.read` are reads and remain available during a drain. `attention.answer`
+and `attention.close_find` write one record and are refused during a drain.
 
 `session.brief` takes `session`, an optional `since` (Unix milliseconds, default
 0) and the current `epoch`, and answers `{"brief": {...}}`: a bounded account of
@@ -4844,7 +4915,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:670`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:695`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

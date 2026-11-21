@@ -8836,10 +8836,33 @@ pub fn message_to_strand(
 ) -> fn(String, String, String, operator.Delivery) -> thread_send.Answer {
   // The page keeps this closure for as long as it is open, so it holds the
   // three values it reads and not the whole attachment.
-  let registry = attachment.registry
-  let digest = attachment.digest
-  let epoch = attachment.epoch
+  strand_sender(
+    attachment.registry,
+    attachment.digest,
+    attachment.epoch,
+    gateway_of,
+  )
+}
 
+/// What `message_to_strand` is made of, for a caller that holds a credential
+/// and not a page: the registry that answers authority and residency, the
+/// credential the authority is read for, and the daemon epoch the binding
+/// carries. The control socket's `attention.answer` delivers its prompt through
+/// this (protocol-change/128), so a prompt sent from a page and one sent from a
+/// native client take one path, under the same binding and the same cap.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.strand_sender(registry, digest, epoch, gateway_of)("01HX", "main", "retry", operator.Prompt)
+/// ```
+@internal
+pub fn strand_sender(
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  epoch: String,
+  gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
+) -> fn(String, String, String, operator.Delivery) -> thread_send.Answer {
   fn(session, strand, text, delivery) {
     let sent = {
       use #(principal, authority) <- result.try(
@@ -8869,6 +8892,11 @@ pub fn message_to_strand(
       use hub <- result.map(
         gateway_of(instance) |> result.replace_error(thread_send.NotResident),
       )
+
+      // The control socket's `attention.answer` shares this binding, so its
+      // prompts carry `PageDoor` and a `web-send-` connection id. That is
+      // harmless: the only reader of `door` is `gateway.evolution_via`, which a
+      // prompt never reaches.
       let binding =
         gateway.Binding(
           session_id: session,

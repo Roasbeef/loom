@@ -5461,7 +5461,8 @@ pub fn an_observer_on_a_busy_strand_is_refused_at_admission_test() {
 }
 
 // Every user prompt the transcript holds, in commit order.
-fn user_prompt_texts(harness: Harness) -> List(String) {
+@internal
+pub fn user_prompt_texts(harness: Harness) -> List(String) {
   let assert Ok(rows) =
     storage.scan_entries(
       harness.runtime.session.store,

@@ -7279,12 +7279,21 @@ from the registry (`forbidden` for an observer, `not_found` for a non-holder),
 residency (`not_resident`), the record, state, revision, then for an answer
 `core/attention_answer.check`, one `Prompt` to the asking strand through the
 injected send, and only then the settle, so a refused delivery leaves the ask open.
-`attention.answer` has no control command because the control socket holds no
-gateway; `ui_socket.answer_ask_for` and `close_find_for` are the home's acts, and
-`server.home_attention` and `HomeAttachment.attention` are the home's typed feed
-(`web_view/attention_feed`). `ui_socket.send_to_strand` and `message_to_strand`
-take a strand; `send_message` and `message_to` stay the main-strand defaults, and
-the gateway's `unknown_strand` is `thread_send.UnknownStrand`.
+`attention.answer` is a control command too (protocol-change/128): `server.dispatch`
+runs `attention_door.answer` with a send made by `Config.strand_send`, which `main.listen_moving`
+builds from `ui_socket.strand_sender` over its `gateway_of` projection, so a prompt
+from the control socket and one from the home page are sent under one binding;
+`server.answer_refusal` maps a refused delivery (`thread_send.Refusal`) to a code and
+words that say whether the ask is still open. A test that builds `server.Config` names
+a `strand_send`; `daemon_server_test.refusing_strand_send` is the default and
+`fixture_answering` takes a real one. `ui_socket.answer_ask_for` and `close_find_for`
+are the home's acts, and `server.home_attention` and `HomeAttachment.attention` are
+the home's typed feed (`web_view/attention_feed`). `ui_socket.send_to_strand` and
+`message_to_strand` take a strand; `send_message` and `message_to` stay the
+main-strand defaults, and the gateway's `unknown_strand` is
+`thread_send.UnknownStrand`. `sessions.saved_attention` reads the catalogue summary
+(protocol-change/122) with `server.saved_rows`, the one read it shares with
+`home_saved_attention`; an unreadable catalogue is `unavailable`, never an empty list.
 
 Stuck items (addendum to 120) carry `reason` (the run's error code if it is a short
 lower-case word, else `failed`), `retry_after_ms` and `failed_at` from the failed

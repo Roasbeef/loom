@@ -135,6 +135,7 @@ import web_view/review_feed
 import web_view/saved_attention
 import web_view/session_brief
 import web_view/sessions as listed_sessions
+import web_view/thread_send
 import web_view/tool_result
 import weft
 
@@ -151,6 +152,16 @@ pub type Config(instance) {
     /// read (`review_door`, protocol-change/123) calls it and never runs Git
     /// itself.
     worktree: fn(instance) -> Option(fn() -> Result(JsonValue, String)),
+    /// Makes the send `attention.answer` delivers its prompt with
+    /// (protocol-change/128). Given the registry, the caller's credential and
+    /// the daemon epoch, it answers a function from a session, a strand and the
+    /// prompt's text to what the session's gateway said. The daemon builds it
+    /// from the same code the web view's answer uses (`ui_socket.strand_sender`),
+    /// so a prompt from a native client is sent under the same binding and
+    /// authority cap as one from a page. It never takes anything from a request
+    /// but the three arguments of the function it returns.
+    strand_send: fn(manager.Manager(instance), access.Digest, String) ->
+      fn(String, String, String) -> thread_send.Answer,
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
     /// The `[executors.<name>]` the owner configured, read once at startup,
@@ -3202,11 +3213,13 @@ fn control(
             | protocol.PublishTicket(..)
             | protocol.SessionActivity(..)
             | protocol.SessionAttention(..)
+            | protocol.SavedAttention(..)
             | protocol.ReadAttention(..)
             | protocol.ReadApprovals(..)
             | protocol.SessionBrief(..)
             | protocol.ReviewSession(..)
             | protocol.CloseFind(..)
+            | protocol.AnswerAsk(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
             | protocol.RestoreSession(..)
@@ -3256,6 +3269,7 @@ fn control_use(command: protocol.Command) {
     | protocol.ListSessions(..)
     | protocol.SessionActivity(..)
     | protocol.SessionAttention(..)
+    | protocol.SavedAttention(..)
     | protocol.ReadAttention(..)
     | protocol.ReadApprovals(..)
     | protocol.SessionBrief(..)
@@ -3303,6 +3317,7 @@ fn control_use(command: protocol.Command) {
     | protocol.RunProjectVerdict(..)
     | protocol.PublishTicket(..)
     | protocol.CloseFind(..)
+    | protocol.AnswerAsk(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
     | protocol.MoveSession(..)
@@ -3505,6 +3520,36 @@ fn dispatch(
         review_door.read(reach, session) |> result.map_error(attention_refusal),
       )
       within_frame(reply_to, "sessions.review", review_feed.encode(review))
+    }
+
+    // An answer is delivered to the asking strand before the ask is settled
+    // (`attention_door.answer`, protocol-change/128). The send is the web view's
+    // own, made for this credential, so the prompt enters the session under the
+    // same binding whichever door a person answered through.
+    protocol.AnswerAsk(session, ask, revision, answer, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      let send = config.strand_send(state.registry, digest, state.epoch)
+      attention_door.answer(
+        attention_reach(config, state.registry, digest),
+        fn(strand, text) { send(session, strand, text) },
+        session,
+        ask,
+        revision,
+        answer,
+      )
+      |> result.map_error(answer_refusal)
+      |> result.map(fn(answered) {
+        #(
+          "attention.answer",
+          json.Object([
+            #("ask", json.String(ask)),
+            #("delivery", json.String(delivery_word(answered.delivery))),
+            #("revision", json.Int(answered.revision)),
+          ]),
+        )
+      })
     }
     protocol.CloseFind(session, find, revision, outcome, supplied) -> {
       use Nil <- result.try(
@@ -4970,6 +5015,30 @@ fn dispatch_class(
         False -> Error("metadata_too_large")
       }
     }
+    protocol.SavedAttention(sessions, supplied) -> {
+      use Nil <- result.try(epoch(state, supplied))
+
+      // A member is asked about only the sessions its credential holds, as for
+      // `sessions.attention`; the read is the home page's (`saved_rows`), and a
+      // catalogue that cannot be read is `unavailable`, never a list of sessions
+      // with nothing open.
+      use rows <- result.try(
+        saved_rows(state.registry, digest, sessions)
+        |> result.replace_error("unavailable"),
+      )
+      let body =
+        json.Object([#("saved", json.Array(list.map(rows, saved_json)))])
+      use frame <- result.try(
+        protocol.event(Some(reply_to), "sessions.saved_attention", body)
+        |> result.replace_error("metadata_too_large"),
+      )
+
+      // A frame over the bound is refused rather than sent.
+      case string.byte_size(frame) <= 60_000 {
+        True -> Ok(#("sessions.saved_attention", body))
+        False -> Error("metadata_too_large")
+      }
+    }
     protocol.GetSession(id) -> {
       use _ <- result.try(authorized(state, digest, id))
       manager.get(state.registry, id)
@@ -5169,7 +5238,8 @@ fn dispatch_class(
     | protocol.ReadApprovals(..)
     | protocol.SessionBrief(..)
     | protocol.ReviewSession(..)
-    | protocol.CloseFind(..) -> Error("unavailable")
+    | protocol.CloseFind(..)
+    | protocol.AnswerAsk(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
@@ -6775,22 +6845,56 @@ pub fn home_saved_attention(
 
     // A failed read answers nothing, which the page draws as every listed
     // session not checked and never as a session with nothing open.
-    case manager.attention_for(registry, held(registry, digest, asked)) {
-      Ok(rows) ->
-        list.filter_map(rows, fn(row) {
-          let #(id, summary) = row
-          saved_attention.from_row(
-            session_id: id,
-            pending_approvals: summary.pending_approvals,
-            open_asks: summary.open_asks,
-            open_finds: summary.open_finds,
-            oldest_open_at: summary.oldest_open_at,
-            updated_at: summary.updated_at,
-          )
-        })
-      Error(_) -> []
-    }
+    saved_rows(registry, digest, asked) |> result.unwrap([])
   }
+}
+
+/// The summary rows of the sessions among `ids` the credential holds, in the
+/// order of `ids`, or the registry's error when the catalogue could not be read.
+/// It is the one read the home page (`home_saved_attention`) and the control
+/// command `sessions.saved_attention` share (protocol-change/128), so a session
+/// is held, left out for having no row, or dropped for a damaged one by the same
+/// code for both.
+fn saved_rows(
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  ids: List(String),
+) -> Result(List(saved_attention.Saved), manager.Error) {
+  use rows <- result.map(manager.attention_for(
+    registry,
+    held(registry, digest, ids),
+  ))
+  list.filter_map(rows, fn(row) {
+    let #(id, summary) = row
+    saved_attention.from_row(
+      session_id: id,
+      pending_approvals: summary.pending_approvals,
+      open_asks: summary.open_asks,
+      open_finds: summary.open_finds,
+      oldest_open_at: summary.oldest_open_at,
+      updated_at: summary.updated_at,
+    )
+  })
+}
+
+/// One summary row as `sessions.saved_attention` sends it. `oldest_open_at` is
+/// present only when an ask or a find is open.
+fn saved_json(saved: saved_attention.Saved) -> JsonValue {
+  json.Object(
+    list.flatten([
+      [
+        #("session_id", json.String(saved.session_id)),
+        #("pending_approvals", json.Int(saved.pending_approvals)),
+        #("open_asks", json.Int(saved.open_asks)),
+        #("open_finds", json.Int(saved.open_finds)),
+      ],
+      case saved.oldest_open_at {
+        Some(at) -> [#("oldest_open_at", json.Int(at))]
+        None -> []
+      },
+      [#("updated_at", json.Int(saved.updated_at))],
+    ]),
+  )
 }
 
 /// The attention read a home page is handed: `sessions.attention` over the
@@ -6961,6 +7065,59 @@ fn control_reserve(
 /// The words and code of a door refusal, as the control socket sends it.
 fn attention_refusal(refusal: attention_door.Refusal) -> Refused {
   Refused(refusal.code, refusal.words, [])
+}
+
+/// The code and words an answer that did not complete is sent as
+/// (protocol-change/128). A refusal of the daemon's own keeps the door's code
+/// and words. A prompt the gateway would not take keeps the ask open, and the
+/// words say so, since the person must know that answering again is safe. A
+/// prompt that was delivered and not settled is the door's own refusal, whose
+/// words already say that it arrived.
+fn answer_refusal(fault: attention_door.AnswerFault) -> Refused {
+  // The two refusals the door worded itself pass through, and a refused send is
+  // worded here, because only here is it known to be a control socket's.
+  case fault {
+    attention_door.Declined(refusal) | attention_door.Unsettled(refusal) ->
+      attention_refusal(refusal)
+    attention_door.NotSent(refusal) -> send_refusal(refusal)
+  }
+}
+
+/// Each way the gateway can refuse a prompt, as one code and one sentence that
+/// says whether the ask is still open.
+fn send_refusal(refusal: thread_send.Refusal) -> Refused {
+  // The code is the nearest of the control protocol's, and the words carry what
+  // the code cannot: that the ask can be answered again.
+  let #(code, words) = case refusal {
+    thread_send.NotHeld -> #("not_found", "no such session")
+    thread_send.NotResident -> #("not_resident", "the session is not running")
+    thread_send.UnknownStrand -> #(
+      "not_found",
+      "the asking strand no longer exists; the ask is still open",
+    )
+    thread_send.QueueFull -> #(
+      "conflict",
+      "the strand's queue is full; the ask is still open",
+    )
+    thread_send.NotAccepted(_) -> #(
+      "unavailable",
+      "the session did not take the prompt or did not answer; the prompt may have arrived and the ask is still open",
+    )
+    thread_send.Unanswered -> #(
+      "unavailable",
+      "the session did not answer in time; the prompt may have arrived and the ask is still open",
+    )
+  }
+
+  Refused(code, words, [])
+}
+
+/// How the gateway took a prompt, as the reply to an answer words it.
+fn delivery_word(admission: thread_send.Admission) -> String {
+  case admission {
+    thread_send.Admitted -> "admitted"
+    thread_send.Queued -> "queued"
+  }
 }
 
 /// A reply body that is checked against the 60,000-byte frame, refused with
