@@ -1236,8 +1236,13 @@ activation's `from_node` names the orchestrator row and so the spawner, which is
 the port now compares it with the node the message came from
 (`orchestrator_port`, the `Activate` arm) and refuses a mismatch with
 `UnknownSource(node)` before the importer runs, as the spawn messages judge their
-requester by the transport's node. A peer cannot name another orchestrator's node as
-its own to put a session it authored on another spawner's page. The fixture of
+requester by the transport's node. A peer that declares another node than the
+one it sends from is refused. The check is as strong as the spawn messages' and no
+stronger: the node is read from the pid in the message's reply subject, which the
+sender supplies, so a peer that also forges that pid (a live pid on the node it
+names) passes. Distribution authenticates the connection and gives a receiver no
+sender identity inside a message, and no binding of that kind exists in the tree.
+The fixture of
 `orchestrator_port_test` that declared a node other than the test's own now declares
 its own node, and `an_activation_declaring_another_nodes_name_is_refused_test`
 pins the refusal.

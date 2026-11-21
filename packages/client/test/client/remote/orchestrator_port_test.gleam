@@ -1815,7 +1815,11 @@ pub fn a_child_resolve_before_open_says_the_decision_was_not_sent_test() {
 // node other than its own is refused before the importer sees anything.
 pub fn an_activation_declaring_another_nodes_name_is_refused_test() {
   let seen = process.new_subject()
-  let port = importing(seen, fn(_) { session_move.Accepted })
+  let port =
+    importing(seen, fn(_) {
+      process.send(seen, "activated")
+      session_move.Accepted
+    })
   assert orchestrator_port.ask_activation(
       port,
       declaring("laptop@100.64.0.5"),
@@ -1827,4 +1831,5 @@ pub fn an_activation_declaring_another_nodes_name_is_refused_test() {
   assert process.receive(seen, 0) == Error(Nil)
   assert orchestrator_port.ask_activation(port, activation(), 1000)
     == Ok(session_move.Accepted)
+  assert process.receive(seen, 0) == Ok("activated")
 }
