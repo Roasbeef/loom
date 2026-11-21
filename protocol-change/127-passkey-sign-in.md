@@ -259,3 +259,26 @@ nothing else removes one. A lost root key therefore leaves every passkey able to
 sign in again, which is the point: the passkey is how the owner gets back in
 without a shell on the box. An owner who suspects a key they do not recognise
 removes it from the Passkeys list.
+
+## Addendum, 2026-11-21: the sign-in page opens from any top-level navigation
+
+`GET /ui/signin` first admitted only `Sec-Fetch-Site: none` or `same-origin`,
+the check every page uses. The page exists for a phone with no login, and its
+owner reaches it by tapping a link in another app (a chat app's in-app browser,
+Messages, an email), which a browser marks `cross-site`. The owner was refused
+with `403 forbidden navigation`.
+
+The `GET` now also admits a request that is a top-level document navigation,
+`Sec-Fetch-Mode: navigate` with `Sec-Fetch-Dest: document`, whatever its
+`Sec-Fetch-Site` (`ui_http.signin_navigation_allowed`). The reason for the
+check was that a challenge is issued only to a navigation, so no other page can
+fill the table by fetching the address. That property needs the request to be
+a top-level navigation, which another page's script cannot make silently:
+`fetch`, `XMLHttpRequest`, `<img>`, `<iframe>` and `<script>` carry another
+mode or destination and are still refused. A site can open many top-level
+windows, but the challenge table is bounded and at its limit replaces only a
+challenge of the same kind (`ui_sessions.challenge`), so a flood of sign-in
+pages cannot push out a registration's challenge. The page carries no
+authority, so no keyed page, home, admin page or login resume is widened:
+those keep `navigation_allowed`. The sign-in `POST` is unchanged and still
+requires `same-origin`.

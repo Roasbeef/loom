@@ -1726,15 +1726,18 @@ fn document_refused() {
 }
 
 /// The passkey sign-in page (protocol-change/127), for a person who opens the
-/// address with no login. It is a navigation from outside any page or from this
-/// origin, as the resume page is, and it holds a challenge the daemon issued for
-/// this visit and the relying party id of the origin it was admitted under, and
-/// nothing the request said. A table that cannot issue is a daemon that is not
+/// address with no login. It is a navigation from outside any page, from this
+/// origin or from a link in another app, and it holds a challenge the daemon
+/// issued for this visit and the relying party id of the origin it was admitted
+/// under, and nothing the request said. A table that cannot issue is a daemon that is not
 /// serving.
 fn signin_page(ui: Ui(instance), request, origin: ui_http.PageOrigin) {
   // A challenge is issued only to a navigation, so no other page can fill the
-  // table by fetching the address.
-  case ui_http.navigation_allowed(request) {
+  // table by fetching the address. A link tapped in another app is a top-level
+  // navigation marked `cross-site`, which this page admits and no other does,
+  // and a site that opens many windows is bounded by the challenge table, which
+  // replaces only a sign-in challenge at its limit.
+  case ui_http.signin_navigation_allowed(request) {
     False -> plain(403, "forbidden navigation")
     True ->
       case ui_sessions.challenge(ui.sessions, ui_sessions.SigningIn) {
