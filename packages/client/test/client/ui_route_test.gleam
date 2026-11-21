@@ -11409,3 +11409,56 @@ pub fn a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test() {
     assert process.receive(reached, 0) == Error(Nil)
   })
 }
+
+// A page key is issued for the one page a link opened. The drive of #1137 opened
+// the box's home from `loom ui --no-remember` and typed a session's address
+// under that home's key: the cookie and key are live, but the grant is the
+// home's, so the session's page refuses it. The refusal says that the link was
+// opened for a different page, and not that the page ended, because the page
+// has not ended and the home under the same key still opens.
+pub fn a_home_key_on_a_session_address_says_it_is_another_page_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "other-page", 970)
+    let home = enter(port, forgotten_home(port, credential))
+    let by_hand = string.replace(home.page, "/home", "/sessions/" <> session)
+    let refused =
+      get(port, by_hand, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> home.cookie),
+      ])
+    assert refused.status == 403
+    assert string.contains(refused.body, ending.headline(ending.OtherPage))
+    assert !string.contains(refused.body, ending.headline(ending.PageEnded))
+    assert string.contains(refused.body, "loom ui --session " <> session)
+
+    // The socket is refused the same way, and the home itself is untouched.
+    assert get(port, by_hand <> "/ws?csrf-token=" <> home.nonce, [
+        host(port),
+        #("cookie", "loom_ui=" <> home.cookie),
+        #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ]).status
+      == 403
+    assert open_page(port, home).status == 200
+  })
+}
+
+// The same holds for a session's page key on another session's address.
+pub fn a_session_key_on_another_sessions_address_says_it_is_another_page_test() {
+  fixture(fn(ready, port, credential) {
+    let first = create_session(ready, "first-page", 971)
+    let second = create_session(ready, "second-page", 972)
+    let one = enter(port, link(port, credential, first))
+    let crossed =
+      string.replace(one.page, "/sessions/" <> first, "/sessions/" <> second)
+    let refused =
+      get(port, crossed, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> one.cookie),
+      ])
+    assert refused.status == 403
+    assert string.contains(refused.body, ending.headline(ending.OtherPage))
+    assert open_page(port, one).status == 200
+  })
+}
