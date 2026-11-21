@@ -273,7 +273,7 @@
      (340 + 640). Where the sidebar is dropped it is a drawer: the same
      wrapper placed over the centre behind a scrim (the narrow frames at the
      end of this sheet). */
-  loom-shell.loom-session{display:block;height:100dvh;min-width:0;overflow:hidden;background:var(--color-bg);}
+  loom-shell.loom-session{display:block;height:100dvh;min-width:0;overflow:hidden;overflow:clip;background:var(--color-bg);}
   /* The top bar. It is 44px tall, and taller only when the ended page's
      notice wraps onto a row of its own. The shell draws the bar's border and
      background around it, with a button at each end. */
@@ -358,7 +358,7 @@
      shrinking. Opening shows it at once. Below the breakpoints of the frame
      above the wrapper of the sidebar is not drawn unless the reader opened
      the drawer, and the panel's wrapper goes above the centre. */
-  .shell{display:flex;flex-direction:column;height:100%;min-width:0;}
+  .shell{display:flex;flex-direction:column;height:100%;min-width:0;overflow:hidden;overflow:clip;}
   .shell-bar{flex:0 0 auto;display:flex;align-items:flex-start;min-width:0;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
   .shell-body{position:relative;flex:1 1 0;display:flex;min-height:0;min-width:0;}
   .shell-centre{flex:1 1 0;display:flex;min-width:0;min-height:0;}
@@ -535,7 +535,9 @@
   .sidebar-title{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
   .side-top{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;padding:12px 10px 4px;}
   .side-top .brand{display:flex;align-items:center;gap:8px;margin:0;padding:2px 8px 10px;font:600 14px/1.4 var(--font-sans);}
-  .side-top .here{display:inline-flex;align-items:center;gap:6px;min-width:0;overflow:hidden;color:var(--color-fg-quiet);font:400 12.5px/1.4 var(--font-sans);text-overflow:ellipsis;white-space:nowrap;}
+  .side-top .brand{flex-wrap:wrap;gap:2px 8px;}
+  .side-top .here{display:flex;align-items:center;gap:6px;flex:1 0 100%;min-width:0;color:var(--color-fg-quiet);font:400 12.5px/1.4 var(--font-sans);}
+  .side-top .here-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .dot-ok{display:inline-block;flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--color-added);}
   .new-session{display:flex;align-items:center;gap:10px;width:100%;height:36px;margin:0;padding:0 10px;border:0;border-radius:8px;background:color-mix(in srgb,var(--color-fg) 8%,transparent);color:var(--color-fg);font:13.5px/1 var(--font-sans);text-align:left;cursor:pointer;}
   .new-session:hover{background:color-mix(in srgb,var(--color-fg) 12%,transparent);}
@@ -632,11 +634,14 @@
     .row-menu-toggle{opacity:1;width:44px;height:44px;margin:0;}
   }
   /* The foot: the pages that are not sessions, and who the page is for. */
-  .side-foot{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--color-divider);}
-  .foot-admin{margin:0;padding:0 10px;height:36px;border:0;border-radius:8px;background:transparent;color:var(--color-fg);font:13.5px/1 var(--font-sans);cursor:pointer;}
+  .side-foot{flex:0 0 auto;display:flex;flex-direction:column;gap:8px;padding:10px;border-top:1px solid var(--color-divider);}
+  .foot-admin{display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;width:100%;margin:0;padding:0 12px;height:36px;border:1px solid var(--color-divider);border-radius:8px;background:transparent;color:var(--color-fg);font:13.5px/1 var(--font-sans);cursor:pointer;}
+  .foot-go{color:var(--color-fg-quiet);font-size:16px;}
   .foot-admin:hover{background:color-mix(in srgb,var(--color-fg) 8%,transparent);}
   .foot-admin:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
-  .foot-who{margin-left:auto;min-width:0;overflow:hidden;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);text-overflow:ellipsis;white-space:nowrap;}
+  .foot-who{display:flex;align-items:center;gap:8px;min-width:0;margin:0;color:var(--color-fg);font:13px/1.4 var(--font-sans);}
+  .foot-avatar{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid var(--color-divider);border-radius:50%;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:600 12px/1 var(--font-sans);}
+  .foot-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   li.session.confirming{display:block;padding:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
   .session-confirm-lead{margin:0;font:500 12px/1.4 var(--font-sans);}
   .session-confirm-name{margin:2px 0 8px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
@@ -864,14 +869,14 @@
      shortcut and a ghost Theme. The connection's pill is drawn only when the
      page is not connected. */
   :host(.loom-inbox) .region-sidebar{width:184px;}
-  :host(.loom-inbox) .shell-bar{align-items:center;box-sizing:border-box;height:44px;background:var(--color-bg);}
-  :host(.loom-inbox) .shell-toggle{align-self:center;height:43px;}
+  :host(.loom-inbox) .shell-bar{align-items:center;box-sizing:border-box;min-height:48px;height:48px;padding-top:env(safe-area-inset-top,0px);background:var(--color-bg);}
+  :host(.loom-inbox) .shell-toggle{align-self:center;height:47px;}
   :host(.loom-inbox) .toggle-sidebar{width:44px;}
   :host(.loom-inbox) .toggle-hint{display:none;}
   :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:center;box-sizing:border-box;width:auto;height:auto;margin:0 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
   :host(.loom-inbox) .shell-theme{margin-right:12px;}
   :host(.loom-inbox) .bar-search:hover,:host(.loom-inbox) .shell-theme:hover{background:var(--color-bg-raised);color:var(--color-fg);}
-  loom-shell.loom-inbox .session-head{flex-wrap:nowrap;align-items:center;gap:0 14px;min-height:43px;padding:0 16px 0 4px;overflow:hidden;}
+  loom-shell.loom-inbox .session-head{flex-wrap:nowrap;align-items:center;gap:0 14px;min-height:47px;padding:0 16px 0 4px;overflow:hidden;}
   loom-shell.loom-inbox .session-head > *{order:3;flex:0 0 auto;}
   loom-shell.loom-inbox .session-head .brand{display:block;order:0;font:650 14px/26px var(--font-sans);letter-spacing:.01em;}
   loom-shell.loom-inbox .session-head > h1{order:1;flex:0 1 auto;color:var(--color-fg-quiet);font:400 14px/26px var(--font-sans);}
@@ -2210,10 +2215,18 @@
      window and a sheet from the bottom edge on a phone: one tree, two looks. No
      shadow and no coloured edge. */
   main.centre > .new-pane{flex:1 1 0;min-height:0;max-width:none;display:flex;flex-direction:column;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
-  .new-wrap{flex:1 0 auto;display:flex;flex-direction:column;align-items:center;padding:56px 8px 24px;}
+  .new-wrap{flex:1 0 auto;display:flex;flex-direction:column;align-items:center;padding:clamp(24px,10vh,96px) 8px 24px;}
   .new-col{width:100%;max-width:780px;}
   .new-col h1{margin:0 0 6px 0;font:600 26px/1.25 var(--font-sans);letter-spacing:-.01em;text-align:center;}
   .new-col .lede{margin:0 0 22px 0;color:var(--color-fg-quiet);text-align:center;}
+  .new-head{margin:0 0 18px 0;}
+  .new-head .lede{margin-bottom:0;}
+  /* The links to the other lists sit at the right of the pane's top, small and quiet, and take no room when the page has none. */
+  .new-links{display:flex;justify-content:flex-end;gap:14px;margin:0 2px 10px 2px;}
+  /* The note a first run draws about models: tinted ground, hairline border, no colour bar. It is grey because nothing here is waiting on a decision. */
+  .setup-note{margin:0 0 14px 0;padding:10px 14px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-sunk);color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .setup-note p{margin:0;}
+  .setup-note .setup-title{margin-bottom:2px;color:var(--color-fg);font-weight:550;}
   .recent{margin:0 0 12px 0;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-raised);overflow:hidden;}
   .recent-head{margin:0;padding:8px 14px 4px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   ul.recent-list{list-style:none;margin:0;padding:0;}
@@ -2235,8 +2248,21 @@
   .composer-name:focus-visible,.composer-typed:focus-visible{outline:none;border-bottom-color:var(--color-fg-quiet);}
   .composer-typed{border-top:1px solid var(--color-divider);font-size:14px;}
   .cbar{display:flex;align-items:center;gap:8px;}
-  .limits-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:4px 0;}
-  .limits-grid select.composer-typed{background:var(--color-bg-raised);color:var(--color-fg);}
+  .cbar-note{flex:1 1 auto;min-width:0;}
+  .send-reason{color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  /* The Advanced disclosure under the chips: a quiet button, and the four limits as labelled fields in a grid that wraps to one column on a phone. */
+  .adv{margin:10px 0 0 0;}
+  .adv-toggle{display:inline-flex;align-items:center;gap:4px;margin:0;padding:6px 2px;border:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
+  .adv-toggle:hover{color:var(--color-fg);}
+  .adv-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .adv-chevron{display:inline-flex;transition:transform 120ms ease;}
+  .adv-toggle[aria-expanded="true"] .adv-chevron{transform:rotate(180deg);}
+  .limits-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:6px 0 0 0;padding:12px 14px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-sunk);}
+  .adv-field{display:flex;flex-direction:column;gap:4px;min-width:0;}
+  .adv-label{color:var(--color-fg);font:550 13px/1.4 var(--font-sans);}
+  .adv-help{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .adv-input{box-sizing:border-box;width:100%;height:36px;margin:0;padding:0 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);color:var(--color-fg);font:14px/1.4 var(--font-sans);}
+  .adv-input:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   .place-send{display:inline-flex;align-items:center;gap:8px;height:36px;margin:0 0 0 auto;padding:0 14px;border:0;border-radius:10px;background:var(--color-fg);color:var(--color-bg);font:13.5px/1 var(--font-sans);cursor:pointer;}
   .place-send:hover:not(:disabled){opacity:.9;}
   .place-send:disabled{opacity:.5;cursor:default;}
@@ -2397,17 +2423,21 @@
   /* The home and the admin page are lists, not a transcript, and keep a 16px
      gutter on a phone so a row's text stops short of the screen's edge. */
   @media (max-width:640px){main.centre:has(> .home-sessions),main.centre:has(> .admin-body){padding-left:16px;padding-right:16px;}}
-  /* The phone. The banner shows, the composer sits at the bottom within reach of
-     a thumb with the places a session worked in above it, the chips wrap rather than
+  /* The phone. The banner shows, the composer sits at the top under the heading with the places a session worked in above it, the chips wrap rather than
      run off the screen, and a chip's list is a sheet from the bottom edge over a
      scrim. Targets are at least 44px. */
   @media (max-width:640px){
     .banner{display:flex;}
-    .new-wrap{padding:8px 0 8px;}
-    .new-col{flex:1 0 auto;display:flex;flex-direction:column;}
+    .new-wrap{padding:8px 0 16px;align-items:stretch;}
     .new-col h1{font-size:22px;text-align:left;}
-    .new-col .lede{margin-bottom:14px;text-align:left;}
-    form.place-composer{margin-top:auto;}
+    .new-col .lede{margin-bottom:0;text-align:left;}
+    .new-head{margin-bottom:12px;}
+    /* The composer follows the heading at once; the first run's note about models goes under the controls. */
+    .new-col{display:flex;flex-direction:column;}
+    .setup-note{order:2;margin:14px 0 0 0;}
+    .adv-toggle{min-height:44px;}
+    .adv-input{height:44px;font-size:16px;}
+    .limits-grid{grid-template-columns:1fr;}
     .recent-hint{display:none;}
     .recent-row{min-height:44px;flex-wrap:wrap;padding-top:8px;padding-bottom:8px;}
     .recent-place{flex:1 1 auto;min-width:0;max-width:100%;flex-wrap:wrap;white-space:normal;overflow-wrap:anywhere;}
@@ -2560,7 +2590,10 @@
   @media (max-width:640px){
     :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme,:host(.loom-inbox) .toggle-panel{display:none;}
     :host(.loom-session:not(.loom-home)) .toggle-sidebar,:host(.loom-session:not(.loom-home)) .region-panel{display:none;}
-    loom-shell.loom-inbox .session-head .role-chip,loom-shell.loom-inbox .session-head .home-who,loom-shell.loom-inbox .session-head .workspace{display:none;}
+    loom-shell.loom-inbox .session-head .role-chip,loom-shell.loom-inbox .session-head .workspace{display:none;}
+    loom-shell.loom-inbox:not(.loom-home) .session-head .home-who{display:none;}
+    loom-shell.loom-home .session-head .home-who{display:flex;min-width:0;}
+    loom-shell.loom-home .session-head .home-who-button{min-height:36px;max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     loom-shell.loom-inbox .session-head{gap:0 10px;padding-right:12px;}
     loom-shell.loom-session:not(.loom-home) .session-head{padding-left:16px;}
     loom-shell.loom-inbox .session-head .session-title{flex:0 1 auto;min-width:0;}

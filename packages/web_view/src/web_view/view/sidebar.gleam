@@ -122,6 +122,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -612,14 +613,14 @@ fn top(page: Page(message)) -> Element(message) {
       html.span(
         [
           attribute.class("here"),
-          attribute.title("The daemon serving this page"),
+          attribute.title("The daemon serving this page: " <> page.machine),
         ],
         [
           html.span(
             [attribute.class("dot-ok"), attribute.aria_hidden(True)],
             [],
           ),
-          html.text(page.machine),
+          html.span([attribute.class("here-name")], [html.text(page.machine)]),
         ],
       ),
     ]),
@@ -931,32 +932,50 @@ fn toggle_words(rows: List(Row)) -> String {
   }
 }
 
-/// The column's foot: the admin page where the page may open it, and who the
-/// page is for. Both are the page's own values, drawn as text.
+/// The column's foot: who the page is for, then the admin page where the page may
+/// open it. Who is a line with the name's first letter in a circle, so it reads
+/// as the account; Admin is a bordered button with an arrow, so it reads as a
+/// control and not as a label. Both are the page's own values, drawn as text and never into an attribute, since the name is a person's choice.
 fn foot(page: Page(message)) -> Element(message) {
-  // Dispatch on foot state.
+  // A page with no name to show draws no account line.
+  let who = case page.who {
+    "" -> []
+    name -> [
+      html.p([attribute.class("foot-who")], [
+        html.span(
+          [attribute.class("foot-avatar"), attribute.aria_hidden(True)],
+          [
+            html.text(string.uppercase(string.slice(name, 0, 1))),
+          ],
+        ),
+        html.span([attribute.class("foot-name")], [html.text(name)]),
+      ]),
+    ]
+  }
+
+  // Only a page that may open the admin page draws the button.
   let admin = case page.administering {
     Some(press) -> [
       html.button(
         [
           attribute.type_("button"),
           attribute.class("foot-admin"),
+          attribute.title("Open the admin page: people, invitations and roles"),
           event.on_click(press),
         ],
-        [html.text("Admin")],
+        [
+          html.text("Admin"),
+          html.span([attribute.class("foot-go"), attribute.aria_hidden(True)], [
+            html.text("›"),
+          ]),
+        ],
       ),
     ]
     None -> []
   }
 
-  // Dispatch on foot state.
-  let who = case page.who {
-    "" -> []
-    name -> [html.span([attribute.class("foot-who")], [html.text(name)])]
-  }
-
-  // Dispatch on foot state.
-  case list.append(admin, who) {
+  // A column with neither draws no foot.
+  case list.append(who, admin) {
     [] -> element.none()
     parts -> html.div([attribute.class("side-foot")], parts)
   }

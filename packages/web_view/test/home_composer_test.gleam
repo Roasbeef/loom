@@ -229,7 +229,7 @@ pub fn the_owner_opens_on_the_composer_test() {
   assert string.contains(html, "What should the agent work on?")
   assert string.contains(html, "<h1>New session</h1>")
   assert string.contains(html, "Start again where you worked")
-  assert string.contains(html, "Show the full session list")
+  assert string.contains(html, "All sessions")
   assert string.contains(
     html,
     "Agent</span><span class=\"place-chip-value\">laptop",
@@ -776,4 +776,118 @@ pub fn a_kept_session_without_its_message_is_offered_not_deleted_test() {
 
   let departed = run(model, compose(composer.OpenedUnsent))
   assert string.contains(drawn(departed), "/ui/sessions/S?ticket=T")
+}
+
+// A daemon with no session and no model key in its configuration is on its
+// first run. The pane says so in its own words, says what the page can and
+// cannot know about models and cites the configuration page, and draws Start
+// disabled with the reason beside it, since no folder is chosen yet. The old
+// sentence and the stray list link are not drawn.
+fn first_run(asked: Asked) -> home.Start {
+  home.Start(
+    ..owner(asked),
+    sessions: fn(deliver) { deliver(home.Listed([])) },
+    activity: fn(_, deliver) { deliver([]) },
+    profiles: [],
+    models: [],
+    executors: [],
+    pools: [],
+  )
+}
+
+pub fn a_first_run_leads_with_what_to_do_and_holds_start_test() {
+  let model = opened(first_run(process.new_subject()))
+  let html = drawn(model)
+
+  assert string.contains(html, "Start your first session")
+  assert string.contains(html, "listed in the sidebar")
+  assert string.contains(html, "No model is listed in a loom.toml")
+  assert string.contains(html, "docs/configuration.md")
+  assert string.contains(html, "[models.&lt;name&gt;]")
+
+  // Start is disabled, and the reason is beside it and named by the button.
+  assert string.contains(html, "Choose a folder first.")
+  assert string.contains(html, "aria-describedby=\"start-reason\"")
+  assert string.contains(html, "disabled")
+
+  // One control asks for the folder; the sentence that repeated it is gone.
+  assert string.contains(html, "Choose a folder…")
+  assert !string.contains(html, "The agent runs on")
+  assert !string.contains(html, "Show the full session list")
+  assert !string.contains(html, "All sessions")
+}
+
+// A daemon whose configuration lists a model draws no note about models, and a
+// daemon with sessions draws the question, the list link and an enabled Start.
+pub fn a_used_daemon_draws_no_setup_note_and_an_enabled_start_test() {
+  let html = drawn(opened(owner(process.new_subject())))
+
+  assert !string.contains(html, "No model is listed")
+  assert !string.contains(html, "Start your first session")
+  assert string.contains(html, "All sessions")
+  assert !string.contains(html, "send-reason")
+}
+
+// With sessions but no model key the note stays away: it is a first-run note, and
+// a daemon that has run sessions has shown that it can.
+pub fn the_model_note_is_for_the_first_run_only_test() {
+  let start = home.Start(..owner(process.new_subject()), models: [])
+  let html = drawn(opened(start))
+
+  assert !string.contains(html, "No model is listed")
+}
+
+// The subagent limits are behind an Advanced disclosure with plain labels. Closed,
+// the page draws the button and none of the fields; open, it draws the four
+// fields with the daemon's defaults as values, each belonging to the composer's
+// form by its `form` attribute, and the old jargon is gone.
+pub fn the_advanced_disclosure_holds_the_limits_test() {
+  let model = opened(owner(process.new_subject()))
+  let closed = drawn(model)
+
+  assert string.contains(closed, ">Advanced<")
+  assert string.contains(closed, "aria-expanded=\"false\"")
+  assert !string.contains(closed, "name=\"fan_out\"")
+  assert !string.contains(closed, "Subagent limits")
+
+  let open = drawn(run(model, compose(composer.ToggledLimits)))
+  assert string.contains(open, "Subagents at once")
+  assert string.contains(open, "Subagents per session")
+  assert string.contains(open, "Levels of nesting")
+  assert string.contains(open, "name=\"fan_out\"")
+  assert string.contains(open, "value=\"100\"")
+  assert string.contains(open, "value=\"256\"")
+  assert string.contains(open, "form=\"new-session-form\"")
+  assert string.contains(open, "Default (1 level)")
+  assert !string.contains(open, "Fan-out (100)")
+  assert !string.contains(open, "Max depth (1)")
+  assert !string.contains(open, "Subagent limits")
+}
+
+// The Advanced fields reach the form's decoder as they always did: a submit with
+// the disclosure open carries the four limits beside the message.
+pub fn an_open_disclosure_submit_carries_the_limits_test() {
+  let fields = [
+    #("prompt", "x"),
+    #("fan_out", "100"),
+    #("session_strands", "256"),
+    #("depth_mode", "default"),
+    #("depth_cap", "1"),
+  ]
+
+  assert new_session.fields_with_limits(
+      fields,
+      new_session.NameOnly,
+      composer.LimitsOpen,
+    )
+    == Ok(#(
+      "x",
+      composer.Nothing,
+      composer.LimitsInput(
+        fan_out: "100",
+        session_strands: "256",
+        depth_mode: "default",
+        depth_cap: "1",
+      ),
+    ))
 }

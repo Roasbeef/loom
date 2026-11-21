@@ -837,6 +837,17 @@ a report. A pool whose one answering executor is already drawn with the same
 workspaces is left out, since it offers the same rows. Naming members for a remote
 box would need the offers wire to carry names, which it does not. The offered set
 the submit re-checks is unchanged.
+A daemon with no session draws a first-run pane (`new_session.History`): the heading
+"Start your first session", one line saying that sessions are listed in the sidebar,
+and, while the daemon's configuration names no `[models.<name>]` key, a note saying
+that a session then uses the `LOOM_*` environment variables if they are set, with the
+pointer to `docs/configuration.md`. The page cannot tell a daemon with no model from
+one that reads the environment, because it is given only the keys of a file's model
+tables, so the note informs and does not block. Start is disabled, with its reason
+beside it, while no folder is chosen. The subagent limits are behind an "Advanced"
+disclosure under the chips, in plain words, with the daemon's defaults as values. On
+a phone the composer follows the heading, the controls wrap into one column, and the
+account control stays in the top bar, one tap from the passkeys.
 The third chip is Model, which merges the profile and the main model. A chip's list is a popover
 on a wide window and a bottom sheet on a phone, from one tree. Every row is a
 button whose message carries a value the server built, `composer.update` honours it
