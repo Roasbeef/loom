@@ -1228,16 +1228,21 @@ change has no row. A session that moves on from here keeps its row, and while it
 custody is `moved` nothing archives it (the box's own archive and the page's both
 refuse a moved session, as they did for a session the page created), so
 `TopSessions` lists it as an idle row and it holds one of the spawner's
-`max_sessions` places until the session comes back or is deleted where it went. That
-is the round trip laptop to box and back, so it is the common case, and it is not
-fixed here: the listing and the count would need to leave out moved sessions. The
-activation's `from_node` is the sender's own statement, and the port does not compare
-it with the node the message came from, so a pinned peer could claim another
-spawner's node for a session it authored. That needs a misbehaving peer on the
-distribution link and reaches no existing session, but the comparison is one line
-and is left for a follow-up.
+`max_sessions` places until the session comes back or is deleted where it went. It
+takes an onward move from here, since a move back to a directory on the origin is
+refused today, and it is not fixed here: the listing and the count would need to
+leave out moved sessions. The
+activation's `from_node` names the orchestrator row and so the spawner, which is why
+the port now compares it with the node the message came from
+(`orchestrator_port`, the `Activate` arm) and refuses a mismatch with
+`UnknownSource(node)` before the importer runs, as the spawn messages judge their
+requester by the transport's node. A peer cannot name another orchestrator's node as
+its own to put a session it authored on another spawner's page. The fixture of
+`orchestrator_port_test` that declared a node other than the test's own now declares
+its own node, and `an_activation_declaring_another_nodes_name_is_refused_test`
+pins the refusal.
 
 **Tests.** `session_importer_test` (`a_moved_session_is_reachable_by_the_senders_page_test`,
 `a_moved_session_stays_private_without_a_page_for_the_sender_test`) and
 `relayed_test` (`an_imported_session_gets_a_row_beside_the_caps_and_only_one_test`,
-`an_import_with_no_page_writes_no_row_test`).
+`an_import_with_no_page_writes_no_row_test`), and `orchestrator_port_test` for the node check.
