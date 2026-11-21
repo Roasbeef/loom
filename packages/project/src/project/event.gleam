@@ -32,6 +32,9 @@ pub type CheckResult {
     commit: CommitId,
     /// The digest of the command.
     digest: CommandDigest,
+    /// Whether the work could have caused the failure, which the host judges
+    /// from the exit status and the output.
+    cause: model.FailureCause,
   )
 }
 
@@ -282,6 +285,14 @@ pub type Event {
     by: PrincipalId,
   )
 
+  /// A person asked for the check to run again on the commit it already judged.
+  RecheckRequested(
+    /// The ticket.
+    ticket: TicketId,
+    /// Who asked.
+    by: PrincipalId,
+  )
+
   /// The host opened the ticket's pull request.
   PullRequestOpened(
     /// The ticket.
@@ -429,6 +440,10 @@ pub type Refusal {
 
   /// The answer does not echo the open question.
   StaleAnswer(ticket: TicketId)
+
+  /// No check failed at the head, or gave no result, so there is nothing to
+  /// run again.
+  NothingToRecheck(ticket: TicketId)
 
   /// A conclusion must be `Merged`, `Closed` or `Abandoned`; a person's stop
   /// is its own command.

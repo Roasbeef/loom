@@ -237,6 +237,10 @@ pub type Command {
   /// A person's request for a new assignment on a stalled ticket. Owner-only.
   RetryTicket(project: String, ticket: String)
 
+  /// A person's request that the check run again on the commit it already
+  /// judged, because it failed there or gave no result. Owner-only.
+  RecheckTicket(project: String, ticket: String)
+
   /// A person's request that a stored trigger be evaluated afresh. Owner-only.
   RequeueTrigger(project: String, trigger: String)
 
@@ -284,9 +288,34 @@ pub type Command {
     epoch: String,
   )
 
+  /// Reads the catalogue's attention summaries for the named sessions, saved or
+  /// resident (`protocol-change/128`, over `protocol-change/122`). The owner is
+  /// answered for every identity and a member for the identities it holds. It
+  /// reads the summary table only and never opens a session.
+  SavedAttention(
+    /// Between one and `activity_limit` distinct canonical identities, in the
+    /// order the reply keeps.
+    sessions: List(String),
+    /// Current daemon epoch, checked before any session is resolved.
+    epoch: String,
+  )
+
   /// Reads one ask or find in full with its revision (`protocol-change/120`).
   /// The owner, or a member that holds the session at any role.
   ReadAttention(session: String, id: String, epoch: String)
+
+  /// Answers an open ask, expecting the record to be at `revision`
+  /// (`protocol-change/128`, over `protocol-change/120`). The owner, or a member
+  /// that holds the session as an Operator. `answer` is the object of
+  /// `protocol-change/119`, "The answer", whose shape the daemon checks against
+  /// the stored ask and not here.
+  AnswerAsk(
+    session: String,
+    ask: String,
+    revision: Int,
+    answer: JsonValue,
+    epoch: String,
+  )
 
   /// Reads a session's pending approvals as evidence (`protocol-change/120`,
   /// the addendum "Approval evidence"). The owner, or a member that holds the
@@ -804,6 +833,11 @@ fn decode_fields(
       use ticket <- result.map(text_field(fields, "ticket", 128))
       RetryTicket(project, ticket)
     }
+    "projects.recheck" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      RecheckTicket(project, ticket)
+    }
     "projects.publish" -> {
       use project <- result.try(text_field(fields, "project", 64))
       use ticket <- result.map(text_field(fields, "ticket", 128))
@@ -851,6 +885,19 @@ fn decode_fields(
       use sessions <- result.try(activity_sessions(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       SessionAttention(sessions, epoch)
+    }
+    "sessions.saved_attention" -> {
+      use sessions <- result.try(activity_sessions(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SavedAttention(sessions, epoch)
+    }
+    "attention.answer" -> {
+      use session <- result.try(attention_session(fields))
+      use ask <- result.try(text_field(fields, "ask", 64))
+      use revision <- result.try(attention_revision(fields))
+      use answer <- result.try(answer_field(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      AnswerAsk(session, ask, revision, answer, epoch)
     }
     "attention.read" -> {
       use session <- result.try(attention_session(fields))
@@ -1699,6 +1746,17 @@ fn attention_revision(
   case list.key_find(fields, "revision") {
     Ok(json.Int(revision)) if revision >= 0 -> Ok(revision)
     Ok(_) | Error(Nil) -> Error("expected a nonnegative revision")
+  }
+}
+
+/// The answer object of an `attention.answer`: a JSON object, whose members the
+/// daemon checks against the stored ask and not here.
+fn answer_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(JsonValue, String) {
+  case list.key_find(fields, "answer") {
+    Ok(json.Object(_) as answer) -> Ok(answer)
+    Ok(_) | Error(Nil) -> Error("expected an answer object")
   }
 }
 

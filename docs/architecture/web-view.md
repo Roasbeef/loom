@@ -274,12 +274,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:629`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:640`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:8600`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:8749`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -2457,3 +2457,116 @@ figures and the placement chips are the stream strip's (`view/stream_head`,
 session's page has the same folders (without counts) and "Watch live" list as
 Home's, with `watch_rule`'s second lines. See protocol-change/051, the addendum
 "one frame on every page".
+
+## Signing in with a passkey (protocol-change/127)
+
+The owner can register a WebAuthn credential from a fresh home and sign a browser
+in with it later at `/ui/signin`, with no shell on the daemon's machine. This is
+the way a phone reaches a daemon on a box over a listed origin
+([Remote origins](#remote-origins)) without `loom ui --device`.
+
+### Who may do what
+
+| Step | Page | Origin of the page | Ceiling |
+|---|---|---|---|
+| Add a passkey | the owner's home | `Fresh` (a `loom ui` exchange) | `Operator` |
+| Sign in | none: a browser with no login | not applicable | not applicable |
+| List and remove passkeys | the owner's home | any | `Operator` |
+
+A member is never offered a passkey and the daemon refuses every route for one.
+A home that a passkey signs in is `Resumed`, the bookmark's origin
+(`ui_sessions.passkey_origin`), so it cannot add a passkey, make a device link or
+open the admin page. That is a provisional ruling recorded in
+`protocol-change/127-passkey-sign-in.md`, and flipping it is one constant.
+
+### The routes
+
+| Route | What it does |
+|---|---|
+| `GET /ui/signin` | Draws the sign-in page: a fixed document with one form, a challenge from `ui_sessions.challenge` and the relying party id, as data attributes. It needs no login. |
+| `POST /ui/signin` | `server.signin_submit`: the sender, the declared form, a control-class permit, then `ui_passkey.sign_in`. A good assertion answers like `login_resume` does: the exchange page of a new home, with the page cookie and the login cookie. Every refusal is one `401` document. |
+| `GET /ui/p/<key>/passkey` | Draws the registration page for a page that `ui_passkey.may_register` accepts. |
+| `POST /ui/p/<key>/passkey` | `server.passkey_submit`: the same checks, the page's nonce, then `ui_passkey.register`. A good registration answers `303` to the home; every refusal is one `403`. |
+
+The two pages are served under the resume page's policy: `script-src 'self'`,
+`form-action 'self'`, no inline script and no inline style. Their scripts
+(`web_view_signin.js`, `web_view_passkey.js`, sources in
+`packages/web_client/assets`) call `navigator.credentials`, put the base64url
+results into the form and submit it, so there is no `fetch` and `connect-src` is
+unchanged. The challenge and the relying party id are data attributes the daemon
+wrote.
+
+### One ceremony
+
+The relying party id is the host of the origin the request was admitted under,
+without a port (`ui_http.rp_id`), and the origin in the client data must be the
+page's address byte for byte (`ui_http.address`). For a sign-in the daemon:
+
+1. reads the challenge out of the posted client data and spends it
+   (`ui_sessions.answer`), which removes it, so a replayed, expired or unknown
+   challenge or a registration's challenge is refused before anything else is read;
+2. finds the passkey by credential id and its principal (`manager.find_passkey`)
+   and refuses a principal that is not the owner;
+3. verifies the assertion (`client/daemon/passkey.verify_assertion`): client data
+   `webauthn.get`, the issued challenge and the page's origin, authenticator data
+   with the relying party's hash and the user-present and user-verified flags, a
+   counter that rose (or zero beside zero), and an ES256 signature over the
+   authenticator data and the hash of the client data under the stored key;
+4. records the counter and sets a login (`ui_login.passkey`, an `Operator` login
+   with no parent), then mints and redeems a `Resumed` home ticket for it in the
+   same request.
+
+A registration is the same with `webauthn.create`, the attested credential id
+compared with the posted one, and no signature, because attestation is `none`. The
+key arrives as the browser's `getPublicKey()`, `SubjectPublicKeyInfo` DER, which
+`kryptos` parses and whose curve it names. The daemon has no COSE or CBOR reader
+and no FFI of its own. `client/daemon/passkey` holds these checks as pure
+functions, and `client/daemon/ui_passkey` holds the part that reads the catalogue
+and the challenge table.
+
+### The challenge table
+
+The challenges are held by `ui_sessions`, the actor that holds every other
+single-use secret of the view. A challenge lives five minutes. The sign-in page
+issues one to anyone, so the table holds at most 64, and a new challenge at the
+bound replaces the one that expires first.
+
+### Storage
+
+Catalogue version 23 adds `access_passkeys`: credential id, principal, public key
+(base64url text of a 91-byte P-256 `SubjectPublicKeyInfo`), counter, label,
+created and last used. A principal holds at most eight. Every row is decoded
+totally on read. `storage/access` is the only reader and writer, and
+`manager` serializes the registry's calls (`find_passkey`, `use_passkey`,
+`list_passkeys`, `add_passkey`, `remove_passkey`).
+
+### The account panel
+
+The panel's last region, `view/passkeys`, lists the passkeys by label, when each
+was added and when it last signed a browser in. "Remove" asks for a second press,
+"Confirm", before the home asks the daemon (`ui_socket.remove_passkey_for`), which
+authenticates the page's credential as the owner again and removes only the
+named passkey. "Add a passkey" is a link to the registration page, drawn only
+when the daemon handed the page an address for it, which it does for a fresh
+owner's home alone (`ui_socket.home_passkeys_capability`). All the region's
+handlers are beneath `home.signins_path`, so the home socket's admission is
+unchanged.
+
+### What is not checked here
+
+The daemon's half is tested with keys made in the tests. What a phone sends, and
+whether an iOS or Android browser offers `getPublicKey`, needs a phone: register
+from a fresh home at a listed `https` origin, sign out, and sign in again at
+`/ui/signin`. The registration page says when a browser cannot hand over the key.
+
+### Passkeys outlive logins
+
+A passkey is a row keyed by its principal, not a login, so nothing that ends
+logins ends a passkey: "Sign out everywhere", deleting the root key (which
+revokes every login at the next start, `ui_login.root_key`) and rotating the
+owner's credential all leave the table as it was. A passkey must be removed by
+hand, and the account panel's Passkeys list is where the owner checks for a key
+they do not recognise. Removing a passkey likewise does not end the logins it
+signed in; the notice after a removal says so, and those browsers are signed out
+from the Sign-ins list. The owner ruled that deleting the root key leaves the table
+as it is (`protocol-change/127-passkey-sign-in.md`).

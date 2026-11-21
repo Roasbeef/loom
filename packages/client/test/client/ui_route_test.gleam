@@ -65,6 +65,9 @@ import gleam/uri
 import host/bootstrap
 import host/claim
 import host/login
+import kryptos/ec
+import kryptos/ecdsa
+import kryptos/hash
 import mist
 import session_view/move_candidates
 import session_view/operator as session_operator
@@ -90,6 +93,7 @@ import web_view/machines
 import web_view/names
 import web_view/orchestrators as relayed_roster
 import web_view/page
+import web_view/passkeys
 import web_view/peer_links
 import web_view/projects as page_projects
 import web_view/renames
@@ -249,6 +253,7 @@ fn fixture_lasting_with_root(
   let config =
     server.Config(
       worktree: fn(_) { None },
+      strand_send: daemon_server_test.refusing_strand_send,
       peer_endpoint: fn(_) { None },
       daemon:,
       domain_configuration: "",
@@ -11460,5 +11465,749 @@ pub fn a_session_key_on_another_sessions_address_says_it_is_another_page_test() 
     assert refused.status == 403
     assert string.contains(refused.body, ending.headline(ending.OtherPage))
     assert open_page(port, one).status == 200
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Passkeys (protocol-change/127). Each test drives the real router with keys
+// the test makes, as a browser's authenticator would: a P-256 key pair, the
+// client data and authenticator data a browser writes, and a signature over
+// them. The daemon cannot tell these from a phone's, and what a phone adds
+// beyond them (the biometric, the sync) is the authenticator's.
+// ---------------------------------------------------------------------------
+
+// The relying party id and origin the fixture's loopback requests are admitted
+// under.
+const passkey_rp = "127.0.0.1"
+
+fn passkey_address(port: Int) -> String {
+  "http://127.0.0.1:" <> int.to_string(port)
+}
+
+fn base64url(bits: BitArray) -> String {
+  bit_array.base64_url_encode(bits, False)
+}
+
+// What a browser writes as `clientDataJSON`.
+fn passkey_client_data(
+  kind: String,
+  challenge: String,
+  origin: String,
+) -> BitArray {
+  json.Object([
+    #("type", json.String(kind)),
+    #("challenge", json.String(challenge)),
+    #("origin", json.String(origin)),
+    #("crossOrigin", json.Bool(False)),
+  ])
+  |> json.to_string
+  |> bit_array.from_string
+}
+
+// Authenticator data without credential data.
+fn passkey_data(rp: String, flags: Int, count: Int) -> BitArray {
+  let hashed = bootstrap.sha256(bit_array.from_string(rp))
+  <<hashed:bits, flags:8, count:32>>
+}
+
+// The same for a registration, with the credential id and a stand-in for the key.
+fn passkey_attested(credential: BitArray, flags: Int) -> BitArray {
+  <<
+    passkey_data(passkey_rp, flags, 0):bits,
+    0:size(128),
+    bit_array.byte_size(credential):16,
+    credential:bits,
+    "cose":utf8,
+  >>
+}
+
+// A urlencoded form as a browser posts it.
+fn passkey_form(fields: List(#(String, String))) -> String {
+  uri.query_to_string(fields)
+}
+
+fn post_form(
+  port: Int,
+  path: String,
+  fields: List(#(String, String)),
+  more: List(#(String, String)),
+) -> Answer {
+  let body = passkey_form(fields)
+  let defaults = [
+    host(port),
+    #("sec-fetch-site", "same-origin"),
+    #("content-type", "application/x-www-form-urlencoded"),
+    #("content-length", int.to_string(string.byte_size(body))),
+  ]
+  send_request(port, "POST", path, list.append(defaults, more), body)
+}
+
+// The key a page's address names: `/ui/p/<key>/home`.
+fn page_key(entered: Entered) -> String {
+  let assert ["", "ui", "p", key, ..] = string.split(entered.page, "/")
+    as "the page's address is keyed"
+  key
+}
+
+// A passkey a test registered: the key to sign with and the credential id.
+type Authenticator {
+  Authenticator(private: ec.PrivateKey, credential: BitArray, id: String)
+}
+
+// The registration page of a fresh home, as the home's link opens it.
+fn passkey_page(port: Int, entered: Entered) -> Answer {
+  get(port, "/ui/p/" <> page_key(entered) <> "/passkey", [
+    host(port),
+    #("sec-fetch-site", "same-origin"),
+    #("cookie", "loom_ui=" <> entered.cookie),
+  ])
+}
+
+// The registration's post as the page's script makes it: the authenticator's
+// results and the page's nonce.
+fn passkey_register(
+  port: Int,
+  entered: Entered,
+  challenge: String,
+  label: String,
+) -> #(Authenticator, Answer) {
+  let #(private, public) = ec.generate_key_pair(ec.P256)
+  let assert Ok(der) = ec.public_key_to_der(public) as "the key has DER"
+  let credential = token.production_entropy()(32)
+  let fields = [
+    #("nonce", entered.nonce),
+    #("id", base64url(credential)),
+    #(
+      "cdj",
+      base64url(passkey_client_data(
+        "webauthn.create",
+        challenge,
+        passkey_address(port),
+      )),
+    ),
+    #("ad", base64url(passkey_attested(credential, 69))),
+    #("pk", base64url(der)),
+    #("label", label),
+  ]
+  let answer =
+    post_form(port, "/ui/p/" <> page_key(entered) <> "/passkey", fields, [
+      #("cookie", "loom_ui=" <> entered.cookie),
+    ])
+  #(Authenticator(private:, credential:, id: base64url(credential)), answer)
+}
+
+// The sign-in page, as a browser with no login opens it.
+fn signin_page(port: Int) -> Answer {
+  get(port, "/ui/signin", [host(port), #("sec-fetch-site", "none")])
+}
+
+// The sign-in's post as the page's script makes it, signed by `authenticator`.
+fn passkey_assert(
+  port: Int,
+  authenticator: Authenticator,
+  challenge: String,
+  count: Int,
+  flags: Int,
+) -> Answer {
+  let client =
+    passkey_client_data("webauthn.get", challenge, passkey_address(port))
+  let data = passkey_data(passkey_rp, flags, count)
+  let message = <<data:bits, bootstrap.sha256(client):bits>>
+  post_form(
+    port,
+    "/ui/signin",
+    [
+      #("id", authenticator.id),
+      #("cdj", base64url(client)),
+      #("ad", base64url(data)),
+      #(
+        "sig",
+        base64url(ecdsa.sign(authenticator.private, message, hash.Sha256)),
+      ),
+    ],
+    [],
+  )
+}
+
+// A fresh owner's home, a registered passkey, and the challenge-issuing page the
+// registration came from.
+fn registered_passkey(
+  port: Int,
+  credential: String,
+) -> #(Signed, Authenticator) {
+  let signed = sign_in(port, credential)
+  let page = passkey_page(port, signed.page)
+  assert page.status == 200
+  let challenge = attribute(page.body, "data-challenge")
+  let #(authenticator, answer) =
+    passkey_register(port, signed.page, challenge, "Phone")
+  assert answer.status == 303
+  assert list.key_find(answer.headers, "location") == Ok(signed.page.page)
+  #(signed, authenticator)
+}
+
+fn bearer_digest(credential: String) -> access.Digest {
+  let assert Ok(digest) =
+    credential
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> access.credential_digest
+    as "the owner's digest is valid"
+  digest
+}
+
+// The whole of it: a fresh owner's home registers a passkey, a browser with no
+// login signs in with it and is handed a resumed home and a login cookie.
+pub fn a_passkey_registers_from_a_fresh_home_and_signs_a_browser_in_test() {
+  fixture(fn(ready, port, credential) {
+    let #(_, authenticator) = registered_passkey(port, credential)
+
+    // The catalogue holds it, with the label and the counter the registration
+    // reported.
+    let assert Ok(held) =
+      manager.list_passkeys(ready.registry, bearer_digest(credential))
+      as "the owner's passkeys are listed"
+    let assert [row] = held as "one passkey is held"
+    assert row.credential_id == authenticator.id
+    assert row.label == "Phone"
+    assert row.sign_count == 0
+
+    // The sign-in page needs no login and carries a challenge, under the policy
+    // that lets its form post to this origin.
+    let page = signin_page(port)
+    assert page.status == 200
+    assert attribute(page.body, "data-rp-id") == passkey_rp
+    let assert Ok(policy) =
+      list.key_find(page.headers, "content-security-policy")
+    assert string.contains(policy, "form-action 'self'")
+    let challenge = attribute(page.body, "data-challenge")
+    let answer = passkey_assert(port, authenticator, challenge, 1, 5)
+    let signed = signed_in(answer)
+
+    // The home it opened is the bookmark's, not a `loom ui` exchange's, and
+    // belongs to the login the sign-in set.
+    let socket = home_socket(port, signed.page, [])
+    assert list.key_find(socket.headers, "x-page-origin") == Ok("resumed")
+    assert list.key_find(socket.headers, "x-page-ceiling") == Ok("operator")
+    assert list.key_find(socket.headers, "x-page-login") != Ok("none")
+
+    // The login resumes like any other, and the passkey's counter moved.
+    assert resume_as(port, signed).status == 200
+    let assert Ok(after) =
+      manager.list_passkeys(ready.registry, bearer_digest(credential))
+      as "the owner's passkeys are listed again"
+    let assert [used] = after as "one passkey is held"
+    assert used.sign_count == 1
+    assert used.last_used_ms != None
+  })
+}
+
+// A challenge answers once. The same assertion posted again, whole, is refused
+// with the one fixed document that echoes nothing.
+pub fn a_replayed_passkey_assertion_is_refused_test() {
+  fixture(fn(_, port, credential) {
+    let #(_, authenticator) = registered_passkey(port, credential)
+    let challenge = attribute(signin_page(port).body, "data-challenge")
+    // The counter is zero beside a stored zero, which the counter rule accepts
+    // every time, so only the challenge's single use can refuse the second post.
+    assert passkey_assert(port, authenticator, challenge, 0, 5).status == 200
+    let again = passkey_assert(port, authenticator, challenge, 0, 5)
+    assert again.status == 401
+    assert string.contains(again.body, "This passkey could not sign you in.")
+    assert !string.contains(again.body, authenticator.id)
+    assert !string.contains(again.body, challenge)
+  })
+}
+
+// A counter that does not rise is a clone and is refused; a rising one signs in
+// again.
+pub fn a_passkey_counter_that_does_not_rise_is_refused_test() {
+  fixture(fn(_, port, credential) {
+    let #(_, authenticator) = registered_passkey(port, credential)
+    let first = attribute(signin_page(port).body, "data-challenge")
+    assert passkey_assert(port, authenticator, first, 5, 5).status == 200
+    let second = attribute(signin_page(port).body, "data-challenge")
+    assert passkey_assert(port, authenticator, second, 5, 5).status == 401
+    let third = attribute(signin_page(port).body, "data-challenge")
+    assert passkey_assert(port, authenticator, third, 6, 5).status == 200
+  })
+}
+
+// Every way a sign-in can be wrong is the same `401` and the same document.
+pub fn a_passkey_sign_in_that_is_wrong_is_one_refusal_test() {
+  fixture(fn(_, port, credential) {
+    let #(_, authenticator) = registered_passkey(port, credential)
+    let fresh = fn() { attribute(signin_page(port).body, "data-challenge") }
+    let refused = fn(answer: Answer) {
+      assert answer.status == 401
+      assert string.contains(answer.body, "This passkey could not sign you in.")
+    }
+
+    // An unknown credential, no user verification, and no user presence.
+    let stranger = Authenticator(..authenticator, id: base64url(<<7:128>>))
+    refused(passkey_assert(port, stranger, fresh(), 1, 5))
+    refused(passkey_assert(port, authenticator, fresh(), 1, 1))
+    refused(passkey_assert(port, authenticator, fresh(), 1, 4))
+
+    // A challenge that was never issued and one the registration page issued.
+    refused(passkey_assert(port, authenticator, base64url(<<1:256>>), 1, 5))
+    let registering = sign_in(port, credential)
+    let page = passkey_page(port, registering.page)
+    refused(passkey_assert(
+      port,
+      authenticator,
+      attribute(page.body, "data-challenge"),
+      1,
+      5,
+    ))
+
+    // A signature made for another origin, another relying party and by
+    // another key.
+    let challenge = fresh()
+    let client =
+      passkey_client_data("webauthn.get", challenge, "https://evil.example")
+    let data = passkey_data(passkey_rp, 5, 1)
+    let message = <<data:bits, bootstrap.sha256(client):bits>>
+    refused(
+      post_form(
+        port,
+        "/ui/signin",
+        [
+          #("id", authenticator.id),
+          #("cdj", base64url(client)),
+          #("ad", base64url(data)),
+          #(
+            "sig",
+            base64url(ecdsa.sign(authenticator.private, message, hash.Sha256)),
+          ),
+        ],
+        [],
+      ),
+    )
+
+    // The right origin and a signature over authenticator data that hashes
+    // another relying party's id.
+    let challenge = fresh()
+    let client =
+      passkey_client_data("webauthn.get", challenge, passkey_address(port))
+    let data = passkey_data("evil.example", 5, 1)
+    let message = <<data:bits, bootstrap.sha256(client):bits>>
+    refused(
+      post_form(
+        port,
+        "/ui/signin",
+        [
+          #("id", authenticator.id),
+          #("cdj", base64url(client)),
+          #("ad", base64url(data)),
+          #(
+            "sig",
+            base64url(ecdsa.sign(authenticator.private, message, hash.Sha256)),
+          ),
+        ],
+        [],
+      ),
+    )
+    let other = Authenticator(..authenticator, private: pair_key())
+    refused(passkey_assert(port, other, fresh(), 1, 5))
+
+    // The good one still works after every refusal.
+    assert passkey_assert(port, authenticator, fresh(), 1, 5).status == 200
+  })
+}
+
+fn pair_key() -> ec.PrivateKey {
+  let #(private, _) = ec.generate_key_pair(ec.P256)
+  private
+}
+
+// The sign-in post is checked as the resume's is: this origin's own page as the
+// sender, a declared form, exactly the four fields.
+pub fn the_passkey_sign_in_post_is_checked_before_it_is_read_test() {
+  fixture(fn(_, port, credential) {
+    let #(_, authenticator) = registered_passkey(port, credential)
+    let challenge = attribute(signin_page(port).body, "data-challenge")
+    let fields = [
+      #("id", authenticator.id),
+      #("cdj", "AAAA"),
+      #("ad", "AAAA"),
+      #("sig", "AAAA"),
+    ]
+    let post = fn(headers) {
+      let body = passkey_form(fields)
+      send_request(
+        port,
+        "POST",
+        "/ui/signin",
+        list.append(
+          [
+            host(port),
+            #("content-type", "application/x-www-form-urlencoded"),
+            #("content-length", int.to_string(string.byte_size(body))),
+          ],
+          headers,
+        ),
+        body,
+      )
+    }
+
+    // Another site, a navigation, and a request that says nothing of its sender.
+    assert post([#("sec-fetch-site", "cross-site")]).status == 403
+    assert post([#("sec-fetch-site", "same-site")]).status == 403
+    assert post([#("sec-fetch-site", "none")]).status == 403
+    assert post([]).status == 403
+
+    // A body of another shape: a missing field, an extra one, a repeat.
+    assert post_form(port, "/ui/signin", [#("id", authenticator.id)], []).status
+      == 400
+    assert post_form(
+        port,
+        "/ui/signin",
+        [#("challenge", challenge), ..fields],
+        [],
+      ).status
+      == 400
+    assert post_form(port, "/ui/signin", [#("id", "AA"), ..fields], []).status
+      == 400
+
+    // A body that is not urlencoded, and one over its bound.
+    let bytes =
+      send_request(
+        port,
+        "POST",
+        "/ui/signin",
+        [
+          host(port),
+          #("sec-fetch-site", "same-origin"),
+          #("content-type", "application/json"),
+          #("content-length", "2"),
+        ],
+        "{}",
+      )
+    assert bytes.status == 400
+    let big = string.repeat("A", 5000)
+    assert post_form(
+        port,
+        "/ui/signin",
+        [#("id", big), ..list.drop(fields, 1)],
+        [],
+      ).status
+      == 400
+  })
+}
+
+// The registration page is the owner's fresh home's: a page a passkey signed in
+// is resumed, so it is refused the page and the post alike.
+pub fn a_resumed_home_cannot_register_a_passkey_test() {
+  fixture(fn(ready, port, credential) {
+    let #(_, authenticator) = registered_passkey(port, credential)
+    let challenge = attribute(signin_page(port).body, "data-challenge")
+    let signed = signed_in(passkey_assert(port, authenticator, challenge, 1, 5))
+    let page = passkey_page(port, signed.page)
+    assert page.status == 403
+    assert string.contains(page.body, "No passkey was added.")
+
+    // A live registration challenge, from a second fresh home of the same owner,
+    // posted with the resumed page's own cookie and nonce: only the page's
+    // standing can refuse it.
+    let second = sign_in(port, credential)
+    let live = attribute(passkey_page(port, second.page).body, "data-challenge")
+    let #(_, answer) = passkey_register(port, signed.page, live, "Tablet")
+    assert answer.status == 403
+    let assert Ok(held) =
+      manager.list_passkeys(ready.registry, bearer_digest(credential))
+      as "the passkeys are listed"
+    assert list.length(held) == 1
+
+    // The bookmark's resumed home is refused the same.
+    let resumed = resume_as(port, signed)
+    assert resumed.status == 200
+  })
+}
+
+// The registration post is the page's: its cookie, its nonce, this origin, and a
+// challenge issued for this principal's registration.
+pub fn a_registration_without_the_pages_standing_is_refused_test() {
+  fixture(fn(ready, port, credential) {
+    let signed = sign_in(port, credential)
+    let page = passkey_page(port, signed.page)
+    let challenge = attribute(page.body, "data-challenge")
+
+    // The registration page's policy lets its form post and nothing wider.
+    let assert Ok(policy) =
+      list.key_find(page.headers, "content-security-policy")
+    assert string.contains(policy, "form-action 'self'")
+    assert string.contains(policy, "script-src 'self'")
+    assert attribute(page.body, "data-key") == page_key(signed.page)
+
+    // Another page's nonce, no nonce, another origin as the sender, and no
+    // cookie are each refused with nothing written.
+    let wrong = Entered(..signed.page, nonce: string.repeat("0", 64))
+    assert passkey_register(port, wrong, challenge, "A").1.status == 403
+    let path = "/ui/p/" <> page_key(signed.page) <> "/passkey"
+    assert post_form(port, path, [#("nonce", signed.page.nonce)], [
+        #("cookie", "loom_ui=" <> signed.page.cookie),
+      ]).status
+      == 400
+    let elsewhere =
+      post_form(port, path, [#("nonce", signed.page.nonce)], [
+        #("sec-fetch-site", "cross-site"),
+        #("cookie", "loom_ui=" <> signed.page.cookie),
+      ])
+    assert elsewhere.status == 403
+    assert passkey_register(
+        port,
+        Entered(..signed.page, cookie: "nope"),
+        challenge,
+        "A",
+      ).1.status
+      == 403
+
+    // A challenge that is the sign-in's is not a registration's.
+    let signin = attribute(signin_page(port).body, "data-challenge")
+    assert passkey_register(port, signed.page, signin, "A").1.status == 403
+
+    // Nothing was written by any of them, and the original challenge was not
+    // spent by them: it still registers.
+    assert manager.list_passkeys(ready.registry, bearer_digest(credential))
+      == Ok([])
+    assert passkey_register(port, signed.page, challenge, "A").1.status == 303
+    let assert Ok(held) =
+      manager.list_passkeys(ready.registry, bearer_digest(credential))
+      as "the passkeys are listed"
+    assert list.length(held) == 1
+  })
+}
+
+// A member's home is refused the registration page and the post.
+pub fn a_members_home_cannot_register_a_passkey_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "member-passkey", 1301)
+    let member_credential =
+      member(ready, "ui-passkey", session, access.Operator)
+    let signed = sign_in_as(port, member_credential)
+    let page = passkey_page(port, signed.page)
+    assert page.status == 403
+
+    // The owner's live registration challenge, posted with the member's own
+    // cookie and nonce, registers nothing for either of them.
+    let owner = sign_in(port, credential)
+    let live = attribute(passkey_page(port, owner.page).body, "data-challenge")
+    assert passkey_register(port, signed.page, live, "A").1.status == 403
+    assert manager.list_passkeys(ready.registry, bearer_digest(credential))
+      == Ok([])
+  })
+}
+
+// The label is judged by the catalogue's rule and a blank one is "Passkey".
+pub fn a_passkey_label_is_judged_and_defaults_test() {
+  fixture(fn(ready, port, credential) {
+    let signed = sign_in(port, credential)
+    let register = fn(label) {
+      let page = passkey_page(port, signed.page)
+      let challenge = attribute(page.body, "data-challenge")
+      passkey_register(port, signed.page, challenge, label).1.status
+    }
+
+    // A control character never parses, a name too long is refused by the
+    // catalogue's rule, a blank label defaults, and a name of
+    // spaces and punctuation is kept.
+    assert register("bad\tlabel") == 400
+    assert label_refused_keeps_the_challenge(port, signed)
+    assert register(string.repeat("x", 33)) == 403
+    assert register("  ") == 303
+    assert register("Work laptop (2026)") == 303
+    let assert Ok(held) =
+      manager.list_passkeys(ready.registry, bearer_digest(credential))
+      as "the passkeys are listed"
+    assert list.sort(list.map(held, fn(row) { row.label }), string.compare)
+      == ["Kept", "Passkey", "Work laptop (2026)"]
+  })
+}
+
+// A label the catalogue refuses does not spend the challenge: the same
+// challenge registers once the label is corrected.
+fn label_refused_keeps_the_challenge(port: Int, signed: Signed) -> Bool {
+  let page = passkey_page(port, signed.page)
+  let challenge = attribute(page.body, "data-challenge")
+  let first =
+    passkey_register(port, signed.page, challenge, string.repeat("x", 33))
+  let second = passkey_register(port, signed.page, challenge, "Kept")
+  first.1.status == 403 && second.1.status == 303
+}
+
+// An ES256 key is the only kind accepted: a registration with another curve's
+// key writes nothing.
+pub fn a_passkey_of_another_curve_is_refused_test() {
+  fixture(fn(ready, port, credential) {
+    let signed = sign_in(port, credential)
+    let page = passkey_page(port, signed.page)
+    let challenge = attribute(page.body, "data-challenge")
+    let #(_, other) = ec.generate_key_pair(ec.P384)
+    let assert Ok(der) = ec.public_key_to_der(other) as "the key has DER"
+    let credential_id = token.production_entropy()(32)
+    let answer =
+      post_form(
+        port,
+        "/ui/p/" <> page_key(signed.page) <> "/passkey",
+        [
+          #("nonce", signed.page.nonce),
+          #("id", base64url(credential_id)),
+          #(
+            "cdj",
+            base64url(passkey_client_data(
+              "webauthn.create",
+              challenge,
+              passkey_address(port),
+            )),
+          ),
+          #("ad", base64url(passkey_attested(credential_id, 69))),
+          #("pk", base64url(der)),
+          #("label", "Other"),
+        ],
+        [#("cookie", "loom_ui=" <> signed.page.cookie)],
+      )
+    assert answer.status == 403
+    assert manager.list_passkeys(ready.registry, bearer_digest(credential))
+      == Ok([])
+  })
+}
+
+// The daemon's two new scripts and the sign-in link on the root page are served.
+pub fn the_passkey_scripts_and_root_link_are_served_test() {
+  fixture(fn(_, port, _) {
+    let script = fn(name) {
+      get(port, "/ui/assets/" <> name, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+      ])
+    }
+    let signin = script("web_view_signin.js")
+    assert signin.status == 200
+    assert string.contains(signin.body, "userVerification")
+    assert string.contains(signin.body, "navigator.credentials.get")
+    let register = script("web_view_passkey.js")
+    assert register.status == 200
+    assert string.contains(register.body, "navigator.credentials.create")
+    assert string.contains(register.body, "alg: -7")
+    assert string.contains(register.body, "attestation: \"none\"")
+    assert string.contains(register.body, "loom-page-nonce.")
+    let root = get(port, "/", [host(port), #("sec-fetch-site", "none")])
+    assert string.contains(root.body, "href=\"/ui/signin\"")
+  })
+}
+
+// The home's passkeys capability is the owner's operating page's, and its
+// registration link is a fresh home's.
+pub fn the_passkeys_capability_is_the_owners_operating_pages_test() {
+  fixture(fn(ready, _, _) {
+    let owner = ready.owner
+    let member =
+      access.Principal(
+        id: "someone",
+        display_name: "Someone",
+        kind: access.MemberPrincipal,
+      )
+    let read = fn(deliver) { deliver(passkeys.Listed([])) }
+    let remove = fn(_) { passkeys.Removed }
+    let capability = fn(principal, ceiling, origin) {
+      ui_socket.home_passkeys_capability(
+        principal,
+        ceiling,
+        origin,
+        "key",
+        read,
+        remove,
+      )
+    }
+    let assert Some(fresh) =
+      capability(owner, access.Operator, ui_sessions.Fresh)
+    assert fresh.add == Some("/ui/p/key/passkey")
+    let assert Some(resumed) =
+      capability(owner, access.Operator, ui_sessions.Resumed)
+    assert resumed.add == None
+    assert capability(owner, access.Observer, ui_sessions.Fresh) == None
+    assert capability(member, access.Operator, ui_sessions.Fresh) == None
+  })
+}
+
+// Removal is the owner's, names the passkey by fingerprint, and removes only
+// that one; a stale or unknown fingerprint is `NotFound`.
+pub fn an_owner_removes_a_passkey_by_fingerprint_test() {
+  fixture(fn(ready, port, credential) {
+    let #(_, authenticator) = registered_passkey(port, credential)
+    let standing = owner_standing(ready, credential, access.Operator)
+    let fingerprint = access.passkey_fingerprint(authenticator.id)
+
+    // The listing names it by fingerprint and label and by nothing else.
+    let assert passkeys.Listed([row]) =
+      ui_socket.passkeys_read(standing, page_open)
+      as "the owner's passkeys are read"
+    assert row.fingerprint == fingerprint
+    assert row.label == "Phone"
+
+    // An observer-ceiling page, a page that ended and an unknown fingerprint
+    // remove nothing.
+    let watching = owner_standing(ready, credential, access.Observer)
+    assert ui_socket.remove_passkey_for(
+        watching,
+        ready.epoch,
+        page_open,
+        fingerprint,
+      )
+      == passkeys.Declined(passkeys.NotAllowed)
+    assert ui_socket.remove_passkey_for(
+        standing,
+        ready.epoch,
+        fn() { Error(Nil) },
+        fingerprint,
+      )
+      == passkeys.Declined(passkeys.Unavailable)
+    assert ui_socket.remove_passkey_for(
+        standing,
+        ready.epoch,
+        page_open,
+        "0000000000000000",
+      )
+      == passkeys.Declined(passkeys.NotFound)
+    assert ui_socket.remove_passkey_for(
+        standing,
+        "another-daemon",
+        page_open,
+        fingerprint,
+      )
+      == passkeys.Declined(passkeys.Unavailable)
+
+    // The owner's own removes it, and a browser holding it can sign in no more.
+    assert ui_socket.remove_passkey_for(
+        standing,
+        ready.epoch,
+        page_open,
+        fingerprint,
+      )
+      == passkeys.Removed
+    assert ui_socket.passkeys_read(standing, page_open) == passkeys.Listed([])
+    let challenge = attribute(signin_page(port).body, "data-challenge")
+    assert passkey_assert(port, authenticator, challenge, 1, 5).status == 401
+  })
+}
+
+// A member's page reads no passkey and removes none, whatever it asks.
+pub fn a_member_reads_and_removes_no_passkey_test() {
+  fixture(fn(ready, port, credential) {
+    let #(_, authenticator) = registered_passkey(port, credential)
+    let session = create_session(ready, "member-reads", 1302)
+    let _ = member(ready, "ui-reader", session, access.Operator)
+    let #(standing, _) = standing_of(ready, "ui-reader", access.Operator)
+    assert ui_socket.passkeys_read(standing, page_open) == passkeys.Unread
+    assert ui_socket.remove_passkey_for(
+        standing,
+        ready.epoch,
+        page_open,
+        access.passkey_fingerprint(authenticator.id),
+      )
+      == passkeys.Declined(passkeys.NotAllowed)
   })
 }

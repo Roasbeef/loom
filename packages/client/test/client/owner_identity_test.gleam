@@ -54,15 +54,14 @@ fn rig(name: String) -> Rig {
   worktree_rig.establish(state)
   let assert Ok(here) = simplifile.current_directory()
   let assert Ok(git) =
-    worktree_git.start(
-      worktree_git.Config(
-        helper_path: here <> "/../sandbox/loom-exec",
-        scratch: state <> "/git",
-        state_root: state,
-        demand: exec.BestEffort,
-        credentials: [],
-      ),
-    )
+    worktree_git.start(worktree_git.Config(
+      helper_path: here <> "/../sandbox/loom-exec",
+      scratch: state <> "/git",
+      state_root: state,
+      demand: exec.BestEffort,
+      credentials: [],
+      path: "",
+    ))
     as "the sandboxed Git starts"
   Rig(git:, home:, scratch:)
 }

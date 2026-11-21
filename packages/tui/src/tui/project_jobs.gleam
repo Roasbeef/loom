@@ -134,6 +134,18 @@ pub fn change(
       #("project", json.String(project)),
       #("ticket", json.String(ticket)),
     ])
+    job.RecheckTicket(project:, ticket:) -> #("projects.recheck", [
+      #("project", json.String(project)),
+      #("ticket", json.String(ticket)),
+    ])
+    job.PublishTicket(project:, ticket:) -> #("projects.publish", [
+      #("project", json.String(project)),
+      #("ticket", json.String(ticket)),
+    ])
+    job.StopTicket(project:, ticket:) -> #("projects.stop", [
+      #("project", json.String(project)),
+      #("ticket", json.String(ticket)),
+    ])
     job.LabelTrigger(project:, trigger:, judgement:) -> #("projects.label", [
       #("project", json.String(project)),
       #("trigger", json.String(trigger)),
@@ -146,8 +158,24 @@ pub fn change(
   // failure of the job.
   case send(host, name, fields) {
     Ok(_) -> Ok(job.ProjectChanged(change, None))
-    Error(daemon.Refused(code, _)) -> Ok(job.ProjectChanged(change, Some(code)))
+    Error(daemon.Refused(code, message)) ->
+      Ok(job.ProjectChanged(change, Some(refusal(change, code, message))))
     Error(other) -> Error(daemon_selection.failure(other))
+  }
+}
+
+/// What a refusal of a ticket change carries. An answer, a close and a label
+/// keep the daemon's code, which the screen words itself. The commands the
+/// daemon answers in the project's own words (a retry, a re-run, a publish and a
+/// stop) carry the sentence, because the engine or the host knows why and the
+/// code only says that it refused.
+fn refusal(change: job.ProjectChange, code: String, message: String) -> String {
+  case change {
+    job.AnswerTicket(..) | job.CloseTicket(..) | job.LabelTrigger(..) -> code
+    job.RetryTicket(..)
+    | job.RecheckTicket(..)
+    | job.PublishTicket(..)
+    | job.StopTicket(..) -> message
   }
 }
 

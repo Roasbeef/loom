@@ -285,7 +285,10 @@ fn exercise() {
       let author_retired = serve.retire_instance(instance)
       consumer_retired |> should.equal(Ok(Nil))
       author_retired |> should.equal(Ok(Nil))
-      assert acceptance.helpers() == before
+
+      // A helper left by an earlier module may exit while this test runs, so
+      // the census is of helpers started here, not equality with the start.
+      assert acceptance.new_helpers(before) == []
         as "both session pools and every saved-program plane have retired"
       let assert [weft.Completed(0, Nil)] = outcomes
         as "both real sessions finish their complete finite provider script"

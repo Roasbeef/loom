@@ -115,6 +115,7 @@ harness = { path = "../harness" }
 host = { path = "../host" }
 json_codec = { path = "../json_codec" }
 khepri = { version = "== 0.19.3" }
+kryptos = { version = ">= 1.5.0 and < 2.0.0" }
 lsp = { path = "../lsp" }
 lustre = { version = "== 5.7.1" }
 machine = { path = "../machine" }

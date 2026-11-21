@@ -186,6 +186,7 @@ fn owner(orchestrating: option.Option(home.Orchestrators)) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    passkeys: None,
     visiting: None,
     orchestrators: orchestrating,
     executors: ["local-exec"],

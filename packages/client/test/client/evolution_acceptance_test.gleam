@@ -201,7 +201,10 @@ fn exercise() {
         == Error("Unavailable: the evolution plane is not open")
         as "closing the session stops the cell on the path no custody owner covers"
       assert_departed(final_helpers)
-      assert helpers() == before
+
+      // A helper left by an earlier module may exit while this test runs, so
+      // the census is of helpers started here, not equality with the start.
+      assert new_helpers(before) == []
         as "session retirement leaves no native helper behind"
       Nil
     })

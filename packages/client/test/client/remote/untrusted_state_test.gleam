@@ -82,6 +82,7 @@ fn machine(rig: Rig) -> executor_plane.Machine {
     logger: log.discard(),
     mcp_servers: [],
     credentials: [],
+    check_path: "",
   )
 }
 
@@ -101,6 +102,7 @@ fn states_at(
       scratch: root <> "/state-git",
       state_root: root,
       credentials: [],
+      path: "",
       demand: exec.BestEffort,
     ))
     as "the sandboxed Git starts"

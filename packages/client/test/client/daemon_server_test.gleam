@@ -44,6 +44,7 @@ import tui/connection
 import tui/daemon/protocol as terminal_protocol
 import web_view/saved_attention
 import web_view/sessions
+import web_view/thread_send
 import weft
 import weft/poll
 
@@ -278,6 +279,63 @@ pub fn fixture_observing(
   executors_reload: option.Option(server.ExecutorsReload),
   run,
 ) {
+  fixture_answering(
+    connection_limits,
+    peer_endpoint,
+    worktree,
+    refusing_strand_send,
+    build,
+    asked,
+    movers,
+    reach,
+    ledger,
+    executors_reload,
+    run,
+  )
+}
+
+/// The strand send of a daemon whose sessions have no gateway the control
+/// socket can reach: every prompt is refused `NotResident`. It is the default
+/// of every fixture that does not test `attention.answer`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // refusing_strand_send(registry, digest, "epoch")("session", "main", "go on")
+/// ```
+@internal
+pub fn refusing_strand_send(
+  _registry: manager.Manager(instance),
+  _digest: access.Digest,
+  _epoch: String,
+) -> fn(String, String, String) -> thread_send.Answer {
+  fn(_session, _strand, _text) { thread_send.Refused(thread_send.NotResident) }
+}
+
+/// `fixture_observing` with the send `attention.answer` delivers its prompt
+/// with (protocol-change/128), for a test that answers an ask over the control
+/// socket. A test passes a send that records what it was given and says what
+/// the gateway would.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_answering(limits.defaults, peer, worktree, strand_send, build, stub, movers, reach, None, None, run)
+/// ```
+@internal
+pub fn fixture_answering(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  worktree,
+  strand_send,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  reach: deployment.Reach,
+  ledger: option.Option(ledger_control.Handle),
+  executors_reload: option.Option(server.ExecutorsReload),
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -301,6 +359,7 @@ pub fn fixture_observing(
   let config =
     server.Config(
       worktree:,
+      strand_send:,
       peer_endpoint:,
       daemon:,
       domain_configuration: "",
@@ -2229,6 +2288,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
       let config =
         server.Config(
           worktree: fn(_) { None },
+          strand_send: refusing_strand_send,
           peer_endpoint: endpoint,
           daemon:,
           domain_configuration: "",

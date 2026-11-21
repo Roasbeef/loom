@@ -64,7 +64,8 @@ A project is a catalogue row and a role over ordinary sessions, with no session 
 | `project_book` | A table of each project's `Handle` and each ticket's `Mandate` | Any decision: the table never calls into an actor |
 | `project_start` | Making a project, `ports_for`, `seat`, `reopen` | Ticket state |
 | `storage/project_ledger` | The SQLite file's schema and its transactions | A process: it runs in the actor |
-| `client/project_repo`, `project_publish` | `host.git`, per-ticket clones, check trees, the push and the pull request | Whether a commit may be published, which the engine decides |
+| `client/project_repo`, `project_publish` | `host.git`, the template, per-ticket clones, check trees, the push and the pull request | Whether a commit may be published, which the engine decides |
+| `client/project_template`, `template_state` | A template build (cut, `setup`, base check, swap) and the pure state of where the template stands | When a build runs, which the actor decides, and the sandbox, which `worktrees` provides |
 | `client/project_poller`, `project_watcher`, `project_github` | One bounded pass over GitHub, its schedule, and translation to triggers | Admission, which the gate decides |
 | `project/tape`, `judge`, `standing`, `client/project_judge`, `project_judge_session` | Recorded tapes, verdict arithmetic, scratch judgement sessions | The `auto` decision, which `state.verdict_of` reads from the engine |
 
@@ -141,7 +142,7 @@ The row's key makes a repeat harmless. `start` carries `request_key`, `project:<
 | `reopen` | `reopen_session` | 9 attempts, then `WorkerFailed` with the refusal's text for a worker, a log line for the router |
 | `offer` | `offer_to_router` | 10 attempts, then `RouterTurnEnded` |
 | `observe` | `observe_head` | 5 attempts |
-| `check` | `start_check` | `max_task_attempts` of 3, then a review |
+| `check` | `start_check` | `max_task_attempts` of 3, then a review. With a template, the row is left untouched while the template is not ready |
 | `publish` | `start_publish` | 3 failed pushes, or 5 starts of a task that never answers, then a review. A failed push counts two on the row, one for the start and one for the deferral that brings its time forward |
 | `github_reply` | `start_reply` | `max_reply_attempts` of 5, leaving a draft |
 | `stop` | `stop_worker` | 5 attempts to release the clone, leaving the tree |
@@ -222,9 +223,12 @@ flowchart TD
     Fetch -- "Accepted(commit, changed)" --> Scope["protect.scope"]
     Scope -- "ProtectedPathsTouched" --> Review["AwaitingReview, no check runs"]
     Scope -- "ProtectedPathsUntouched" --> Check["RequestCheck: start_check"]
+    Check -- "template not ready" --> Wait["row left untouched, ticket check: waiting"]
     Check -- "no check configured" --> NoCheck["NoCheckConfigured review"]
     Check -- "exit 0" --> Pass["CheckRecorded, then CheckOk(host.passed)"]
-    Check -- "nonzero" --> Fail["CheckRejected, tell_worker with 4000 chars of output"]
+    Check -- "nonzero" --> Class["failure_cause: test or environment"]
+    Class -- "test, live worker, 3 heads or fewer" --> Fail["CheckRejected(WorkerTold), failure_note to the worker"]
+    Class -- "environment, or the fourth head, or no worker" --> Person["CheckRejected(PersonNeeded), person/check, no note"]
     Check -- "DidNotFinish twice" --> Unfinished["review"]
     Pass --> Publish["PublishBranch: start_publish"]
 ```
@@ -234,6 +238,20 @@ flowchart TD
 3. **Check.** `check_tree` builds a new repository under `checks/`, fetches the commit from `host.git`, and runs `bash -o pipefail -c <command>` through `worktrees.check_runner`. The network is off and the tree is its only writable root. The jail masks every project's `host.git`, `ledger.db` and its side files, and not `checks/`, which holds the tree. The tree is removed afterwards whatever happened.
 4. **Record.** A pass writes `CheckRecorded` first, because `CheckPassed` names the ledger entry that holds the result.
 5. **Publish.** A ticket with an explicit Mandate reaches this step on a pass, and an inferred one only after a person publishes it. `project_publish.publish` runs `git -C host.git push --no-verify` with hooks off and no force, to the URL pinned in `loom-origin-url` when the project was created. It then looks for an open pull request on `project/<ticket>` and creates one only if there's none, so a crash between the two doesn't open a second. The push and `gh` run in the daemon process, outside any jail, and the owner's global Git config applies to them, because that's where the owner's credentials are configured. Only a pinned GitHub URL is published: for any other origin the publish is unavailable and neither the push nor `gh` runs.
+
+A failed check has two readers, and the engine decides which. The host classifies the failure (`failure_cause`) and hands the engine `CheckRejected(commit, digest, cause)`. The engine keeps a `Rejection` on the ticket with the cause and a `handling`: `WorkerTold` for a test failure while a worker is live and no more than `work.max_failing_heads` (3) different heads have failed in a row, `PersonNeeded` otherwise. The host sends the worker its `failure_note` only on `WorkerTold`, and the note says whether the same check passed on the clean base (a ready template), that it runs offline, and that the environment is not the worker's to mend. A worker's first report ends `WorkerTold`, so a worker that comes back idle at the same commit leaves the ticket at `person/check`. The same commit is not checked again by itself. A person re-runs it with `projects.recheck` after mending the cause, publishes past it, closes or stops.
+
+```mermaid
+stateDiagram-v2
+    [*] --> InProgress
+    InProgress --> Working: CheckRejected(WorkerTold), worker handles it
+    InProgress --> PersonCheck: CheckRejected(PersonNeeded)
+    Working --> PersonCheck: worker idle at the same commit
+    PersonCheck --> InProgress: RecheckRequested, RequestCheck at the head
+    PersonCheck --> Published: PersonPublished past the check
+    InProgress --> Ready: CheckOk
+    PersonCheck --> [*]: close or stop
+```
 
 A later report with no head goes through `ObserveHead` again, and a new commit returns readiness to `InProgress`.
 
@@ -257,7 +275,7 @@ stateDiagram-v2
 
 `Rested`, `Exited` and `Crashed` are `AssignmentDone(SessionRested)`, `(SessionExited)` and `(SessionCrashed)`. Only pending and running assignments hold a slot. A rested assignment gives its slot back when its work waits for a person and the worker is idle, while its session and clone stay. `rested_session` binds the next assignment to the same session, and `tree_seq` keeps naming the original clone.
 
-`stage.of` takes the first match: `ended/<outcome>`, `person/delivery`, `person/answer`, `person/review`, `person/blocked`, `person/failed`, `queued`, then `idle` or `working`.
+`stage.of` takes the first match: `ended/<outcome>`, `person/delivery`, `person/answer`, `person/review`, `person/blocked`, `person/failed`, `person/check`, `queued`, then `idle` or `working`.
 
 | Row | Stage | Condition |
 | --- | --- | --- |
@@ -266,9 +284,10 @@ stateDiagram-v2
 | 3 | `person/answer` | An open question for a person |
 | 4 | `person/review` | Awaiting review, or a pull request open on a ready or published ticket, unless a running assignment's worker is at work |
 | 5 | `person/blocked`, `person/failed` | The latest report says so and no person has spoken since |
-| 6 | `queued` | Never assigned, the assignment is pending, or a session is wanted |
-| 7 | `idle` | The latest report is `waiting`, or the latest assignment ended |
-| 8 | `working` | Otherwise |
+| 6 | `person/check` | The check failed at the head and nobody is handling it: no worker is at work, none was sent back to it, and no session is on its way |
+| 7 | `queued` | Never assigned, the assignment is pending, or a session is wanted |
+| 8 | `idle` | The latest report is `waiting` and no person has spoken since, or the latest assignment ended |
+| 9 | `working` | Otherwise |
 
 A worker is at work when its latest assignment is running and a person has spoken since its latest report, or it has reported nothing or only progress. A resumed assignment starts with no report, so a ticket that was in review reads `working` for as long as the new worker changes the work, and `person/review` again when that worker reports `waiting`. A pending assignment, an ended one and a worker whose latest report is `waiting`, `blocked`, `failed` or `dropped` leave the review row in force, and a question or a failed input still outranks it.
 
@@ -361,17 +380,58 @@ The scratch session's `route` tool has the router's schema, and its executor rec
 
 ## Git layout
 
-A worker's clone is under the state root, not a linked worktree, because a linked worktree would give it write access to the owner's `.git`.
+A worker's clone is under the state root, not a linked worktree, because a linked worktree would give it write access to the owner's `.git`. A project with a `setup` command has a template, and every clone and check tree is a copy of it.
 
 | Path under `<state>/projects/<id>` | Written by | Read by |
 | --- | --- | --- |
 | `ledger.db` | The project actor | Masked from worker sessions |
 | `host.git` | Jailed Git run by host code, for `refresh_base` and `fetch_commit` | Jailed Git, and the push outside the jail. Masked from worker sessions |
 | `host.git/loom-origin-url` | The daemon, once, from the owner's checkout | The daemon |
+| `template` | Jailed `setup` and check, then renamed into place by the daemon. Built under `.template.making`, with the replaced one waiting in `.template.old` for a moment | The daemon, which copies it. Masked from sessions and checks like `host.git` |
 | `tickets/<name>` | The worker. The daemon on release | Its worker, and other workers, which can read it and not write it |
 | `checks/chk-<ticket>-<hex>` | Jailed Git, then the check. The daemon deletes it | The check |
 
-`project_repo.clone` builds under `tickets/.<name>.making` and renames, so the final name exists only for a whole clone, and a clone on disk is adopted and never replaced. `FromOwner` clones the owner's checkout with `--no-hardlinks` and removes `origin`. `FromCommit` runs `git init --template=` and fetches one commit from `host.git` by path, so nothing in its config names `host.git`. `release` removes a clone only when `status` is clean and every ref's commit is in `host.git`, and otherwise records `TreeKept`.
+`project_repo.clone_from` builds under `tickets/.<name>.making` and renames, so the final name exists only for a whole clone, and a clone on disk is adopted and never replaced. With a warm seed the clone is a copy of the template (`git-cow copy`, or `cp -RPp` when no binary is found or it fails for a reason other than refusing the template, which is an error), then a fetch of the commit from `host.git` and `git checkout -b`, which leaves the template's ignored files in place. A copy's `.git/config` holds only what `git init` wrote: no remote, URL or credential helper. `FromOwner` clones the owner's checkout with `--no-hardlinks` and removes `origin`. `FromCommit` runs `git init --template=` and fetches one commit from `host.git` by path, so nothing in its config names `host.git`. `release` removes a clone only when `status` is clean and every ref's commit is in `host.git`, and otherwise records `TreeKept`.
+
+## The template
+
+A check runs worker-authored code with the network off, and a real repository's build needs its dependencies first. The template is where the two meet. The host cuts a clean checkout of the recorded base commit from `host.git`, runs `[project].setup` in it with the network on, runs `check` once on it with the network off to show the clean base passes, and only then renames it to `<state>/projects/<id>/template`. `setup` never runs on anything a worker wrote. A project without `setup` has no template and keeps the behaviour of the sections above.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unmanaged: no setup command
+    [*] --> Preparing: setup command, first build queued
+    Preparing --> Ready: Built, TemplateBuilt recorded
+    Preparing --> Broken: Failed, TemplateFailed recorded
+    Broken --> Preparing: retry setup, or the next look
+    Ready --> Ready: look at the base, Unchanged
+    Ready --> Rebuilding: base moved, or retry setup
+    Rebuilding --> Ready: Built, swapped in
+    Rebuilding --> Stale: Failed, the last good template stays
+    Stale --> Rebuilding: retry setup, or the next look
+    Ready --> Preparing: the setup or check command changed
+```
+
+`Rebuilding` and `Stale` are the `upkeep` of a `Ready` state. `Broken` has two faces for a person: `failed` when `setup` failed (or the host could not cut the tree), and `base_check_red` when `check` failed on the clean base. A person reads them on the board's sources list, in a row whose `source` is `setup`, with the sentence that names the project's setup and not any ticket, and the last 4000 characters of the output. `template_state` holds the states and the moves; the actor holds one value and persists two records.
+
+```mermaid
+flowchart TD
+    Row["template row, key build"] --> Start["start_template: weft task"]
+    Start --> Base["base_commit: fetch the owner's HEAD"]
+    Base -- "equals the ready commit" --> Same["Unchanged"]
+    Base -- "moved, or no template" --> Cut["cut_template_tree under .template.making"]
+    Cut --> Setup["run_setup: network on, HOME in the tree"]
+    Setup -- "nonzero" --> Fail["Failed(Setup)"]
+    Setup --> Check["run_check: network off"]
+    Check -- "nonzero" --> Red["Failed(BaseCheck)"]
+    Check --> Seal["sound_template, exclude_untracked"]
+    Seal --> Swap["swap_template: two renames"]
+    Swap --> Built["Built(commit)"]
+```
+
+A `start` row for a new session is left untouched while the state is `Preparing` or `Broken`: it is neither settled nor deferred, so its attempts do not count and the ticket stays `queued`. A restart replays the two records and queues the build row again when no template is ready. The build removes `.template.making` before it cuts, so a half-built tree is never the template, and `restore_interrupted_swap` puts back a template that a swap left under its waiting name. The base is looked at every ten minutes (`template_look_ms`) and rebuilt only if it moved. A person retries with `projects.retry` and the ticket name `setup`.
+
+`setup` and `check` see the daemon's own `PATH`, read once when the machine is read (`executor_plane.Machine.check_path`). Their jails are the check's: the host readable with the state-root, credential and project-file masks, one writable root, and `HOME` at `<tree>/.loom-check-home` with `TMPDIR` under it. The host makes both directories in the sandbox before a command runs (`worktrees.prepare_home`), because the jail leaves `/tmp` unwritable and Go fails there. A setup's limits are lifted (`worktree_git.setup_runner`): the base leaves the wall to the caller's timeout, and memory and processes are 8 GiB and 4096.
 
 ## Storage
 
@@ -455,4 +515,14 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 - A person stopping a worker session from outside the project fails its ticket.
 - The restart note is queued once per assignment, so a second restart of the same assignment reopens its session through the `reopen` row and doesn't tell the worker again.
 - One worker whose session had last been attached by a terminal read `worker_failed` after a graceful restart in a live drive. A graceful stop with terminals attached to two workers records no loss in `project_daemon_test`, and no cause is established. A refused build no longer rings, which closes one way a client's open of a project session could have failed an assignment. The control command `sessions.stop`, a page's stop and a session being made shareable each write a `daemon.session_stop` line with the principal, the session and the route (`control`, `page`, `shareable`), so the next occurrence can be attributed to a stop or ruled out. Stops by `top_host`, the session mover and the restart path write no such line.
+- A template that `git-cow` refuses (a socket or a link that `setup` left under `.git`, say) is found by the first worker that needs a copy, and that start fails as a start does, five attempts and then `WorkerFailed`. The build checks the things it can name cheaply (`sound_template`) and does not make a trial copy.
+- A copy that is reading the old template while a rebuild swaps it in can fail. The ticket's start retries, and a check's `DidNotFinish` is run again once. The window is the two renames of one swap, at most every ten minutes.
+- The session policy masks the template only if it exists when the policy is built (`protecting_projects` masks what is on disk), and the swap leaves `template` absent for the time between its two renames. A jailed call that starts in that window is refused with the mask error and the model sees a failed command.
+- `setup` has the network and the whole host readable minus the masks, and writes only the template. It runs the repository's scripts, so a malicious base commit can read what the host reads and send it anywhere. The recorded base is the owner's own `HEAD`, which is what makes this the owner's code and not a worker's.
+- Build output that the repository does not ignore is written to the template's `.git/info/exclude`, so `git status` in a clone does not report it. A worker file at one of those paths is invisible to the host's clean test (`uncommitted`, `unrecorded_work`).
+- A worker's tools and the check see the same `PATH`: the owner's `[tools] path`, then the daemon's, then the system directories (`workspace_policy.tool_environment`, pinned by `project_worker_path_test`). A worker's jail still cannot read a directory the policy masks, and the heuristic below says nothing of that.
+- The environment heuristic (`project_host.failure_cause`) reaches only what a check prints in words: status 126 or 127, `command not found` and `executable file not found`. A missing library, a refused network call, a wrong tool version and output in another language read as a test failure and go back to the worker. A test that prints `command not found` for its own reasons goes to a person.
+- A re-run (`projects.recheck`) while another client's re-run is in flight starts a second check, and the second verdict is stale. The engine cannot see the host's pending check row.
+- A session that ended with `AssignmentEnded` as exited or crashed, with nothing owed, reads `idle`. The host never sends that event (a session that dies is `WorkerFailed`), so the state is reachable only from a ledger written by another producer, and the `stuck` invariant of the model-based test exempts it.
+- `git-cow` is not shipped by `make dist`. The ladder looks beside the server first (`install.git_cow`) and then on `PATH`.
 - Remote workers depend on the #1137 bundle work, so workers run on the owning machine. Whether `active_tool_names` alone closes every effect path for a router on a remote executor hasn't been tested.

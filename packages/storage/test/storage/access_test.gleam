@@ -512,6 +512,11 @@ pub fn generated_access_queries_match_sqlc_input_test() {
     sql.stamp_login_resumed(None, "").0,
 
     sql.session_members("", "").0,
+    sql.insert_access_passkey("", "", "", 0, "", 0).0,
+    sql.access_passkey("").0,
+    sql.principal_passkeys("").0,
+    sql.use_access_passkey(0, None, "").0,
+    sql.delete_access_passkey("", "").0,
   ]
   assert normalize(source) == normalize(string.join(generated, "\n"))
 }

@@ -62,15 +62,14 @@ pub fn rig(name: String) -> Rig {
   let assert Ok(here) = simplifile.current_directory()
     as "the test runner has a working directory"
   let assert Ok(git) =
-    worktree_git.start(
-      worktree_git.Config(
-        helper_path: here <> "/../sandbox/loom-exec",
-        scratch: state <> "/git-runner",
-        state_root: state,
-        demand: exec.BestEffort,
-        credentials: [],
-      ),
-    )
+    worktree_git.start(worktree_git.Config(
+      helper_path: here <> "/../sandbox/loom-exec",
+      scratch: state <> "/git-runner",
+      state_root: state,
+      demand: exec.BestEffort,
+      credentials: [],
+      path: "",
+    ))
     as "the sandboxed Git starts"
   let snapshots = state <> "/repository-snapshots"
   let call =

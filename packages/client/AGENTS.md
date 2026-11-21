@@ -586,7 +586,10 @@ adds them through `workspace_policy.protecting_node_credentials`, beside the
 state-root and blob masks, so a jailed child cannot print them into a tool
 result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
 `worktree_git.Config` carry the same list, so the sandboxed Git that runs a
-repository's hooks during `git worktree add` masks them too. Both live outside the state
+repository's hooks during `git worktree add` masks them too. Both also carry
+`path`, the daemon's own `PATH` read once into `Machine.check_path`, which is the
+`PATH` a project's `setup` and `check` see (the system directories stand in when it
+is empty). Both live outside the state
 root, which is why the state-root masks never covered them. An absent path is
 skipped, as for every conditional mask. Every jail, a host session's
 included, also masks the state root's `vm` directory, the home's `.loom/vm`
@@ -1327,6 +1330,33 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   compared with, since `now` is monotonic: a `Remembered` ticket whose login has
   ended is `UnknownTicket` before it makes room; a `Forgotten` one is not held to
   it.
+- `daemon/passkey` (protocol-change/127): the WebAuthn checks as pure functions of
+  bytes, with `kryptos` (a direct dependency of `client`, so `conformance` and
+  `eval` list it in their manifests) for the P-256 key and the ECDSA verify and
+  no `@external`. `challenge_of` reads the challenge out of client data;
+  `verify_assertion` checks `webauthn.get`, the issued challenge, the page's
+  origin byte for byte, the relying party hash, the user-present and
+  user-verified flags, a counter that rose (zero beside zero is accepted) and the
+  ES256 signature over `authData ++ sha256(clientData)`; `verify_registration`
+  does the same for `webauthn.create` with the attested credential id compared
+  and no signature (attestation `none`), and refuses any key that is not 91 bytes
+  of P-256 `SubjectPublicKeyInfo`.
+- `daemon/ui_passkey`: what the router does with a passkey form once the request
+  is checked. `sign_in` spends the challenge (`ui_sessions.answer`, which must be
+  a `SigningIn` one), finds the passkey (`manager.find_passkey`), requires the
+  owner, verifies, records the counter and sets a login (`ui_login.passkey`);
+  `register` spends this principal's `Registering` challenge, verifies, and
+  writes the passkey through `manager.add_passkey`, which re-authenticates the
+  caller as the owner. `may_register` is the router's test of a page: the owner's
+  `Home`, `Operator`, `Fresh`. `server.signin_page` and `signin_submit`,
+  `passkey_page` and `passkey_submit` are the four routes (`ui_http.SigninPage`,
+  `SigninSubmit`, `PasskeyPage`, `PasskeySubmit`); a passkey sign-in opens a
+  `ui_sessions.passkey_origin` (`Resumed`) home and sets the login cookie through
+  `enter_response`. `ui_sessions` holds the challenges (`challenge`, `answer`,
+  five minutes, at most 64, the oldest replaced at the bound). `ui_socket`'s
+  `home_passkeys_capability`, `passkeys_read` and `remove_passkey_for` are the
+  home's side: the capability is the owner's `Operator` home's and carries the
+  registration link only for a `Fresh` one.
 - `daemon/ui_http`: pure checks. `route` also routes the admin page's three
   (`AdminExchange` at `/ui/admin?ticket=`, `AdminPage`, `AdminSocket`) and the
   claim's two (`ClaimPage`, `ClaimSubmit` at `/ui/claim`); `posted_claim` reads
@@ -7287,12 +7317,21 @@ from the registry (`forbidden` for an observer, `not_found` for a non-holder),
 residency (`not_resident`), the record, state, revision, then for an answer
 `core/attention_answer.check`, one `Prompt` to the asking strand through the
 injected send, and only then the settle, so a refused delivery leaves the ask open.
-`attention.answer` has no control command because the control socket holds no
-gateway; `ui_socket.answer_ask_for` and `close_find_for` are the home's acts, and
-`server.home_attention` and `HomeAttachment.attention` are the home's typed feed
-(`web_view/attention_feed`). `ui_socket.send_to_strand` and `message_to_strand`
-take a strand; `send_message` and `message_to` stay the main-strand defaults, and
-the gateway's `unknown_strand` is `thread_send.UnknownStrand`.
+`attention.answer` is a control command too (protocol-change/128): `server.dispatch`
+runs `attention_door.answer` with a send made by `Config.strand_send`, which `main.listen_moving`
+builds from `ui_socket.strand_sender` over its `gateway_of` projection, so a prompt
+from the control socket and one from the home page are sent under one binding;
+`server.answer_refusal` maps a refused delivery (`thread_send.Refusal`) to a code and
+words that say whether the ask is still open. A test that builds `server.Config` names
+a `strand_send`; `daemon_server_test.refusing_strand_send` is the default and
+`fixture_answering` takes a real one. `ui_socket.answer_ask_for` and `close_find_for`
+are the home's acts, and `server.home_attention` and `HomeAttachment.attention` are
+the home's typed feed (`web_view/attention_feed`). `ui_socket.send_to_strand` and
+`message_to_strand` take a strand; `send_message` and `message_to` stay the
+main-strand defaults, and the gateway's `unknown_strand` is
+`thread_send.UnknownStrand`. `sessions.saved_attention` reads the catalogue summary
+(protocol-change/122) with `server.saved_rows`, the one read it shares with
+`home_saved_attention`; an unreadable catalogue is `unavailable`, never an empty list.
 
 Stuck items (addendum to 120) carry `reason` (the run's error code if it is a short
 lower-case word, else `failed`), `retry_after_ms` and `failed_at` from the failed
@@ -11549,8 +11588,8 @@ ordinary top-level worker session per ticket assignment
   clone the host makes (`git clone --no-hardlinks`, `origin` removed, branch
   `loom/<ticket>-<seq>`) under `<state>/projects/<id>/tickets/`, with a real `.git`
   directory, so `workspace_policy` adds no writable root for it. A ticket with a
-  recorded head starts its next clone there instead (`project_repo.clone` takes a
-  `Start`: `FromOwner`, or `FromCommit`, a template-less repository that fetches
+  recorded head starts its next clone there instead (`project_repo.clone` and
+  `clone_from` take a `Start`: `FromOwner`, or `FromCommit`, a template-less repository that fetches
   the commit from `host.git` by path, so it has no remote at all, with hooks and
   `core.fsmonitor` off on the command line), unless the owner's `HEAD` already
   contains the head, as for a merged ticket the owner pulled. The host
@@ -11641,8 +11680,35 @@ ordinary top-level worker session per ticket assignment
   `ticket_read_for` and `answer_for`), and admits a click beneath
   `home.projects_path` for that page only (`ui_socket.home_event`).
   `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`,
-  `check`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
+  `check`, `setup`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
   tables `source` and `rule`, read by `client/project_sources`).
+- The template (protocol-change/106, "The template") is two modules and a section of
+  `project_host`. `client/project_template` builds it: `base_commit` from the owner's `HEAD`,
+  `cut_template_tree` under `.template.making`, `run_setup` through `worktrees.setup_runner`
+  (the check's jail with the network on and the CPU, wall and file-size limits lifted; both
+  runners get a `TMPDIR` under `HOME`, made first by `worktrees.prepare_home`), `run_check`
+  on the clean base with the network off, `sound_template`, `exclude_untracked` and the
+  `swap_template` renames. `client/template_state` is the pure `Standing`
+  (`Unmanaged`, `Preparing`, `Ready` with an `Upkeep`, `Broken`) and its moves, with the
+  words the board shows. `project_host` holds one `Standing`, rebuilds it on replay from the
+  records `TemplateBuilt` and `TemplateFailed`, runs one `template` effect row (key `build`) in a
+  weft task, and leaves a `start` row for a new session untouched while `admits` is false, so
+  attempts do not count. Compaction keeps the latest of each record
+  (`project_retention.select_records`). `projects.retry` with the ticket `setup` is the person's
+  retry. `project_host` keeps the latest `CheckRecorded` of each ticket (`checks`, rebuilt on
+  replay, with the time) for the ticket's `check` object. `check_failed` classifies the cause
+  (`failure_cause`: status 126 or 127, or `command not found` in the output) and tells the worker
+  only when the engine's `Rejection.handling` is `WorkerTold`; `failure_note` states whether the same
+  check passed on the clean base (`BaseProof`). `start_check` leaves its row untouched while
+  `template_state.admits` is false. `projects.recheck` is `project_host.recheck`. `Ports.build_template` is `project_start`'s closure over `project_template.build`,
+  and `project_start.seed_of` makes the `Seed` (`Cold` without `setup`, `Warm` with it) that
+  `project_repo.clone_from`, `check_tree_from` and `project_start.run_check_from` take. Both
+  `project_repo.copy_template` runs (`git-cow copy`, else `cp -RPp`) go through
+  `worktrees.run_program` in the sandbox, writable only in the destination's parent, and exit 2 from
+  `git-cow` is an error and not a fallback. `install.git_cow` is the lookup ladder.
+  `workspace_policy.private_masks` masks `<project>/template` for sessions and checks.
+  The test pair is `project_template_test` (real sandbox, a loopback server for the network,
+  `git-cow` when installed) and `project_template_host_test` (fake build port).
 - The GitHub source is four modules and a section of `project_host`.
   `client/project_github` decodes REST answers totally and translates each item
   into the gate's inputs (sender class from the owner's literal lists, an exact

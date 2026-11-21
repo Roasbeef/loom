@@ -320,6 +320,7 @@ fn machine(state: String, seed: String) -> executor_plane.Machine {
     logger: log.discard(),
     mcp_servers: [],
     credentials: [],
+    check_path: "",
   )
 }
 

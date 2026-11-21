@@ -181,6 +181,7 @@ fn fixture_serving(
       daemon,
       fn(_) { None },
       fn(_) { None },
+      wire.refusing_strand_send,
       "",
       roster.fixed([]),
       [],

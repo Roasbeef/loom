@@ -249,7 +249,10 @@ fn exercise() {
         as "source conversation survives both evaluations and selections"
       let assert Ok(Nil) = serve.retire_instance(source)
         as "source runtime proves native retirement"
-      assert acceptance.helpers() == before
+
+      // A helper left by an earlier module may exit while this test runs, so
+      // the census is of helpers started here, not equality with the start.
+      assert acceptance.new_helpers(before) == []
         as "trials and pinned sessions leave no native helper behind"
       Nil
     })

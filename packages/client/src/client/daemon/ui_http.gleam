@@ -38,6 +38,7 @@ import client/daemon/ui_origin
 import client/daemon/ui_sessions
 import core/ids
 import gleam/bit_array
+import gleam/dict.{type Dict}
 import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -156,6 +157,19 @@ pub type Route {
   /// `POST /ui/l/<key>/home`: a browser login asks for a home page.
   LoginResume(key: String)
 
+  /// `GET /ui/signin`: the passkey sign-in page (protocol-change/127), which
+  /// needs no login and carries a challenge.
+  SigninPage
+
+  /// `POST /ui/signin`: a passkey assertion, which signs a browser in.
+  SigninSubmit
+
+  /// `GET /ui/p/<key>/passkey`: the registration page of an owner's fresh home.
+  PasskeyPage(key: String)
+
+  /// `POST /ui/p/<key>/passkey`: a passkey registration.
+  PasskeySubmit(key: String)
+
   /// `GET /ui/claim`: the fixed claim form.
   ClaimPage
 
@@ -210,6 +224,12 @@ pub type Asset {
 
   /// The root page's script, which forwards to a remembered login.
   RootScript
+
+  /// The passkey sign-in page's script (protocol-change/127).
+  SigninScript
+
+  /// The passkey registration page's script.
+  PasskeyScript
 
   /// The client components' bundle.
   Client
@@ -337,6 +357,10 @@ pub fn route(request: Request(body)) -> Route {
     http.Post, ["ui", "l", key, "home"] -> LoginResume(key)
     http.Get, ["ui", "claim"] -> ClaimPage
     http.Post, ["ui", "claim"] -> ClaimSubmit
+    http.Get, ["ui", "signin"] -> SigninPage
+    http.Post, ["ui", "signin"] -> SigninSubmit
+    http.Get, ["ui", "p", key, "passkey"] -> PasskeyPage(key)
+    http.Post, ["ui", "p", key, "passkey"] -> PasskeySubmit(key)
 
     http.Get, ["ui", "admin"] ->
       // This branch resolves query request ticket before the operation continues.
@@ -358,6 +382,8 @@ pub fn route(request: Request(body)) -> Route {
         _ if name == page.page_asset -> Asset(PageScript)
         _ if name == page.resume_asset -> Asset(ResumeScript)
         _ if name == page.root_asset -> Asset(RootScript)
+        _ if name == page.signin_asset -> Asset(SigninScript)
+        _ if name == page.passkey_asset -> Asset(PasskeyScript)
         _ if name == page.client_asset -> Asset(Client)
         _ if name == page.favicon_asset -> Asset(Favicon)
         _ if name == page.mermaid_frame_asset -> Asset(MermaidFrame)
@@ -601,6 +627,11 @@ pub fn same_origin_post(request: Request(body)) -> Bool {
 /// The most bytes the resume form's body may hold.
 pub const max_form_bytes = 1024
 
+/// The most bytes a passkey form's body may hold (protocol-change/127). A
+/// registration posts a credential id of up to 512 characters, authenticator
+/// data and a key, each in base64url, and a label: well under this.
+pub const max_passkey_form_bytes = 4096
+
 /// Whether the request declares a body the resume may read: a `Content-Length`
 /// of at most `max_form_bytes`, no `Transfer-Encoding` (a chunked body has no
 /// length to bound before it is read), and the URL-encoded form type a form
@@ -613,10 +644,22 @@ pub const max_form_bytes = 1024
 /// // ui_http.form_declared(request)
 /// ```
 pub fn form_declared(request: Request(body)) -> Bool {
+  form_declared_within(request, max_form_bytes)
+}
+
+/// `form_declared` for a form that may hold up to `limit` bytes: the passkey
+/// forms, whose fields are longer than a nonce or a ticket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.form_declared_within(request, ui_http.max_passkey_form_bytes)
+/// ```
+pub fn form_declared_within(request: Request(body), limit: Int) -> Bool {
   // Parse and bound the Content-Length header value.
   let length = case request.get_header(request, "content-length") {
-    Ok(text) -> int.parse(text) |> result.unwrap(max_form_bytes + 1)
-    Error(Nil) -> max_form_bytes + 1
+    Ok(text) -> int.parse(text) |> result.unwrap(limit + 1)
+    Error(Nil) -> limit + 1
   }
 
   let chunked = result.is_ok(request.get_header(request, "transfer-encoding"))
@@ -627,7 +670,7 @@ pub fn form_declared(request: Request(body)) -> Bool {
     Error(Nil) -> False
   }
 
-  length >= 0 && length <= max_form_bytes && !chunked && kind
+  length >= 0 && length <= limit && !chunked && kind
 }
 
 /// The login nonce a resume form posted: a body of exactly one field, `nonce`,
@@ -679,6 +722,110 @@ fn lowercase_hex(value: String) -> Bool {
   list.all(string.to_graphemes(value), fn(digit) {
     string.contains("0123456789abcdef", digit)
   })
+}
+
+/// The fields of a passkey form, from the body it posted: exactly the names in
+/// `encoded`, each once with a value of 1 to 2048 base64url characters, and
+/// exactly the names in `typed`, each once with a value of at most 256 bytes
+/// and no control character, and no other field. The answer maps each name to
+/// its value as sent, for the caller to decode and judge; nothing is looked up
+/// here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.posted_fields(<<"id=AAAA&label=Phone">>, ["id"], ["label"])
+/// ```
+pub fn posted_fields(
+  body: BitArray,
+  encoded: List(String),
+  typed: List(String),
+) -> Result(Dict(String, String), Nil) {
+  use text <- result.try(bit_array.to_string(body))
+  use fields <- result.try(uri.parse_query(text))
+  let names = list.append(encoded, typed)
+  let found = dict.from_list(fields)
+
+  // Each expected name once and no other, so a repeated or extra field is not a
+  // passkey form.
+  let exact =
+    list.length(fields) == list.length(names)
+    && dict.size(found) == list.length(names)
+    && list.all(names, dict.has_key(found, _))
+  let valid =
+    list.all(encoded, field_holds(found, _, base64url_value))
+    && list.all(typed, field_holds(found, _, typed_value))
+
+  // The shape and every value must hold, or the body is not a passkey form.
+  case exact && valid {
+    True -> Ok(found)
+    False -> Error(Nil)
+  }
+}
+
+/// Whether the posted field `name` is present and `holds` of its value.
+fn field_holds(
+  found: Dict(String, String),
+  name: String,
+  holds: fn(String) -> Bool,
+) -> Bool {
+  dict.get(found, name) |> result.map(holds) |> result.unwrap(False)
+}
+
+/// One to 2048 base64url characters.
+fn base64url_value(value: String) -> Bool {
+  let size = string.byte_size(value)
+  size >= 1
+  && size <= 2048
+  && list.all(string.to_graphemes(value), fn(char) {
+    string.contains(
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-",
+      char,
+    )
+  })
+}
+
+/// At most 256 bytes and no control character.
+fn typed_value(value: String) -> Bool {
+  string.byte_size(value) <= 256
+  && list.all(string.to_utf_codepoints(value), fn(point) {
+    string.utf_codepoint_to_int(point) >= 32
+  })
+}
+
+/// The WebAuthn relying party id of a page: the host of its origin without a
+/// port, lowercase. It is the name a passkey is bound to and the one whose hash
+/// the authenticator data carries, so it is taken from the origin the request
+/// was admitted under and never from a header the request adds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_http.rp_id(ui_http.Loopback("localhost:4000")) == "localhost"
+/// ```
+pub fn rp_id(origin: PageOrigin) -> String {
+  // A loopback `Host` is the one the browser sent; a listed origin's is the one
+  // the owner listed.
+  let host = case origin {
+    Loopback(host) -> host
+    Remote(listed) -> ui_origin.host(listed)
+  }
+
+  string.lowercase(host_name(host))
+}
+
+/// A `Host` without its port: a bracketed IPv6 literal ends at its bracket, and
+/// any other name at its first colon.
+fn host_name(host: String) -> String {
+  // A literal's own colons are inside its brackets, so the bracket is looked for
+  // first.
+  case string.split_once(host, "]") {
+    Ok(#(literal, _)) -> literal <> "]"
+    Error(Nil) ->
+      string.split_once(host, ":")
+      |> result.map(fn(parts) { parts.0 })
+      |> result.unwrap(host)
+  }
 }
 
 /// The claim form's fields, from the body it posted: `token`, and optionally

@@ -14,10 +14,14 @@ import client/daemon/attention_door.{
 import client/daemon/brief_door
 import client/daemon/limits
 import client/daemon/manager
-import client/daemon_server_test.{connect, fixture_building, frame, send}
+import client/daemon/ui_socket
+import client/daemon_server_test.{connect, frame, send}
+import client/deployment
 import client/gateway_test
 import client/internal/ffi_os
 import client/peer_mail
+import client/session_directory
+import client/session_movers
 import core/agency_limits
 import core/attention as records
 import core/clock
@@ -29,7 +33,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import host/bootstrap
+import machine/strand as machine_strand
 import runtime/api
+import session_view/operator as session_operator
 import storage/access
 import storage/catalogue
 import support/internal/ffi_ws
@@ -109,6 +115,7 @@ fn good_answer() -> JsonValue {
 
 type Rig {
   Rig(
+    harness: gateway_test.Harness,
     runtime: api.Runtime,
     session: String,
     saved: String,
@@ -130,7 +137,24 @@ fn with_rig(
   let #(saved, _) = ids.mint_session(ids.generator(clock.fixed(0), 902))
   let session = ids.session_id_to_string(resident)
   let saved_id = ids.session_id_to_string(saved)
-  let runtime = gateway_test.reserved_fixture(resident).runtime
+  let harness = gateway_test.reserved_fixture(resident)
+  let runtime = harness.runtime
+
+  // The control socket delivers an answer through the gateway of the scripted
+  // session, by the web view's own sender (`ui_socket.strand_sender`), so the
+  // prompt it sends is the real one and lands in the session's transcript.
+  let strand_send = fn(registry, digest, epoch) {
+    let send =
+      ui_socket.strand_sender(registry, digest, epoch, fn(instance) {
+        case instance == session {
+          True -> Ok(harness.hub)
+          False -> Error(Nil)
+        }
+      })
+    fn(target, strand, text) {
+      send(target, strand, text, session_operator.Prompt)
+    }
+  }
   let endpoint = fn(instance) {
     case instance == session {
       True ->
@@ -143,10 +167,17 @@ fn with_rig(
       False -> None
     }
   }
-  fixture_building(
+  daemon_server_test.fixture_answering(
     limits.defaults,
     endpoint,
+    fn(_) { None },
+    strand_send,
     fn(record, _domain, _services, _owner, _directory) { Ok(record.id) },
+    session_directory.none(),
+    session_movers.idle(),
+    deployment.alone("nonode@nohost"),
+    None,
+    None,
     fn(_, ready, port, credential) {
       list.each([#(session, 901), #(saved_id, 902)], fn(pair) {
         let assert Ok(_) =
@@ -205,6 +236,7 @@ fn with_rig(
         credential,
         ready.epoch,
         Rig(
+          harness:,
           runtime:,
           session:,
           saved: saved_id,
@@ -962,4 +994,484 @@ fn result_is_ok(result: Result(a, b)) -> Bool {
     Ok(_) -> True
     Error(_) -> False
   }
+}
+
+// --- answering over the control socket (protocol-change/128) -----------------
+
+/// The strand an ask of `ask_request` came from, which the daemon must find in
+/// the session to deliver the prompt. `attention.ask` records the strand name
+/// and does not create the strand.
+fn add_audit_strand(rig: Rig) -> Nil {
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    )
+  let assert Ok(Nil) =
+    api.create_idle_strand(rig.runtime, "sub:main/audit", configuration, None)
+    as "the asking strand exists"
+  Nil
+}
+
+fn answer(
+  socket,
+  id: Int,
+  rig: Rig,
+  revision: JsonValue,
+  answer: JsonValue,
+  epoch: String,
+) -> JsonValue {
+  send(
+    socket,
+    id,
+    "attention.answer",
+    json.Object([
+      #("session", json.String(rig.session)),
+      #("ask", json.String(rig.ask)),
+      #("revision", revision),
+      #("answer", answer),
+      #("epoch", json.String(epoch)),
+    ]),
+    within_ms: 1000,
+  )
+}
+
+/// The prompts the session's transcript holds that answer an ask.
+fn answer_prompts(rig: Rig) -> List(String) {
+  gateway_test.user_prompt_texts(rig.harness)
+  |> list.filter(string.starts_with(_, "Answer to "))
+}
+
+/// Waits until the transcript holds `count` answering prompts, since the
+/// gateway writes the user entry after it has admitted the message.
+fn await_prompts(rig: Rig, count: Int) -> List(String) {
+  let assert poll.Answered(prompts) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      let found = answer_prompts(rig)
+      case list.length(found) >= count {
+        True -> poll.Done(found)
+        False -> poll.Retry
+      }
+    })
+    as "the transcript settles"
+  prompts
+}
+
+pub fn the_owner_answers_an_ask_over_the_control_socket_test() {
+  with_rig(fn(_registry, port, credential, epoch, rig, principal) {
+    add_audit_strand(rig)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let before = body(read(socket, 1, rig, rig.ask, epoch), "revision")
+    let assert json.Int(read_at) = before
+
+    let answered = answer(socket, 2, rig, before, good_answer(), epoch)
+    assert field(answered, "event") == json.String("attention.answer")
+    assert field(answered, "reply_to") == json.Int(2)
+    assert body(answered, "ask") == json.String(rig.ask)
+    assert body(answered, "delivery") == json.String("admitted")
+    let assert json.Int(settled) = body(answered, "revision")
+    assert settled > read_at
+
+    // The record is settled with the answer and the answerer, and no longer
+    // offers to be answered.
+    let again = read(socket, 3, rig, rig.ask, epoch)
+    assert body(again, "status") == json.String("answered")
+    assert body(again, "revision") == json.Int(settled)
+    assert body(again, "may_answer") == json.Bool(False)
+    assert field(body(again, "answer"), "by") == json.String(principal.id)
+
+    // One prompt reached the asking strand, worded as 119 specifies.
+    let assert [prompt] = await_prompts(rig, 1)
+    assert string.starts_with(
+      prompt,
+      "Answer to " <> rig.ask <> ":\n\n```json\n",
+    )
+
+    // An answered ask is not answered again, and nothing more is sent.
+    let twice = answer(socket, 4, rig, json.Int(settled), good_answer(), epoch)
+    assert code(twice) == json.String("conflict")
+    assert answer_prompts(rig) == [prompt]
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_refused_answer_changes_nothing_and_sends_nothing_test() {
+  with_rig(fn(_registry, port, credential, epoch, rig, _principal) {
+    add_audit_strand(rig)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let before = body(read(socket, 1, rig, rig.ask, epoch), "revision")
+    let assert json.Int(read_at) = before
+
+    // A stale epoch is refused first.
+    assert code(answer(socket, 2, rig, before, good_answer(), "previous-epoch"))
+      == json.String("stale_epoch")
+
+    // A revision the record is not at is a conflict.
+    assert code(answer(
+        socket,
+        3,
+        rig,
+        json.Int(read_at - 1),
+        good_answer(),
+        epoch,
+      ))
+      == json.String("conflict")
+
+    // The first failing key of an answer the ask does not take is named.
+    let bad =
+      json.Object([
+        #(
+          "answers",
+          json.Object([#("q1", json.Bool(True)), #("q2", json.String("zzz"))]),
+        ),
+      ])
+    let invalid = answer(socket, 4, rig, before, bad, epoch)
+    assert code(invalid) == json.String("bad_request")
+    assert body(invalid, "message") == json.String("q2: not one of the options")
+
+    // An answer that is not an object, and a revision that is not a number,
+    // never reach the registry.
+    assert code(answer(socket, 5, rig, before, json.String("yes"), epoch))
+      == json.String("bad_request")
+    assert code(answer(socket, 6, rig, json.String("41"), good_answer(), epoch))
+      == json.String("bad_request")
+
+    // A find is not an ask, and an absent record is not found.
+    let on_find =
+      send(
+        socket,
+        7,
+        "attention.answer",
+        json.Object([
+          #("session", json.String(rig.session)),
+          #("ask", json.String(rig.find)),
+          #("revision", before),
+          #("answer", good_answer()),
+          #("epoch", json.String(epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert code(on_find) == json.String("bad_request")
+    let absent =
+      send(
+        socket,
+        8,
+        "attention.answer",
+        json.Object([
+          #("session", json.String(rig.session)),
+          #("ask", json.String("ask-ffffffffff")),
+          #("revision", before),
+          #("answer", good_answer()),
+          #("epoch", json.String(epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert code(absent) == json.String("not_found")
+
+    // A saved session is not running, and an identity the daemon does not hold
+    // is told what a bystander is told.
+    let saved =
+      send(
+        socket,
+        9,
+        "attention.answer",
+        json.Object([
+          #("session", json.String(rig.saved)),
+          #("ask", json.String(rig.ask)),
+          #("revision", before),
+          #("answer", good_answer()),
+          #("epoch", json.String(epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert code(saved) == json.String("not_resident")
+    let #(stranger, _) = ids.mint_session(ids.generator(clock.fixed(0), 999))
+    let unknown =
+      send(
+        socket,
+        10,
+        "attention.answer",
+        json.Object([
+          #("session", json.String(ids.session_id_to_string(stranger))),
+          #("ask", json.String(rig.ask)),
+          #("revision", before),
+          #("answer", good_answer()),
+          #("epoch", json.String(epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert code(unknown) == json.String("not_found")
+
+    // The ask is as it was, and the session was sent nothing.
+    let after = read(socket, 11, rig, rig.ask, epoch)
+    assert body(after, "status") == json.String("open")
+    assert body(after, "revision") == before
+    assert answer_prompts(rig) == []
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn an_answer_the_gateway_refuses_leaves_the_ask_open_test() {
+  with_rig(fn(_registry, port, credential, epoch, rig, _principal) {
+    // The asking strand does not exist in the session, so the gateway refuses
+    // the prompt and the daemon says the ask is still open.
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let before = body(read(socket, 1, rig, rig.ask, epoch), "revision")
+    let refused = answer(socket, 2, rig, before, good_answer(), epoch)
+    assert code(refused) == json.String("not_found")
+    assert body(refused, "message")
+      == json.String(
+        "the asking strand no longer exists; the ask is still open",
+      )
+    let after = read(socket, 3, rig, rig.ask, epoch)
+    assert body(after, "status") == json.String("open")
+    assert body(after, "revision") == before
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn members_answer_by_their_role_over_the_control_socket_test() {
+  with_rig(fn(_registry, port, _credential, epoch, rig, _principal) {
+    add_audit_strand(rig)
+    let assert Ok(store) = catalogue.open(rig.state_root <> "/catalogue.db")
+      as "the catalogue opens"
+    let member = fn(name, token, role) {
+      let assert Ok(principal) =
+        access.create_member(store, name, name, digest_of(token))
+        as "the member exists"
+      case role {
+        Some(held) -> {
+          let assert Ok(Nil) =
+            access.grant(store, principal.id, rig.session, held)
+          Nil
+        }
+        None -> Nil
+      }
+      principal
+    }
+    let operator = string.repeat("8", 64)
+    let observer = string.repeat("9", 64)
+    let bystander = string.repeat("a", 64)
+    let operating = member("ans-operator", operator, Some(access.Operator))
+    let _ = member("ans-observer", observer, Some(access.Observer))
+    let _ = member("ans-bystander", bystander, None)
+    let revision = open_revision(rig, rig.ask)
+
+    // An observer is refused and a bystander is told no such session; neither
+    // reaches the record.
+    let #(ob_socket, _) = connect(port, observer, "/v2/control")
+    let _ = frame(ob_socket, within_ms: 1000)
+    let forbidden =
+      answer(ob_socket, 1, rig, json.Int(revision), good_answer(), epoch)
+    assert code(forbidden) == json.String("forbidden")
+    assert body(forbidden, "message")
+      == json.String("an observer cannot change a record")
+    let _ = ffi_ws.tcp_close(ob_socket)
+
+    let #(by_socket, _) = connect(port, bystander, "/v2/control")
+    let _ = frame(by_socket, within_ms: 1000)
+    assert code(answer(
+        by_socket,
+        1,
+        rig,
+        json.Int(revision),
+        good_answer(),
+        epoch,
+      ))
+      == json.String("not_found")
+    let _ = ffi_ws.tcp_close(by_socket)
+    assert open_revision(rig, rig.ask) == revision
+    assert answer_prompts(rig) == []
+
+    // An Operator member answers, and the record names it as the answerer.
+    let #(op_socket, _) = connect(port, operator, "/v2/control")
+    let _ = frame(op_socket, within_ms: 1000)
+    let answered =
+      answer(op_socket, 1, rig, json.Int(revision), good_answer(), epoch)
+    assert field(answered, "event") == json.String("attention.answer")
+    let settled = read(op_socket, 2, rig, rig.ask, epoch)
+    assert field(body(settled, "answer"), "by") == json.String(operating.id)
+    let _ = ffi_ws.tcp_close(op_socket)
+    assert catalogue.close(store) == Ok(Nil)
+  })
+}
+
+// This pins `strand_sender`, the function the page's `message_to_strand` calls
+// and the control socket's `strand_send` is built from. A page's attachment has
+// too many fields to build here, so the page's own wrapper is covered by
+// `ui_socket_test` and `ui_route_test`.
+pub fn the_strand_sender_the_page_shares_delivers_and_settles_test() {
+  with_rig(fn(registry, _port, _credential, epoch, rig, principal) {
+    add_audit_strand(rig)
+
+    // The send a home page's answer is made with, over the owner's credential.
+    let send =
+      ui_socket.strand_sender(registry, rig.owner, epoch, fn(_) {
+        Ok(rig.harness.hub)
+      })
+    let revision = open_revision(rig, rig.ask)
+    let assert Ok(attention_door.Answered(
+      delivery: thread_send.Admitted,
+      revision: settled,
+    )) =
+      attention_door.answer(
+        rig.reach(rig.owner),
+        fn(strand, text) {
+          send(rig.session, strand, text, session_operator.Prompt)
+        },
+        rig.session,
+        rig.ask,
+        revision,
+        good_answer(),
+      )
+      as "the page's path delivers and settles"
+    assert settled > revision
+    let assert Ok(attention.StoredAsk(ask:, ..)) =
+      attention.read(rig.runtime, rig.ask)
+    let assert records.Answered(answer: records.Answer(by:, ..), ..) = ask.state
+    assert by == principal.id
+    let assert [_] = await_prompts(rig, 1)
+    Nil
+  })
+}
+
+// --- saved counts over the control socket (protocol-change/128) --------------
+
+fn saved_request(
+  socket,
+  id: Int,
+  sessions: List(String),
+  epoch: String,
+) -> JsonValue {
+  send(
+    socket,
+    id,
+    "sessions.saved_attention",
+    json.Object([
+      #("sessions", json.Array(list.map(sessions, json.String))),
+      #("epoch", json.String(epoch)),
+    ]),
+    within_ms: 1000,
+  )
+}
+
+pub fn saved_counts_are_read_for_the_sessions_a_credential_holds_test() {
+  with_rig(fn(registry, port, credential, epoch, rig, _principal) {
+    // Both sessions have a row. The writes are casts and the read queues behind
+    // them in the registry's turn.
+    manager.record_attention(
+      registry,
+      rig.session,
+      catalogue.AttentionSummary(
+        pending_approvals: 0,
+        open_asks: 1,
+        open_finds: 0,
+        oldest_open_at: None,
+        updated_at: 50,
+      ),
+    )
+    manager.record_attention(
+      registry,
+      rig.saved,
+      catalogue.AttentionSummary(
+        pending_approvals: 1,
+        open_asks: 0,
+        open_finds: 2,
+        oldest_open_at: Some(30),
+        updated_at: 40,
+      ),
+    )
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+
+    // Each row answers in the order asked, with `oldest_open_at` absent where
+    // nothing is open.
+    let resident_row =
+      json.Object([
+        #("session_id", json.String(rig.session)),
+        #("pending_approvals", json.Int(0)),
+        #("open_asks", json.Int(1)),
+        #("open_finds", json.Int(0)),
+        #("updated_at", json.Int(50)),
+      ])
+    let saved_row =
+      json.Object([
+        #("session_id", json.String(rig.saved)),
+        #("pending_approvals", json.Int(1)),
+        #("open_asks", json.Int(0)),
+        #("open_finds", json.Int(2)),
+        #("oldest_open_at", json.Int(30)),
+        #("updated_at", json.Int(40)),
+      ])
+    let saved = saved_request(socket, 1, [rig.session, rig.saved], epoch)
+    assert field(saved, "event") == json.String("sessions.saved_attention")
+    assert body(saved, "saved") == json.Array([resident_row, saved_row])
+    assert body(
+        saved_request(socket, 6, [rig.saved, rig.session], epoch),
+        "saved",
+      )
+      == json.Array([saved_row, resident_row])
+
+    // The batch bound is `sessions.attention`'s, and so is the epoch rule.
+    assert code(saved_request(socket, 2, [], epoch))
+      == json.String("bad_request")
+    assert code(saved_request(socket, 3, [rig.saved, rig.saved], epoch))
+      == json.String("bad_request")
+    let many =
+      list.repeat(Nil, 25)
+      |> list.index_map(fn(_, seed) {
+        let #(id, _) = ids.mint_session(ids.generator(clock.fixed(0), seed))
+        ids.session_id_to_string(id)
+      })
+    assert code(saved_request(socket, 4, many, epoch))
+      == json.String("bad_request")
+    assert code(saved_request(socket, 5, [rig.saved], "previous-epoch"))
+      == json.String("stale_epoch")
+    let _ = ffi_ws.tcp_close(socket)
+
+    // A member is answered for what it holds and nothing else.
+    let assert Ok(store) = catalogue.open(rig.state_root <> "/catalogue.db")
+      as "the catalogue opens"
+    let holder = string.repeat("b", 64)
+    let bystander = string.repeat("c", 64)
+    let assert Ok(held) =
+      access.create_member(store, "sv-holder", "sv-holder", digest_of(holder))
+    let assert Ok(Nil) =
+      access.grant(store, held.id, rig.saved, access.Observer)
+    let assert Ok(_) =
+      access.create_member(
+        store,
+        "sv-bystander",
+        "sv-bystander",
+        digest_of(bystander),
+      )
+    let #(held_socket, _) = connect(port, holder, "/v2/control")
+    let _ = frame(held_socket, within_ms: 1000)
+    // Both sessions have a row, and the member holds only the saved one.
+    assert body(
+        saved_request(held_socket, 1, [rig.session, rig.saved], epoch),
+        "saved",
+      )
+      == json.Array([saved_row])
+    assert body(saved_request(held_socket, 2, [rig.session], epoch), "saved")
+      == json.Array([])
+    let _ = ffi_ws.tcp_close(held_socket)
+
+    let #(by_socket, _) = connect(port, bystander, "/v2/control")
+    let _ = frame(by_socket, within_ms: 1000)
+    assert body(
+        saved_request(by_socket, 1, [rig.session, rig.saved], epoch),
+        "saved",
+      )
+      == json.Array([])
+    let _ = ffi_ws.tcp_close(by_socket)
+    assert catalogue.close(store) == Ok(Nil)
+  })
 }
