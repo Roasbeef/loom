@@ -1316,6 +1316,29 @@ pub fn a_receiver_without_the_executor_refuses_and_the_session_returns_test() {
   finish(rig)
 }
 
+// The movers record how a move ended, so the control command that began it can
+// answer a refusal. A move of another operation has not ended.
+pub fn the_movers_report_a_refused_move_to_the_command_that_began_it_test() {
+  let rig =
+    start(
+      "settled",
+      25,
+      Recorded,
+      protocol.AllRetired,
+      [executors.plain("other", "other@10.0.0.9")],
+      0,
+    )
+  let assert Ok(control) = session_movers.start(plain(rig), 100, no_holder)
+  let move = begin(rig)
+  control.begin(move)
+  let assert session_movers.Abandoned(reason) = control.settled(move, 20_000)
+  assert string.contains(reason, "no executor named box")
+  assert custody(rig.source, rig.session) == catalogue.Resident
+  assert control.settled(catalogue.Pending(..move, op: "another-op"), 0)
+    == session_movers.InFlight
+  finish(rig)
+}
+
 pub fn a_receiver_that_cannot_be_reached_never_abandons_the_move_test() {
   let rig =
     start(

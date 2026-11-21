@@ -188,6 +188,7 @@ pub fn a_ledger_bundle_writes_the_spawner_and_no_orchestrator_rows_test() {
     distribution_provision.provision_ledger(plan, timestamp.system_time())
   let box = bundle_named(ledger, "box")
   assert box.orchestrators == []
+  assert distribution_bundle.decode(distribution_bundle.encode(box)) == Ok(box)
   assert list.map(box.spawners, fn(relay) { relay.spawner.name }) == ["laptop"]
 }
 

@@ -1300,7 +1300,8 @@ A bundle made with `--static` also writes an `[orchestrators.<name>]` row on eac
 orchestrator for every other orchestrator it peers with, using the plan's name and
 node, so a session can move between them with no edit. Those rows carry no
 `address` and no `checkout_executor`; a session that works in a directory still needs
-the two checkout keys added by hand. A ledger bundle writes no rows, because the daemon
+the two checkout keys added by hand, and a later install of a bundle that writes the same
+row refuses it without `--force`, which drops those keys. A ledger bundle writes no rows, because the daemon
 derives them from the ledger (see [Orchestrators that come from the
 ledger](#orchestrators-that-come-from-the-ledger)).
 
