@@ -542,6 +542,7 @@ fn spawn(
         #("purpose", json.String(purpose)),
         #("brief", json.String(brief)),
         #("on", json.String("box")),
+        #("context", json.String("fresh")),
       ],
       case within_ms {
         Some(ms) -> [#("within_ms", json.Int(ms))]

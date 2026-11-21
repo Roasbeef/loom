@@ -6462,6 +6462,7 @@ fn seeded_and_received(
     agency.Config(
       ..config,
       seeding: agency.Seeding(
+        offer: agency.Offered,
         capture: fn() {
           result.map(capture(), fn(state) {
             agency.Seed(state:, workspace: "/work/loom")
@@ -6559,6 +6560,52 @@ fn the_commits_a_child_made() -> state_object.State {
 }
 
 const child_ref = "refs/loom/children/record-0123456789abcdef/22222222"
+
+// The report of a child that started from uncommitted work names the child's own
+// commits to cherry-pick and warns off `git merge`, whose history includes the
+// snapshot of the parent's untracked files (issue #1137, defect 6). A child that
+// started from a clean tree keeps the merge advice.
+pub fn the_report_warns_off_a_merge_only_when_the_sent_tree_was_dirty_test() {
+  let report_for = fn(sent: state_object.State, index: Int) {
+    let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+    let #(harness, _queued) =
+      start_remote(
+        Hangs,
+        [box],
+        seeded_and_received(fn() { Ok(sent) }, fn(_seed, _returned, _child) {
+          Ok(remote_child.Applied(ref: child_ref, commits: 2))
+        }),
+      )
+    let caller = caller_on("main", "turn-1:tools", index)
+    let assert Ok(spawned) =
+      harness.seam.spawn(caller, my_workspace_on_box("continue"))
+    fake_orchestrators.settle_returning(
+      box,
+      spawned.handle,
+      the_commits_a_child_made(),
+    )
+    let assert Ok([agent.Ready(report:, ..)]) =
+      harness.seam.wait(caller, [spawned.handle], 100)
+    close(harness)
+    report
+  }
+
+  let dirty = report_for(a_workspace_state(), 0)
+  assert string.contains(
+    dirty,
+    "git cherry-pick " <> a_workspace_state().tip <> ".." <> child_ref,
+  )
+  assert string.contains(dirty, "Working snapshot")
+  assert !string.contains(dirty, "or `git merge")
+
+  let clean =
+    report_for(
+      state_object.State(..a_workspace_state(), dirty: state_object.Clean),
+      1,
+    )
+  assert string.contains(clean, "`git cherry-pick` or `git merge " <> child_ref)
+  assert !string.contains(clean, "Working snapshot")
+}
 
 pub fn a_childs_returned_commits_are_applied_once_and_told_in_its_report_test() {
   let box = fake_orchestrators.start("box", fake_orchestrators.Up)
@@ -6702,6 +6749,103 @@ pub fn a_child_with_no_returned_state_is_reported_as_it_was_test() {
   let assert Ok([agent.Ready(report:, ..)]) =
     harness.seam.wait(caller, [spawned.handle], 100)
   assert report == "done on " <> spawned.strand
+  close(harness)
+}
+
+// A tool call that names no context, from a session that could have sent its
+// workspace, is refused before anything is captured, stored or sent. The child
+// would otherwise start without the files and the model would never be told
+// (issue #1137, defect 4).
+pub fn an_unstated_context_with_on_is_refused_when_a_workspace_is_offered_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], seeded_by(fn() { Ok(a_workspace_state()) }))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(..on_box("plain"), context: agent.Unstated),
+    )
+  assert string.contains(reason, "my_workspace")
+  assert string.contains(reason, "fresh")
+  assert stubs_of(harness) == []
+  assert { fake_orchestrators.report(box) }.spawns == []
+  close(harness)
+}
+
+// The refusal leaves the explicit choices alone: `fresh` still starts an
+// unseeded child, and `my_workspace` still seeds one.
+pub fn a_named_context_passes_the_unstated_check_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], seeded_by(fn() { Ok(a_workspace_state()) }))
+  let assert Ok(_) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      agent.SpawnRequest(..on_box("fresh one"), context: agent.Fresh),
+    )
+    as "an explicit fresh is the model's choice"
+  let assert Ok(_) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 1),
+      my_workspace_on_box("seeded one"),
+    )
+    as "an explicit my_workspace seeds"
+  let states =
+    stubs_of(harness)
+    |> list.map(fn(stub) { stub.request.state })
+  assert list.length(states) == 2
+  assert list.contains(states, None)
+  assert list.contains(states, Some(a_workspace_state()))
+  close(harness)
+}
+
+// A call site that already has a stub is reconciled and not refused, so a
+// replayed spawn whose child exists still finds it.
+pub fn a_replayed_call_site_with_a_stub_is_not_refused_as_unstated_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], seeded_by(fn() { Ok(a_workspace_state()) }))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(first) = harness.seam.spawn(caller, on_box("plain"))
+    as "the first call names fresh"
+  let assert Ok(again) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(..on_box("plain"), context: agent.Unstated),
+    )
+    as "the replay finds the stub"
+  assert again.handle == first.handle
+  assert list.length(stubs_of(harness)) == 1
+  close(harness)
+}
+
+// A session with no workspace to send has nothing to choose, so an unstated
+// context is fresh there, as it always was.
+pub fn an_unstated_context_is_fresh_when_no_workspace_is_offered_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Ok(_) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      agent.SpawnRequest(..on_box("plain"), context: agent.Unstated),
+    )
+    as "nothing could have been sent"
+  let assert [stub] = stubs_of(harness)
+  assert stub.request.state == None
+  close(harness)
+}
+
+// A local child shares this session's workspace, so an unstated context is
+// fresh there too.
+pub fn an_unstated_context_is_fresh_for_a_local_child_test() {
+  let harness = start_harness(Hangs)
+  let assert Ok(_) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      agent.SpawnRequest(..a_spawn("local"), context: agent.Unstated),
+    )
+    as "a local spawn is unaffected"
   close(harness)
 }
 

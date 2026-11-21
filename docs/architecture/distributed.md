@@ -1988,6 +1988,14 @@ holds `offered`, asked at each spawn: it is true only in a session the owner
 holds alone (`manager.unshared_sessions`), and inviting a member makes the next
 spawn refuse.
 
+A tool call with `on` must name its `context` when the session could send its
+workspace (protocol-change/129). An omitted `context` decodes to
+`Provenance.Unstated`, and `agency.refuse_unstated_context` refuses it when
+`Seeding.offer` is `Offered`, telling the model to pass `my_workspace` or
+`fresh`. The caller cannot read the receiving spawner's `seed`, so it does not
+choose for the model. A call site that already has a stub is reconciled first and
+is never refused.
+
 **The stub is written first.** The holder admits a remote spawn: it checks the
 depth cap and the fan-out caps and writes `remote-child/{call site digest}`
 (`client/remote_child`), a reserved fact holding the orchestrator, the parent
