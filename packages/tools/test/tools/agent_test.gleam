@@ -159,6 +159,8 @@ fn echo_send(
 fn provenance_text(context: agent.Provenance) -> String {
   case context {
     agent.Fresh -> "fresh"
+    // An omitted context is fresh for a child of this session, as it always was.
+    agent.Unstated -> "fresh"
     agent.MyConversation -> "mine"
     agent.MyWorkspace -> "workspace"
   }
@@ -745,6 +747,51 @@ pub fn spawn_decodes_my_workspace_as_its_own_provenance_test() {
     )
   assert !outcome.is_error
   assert process.receive(seen, 100) == Ok(agent.MyWorkspace)
+}
+
+// A call that leaves `context` out reaches the Agency as `Unstated`, which is
+// not the same word as an explicit `fresh`: the Agency refuses the first for a
+// child on another orchestrator when the workspace could have been sent.
+pub fn spawn_decodes_an_omitted_context_as_unstated_test() {
+  let seen = process.new_subject()
+  let agency =
+    agent.Agency(
+      ..echoing_agency(),
+      spawn: fn(caller: agent.Caller, request: agent.SpawnRequest) {
+        process.send(seen, request.context)
+        Ok(agent.Spawned(
+          handle: agent.Handle(
+            strand: "sub:^main/x-1",
+            operation: caller.operation,
+          ),
+          strand: "sub:^main/x-1",
+          tools: [],
+          model: "default-model",
+          model_id: "provider-model-id",
+          deadline_ms: option.None,
+        ))
+      },
+      orchestrator_names: ["box"],
+    )
+  let spawn_with = fn(extra) {
+    run(
+      "agent_spawn",
+      ctx_for("main", "turn", 0),
+      agency,
+      json.Object(list.append(
+        [
+          #("purpose", json.String("x")),
+          #("brief", json.String("b")),
+          #("on", json.String("box")),
+        ],
+        extra,
+      )),
+    )
+  }
+  assert !{ spawn_with([]) }.is_error
+  assert process.receive(seen, 100) == Ok(agent.Unstated)
+  assert !{ spawn_with([#("context", json.String("fresh"))]) }.is_error
+  assert process.receive(seen, 100) == Ok(agent.Fresh)
 }
 
 fn recording_spawn(
