@@ -2124,8 +2124,11 @@ session the live `sessions.attention` and `sessions.activity` are current.
 absent when there is none (it says nothing of approvals, which carry a time only
 through `approval.read`), and `updated_at` is Unix milliseconds on the daemon's
 clock when the row was written. Errors: `bad_request` for the batch rules,
-`stale_epoch`, and `unavailable` when the catalogue cannot be read, which is
-never an empty `saved`.
+`stale_epoch`, and `unavailable` when the summary read fails, which is not
+answered as an empty `saved`. A failed membership check is different: the
+registry's check that the credential holds an id leaves that id out, so a
+membership read that fails can answer `{"saved":[]}`, and a client treats an
+absent id as not read, never as nothing open.
 
 `attention.read` takes `session` and `id` (an ask or find identifier) and
 answers the record in full: `kind`, `id`, `revision` (the sequence number of its
@@ -2167,7 +2170,7 @@ as it was unless the message says the prompt may have arrived:
 | `not_found` | The session is not held by the credential, the ask is absent, or the asking strand no longer exists. |
 | `not_resident` | The session is saved, opening, stopping, or has no gateway. |
 | `conflict` | The ask is already answered, `revision` is not the one read now, the strand's queue is full, or the settling write lost a race after delivery (the message is `delivered; the record changed`). |
-| `unavailable` | The gateway did not accept the prompt or did not answer in time, or the settling write failed after delivery. |
+| `unavailable` | The gateway did not take the prompt or did not answer in time (the prompt may have arrived, and the ask is still open), or the settling write failed after delivery. |
 
 A prompt is delivered before the ask is settled, so a failure between the two
 leaves the ask open with the prompt in the strand's transcript, and a second

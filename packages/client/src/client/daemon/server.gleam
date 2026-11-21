@@ -7075,7 +7075,7 @@ fn send_refusal(refusal: thread_send.Refusal) -> Refused {
     )
     thread_send.NotAccepted(_) -> #(
       "unavailable",
-      "the session refused the prompt; the ask is still open",
+      "the session did not take the prompt or did not answer; the prompt may have arrived and the ask is still open",
     )
     thread_send.Unanswered -> #(
       "unavailable",

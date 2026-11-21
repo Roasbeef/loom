@@ -125,7 +125,7 @@ have arrived:
 | `not_found` | The session is not held by the credential, the ask is absent, or the asking strand no longer exists. |
 | `not_resident` | The session is saved, opening, stopping or has no gateway. |
 | `conflict` | The ask is answered already, its revision is not the one given, the strand's queue is full, or the settling write lost a race after delivery (the message then reads "delivered; the record changed"). |
-| `unavailable` | The gateway would not take the prompt, did not answer in time, or the settling write failed. |
+| `unavailable` | The gateway did not take the prompt or did not answer in time (the prompt may have arrived, and the ask is still open), or the settling write failed. |
 
 The messages say whether the ask is still open. A client that receives a
 `conflict` with "delivered; the record changed" reads the record again before
@@ -151,8 +151,10 @@ leave no entry, so a client cannot tell the last two from the first, which is
 what [050](050-session-activity.md)'s addendum asks of every read. A row that
 does not decode (a negative count or time, which the table's `CHECK` forbids) is
 dropped as a session never read. `oldest_open_at` is absent when no ask or find
-is open. A catalogue that cannot be read is `unavailable` and never an empty
-`saved`, so a client does not draw "nothing open" over a failed read.
+is open. A summary read that fails is `unavailable` and not an empty `saved`.
+A failed membership check is different: it leaves the id out, so it can answer
+`{"saved":[]}`. A client therefore treats an absent id as not read and never
+draws "nothing open" for it.
 
 The command shares its read with the web home (`server.saved_rows`): one
 function holds the membership check, the row decode and the drop rule, so the
