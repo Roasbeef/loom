@@ -319,6 +319,7 @@ fn spawn(brief: String, purpose: String, on: String) -> json.JsonValue {
     #("purpose", json.String(purpose)),
     #("brief", json.String(brief)),
     #("on", json.String(on)),
+    #("context", json.String("fresh")),
   ])
 }
 
