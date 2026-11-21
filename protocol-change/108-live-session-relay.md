@@ -1181,3 +1181,52 @@ draws the unavailable notice until the box answers. Showing the evolution board 
 relayed page needs a new revision of the exchange, an `evolution` read carried as
 `108.worktree.1` carries the workspace, with its own authority rule on the box, and is
 not built.
+
+## Addendum: a session moved from the spawner is reachable by its page (2026-11-20)
+
+**The problem.** The drive of #1137 (criterion 4) moved a laptop session to the box
+with `loom sessions move` and found that the laptop's relayed page could not open
+it. "The owner's own sessions" above had left every session the owner did not create
+through the page outside `catalogue_relayed_sessions`, and with it outside every
+door of 094 and of this proposal (`NotRelayed`). A moved session is the one case in
+that set whose origin the box knows: the receiver records the orchestrator it came
+from (`Imported(op, from)`, protocol-change/107). Leaving it unreachable made the
+two pages differ for the same session, against #1137's criterion that every session
+looks and behaves the same from either machine's page.
+
+**What was considered.** A `reach` key on `top_level`, as the section above
+proposes for every session the owner started on the box, was rejected for this case:
+it adds a configuration key and a policy to decide something the move already
+decided. Deriving reachability at read time from the import row was rejected: the
+listing query (`relayed_page`) and every `relayed_of` reader would each need a
+second source and a mapping from the orchestrator's name to the spawner's, where a
+row makes both the same read. The security model does not forbid the row. The
+session was the page owner's own until the move, the page's owner chose the move,
+the sender is a pinned peer that 094 already trusts with `top_level`, and every door
+keeps its ceiling, so the set of sessions the page's stolen cookie reaches grows by
+sessions that peer itself sent.
+
+**The decision.** When the receiver commits an import, it writes the same
+`catalogue_relayed_sessions` row a create writes if, and only if, a
+`[spawners.<name>]` table has the sender's node and has a `top_level` table
+(`session_importer.reachable`, `catalogue.relay_import`, `manager.relay_imported`).
+The row's request id is `moved-` and the move's `op`, with `_` written as `-`. The
+write ignores `max_sessions` and `max_per_hour`: the owner of the other
+orchestrator chose the move, and an import the cap refused would leave a session the
+sender already retired. The row counts toward both caps afterwards, so a spawner
+that moves sessions here has fewer places to create. A session that already has a
+row keeps it, so a resent activation, which runs the write again, writes nothing, and
+a failure of the write answers `Failed`, never a refusal, because the import has
+committed and the sender asks again. From then on the session is listed by
+`TopSessions` and served by every door of 094 and 108 as one the page created: the
+same ceiling, the same table of commands, the same archive.
+
+**What it costs.** A spawner's table must exist before the move: a `top_level` table
+added later does not reach sessions imported before. A session moved from here to a
+third orchestrator keeps its row, and `TopSessions` lists the tombstone as an idle
+row until the owner archives it on the box. A session moved before this change has no
+row.
+
+**Tests.** `session_importer_test` (`a_moved_session_is_reachable_by_the_senders_page_test`,
+`a_moved_session_stays_private_without_a_page_for_the_sender_test`) and
+`relayed_test` (`an_imported_session_gets_a_row_beside_the_caps_and_only_one_test`).

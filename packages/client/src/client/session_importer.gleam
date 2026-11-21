@@ -54,6 +54,12 @@
 //// 7. The registry commits the registration, its mapping and the `imported` row
 ////    together and moves the copy into place in the same turn.
 ////
+//// 8. When a `[spawners.<name>]` table with a `top_level` table has the sender's
+////    node, `reachable` gives the session a relayed row, so that spawner's page
+////    opens it as it opens a session it created (protocol-change/108, the
+////    addendum on moved sessions). The write follows the commit and a resent
+////    activation repeats it.
+////
 //// Every refusal is final for the sender, and it says why. A fault that is not
 //// a finding about the copy, such as a registry that did not answer, is a
 //// failure and the sender asks again.
@@ -80,6 +86,7 @@ import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict, Accepted, Failed,
   Refused,
 }
+import client/spawners.{type Spawner}
 import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
@@ -115,6 +122,11 @@ pub type Context(instance) {
     /// Read when an activation arrives, so one enrolled since the daemon
     /// started is recognised (protocol-change/086).
     orchestrators: Roster(Orchestrator),
+    /// The `[spawners.<name>]` tables, read once at start. A session that
+    /// arrives from the node of a spawner with a `top_level` table becomes
+    /// reachable by that spawner's page (protocol-change/108, the addendum on
+    /// moved sessions).
+    spawners: List(Spawner),
     /// The executors this daemon lists, one of which must hold the session.
     executors: Roster(Executor),
     /// Where the receiver writes down what it did.
@@ -805,8 +817,8 @@ fn import_it(
     )
   {
     Ok(_) -> {
+      use Nil <- result.map(reachable(context, activation, from))
       told_imported(context, activation, from, size)
-      Ok(Nil)
     }
     Error(manager.AdminMetadata(catalogue.Conflict))
     | Error(manager.AdminBusy) -> Error(Refused(session_move.Conflict))
@@ -814,6 +826,56 @@ fn import_it(
       Error(Refused(session_move.Malformed(reason)))
     Error(other) -> Error(Failed(string.inspect(other)))
   }
+}
+
+// A session that came from the node of a spawner with a page here is the
+// owner's own session, which that page showed until the move. Giving it a
+// relayed row lets the page open it as it opens a session it created, through
+// the same doors and the same ceiling. The write is repeated by every resent
+// activation, so an import that committed and then failed here is finished by
+// the sender's next ask, and a failure is a `Failed` verdict, never a refusal,
+// because the import has already committed.
+
+/// Makes an imported session reachable by the page of the spawner whose node
+/// sent it, when there is such a spawner and it has a `top_level` table.
+fn reachable(
+  context: Context(instance),
+  activation: Activation,
+  from: String,
+) -> Result(Nil, Verdict) {
+  let #(now_ms, _) = clock.read(context.clock)
+
+  // Whether there is a page to give the session to decides whether anything is
+  // written at all.
+  case page_of(context, from) {
+    // No spawner has the sender's node, or its table offers no page, so the
+    // session stays the owner's own on this daemon.
+    Error(Nil) -> Ok(Nil)
+
+    // The row is written in the registry's turn, and a repeat leaves it as it is.
+    Ok(held) ->
+      manager.relay_imported(
+        context.registry,
+        held.name,
+        activation.session,
+        op: activation.op,
+        now_ms:,
+      )
+      |> result.map_error(fn(error) { Failed(string.inspect(error)) })
+  }
+}
+
+/// The spawner whose node is the node of the orchestrator `from`, when its table
+/// lets its page start and read sessions here.
+fn page_of(context: Context(instance), from: String) -> Result(Spawner, Nil) {
+  use origin <- result.try(orchestrators.find(
+    roster.rows(context.orchestrators),
+    from,
+  ))
+  use held <- result.try(spawners.by_node(context.spawners, origin.node))
+
+  option.to_result(held.top_level, Nil)
+  |> result.replace(held)
 }
 
 /// Says that the registry committed the session as imported, with the copy's

@@ -23,7 +23,8 @@
 ////    and the session must be in `catalogue_relayed_sessions` for this spawner
 ////    (`NotRelayed`). A session the owner started, or another spawner did, is
 ////    refused whatever its state, so the table is the whole of what a page can
-////    reach.
+////    reach. A session that spawner moved here is in the table too: the
+////    importer writes its row (`session_importer.reachable`).
 ////
 //// ## A create is two steps and a resend finishes it
 ////

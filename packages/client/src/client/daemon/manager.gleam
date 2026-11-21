@@ -771,6 +771,10 @@ type Message(instance) {
   /// The relayed row of a session, without waking it.
   RelayedOfSession(String, Subject(Result(Option(catalogue.Relayed), Error)))
 
+  /// Makes a session that arrived by a move reachable by a spawner's page: the
+  /// spawner, the session, the move's op and the time.
+  RelayImported(String, String, String, Int, Subject(Result(Nil, Error)))
+
   /// One page of a spawner's relayed sessions: the spawner, the identity the
   /// page follows and the most rows.
   RelayedSessions(
@@ -2195,6 +2199,34 @@ pub fn relayed_of(
 ) -> Result(Option(catalogue.Relayed), Error) {
   call.try_call(manager.commands, waiting: 5000, sending: RelayedOfSession(
     id,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Makes a session that another orchestrator moved here reachable by the page
+/// of the spawner whose node sent it (protocol-change/108, the addendum on
+/// moved sessions). A session that already has a relayed row keeps it, so a
+/// repeat of the same import writes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.relay_imported(registry, "laptop", session_id, op: "0192f3c1", now_ms: 1_000)
+/// ```
+@internal
+pub fn relay_imported(
+  manager: Manager(instance),
+  spawner: String,
+  id: String,
+  op op: String,
+  now_ms now_ms: Int,
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: RelayImported(
+    spawner,
+    id,
+    op,
+    now_ms,
     _,
   ))
   |> result.unwrap(Error(Unavailable))
@@ -4096,6 +4128,14 @@ fn handle(
       process.send(
         reply,
         catalogue.relayed_of(book.catalogue, id) |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    RelayImported(spawner, id, op, now_ms, reply) -> {
+      process.send(
+        reply,
+        catalogue.relay_import(book.catalogue, spawner, id, op:, now_ms:)
+          |> result.map_error(Catalogue),
       )
       sm.keep(book)
     }
