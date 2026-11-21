@@ -11704,6 +11704,59 @@ pub fn a_passkey_registers_from_a_fresh_home_and_signs_a_browser_in_test() {
   })
 }
 
+// The owner opens the sign-in page from a link in another app, which a browser
+// marks `cross-site`. A top-level navigation is served a challenge; a request
+// another page's script makes is refused without issuing one, and the post
+// stays this origin's own page's alone.
+pub fn the_sign_in_page_opens_from_a_link_in_another_app_test() {
+  fixture(fn(_, port, _) {
+    let from = fn(site, mode, dest) {
+      get(port, "/ui/signin", [
+        host(port),
+        #("sec-fetch-site", site),
+        #("sec-fetch-mode", mode),
+        #("sec-fetch-dest", dest),
+      ])
+    }
+    let opened = from("cross-site", "navigate", "document")
+    assert opened.status == 200
+    assert attribute(opened.body, "data-challenge") != ""
+    assert from("same-site", "navigate", "document").status == 200
+
+    // Another page's `fetch`, an image, a frame and a request that says nothing
+    // of its mode are refused.
+    assert from("cross-site", "cors", "empty").status == 403
+    assert from("cross-site", "no-cors", "empty").status == 403
+    assert from("cross-site", "no-cors", "image").status == 403
+    assert from("cross-site", "navigate", "iframe").status == 403
+    assert get(port, "/ui/signin", [
+        host(port),
+        #("sec-fetch-site", "cross-site"),
+      ]).status
+      == 403
+
+    // The post is unchanged: a cross-site sender is refused even when it names
+    // a navigation.
+    let body = passkey_form([#("id", "AA")])
+    let posted =
+      send_request(
+        port,
+        "POST",
+        "/ui/signin",
+        [
+          host(port),
+          #("sec-fetch-site", "cross-site"),
+          #("sec-fetch-mode", "navigate"),
+          #("sec-fetch-dest", "document"),
+          #("content-type", "application/x-www-form-urlencoded"),
+          #("content-length", int.to_string(string.byte_size(body))),
+        ],
+        body,
+      )
+    assert posted.status == 403
+  })
+}
+
 // A challenge answers once. The same assertion posted again, whole, is refused
 // with the one fixed document that echoes nothing.
 pub fn a_replayed_passkey_assertion_is_refused_test() {

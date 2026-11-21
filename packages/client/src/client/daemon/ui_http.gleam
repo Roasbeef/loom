@@ -603,6 +603,47 @@ pub fn navigation_allowed(request: Request(body)) -> Bool {
   }
 }
 
+/// Whether the sign-in page may be opened by this request: either a navigation
+/// `navigation_allowed` admits, or any top-level document navigation whatever
+/// its `Sec-Fetch-Site`, which is `Sec-Fetch-Mode: navigate` together with
+/// `Sec-Fetch-Dest: document`.
+///
+/// Only the sign-in page asks this question. It exists for a phone that has no
+/// login, and its owner reaches it by tapping a link in another app (a chat
+/// app's in-app browser, Messages, an email), which a browser marks
+/// `cross-site`. The page carries no authority: it draws a challenge the
+/// daemon issued for the visit and answers nothing about the person. What the
+/// check protects is that a challenge is issued only to a navigation, so no
+/// other page can fill the table by fetching the address, and a script on
+/// another page cannot make a top-level navigation silently: `fetch`,
+/// `XMLHttpRequest`, `<img>`, `<iframe>` and `<script>` carry another mode or
+/// destination and are refused. A site that opens many top-level windows is
+/// bounded by the challenge table, which replaces only a challenge of the same
+/// kind at its limit (`ui_sessions.challenge`). Every other page, which carries
+/// or creates authority, keeps `navigation_allowed`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.signin_navigation_allowed(request)
+/// ```
+pub fn signin_navigation_allowed(request: Request(body)) -> Bool {
+  // This branch resolves the ordinary first-party check before the headers
+  // that name a top-level document navigation are read.
+  case navigation_allowed(request) {
+    True -> True
+    False ->
+      case
+        request.get_header(request, "sec-fetch-mode"),
+        request.get_header(request, "sec-fetch-dest")
+      {
+        Ok("navigate"), Ok("document") -> True
+        Ok(_), Ok(_) | Ok(_), Error(Nil) | Error(Nil), Ok(_) -> False
+        Error(Nil), Error(Nil) -> False
+      }
+  }
+}
+
 /// Whether a state-changing request came from this origin's own page:
 /// `Sec-Fetch-Site` is `same-origin` and nothing else. The login's resume is a
 /// `POST` from the resume page, and an exchange's confirmed press is a `POST`

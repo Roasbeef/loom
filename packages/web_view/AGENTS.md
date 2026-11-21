@@ -264,7 +264,8 @@ page keys and nonces, and the relay into the session's gateway.
   `landing_rule` (pure, no Lustre) is the first round that decides the centre: `Round` holds one `Reading` (`Due | Answered | NotDue`) for the list, the activity read, the catalogue summaries, the boards and the feed; `listed` takes the first list that was read and with it which of the reads that depend on it are due, `answer` marks a read's first answer and says whether it was the last due (`Closes`), and `landing` reads the gathered `Picture` (the running sessions' reports and the counts of what waits). `inbox_rule` (pure, no Lustre) decides `Group` (`NeedsYou | Waiting | Updates |
   Quiet`), `Kind`, `head`, `headline`, the ordering by name and `landing`
   (`Inbox` when any session needs the owner, failed, works or is idle with a last
-  message; else `Form`). `view/inbox` draws the grouped list and a reading pane (`inbox_rule.Folder`, `gloss` and `count_note` word the rail and the bands)
+  message; else `Form`). `grouped_with(threads, reviewing, attending)` also keeps a quiet
+  session that has an attention-feed row out of `Quiet`, so it is drawn once. `view/inbox` draws the grouped list and a reading pane (`inbox_rule.Folder`, `gloss` and `count_note` word the rail and the bands)
   inside the centre's body (so at `table_path`); `home.centre_body` shows it when
   `landed_inbox` holds: pane `NewSession` or `SessionList` and `centre_choice`
   is `Decided(InboxCentre)`. The centre is decided once per page load

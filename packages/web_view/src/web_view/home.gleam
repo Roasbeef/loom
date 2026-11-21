@@ -6708,11 +6708,16 @@ fn following_review(model: Model, current: Option(String)) -> Option(String) {
 }
 
 /// The inbox's groups: the threads of the last reads, with the idle sessions
-/// whose worktree holds changes under "To review".
+/// whose worktree holds changes under "To review", and without the quiet
+/// sessions that have a row in the attention feed, which the feed draws.
 fn model_groups(
   model: Model,
 ) -> List(#(inbox_rule.Group, List(inbox_rule.Thread))) {
-  inbox_rule.grouped_with(drawn_threads(model), reviewing_ids(model))
+  inbox_rule.grouped_with(
+    drawn_threads(model),
+    reviewing_ids(model),
+    list.map(current_items(model), attention_rule.session_of),
+  )
 }
 
 /// The idle sessions with a last message, as their identity and that message,
