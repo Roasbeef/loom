@@ -261,6 +261,34 @@ fn board_text(handle: project_host.Handle) -> String {
   )
 }
 
+// The whole board, source rows included, without the two times the watcher
+// moves on its own. Its tick runs on real time, so `last_poll_ms` and
+// `next_poll_ms` change between reads with nothing wrong, and a test that
+// compares a board across a time change or a restart compares this instead.
+fn steady_text(handle: project_host.Handle) -> String {
+  let shown = board(handle)
+  let steady =
+    list.map(shown.sources, fn(row) {
+      case row {
+        json.Object(fields) ->
+          json.Object(
+            list.filter(fields, fn(field) {
+              field.0 != "last_poll_ms" && field.0 != "next_poll_ms"
+            }),
+          )
+        other -> other
+      }
+    })
+  json.to_string(
+    json.Object([
+      #("sources", json.Array(steady)),
+      #("would", json.Array(shown.would_have_done)),
+      #("replies", json.Array(shown.replies)),
+      #("tickets", json.Array(shown.tickets)),
+    ]),
+  )
+}
+
 // The first pass of a source only sets its cursors, so a test waits for it and
 // then serves its fixtures.
 fn first_pass(handle: project_host.Handle) -> Nil {
@@ -1744,17 +1772,17 @@ pub fn an_open_ticket_and_its_text_survive_a_compaction_and_a_restart_test() {
       worker,
       tools.WorkerReport(tools.Waiting, Some("which database?")),
     )
-  let shown = board_text(handle)
+  let shown = steady_text(handle)
 
   // The ticket is open, so nothing it names is old enough to drop, however
   // long ago it began.
   process.send(rig.clock, SetTime(t0 + forty_days))
   let assert Ok(0) = project_host.compact(handle)
-  assert board_text(handle) == shown
+  assert steady_text(handle) == shown
 
   stop(handle)
   let again = start(rig)
-  assert board_text(again) == shown
+  assert steady_text(again) == shown
   let assert Ok(card) =
     project_host.read(again, tools.TriggerCard(model.TriggerId("a")))
   assert string.contains(json.to_string(card), "fix a, carefully")

@@ -46,6 +46,7 @@ fn trees(rig: worktree_rig.Rig) -> Worktrees {
         ledger_path: rig.ledger_path,
         helper_path: here <> "/../sandbox/loom-exec",
         credentials: [node_cookie(rig)],
+        path: "",
         demand: exec.PlatformEnforcement,
         logger: log.discard(),
       ),

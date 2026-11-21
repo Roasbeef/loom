@@ -557,3 +557,162 @@ which a person must publish; and a follow-up that only a bot or a non-addressing
 longer reaches the worker it was about. A person who wants the worker to act on such text addresses the
 agent on the thread, which is an explicit trigger.
 
+
+## Addendum: the template (2026-11-02)
+
+**Affects**: one new `[project]` key, `setup`, and a new row on a project's board; one new host ledger
+record pair, `template_built` and `template_failed`, and one new effect-row kind, `template`, which a
+reader that predates them settles as an unknown job and reads as no template. `projects.retry` accepts
+the ticket name `setup`. The check's `PATH` is the daemon's own. No engine event, no frozen interface
+and no wire field changes.
+
+**The problem.** Measured on a real Loom task, a check ran in a fresh clone with a fixed `PATH`, `HOME`
+set to a directory in the tree, and the network off. `go` was not found, the system `python3` was too old,
+and neither hex packages, Go modules nor Git dependencies could be fetched. The check has to stay offline,
+because it runs code a worker wrote. A worker's clone was also a 228 MiB `git clone --no-hardlinks` each.
+
+**What was considered.** Turning the network on for the check: rejected, because a worker's code would
+then run with the network on and with the repository's own secrets in reach. A shared dependency cache
+outside the trees that every check mounts read-only: rejected, because the cache has to be filled by
+something with the network on, which is the same step, and a mount of the host's cache into a jail widens
+what the jail reads. Fetching in the clone before the worker starts: rejected, because it runs the
+repository's scripts in a tree the worker is about to write. Decided: a template.
+
+**The decision.** `setup`, an optional command of at most 4096 bytes, is run once per base commit by the
+host, on a clean checkout of the recorded base that the host cut from `host.git`, in the check's jail with
+the network on. The jail is the check's with two differences: the network is on and the CPU, wall and file-size
+limits are lifted (the caller's timeout is the wall), with memory raised to 8 GiB and processes to 4096.
+Its only writable root is the tree, `HOME` is `<tree>/.loom-check-home`, `TMPDIR` is `$HOME/tmp` (the jail
+leaves no other place to write, so a toolchain's work directory goes there), the state-root
+and credential masks apply as for a check, and the environment carries only the daemon's `PATH` and the
+check's fixed variables. Then `check` runs once on the same tree with the network off, to show it passes on
+the clean base. Only then is the tree renamed to `<state>/projects/<id>/template`. It is a normal
+non-bare repository holding no linked worktree, alternates file or link under `.git`, and its
+`.git/config` holds only what `git init` writes, because it was made by fetching one commit from
+`host.git` by path: no remote, no URL, no credential helper. It is masked from sessions and checks as
+`host.git` is.
+
+Each worker clone and each check tree is `git-cow copy <template> <dest>`, or `cp -RPp` when no
+`git-cow` is found or it fails for any reason but refusing the template, moved to its commit by a fetch
+from `host.git` and a checkout that keeps ignored files. Exit 2 from `git-cow` is a refusal of the
+template and is an error. The copy runs in the sandbox, writable only in the destination's parent. A
+copy of a template carries no credential, and nothing a worker writes reaches the template, `host.git` or
+the owner's `.git`. Files the build left untracked are listed in the template's `.git/info/exclude`, so
+a clone reads clean.
+
+The daemon's own `PATH`, read once when the machine is read, is what `setup` and `check` see. The system
+directories are the fallback when it has none. A worker's tools get it too, after the owner's
+`[tools] path` (see the addendum on failed checks).
+
+The lifecycle is a pure state in the project actor: preparing, ready at a commit, failed, or base check red.
+A build is one durable `template` row run in a weft task, its two outcomes are host records, and replay
+rebuilds the state. A new assignment waits, its attempts untouched, until the template is ready, so
+tickets queue and nothing fails. If `setup` or the base check fails, no worker starts and the board's
+sources list carries a row for the setup that says it is the project's setup and not any ticket, with the
+last 4000 characters of the output. The base is looked at every ten minutes and rebuilt only if it
+moved, in a new directory swapped in on success, so a failed rebuild keeps the last good template and shows a
+note. A build interrupted by a crash is cleaned up and redone, and a swap that stopped between its two
+renames is undone before anything else.
+
+**What it costs.** A dependency change in a worker's commit is not fetched: the offline check fails,
+and a person decides. `setup` runs the repository's own scripts with the network on, jailed: it can
+read what the host reads minus the masks, write only the template, and reach any host on the network, so
+reading `setup` is reading the build file of a repository about to be run. A rebuild uses CPU and disk, up
+to one per ten minutes. A copy that is reading the old template while a rebuild swaps it can fail, and the
+ticket tries again. Build output that is not ignored by the repository is excluded from the clone's
+`git status`, so a worker's file at one of those paths is invisible to the host's clean test. The template
+is a second copy of the build on disk, and the copies are cheap only where `git-cow` can clone.
+What `setup` writes must also be relocatable: the base check runs at `.template.making` and the copies
+run elsewhere, so an absolute path that `setup` bakes into its output (a virtual environment's shebang
+lines, say) names the build directory and breaks in every copy. A `setup` that changes a tracked file
+(a lockfile a package manager rewrote) fails the build, because no exclude hides that change from a copy.
+
+## Addendum: a failed check is seen, and never sticks (2026-11-02)
+
+**Scope.** One new stage, `person/check`. One new action, `recheck`, and one new command,
+`projects.recheck`. A fuller `check` object on the ticket. A new engine event `RecheckRequested`, a
+`cause` on the check result event, and two ticket fields in the snapshot (`rejected` and
+`failed_heads`). A `at_ms` field on the host's check record. The mutating ticket commands answer a
+refusal in the project's own words. The `check` object, the stage and the action are additions that a
+reader which predates them ignores or keeps as text, and no frozen interface changes.
+
+**The problem.** Measured in a real run, a check failed on a worker's commit and the board read "Nothing
+needs you" with the ticket `idle`. The failure was in the worker's inbox and the ledger and nowhere a
+person looks. The note led the worker to treat a missing `go` as its own bug: about forty model calls
+over twenty minutes, ending in a question that came to "run it again with go on PATH". When a person
+answered, the same commit was seen again, the engine had already checked it and queued nothing, and the
+ticket sat at `idle`. `projects.publish` existed on the wire and neither `loom project` nor the terminal
+board offered it.
+
+**What was considered.** Reusing `person/review` for a failed check: rejected. That stage stands on a
+readiness (`AwaitingReview`, or a vouched commit with a pull request) that a failed check never reaches,
+and a review is the question of whether to publish work that passed or was never checked, so two
+meanings would share a word. Reusing `person/blocked`: rejected, since that is the worker's own report.
+Checking the same commit again by itself after a person answers: rejected, since nothing about the
+commit or the check's environment has changed and the result would repeat; a person re-runs it when they
+have changed something. Counting failing heads in the host: rejected, because the stage has to know
+whether the worker was sent back, and a decision that the stage depends on belongs in the ledger with the
+failure. A `Bool` for "the worker was sent back": rejected for a two-word type.
+
+**The decision.**
+
+- `stage.of` gets row 6, `person/check`: the check failed at the head (readiness still `InProgress`,
+  the rejection's commit is the head) and nobody is handling it. A session on its way, a worker at work
+  and a worker that was just sent back to the failure each count as somebody, and the stage is then
+  `queued` or `working`. Rows 1 to 5 still outrank it, so a question, a failed delivery or a worker's
+  own `blocked` or `failed` report is shown first. `person/check` needs a person, ranks beside
+  `person/review`, and is drawn by clients that predate it as an unknown `person/` stage.
+- A rejection carries its `cause` (`test` or `environment`) and its `handling` (`worker` or `person`).
+  The host classifies the cause from the exit status and the output: status 126 or 127, or output naming
+  `command not found` or `executable file not found`, is the environment. The engine decides the handling:
+  `worker` only for a test failure with a live assignment and at most `work.max_failing_heads` (3)
+  different heads failed in a row on the ticket. A fourth head is the person's. The count restarts on a
+  pass, on a person's answer and on a person's re-run, and a re-run of the same commit is not another
+  head. The host sends the worker its note only when the engine says `worker`. The worker's first report
+  after the note ends the status, so a worker that comes back idle at the same commit reads
+  `person/check`, and one that reports progress reads `working`.
+- `recheck` is listed when the check failed at the head, or gave no result for it. Its event clears the
+  record of the failure while the check runs, marks the head as asked for, and asks the host to run the
+  check on that commit. Clearing the record keeps the action from being listed twice before the verdict.
+  The same commit seen again after a person's answer is not checked again by itself; the ticket reads
+  `person/check` with `recheck`, `publish`, `close` and `stop` listed, and `retry` when no session is live.
+- A stage `idle` is no longer shown for a session that a person has just spoken to: such a worker has been
+  handed work and reads `working` until it reports. This is the same fix, for the answer case.
+- The ticket's `check` is `null` before the host judges the head and otherwise
+  `{commit, outcome, at_ms, command, output, cause, handling, note}`. `outcome` adds `unfinished` (no
+  result) and `waiting` (the project's template has no base check proof, so the commit was not run
+  against it). `at_ms`, `command` and `output` are from the host's record of the run for that commit and are
+  absent when there is none; `output` is the last 4000 characters, led by the exit status, and is external
+  text. `cause` and `handling` are present for `failed`. `note` is the host's sentence for `unfinished` and
+  `waiting`.
+- With a template, a check is run only when the template is ready, that is, when its own check passed on the
+  clean base. Otherwise the worker's commit is not run against it. The row waits, neither settled nor
+  deferred, as a session start does, and the ticket's `check` says `waiting` with the template's note.
+- The note to the worker says, with a template, that the same check passed on the clean base at the
+  base commit, that it runs offline with the project's prepared dependencies and cannot fetch anything, that
+  a change needing other dependencies cannot pass it and is a question for a person, and not to install tools
+  or change the environment. With no template it says the environment was never shown to work and to report
+  an environment error to a person with a question. The words outside the fence are the host's. The
+  check's output stays inside the fence as data, as before. No thread text reaches the note.
+- `projects.recheck` (`project`, `ticket`) replies an echo. `projects.stop`, `close`, `retry`, `recheck`
+  and `publish` answer a refusal as `bad_request` with the host's own sentence in `message`, where they
+  answered the generic one. `publish` is refused while `[project].publish` is `off`, in words, as before.
+  `loom project` gains `publish`, `retry`, `recheck`, `close`, `stop` and `answer`, each naming a ticket,
+  and the terminal board gains `k` (check again), `P` (publish) and `x` (stop) on a ticket page. A publish
+  says when it went past a failed check or without a passing one. Inferred work is still published only by
+  a person.
+- A worker's tools see the daemon's `PATH`. `tool_environment` carries the owner's `[tools] path`, then the
+  daemon's own `PATH`, then the system directories, for every session, so the check and the worker find
+  the same tools. The earlier addendum's sentence that a project's worker jails do not share the daemon's
+  `PATH` is withdrawn: a test now pins the order.
+
+**What it costs.** `person/check` is one more stage for a client to word. The engine state and snapshot
+gain two fields that read as their defaults from older documents, and the ledger's check record gains one.
+The environment heuristic reaches only what a check prints in words, so a missing library, a refused
+network call, a wrong tool version and output in another language still read as a test failure and go
+back to the worker. A test that prints `command not found` for its own reasons goes to a person, which
+costs a look. A person who re-runs a check twice before the first verdict arrives cannot, since the
+action leaves the list at once, but two re-runs on different clients in the same moment are two checks and
+the second verdict is stale. A ticket whose assignment ended without the host ever sending
+`AssignmentEnded` as exited or crashed (a sequence nothing produces) can still read `idle`, and the
+model-based test says so.

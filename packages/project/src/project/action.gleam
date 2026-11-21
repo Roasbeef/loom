@@ -14,6 +14,7 @@
 //// | `Answer` | `Answered` | the ticket is open and a question is open |
 //// | `Close` | `PersonClosed` | the ticket is open |
 //// | `Retry` | `RetryRequested` | the ticket is open, has no session and is not already in line for one |
+//// | `Recheck` | `RecheckRequested` | the check failed at the head, or gave no result for it (`state.recheckable`) |
 //// | `Publish` | `PersonPublished` | the ticket is open and has a head |
 //// | `Stop` | `PersonStopped` | the mandate stands |
 ////
@@ -36,6 +37,9 @@ pub type Action {
 
   /// Ask for a new worker.
   Retry
+
+  /// Run the check again on the commit it already judged.
+  Recheck
 
   /// Publish the ticket's head past the check.
   Publish
@@ -63,6 +67,7 @@ pub fn available(ticket: Ticket) -> List(Action) {
         && state.active_assignment(ticket) == None
         && ticket.demand == Satisfied,
     ),
+    #(Recheck, state.recheckable(ticket) != None),
     #(Publish, open && ticket.head != None),
     #(Stop, ticket.authority == Granted),
   ]
@@ -89,6 +94,7 @@ pub fn word(action: Action) -> String {
     Answer -> "answer"
     Close -> "close"
     Retry -> "retry"
+    Recheck -> "recheck"
     Publish -> "publish"
     Stop -> "stop"
   }

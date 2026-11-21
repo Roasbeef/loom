@@ -3193,6 +3193,7 @@ fn control(
             | protocol.AnswerQuestion(..)
             | protocol.CloseTicket(..)
             | protocol.RetryTicket(..)
+            | protocol.RecheckTicket(..)
             | protocol.RequeueTrigger(..)
             | protocol.SetProjectMode(..)
             | protocol.LabelTrigger(..)
@@ -3295,6 +3296,7 @@ fn control_use(command: protocol.Command) {
     | protocol.AnswerQuestion(..)
     | protocol.CloseTicket(..)
     | protocol.RetryTicket(..)
+    | protocol.RecheckTicket(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
     | protocol.LabelTrigger(..)
@@ -3560,7 +3562,7 @@ fn dispatch(
         project_post(control, project, request, text)
       })
     protocol.StopTicket(project, ticket) ->
-      project_command(config, principal, fn(control) {
+      project_command_in_words(config, principal, fn(control) {
         project_stop(control, project, ticket)
       })
     protocol.ProjectTicket(project, ticket) ->
@@ -3572,15 +3574,19 @@ fn dispatch(
         project_answer(control, project, ticket, seq, text)
       })
     protocol.CloseTicket(project, ticket) ->
-      project_command(config, principal, fn(control) {
+      project_command_in_words(config, principal, fn(control) {
         project_close(control, project, ticket)
       })
     protocol.RetryTicket(project, ticket) ->
-      project_command(config, principal, fn(control) {
+      project_command_in_words(config, principal, fn(control) {
         project_retry(control, project, ticket)
       })
+    protocol.RecheckTicket(project, ticket) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_recheck(control, project, ticket)
+      })
     protocol.PublishTicket(project, ticket) ->
-      project_command(config, principal, fn(control) {
+      project_command_in_words(config, principal, fn(control) {
         project_publish(control, project, ticket)
       })
     protocol.RequeueTrigger(project, trigger) ->
@@ -3725,14 +3731,14 @@ fn project_stop(
   control: project_start.Control,
   project: String,
   ticket: String,
-) -> Result(#(String, JsonValue), String) {
+) -> Result(#(String, JsonValue), Refused) {
   use handle <- result.try(
     project_book.get(control.book, project)
-    |> result.replace_error("not_found"),
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   use Nil <- result.map(
     project_host.stop_ticket(handle, ticket, "owner")
-    |> result.replace_error("bad_request"),
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
   )
   #("projects.stop", json.Object([#("ticket", json.String(ticket))]))
 }
@@ -3791,14 +3797,14 @@ fn project_close(
   control: project_start.Control,
   project: String,
   ticket: String,
-) -> Result(#(String, JsonValue), String) {
+) -> Result(#(String, JsonValue), Refused) {
   use handle <- result.try(
     project_book.get(control.book, project)
-    |> result.replace_error("not_found"),
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   use Nil <- result.map(
     project_host.close_ticket(handle, ticket, "owner")
-    |> result.replace_error("bad_request"),
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
   )
   #("projects.close", json.Object([#("ticket", json.String(ticket))]))
 }
@@ -3808,16 +3814,35 @@ fn project_retry(
   control: project_start.Control,
   project: String,
   ticket: String,
-) -> Result(#(String, JsonValue), String) {
+) -> Result(#(String, JsonValue), Refused) {
   use handle <- result.try(
     project_book.get(control.book, project)
-    |> result.replace_error("not_found"),
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   use Nil <- result.map(
     project_host.retry(handle, ticket, "owner")
-    |> result.replace_error("bad_request"),
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
   )
   #("projects.retry", json.Object([#("ticket", json.String(ticket))]))
+}
+
+/// The `projects.recheck` step: the owner asks for the check to run again on
+/// the commit it already judged. A ticket whose check has not failed or given
+/// no result at its head is `bad_request` with the engine's sentence.
+fn project_recheck(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  use Nil <- result.map(
+    project_host.recheck(handle, ticket, "owner")
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #("projects.recheck", json.Object([#("ticket", json.String(ticket))]))
 }
 
 /// The `projects.publish` step: the owner publishes a ticket's current commit
@@ -3828,14 +3853,14 @@ fn project_publish(
   control: project_start.Control,
   project: String,
   ticket: String,
-) -> Result(#(String, JsonValue), String) {
+) -> Result(#(String, JsonValue), Refused) {
   use handle <- result.try(
     project_book.get(control.book, project)
-    |> result.replace_error("not_found"),
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   use commit <- result.map(
     project_host.publish(handle, ticket, "owner")
-    |> result.replace_error("bad_request"),
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
   )
   #(
     "projects.publish",
@@ -5131,6 +5156,7 @@ fn dispatch_class(
     | protocol.AnswerQuestion(..)
     | protocol.CloseTicket(..)
     | protocol.RetryTicket(..)
+    | protocol.RecheckTicket(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
     | protocol.LabelTrigger(..)

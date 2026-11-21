@@ -76,8 +76,16 @@ pub type Config {
     credentials: List(String),
     /// Enforcement strictness for every call.
     demand: EnforcementDemand,
+    /// The `PATH` a project's setup and check see: the daemon's own, read once
+    /// when it started. Empty means the daemon had none, and the system
+    /// directories (`system_path`) stand in.
+    path: String,
   )
 }
+
+/// The directories a check finds its tools in when the daemon has no `PATH` of
+/// its own to give it.
+pub const system_path = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 /// A running sandboxed Git: the broker its calls clear through and the Git
 /// binary they name.
@@ -90,6 +98,7 @@ pub opaque type Git {
     state_root: String,
     credentials: List(String),
     demand: EnforcementDemand,
+    path: String,
     incarnation: Int,
   )
 }
@@ -264,6 +273,10 @@ pub fn start(config: Config) -> Result(Git, String) {
     state_root: config.state_root,
     credentials: config.credentials,
     demand: config.demand,
+    path: case config.path {
+      "" -> system_path
+      daemons -> daemons
+    },
     incarnation:,
   )
 }
@@ -281,7 +294,44 @@ pub fn start(config: Config) -> Result(Git, String) {
 /// // worktree_git.run(git, Run("/repo", [], ["status", "--porcelain=v1"]), 60_000)
 /// ```
 pub fn run(git: Git, call: Run, within_ms: Int) -> Result(Output, String) {
-  run_in(git, call, environment(), StoreSealed, within_ms)
+  run_in(
+    git,
+    git.program,
+    git_arguments(call),
+    call,
+    environment(),
+    StoreSealed,
+    within_ms,
+  )
+}
+
+/// Runs another program in the same sandbox, under the same policy as a Git
+/// call: the host readable with the state root masked, no network, and writes
+/// only where the call names. The host uses it for the copy of a template
+/// (`git-cow` or `cp`), which reads a tree that repository scripts wrote and
+/// so has to run as jailed as a Git that reads a worker's clone. The call's
+/// `arguments` are the program's whole argument list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_git.run_program(git, "/bin/cp", Run("/s/projects/p-1", ["/s/projects/p-1/tickets"], ["-Rp", "/s/projects/p-1/template", "/s/projects/p-1/tickets/t-a-1"]), 600_000)
+/// ```
+pub fn run_program(
+  git: Git,
+  program: String,
+  call: Run,
+  within_ms: Int,
+) -> Result(Output, String) {
+  run_in(
+    git,
+    program,
+    call.arguments,
+    call,
+    environment(),
+    StoreSealed,
+    within_ms,
+  )
 }
 
 /// Runs one Git invocation like `run`, with the node's state store readable.
@@ -303,7 +353,15 @@ pub fn run_reading_store(
   call: Run,
   within_ms: Int,
 ) -> Result(Output, String) {
-  run_in(git, call, environment(), StoreReadable, within_ms)
+  run_in(
+    git,
+    git.program,
+    git_arguments(call),
+    call,
+    environment(),
+    StoreReadable,
+    within_ms,
+  )
 }
 
 /// Reads the operator's global Git configuration through the sandbox and answers
@@ -339,13 +397,30 @@ pub fn read_global_config(
       list.key_set(kept, pair.0, pair.1)
     })
   let call = Run(directory: git.scratch, writable: [], arguments:)
-  run_in(git, call, environment, StoreSealed, within_ms)
+  run_in(
+    git,
+    git.program,
+    git_arguments(call),
+    call,
+    environment,
+    StoreSealed,
+    within_ms,
+  )
+}
+
+// Git's own argument list for a call: the flags that keep it from paging or
+// taking optional locks, then what the caller asked for.
+fn git_arguments(call: Run) -> List(String) {
+  ["--no-pager", "--no-optional-locks", ..call.arguments]
 }
 
 /// Runs one call under a given environment, which is also the allowlist the
-/// policy lets through.
+/// policy lets through. The program and its whole argument list are named by
+/// the caller, so a Git call and a template copy share one sandbox policy.
 fn run_in(
   git: Git,
+  program: String,
+  arguments: List(String),
   call: Run,
   environment: List(#(String, String)),
   store: StoreAccess,
@@ -367,12 +442,7 @@ fn run_in(
         grants: [],
         response: broker.RefuseNarrowed,
         demand: git.demand,
-        argv: [
-          git.program,
-          "--no-pager",
-          "--no-optional-locks",
-          ..call.arguments
-        ],
+        argv: [program, ..arguments],
         env: environment,
         cwd: call.directory,
         budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
@@ -381,7 +451,7 @@ fn run_in(
       waiting: within_ms,
     )
     |> result.map_error(fn(refusal) {
-      "the sandbox refused the Git call: " <> string.inspect(refusal)
+      "the sandbox refused the program: " <> string.inspect(refusal)
     }),
   )
 
@@ -592,14 +662,14 @@ fn capture_environment(call: Capture) -> List(#(String, String)) {
 /// it is for a session's tools, and the state root's secrets are masked
 /// (`workspace_policy.protecting_state_root`), so a check cannot read a
 /// session's store, the owner's token or the catalogue. Each project's host
-/// repository and ledger are masked as well (`protecting_project_files`),
-/// because a check is worker-authored code and part of its output goes back to
-/// the worker. The check trees are not, since the tree it runs in is one of
-/// them. The network is off. The
-/// only writable root is the tree, because a build writes its output there, and
-/// `HOME` is a directory inside it so a toolchain's cache has somewhere to go
-/// that is discarded with the tree. The environment is built here and carries
-/// nothing of the daemon's: no credential, no token.
+/// repository, template and ledger are masked as well
+/// (`protecting_project_files`), because a check is worker-authored code and
+/// part of its output goes back to the worker. The check trees are not, since
+/// the tree it runs in is one of them. The network is off. The only writable
+/// root is the tree, because a build writes its output there, and `HOME` is a
+/// directory inside it so a toolchain's cache has somewhere to go that is
+/// discarded with the tree. The environment is built here and carries nothing
+/// of the daemon's but its `PATH`: no credential, no token.
 ///
 /// ## Examples
 ///
@@ -607,11 +677,116 @@ fn capture_environment(call: Capture) -> List(#(String, String)) {
 /// // worktree_git.check_runner(git, "/state/worktrees/p1/chk-t-a-0123456789ab")
 /// ```
 pub fn check_runner(git: Git, directory: String) -> goalcheck.Runner {
+  runner(git, directory, policy.workspace_default(directory), policy.NetworkOff)
+}
+
+/// A runner for a project's `setup` command in the tree that becomes its
+/// template. It is the check's runner with the network on and the build's
+/// limits lifted, and nothing else widened: the host is readable with the
+/// state-root and credential masks applied, the only writable root is the
+/// tree, and `HOME` is a directory inside it, so every cache `setup` fills
+/// lands in the template.
+///
+/// The network is on because `setup` is the one step that fetches
+/// dependencies. It is safe to give it that only because of what runs: the
+/// tree is a clean checkout of the recorded base commit, made by the host, and
+/// no worker has written a byte of it. The runner is never built for a tree a
+/// worker touched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_git.setup_runner(git, "/state/projects/p-1/.template.making")
+/// ```
+pub fn setup_runner(git: Git, directory: String) -> goalcheck.Runner {
+  let base = policy.workspace_default(directory)
+  runner(
+    git,
+    directory,
+    policy.SandboxPolicy(
+      ..base,
+      limits: policy.Limits(
+        ..base.limits,
+        cpu_s: 0,
+        wall_s: 0,
+        fsize_bytes: 0,
+        mem_bytes: setup_mem_bytes,
+        pids: setup_pids,
+      ),
+    ),
+    policy.NetworkFull,
+  )
+}
+
+/// The directory a check or a setup uses as `HOME`, inside its tree, so that
+/// whatever a toolchain caches there is discarded with the tree or kept with
+/// the template.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert worktree_git.home_of("/s/projects/p-1/template") == "/s/projects/p-1/template/.loom-check-home"
+/// ```
+pub fn home_of(directory: String) -> String {
+  directory <> "/.loom-check-home"
+}
+
+/// Makes a tree's `HOME` and the `TMPDIR` inside it, in the sandbox. The jail
+/// makes the tree the only place a command may write, so `/tmp` is not one,
+/// and a toolchain that makes a work directory there (Go does) fails unless
+/// `TMPDIR` names a directory that exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_git.prepare_home(git, "/s/projects/p-1/.template.making")
+/// ```
+pub fn prepare_home(git: Git, directory: String) -> Result(Nil, String) {
+  use output <- result.try(run_program(
+    git,
+    "/bin/mkdir",
+    Run(directory:, writable: [directory], arguments: [
+      "-p",
+      home_of(directory) <> "/tmp",
+    ]),
+    query_within_ms,
+  ))
+
+  // A zero exit means both directories stand, and `mkdir -p` makes no
+  // complaint about one that was already there.
+  case output.code {
+    0 -> Ok(Nil)
+    code ->
+      Error(
+        "the check's home was not made: mkdir exited " <> int.to_string(code),
+      )
+  }
+}
+
+// The memory and process ceilings of a setup. A first build compiles a whole
+// project and starts a process or a thread per core, so the check's 2 GiB and
+// 512 would stop it half way. The wall is the caller's own timeout: the base
+// leaves it at zero, which lets the call's requirement set it, where a base of
+// 600 s would refuse any setup that asked for longer.
+const setup_mem_bytes = 8_589_934_592
+
+const setup_pids = 4096
+
+/// The runner a check and a setup share. They differ in the network and the
+/// limits, which the caller chooses, and in nothing the masks or the
+/// environment cover.
+fn runner(
+  git: Git,
+  directory: String,
+  start: policy.SandboxPolicy,
+  network: policy.NetworkPolicy,
+) -> goalcheck.Runner {
   let #(op_id, _) =
     ids.mint_op(ids.generator(wall_clock(), seed: random_seed()))
   let environment = [
-    #("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"),
-    #("HOME", directory <> "/.loom-check-home"),
+    #("PATH", git.path),
+    #("HOME", home_of(directory)),
+    #("TMPDIR", home_of(directory) <> "/tmp"),
     #("LANG", "C"),
     #("LC_ALL", "C"),
     #("GIT_CONFIG_NOSYSTEM", "1"),
@@ -620,9 +795,9 @@ pub fn check_runner(git: Git, directory: String) -> goalcheck.Runner {
   ]
   let base =
     policy.SandboxPolicy(
-      ..policy.workspace_default(directory),
+      ..start,
       readable_roots: ["/"],
-      network: policy.NetworkOff,
+      network:,
       env_allow: list.map(environment, fn(pair) { pair.0 }),
     )
     |> workspace_policy.protecting_state_root(git.state_root)

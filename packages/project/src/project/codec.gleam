@@ -15,6 +15,18 @@
 ////
 //// Only `gleam/json` and `gleam/dynamic/decode` are used, which keeps the
 //// package off the Erlang-only dependencies lint R6 forbids.
+////
+//// ## Flow
+////
+//// `encode` → `decode`
+////
+//// 1. `encode` writes an event as a tagged object, and `decode` reads one back
+////    totally.
+//// 2. `check_json` and `check_decoder` carry a check's result, rebuilding a
+////    pass through `host.passed` and reading a rejection's cause, which a
+////    ledger written before it was kept reads as a test failure.
+//// 3. `report_json`, `reason_json` and `routing_json`, with their decoders, are
+////    the pieces the snapshot reuses.
 
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
@@ -198,6 +210,11 @@ fn to_json(incoming: Event) -> Json {
       ])
     event.PersonClosed(ticket, by) ->
       tagged("person_closed", [
+        ticket_field(ticket),
+        #("by", json.string(by.value)),
+      ])
+    event.RecheckRequested(ticket, by) ->
+      tagged("recheck_requested", [
         ticket_field(ticket),
         #("by", json.string(by.value)),
       ])
@@ -406,6 +423,11 @@ fn closing_decoder(tag: String) -> Decoder(Event) {
       use ticket <- decode.field("ticket", ticket_id())
       use by <- decode.field("by", principal())
       decode.success(event.PersonClosed(ticket, by))
+    }
+    "recheck_requested" -> {
+      use ticket <- decode.field("ticket", ticket_id())
+      use by <- decode.field("by", principal())
+      decode.success(event.RecheckRequested(ticket, by))
     }
     "retry_requested" -> {
       use ticket <- decode.field("ticket", ticket_id())
@@ -748,11 +770,12 @@ fn check_json(finished: CheckResult) -> Json {
         #("digest", json.string(host.command_digest(proof).value)),
         #("entry", json.string(host.entry(proof).value)),
       ])
-    event.CheckRejected(commit, digest) ->
+    event.CheckRejected(commit, digest, cause) ->
       json.object([
         #("result", json.string("rejected")),
         #("commit", json.string(commit.value)),
         #("digest", json.string(digest.value)),
+        #("cause", json.string(cause_word(cause))),
       ])
   }
 }
@@ -770,8 +793,41 @@ fn check_decoder() -> Decoder(CheckResult) {
       use entry <- decode.field("entry", text_decoder(EntryId))
       decode.success(event.CheckOk(host.passed(commit, digest, entry)))
     }
-    "rejected" -> decode.success(event.CheckRejected(commit, digest))
-    _ -> decode.failure(event.CheckRejected(commit, digest), "CheckResult")
+    "rejected" -> {
+      // A ledger written before the cause was recorded reads as a test
+      // failure, which is what every rejection then was.
+      use cause <- decode.optional_field(
+        "cause",
+        model.TestFailure,
+        cause_decoder(),
+      )
+      decode.success(event.CheckRejected(commit, digest, cause))
+    }
+    _ ->
+      decode.failure(
+        event.CheckRejected(commit, digest, model.TestFailure),
+        "CheckResult",
+      )
+  }
+}
+
+/// The word a failure cause has in the ledger and in a snapshot.
+pub fn cause_word(cause: model.FailureCause) -> String {
+  case cause {
+    model.TestFailure -> "test"
+    model.EnvironmentFailure -> "environment"
+  }
+}
+
+/// Reads a failure cause's word.
+pub fn cause_decoder() -> Decoder(model.FailureCause) {
+  use word <- decode.then(decode.string)
+
+  // Only the two words the encoder writes name a cause.
+  case word {
+    "test" -> decode.success(model.TestFailure)
+    "environment" -> decode.success(model.EnvironmentFailure)
+    _ -> decode.failure(model.TestFailure, "FailureCause")
   }
 }
 
