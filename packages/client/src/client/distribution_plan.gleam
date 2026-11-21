@@ -33,6 +33,22 @@
 //// orchestrator. An executor peers with every orchestrator that uses it. Every
 //// edge is symmetric, because a pin is checked by both ends of a connection.
 ////
+//// ## Orchestrator rows and relay terms
+////
+//// A static bundle of an orchestrator also writes an `[orchestrators.<name>]`
+//// row for every other orchestrator it peers with, because the plan already
+//// says they know each other and a daemon accepts a move only from an
+//// orchestrator it lists. A ledger bundle writes none, since a daemon that runs
+//// from a ledger derives them.
+////
+//// Letting another orchestrator start sessions here is a decision the plan
+//// cannot imply, since it needs a profile that the plan does not define and a
+//// place for the sessions. An orchestrator node says it with a `spawners.<name>`
+//// table, where `<name>` is another orchestrator in the plan: the `profile`
+//// that seeds its sessions and the `executor` and `workspace` they run in. The
+//// bundle then writes `[spawners.<name>]` and the `[spawners.<name>.top_level]`
+//// table that lets that orchestrator's page start and read sessions here.
+////
 //// ## The directory
 ////
 //// A plan may list, under a top-level `directory`, the nodes that form the
@@ -42,6 +58,19 @@
 //// Every member peers with every other member, because any member may become
 //// the cluster's leader, and each member's bundle carries a `[directory]` table
 //// naming all of them.
+////
+//// ## Flow
+////
+//// `parse` reads the plan into a neutral tree (`toml_tree` or `json_tree`),
+//// decodes it (`plan_of`, `node_of`) and checks it with `validate`.
+////
+//// 1. `validate` checks each node on its own with `check_node`, which judges the
+////    keys its role allows (`valid_role_keys`) and each spawner
+////    (`valid_spawner`).
+//// 2. It then checks what involves more than one node: `unique_nodes`,
+////    `references_executors`, `references_spawners`, `valid_peers` and
+////    `valid_directory`.
+//// 3. `peers` and `used_executors` are what provisioning reads afterwards.
 
 import client/distribution
 import gleam/dict.{type Dict}
@@ -105,6 +134,25 @@ pub type Node {
     executors: List(String),
     /// The workspaces an executor registers. Empty for an orchestrator.
     workspaces: List(Workspace),
+    /// The orchestrators allowed to start sessions here, in name order. Empty
+    /// for an executor and for an orchestrator that admits none.
+    spawners: List(Spawner),
+  )
+}
+
+/// What an orchestrator lets another orchestrator start on it: the
+/// `[spawners.<name>]` table of its bundle and the `top_level` table below it.
+pub type Spawner {
+  Spawner(
+    /// The spawning orchestrator's plan name.
+    name: String,
+    /// The `[profiles.<name>]` key that seeds its sessions. The plan does not
+    /// define it, so the operator's configuration has to.
+    profile: String,
+    /// The executor its sessions run on, one that this node uses.
+    executor: String,
+    /// The workspace registered on that executor.
+    workspace: String,
   )
 }
 
@@ -228,6 +276,7 @@ pub fn validate(plan: Plan) -> Result(Plan, String) {
   use Nil <- result.try(
     list.try_each(plan.nodes, references_executors(plan, _)),
   )
+  use Nil <- result.try(list.try_each(plan.nodes, references_spawners(plan, _)))
   use Nil <- result.try(list.try_each(plan.nodes, valid_peers(plan, _)))
   use Nil <- result.try(valid_directory(plan))
   Ok(plan)
@@ -519,7 +568,7 @@ fn plan_of(tree: Tree) -> Result(Plan, String) {
 
 const node_keys = [
   "name", "role", "erlang_node", "host", "listen_port", "bundle_dir",
-  "executors", "workspaces",
+  "executors", "workspaces", "spawners",
 ]
 
 /// Decodes an individual node table definition from the plan Tree.
@@ -540,6 +589,7 @@ fn node_of(tree: Tree, index: Int) -> Result(Node, String) {
   use bundle_dir <- result.try(optional_text(fields, "bundle_dir", place))
   use executors <- result.try(optional_names(fields, "executors", place))
   use workspaces <- result.try(optional_workspaces(fields, place))
+  use spawners <- result.try(optional_spawners(fields, place))
   Ok(Node(
     name:,
     role:,
@@ -549,6 +599,7 @@ fn node_of(tree: Tree, index: Int) -> Result(Node, String) {
     bundle_dir:,
     executors:,
     workspaces:,
+    spawners:,
   ))
 }
 
@@ -644,6 +695,36 @@ fn optional_workspaces(
         }
       })
     Ok(_) -> Error(place <> ": workspaces must be a table of name = \"root\"")
+  }
+}
+
+// The spawners are a table of orchestrator name to the terms. They are read in
+// name order, as the workspaces are, so a plan and a bundle made from it list
+// them the same way every time.
+/// Decodes the optional `spawners` tables of an orchestrator node.
+fn optional_spawners(
+  fields: Dict(String, Tree),
+  place: String,
+) -> Result(List(Spawner), String) {
+  case dict.get(fields, "spawners") {
+    Error(Nil) -> Ok([])
+    Ok(Fields(entries)) ->
+      dict.to_list(entries)
+      |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+      |> list.try_map(fn(entry) {
+        let here = place <> ": spawners." <> entry.0
+        use terms <- result.try(table(entry.1, here))
+        use Nil <- result.try(known_keys(
+          terms,
+          ["profile", "executor", "workspace"],
+          here,
+        ))
+        use profile <- result.try(text_key(terms, "profile", here))
+        use executor <- result.try(text_key(terms, "executor", here))
+        use workspace <- result.try(text_key(terms, "workspace", here))
+        Ok(Spawner(name: entry.0, profile:, executor:, workspace:))
+      })
+    Ok(_) -> Error(place <> ": spawners must be a table of tables")
   }
 }
 
@@ -757,10 +838,14 @@ fn valid_host(place: String, host: String) -> Result(Nil, String) {
 /// Validates that node keys are compatible with the node's assigned role.
 fn valid_role_keys(node: Node, place: String) -> Result(Nil, String) {
   // Check key compatibility based on whether node is an orchestrator or executor.
+  //
+  // The spawners belong to an orchestrator, so each role refuses the other's
+  // keys and an orchestrator's spawners are judged one by one.
   case node.role {
     Tool -> Error(place <> ": a plan holds daemons, and a tool is not one")
-    Orchestrator ->
-      case node.workspaces {
+    Orchestrator -> {
+      // An orchestrator registers no workspaces.
+      use Nil <- result.try(case node.workspaces {
         [] -> Ok(Nil)
         _ ->
           Error(
@@ -768,8 +853,22 @@ fn valid_role_keys(node: Node, place: String) -> Result(Nil, String) {
             <> ": workspaces belong on an executor, and this node is an "
             <> "orchestrator",
           )
-      }
+      })
+
+      list.try_each(node.spawners, valid_spawner(node, _))
+    }
     Executor -> {
+      // An executor admits no spawner.
+      use Nil <- result.try(case node.spawners {
+        [] -> Ok(Nil)
+        _ ->
+          Error(
+            place
+            <> ": spawners belong on an orchestrator, and this node is an "
+            <> "executor",
+          )
+      })
+
       // Ensure executor nodes do not specify orchestrator-specific executor lists.
       use Nil <- result.try(case node.executors {
         [] -> Ok(Nil)
@@ -807,6 +906,74 @@ fn valid_role_keys(node: Node, place: String) -> Result(Nil, String) {
       })
     }
   }
+}
+
+/// The rules of one spawner on its own: the grammar of its names, and an
+/// executor that the node uses. That the executor serves the workspace and that
+/// the spawner is an orchestrator of the plan need the other nodes, so
+/// `references_spawners` checks them.
+fn valid_spawner(node: Node, spawner: Spawner) -> Result(Nil, String) {
+  let place = "node " <> node.name <> ": spawners." <> spawner.name
+
+  // The first rule a spawner breaks names the refusal.
+  case
+    catalogue.is_orchestrator_name(spawner.name),
+    catalogue.is_profile_name(spawner.profile),
+    list.contains(node.executors, spawner.executor),
+    catalogue.is_workspace_name(spawner.workspace)
+  {
+    False, _, _, _ -> Error(place <> ": the name is not an orchestrator name")
+    _, False, _, _ ->
+      Error(place <> ": profile is not a profile name: " <> spawner.profile)
+    _, _, False, _ ->
+      Error(
+        place
+        <> ": executor \""
+        <> spawner.executor
+        <> "\" is not one of this node's executors",
+      )
+    _, _, _, False ->
+      Error(place <> ": workspace must be 1 to 128 bytes with no / and no NUL")
+    True, True, True, True -> Ok(Nil)
+  }
+}
+
+/// Verifies that each spawner of an orchestrator is another orchestrator of the
+/// plan and that the executor it is placed on registers the workspace.
+fn references_spawners(plan: Plan, node: Node) -> Result(Nil, String) {
+  list.try_each(node.spawners, fn(spawner) {
+    let place = "node " <> node.name <> ": spawners." <> spawner.name
+    let named = fn(name) {
+      list.find(plan.nodes, fn(other) { other.name == name })
+    }
+
+    // Decide whether the spawner and the executor are nodes of the right kind.
+    case named(spawner.name), named(spawner.executor) {
+      Ok(Node(role: Orchestrator, name:, ..)), Ok(Node(workspaces:, ..)) ->
+        case name == node.name {
+          True -> Error(place <> ": an orchestrator cannot spawn on itself")
+          False ->
+            case
+              list.any(workspaces, fn(each) { each.name == spawner.workspace })
+            {
+              True -> Ok(Nil)
+              False ->
+                Error(
+                  place
+                  <> ": executor \""
+                  <> spawner.executor
+                  <> "\" has no workspace \""
+                  <> spawner.workspace
+                  <> "\"",
+                )
+            }
+        }
+      Ok(_), _ ->
+        Error(place <> ": \"" <> spawner.name <> "\" is not an orchestrator")
+      Error(Nil), _ ->
+        Error(place <> ": \"" <> spawner.name <> "\" is not a node")
+    }
+  })
 }
 
 /// Verifies that node names, Erlang node identities, and host listener ports are distinct.
