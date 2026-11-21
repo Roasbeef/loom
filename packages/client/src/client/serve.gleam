@@ -3577,11 +3577,13 @@ fn seeding_of(
   case home, capture {
     There(..), _ ->
       agency.Seeding(
+        offer: agency.NotOffered,
         capture: fn() { Error(remote_workspace_refusal) },
         receive:,
       )
     Here(..), None ->
       agency.Seeding(
+        offer: agency.NotOffered,
         capture: fn() {
           Error(
             "this orchestrator cannot capture a workspace: it keeps no state store or has no sandboxed Git",
@@ -3591,6 +3593,7 @@ fn seeding_of(
       )
     Here(..), Some(capture) ->
       agency.Seeding(
+        offer: agency.Offered,
         capture: fn() { captured(capture, workspace, gate) },
         receive:,
       )

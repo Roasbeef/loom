@@ -14,7 +14,7 @@ and reaches the page), **PARTIAL** (some of it exists, or it exists but does not
    See Q3.
 2. **The home page and the sidebar already group sessions by "what needs you"** (Needs you / Working / Idle /
    Saved) from a polled `sessions.activity` read. But the page keeps only a four-word state and throws away
-   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:7542-6558`).
+   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:7569-6558`).
 3. **Project mode is already a coordinator.** One router session, worker sessions per ticket, a ledger, a
    board whose stages are literally "who acts next" (`person/answer`, `person/review`, `person/blocked`,
    `person/failed`), a worker question with an answer box, and GitHub PR creation and polling. The web home

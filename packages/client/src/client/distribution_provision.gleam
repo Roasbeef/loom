@@ -46,6 +46,7 @@ import client/executors
 import client/internal/ffi_pki
 import client/membership_provision
 import client/membership_signing
+import client/orchestrators.{type Orchestrator}
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
@@ -484,12 +485,46 @@ fn bundle(plan: Plan, entry: Issued, minted: Minted, trust: Trust) -> Bundle {
       executors.plain(row.name, row.erlang_node)
     }),
     workspaces: node.workspaces,
+    orchestrators: listed_orchestrators(plan, node, trust),
+    spawners: relays(plan, node),
     directory: listed_directory(plan, node, trust),
     ca: minted.authority,
     certificate: entry.certificate,
     key: entry.key,
     cookie: minted.cookie,
   )
+}
+
+/// The `[orchestrators.<name>]` rows of a static bundle: every other
+/// orchestrator the node peers with. The plan already says they know each other,
+/// and a daemon accepts a move only from an orchestrator it lists. A signed
+/// ledger bundle lists none, because a daemon that runs from a ledger derives
+/// them itself.
+fn listed_orchestrators(
+  plan: Plan,
+  node: Node,
+  trust: Trust,
+) -> List(Orchestrator) {
+  case trust, node.role {
+    distribution_bundle.StaticPeers(..), distribution_plan.Orchestrator ->
+      distribution_plan.peers(plan, node)
+      |> list.filter(fn(peer) { peer.role == distribution_plan.Orchestrator })
+      |> list.map(fn(peer) { orchestrators.plain(peer.name, peer.erlang_node) })
+    distribution_bundle.StaticPeers(..), _
+    | distribution_bundle.SignedLedger(..), _
+    -> []
+  }
+}
+
+/// The orchestrators the plan lets start sessions on a node, each with its node
+/// name. Both trust modes carry them, since a ledger never derives a spawner.
+fn relays(plan: Plan, node: Node) -> List(distribution_bundle.Relay) {
+  list.filter_map(node.spawners, fn(spawner) {
+    list.find(plan.nodes, fn(other) { other.name == spawner.name })
+    |> result.map(fn(other) {
+      distribution_bundle.Relay(spawner:, node: other.erlang_node)
+    })
+  })
 }
 
 /// Determines directory members included in a node bundle, providing members for static

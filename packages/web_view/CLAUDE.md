@@ -1410,8 +1410,12 @@ page keys and nonces, and the relay into the session's gateway.
   the page is the host that empties it. A prompt for another strand or
   session is named in the notice and not kept.
 - `ending.Ending` (`PageEnded`, `AccessRevoked`, `SessionStopped`,
-  `NotOpen`, `DaemonNotReady`, `LinkExpired`, `ConnectionFailed`): why a page
-  has no session, as a closed type. `PageEnded` means eight hours ran out, the
+  `NotOpen`, `DaemonNotReady`, `LinkExpired`, `ConnectionFailed`, and the relayed
+  page's `PeerUnreachable` and `PeerCrowded`): why a page
+  has no session, as a closed type. `OtherPage` is `page_grant`'s 403 for a live
+  page key whose grant names another page (a home key typed onto a session's
+  address); it is final and says the link was opened for a different page, not
+  that the page ended (protocol-change/051, the addendum of 2026-11-20). `PageEnded` means eight hours ran out, the
   daemon restarted, or the page was the oldest of `ending.max_pages` (four)
   when a newer link opened; a newer link ends nothing below that bound. `headline` and `advice(ending,
   session_id)` are fixed strings, so no peer, session or error text reaches

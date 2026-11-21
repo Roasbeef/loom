@@ -5362,6 +5362,27 @@ in that folder. A ticket at any other stage that needs a person
 The "Projects" folder lists both. This revises the addendum "project tickets on
 Home" (2026-11-18), which put every ticket under "Needs you".
 
+### A page key used on another page's address (2026-11-20)
+
+A page key is issued for the one page a link opened (a session, the home, or the
+admin page), and `page_grant` refuses a key whose grant names another scope with
+403. The refusal drew `PageEnded`, "This page has ended.", which is false: the key
+is live and its own page still opens. #1137's two-machine drive met it by opening
+the home from `loom ui --no-remember` and typing a session's address under the
+home's key. A login made with `--no-remember` reaches no other page by design, so
+the refusal is right and its words were wrong.
+
+`Ending` gains `OtherPage` (reason "the page key was issued for another page", socket
+close `Final`). Its headline is "This link was opened for a different page, not for
+this session." and its advice says that a page key opens only the page its link was
+made for and that `loom ui --no-remember` reaches no other page, with the command
+`loom ui --session <id>`. The home and admin pages never meet it, so they draw their
+generic connection failure for it. `ending_test` and `ui_route_test`
+(`a_home_key_on_a_session_address_says_it_is_another_page_test`,
+`a_session_key_on_another_sessions_address_says_it_is_another_page_test`) pin it.
+The status stays 403, which `a_ticket_of_the_other_scope_is_refused_and_spent_test`
+already pinned for the exchange.
+
 ## Addendum: the passkey routes (2026-11-20)
 
 [127](127-passkey-sign-in.md) adds four routes and two assets to the web view.

@@ -15,6 +15,7 @@ import client/remote/scope
 import client/roster
 import client/session_importer
 import client/session_move
+import client/spawners
 import core/clock
 import core/ids
 import gleam/bit_array
@@ -94,6 +95,7 @@ fn rig(label: String, listed: List(executors.Executor)) -> Rig {
       domain_configuration: "",
       clock: clock.fixed(at: 5000),
       orchestrators: roster.fixed([orchestrators.plain("alpha", alpha_node)]),
+      spawners: [],
       executors: roster.fixed(listed),
       logger: log.discard(),
     ),
@@ -553,6 +555,7 @@ pub fn a_repeat_of_a_committed_move_is_accepted_whatever_the_sender_is_called_no
     session_importer.Context(
       ..rig.context,
       orchestrators: roster.fixed([orchestrators.plain("charlie", alpha_node)]),
+      spawners: [],
     )
   assert session_importer.activate(renamed, request) == session_move.Accepted
 
@@ -974,6 +977,7 @@ pub fn a_member_that_owns_the_record_never_refuses_the_import_test() {
       ..recorded(rig, book),
       executors: roster.fixed([]),
       orchestrators: roster.fixed([]),
+      spawners: [],
     )
 
   // The session is its own by the record, so the import that cannot finish is
@@ -1061,5 +1065,109 @@ pub fn a_member_without_a_quorum_cannot_decide_test() {
   assert manager.get(rig.registry, copy.session)
     == Error(manager.Catalogue(catalogue.Missing))
   assert simplifile.is_file(waiting(rig, copy, op)) == Ok(True)
+  finish(rig)
+}
+
+// --- a moved session and the sender's page ----------------------------------
+
+// The text of a configuration in which `alpha`'s node is also a spawner, with or
+// without the `top_level` table that lets its page start and read sessions.
+fn alpha_spawner(table: String) -> List(spawners.Spawner) {
+  let text = "
+[distribution]
+node = \"box@10.0.0.9\"
+ca = \"/etc/loom/ca.pem\"
+certificate = \"/etc/loom/cert.pem\"
+key = \"/etc/loom/key.pem\"
+cookie = \"/home/loom/.erlang.cookie\"
+
+[[distribution.peers]]
+node = \"alpha@10.0.0.1\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000001\"
+
+[[distribution.peers]]
+node = \"runner@10.0.0.7\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000003\"
+
+[executors.box]
+node = \"runner@10.0.0.7\"
+
+[models.base]
+dialect = \"anthropic\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"base-model\"
+context_window = 1000
+max_output_tokens = 100
+
+[roles]
+main = [\"base\"]
+
+[profiles.alt.roles]
+main = [\"base\"]
+
+[spawners.alpha]
+node = \"alpha@10.0.0.1\"
+directory = \"/srv/loom/scratch\"
+profile = \"alt\"
+" <> table
+  let assert Ok(configured) = spawners.parse(text) as "the spawner table parses"
+  configured
+}
+
+// A session another orchestrator moved here is reachable by the page of the
+// spawner on that orchestrator's node, because it was that page's own session
+// until the move. The row is the one a create leaves, so every door a created
+// session has opens it, and a resent activation leaves the one row.
+pub fn a_moved_session_is_reachable_by_the_senders_page_test() {
+  let rig = rig("reachable", box())
+  let context =
+    session_importer.Context(
+      ..rig.context,
+      spawners: alpha_spawner(
+        "\n[spawners.alpha.top_level]\nexecutors = [\"box\"]\n",
+      ),
+    )
+  let copy = cut(rig, 20, clean())
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+  assert manager.relayed_of(rig.registry, copy.session) == Ok(None)
+  assert session_importer.activate(context, activation(copy, op))
+    == session_move.Accepted
+
+  let assert Ok(Some(row)) = manager.relayed_of(rig.registry, copy.session)
+  assert row.spawner == "alpha"
+  assert row.session_id == copy.session
+  assert row.created_at == 5000
+  assert session_importer.activate(context, activation(copy, op))
+    == session_move.Accepted
+  assert manager.relayed_of(rig.registry, copy.session) == Ok(Some(row))
+  finish(rig)
+}
+
+// The page reaches only what its own owner sent. A spawner whose node is not
+// the sender's, or whose table has no `top_level`, gets no row, so the
+// session stays the box's own.
+pub fn a_moved_session_stays_private_without_a_page_for_the_sender_test() {
+  let rig = rig("private", box())
+  let off = session_importer.Context(..rig.context, spawners: alpha_spawner(""))
+  let copy = cut(rig, 21, clean())
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+  assert session_importer.activate(off, activation(copy, op))
+    == session_move.Accepted
+  assert manager.relayed_of(rig.registry, copy.session) == Ok(None)
+
+  let other =
+    session_importer.Context(
+      ..rig.context,
+      spawners: list.map(
+        alpha_spawner("\n[spawners.alpha.top_level]\nexecutors = [\"box\"]\n"),
+        fn(held) { spawners.Spawner(..held, node: "other@10.0.0.2") },
+      ),
+    )
+  let second = cut(rig, 22, clean())
+  let second_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9f"
+  assert send(rig, second, second_op, 65_536) == session_move.Accepted
+  assert session_importer.activate(other, activation(second, second_op))
+    == session_move.Accepted
+  assert manager.relayed_of(rig.registry, second.session) == Ok(None)
   finish(rig)
 }

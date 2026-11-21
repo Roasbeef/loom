@@ -299,6 +299,7 @@ the last `@`.
 {"purpose": "run the integration suite",
  "brief": "Run make e2e on the box and report failures.",
  "on": "box",
+ "context": "fresh",
  "within_ms": 1800000,
  "result_schema": {"type": "object",
                    "properties": {"failed": {"type": "array"}},

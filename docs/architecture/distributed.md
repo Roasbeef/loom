@@ -764,6 +764,17 @@ each bundle (`loom-distribution-bundle/1`) lists its peers' pins, the key is
 dropped when `provision` returns, and adding a node or renewing a certificate
 means provisioning again and reinstalling every bundle.
 
+A static bundle of an orchestrator also writes `[orchestrators.<name>]` for each other
+orchestrator it peers with (`distribution_provision.listed_orchestrators`), because a daemon
+accepts a move only from an orchestrator it lists and the plan already says they know each
+other. A ledger bundle writes none, since the daemon derives them. Letting another
+orchestrator start sessions here is not implied by a plan: it needs a profile and a
+placement. A `[node.spawners.<name>]` table on an orchestrator node says it, with `profile`,
+`executor` and `workspace`, and the bundle then writes `[spawners.<name>]` and
+`[spawners.<name>.top_level]` (`distribution_bundle.config_tables`), in both trust modes. The
+profile must still be defined in the node's `[profiles.<name>]`, which the plan does not
+write.
+
 ## One tool call, end to end
 
 A remote call goes through four stages: the session open attaches once, each
@@ -1564,9 +1575,15 @@ the executor, the laptop's registration still names the old directory, and the r
 checkout is not built, so the laptop's activation refuses the session with a sentence that
 says its work is on the executor, that moving it back is not supported yet, that nothing
 moved, and that its commits are on the executor's branch `loom/<session>`. `loom sessions
-move` does not wait for the outcome, so the refusal appears in the source's daemon log as
-`daemon.move_aborted`; neither `loom sessions list --all` nor `loom deployment status`
-reports an aborted move, and the session simply stays where it was.
+move` waits up to seven seconds for the move to end (`session_movers.settle_wait_ms`),
+and a move that ended in that time as an abort is answered as a `not_movable` refusal
+carrying the receiver's sentence, so the command prints it and exits 1. The movers keep
+how the latest move of each session ended in memory (`session_movers.Settlement`), and
+`server.move_command` asks for it after the registry accepts the move. A move that is still
+going when the wait ends is answered as before, with its operation, and a refusal that
+comes later appears only in the source's daemon log as `daemon.move_aborted`. Neither
+`loom sessions list --all` nor `loom deployment status` reports an aborted move, and the
+session stays where it was.
 
 ### The executor fence
 
@@ -1988,6 +2005,14 @@ holds `offered`, asked at each spawn: it is true only in a session the owner
 holds alone (`manager.unshared_sessions`), and inviting a member makes the next
 spawn refuse.
 
+A tool call with `on` must name its `context` when the session could send its
+workspace (protocol-change/129). An omitted `context` decodes to
+`Provenance.Unstated`, and `agency.refuse_unstated_context` refuses it when
+`Seeding.offer` is `Offered`, telling the model to pass `my_workspace` or
+`fresh`. The caller cannot read the receiving spawner's `seed`, so it does not
+choose for the model. A call site that already has a stub is reconciled first and
+is never refused.
+
 **The stub is written first.** The holder admits a remote spawn: it checks the
 depth cap and the fan-out caps and writes `remote-child/{call site digest}`
 (`client/remote_child`), a reserved fact holding the orchestrator, the parent
@@ -2137,7 +2162,11 @@ same shape for delegate sessions).
 
 Every other message names a session, which must have a row for this spawner
 (`NotRelayed`). A session the owner started, or another spawner did, is
-unreachable by this door. A message about a saved session opens it first, within a
+unreachable by this door. A session this spawner moved here is reachable: the
+receiver of a move writes the row when the sender's node is a spawner with a
+`top_level` table, outside the two caps (protocol-change/108, the addendum on moved
+sessions), so the laptop's page opens a session that `loom sessions move` sent to the
+box the way it opens one it created. A message about a saved session opens it first, within a
 budget inside the laptop's seven seconds. A listing opens nothing: a saved session
 is listed idle with no requests, and its requests are read when the page opens it.
 A failed resident overview or a transitional instance refuses the listing rather
