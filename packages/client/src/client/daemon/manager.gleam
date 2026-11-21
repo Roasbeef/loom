@@ -1242,6 +1242,13 @@ pub type Import {
     /// The first-prompt subtitle the source showed, kept so a listing reads the
     /// same on this side.
     subtitle: Option(String),
+    /// The spawner whose page may read the session, because it came from that
+    /// spawner's orchestrator and the spawner has a `top_level` table. Its
+    /// relayed row commits with the import (protocol-change/108, the addendum on
+    /// moved sessions).
+    relay_to: Option(String),
+    /// The time the relayed row is stamped with, in Unix milliseconds.
+    relayed_at_ms: Int,
   )
 }
 
@@ -5001,12 +5008,14 @@ fn import_now(
   })
 
   use custody <- result.try(
-    domain.import_session(
+    domain.import_relaying(
       book.catalogue,
       incoming.registration,
       incoming.mapping,
       op: incoming.op,
       from: incoming.from,
+      relay_to: incoming.relay_to,
+      now_ms: incoming.relayed_at_ms,
     )
     |> result.map_error(AdminMetadata),
   )

@@ -1350,9 +1350,20 @@ fn answer(
       }
 
     // An activation hashes and opens a whole file. It runs apart from the
-    // port, so a lookup is not kept waiting behind it.
+    // port, so a lookup is not kept waiting behind it. The node it declares as
+    // its source selects the orchestrator row, and through it a spawner's page
+    // that may read the session, so it must be the node the message came from:
+    // a peer cannot name another orchestrator's node as its own.
     Activate(activation:, reply:) ->
-      detached(reply, fn(_node) { importer.activate(activation) })
+      detached(reply, fn(node) {
+        case activation.from_node == node {
+          True -> importer.activate(activation)
+          False ->
+            session_move.Refused(session_move.UnknownSource(
+              node: activation.from_node,
+            ))
+        }
+      })
 
     // The three subagent messages each run apart from the port. A spawn may
     // open a session, a join waits for up to 25 s, and a run end reaches into

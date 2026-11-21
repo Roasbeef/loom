@@ -478,6 +478,7 @@ pub fn a_plan_that_breaks_a_rule_of_the_ledger_is_refused_by_name_test() {
       bundle_dir: None,
       executors: used,
       workspaces: [],
+      spawners: [],
     )
   }
   let plan =

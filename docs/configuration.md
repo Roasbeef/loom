@@ -1318,11 +1318,21 @@ repo = "/home/me/src/loom"
 | `bundle_dir` | string | `<home>/.loom/distribution` | absolute path | Where that machine's credential files go. |
 | `executors` | list of strings | none | names of executor nodes | Orchestrators only. The executors this node uses. |
 | `workspaces` | table of name = root | none | name of 1 to 128 bytes with no `/`, absolute root | Executors only. The workspaces it registers. |
+| `spawners` | table of `<name>` tables, each with `profile`, `executor`, `workspace` | none | `<name>` is another orchestrator of the plan; `profile` is a profile name; `executor` is one of this node's `executors`; `workspace` is one that executor registers | Orchestrators only. Lets the named orchestrator start sessions here. The bundle writes `[spawners.<name>]` with that placement and profile, and a `[spawners.<name>.top_level]` table offering the same executor and profile, so the named orchestrator's page can start and read sessions here. The plan does not define the profile, so this node's `loom.toml` must have `[profiles.<profile>]`, or the daemon refuses its file. |
 
 Every orchestrator peers with the executors it uses and with every other
 orchestrator, and each executor peers with the orchestrators that use it, always in
 both directions. An executor that no orchestrator uses, and an orchestrator with no
 peer, are errors. Unknown keys are refused.
+
+A bundle made with `--static` also writes an `[orchestrators.<name>]` row on each
+orchestrator for every other orchestrator it peers with, using the plan's name and
+node, so a session can move between them with no edit. Those rows carry no
+`address` and no `checkout_executor`; a session that works in a directory still needs
+the two checkout keys added by hand, and a later install of a bundle that writes the same
+row refuses it without `--force`, which drops those keys. A ledger bundle writes no rows, because the daemon
+derives them from the ledger (see [Orchestrators that come from the
+ledger](#orchestrators-that-come-from-the-ledger)).
 
 A plan may also name, in a top-level `directory` list of node `name`s, the members
 of a session directory (`[directory]` above): three to seven distinct nodes,

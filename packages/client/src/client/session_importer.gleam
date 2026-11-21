@@ -54,6 +54,11 @@
 //// 7. The registry commits the registration, its mapping and the `imported` row
 ////    together and moves the copy into place in the same turn.
 ////
+////    When a `[spawners.<name>]` table with a `top_level` table has the sender's
+////    node (`page_of`), the same transaction writes a relayed row for it, so
+////    that spawner's page opens the session as it opens one it created
+////    (protocol-change/108, the addendum on moved sessions).
+////
 //// Every refusal is final for the sender, and it says why. A fault that is not
 //// a finding about the copy, such as a registry that did not answer, is a
 //// failure and the sender asks again.
@@ -80,6 +85,7 @@ import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict, Accepted, Failed,
   Refused,
 }
+import client/spawners.{type Spawner}
 import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
@@ -115,6 +121,11 @@ pub type Context(instance) {
     /// Read when an activation arrives, so one enrolled since the daemon
     /// started is recognised (protocol-change/086).
     orchestrators: Roster(Orchestrator),
+    /// The `[spawners.<name>]` tables, read once at start. A session that
+    /// arrives from the node of a spawner with a `top_level` table becomes
+    /// reachable by that spawner's page (protocol-change/108, the addendum on
+    /// moved sessions).
+    spawners: List(Spawner),
     /// The executors this daemon lists, one of which must hold the session.
     executors: Roster(Executor),
     /// Where the receiver writes down what it did.
@@ -784,6 +795,8 @@ fn import_it(
       context.state_root,
     )
 
+  let #(now_ms, _) = clock.read(context.clock)
+
   // The copy is renamed into place by the import, so its size is read first.
   let size = case simplifile.file_info(received) {
     Ok(info) -> Some(info.size)
@@ -801,6 +814,10 @@ fn import_it(
         from:,
         received:,
         subtitle: manifest.subtitle,
+        relay_to: option.from_result(
+          result.map(page_of(context, from), fn(held) { held.name }),
+        ),
+        relayed_at_ms: now_ms,
       ),
     )
   {
@@ -814,6 +831,25 @@ fn import_it(
       Error(Refused(session_move.Malformed(reason)))
     Error(other) -> Error(Failed(string.inspect(other)))
   }
+}
+
+// A session that came from the node of a spawner with a page here is the
+// owner's own session, which that page showed until the move. The registry
+// writes its relayed row in the transaction that records the import, so the
+// page opens it as it opens a session it created, through the same doors and
+// the same ceiling, and no later step can leave it unreachable.
+
+/// The spawner whose node is the node of the orchestrator `from`, when its table
+/// lets its page start and read sessions here.
+fn page_of(context: Context(instance), from: String) -> Result(Spawner, Nil) {
+  use origin <- result.try(orchestrators.find(
+    roster.rows(context.orchestrators),
+    from,
+  ))
+  use held <- result.try(spawners.by_node(context.spawners, origin.node))
+
+  option.to_result(held.top_level, Nil)
+  |> result.replace(held)
 }
 
 /// Says that the registry committed the session as imported, with the copy's

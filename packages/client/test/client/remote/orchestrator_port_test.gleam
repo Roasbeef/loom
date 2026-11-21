@@ -212,11 +212,17 @@ fn chunk(offset: Int, bytes: BitArray) -> session_move.Chunk {
   session_move.Chunk(session: "s1", op: "op1", offset:, total: 6, bytes:)
 }
 
+// An activation that declares the node it is sent from, which is this one:
+// the port judges the declaration against the node the message came from.
 fn activation() -> session_move.Activation {
+  declaring(atom.to_string(node.name(node.self())))
+}
+
+fn declaring(from_node: String) -> session_move.Activation {
   session_move.Activation(
     session: "s1",
     op: "op1",
-    from_node: "alpha@10.0.0.1",
+    from_node:,
     digest: "00",
     incarnation: 2,
     manifest: session_move.Manifest(
@@ -1802,4 +1808,28 @@ pub fn a_child_resolve_before_open_says_the_decision_was_not_sent_test() {
     |> remote_spawner.resolve_answer
   let assert Error(peer_mail.Refused(reason)) = answer
   assert string.contains(reason, "decision was not sent")
+}
+
+// The node an activation declares as its source picks the orchestrator row and,
+// through it, the spawner whose page may read the session. A peer that names a
+// node other than its own is refused before the importer sees anything.
+pub fn an_activation_declaring_another_nodes_name_is_refused_test() {
+  let seen = process.new_subject()
+  let port =
+    importing(seen, fn(_) {
+      process.send(seen, "activated")
+      session_move.Accepted
+    })
+  assert orchestrator_port.ask_activation(
+      port,
+      declaring("laptop@100.64.0.5"),
+      1000,
+    )
+    == Ok(
+      session_move.Refused(session_move.UnknownSource(node: "laptop@100.64.0.5")),
+    )
+  assert process.receive(seen, 0) == Error(Nil)
+  assert orchestrator_port.ask_activation(port, activation(), 1000)
+    == Ok(session_move.Accepted)
+  assert process.receive(seen, 0) == Ok("activated")
 }
