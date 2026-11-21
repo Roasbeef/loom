@@ -516,7 +516,7 @@ page keys and nonces, and the relay into the session's gateway.
   takes exactly the name field and the one more field the chosen target needs. The
   composer creates through `Start.create` with `creations.Private`, so the server
   re-checks the place, the profile and the model as the old form's did. The old form
-  and list stay reachable through "Show the full session list" until S4. The admin
+  and list stay reachable through the "All sessions" link above the composer's heading, which is drawn once a session exists. The admin
   page opens on the Machines tab (`admin.Part`), has the sidebar (`Start.machine`,
   `Start.activity`; `admin.sidebar_path`, whose clicks `admin_accepts` admits) and a
   machine's "Show its sessions", which narrows the sidebar in place.
@@ -1779,7 +1779,8 @@ and `create.Offered`'s submits all take it, and `home.offered_roles` checks both
 fields against the page's lists. Only the key string reaches the page; no URL,
 key variable, upstream identifier or pricing does. A key removed since the page
 opened is `creations.UnknownModel`, whose fixed words say to reload the page.
-- **Subagent limits disclosure (`protocol-change/113`).** When targeting the local daemon (`composer.Here`), `new_session.form` renders a collapsed-by-default `"Subagent limits"` toggle (`composer.LimitsDisclosure`, `ToggledLimits`) expanding `.limits-grid` inputs for `fan_out`, `session_strands`, `depth_mode` (`default` / `bounded` / `unlimited`), and `depth_cap`. `composer.parse_limits` validates via `core/agency_limits.validate`, refusing malformed or inconsistent inputs with `creations.InvalidLimits` before `Start.create` runs.
+- **Advanced limits disclosure (`protocol-change/113`).** When targeting the local daemon (`composer.Here`), `new_session.advanced` draws a collapsed-by-default "Advanced" button under the chips (`composer.LimitsDisclosure`, `ToggledLimits`) that expands `.limits-grid` with four labelled fields: "Subagents at once" (`fan_out`), "Subagents per session" (`session_strands`), "Nesting" (`depth_mode`: `default` / `bounded` / `unlimited`) and "Levels of nesting" (`depth_cap`), each showing the `core/agency_limits` default as its value. The fields sit outside the `<form id="new-session-form">` and belong to it through the `form` attribute, so the submit carries them and `new_session.fields_with_limits` is unchanged. `composer.parse_limits` validates via `core/agency_limits.validate`, refusing malformed or inconsistent inputs with `creations.InvalidLimits` before `Start.create` runs.
+- **First-run composer.** `new_session.Pane.history` (`NoSessions` / `HasSessions`) selects the heading ("Start your first session" and one line about what the sidebar will list, against the question), the "All sessions" link (drawn only with sessions), and `setup_note`, a grey note drawn only for a first run whose `Start.models` and `Start.profiles` are both empty. The page is told only the keys a `loom.toml` names, and a daemon with no file builds one catalogue entry from the `LOOM_*` variables that is not in that list, so an empty list does not prove a start would fail; the note says so and cites `docs/configuration.md`, and does not block Start. `new_session.readiness` holds Start (`Held("Choose a folder first.")`, reason beside it, `aria-describedby`) while no target is in force, since `composer.started` does nothing then. Knowing that no model is usable would need the daemon to tell the page, which is a protocol change.
 
 ## Sessions on an executor (protocol 078)
 
