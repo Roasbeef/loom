@@ -184,6 +184,7 @@ import host/endpoint
 import host/launch_metadata
 import mist
 import runtime/effects
+import session_view/operator
 import simplifile
 import storage/catalogue
 import telemetry/field
@@ -4616,6 +4617,7 @@ pub fn listen_serving(
     orchestrator_port.unreported(),
     None,
     fn(_) { None },
+    fn(_) { Error(Nil) },
   )
 }
 
@@ -4628,7 +4630,7 @@ pub fn listen_serving(
 /// ## Examples
 ///
 /// ```gleam
-/// // main.listen_moving(config, daemon, upgrade, peers, Some(ui), movers, reads, None, worktree)
+/// // main.listen_moving(config, daemon, upgrade, peers, Some(ui), movers, reads, None, worktree, gateway_of)
 /// ```
 @internal
 pub fn listen_moving(
@@ -4642,6 +4644,7 @@ pub fn listen_moving(
   reads: orchestrator_port.Reads,
   projects: Option(project_start.Control),
   worktree: fn(instance) -> Option(fn() -> Result(JsonValue, String)),
+  gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
 ) -> Result(Serving(instance), String) {
   use ready <- result.try(root.ready(daemon, within: 20_000))
   use domain_configuration <- result.try(captured_domain_configuration(
@@ -4651,6 +4654,14 @@ pub fn listen_moving(
   let routing =
     server.Config(
       worktree:,
+      strand_send: fn(registry, digest, epoch) {
+        // Every prompt the control socket delivers is a `Prompt`: an ask ends
+        // its run, so the strand is idle and the prompt starts the next one.
+        let send = ui_socket.strand_sender(registry, digest, epoch, gateway_of)
+        fn(session, strand, text) {
+          send(session, strand, text, operator.Prompt)
+        }
+      },
       daemon:,
       peer_endpoint:,
       domain_configuration:,
@@ -4927,6 +4938,7 @@ fn run(
           reads,
           projects,
           fn(resident: serve.Resident) { Some(resident.worktree) },
+          fn(resident: serve.Resident) { Ok(resident.gateway) },
         ),
       )
       publish_endpoint(config, serving, paths, fence)

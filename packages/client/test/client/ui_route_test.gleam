@@ -249,6 +249,7 @@ fn fixture_lasting_with_root(
   let config =
     server.Config(
       worktree: fn(_) { None },
+      strand_send: daemon_server_test.refusing_strand_send,
       peer_endpoint: fn(_) { None },
       daemon:,
       domain_configuration: "",
