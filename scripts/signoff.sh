@@ -37,7 +37,10 @@
 #                            some of those builds read a Go build-cache
 #                            object that was zero from some offset on;
 #                            now no lane compiles the helper.
-#   client                   scripts/check.sh client tui, then
+#   client                   scripts/check.sh client in three shards, one
+#                            after another (the shards hosted CI runs, each
+#                            under test.sh's own 1200 s bound), then
+#                            scripts/check.sh tui, then
 #                            scripts/e2e_client_bootstrap.sh: the native
 #                            TUI bootstrap and the shipped-daemon fixtures.
 #                            The long pole, and sequential on purpose: the
@@ -172,8 +175,21 @@ if ! $retry make codemode-seed build binaries server-shipment 2>&1 | tee "$logs/
 	verdict=1
 fi
 
+# The client package runs as the same three shards hosted CI runs
+# (client-1 to client-3 in .github/workflows/ci.yml), one after another.
+# scripts/test.sh bounds each run at 1200 s, so a single run of the whole
+# package let that bound fire on whichever late module was in flight once
+# the suite outgrew it (b75f1c807: vm_link_model_test, 2026-11-20). Each
+# shard keeps its own bound, and a retry reruns one shard. Keep the count
+# equal to the number of client shards in ci.yml.
+client_shards=3
 lane_client() {
-	$retry bash scripts/check.sh client tui &&
+	local shard
+	for shard in $(seq 1 "$client_shards"); do
+		LOOM_CLIENT_TEST_SHARD="$shard/$client_shards" \
+			$retry bash scripts/check.sh client || return 1
+	done
+	$retry bash scripts/check.sh tui &&
 		$retry bash scripts/e2e_client_bootstrap.sh
 }
 lane_mid() { $retry bash scripts/check.sh runtime storage session events; }
