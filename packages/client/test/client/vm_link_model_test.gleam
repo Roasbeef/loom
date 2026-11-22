@@ -390,7 +390,14 @@ fn document(text: String) -> dict.Dict(String, tom.Toml) {
 }
 
 fn rows_of(text: String) -> dict.Dict(String, tom.Toml) {
-  case dict.get(document(text), "executors") {
+  rows_in(document(text))
+}
+
+// The `executors` table of a document that is already parsed. A check that asks
+// several questions of one configuration parses it once and asks them here,
+// because parsing is the cost of a campaign: it grapheme-splits the whole text.
+fn rows_in(parsed: dict.Dict(String, tom.Toml)) -> dict.Dict(String, tom.Toml) {
+  case dict.get(parsed, "executors") {
     Ok(tom.Table(rows)) -> rows
     _ -> dict.new()
   }
@@ -421,7 +428,11 @@ fn is_guests(row: tom.Toml) -> Bool {
 // The name and address of every untrusted row, sorted, which is what a daemon
 // reads at its start.
 fn untrusted_rows(text: String) -> List(#(String, String)) {
-  rows_of(text)
+  untrusted_in(rows_of(text))
+}
+
+fn untrusted_in(rows: dict.Dict(String, tom.Toml)) -> List(#(String, String)) {
+  rows
   |> dict.to_list
   |> list.filter_map(fn(entry) {
     case entry.1 {
@@ -459,8 +470,8 @@ fn kind_of_slot(slot: WorldSlot) -> Option(LinkKind) {
 }
 
 // The port the guest's own row names, when the file has one.
-fn row_port(world: World, guest: Int) -> Option(Int) {
-  case dict.get(rows_of(world.config), name_of(guest)) {
+fn row_port(rows: dict.Dict(String, tom.Toml), guest: Int) -> Option(Int) {
+  case dict.get(rows, name_of(guest)) {
     Ok(tom.Table(fields) as row) ->
       case is_guests(row), dict.get(fields, "address") {
         True, Ok(tom.String(address)) ->
@@ -475,7 +486,11 @@ fn row_port(world: World, guest: Int) -> Option(Int) {
 }
 
 fn has_row(world: World, guest: Int) -> Bool {
-  case dict.get(rows_of(world.config), name_of(guest)) {
+  row_held(rows_of(world.config), guest)
+}
+
+fn row_held(rows: dict.Dict(String, tom.Toml), guest: Int) -> Bool {
+  case dict.get(rows, name_of(guest)) {
     Ok(row) -> is_untrusted(row) && is_guests(row)
     Error(Nil) -> False
   }
@@ -483,6 +498,14 @@ fn has_row(world: World, guest: Int) -> Bool {
 
 // The guest as the model would describe it, read from what the world holds.
 fn view_of(world: World, guest: Int) -> Slot {
+  view_in(world, rows_of(world.config), guest)
+}
+
+fn view_in(
+  world: World,
+  rows: dict.Dict(String, tom.Toml),
+  guest: Int,
+) -> Slot {
   case at(world.slots, guest, WorldAbsent) {
     WorldAbsent -> Absent
     WorldGuest(link: None, traces: vm_link.LeafTrace, ..) -> Stub
@@ -495,7 +518,7 @@ fn view_of(world: World, guest: Int) -> Slot {
           Some(text) -> option.from_result(vm_link.decode_port(text))
           None -> None
         },
-        row: case kind == Untrusted, row_port(world, guest) {
+        row: case kind == Untrusted, row_port(rows, guest) {
           True, Some(port) -> EnrolledAt(port)
           _, _ -> NotEnrolled
         },
@@ -505,7 +528,11 @@ fn view_of(world: World, guest: Int) -> Slot {
 }
 
 fn enrolled_guests(world: World) -> List(Int) {
-  list.filter([0, 1, 2], fn(guest) { has_row(world, guest) })
+  enrolled_in(rows_of(world.config))
+}
+
+fn enrolled_in(rows: dict.Dict(String, tom.Toml)) -> List(Int) {
+  list.filter([0, 1, 2], fn(guest) { row_held(rows, guest) })
 }
 
 // --- commands on the world ------------------------------------------------------------------
@@ -902,19 +929,23 @@ fn execute_rm(world: World, guest: Int) -> Result(World, statem.Violation) {
 
 // --- what must hold after every command ---------------------------------------------------------
 
-fn ours_present(world: World) -> Bool {
+fn ours_present(parsed: dict.Dict(String, tom.Toml)) -> Bool {
   let wanted = dict.get(document(vm_link.link_table(files())), "executor_link")
-  dict.get(document(world.config), "executor_link") == wanted
+  dict.get(parsed, "executor_link") == wanted
 }
 
 fn check_world(world: World) -> Result(World, statem.Violation) {
-  let guests = enrolled_guests(world)
-  let ours = ours_present(world)
+  // The configuration is parsed once, and every question below reads that one
+  // parse.
+  let parsed = document(world.config)
+  let rows = rows_in(parsed)
+  let guests = enrolled_in(rows)
+  let ours = ours_present(parsed)
 
   // A guest's row needs the link table, the table needs the credentials it
   // names, and a table left with no guest is left for an operator's own row.
   let operator_rows =
-    list.filter(untrusted_rows(world.config), fn(row) {
+    list.filter(untrusted_in(rows), fn(row) {
       !list.contains(list.map(guests, name_of), row.0)
     })
   use Nil <- result.try(case guests != [] && !ours {
@@ -944,7 +975,7 @@ fn check_world(world: World) -> Result(World, statem.Violation) {
   // a stop.
   use Nil <- result.try(
     list.try_each([0, 1, 2], fn(guest) {
-      case view_of(world, guest) {
+      case view_in(world, rows, guest) {
         Present(kind: Untrusted, life: Alive, port:, row:) ->
           case
             row == option.map(port, EnrolledAt) |> option.unwrap(NotEnrolled)
@@ -974,12 +1005,13 @@ fn check_follows(
   model: Model,
   command: Command,
 ) -> Result(World, statem.Violation) {
-  let views = list.map([0, 1, 2], view_of(world, _))
+  let config_rows = rows_of(world.config)
+  let views = list.map([0, 1, 2], view_in(world, config_rows, _))
   let seen = case world.daemon {
     WorldDown -> ObservedDown
     WorldUp(sessions: 0, ..) -> ObservedIdle
     WorldUp(rows:, ..) ->
-      ObservedBusy(case rows == untrusted_rows(world.config) {
+      ObservedBusy(case rows == untrusted_in(config_rows) {
         True -> Current
         False -> Behind
       })
