@@ -1015,6 +1015,11 @@ fn workspace_tools_in(
     jobs,
     working_directory.door(attach.owner.facts),
   )
+  |> contributions.lsp_query_tools(
+    spec.tools.lsp_tools,
+    doors.lsp,
+    lsp_hints(lsp),
+  )
   |> list.filter(fn(each) { !list.contains(spec.deactivated_tools, each.name) })
 }
 

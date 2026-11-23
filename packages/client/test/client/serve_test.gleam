@@ -1967,6 +1967,7 @@ fn networked_tools() -> catalog.ToolsConfig {
     set: [
       #("GH_CONFIG_DIR", "/home/me/.config/gh"),
     ],
+    lsp_tools: catalog.LspToolsOff,
   )
 }
 

@@ -11,6 +11,7 @@ import broker/broker
 import broker/exec
 import broker/framing
 import broker/policy
+import client/catalog
 import client/codemode
 import client/contributions
 import client/lsp/codemode_rename
@@ -257,6 +258,87 @@ fn tool_named(registry: tool.Registry, name: String) -> tool.Tool {
 pub fn a_door_keeps_language_calls_in_code_mode_test() {
   let names = tool.names(registry(Some(door())))
   assert list.filter(names, string.starts_with(_, "lsp_")) == []
+}
+
+// --- the opt-in query tools ---------------------------------------------------
+
+// The registry the workspace builds with the `[tools] lsp_tools` choice
+// applied after its other tools, as `workspace_plane` does.
+fn registry_offering(
+  offer: catalog.LspTools,
+  lsp: Option(query.Door),
+) -> tool.Registry {
+  let built =
+    contributions.workspace_tools(None, None, lsp, [])
+    |> contributions.lsp_query_tools(offer, lsp, [])
+  tool.registry(built)
+}
+
+fn lsp_names(registry: tool.Registry) -> List(String) {
+  list.filter(tool.names(registry), string.starts_with(_, "lsp_"))
+}
+
+// Off is the default and is byte for byte the registry without the
+// feature, even on a host whose door exists.
+pub fn the_query_tools_are_absent_unless_opted_in_test() {
+  assert lsp_names(registry_offering(catalog.LspToolsOff, Some(door()))) == []
+  assert tool.declarations(registry_offering(catalog.LspToolsOff, Some(door())))
+    == tool.declarations(
+      tool.registry(contributions.workspace_tools(None, None, Some(door()), [])),
+    )
+}
+
+// On offers the five tools, but only where there is a door to ask: with no
+// `[lsp.<name>]` server the tool array stays what it always was.
+pub fn the_query_tools_need_both_the_opt_in_and_a_door_test() {
+  assert lsp_names(registry_offering(catalog.LspToolsOn, Some(door())))
+    == [
+      "lsp_definition", "lsp_diagnostics", "lsp_hover", "lsp_references",
+      "lsp_symbols",
+    ]
+  assert lsp_names(registry_offering(catalog.LspToolsOn, None)) == []
+}
+
+// A call reaches the session's one door, so what the tool answers is the
+// door's answer: here a definition, then a server that is not there.
+pub fn an_opted_in_session_answers_through_the_one_door_test() {
+  let asked = process.new_subject()
+  let found =
+    query.Door(..door(), definition: fn(query_asked: query.SymbolQuery) {
+      process.send(asked, query_asked.symbol)
+      Ok(query.Served(
+        value: [
+          query.Site(path: "a.go", line: 4, column: 6, text: "func Greet()"),
+        ],
+        warmth: query.Warm,
+      ))
+    })
+  let args = json.Object([#("symbol", json.String("Greet"))])
+  let workspace = scratch("lsp-tool-definition")
+  let outcome =
+    tool.dispatch(
+      registry_offering(catalog.LspToolsOn, Some(found)),
+      ctx_in(workspace),
+      "lsp_definition",
+      args,
+    )
+  assert !outcome.is_error
+  assert string.contains(text_of(outcome), "a.go:4:")
+  assert process.receive(asked, 0) == Ok("Greet")
+
+  let down =
+    query.Door(..door(), definition: fn(_) {
+      Error(query.NoServer("no language server is configured for .py"))
+    })
+  let refused =
+    tool.dispatch(
+      registry_offering(catalog.LspToolsOn, Some(down)),
+      ctx_in(workspace),
+      "lsp_definition",
+      args,
+    )
+  assert refused.is_error
+  assert string.starts_with(text_of(refused), "language server unavailable")
 }
 
 // With a door, a landed write is reported to it and its diagnostics
