@@ -72,6 +72,13 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   seven days or past 200, oldest first, never an open one. `guard_key` names
   the cell every insertion replaces so two inserts cannot both take the last
   slot.
+- `core/attention_dismissal.{Dismissal, key, prefix, encode, decode, covers}` —
+  the owner's acknowledgement of a stuck strand's failure
+  (protocol-change/131), one reserved cell `attention/stuck/<strand>` per
+  strand holding the strand, the operation of the failed run it covers, the
+  time and the principal. `decode` is total, and `covers` is the one rule the
+  feed applies: the same strand and the same failed operation. A strand that
+  failed again has a new operation and is not covered.
 - `core/glance.Glance` — a strand's operator-facing title and one-line
   activity summary, written by the daemon's glance loop under the reserved
   `client/glance/{strand}` fact and read by the TUI's agent strip from each

@@ -2868,12 +2868,19 @@ pub const attention_ask_fact_prefix = "attention/ask/"
 /// reported, not as text the agent can edit afterwards.
 pub const attention_find_fact_prefix = "attention/find/"
 
+/// The reserved prefix a stuck strand's dismissal lives under,
+/// `attention/stuck/<strand>` (protocol-change/131). Reserved because a model
+/// that could write one would hide its own strand's failure from the person the
+/// feed exists to tell, and one that could remove it would raise a failure the
+/// owner had already set aside.
+pub const attention_stuck_fact_prefix = "attention/stuck/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The twenty corners, and what each would let a forged write do:
+/// The twenty-one corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -2908,9 +2915,9 @@ pub const attention_find_fact_prefix = "attention/find/"
 /// reached the parent, or erase the receipt that stops a resend steering the
 /// parent twice; `remote-send/` — send text to a remote child under the
 /// parent's name without a tool call, or drop a send the model was told was
-/// queued; and `attention/ask/` and `attention/find/` — forge a question or an
+/// queued; `attention/ask/` and `attention/find/` — forge a question or an
 /// answer a person is about to act on, or a finding shown as the harness's own
-/// record.
+/// record; and `attention/stuck/` — dismiss a failure the owner has not seen.
 ///
 /// ## Examples
 ///
@@ -2944,6 +2951,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, remote_send_fact_prefix)
   || string.starts_with(key, attention_ask_fact_prefix)
   || string.starts_with(key, attention_find_fact_prefix)
+  || string.starts_with(key, attention_stuck_fact_prefix)
   || string.starts_with(key, "evolution/")
 }
 
