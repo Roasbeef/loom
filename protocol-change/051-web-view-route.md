@@ -5377,11 +5377,22 @@ close `Final`). Its headline is "This link was opened for a different page, not 
 this session." and its advice says that a page key opens only the page its link was
 made for and that `loom ui --no-remember` reaches no other page, with the command
 `loom ui --session <id>`. The home and admin pages never meet it, so they draw their
-generic connection failure for it. `ending_test` and `ui_route_test`
+generic connection failure for it. (Superseded the same day: see the next
+paragraph.) `ending_test` and `ui_route_test`
 (`a_home_key_on_a_session_address_says_it_is_another_page_test`,
 `a_session_key_on_another_sessions_address_says_it_is_another_page_test`) pin it.
 The status stays 403, which `a_ticket_of_the_other_scope_is_refused_and_spent_test`
 already pinned for the exchange.
+
+The home and the admin page do meet it, by the same edit of an address: a session's
+key on `/home`, or the home's key on `/admin`. `home_grant` and `admin_grant` drew
+`PageEnded` for a live key of another scope, so the home said "This page has ended."
+for a page that had not ended. They now draw `OtherPage`, with a headline for each
+("... not for the home." and "... not for the admin page.") and the same advice, whose
+command is `loom ui`. A key that names no live page is still `PageEnded`. Nothing
+about what a key opens changes: the grant check that refused the request still
+refuses it, with the same 403, and only the words differ.
+`a_key_for_another_page_on_home_or_admin_says_it_is_another_page_test` pins it.
 
 ## Addendum: the passkey routes (2026-11-20)
 

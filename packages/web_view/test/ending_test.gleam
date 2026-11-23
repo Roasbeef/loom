@@ -249,3 +249,19 @@ pub fn a_key_for_another_page_is_not_an_ended_page_test() {
   )
   assert !string.contains(ending.advice(ending.OtherPage, "S"), "ended")
 }
+
+// The home and the admin page say which page the key was not for, and neither
+// calls the page ended or says it is a session.
+pub fn a_key_for_another_page_on_home_or_admin_is_not_an_ended_page_test() {
+  assert ending.home_headline(ending.OtherPage)
+    == "This link was opened for a different page, not for the home."
+  assert ending.admin_headline(ending.OtherPage)
+    == "This link was opened for a different page, not for the admin page."
+  assert string.contains(
+    ending.home_advice(ending.OtherPage),
+    "loom ui --no-remember reaches no other page",
+  )
+  assert string.contains(ending.admin_advice(ending.OtherPage), "press Admin")
+  assert !string.contains(ending.home_advice(ending.OtherPage), "ended")
+  assert !string.contains(ending.admin_advice(ending.OtherPage), "ended")
+}

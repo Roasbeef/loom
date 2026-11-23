@@ -340,12 +340,12 @@ pub fn home_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
+    OtherPage -> home_other_page_headline
     SessionStopped
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded
-    | OtherPage -> "The connection to the daemon failed."
+    | PeerCrowded -> "The connection to the daemon failed."
   }
 }
 
@@ -378,12 +378,18 @@ pub fn home_advised(ending: Ending) -> Advice {
         command,
       )
     LinkExpired -> Advice("A link works once, within 60 seconds.", command)
+    OtherPage ->
+      Advice(
+        "A page key opens only the page its link was made for, and a link from "
+          <> "loom ui --no-remember reaches no other page. Open the home from "
+          <> "the link that was made for it.",
+        command,
+      )
     SessionStopped
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded
-    | OtherPage ->
+    | PeerCrowded ->
       Advice(
         "Reload this page. If it fails again, it needs a new link.",
         command,
@@ -431,6 +437,14 @@ pub fn relayed_advice(ending: Ending) -> String {
 const other_page_headline =
   "This link was opened for a different page, not for this session."
 
+/// `other_page_headline` for the home, which is not a session.
+const home_other_page_headline =
+  "This link was opened for a different page, not for the home."
+
+/// `other_page_headline` for the admin page.
+const admin_other_page_headline =
+  "This link was opened for a different page, not for the admin page."
+
 /// What a relayed page says while it waits for its orchestrator.
 const relayed_wait_advice =
   "This page keeps asking the orchestrator and reconnects by itself when it answers. Commands whose outcome is unknown will not be sent again."
@@ -450,12 +464,12 @@ pub fn admin_headline(ending: Ending) -> String {
     AccessRevoked -> "Your access was revoked or changed."
     DaemonNotReady -> "The daemon was not ready."
     LinkExpired -> "This link has expired or was already used."
+    OtherPage -> admin_other_page_headline
     SessionStopped
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded
-    | OtherPage -> "The connection to the daemon failed."
+    | PeerCrowded -> "The connection to the daemon failed."
   }
 }
 
@@ -492,12 +506,18 @@ pub fn admin_advised(ending: Ending) -> Advice {
       )
     LinkExpired ->
       Advice("A link works once, within 60 seconds." <> fresh, command)
+    OtherPage ->
+      Advice(
+        "A page key opens only the page its link was made for, and a link from "
+          <> "loom ui --no-remember reaches no other page."
+          <> fresh,
+        command,
+      )
     SessionStopped
     | NotOpen
     | ConnectionFailed
     | PeerUnreachable
-    | PeerCrowded
-    | OtherPage ->
+    | PeerCrowded ->
       Advice(
         "Reload this page. If it fails again, it needs a new link." <> fresh,
         command,
