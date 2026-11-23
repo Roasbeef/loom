@@ -117,8 +117,8 @@ pub type Chip {
     /// when it did not.
     model: String,
     /// The catalogue's name for the strand's model, or `None` while the
-    /// page has not read the strand's configuration. Every card names its
-    /// model, so a reader never has to open a strand to learn it.
+    /// page has not read the strand's configuration. Every live strand's card
+    /// names its model, so a reader never has to open a strand to learn it.
     own_model: Option(String),
     /// The tools the strand's current operation ran most recently, oldest
     /// first, as `agent_view` bounds them.

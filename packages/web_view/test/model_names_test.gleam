@@ -57,7 +57,17 @@ pub fn the_bar_names_the_main_strands_model_test() {
   assert !string.contains(html, "upstream/test")
 }
 
-// Every card names its strand's model, whether or not it is the main
+// The strip above the stream names the model of the strand on screen, which on
+// a fresh page is main's.
+pub fn the_strip_names_the_strand_on_screens_model_test() {
+  let html = page([#("advisor", "baseten-deepseek-v41")])
+  assert string.contains(
+    html,
+    "<span class=\"stream-model\" title=\"Model this strand runs on\"> · test</span>",
+  )
+}
+
+// Every live strand's card names its model, whether or not it is the main
 // strand's, so a reader never opens a strand to learn it.
 pub fn every_card_names_its_model_test() {
   let html =

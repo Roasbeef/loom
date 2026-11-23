@@ -337,9 +337,10 @@ still with no new wire field:
 
 - The strip above the stream names the model of the strand on screen after the
   place (`main · aperture · Kimi-K3.1-Pro`), from the same catalogue entry.
-- Every strand's card names its model, not only a strand whose entry differs
-  from the main strand's. A strand whose configuration the capture does not hold
-  still draws nothing.
+- Every live strand's card names its model, not only a strand whose entry
+  differs from the main strand's. A settled strand's card, a child on another
+  orchestrator and a strand whose configuration the capture does not hold
+  still draw none.
 
 ## Addendum 2026-10-08: choosing a model beside a profile
 
