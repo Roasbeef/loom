@@ -444,6 +444,7 @@ fn run_rename(helper_path: String, seed: String) -> Nil {
       hook,
       "rename",
       seed,
+      catalog.LspToolsOff,
     )
 
   let assert [
@@ -635,6 +636,7 @@ fn run_stale(helper_path: String, seed: String) -> Nil {
       hook,
       "stale",
       seed,
+      catalog.LspToolsOff,
     )
 
   // The writer is stopped before the disk is read, so what is read is
@@ -777,13 +779,10 @@ fn gopls_turns() -> List(script.Turn) {
   ]
 }
 
-fn run_gopls(
-  helper_path: String,
-  gopls: String,
-  places: GoPlaces,
-  seed: String,
-) -> Nil {
-  let rig = rig("gopls")
+// The Go fixture module both gopls sessions query, and the `loom.toml`
+// that wires the server. `util.Greet` is defined once and called twice from
+// `main`, and `broken` holds one type error for the diagnostics query.
+fn write_go_fixture(rig: Rig, gopls: String, places: GoPlaces) -> String {
   let module = rig.workspace <> "/gomod"
   write(module <> "/go.mod", "module example.com/probe\n\ngo 1.21\n")
   write(
@@ -796,19 +795,19 @@ fn run_gopls(
     "package main\n\nimport \"example.com/probe/util\"\n\nfunc main() {\n"
       <> "\tprintln(util.Greet(\"world\"))\n\tprintln(util.Greet(\"again\"))\n}\n",
   )
+  write(
+    module <> "/broken/broken.go",
+    "package broken\n\nfunc Bad() int {\n\treturn \"not an int\"\n}\n",
+  )
 
   // `gopls` shells out to `go`, whose toolchain it must read, and writes
   // its build and file caches under the user cache directory. Each is a
   // root the operator lists (see `go_places` for where the paths come
   // from), and a jail that grants the wrong cache leaves `go list` unable
   // to write, so `gopls` loads no packages and every definition comes back
-  // empty.
-
-  // The cache grant follows the test runner's GOCACHE override. Forwarding
-  // the same name makes jailed Go write to the granted path; when unset,
-  // both sides retain the native cache default.
+  // empty. The cache grant follows the test runner's GOCACHE override.
   let gopls_cache = parent_directory(places.cache) <> "/gopls"
-  let toml = "
+  "
 [models.acme]
 dialect = \"anthropic\"
 base_url = \"https://acme.test\"
@@ -828,6 +827,16 @@ readable = [\"" <> places.root <> "\", \"" <> places.module_cache <> "\"]
 writable = [\"" <> places.cache <> "\", \"" <> gopls_cache <> "\"]
 env = [\"GOCACHE\", \"GOFLAGS\", \"GOTOOLCHAIN\"]
 "
+}
+
+fn run_gopls(
+  helper_path: String,
+  gopls: String,
+  places: GoPlaces,
+  seed: String,
+) -> Nil {
+  let rig = rig("gopls")
+  let toml = write_go_fixture(rig, gopls, places)
   let messages =
     run_session(
       rig,
@@ -837,6 +846,7 @@ env = [\"GOCACHE\", \"GOFLAGS\", \"GOTOOLCHAIN\"]
       fn(_) { Nil },
       "gopls",
       seed,
+      catalog.LspToolsOff,
     )
   let assert [
     message.UserMessage(..),
@@ -873,6 +883,149 @@ env = [\"GOCACHE\", \"GOFLAGS\", \"GOTOOLCHAIN\"]
   let sites = reported_sites(references)
   assert list.any(sites, fn(site) { site.0 == "gomod/main.go" && site.1 == 6 })
   assert list.any(sites, fn(site) { site.0 == "gomod/main.go" && site.1 == 7 })
+}
+
+// --- gopls through the opt-in top-level tools --------------------------------
+
+/// The same server and fixture as above, asked through the opt-in `lsp_*`
+/// tools instead of code mode: `[tools] lsp_tools = "on"` registers them, a
+/// definition, the references of a qualified name and a file's diagnostics
+/// answer in band through the session's one door, and a path outside the
+/// project is refused as an unavailable server. The first three queries need
+/// no code-mode toolchain, so this session boots without a seed.
+pub fn lsp_gopls_top_level_tools_end_to_end_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    case go_prerequisites() {
+      Error(NotInstalled(reason)) ->
+        io.println_error(
+          "SKIP lsp e2e gopls tools: gopls or go is not installed ("
+          <> reason
+          <> ")",
+        )
+      Error(UnknownRoot(reason)) ->
+        io.println_error(
+          "SKIP lsp e2e gopls tools: go's GOROOT cannot be derived ("
+          <> reason
+          <> ")",
+        )
+      Ok(#(helper_path, gopls, places)) ->
+        run_gopls_tools(helper_path, gopls, places)
+    }
+  })
+}
+
+fn gopls_tool_turns() -> List(script.Turn) {
+  [
+    tool_turn("call_definition", "lsp_definition", [
+      #("symbol", json.String("Greet")),
+    ]),
+    tool_turn("call_refs", "lsp_references", [
+      #("symbol", json.String("util.Greet")),
+    ]),
+    tool_turn("call_diagnostics", "lsp_diagnostics", [
+      #("path", json.String("gomod/broken/broken.go")),
+    ]),
+    tool_turn("call_outside", "lsp_symbols", [
+      #("path", json.String("/etc/hosts")),
+    ]),
+    script.AnswerTurn(
+      text: "Greet is defined in util.",
+      input_tokens: 150,
+      output_tokens: 5,
+    ),
+  ]
+}
+
+fn tool_turn(
+  call_id: String,
+  tool: String,
+  arguments: List(#(String, JsonValue)),
+) -> script.Turn {
+  script.ToolUseTurn(
+    call_id:,
+    tool:,
+    arguments: json.Object(arguments),
+    input_tokens: 100,
+    output_tokens: 5,
+  )
+}
+
+fn run_gopls_tools(
+  helper_path: String,
+  gopls: String,
+  places: GoPlaces,
+) -> Nil {
+  let rig = rig("gopls-tools")
+  let toml = write_go_fixture(rig, gopls, places)
+  let messages =
+    run_session(
+      rig,
+      helper_path,
+      toml,
+      gopls_tool_turns(),
+      fn(_) { Nil },
+      "gopls-tools",
+      rig.root <> "/no-such-seed",
+      catalog.LspToolsOn,
+    )
+  let assert [
+    message.UserMessage(..),
+    message.AssistantMessage(stop_reason: message.ToolUse, ..),
+    message.ToolResultMessage(
+      tool_name: "lsp_definition",
+      is_error: False,
+      content: definition,
+      ..,
+    ),
+    message.AssistantMessage(stop_reason: message.ToolUse, ..),
+    message.ToolResultMessage(
+      tool_name: "lsp_references",
+      is_error: False,
+      content: references,
+      ..,
+    ),
+    message.AssistantMessage(stop_reason: message.ToolUse, ..),
+    message.ToolResultMessage(
+      tool_name: "lsp_diagnostics",
+      is_error: False,
+      content: diagnostics,
+      ..,
+    ),
+    message.AssistantMessage(stop_reason: message.ToolUse, ..),
+    message.ToolResultMessage(
+      tool_name: "lsp_symbols",
+      is_error: True,
+      content: outside,
+      ..,
+    ),
+    message.AssistantMessage(stop_reason: message.Stop, ..),
+  ] = messages
+    as "the run must be three answered queries, one refusal and an answer"
+  let definition_line = "func Greet(name string) string {"
+  assert string.contains(
+    text_of(definition),
+    "gomod/util/util.go:4:"
+      <> hashline.anchor(definition_line)
+      <> "|"
+      <> definition_line,
+  )
+
+  // Both calls in `main` are references, grouped under the function that
+  // holds them, and the count line comes first.
+  let references = text_of(references)
+  assert string.contains(references, "to `util.Greet` in 2 files")
+  assert string.contains(references, "gomod/main.go")
+  assert string.contains(references, "  in main:")
+  assert string.contains(references, "gomod/main.go:6:")
+  assert string.contains(references, "gomod/main.go:7:")
+
+  // The type error is reported, and the block says whether it settled.
+  let diagnostics = text_of(diagnostics)
+  assert string.contains(diagnostics, "error at gomod/broken/broken.go:4:")
+
+  // A path the server's root does not hold is the typed unavailable answer,
+  // and the door asked no server about it.
+  assert string.starts_with(text_of(outside), "language server unavailable")
 }
 
 // --- one session -------------------------------------------------------------
@@ -913,6 +1066,7 @@ fn run_session(
   hook: fn(Int) -> Nil,
   name: String,
   seed: String,
+  lsp_tools: catalog.LspTools,
 ) -> List(message.AgentMessage) {
   let assert Ok(parsed) = catalog.parse(toml)
     as "the fixture loom.toml must parse"
@@ -922,9 +1076,10 @@ fn run_session(
     as "the compiled fixture has a shallow capability socket"
   let settings =
     serve.Settings(
-      ..settings(rig, helper_path, parsed, hooked(turns, hook), name),
+      ..settings(rig, helper_path, parsed, hooked(turns, hook, lsp_tools), name),
       codemode_seed: seed,
       codemode_sockets: Some(socket_root),
+      tools: catalog.ToolsConfig(..catalog.default_tools(), lsp_tools:),
     )
   let assert Ok(instance) = serve.open_instance(settings, log.discard())
     as "the session must boot"
@@ -985,18 +1140,42 @@ fn result_text(content: List(message.ToolResultBlock)) -> String {
 // process preparing the request, before the turn is delivered, and is
 // handed the request's key — how many tool results it carries — so it can
 // act between two named turns.
-fn hooked(turns: List(script.Turn), hook: fn(Int) -> Nil) -> http.Transport {
+fn hooked(
+  turns: List(script.Turn),
+  hook: fn(Int) -> Nil,
+  lsp_tools: catalog.LspTools,
+) -> http.Transport {
   let inner = script.transport(turns)
   http.Transport(prepare_streaming: fn(request, subject) {
     let assert Ok(body) = json.parse(request.body)
       as "the real provider request is valid JSON"
     let assert json.Array(tools) = json_field(body, "tools")
       as "the provider carries its default tool registry"
-    assert !list.any(tools, fn(tool) {
-      let assert json.String(name) = json_field(tool, "name")
-        as "each registered tool has a name"
-      string.starts_with(name, "lsp_")
-    })
+    let offered =
+      list.filter_map(tools, fn(tool) {
+        let assert json.String(name) = json_field(tool, "name")
+          as "each registered tool has a name"
+        case string.starts_with(name, "lsp_") {
+          True -> Ok(name)
+          False -> Error(Nil)
+        }
+      })
+
+    // The queries are code-mode only unless the operator opted in, and
+    // an opted-in session offers exactly the five, so a registry that
+    // grew or lost one fails here rather than in a transcript.
+    case lsp_tools {
+      catalog.LspToolsOff -> {
+        assert offered == []
+      }
+      catalog.LspToolsOn -> {
+        assert list.sort(offered, string.compare)
+          == [
+            "lsp_definition", "lsp_diagnostics", "lsp_hover", "lsp_references",
+            "lsp_symbols",
+          ]
+      }
+    }
     hook(script.tool_results_in(request.body))
     inner.prepare_streaming(request, subject)
   })
