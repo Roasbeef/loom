@@ -35,6 +35,11 @@ const ask_id = "ask-0123456789"
 
 const find_id = "find-0123456789"
 
+// A first question longer than the feed's head limit, so the head the row and
+// the old title carried is a cut of it.
+const long_prompt =
+  "Which branch should the audit run against, given that the release branch is frozen and the nightly branch carries the migration the audit has to read first?"
+
 const strand = "sub:main/audit-0123456789abcdef"
 
 fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
@@ -130,7 +135,7 @@ fn the_ask() -> attention.Ask {
     questions: [
       attention.Question(
         key: "q1",
-        prompt: "Which branch?",
+        prompt: long_prompt,
         kind: attention.Choice,
         options: [
           attention.Alternative(
@@ -411,7 +416,10 @@ pub fn an_asks_questions_are_fixed_controls_and_model_text_is_text_test() {
 pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
   let html = drawn(run(owner(), home.ItemPicked(ask_key())))
 
-  assert string.contains(html, "<h1 class=\"inbox-title\">Which branch?</h1>")
+  assert string.contains(
+    html,
+    "<h1 class=\"inbox-title\">" <> long_prompt <> "</h1>",
+  )
   assert string.contains(html, "<span>Other</span><input")
   assert string.contains(html, "inbox-other")
   assert string.contains(html, "Message this session")
@@ -431,6 +439,10 @@ pub fn a_row_of_another_strand_is_named_by_the_strand_test() {
 
   assert string.contains(html, ">sub:main/audit-…cdef</span>")
   assert !string.contains(html, "0123456789abcdef</span>")
+}
+
+fn count_of(html: String, needle: String) -> Int {
+  list.length(string.split(html, needle)) - 1
 }
 
 // Two siblings of one purpose keep a short distinguishing tail, so their rows
@@ -471,7 +483,7 @@ pub fn staging_an_answer_sends_nothing_until_send_test() {
 
   // The outbox lists the checked answer, and nothing has been asked of the daemon.
   let html = drawn(staged)
-  assert string.contains(html, "Which branch? — beta")
+  assert string.contains(html, long_prompt <> " — beta")
   assert string.contains(html, "Which files? — a.gleam, b.gleam")
   assert received(asked) == []
 
@@ -525,7 +537,7 @@ pub fn a_refusal_keeps_the_outbox_and_shows_its_words_test() {
   let html = drawn(run(staged, home.ItemSent))
 
   assert string.contains(html, "Not sent: that ask was already answered")
-  assert string.contains(html, "Which branch? — beta")
+  assert string.contains(html, long_prompt <> " — beta")
 }
 
 // One Send carries an answer and a note: the answer first, then the note to
@@ -648,7 +660,9 @@ pub fn an_observer_reads_and_cannot_stage_or_send_test() {
   let html = drawn(picked)
 
   assert string.contains(html, ">Ask</span>")
-  assert string.contains(html, "Which branch?")
+  // The first question is the title and is not listed a second time.
+  assert count_of(html, long_prompt) == 1
+  assert string.contains(html, "<li>Which files?</li>")
   assert string.contains(
     html,
     "Only the owner&#39;s operating page can answer.",

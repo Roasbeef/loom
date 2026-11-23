@@ -519,12 +519,17 @@ fn ask_form(ask: attention.Ask, offer: Offer(message)) -> Element(message) {
   case offer.acting {
     None ->
       html.div([attribute.class("inbox-questions")], [
-        html.ul(
-          [],
-          list.map(ask.questions, fn(question) {
-            html.li([], [html.text(question.prompt)])
-          }),
-        ),
+        // The first question is the pane's title, so the list holds the rest.
+        case list.drop(ask.questions, 1) {
+          [] -> element.none()
+          rest ->
+            html.ul(
+              [],
+              list.map(rest, fn(question) {
+                html.li([], [html.text(question.prompt)])
+              }),
+            )
+        },
         html.p([attribute.class("inbox-hold")], [
           html.text("Only the owner's operating page can answer."),
         ]),
