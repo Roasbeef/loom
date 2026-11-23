@@ -1112,8 +1112,23 @@ fn lead(row: Row, watching: Dict(String, String)) -> Element(message) {
           ]),
         ])
     },
-    ..subtitle(entry)
+    ..list.append(notice_line(entry), subtitle(entry))
   ])
+}
+
+/// The notice of a row that cannot be resumed, as its own quiet line under the
+/// tag. The residency's word already says it to assistive technology, so this
+/// line is hidden from it and is only what a sighted reader sees.
+fn notice_line(entry: Entry) -> List(Element(message)) {
+  case notice(entry) {
+    Some(words) -> [
+      html.span(
+        [attribute.class("session-notice"), attribute.aria_hidden(True)],
+        [html.text(words)],
+      ),
+    ]
+    None -> []
+  }
 }
 
 /// The first line of the session's first prompt, as a third quiet line when the
@@ -1189,19 +1204,36 @@ fn row_words(
   kind: resume.Kind(message),
   suffix: Suffix,
 ) -> #(List(String), String, String) {
-  case entry.residency, kind {
-    Live, _ -> running(entry, suffix)
-    Saved, resume.Opening -> #(["opening"], "…", "opening")
-    Saved, _ -> #(["saved"], "○", "saved")
+  case entry.residency, kind, notice(entry) {
+    Live, _, _ -> running(entry, suffix)
 
     // A row nothing runs and a page cannot open says so, in the words the home
     // table uses for it, rather than passing for a saved session that resumes.
-    Blocked, _ -> #(["saved", "notable"], "○", "needs attention")
-    FailedStart(_), _ -> #(["saved", "notable"], "○", "failed to start")
+    // The glyph keeps the row's leading slot and the words are the row's own
+    // line (`lead`), so a long notice never squeezes the name out of a narrow
+    // column.
+    _, _, Some(words) -> #(["saved", "notable"], "○", words)
+    _, resume.Opening, None -> #(["opening"], "…", "opening")
+    _, _, None -> #(["saved"], "○", "saved")
+  }
+}
 
-    // A session being handed to another orchestrator says where it goes. The
-    // destination is the operator's own configuration, drawn as a text node.
-    Moving(to), _ -> #(["saved", "notable"], "○", "moving to " <> to)
+/// What a row that cannot be resumed says about itself: a session nothing runs
+/// and a page cannot open, one whose start failed, and one being handed to
+/// another orchestrator, whose destination is the operator's own configuration.
+/// A running or saved session has nothing to say beyond its dot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // notice(Entry(..entry, residency: Blocked)) == Some("needs attention")
+/// ```
+fn notice(entry: Entry) -> Option(String) {
+  case entry.residency {
+    Blocked -> Some("needs attention")
+    FailedStart(_) -> Some("failed to start")
+    Moving(to) -> Some("moving to " <> to)
+    Live | Saved -> None
   }
 }
 
