@@ -2527,12 +2527,16 @@
      form and its read-only questions are dressed as the rail's ask is, so the
      options are the same numbered blocks with the note under the label. The
      dock lays out as a column only so the cards can be ordered above the
-     composer without moving it in the tree. */
+     composer without moving it in the tree. The order is asks, then approvals,
+     then the composer, so an ask that arrives or leaves does not move an
+     armed approval card's buttons. The todo panel, the goal and the other
+     children keep order 0 and stay above all three. */
   footer.dock{display:flex;flex-direction:column;}
   footer.dock > section.ask-dock{order:1;}
-  footer.dock > form.composer{order:2;}
+  footer.dock > section.approvals{order:2;}
+  footer.dock > form.composer{order:3;}
   main.centre > .observer-bar{order:2;}
-  main.centre > section.ask-dock{order:1;width:auto;margin:0 24px 8px 24px;}
+  main.centre > section.ask-dock{order:1;margin:0 auto 8px auto;padding:0 24px;}
   section.ask-dock{flex:0 0 auto;margin:0 24px 8px 24px;max-height:55vh;overflow-y:auto;overscroll-behavior:contain;}
   article.ask-card{background:color-mix(in srgb,var(--color-signal) 5%,var(--color-bg-raised));border:1px solid color-mix(in srgb,var(--color-signal) 55%,var(--color-divider));border-radius:10px;padding:10px 14px;margin:0 0 6px 0;}
   article.ask-card:last-child{margin-bottom:0;}
@@ -2594,7 +2598,8 @@
   @media (max-width:640px){
     main.centre > .stream-head{padding-left:14px;padding-right:14px;}
     loom-follow.follow > *{padding-left:14px;padding-right:14px;}
-    section.approvals,section.ask-dock,main.centre > section.ask-dock,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
+    section.approvals,section.ask-dock,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
+    main.centre > section.ask-dock{margin-left:auto;margin-right:auto;padding:0 14px;}
     section.ask-dock{max-height:40vh;}
     form.composer{padding-left:14px;padding-right:14px;}
   }
