@@ -2551,7 +2551,7 @@ fn attention_guidance(seams: Seams) -> String {
   {
     False -> ""
     True ->
-      "Ask the owner with cap/attention.ask(questions, to: None, why: None), building each question with attention.confirm, choose, choose_many, checklist or fill and giving options through attention.alternative. It records the ask and returns its id at once; it does not wait and it does not end your turn, so after the program returns, end your turn yourself and do no more work the answer decides. The answer arrives later as a message from the person holding one fenced JSON object. An ask must never request a secret: credentials go through grants and approvals. attention.notice(kind, text, path: None, line: None) records a note about something outside your task and never stops anything. "
+      "Ask the owner with cap/attention.ask(questions, to: None, why: None), building each question with attention.confirm, choose, choose_many, checklist or fill and giving options through attention.alternative. It records the ask and returns its id at once; it does not wait and it does not end your turn, so after the program returns, end your turn yourself and do no more work the answer decides. The answer arrives later as a message from the person that names the ask's id and lists each question, numbered, with the answer under it: Yes or No, the chosen option labels in double quotes, the typed text, or \"Other (not one of the options):\" and the text. An ask must never request a secret: credentials go through grants and approvals. attention.notice(kind, text, path: None, line: None) records a note about something outside your task and never stops anything. "
   }
 }
 
