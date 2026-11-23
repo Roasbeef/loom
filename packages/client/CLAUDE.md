@@ -9254,8 +9254,10 @@ the protocol-change/078 addendum on moving a session have the protocol.
 - `daemon/manager` carries the catalogue half. `begin_move` commits `moving` and
   cancels the slot in one registry turn, so nothing can open the store after the
   intent. `prepare_slot` reads the custody row and refuses `moving` and `moved`
-  (`SessionMoving`, `SessionMoved`); archive, restore and delete refuse them too
-  (`AdminMoving`, `AdminMoved`). `movable` refuses a session with no executor, an
+  (`SessionMoving`, `SessionMoved`), before it reads visibility; restore, delete,
+  rename and isolate refuse them too (`AdminMoving`, `AdminMoved`). Archive
+  refuses `moving` only: the stub of a `moved` session may be archived, and its
+  tombstone keeps naming the owner (protocol-change/078, addendum). `movable` refuses a session with no executor, an
   archived one and a reserved one (`AdminNotMovable`). `finish_move`, `abort_move`,
   `moving_sessions` and `custody` are the mover's reads and compare-and-sets, and
   `import_session` registers, records the import and renames the copy into place
@@ -9412,7 +9414,8 @@ the protocol-change/078 addendum on moving a session have the protocol.
   (`with_custody`) and of every `sessions.list` record (`listed_json`, which reads
   one `manager.custodies` for the page and encodes with the same
   `custody_members`), `moving` on `open` (`in_flight`), and `not_owner` from the
-  tombstone for open, archive, restore and delete (`tombstoned`). `daemon/main`
+  tombstone for open, restore and delete, and for archive of a session that is
+  not moved away (`tombstoned`). `daemon/main`
   builds the movers in `start_movers`, gives the port its importer, and reads
   `LOOM_MOVE_CRASH_AFTER`.
 

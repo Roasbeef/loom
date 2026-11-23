@@ -423,8 +423,8 @@ pub type Terminate {
   /// The run reaches a terminal state once this batch settles, if every
   /// call in it did — the planner's rule, not this tool's alone, so one
   /// terminating call beside a continuing one ends nothing. Reserved for
-  /// a tool whose whole purpose is to end the operation; every built-in
-  /// answers `ContinueRun`.
+  /// a tool whose whole purpose is to end the operation. `advise` answers it
+  /// for an accepted verdict; every other built-in answers `ContinueRun`.
   TerminateRun
 }
 
@@ -434,7 +434,8 @@ pub type Terminate {
 ///
 /// Constructor invariants: `content` is non-empty; `is_error` marks an
 /// in-band failure the model should react to, never a harness fault;
-/// `terminate` is `ContinueRun` for every built-in, and the constructors
+/// `terminate` is `ContinueRun` for every built-in but an accepted `advise`
+/// verdict, and the constructors
 /// below default it there so that a tool ends a run only by saying so.
 pub type ToolOutcome {
   ToolOutcome(

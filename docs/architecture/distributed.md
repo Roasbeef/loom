@@ -157,6 +157,15 @@ accepts that cost when enrolling a machine. The design therefore draws its
 boundary around who may connect, and does not try to defend one connected node
 against another.
 
+Some checks compare a node a message declares with the node it came from, such
+as the `from_node` of a move's activation
+(`client/remote/orchestrator_port.gleam`). The node is read from the pid in the
+message's reply subject, and the sender supplies that pid. Such a check catches
+a misconfigured peer and keeps each port to its job. It does not stop an
+enrolled peer that wants to misattribute a message, because that peer can
+already call any function on the node. Enrolling an orchestrator is the trust
+decision, and no check inside a message adds to it.
+
 ### Untrusted executors
 
 Everything above is the trusted mode, and it stays the default. An executor whose
@@ -1466,6 +1475,23 @@ it, after which the source's retry would import the session afresh. So
 until the origin answers `Moved` for the session. The web page's delete does
 not apply this hold yet.
 
+The hold is the only thing that prevents a failure the storage layer does not
+([#1259](https://github.com/Roasbeef/loom/issues/1259)). Under `Rows` custody
+(a daemon with no directory membership), `catalogue.begin_move` replaces an
+`imported` row with `moving`, and an abandon of that onward move returns the row
+to `resident`. After either, the receiver no longer remembers that the first move
+committed. A source that missed the activation answer would then ask again, get
+`Conflict`, abandon, and serve its stale copy while the receiver or a third
+orchestrator serves the session. The daemon's `inbound_settled` check
+(`client/daemon/server.gleam`) refuses the onward move until the origin says
+`Moved`, so the sequence cannot start through `sessions.move`. The limit is that
+the check lives in the daemon and not in the catalogue, so a caller of
+`begin_move` that skips it reopens the failure, and an origin that is down or no
+longer listed keeps the session from moving on. Moves between two orchestrators
+that share a directory use `Recorded` custody, where the owner record decides and
+the source's abandon is a compare-and-set that fails once the receiver has
+activated, so they have neither limit.
+
 ### Asking for a move
 
 The terminal, the owner's home and the Admin page ask for a move through the same two
@@ -2157,8 +2183,11 @@ three writes or none. The session's store is made afterwards by the path that
 turns any reservation into a session. A create resent after a crash or a lost
 answer finds the row by its request id and finishes the session. Nothing sweeps an
 unfinished reservation: it stays listed, counts against `max_sessions`, and is
-deleted on the box's own page, which removes it with its row (#1056 tracks the
-same shape for delegate sessions).
+deleted on the box's own page, which removes it with its row. The delegate path
+does not share this limit: its request key is derived from the spawner, parent
+and child, so a resend finds the registration and claims its row (#1056). A
+delegate registration whose laptop never resends stays `Reserved` or `Saved`,
+is not swept, and does not count against the delegate cap.
 
 Every other message names a session, which must have a row for this spawner
 (`NotRelayed`). A session the owner started, or another spawner did, is

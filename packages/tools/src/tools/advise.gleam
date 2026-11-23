@@ -211,7 +211,14 @@ fn run(advice: Advice, ctx: Ctx, arguments: JsonValue) -> ToolOutcome {
   // the far side can judge a verdict without trusting anything the model
   // wrote.
   use ack <- tool.or_outcome(advice.judge(ctx.strand, verdict), tool.failure)
-  tool.success(ack_text(ack))
+
+  // An accepted verdict is the whole answer to a feed, so it ends the
+  // advisor's run. A run that went on asked the model for another step with
+  // nothing new to read, and a model that answered each such step with
+  // another `advise` call looped until the turn was stopped. A refused call
+  // above is an ordinary failure and ends nothing, so the model can correct
+  // its arguments in the same run.
+  tool.ToolOutcome(..tool.success(ack_text(ack)), terminate: tool.TerminateRun)
 }
 
 /// Decodes the model's arguments into a `Verdict`.

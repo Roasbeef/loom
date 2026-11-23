@@ -252,6 +252,7 @@ fn bar(compact: option.Option(Nil)) -> Element(Nil) {
           tone: stream_head.Quiet,
           state: "idle",
           turn: None,
+          model: None,
           goal: None,
         ),
         figures.view(

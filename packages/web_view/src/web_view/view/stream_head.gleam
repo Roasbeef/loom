@@ -3,7 +3,8 @@
 ////
 //// The live mode (`docs/design-notes/attention-inbox/README.md`, section 2.3)
 //// is for watching one session, and the strip says which session and what it
-//// is doing without opening a panel: `ws-1a6368 · main · work · running`, then
+//// is doing without opening a panel: `ws-1a6368 · main · work · glm-5.3 ·
+//// running`, then
 //// the goal when the page has one, then the session's figures (the context
 //// estimate, the cost and the output speed, `view/figures`) and, at the end, the
 //// two chips that say where the agent runs and where its commands run
@@ -30,10 +31,20 @@
 //// strip again for nothing but a clock. `None` (no operation, or an identity
 //// that does not parse) leaves the state's words alone, and no age is invented.
 ////
+//// ## The model
+////
+//// The strand's model is drawn inside the place's span, after the workspace,
+//// and not as a child of its own, so the strip keeps its fixed children. The
+//// name is the catalogue's (`agent_view.catalogue_name`), the same words the
+//// top bar's `session-model` used before the final design hid it, and never
+//// the upstream identifier. A strand whose configuration the page has not read
+//// names none.
+////
 //// ## Flow
 ////
-//// `view` draws the strip, `state` joins the state and the turn's age, and
-//// `fact` draws each remaining fact after a separator.
+//// `view` draws the strip, `state` joins the state and the turn's age,
+//// `model` adds the model to the place, and `fact` draws each remaining fact
+//// after a separator.
 
 import gleam/int
 import gleam/option.{type Option, None, Some}
@@ -72,6 +83,9 @@ pub type Head {
     /// (`core/ids.op_id_timestamp_ms`), or `None` when no operation runs. The
     /// strip draws `, turn 14m` after the state and the browser counts it on.
     turn: Option(Int),
+    /// The catalogue's name for the model the strand on screen runs, or `None`
+    /// when the page has not read the strand's configuration.
+    model: Option(String),
     /// The pinned goal in one line (`goal: Ship it · active · 4k of 9k
     /// tokens`), or `None` when no goal is pinned.
     goal: Option(String),
@@ -84,7 +98,7 @@ pub type Head {
 /// ## Examples
 ///
 /// ```gleam
-/// // stream_head.view(Head("ws-1a6368", "main · loom", Running, "running", Some(1_790_000_000_000), None), figures, chips)
+/// // stream_head.view(Head("ws-1a6368", "main · loom", Running, "running", Some(1_790_000_000_000), Some("glm-5.3"), None), figures, chips)
 /// ```
 pub fn view(
   head: Head,
@@ -94,7 +108,10 @@ pub fn view(
   html.div([attribute.class("stream-head")], [
     html.span([attribute.class("stream-dot"), tone_class(head.tone)], []),
     html.b([attribute.class("stream-name")], [html.text(head.name)]),
-    html.span([attribute.class("stream-fact")], [html.text(head.place)]),
+    html.span([attribute.class("stream-fact")], [
+      html.text(head.place),
+      model(head.model),
+    ]),
     state(head.state, head.turn),
     case head.goal {
       Some(words) -> fact(words)
@@ -131,6 +148,22 @@ pub fn state(words: String, turn: Option(Int)) -> Element(message) {
         ],
       )
     None -> fact(words)
+  }
+}
+
+/// The model after the place, or nothing when the page has not read it.
+fn model(name: Option(String)) -> Element(message) {
+  // The page names a model only from the strand's own configuration.
+  case name {
+    Some("") | None -> element.none()
+    Some(name) ->
+      html.span(
+        [
+          attribute.class("stream-model"),
+          attribute.title("Model this strand runs on"),
+        ],
+        [html.text(" · " <> name)],
+      )
   }
 }
 

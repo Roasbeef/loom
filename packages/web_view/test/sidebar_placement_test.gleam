@@ -112,8 +112,9 @@ pub fn a_name_no_pill_carries_leaves_the_list_alone_test() {
   assert drawn(update(model, operator_page.Narrowing("laptop"))) == before
 }
 
-// The header says where the agent runs and where its commands run, once the page
-// has read the row of its own session, and says only the agent before.
+// The header says where the agent runs, and once the page has read the row of
+// its own session, where its commands run. A folder is on the agent's own
+// machine, so the two are said once.
 pub fn the_header_says_where_the_agent_and_commands_run_test() {
   let before = drawn(page([]))
   assert string.contains(before, "class=\"placement-strip\"")
@@ -122,7 +123,9 @@ pub fn the_header_says_where_the_agent_and_commands_run_test() {
   assert !string.contains(before, "Commands on")
 
   let html = drawn(page(rows()))
-  assert string.contains(html, "Commands on")
+  assert !string.contains(html, "Agent on")
+  assert !string.contains(html, "Commands on")
+  assert string.contains(html, ">On<")
   assert string.contains(html, "laptop · /src/loom")
   assert string.contains(html, "title=\"/src/loom\"")
 }
@@ -165,13 +168,12 @@ pub fn new_session_goes_to_the_home_page_test() {
 }
 
 // A running row's second line is what its session is doing, in the final
-// design's words, and the saved rows keep the tag that names the machine that
-// runs the agent. A session's placement is on its own page's strip, and on the
-// home's list.
+// design's words, and a saved row's says it is saved and where its code lives.
+// A session's placement is on its own page's strip, and on the home's list.
 pub fn a_running_row_says_what_it_is_doing_and_a_saved_one_its_placement_test() {
   let html = drawn(page(rows()))
   assert string.contains(html, "<span class=\"session-watch\">")
-  assert string.contains(html, "<span class=\"tag-agent\">laptop</span>")
+  assert string.contains(html, "saved · ")
 }
 
 // Every row of the sidebar is keyed by the session's catalogue identity, since a

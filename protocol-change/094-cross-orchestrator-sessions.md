@@ -497,3 +497,23 @@ that quotes the sentence is kept as written. The framing is unchanged for
 every other reader: `remote_transcript.lines`, which the terminal draws, and
 the Strands tab's peek (`view/peek`) keep both lines, and their tests still
 pin them.
+
+## Addendum: the delegate path does not orphan a second session (2026-11-23)
+
+The paragraph above that says a resent `Spawn` creates a second delegate
+session, tracked as #1056, does not describe the code on main. A delegate
+creation's request key is derived from the spawner, the parent and the child
+(`client/delegate_key.key`, used by `client/delegate_host`), so a resend after
+a crash between `reserve` and `claim_delegate` carries the same key as the
+crashed attempt. `reserve_creation` in `client/daemon/manager` finds the
+existing registration by that key, and `claim_delegate_child` writes the
+delegate row for that same session id. The resend therefore adds no session;
+`a_resend_after_a_crash_before_the_delegate_row_finds_the_session_test` pins
+it.
+
+What remains is the sweep. A registration that has no delegate row, because
+the laptop never resends, stays `Reserved` or `Saved`, is not swept, and does
+not count against the delegate cap, which counts delegate rows. The relayed
+top-level path described in this document keeps the limit stated above: an
+unfinished registration there stays listed and counts against `max_sessions`
+until it is deleted on the box's page.

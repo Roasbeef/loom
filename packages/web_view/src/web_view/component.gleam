@@ -4416,7 +4416,7 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
       cache: outlook(shared, line.id),
       running_ms: running_ms(shared, line.id),
       model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
-      own_model: apart_from_main(shared, line.id),
+      own_model: model_of(shared, line.id),
       recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
       answer: row |> option.then(answer_line),
     )
@@ -4459,16 +4459,6 @@ fn model_of(shared: Session(socket), strand: String) -> Option(String) {
   option.then(shared.captured, fn(shown) {
     agent_view.catalogue_name(shown.1, strand)
   })
-}
-
-// The strand's model name when it is not the main strand's. A strand with no
-// configuration in the capture, or a capture with none for `main`, has no
-// difference to report, since an unknown model is not evidence of another one.
-fn apart_from_main(shared: Session(socket), strand: String) -> Option(String) {
-  case model_of(shared, agent_roster.primary), model_of(shared, strand) {
-    Some(main), Some(own) if own != main -> Some(own)
-    _, _ -> None
-  }
 }
 
 /// The first line of a strand's latest answer, or nothing while it has given
@@ -9793,6 +9783,7 @@ pub fn stream_head(
         False, Idle -> "idle"
       },
       turn: turn_started(model),
+      model: model_of(model.shared, model.shared.active_strand),
       goal: goal_words(goal(model)),
     ),
     figures.view(

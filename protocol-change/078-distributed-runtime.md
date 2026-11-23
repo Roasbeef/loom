@@ -1766,3 +1766,46 @@ executor, the incarnation and the reason, when a close it asks for is refused or
 unanswered. Control flow is unchanged. Cleaning up the scope of a session that
 retention deletes, or that the restart sweep removes, is not part of this
 addendum.
+
+
+## Addendum: archiving the stub of a session that moved away (2026-11-23)
+
+The two-machine drive found that the source of a move could not hide the row
+it keeps for the session. `sessions.archive` answered `not_owner` from the
+tombstone, and the relayed page's archive answered a store failure, so the stub
+stayed listed and, for a relayed session, kept counting against its spawner's
+cap, with no command that removed it.
+
+`sessions.archive` of a session whose row is `moved` is now served on the
+source. It records the archive row and leaves the `moved` row as it was, so the
+tombstone still names the owner and `sessions.open`, `sessions.restore`,
+`sessions.delete` and `sessions.move` answer `not_owner` as before, whether the
+stub is archived or not. A session that is `moving` is still refused with
+`moving`. The relayed page's archive (protocol-change/094) follows the same rule and
+frees the spawner's place.
+
+This holds the custody rules because archive is a visibility change and the
+earlier text of this document already says that archive and restore do not
+change custody. The stub carries no state the owner needs: the owner serves the
+session from its own catalogue, and the source's tombstone is a record for
+answering `Owns` and `open`, not an input to the owner's decisions. Nothing is
+forwarded to the owner, and nothing the owner holds is touched. `restore` of a
+moved stub is not served, because an archived stub has nothing to return to
+and the session cannot be served here. If the session later moves back
+(`moved -> imported` under a new op), the import clears the archive row, so a
+session this catalogue serves again is never hidden by an archive made while
+it was away. No wire frame, member or code is added or changed; only the
+answer of `sessions.archive` for this one state moves from `not_owner` to the
+view of the archived registration. The earlier paragraph that lists
+`sessions.archive` among the `not_owner` answers of a finished move applies to
+the other four commands.
+
+This supersedes the statement in protocol-change/108 (the addendum on moved
+sessions) that nothing archives a moved stub and that a relayed stub holds a
+`max_sessions` place until then. Archiving it frees the place. 108 is not
+edited. An archived stub stays in the archived list for good, because its
+restore and delete answer `not_owner` and there is no command that removes it.
+`sessions.isolate` of a moved stub is also refused with `not_owner`, since its
+domain mapping is the one a returning session keeps, and `standing` (the peer
+mail lookup) reads custody before visibility, so an archived stub is still
+`Handed`.

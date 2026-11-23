@@ -88,11 +88,15 @@ item here is for the fidelity pass, in both clients where it applies.
   way back is the small "Back to the inbox" link at the top right. A session's
   page has the inbox's folders ("Everything, by need", "Needs you" and the
   rest) and the New session page does not. The inbox should be one click from
-  every page, in the same place.
+  every page, in the same place. Fixed on Home in `web/fidelity-nav`: the
+  folders are drawn on every centre and the link is gone. The admin page's
+  folders and those of a session page opened from a bare link are still text,
+  because neither page can mint a home ticket.
 - *The sidebar.* Blocked rows lost their names and pushed their menu off the
-  column (fixed in `web/live-fixes`). A lone "box not reachable" line sits
-  under the saved rows with no row of its own. Saved rows show only
-  "laptop" as their second line. The sidebar could not be widened (fixed: it
+  column (fixed in `web/live-fixes`). A lone "box not reachable" line sat
+  under the saved rows with no row of its own, and saved rows showed only
+  "laptop" as their second line (both fixed in `web/fidelity-nav`: the note
+  sits under its section's heading, and a saved row reads `saved · <project>`). The sidebar could not be widened (fixed: it
   now drags, default 232px). Re-check the whole column against the mockup.
 - *The ask thread on Home.*
   - The question is drawn twice: once as the truncated title ("…so the site

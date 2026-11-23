@@ -671,7 +671,11 @@ pub fn a_press_on_a_door_button_in_the_sidebar_closes_the_drawer_test() {
     shell_rule.Pressed("li", "session"),
     shell_rule.Pressed("aside", "sidebar"),
   ])
-  assert shell_rule.presses_door([shell_rule.Pressed("button", "new-session")])
+  assert shell_rule.presses_door([shell_rule.Pressed("button", "rail-new")])
+  assert shell_rule.presses_door([shell_rule.Pressed("button", "folder need")])
+
+  // A folder drawn as text, where the page has no way home, is not a door.
+  assert !shell_rule.presses_door([shell_rule.Pressed("div", "folder")])
   assert shell_rule.presses_door([shell_rule.Pressed("button", "foot-admin")])
   assert shell_rule.presses_door([shell_rule.Pressed("button", "row-manage")])
   assert !shell_rule.presses_door([
