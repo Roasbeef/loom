@@ -58,7 +58,11 @@ The web view has no such loop of its own, since `step.update` is that loop
 for a host with no surfaces.
 
 `attention` is the pure classifier behind live mode's rail: it reads a lane's
-pieces and the register's reviews and lifts what needs the owner.
+pieces and the register's reviews and lifts what needs the owner. The records the
+host hands it (asks, stuck strands, finds) come from the daemon's feed row, which
+already leaves out a stuck strand whose failure the owner dismissed
+(protocol-change/131), so the classifier has no acknowledgement rule of its own: a
+dismissed strand is simply not handed in, and a strand that failed again is.
 
 ## Key Types
 

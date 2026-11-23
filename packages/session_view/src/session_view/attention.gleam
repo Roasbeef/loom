@@ -100,7 +100,9 @@ pub type Record {
   /// An open ask, by its identifier.
   AskRecord(id: String, head: String)
 
-  /// A stuck strand, by its name.
+  /// A stuck strand, by its name. A strand whose failure the owner dismissed is
+  /// never handed in: the daemon's feed leaves it out until it fails again
+  /// (protocol-change/131), so this classifier has no rule of its own for it.
   StuckRecord(strand: String)
 
   /// An open find, by its identifier, with the kind word and a head.

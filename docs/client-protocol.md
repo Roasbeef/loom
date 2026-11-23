@@ -569,7 +569,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:5323`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:5349`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1257,7 +1257,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1671`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1689`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -2069,12 +2069,12 @@ A daemon that predates the command answers `bad_request`, which a client reads a
 "this daemon predates the command". `client/executor_reload.decode` reads the
 reply.
 
-### 3.34 `sessions.attention`, `sessions.saved_attention`, `attention.read`, `attention.answer` and `attention.close_find`
+### 3.34 `sessions.attention`, `sessions.saved_attention`, `attention.read`, `attention.answer`, `attention.close_find` and `attention.dismiss_stuck`
 
 What a person has to decide in a set of resident sessions, what the catalogue
 remembers of a set of saved ones, one record in full, the answer to an ask and
-the closing of a find. All five take the current `epoch` and are refused with
-`stale_epoch` when it is old. The answer is delivered through the session's
+the closing of a find and the dismissal of a stuck strand's failure. All six take
+the current `epoch` and are refused with `stale_epoch` when it is old. The answer is delivered through the session's
 gateway by the same send the web view's home page uses
 (`ui_socket.strand_sender`), which `server.Config` carries as `strand_send`. See
 [Protocol 120](../protocol-change/120-attention-feed.md) and
@@ -2097,8 +2097,11 @@ advisor, has no current operation, and its latest terminal result is a failed
 run. A stuck item is `strand` and `reason` (the run's error code, a fixed word),
 and, when it has them, `failed_at` (Unix milliseconds of the failed response
 entry the run ended on, absent when there is no such entry), `retry_after_ms`
-(the provider's wait, when it named one) and `parent` (the spawning strand). A
-resident that does not answer in 2,000 ms, or answers a row over 2,400 bytes, is
+(the provider's wait, when it named one) and `parent` (the spawning strand), and
+`operation`, the failed run's operation identifier in canonical UUID text, which
+`attention.dismiss_stuck` names ([Protocol 131](../protocol-change/131-dismiss-stuck-strand.md)).
+A strand whose failed run the owner dismissed is not listed and is not in `count`
+until it fails again. A resident that does not answer in 2,000 ms, or answers a row over 2,400 bytes, is
 a row with only `session_id` and `state: "unknown"`.
 
 `sessions.saved_attention` takes `sessions`, 1 to 24 distinct canonical ids,
@@ -2185,6 +2188,20 @@ revision. The owner and an Operator member may close; an observer is `forbidden`
 A find that is already closed, or whose revision is not the one given, is
 `conflict`. Nothing is sent to any strand.
 
+`attention.dismiss_stuck` takes `session`, `strand` (at most 128 bytes),
+`operation` (at most 64 bytes, the `operation` of the stuck item the caller read)
+and `epoch`, and answers `{"strand","operation"}`. It records that the person has
+seen that failure and set it aside: the strand is left out of `stuck` until a run
+of it fails again, which is a new operation. Nothing is sent to the strand and
+nothing about it changes. The owner and an Operator member may dismiss, the
+principals that may retry the strand; an observer is `forbidden`, and a session
+the credential does not hold is `not_found`. The session must be resident
+(`not_resident` otherwise). A strand with no failed result, `main` and the
+advisor's strand are `not_found`; a strand that has run since, or failed again
+with another operation, is `conflict`, and a dismissal of a failure already
+dismissed succeeds and changes nothing. `unavailable` is a store that could not
+be read or written.
+
 `approval.read` takes `session` and answers `{"approvals": {"count", "items"}}`:
 the session's pending approvals as evidence, at most four items, oldest id first,
 with `count` the number pending. Each item is `id`, `revision` (the sequence
@@ -2203,8 +2220,9 @@ session that is not running. It never decides, claims or consumes an approval,
 which is decided on the session's own page.
 
 `sessions.attention`, `sessions.saved_attention`, `attention.read` and
-`approval.read` are reads and remain available during a drain. `attention.answer`
-and `attention.close_find` write one record and are refused during a drain.
+`approval.read` are reads and remain available during a drain. `attention.answer`,
+`attention.close_find` and `attention.dismiss_stuck` write one record and are
+refused during a drain.
 
 `session.brief` takes `session`, an optional `since` (Unix milliseconds, default
 0) and the current `epoch`, and answers `{"brief": {...}}`: a bounded account of
@@ -4915,7 +4933,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:695`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:710`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one
