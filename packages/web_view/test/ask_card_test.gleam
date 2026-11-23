@@ -193,7 +193,8 @@ pub fn an_operators_card_is_in_the_dock_with_the_form_and_send_test() {
 
   // The card is inside the dock, after the composer.
   let dock = index_of(html, "<footer class=\"dock\"")
-  let composer = index_of(html, "class=\"composer")
+  let composer =
+    index_of(html, "<form aria-label=\"Composer\" class=\"composer")
   let ask = index_of(html, "Asks waiting")
   assert dock > 0 && dock < composer && composer < ask
 }
@@ -262,23 +263,46 @@ pub fn an_answered_ask_is_not_drawn_test() {
 }
 
 // The turn that called `ask` is the lane's row for the ask: tinted, tagged
-// `lifted · Ask`, and the rail's press names it.
+// `lifted · Ask`, and the rail's press names it. An earlier turn is not.
 pub fn the_turn_that_asked_is_tinted_and_tagged_in_the_lane_test() {
-  let model =
-    component.new(start([], True))
-    |> component.apply([lane_fixture.asking(first_id, "Fold or separate?")])
-    |> lane_fixture.opened
-  let html =
-    step(
-      model,
-      operator_page.Observed(
-        component.RailRead(Ok(row([feed_ask(first_id, 12_500, "main")]))),
-      ),
-    )
-    |> operator
+  let html = laned(12_500, "main")
 
   assert string.contains(html, "needs-you")
-  assert string.contains(html, "lifted · Ask")
+  assert count(html, "lifted · Ask") == 1
+
+  // The tag is on the later row: the earlier turn's words and the asking
+  // prompt come first, and the one tag follows them both.
+  assert index_of(html, "Hi.") < index_of(html, "ask me")
+  assert index_of(html, "ask me") < index_of(html, "lifted · Ask")
+}
+
+// An ask stamped before every row of the lane has no row to tag.
+pub fn an_ask_older_than_every_row_tags_nothing_test() {
+  assert count(laned(500, "main"), "lifted · Ask") == 0
+}
+
+// An ask from a strand that is not on screen is not matched to a turn of the
+// strand that is.
+pub fn an_ask_from_another_strand_tags_nothing_test() {
+  assert count(laned(12_500, "sub:a"), "lifted · Ask") == 0
+}
+
+// The page with an earlier turn and the asking turn in its lane, and one open
+// ask of `strand` recorded at `at`.
+fn laned(at: Int, strand: String) -> String {
+  let model =
+    component.new(start([], True))
+    |> component.apply([
+      lane_fixture.asking_after_a_turn(first_id, "Which branch?"),
+    ])
+    |> lane_fixture.opened
+  step(
+    model,
+    operator_page.Observed(
+      component.RailRead(Ok(row([feed_ask(first_id, at, strand)]))),
+    ),
+  )
+  |> operator
 }
 
 fn index_of(html: String, needle: String) -> Int {

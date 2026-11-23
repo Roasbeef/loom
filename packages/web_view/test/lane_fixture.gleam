@@ -1351,6 +1351,69 @@ pub fn asking(id: String, prompt: String) -> session_channel.Update {
   )
 }
 
+/// A capture of an earlier turn, a greeting answered at 2 s, and then the turn
+/// `asking` describes, whose ask is recorded at 12.5 s. The rows before the
+/// asking turn are the ones an ask must not be matched to.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.asking_after_a_turn("ask-0123456789", "Which branch?")
+/// ```
+pub fn asking_after_a_turn(
+  id: String,
+  prompt: String,
+) -> session_channel.Update {
+  let outcome =
+    message.ToolResultMessage(
+      "a1",
+      "ask",
+      [
+        message.ToolResultText(
+          "asked as " <> id <> ". End your turn now; the answer arrives later.",
+          None,
+        ),
+      ],
+      None,
+      None,
+      None,
+      False,
+      12_000,
+    )
+  capture_of(
+    [
+      item(1, 1000, said("hello", None)),
+      item(2, 2000, assistant([message.AssistantText("Hi.", None)])),
+      item(3, 10_000, said("ask me", None)),
+      item(
+        4,
+        11_000,
+        assistant([
+          call(
+            "a1",
+            "ask",
+            json.Object([
+              #(
+                "questions",
+                json.Array([
+                  json.Object([
+                    #("prompt", json.String(prompt)),
+                    #("kind", json.String("confirm")),
+                  ]),
+                ]),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+      item(5, 12_000, outcome),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
 /// A capture of a turn that searches history for `deploy` and gets back
 /// `details` (the record the `history_search` tool writes, or whatever a
 /// damaged record held), then the answer: the rows a recall step draws.
