@@ -24,7 +24,10 @@ usable from the web.
 - `web/live-fixes` fixes what the owner found on that release: a blocked
   sidebar row whose notice squeezed its name to nothing and pushed its menu
   off the column, the stream's strand dot touching the time, and the sidebar
-  that could not be dragged wider (`grip_rule` now has a sidebar side).
+  that could not be dragged wider (`grip_rule` now has a sidebar side, 180 to
+  480px, default 232px, saved under `loom.sidebar.width.v1`; the column had
+  been 184px on every page, because a later `.loom-inbox` rule overrode the
+  288px base rule).
 - loom-desktop (`Roasbeef/loom-desktop`): #1 to #4 are merged. That covers
   the inbox port, answering asks, and native slice 1 (one needs-you count on
   every surface, approvals decided only beside their evidence). Slice 2 (the
@@ -76,6 +79,46 @@ thread and in the Inspector's lifted rail, which starts hidden (⌥⌘I);
 the composer but never an ask. Give an ask the same place, with its answer
 form (`AskAnswer.swift`). In the web view, check the session page with the
 rail closed and at phone width.
+
+**What the owner found on the release, 2026-11-23, in their words where it
+matters.** The owner's verdict: "the site really needs a lot of work". Every
+item here is for the fidelity pass, in both clients where it applies.
+
+- *Navigation.* The New session page's sidebar has no Inbox entry; the only
+  way back is the small "Back to the inbox" link at the top right. A session's
+  page has the inbox's folders ("Everything, by need", "Needs you" and the
+  rest) and the New session page does not. The inbox should be one click from
+  every page, in the same place.
+- *The sidebar.* Blocked rows lost their names and pushed their menu off the
+  column (fixed in `web/live-fixes`). A lone "box not reachable" line sits
+  under the saved rows with no row of its own. Saved rows show only
+  "laptop" as their second line. The sidebar could not be widened (fixed: it
+  now drags, default 232px). Re-check the whole column against the mockup.
+- *The ask thread on Home.*
+  - The question is drawn twice: once as the truncated title ("…so the site
+    shows the gap state? N…") and once in bold above its card, sitting outside
+    the card's border.
+  - An option's description sits beside its label for one option and under it
+    for the others.
+  - "Other" is a radio and a separate text field.
+  - The agent's message has a dashed border, which the house rules forbid.
+  - Section headers are tracked capitals. "Message pull the lastest version of
+    the repo -- where are we in teh" puts the session's whole first prompt in
+    a capitalised header.
+  - The verdict buttons, the stage buttons and Open session are three button
+    styles in one pane.
+- *An answer is delivered as raw JSON.* After the owner answered, the session's
+  transcript showed a user message "Answer to ask-b0244f75fb:" followed by a
+  fenced `json` block: `{"ask":…,"answers":{"q1":null},"other":{"q1":"already
+  answered"}}`. Both clients must draw an answer as the question and the option
+  chosen (or the Other text), never the wire record. Check where the delivery
+  text is built in the daemon (the answer's delivery into the session,
+  protocol-change/120) as well as how each client draws it. The model should
+  still receive what it needs.
+- *An ask the owner could not see* (above).
+- *The stream.* The strand dot sat on the time (moved in `web/live-fixes`); the
+  mockup draws no dot at all.
+- *Folder choice.* Only a typed path; see item 2 under "Next".
 
 **Smaller follow-ups the owner's passkey test raised.**
 
