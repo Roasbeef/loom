@@ -2668,7 +2668,11 @@ fn delegate_request(
     parent_session:,
     child: "",
     creation: manager.Creation(
-      request_key: "delegate:" <> spawner <> ":" <> parent_session,
+      request_key: delegate_key.key(delegate_key.Key(
+        spawner,
+        parent_session,
+        "",
+      )),
       workspace: "repo",
       name: "delegate " <> spawner <> " " <> parent_session,
       configuration: "",
@@ -2738,15 +2742,6 @@ pub fn a_resend_after_a_crash_before_the_delegate_row_finds_the_session_test() {
   let registry = start(store, 4, fn(record, _) { Ok(record.id) })
   let request = delegate_request("laptop", 950, 2)
 
-  // The helper's key is the production derivation, so the test exercises the
-  // key a real resend would carry.
-  assert request.creation.request_key
-    == delegate_key.key(delegate_key.Key(
-      "laptop",
-      request.parent_session,
-      request.child,
-    ))
-
   // The crashed attempt registered the session and died before the row.
   let assert Ok(manager.View(registration: crashed, ..)) =
     manager.create_scoped(
@@ -2761,13 +2756,20 @@ pub fn a_resend_after_a_crash_before_the_delegate_row_finds_the_session_test() {
   assert catalogue.delegate_for(store, "laptop", request.parent_session)
     == Ok(option.None)
 
+  // The crash also lost the registry's live slot. A fresh registry on the same
+  // store knows the session only from the catalogue, as a restarted daemon does,
+  // so the resend takes the path that prepares a slot rather than the admit path
+  // of a registry that still holds one.
+  stop(registry)
+  let restarted = start(store, 4, fn(record, _) { Ok(record.id) })
+
   // The resend claims the row for the registration that already exists.
   let assert Ok(manager.Delegated(session_id:, ..)) =
-    manager.delegate_session(registry, request)
+    manager.delegate_session(restarted, request)
     as "the resend finds the session"
   assert session_id == crashed.id
   assert catalogue.delegates_held(store, "laptop") == Ok(1)
-  stop(registry)
+  stop(restarted)
   assert catalogue.close(store) == Ok(Nil)
 }
 
