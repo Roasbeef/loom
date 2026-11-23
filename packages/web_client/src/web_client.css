@@ -2348,7 +2348,7 @@
   button.crumb:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);color:var(--color-fg);}
   button.crumb:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .crumb[aria-current="page"]{color:var(--color-fg);font-weight:550;}
-  .crumb-sep{color:var(--color-fg-faint);}
+  .crumb-sep{color:var(--color-fg-quiet);}
   .pick-rows{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;}
   .pick-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;margin:4px 2px 0 2px;padding:8px 4px 2px 4px;border-top:1px solid var(--color-divider);}
   .pick-alts{display:flex;flex-wrap:wrap;gap:4px;}
