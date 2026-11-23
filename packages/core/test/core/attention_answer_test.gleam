@@ -269,6 +269,24 @@ pub fn the_prompt_reads_each_question_with_its_answer_test() {
   assert !string.contains(text, "```")
 }
 
+pub fn every_kind_of_line_ending_is_indented_under_the_number_test() {
+  let assert Ok(values) =
+    attention_answer.check(
+      ask(),
+      wire(list.key_set(good(), "q2", json.Null), [
+        #("q2", json.String("one\r\ntwo\rthree\nfour")),
+      ]),
+    )
+    as "a valid answer"
+  let text = attention_answer.prompt_text(ask(), values)
+
+  assert string.contains(
+    text,
+    "Other (not one of the options): one\n   two\n   three\n   four\n",
+  )
+  assert !string.contains(text, "\r")
+}
+
 pub fn a_confirm_answered_no_and_a_picked_label_are_worded_test() {
   let assert Ok(values) =
     attention_answer.check(

@@ -169,9 +169,14 @@ fn quoted(label: String) -> String {
   "\"" <> label <> "\""
 }
 
-/// Text whose later lines are indented three spaces, under the number.
+/// Text whose later lines are indented three spaces, under the number. A
+/// carriage return, alone or before a line feed, is a line break too: left in
+/// place it would move the cursor in a terminal and skip the indent.
 fn indented(text: String) -> String {
-  string.replace(text, "\n", "\n   ")
+  text
+  |> string.replace("\r\n", "\n")
+  |> string.replace("\r", "\n")
+  |> string.replace("\n", "\n   ")
 }
 
 // --- the submitted object ----------------------------------------------------
