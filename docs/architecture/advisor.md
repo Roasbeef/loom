@@ -331,7 +331,7 @@ name, so a verdict cannot be attributed to a strand that did not produce
 it. `judge` (`client/advisor.gleam:1652`) refuses any caller whose name
 is not `advisor`. The cost is set by the emission guard, described below.
 
-`decode_verdict` (`tools/advise.gleam:230`) is total and decodes the
+`decode_verdict` (`tools/advise.gleam:241`) is total and decodes the
 verdict and its text as one pair, because half the failure modes are
 disagreements between them. A `nudge` with nothing to say has no advice
 in it. A `quiet` carrying text is a model that chose to say something and

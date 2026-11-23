@@ -158,9 +158,6 @@ pub type Presses(message) {
     open: fn(String) -> message,
     /// The link to the full session list was pressed.
     listing: message,
-    /// The link back to the inbox was pressed. It is `None` on a page whose
-    /// inbox is not what it would land on, which draws no link.
-    inbox: Option(message),
   )
 }
 
@@ -398,28 +395,16 @@ fn heading(history: History) -> Element(message) {
   }
 }
 
-/// The links to the other lists, in a row above the heading: the full session
-/// list once there are sessions to list, and the way back to the inbox when the
-/// page has an inbox to return to. A daemon with neither draws no row.
+/// The link to the full session list, in a row above the heading, once there are
+/// sessions to list. A daemon with none draws no row. The way back to the inbox
+/// is the rail's folders, which every page of the home draws.
 fn links(pane: Pane(message)) -> Element(message) {
-  // The list link has something to list only once a session exists.
-  let to_list = case pane.history {
-    NoSessions -> []
-    HasSessions -> [
-      link("All sessions", pane.presses.listing),
-    ]
-  }
-
-  // The inbox link exists only on a page that has an inbox to return to.
-  let to_inbox = case pane.presses.inbox {
-    Some(back) -> [link("Back to the inbox", back)]
-    None -> []
-  }
-
-  // A row with no link in it takes no room.
-  case list.append(to_list, to_inbox) {
-    [] -> element.none()
-    row -> html.nav([attribute.class("new-links")], row)
+  case pane.history {
+    NoSessions -> element.none()
+    HasSessions ->
+      html.nav([attribute.class("new-links")], [
+        link("All sessions", pane.presses.listing),
+      ])
   }
 }
 

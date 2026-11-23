@@ -299,10 +299,11 @@ page keys and nonces, and the relay into the session's gateway.
   `Model.delivered`, which keys the box so it is drawn empty. The form submits
   beneath `table_path`, which `home_owner_accepts` already admits for
   `Submitting`, so no admission is added. `ShowingInbox` sets `centre_choice`
-  to `Decided(InboxCentre)`; `inbox_return` offers it ("‹ Inbox" in `home_table`,
-  "Back to the inbox" in the composer) on a list or composer, whether the
+  to `Decided(InboxCentre)`; `inbox_return` offers it ("‹ Inbox" in `home_table`) on a list, whether the
   centre is `Decided` as anything but `InboxCentre` or still `Awaiting`, while
-  the inbox has content. The centre's first child is an empty node, so
+  the inbox has content. The rail's folders (`rail_folders`) are drawn on
+  every centre, and `FolderPicked` brings the inbox to the centre, closing a
+  ticket or a relayed page. The centre's first child is an empty node, so
   the table keeps its path; what the page says about a press is a `Note`
   (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
   its workspace's heading when the row is gone, or under `Sessions`, and it

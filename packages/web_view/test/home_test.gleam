@@ -580,14 +580,14 @@ pub fn an_observer_homes_only_running_rows_carry_a_press_test() {
   let #(observer, _) =
     opened(start_with(home.ObserverCeiling, fn() { home.Listed(listing()) }))
   let keys = handlers(home.view(observer))
-  assert list.length(keys) == 4
+  assert list.length(keys) == 5
   assert list.all(keys, beneath_the_two_regions)
   assert list.length(
       list.filter(keys, string.starts_with(_, home.table_path <> "\t")),
     )
     == 2
   let html = element.to_string(home.view(observer))
-  assert list.length(string.split(html, "<button")) == 7
+  assert list.length(string.split(html, "<button")) == 8
   assert !string.contains(html, "<a ")
   assert !string.contains(html, "<form")
   assert !string.contains(html, "href")
@@ -613,16 +613,16 @@ pub fn an_operator_home_presses_saved_rows_too_test() {
   let #(operator, _) =
     opened(start_with(home.OperatorCeiling, fn() { home.Listed(with_blocked) }))
   let keys = handlers(home.view(operator))
-  assert list.length(keys) == 8
+  assert list.length(keys) == 9
   assert list.all(keys, beneath_the_two_regions)
   let html = element.to_string(home.view(operator))
-  assert list.length(string.split(html, "<button")) == 11
+  assert list.length(string.split(html, "<button")) == 12
   assert string.contains(html, "title=\"Resume this session\"")
   assert string.contains(html, "stuck")
 
   let #(observer, _) =
     opened(start_with(home.ObserverCeiling, fn() { home.Listed(with_blocked) }))
-  assert list.length(handlers(home.view(observer))) == 4
+  assert list.length(handlers(home.view(observer))) == 5
 }
 
 // A resume press hands the session to the daemon's task and returns: the row
@@ -639,12 +639,12 @@ pub fn a_resume_marks_its_row_and_a_second_press_asks_nothing_test() {
   assert string.contains(html, "Opening…")
 
   // Only the two running rows keep a press, in each region.
-  assert list.length(handlers(home.view(model))) == 4
+  assert list.length(handlers(home.view(model))) == 5
 
   let model = run(model, home.Resuming("D"))
   let model = run(model, home.Resuming("C"))
   assert process.receive(asked, 0) == Error(Nil)
-  assert list.length(handlers(home.view(model))) == 4
+  assert list.length(handlers(home.view(model))) == 5
 }
 
 // The task's answer arrives as a message from the task's own process: a ticket
@@ -663,7 +663,7 @@ pub fn the_tasks_answer_departs_or_words_the_refusal_test() {
   let html = drawn(model)
   assert string.contains(html, "to=\"" <> ticket <> "\"")
   assert string.contains(html, "Opening…")
-  assert list.length(handlers(home.view(model))) == 4
+  assert list.length(handlers(home.view(model))) == 5
 
   let #(model, _) =
     opened(
@@ -676,7 +676,7 @@ pub fn the_tasks_answer_departs_or_words_the_refusal_test() {
   assert string.contains(html, sessions.reason_words(sessions.NotOpened))
   assert !string.contains(html, "Opening…")
   assert !string.contains(html, " to=")
-  assert list.length(handlers(home.view(model))) == 8
+  assert list.length(handlers(home.view(model))) == 9
 }
 
 // A page minted to read has no resume to ask for, even if a frame named a
@@ -806,7 +806,7 @@ pub fn the_frame_is_the_session_pages_without_a_panel_test() {
     html,
     "<aside aria-label=\"Sessions\" class=\"sidebar\"",
   )
-  assert string.contains(html, "<p class=\"brand\"><span>Loom</span>")
+  assert string.contains(html, "rail-folders")
   assert !string.contains(html, "aria-current=\"true\"")
   assert !string.contains(html, "Strand panel")
 
@@ -1275,7 +1275,7 @@ pub fn a_page_without_the_capability_draws_no_creation_control_test() {
       ),
     )
   assert drawn(model) == html
-  assert list.length(handlers(home.view(model))) == 8
+  assert list.length(handlers(home.view(model))) == 9
 }
 
 // The owner's page has one button under each workspace, one more for another
@@ -1289,8 +1289,8 @@ pub fn the_owner_has_a_button_under_each_workspace_test() {
   assert !string.contains(html, "<form")
   let keys = handlers(home.view(model))
 
-  // The sidebar's "New session" button is one more.
-  assert list.length(keys) == 13
+  // The rail adds "Everything, by need" and its "+ New session".
+  assert list.length(keys) == 14
   assert list.all(keys, beneath_the_two_regions)
 }
 

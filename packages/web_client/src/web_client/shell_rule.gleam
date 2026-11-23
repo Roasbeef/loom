@@ -343,20 +343,21 @@ pub type Pressed {
 }
 
 /// The classes of the sidebar's buttons that leave what the page shows: a
-/// session's row, which opens or resumes it, "New session", the foot's "Admin"
-/// and a row menu's "Rename, move or delete", which show another pane. Pressing
+/// session's row, which opens or resumes it, an inbox folder and the rail's
+/// "+ New session", which change the home's centre, the foot's "Admin" and a
+/// row menu's "Rename, move or delete", which show another pane. Pressing
 /// one of them is the person finishing with the drawer, so it closes. Every other
 /// button in the column changes the column in place: a machine pill narrows the
 /// list, the saved group's toggle and an idle group's "Show more" fold rows open
 /// or shut, and a row menu's archive control asks its question. The person is
 /// still working in the drawer, so those leave it open.
 pub const door_classes = [
-  "session-open", "new-session", "foot-admin", "row-manage",
+  "session-open", "folder", "rail-new", "foot-admin", "row-manage",
 ]
 
 /// Whether a click inside the sidebar was on a button that leaves what the page
-/// shows, from the nodes the click passed through. A session's row, "New
-/// session", the foot's "Admin" and a row menu's "Rename, move or delete" are each
+/// shows, from the nodes the click passed through. A session's row, a folder,
+/// "+ New session", the foot's "Admin" and a row menu's "Rename, move or delete" are each
 /// a button of a door class, and pressing one closes the drawer wherever in the
 /// button the click landed. A click on the sidebar's padding, a heading or a
 /// button that works in place (a pill, the saved group's toggle, "Show more")

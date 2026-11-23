@@ -533,15 +533,6 @@
   /* The list's title stays in the page for assistive technology and is not
      drawn, since the group headings are the labels a sighted reader needs. */
   .sidebar-title{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
-  .side-top{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;padding:12px 10px 4px;}
-  .side-top .brand{display:flex;align-items:center;gap:8px;margin:0;padding:2px 8px 10px;font:600 14px/1.4 var(--font-sans);}
-  .side-top .brand{flex-wrap:wrap;gap:2px 8px;}
-  .side-top .here{display:flex;align-items:center;gap:6px;flex:1 0 100%;min-width:0;color:var(--color-fg-quiet);font:400 12.5px/1.4 var(--font-sans);}
-  .side-top .here-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .dot-ok{display:inline-block;flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--color-added);}
-  .new-session{display:flex;align-items:center;gap:10px;width:100%;height:36px;margin:0;padding:0 10px;border:0;border-radius:8px;background:color-mix(in srgb,var(--color-fg) 8%,transparent);color:var(--color-fg);font:13.5px/1 var(--font-sans);text-align:left;cursor:pointer;}
-  .new-session:hover{background:color-mix(in srgb,var(--color-fg) 12%,transparent);}
-  .new-session:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   /* The machine pills: one row that wraps nowhere and scrolls sideways when the
      machines outnumber the width. Each is a real button that says whether it is the
      one chosen. */
@@ -910,6 +901,10 @@
   .folder.need .n{padding:0 6px;border-radius:10px;background:var(--color-signal);color:var(--color-on-signal);font-weight:700;}
   .rail-heading{flex:0 0 auto;margin:18px 18px 6px 18px;color:var(--color-fg-quiet);font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;}
   loom-shell.loom-inbox .state-heading{display:none;}
+  /* A section of another orchestrator keeps its heading in the rail, drawn as the
+     rail's own "Watch live" heading, so the line saying the box is not reachable
+     sits under the name it describes and not alone under the saved rows. */
+  loom-shell.loom-inbox .relayed-side-group .state-heading{display:flex;margin:18px 8px 6px 8px;padding:0;font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;}
   loom-shell.loom-inbox section.state-group{margin:0;}
   loom-shell.loom-inbox li.session{min-height:0;border-radius:6px;font-size:13px;}
   loom-shell.loom-inbox li.session:hover{background:var(--color-bg-raised);}
@@ -2314,7 +2309,7 @@
      the quiet line under a heading that says a box is not answering, and the dimmed
      rows of a box whose last list is what is drawn. The `relayed-side-` prefix keeps
      them apart from the relayed session page's own classes above. */
-  .relayed-side-note{margin:0;padding:0 10px 4px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .relayed-side-note{margin:0 8px 6px 8px;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .relayed-side-quiet ul.sessions{opacity:.65;}
   /* A chip's list. The scrim sits under it and closes it when pressed. */
   .pop-scrim{position:fixed;z-index:4;inset:0;margin:0;padding:0;border:0;background:transparent;cursor:default;}
@@ -2450,7 +2445,6 @@
     .pop-scrim{z-index:20;background:rgba(0,0,0,.45);}
     .opt{min-height:48px;}
     .fp{height:36px;}
-    .new-session{height:44px;}
     .session-open,li.session:not(:has(>.session-open)){min-height:48px;}
   }
   @media (prefers-reduced-motion:reduce){*:not(.arming):not(.arm-note){transition:none!important;animation:none!important;}}

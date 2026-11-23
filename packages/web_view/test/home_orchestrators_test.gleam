@@ -552,6 +552,13 @@ pub fn a_box_that_stops_answering_keeps_its_last_rows_test() {
   assert string.contains(html, "box not reachable, seen")
   assert string.contains(html, "fix retry")
 
+  // The line is the heading's own second line, so it never stands alone under
+  // the rows above it: nothing sits between "On box" and the words.
+  assert string.contains(
+    html,
+    "</h3><p class=\"relayed-side-note\">box not reachable, seen",
+  )
+
   // Hearing from it again clears the line.
   let model =
     run(

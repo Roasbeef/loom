@@ -2072,14 +2072,24 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Widening -> #(Model(..model, filter: listing.Everywhere), effect.none())
 
-    // A folder is a filter on what the page draws and nothing else. A press
-    // for a folder the page does not list changes nothing.
+    // A folder narrows the inbox's list and brings the inbox to the centre: the
+    // rail draws the folders on every centre, so a press from the composer, the
+    // list, a ticket or a relayed session is the way back. A press for a folder
+    // the page does not list changes nothing.
     FolderPicked(folder:) ->
       case
         folder == inbox_rule.Everything
         || list.any(folder_counts(model), fn(entry) { entry.0 == folder })
       {
-        True -> #(Model(..model, folder:), effect.none())
+        True -> #(
+          Model(
+            ..model,
+            folder:,
+            pane: inbox_pane(model),
+            centre_choice: Decided(InboxCentre),
+          ),
+          effect.none(),
+        )
         False -> #(model, effect.none())
       }
 
@@ -5128,6 +5138,17 @@ fn ticket_heard(
   }
 }
 
+/// The pane under the inbox when a folder is pressed. The composer and the list
+/// keep their state beneath the inbox; a ticket's page and a relayed session
+/// are the centre's whole subject, so leaving for the inbox closes them as their
+/// own way back does.
+fn inbox_pane(model: Model) -> Pane {
+  case model.pane {
+    Ticketed(_) | Relayed(_) -> resting_pane(model)
+    NewSession | SessionList -> model.pane
+  }
+}
+
 /// The centre the page returns to when a ticket page closes: the composer for the
 /// owner's operating page, and the list otherwise.
 fn resting_pane(model: Model) -> Pane {
@@ -7234,7 +7255,6 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       open: Opening,
       depart: Composed(composer.OpenedUnsent),
       listing: ShowingList,
-      inbox: inbox_return(model),
     ),
   )
 }
@@ -7645,37 +7665,36 @@ fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
   }
 }
 
-/// The rail's folders, drawn when the centre is the inbox and nowhere else.
-/// "Everything, by need" is always first, and each group that holds a thread
-/// follows with its count. The note says how many sessions the counts read.
-fn rail_folders(model: Model) -> Option(sidebar.Folders(Msg)) {
-  // The folders belong to the inbox, so any other centre draws none.
-  case landed_inbox(model) {
-    False -> None
-    True -> {
-      let tally = attention_rule.tally(standings(model))
+/// The rail's folders, drawn on the home page whatever its centre is, so the
+/// inbox is one press away from the composer, the list, a ticket and a relayed
+/// session as it is from a session's page. "Everything, by need" is always
+/// first, and each group that holds a thread follows with its count. The note
+/// says how many sessions the counts read. A folder is marked as the one the
+/// list is narrowed to only while the inbox is the centre, since otherwise no
+/// folder is on screen.
+fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
+  let tally = attention_rule.tally(standings(model))
 
-      // The counts looked at saved sessions only where a catalogue summary
-      // supplied some.
-      let saved = case model.start.attention, tally.from_catalogue {
-        Some(_), found if found > 0 -> inbox_rule.SavedFromCatalogue
-        _, _ -> inbox_rule.SavedUnchecked
-      }
-
-      Some(sidebar.Folders(
-        items: [
-          #(inbox_rule.Everything, Some(0)),
-          ..list.map(folder_counts(model), fn(entry) {
-            #(entry.0, Some(entry.1))
-          })
-        ],
-        current: Some(shown_folder(model)),
-        pick: Some(FolderPicked),
-        note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
-        running: running_sessions(model),
-      ))
-    }
+  // The counts looked at saved sessions only where a catalogue summary
+  // supplied some.
+  let saved = case model.start.attention, tally.from_catalogue {
+    Some(_), found if found > 0 -> inbox_rule.SavedFromCatalogue
+    _, _ -> inbox_rule.SavedUnchecked
   }
+
+  sidebar.Folders(
+    items: [
+      #(inbox_rule.Everything, Some(0)),
+      ..list.map(folder_counts(model), fn(entry) { #(entry.0, Some(entry.1)) })
+    ],
+    current: case landed_inbox(model) {
+      True -> Some(shown_folder(model))
+      False -> None
+    },
+    pick: Some(FolderPicked),
+    note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
+    running: running_sessions(model),
+  )
 }
 
 /// The folders with something in them and their counts, in the rail's order. A
