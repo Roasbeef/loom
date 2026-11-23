@@ -102,7 +102,7 @@ words for a pending-proposal badge (`session_words(n)`), not a proposals engine.
   (`web_view/view/sidebar.gleam:1-14`; `web_view/listing.gleam:107-121`, `bucket` at `listing.gleam:291`, quiet group folds
   after `idle_shown = 5`, line 52). It re-reads activity every 5 s for the rows it lists
   (`web_view/component.gleam:490`, read started near `component.gleam:1939-1950`). The page's own session is read from
-  its lane (`session_activity`), not the poll (`component.gleam:521-489`).
+  its lane (`session_activity`), not the poll (`component.gleam:528-496`).
 - A count of sessions waiting on the person is written as the shell's `waiting` attribute (max 10) so a phone
   shows a badge on the menu button while the sidebar is shut (`view/shell.gleam:189-203`).
 - **NOTE (doc drift):** `web-design.md` §2.2 (line 140) says other sessions' rows carry no activity ("no new
