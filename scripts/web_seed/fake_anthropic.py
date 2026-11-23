@@ -128,6 +128,8 @@ def main_turn(messages):
     warm = usage(1400, 40000, 600, 600)
     if results:
         names = {called(messages, r.get("tool_use_id")) for r in results}
+        if "fs_read" in names:
+            return [("text", "The check failed: the fold-order test file is missing.")], "end_turn", warm
         if "agent_spawn" in names:
             spawned = next(r for r in results if called(messages, r.get("tool_use_id")) == "agent_spawn")
             handle = re.search(r"Handle: (\S+)", text_of(spawned.get("content", "")))
@@ -158,6 +160,25 @@ def main_turn(messages):
                 ("text", "Before I go further I need one call from you."),
                 ("tool_use", "ask", {"questions": ASK_QUESTIONS, "why": "The fold order decides what I build next."}),
             ],
+            "tool_use",
+            warm,
+        )
+    if "fail the check" in said.lower():
+        # Two reads of a file that does not exist: the turn's divider counts
+        # two failed steps, and the rail's failed-turn card names the last.
+        return (
+            [
+                ("tool_use", "fs_read", {"path": "src/fold_order_test.gleam"}),
+                ("tool_use", "fs_read", {"path": "src/missing_fold_order_test.gleam"}),
+            ],
+            "tool_use",
+            warm,
+        )
+    if "go stuck" in said.lower():
+        # A sub-agent whose provider answers 429, so its strand stops on a
+        # failed run and the inbox draws a stuck thread for it.
+        return (
+            [("tool_use", "agent_spawn", {"purpose": "rate limit review", "brief": "rate limit review of the meter pricing"})],
             "tool_use",
             warm,
         )
@@ -227,6 +248,14 @@ class Handler(BaseHTTPRequestHandler):
         messages = body.get("messages", [])
         if model == "fake-main" and messages:
             sys.stderr.write("fake-main last message: %s\n" % json.dumps(text_of(messages[-1].get("content", ""))))
+        if model == "fake-sub" and "rate limit" in json.dumps(messages):
+            payload = json.dumps({"type": "error", "error": {"type": "rate_limit_error", "message": "rate limited"}}).encode()
+            self.send_response(429)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if model == "fake-advisor":
             blocks, stop, used = advisor_turn(messages)
         elif model == "fake-sub":
