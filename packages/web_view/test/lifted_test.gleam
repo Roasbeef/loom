@@ -286,7 +286,7 @@ pub fn every_rail_handler_is_at_the_admitted_shape_test() {
   let without_approval =
     component.new(page_fixture.start())
     |> component.apply([lane_fixture.captured(10, None)])
-  list.each([lifting(), without_approval], fn(model) {
+  list.each([lifting(), open(lifting(), "9.0"), without_approval], fn(model) {
     let keys = rail_handlers(component.view(model))
     assert list.length(keys) == 2
     assert list.all(keys, fn(key) {
