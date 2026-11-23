@@ -33,12 +33,14 @@
 //// there is no dock and no deciding, so the row says that the operator
 //// decides, and carries no jump.
 ////
-//// An insight is drawn whole until the reader opens it once, and folded to
-//// one line for the rest of the page's life afterwards. The opened keys are
-//// the server model's (`component.RailOpened`); nothing is stored in the
-//// browser and nothing records what the reader has seen. The press that opens
-//// an insight is the first handler this module draws, and it asks the server
-//// to remember a key the server drew into the handler.
+//// An insight is drawn whole until the reader presses it, and folded to one
+//// line afterwards. A second press draws it whole again, so a folded insight
+//// can be read once more. The opened keys are the server model's
+//// (`component.RailOpened`), which a press adds the key to or removes it from;
+//// nothing is stored in the browser and nothing records what the reader has
+//// seen. Every insight's press is a handler at the same path, whether the
+//// insight is whole or folded, and it asks the server to toggle a key the
+//// server drew into the handler.
 ////
 //// ## Actions
 ////
@@ -157,8 +159,9 @@ pub type Rail(message) {
     /// The catalogue's name for a listed session, given its identity, or
     /// `None` for one the page does not list.
     names: fn(String) -> Option(String),
-    /// The message a press on an unopened insight sends, given its key. It
-    /// is `None` for the sheet, whose rows are not handlers.
+    /// The message a press on an insight sends, given its key: it folds a
+    /// whole insight and unfolds a folded one. It is `None` for the sheet,
+    /// whose rows are not handlers.
     open: Option(fn(String) -> message),
     /// What the page draws under a row, given its key: an open ask's form on a
     /// page that may answer, and nothing for every other row. The sheet draws
@@ -604,8 +607,8 @@ fn group(
   }
 }
 
-/// One row: a card whose button jumps, and for an unopened insight that has a
-/// handler, also asks the server to remember that it was opened. The card is
+/// One row: a card whose button jumps, and for an insight on a rail that has a
+/// handler, also asks the server to fold it or to draw it whole again. The card is
 /// the list item, so an ask's form, which cannot sit inside a button, is drawn
 /// inside the same border under the button.
 fn row(item: Item, rail: Rail(message)) -> Element(message) {
@@ -623,7 +626,7 @@ fn row(item: Item, rail: Rail(message)) -> Element(message) {
         list.flatten([
           [attribute.type_("button"), attribute.class("lift-press")],
           jump(item.target),
-          press(lifted, folded, rail.open),
+          press(lifted, rail.open),
         ]),
         [
           html.span([attribute.class("lift-kind")], [
@@ -707,22 +710,19 @@ fn jump(target: String) -> List(attribute.Attribute(message)) {
   }
 }
 
-/// The handler that records an open: only an unopened insight on a rail that
-/// has one. A pinned row and a folded insight draw none.
+/// The handler that toggles an insight: every insight on a rail that has one.
+/// A press on a whole insight asks the server to draw it folded, and a press on
+/// a folded one asks it to draw the insight whole again, so the reader can read
+/// a folded insight a second time. A pinned row draws none, and a sheet's rows
+/// have no handler to draw.
 fn press(
   row: Lifted,
-  folded: Bool,
   open: Option(fn(String) -> message),
 ) -> List(attribute.Attribute(message)) {
   // The press names the key the view drew, not anything the browser sends.
-  case row.hold, folded, open {
-    attention.FoldsOnceOpened, False, Some(open) -> [
-      event.on_click(open(row.key)),
-    ]
-    attention.FoldsOnceOpened, True, _
-    | attention.FoldsOnceOpened, False, None
-    | attention.PinnedUntilAnswered, _, _
-    -> []
+  case row.hold, open {
+    attention.FoldsOnceOpened, Some(open) -> [event.on_click(open(row.key))]
+    attention.FoldsOnceOpened, None | attention.PinnedUntilAnswered, _ -> []
   }
 }
 
