@@ -441,6 +441,14 @@ pub fn a_row_of_another_strand_is_named_by_the_strand_test() {
   assert !string.contains(html, "0123456789abcdef</span>")
 }
 
+// A find whose text the title already holds draws no quote that repeats it.
+pub fn a_short_find_is_not_drawn_twice_test() {
+  let html = drawn(run(owner(), home.ItemPicked(find_key())))
+
+  // The list row and the title hold it, and no quote holds it a third time.
+  assert count_of(html, "No backoff in retry.") == 2
+}
+
 fn count_of(html: String, needle: String) -> Int {
   list.length(string.split(html, needle)) - 1
 }
@@ -610,7 +618,7 @@ pub fn a_find_closes_at_its_revision_test() {
     ))
   let picked = run(model, home.ItemPicked(find_key()))
   let html = drawn(picked)
-  assert string.contains(html, "The agent noticed (bug), untrusted text")
+  assert !string.contains(html, "The agent noticed (bug), untrusted text")
   assert string.contains(html, "src/retry.gleam:41")
 
   let _ = run(picked, home.ItemClosed(attention.Filed))

@@ -1025,18 +1025,35 @@ fn evidence_of(session: String, offer: Offer(message)) -> Element(message) {
 /// leaves it out, as the approval is what the thread is about, and a review's
 /// thread draws it itself, between its counts and its verdict.
 fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
+  // The title is the thread's head, which is these words cut. A message the cut
+  // left whole is the title already, so its quote would repeat it.
+  let head = inbox_rule.thread_head(thread)
+
   case kind, brief, thread.report.last_message {
     inbox_rule.ApprovalPending, _, _ -> element.none()
-    inbox_rule.Working, Some(read), _ -> brief_view.latest(read)
+    inbox_rule.Working, Some(read), _ ->
+      case brief_said(read) == head {
+        True -> element.none()
+        False -> brief_view.latest(read)
+      }
     _, _, Some(text) ->
       case string.trim(text) {
         "" -> element.none()
+        trimmed if trimmed == head -> element.none()
         _ ->
           html.div([attribute.class("inbox-said")], [
             brief_view.finished(text, thread.report.last_message_at),
           ])
       }
     _, _, None -> element.none()
+  }
+}
+
+/// The words of a brief's latest message, trimmed, or empty when it has none.
+fn brief_said(read: Brief) -> String {
+  case read.assistant {
+    Some(assistant) -> string.trim(session_brief.untrusted_text(assistant.text))
+    None -> ""
   }
 }
 

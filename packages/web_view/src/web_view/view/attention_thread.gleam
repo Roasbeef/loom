@@ -828,12 +828,17 @@ fn find_body(
   }
 
   parts.section("Noticed along the way", [
-    parts.quote(
-      "The agent noticed ("
-        <> attention.find_kind_name(find.kind)
-        <> "), untrusted text",
-      text,
-    ),
+    // The title is the head, so the quote is drawn only for text that adds to it.
+    case text == find.head {
+      True -> element.none()
+      False ->
+        parts.quote(
+          "The agent noticed ("
+            <> attention.find_kind_name(find.kind)
+            <> "), untrusted text",
+          text,
+        )
+    },
     case find.path {
       Some(path) ->
         html.p([attribute.class("inbox-place")], [
