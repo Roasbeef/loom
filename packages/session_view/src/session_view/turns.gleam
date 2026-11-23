@@ -2304,6 +2304,7 @@ fn failure_line(words: step_words.Words, detail: List(Line)) -> String {
       }
     })
 
+  // A result with nothing to say leaves the call's words alone.
   let line = case said {
     Ok(text) -> step_words.text(words) <> " · " <> text
     Error(Nil) -> step_words.text(words)
