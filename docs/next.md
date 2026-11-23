@@ -70,8 +70,12 @@ desktop app, saw no question. They typed "continue", and the agent took that
 as no answer and went ahead on its recommended option. An open ask must be
 visible and answerable where the owner is reading: in the stream as the
 mockup's tinted `lifted · Ask` row and beside the composer, not only in the
-inbox and the rail. Check both clients. In the web view, check the session
-page with the rail closed and at phone width.
+inbox and the rail. In loom-desktop today an ask is drawn only as an Inbox
+thread and in the Inspector's lifted rail, which starts hidden (⌥⌘I);
+`ComposerStack` in `App/Sources/SessionScreen.swift` draws approval cards above
+the composer but never an ask. Give an ask the same place, with its answer
+form (`AskAnswer.swift`). In the web view, check the session page with the
+rail closed and at phone width.
 
 **Smaller follow-ups the owner's passkey test raised.**
 
