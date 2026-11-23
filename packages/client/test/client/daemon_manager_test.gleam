@@ -2402,8 +2402,7 @@ pub fn a_finished_move_leaves_a_tombstone_that_answers_for_the_session_test() {
   assert manager.finish_move(registry, remote.id, op: op_a) == Ok(moved)
   assert manager.moving_sessions(registry) == Ok([])
 
-  // Archiving the stub hides it and leaves the tombstone naming the owner. It
-  // is not an error to ask again.
+  // Archiving the stub hides it and leaves the tombstone naming the owner.
   let assert Ok(_) =
     manager.set_visibility(
       registry,
@@ -2421,6 +2420,14 @@ pub fn a_finished_move_leaves_a_tombstone_that_answers_for_the_session_test() {
   assert manager.open(registry, remote.id)
     == Error(manager.SessionMoved(to: "laptop"))
   assert manager.rename(registry, owner, "daemon-test", remote.id, "changed")
+    == Error(manager.AdminMoved(to: "laptop"))
+  assert manager.isolate(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      "/new-state",
+    )
     == Error(manager.AdminMoved(to: "laptop"))
   assert manager.set_visibility(
       registry,

@@ -1799,3 +1799,13 @@ answer of `sessions.archive` for this one state moves from `not_owner` to the
 view of the archived registration. The earlier paragraph that lists
 `sessions.archive` among the `not_owner` answers of a finished move applies to
 the other four commands.
+
+This supersedes the statement in protocol-change/108 (the addendum on moved
+sessions) that nothing archives a moved stub and that a relayed stub holds a
+`max_sessions` place until then. Archiving it frees the place. 108 is not
+edited. An archived stub stays in the archived list for good, because its
+restore and delete answer `not_owner` and there is no command that removes it.
+`sessions.isolate` of a moved stub is also refused with `not_owner`, since its
+domain mapping is the one a returning session keeps, and `standing` (the peer
+mail lookup) reads custody before visibility, so an archived stub is still
+`Handed`.

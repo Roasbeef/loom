@@ -4794,6 +4794,10 @@ fn isolate_now(phase, book: Book(instance), caller, epoch, id, state_root) {
     False -> Ok(Nil)
   })
 
+  // The mapping of a session that moved away is the one it keeps if it comes
+  // back, so a stub's isolation is not this catalogue's to change.
+  use Nil <- result.try(refuse_moved(book, id))
+
   use record <- result.try(
     catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
   )
@@ -4810,9 +4814,10 @@ fn isolate_now(phase, book: Book(instance), caller, epoch, id, state_root) {
   domain.isolate(book.catalogue, id, fresh) |> result.map_error(AdminMetadata)
 }
 
-// A session that is moving or has moved is not this catalogue's to archive,
-// restore or delete: the move row is the only record of who owns it. Both
-// answers name the other side, so the caller can say where the session went.
+// A session that is moving or has moved is not this catalogue's to restore,
+// rename, isolate or delete, and one that is moving is not its to archive: the
+// move row is the only record of who owns it. Both answers name the other
+// side, so the caller can say where the session went.
 /// Returns the refusal used when a session is moving or has already moved.
 fn refuse_moved(book: Book(instance), id: String) -> Result(Nil, AdminError) {
   case catalogue.custody(book.catalogue, id) {
@@ -4866,20 +4871,22 @@ fn begin_move_now(
 
     // A stub that moved away may be archived, so custody answers before the
     // archive check inside `movable` can mask the owner.
-    use Nil <- result.try(case custody {
-      catalogue.Moved(to: owner, ..) -> Error(AdminMoved(to: owner))
-      catalogue.Moving(..) | catalogue.Resident | catalogue.Imported(..) ->
-        movable(book, record, departure)
-    })
+    let check = fn() { movable(book, record, departure) }
 
-    // begin_move_now distinguishes the custody outcomes before continuing the transition.
+    // The stored custody decides: a move away is final, a repeat toward the
+    // same destination answers the stored row, another destination conflicts,
+    // and a session that serves here begins a move.
     case custody {
       catalogue.Moved(to: owner, ..) -> Error(AdminMoved(to: owner))
-      catalogue.Moving(to: heading, ..) if heading == to -> Ok(custody)
-      catalogue.Moving(..) -> Error(AdminMetadata(catalogue.Conflict))
-      catalogue.Resident | catalogue.Imported(..) ->
+      catalogue.Moving(to: heading, ..) if heading == to ->
+        result.replace(check(), custody)
+      catalogue.Moving(..) ->
+        result.try(check(), fn(_) { Error(AdminMetadata(catalogue.Conflict)) })
+      catalogue.Resident | catalogue.Imported(..) -> {
+        use Nil <- result.try(check())
         catalogue.begin_move(book.catalogue, id, op:, to:)
         |> result.map_error(AdminMetadata)
+      }
     }
   }
 

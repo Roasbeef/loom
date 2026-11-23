@@ -611,7 +611,7 @@ pub fn a_session_in_flight_cannot_be_opened_and_says_where_it_is_going_test() {
   })
 }
 
-pub fn open_archive_restore_and_delete_name_the_new_owner_after_the_move_test() {
+pub fn open_restore_and_delete_name_the_new_owner_and_archive_hides_the_stub_after_the_move_test() {
   moving(fn(ready, port, credential, _recorder) {
     let session = remote(ready, "moved-away")
     let #(socket, _) = wire.connect(port, credential, "/v2/control")
