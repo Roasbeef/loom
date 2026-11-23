@@ -261,7 +261,7 @@ pub fn a_key_for_another_page_on_home_or_admin_is_not_an_ended_page_test() {
     ending.home_advice(ending.OtherPage),
     "loom ui --no-remember reaches no other page",
   )
-  assert string.contains(ending.admin_advice(ending.OtherPage), "press Admin")
+  assert string.contains(ending.admin_advice(ending.OtherPage), "Press Admin")
   assert !string.contains(ending.home_advice(ending.OtherPage), "ended")
   assert !string.contains(ending.admin_advice(ending.OtherPage), "ended")
 }
