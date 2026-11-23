@@ -177,6 +177,11 @@ pub type Rail(message) {
 /// The rows of the page's lane with the place each press goes: an approval
 /// goes to the dock, and any other row to the transcript row that holds it.
 ///
+/// `at` is when each row was raised, and is shown on the row. `placed` is the
+/// same question asked for placement: it answers only for a row that belongs to
+/// the strand on screen, so a row of another strand is never matched to a turn
+/// of this one.
+///
 /// A turn's failed steps are lifted under the turn's own key, and a failed
 /// response inside a fold by its block's key, but only the turn's row is in
 /// the lane, so the block resolves to the turn's key. A key that names no
@@ -185,23 +190,33 @@ pub type Rail(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert lifted.items([], [], lifted.InDock, fn(_) { None }) == []
+/// assert lifted.items([], [], lifted.InDock, fn(_) { None }, fn(_) { None }) == []
 /// ```
 pub fn items(
   pieces: List(turns.Piece),
   lifted: List(Lifted),
   dock: Dock,
   at: fn(String) -> Option(Int),
+  placed: fn(String) -> Option(Int),
 ) -> List(Item) {
   list.map(lifted, fn(row) {
-    Item(lifted: row, target: target(pieces, row, dock), at: at(row.key))
+    Item(
+      lifted: row,
+      target: target(pieces, row, dock, placed),
+      at: at(row.key),
+    )
   })
 }
 
 /// Where one row's press goes: the dock for an approval on a page that has
 /// one, nowhere for an approval on a page that has not, and the lane's row
 /// that holds the lifted key for everything else.
-fn target(pieces: List(turns.Piece), row: Lifted, dock: Dock) -> String {
+fn target(
+  pieces: List(turns.Piece),
+  row: Lifted,
+  dock: Dock,
+  at: fn(String) -> Option(Int),
+) -> String {
   // Every kind of row is named, so a new kind has to say where it goes.
   case row.kind, dock {
     attention.ApprovalPending(..), InDock -> dock_target
@@ -212,12 +227,78 @@ fn target(pieces: List(turns.Piece), row: Lifted, dock: Dock) -> String {
     | attention.PeerMessage(..), _
     -> row_of(pieces, row.key)
 
-    // A record of the session's own is not a row of the lane, so a press has
-    // nowhere to jump.
-    attention.AskPending, _
-    | attention.StuckStrand(..), _
-    | attention.FindOpen(..), _
-    -> ""
+    // An ask is in the lane as the agent's newest output before it was
+    // recorded. A stuck strand and a find are records of the session's own,
+    // with no row of the lane, so a press has nowhere to jump.
+    attention.AskPending, _ -> ask_row(pieces, at, at(row.key))
+    attention.StuckStrand(..), _ | attention.FindOpen(..), _ -> ""
+  }
+}
+
+/// The key of the lane row an ask belongs to: the newest piece of the agent's
+/// own output (its words or the work of a turn) that happened at or before the
+/// ask was recorded, or nothing when the ask has no time or no piece qualifies.
+///
+/// The lane holds no identity of an ask. A settled turn is a divider with no
+/// steps in it (`turns.Folded`), the call's result that names the ask is in a
+/// step, and the record's anchor is a driver coordinate the lane does not
+/// carry. The one thing the ask and a row share is when they happened: an ask
+/// is recorded as its call runs, after the response that made the call, and the
+/// owner's next input comes later still. A press of the rail's jump on an ask
+/// that matches nothing does nothing, and the card in the dock is unaffected.
+fn ask_row(
+  pieces: List(turns.Piece),
+  at: fn(String) -> Option(Int),
+  asked: Option(Int),
+) -> String {
+  // An ask with no time cannot be placed.
+  case asked {
+    None -> ""
+    Some(recorded) -> newest_stamped(list.reverse(pieces), at, recorded)
+  }
+}
+
+/// The key of the first output piece, from the newest, that happened at or
+/// before `recorded`. A piece stamped after it is skipped, and an output piece
+/// with no time ends the search with nothing: its place relative to the ask is
+/// unknown, and taking the next older row would tint a turn that did not ask.
+fn newest_stamped(
+  newest_first: List(turns.Piece),
+  at: fn(String) -> Option(Int),
+  recorded: Int,
+) -> String {
+  case newest_first {
+    [] -> ""
+    [piece, ..older] ->
+      case is_output(piece), at(piece_key(piece)) {
+        // The person's input and other frames are not what asked.
+        False, _ -> newest_stamped(older, at, recorded)
+
+        // An unstamped output piece cannot be ordered against the ask.
+        True, None -> ""
+        True, Some(when) if when > recorded ->
+          newest_stamped(older, at, recorded)
+        True, Some(_) -> piece_key(piece)
+      }
+  }
+}
+
+/// Whether a piece is the agent's own output: its words, or a turn's work.
+fn is_output(piece: turns.Piece) -> Bool {
+  // The person's input, another session's message and the advisor's frames are
+  // not what the agent wrote.
+  case piece {
+    turns.Plain(..) | turns.Work(..) -> True
+    turns.Prompt(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Commentary(..)
+    | turns.Peer(..)
+    | turns.Sibling(..)
+    | turns.Trigger(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> False
   }
 }
 

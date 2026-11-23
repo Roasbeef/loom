@@ -1981,8 +1981,8 @@ strand focus clears the opened set; `View.opened` holds the keys, newest
 first, at most `component.open_insights`, and `rail_opened` accepts only a key
 naming a current insight. Every button carries `data-loom-jump`; the lane draws
 each row with `data-loom-row` (`lane.row_attribute`, the piece key), a "lifted"
-tag from `Marks.lifted`, and the `needs-you` tint only for a pinned row (none
-exists in the lane until phase 1b adds asks). `component.sheet` is the phone's
+tag from `Marks.lifted`, and the `needs-you` tint only for a pinned row (an
+ask's row is one, `view/lifted.ask_row`). `component.sheet` is the phone's
 `<details>` bar and sheet, appended as the centre's last child and ordered above
 the dock by CSS; its rows are not handlers. `lifted_test` pins all of this with
 seed 20261118. The jump itself is `web_client/follow`'s.
@@ -2025,6 +2025,31 @@ per fragment. The composer's line reads
 Steer do. A stuck strand's rail card has no Retry button: a send from the rail
 would be a new handler beneath `rail_path`, which an observer's socket already
 admits for the insights' presses.
+
+## The ask in the dock (protocol-change/051, the addendum on the ask in the dock)
+
+`component.asks(model, observed)` draws one `article.ask-card` for each open
+owner-routed ask of the session's feed row (`Watch.row.asks`), oldest first, in a
+`section.ask-dock` labelled "Asks waiting", or `element.none()` with none. The
+operator's page puts it last in the dock, after the composer (the stylesheet lays
+the dock out as a column and orders it above the composer, so the composer's path
+does not move); the observer's puts it in the centre's sixth child, the slot the
+operator's page gives the session switcher. A card's header is `Ask · waiting since
+<loom-time> · <strand>`. Its body is the rail's form with a `Send` button on a page
+that may answer (`rail_filled`, so the submit is `RailAnswered` and nothing new
+reaches the socket), `view/attention_thread.questions_only` (the questions as
+text, no control) on a page that may not, and the feed's cut of the first question
+until the ask is read in full. `rail_heard` now reads every open ask in full on
+every page for that reason; a find is still read only by a page that may act. The
+daemon's word on the last answer is drawn under the cards while it is not empty.
+`view/lifted.ask_row` names the lane row of an ask: the newest `Plain` or `Work`
+piece whose stamp (`lifted.items`' `at`) is at or before the ask's `created_at`,
+because a settled turn holds no steps to match a call against. That row is tinted
+and tagged `lifted · Ask` and the rail's press jumps to it; none marks nothing.
+The form's options and the read-only
+options share the rail's stylesheet block (`.lift ...,.ask-card ...`), the note in
+the second grid row under the label for every option. `ask_card_test` pins all of
+it.
 
 ## Evolution tab (protocol-change/099)
 

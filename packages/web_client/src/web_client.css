@@ -2505,21 +2505,49 @@
      still the control, so the block is the target and the keyboard focus ring
      is the block's. A question's legend repeats the card's words when it is
      the only one, so it is kept for assistive technology and not drawn. */
-  .lift .inbox-questions{gap:6px;margin:0;}
-  .lift fieldset.inbox-question{gap:6px;margin:0;padding:0;border:0;counter-reset:opt;}
+  .lift .inbox-questions,.ask-card .inbox-questions{gap:6px;margin:0;}
+  .lift fieldset.inbox-question,.ask-card fieldset.inbox-question{gap:6px;margin:0;padding:0;border:0;counter-reset:opt;}
   .lift fieldset.inbox-question:only-of-type > legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;}
-  .lift fieldset.inbox-question > legend{padding:0;font:550 13px/1.4 var(--font-sans);}
-  .lift label.inbox-option{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;min-height:0;margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);counter-increment:opt;cursor:pointer;}
-  .lift label.inbox-option::before{content:counter(opt);grid-column:1;grid-row:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
-  .lift label.inbox-option > input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
-  .lift label.inbox-option > span{grid-column:2;grid-row:1;font:600 13.5px/1.45 var(--font-sans);}
-  .lift label.inbox-option .inbox-mark{grid-column:3;grid-row:1;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);}
-  .lift label.inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
-  .lift label.inbox-option:hover{border-color:var(--color-fg-faint);}
-  .lift label.inbox-option:has(> input:checked){border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));}
-  .lift label.inbox-option:has(> input:focus-visible){outline:2px solid var(--color-current);outline-offset:1px;}
-  .lift .inbox-questions .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:13px/1.45 var(--font-sans);}
-  .lift .inbox-questions .place-send{align-self:flex-start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-bg-raised);color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
+  .lift fieldset.inbox-question > legend,.ask-card fieldset.inbox-question > legend{padding:0;font:550 13px/1.4 var(--font-sans);}
+  .lift label.inbox-option,.ask-card .inbox-option{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;min-height:0;margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);counter-increment:opt;cursor:pointer;}
+  .lift label.inbox-option::before,.ask-card .inbox-option::before{content:counter(opt);grid-column:1;grid-row:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
+  .lift label.inbox-option > input,.ask-card .inbox-option > input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;}
+  .lift label.inbox-option > span,.ask-card .inbox-option > span{grid-column:2;grid-row:1;font:600 13.5px/1.45 var(--font-sans);}
+  .lift label.inbox-option .inbox-mark,.ask-card .inbox-option .inbox-mark{grid-column:3;grid-row:1;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);}
+  .lift label.inbox-option .inbox-note,.ask-card .inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .lift label.inbox-option:hover,.ask-card .inbox-option:hover{border-color:var(--color-fg-faint);}
+  .lift label.inbox-option:has(> input:checked),.ask-card .inbox-option:has(> input:checked){border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 8%,var(--color-bg-raised));}
+  .lift label.inbox-option:has(> input:focus-visible),.ask-card .inbox-option:has(> input:focus-visible){outline:2px solid var(--color-current);outline-offset:1px;}
+  .lift .inbox-questions .composer-name,.ask-card .inbox-questions .composer-name{box-sizing:border-box;width:100%;padding:6px 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg);font:13px/1.45 var(--font-sans);}
+  .lift .inbox-questions .place-send,.ask-card .inbox-questions .place-send{align-self:flex-start;padding:3px 9px;border:1px solid var(--color-current);border-radius:6px;background:var(--color-bg-raised);color:var(--color-current);font:550 12px/1.4 var(--font-sans);}
+
+  /* The asks waiting on the owner, in the dock above the composer on the
+     operator's page and above the bar on an observer's (component.asks). A
+     card is a tinted background and a hairline border, as an approval's is. Its
+     form and its read-only questions are dressed as the rail's ask is, so the
+     options are the same numbered blocks with the note under the label. The
+     dock lays out as a column only so the cards can be ordered above the
+     composer without moving it in the tree. The order is asks, then approvals,
+     then the composer, so an ask that arrives or leaves does not move an
+     armed approval card's buttons. The todo panel, the goal and the other
+     children keep order 0 and stay above all three. */
+  footer.dock{display:flex;flex-direction:column;}
+  footer.dock > section.ask-dock{order:1;}
+  footer.dock > section.approvals{order:2;}
+  footer.dock > form.composer{order:3;}
+  main.centre > .observer-bar{order:2;}
+  main.centre > section.ask-dock{order:1;margin:0 auto 8px auto;padding:0 24px;}
+  section.ask-dock{flex:0 0 auto;margin:0 24px 8px 24px;max-height:55vh;overflow-y:auto;overscroll-behavior:contain;}
+  article.ask-card{background:color-mix(in srgb,var(--color-signal) 5%,var(--color-bg-raised));border:1px solid color-mix(in srgb,var(--color-signal) 55%,var(--color-divider));border-radius:10px;padding:10px 14px;margin:0 0 6px 0;}
+  article.ask-card:last-child{margin-bottom:0;}
+  .ask-head{margin:0 0 8px 0;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);}
+  .ask-kind{color:var(--color-signal-text);font-weight:600;}
+  .ask-cut{margin:0;color:var(--color-fg);font:13.5px/1.45 var(--font-sans);overflow-wrap:anywhere;}
+  .ask-words{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  article.ask-card fieldset.inbox-question{background:transparent;}
+  .ask-card .inbox-hold{margin:0;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .ask-card .inbox-read{cursor:default;}
+  .ask-card .inbox-read:hover{border-color:var(--color-divider);}
 
   /* A lifted row in the stream is tagged `lifted · Kind` under its words, and
      tinted across the row only when it needs the owner, with the tint and the
@@ -2570,7 +2598,9 @@
   @media (max-width:640px){
     main.centre > .stream-head{padding-left:14px;padding-right:14px;}
     loom-follow.follow > *{padding-left:14px;padding-right:14px;}
-    section.approvals,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
+    section.approvals,section.ask-dock,section.controls,section.dock-goal{margin-left:14px;margin-right:14px;}
+    main.centre > section.ask-dock{margin-left:auto;margin-right:auto;padding:0 14px;}
+    section.ask-dock{max-height:40vh;}
     form.composer{padding-left:14px;padding-right:14px;}
   }
 

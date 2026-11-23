@@ -470,6 +470,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           True -> element.none()
           False -> composer(model)
         },
+
+        // The open asks are the dock's last child, so the composer's path does
+        // not move; the stylesheet orders them above the composer.
+        component.asks(model, Observed),
       ]),
 
       // The element that moves the browser to another page is always the

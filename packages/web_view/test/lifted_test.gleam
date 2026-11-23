@@ -299,7 +299,8 @@ pub fn a_key_with_no_row_is_left_alone_test() {
       attention.FoldsOnceOpened,
       "1 step failed",
     )
-  let items = lifted.items([], [step], lifted.InDock, fn(_) { None })
+  let items =
+    lifted.items([], [step], lifted.InDock, fn(_) { None }, fn(_) { None })
   assert list.map(items, fn(item) { item.target }) == ["work:7"]
 }
 

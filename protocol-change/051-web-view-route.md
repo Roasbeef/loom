@@ -5404,3 +5404,95 @@ home socket already admits a click, and "Add a passkey" is a link and not an
 event. The registration page's cookie is the page's own, scoped to
 `/ui/p/<key>`, so it reaches the route and no other path. The sign-in page has
 no cookie and no key in its address.
+
+## Addendum: the ask in the dock (2026-11-23)
+
+On 2026-11-23 an agent called `ask` and the daemon held the ask open, but the
+owner, reading the session's transcript with the live rail closed, saw no question
+and typed "continue", which the agent took as no answer. The rail and the phone's
+sheet held the ask and its form, and neither is on screen by default. This
+addendum puts the open ask where the owner reads: a card above the composer on an
+operator's page and above the bar on an observer's, and the turn that called `ask`
+marked in the stream.
+
+### What the page draws
+
+Each ask the session's feed row holds as open and routed to the owner is one card,
+oldest first, in a `section` labelled "Asks waiting". A card's header is `Ask ·
+waiting since <loom-time> · <strand>`, the time drawn through `view/stamp` so the
+browser words it in its own zone. Under it are the ask's questions, each once, and
+each option's note under its label in the same place for every option.
+
+- **An operator's page** draws the rail's form (`view/attention_thread.answer_form`)
+  with a button that reads `Send`. Its submit is the rail's `RailAnswered`, so the
+  checking (`web_view/answer_rule`), the revision, the door and the daemon's word
+  are the rail's. The word is said under the cards while it is not empty.
+- **An observer's page** draws the questions as text (`questions_only`): no form,
+  no control, no Send.
+- **Until the ask is read in full** the card holds the feed's cut of the first
+  question and no form.
+
+A card leaves with the next read of the feed row after its ask is answered or
+closed, and with no open ask the section is `element.none()`.
+
+The row an ask belongs to is marked in the stream as a lifted row: the tint of a
+row that needs the owner and the tag `lifted · Ask`, and the rail's press jumps to
+it. The lane holds no identity of an ask. A settled turn is a divider with no
+steps in it, the call's result that names the ask is in a step, and the record's
+anchor is a driver coordinate the lane does not carry. The row is therefore the
+newest piece of the agent's own output (its words or a turn's work) whose time is
+at or before the ask's `created_at` (`view/lifted.ask_row`), which is the turn that
+made the call. A row with no time is never chosen, and an ask with no row marks
+nothing; the card is unaffected.
+
+### Paths, and who admits them
+
+The cards are drawn at places that move no path an earlier addendum admits:
+
+| Page | Place |
+|---|---|
+| Operator's | The dock's last child, after the composer; the stylesheet lays the dock out as a column and orders the cards above the composer. |
+| Observer's | The centre's sixth child, the slot the operator's page gives the session switcher and the observer's left empty, so the context figure's Refresh keeps its path. |
+
+The form's submit is a submit beneath the dock. An operator's or owner's socket
+admits a submit at any path, as the addendum "the live rail, answered" says, and an
+observer's admits none and is handed no form. No socket's code changed, and
+`component.rail_submit` still names the rail's form alone. The cards carry no
+approval control: an approval is decided only in its own region of the dock.
+
+### What the page reads
+
+Every page now reads each open ask in full (`Attention.record`), where before only a
+page that may answer did, because an observer's card draws the questions. The read
+is the door's `read_stored`, which holds the authority an observer already has for
+the rail's rows. A find is still read in full only by a page that may close it.
+
+### What was considered
+
+- **Moving the ask's form out of the rail and the sheet.** The rail and the sheet
+  keep their forms, so an owner who opens either still answers there. That leaves
+  the same ask answerable from two places; whichever sends first settles it, and the
+  other form leaves with the next read.
+- **A new row of the lane drawn for the ask.** The lane's rows come from the
+  transcript, and an ask is a record beside it, so a row drawn for the record would
+  claim a position in the conversation the model never wrote.
+- **Matching the turn by the ask's anchor, by the call's result or by the call's
+  summary.** The anchor is a driver coordinate the lane does not carry, and the
+  result and the summary are in a step, which a settled turn does not hold until
+  the reader opens it.
+
+### Cost
+
+One function (`component.asks`) drawn in two places, one read-only drawing, a
+read of each open ask on the observer's page, a stylesheet block, and one pass
+over the lane's pieces for each open ask. No message, route, frame or admitted place.
+
+### Verification
+
+`web_view/test/ask_card_test.gleam` drives the page: an operator's card with its
+form and Send in the dock after the composer, each question drawn once with each
+note beside its label, an observer's card with no form and no Send, two asks oldest
+first, an answered ask drawn as nothing, and the asking turn tinted and tagged. A drive
+in a browser against the scripted model (`scripts/web_seed`, the prompt "ask me
+first") was run on the operator's and the observer's page at 1440 and 375 pixels
+wide with the rail closed; the captures are kept outside the repository.

@@ -500,6 +500,59 @@ pub fn answer_form(
   ])
 }
 
+/// An ask's questions as text, for a page that may not answer: each question
+/// once, with each option's label, its mark and its note, and no control, no
+/// Other field and no Send. The observer's session page draws this in the card
+/// the operator's page answers from, so both read the same questions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention_thread.questions_only(ask)
+/// ```
+pub fn questions_only(ask: attention.Ask) -> Element(message) {
+  html.div([attribute.class("inbox-questions")], list.map(ask.questions, held))
+}
+
+/// One question for a reader who may not answer it. A kind with options lists
+/// them, and a kind without says in fixed words what the owner would give.
+fn held(question: Question) -> Element(message) {
+  html.fieldset([attribute.class("inbox-question")], [
+    html.legend([attribute.class("inbox-label")], [html.text(question.prompt)]),
+    ..case question.kind, question.options {
+      attention.Confirm, _ -> [held_line("Yes or no")]
+      attention.Fill(..), _ -> [held_line("A written answer")]
+      attention.Choice, options
+      | attention.Multiple(..), options
+      | attention.Checklist, options
+      -> list.map(options, held_option)
+    }
+  ])
+}
+
+/// One option as text: its label, the model's mark when it recommends it, and
+/// its note under the label, in the same places the form's options use.
+fn held_option(option: attention.Alternative) -> Element(message) {
+  html.div([attribute.class("inbox-option inbox-read")], [
+    html.span([], [html.text(option.label)]),
+    case option.emphasis {
+      attention.Recommended ->
+        html.em([attribute.class("inbox-mark")], [html.text("recommended")])
+      attention.Plain -> element.none()
+    },
+    case option.note {
+      Some(note) ->
+        html.small([attribute.class("inbox-note")], [html.text(note)])
+      None -> element.none()
+    },
+  ])
+}
+
+/// A line that says what kind of answer a question without options takes.
+fn held_line(words: String) -> Element(message) {
+  html.p([attribute.class("inbox-hold")], [html.text(words)])
+}
+
 /// One question with its component, chosen by the question's kind.
 fn question(question: Question) -> Element(message) {
   html.fieldset([attribute.class("inbox-question")], [

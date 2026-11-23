@@ -54,6 +54,22 @@ this is deliberately not a diagram
 The source stays available when a diagram cannot be rendered.
 '''
 
+# The ask the fake main puts to the owner when a prompt says "ask me first": a
+# choice with three options (one recommended, each with a note) and a confirm.
+# The call ends the turn, so the session then waits on the owner's answer.
+ASK_QUESTIONS = [
+    {
+        "prompt": "Closed items: fold under open ones, or a separate Done list?",
+        "kind": "choice",
+        "options": [
+            {"label": "Fold under open", "note": "Matches the Inbox plugin and keeps context.", "recommended": True},
+            {"label": "Separate Done list", "note": "Closed work leaves the list at once."},
+            {"label": "Hide after 24h", "note": "Closed items stay a day, then drop out."},
+        ],
+    },
+    {"prompt": "Keep the parts of the work that do not depend on it moving?", "kind": "confirm"},
+]
+
 # Many small diagrams in one answer, for measuring what each diagram's own
 # renderer frame costs. Send "mermaid many" to get it.
 MERMAID_MANY_ANSWER = "## Many diagrams\n\n" + "\n".join(
@@ -133,6 +149,18 @@ def main_turn(messages):
         )
         return [("text", answer)], "end_turn", warm
     said = text_of(last.get("content", ""))
+    if "ask me first" in said.lower():
+        # The advisor stays quiet, so its nudge cannot wake the strand that is
+        # meant to be waiting on the owner.
+        NUDGED.set()
+        return (
+            [
+                ("text", "Before I go further I need one call from you."),
+                ("tool_use", "ask", {"questions": ASK_QUESTIONS, "why": "The fold order decides what I build next."}),
+            ],
+            "tool_use",
+            warm,
+        )
     if "mermaid many" in said.lower():
         return [("text", MERMAID_MANY_ANSWER)], "end_turn", warm
     if "mermaid" in said.lower():
@@ -197,6 +225,8 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
         model = body.get("model", "")
         messages = body.get("messages", [])
+        if model == "fake-main" and messages:
+            sys.stderr.write("fake-main last message: %s\n" % json.dumps(text_of(messages[-1].get("content", ""))))
         if model == "fake-advisor":
             blocks, stop, used = advisor_turn(messages)
         elif model == "fake-sub":

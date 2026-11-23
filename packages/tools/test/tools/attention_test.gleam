@@ -117,7 +117,7 @@ pub fn the_description_tells_the_model_to_stop_and_how_the_answer_arrives_test()
   let description = ask_tool().description
   assert string.contains(description, "your turn ends")
   assert string.contains(description, "message from the person")
-  assert string.contains(description, "fenced")
+  assert string.contains(description, "with the answer under it")
   assert string.contains(description, "Other")
 }
 

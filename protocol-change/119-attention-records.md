@@ -237,6 +237,9 @@ event.
 
 ### The answer
 
+Amended by [130](130-ask-answer-wording.md): the prompt is now worded as each
+question with its answer under it, not a sentence and a fenced object.
+
 A person answers through the Home page's thread send ([118](118-inbox-thread-send.md)).
 The answer reaches the asking strand as an ordinary prompt, so the transcript
 records who sent it and the model reads a typed value instead of prose. The

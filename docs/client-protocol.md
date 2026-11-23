@@ -2144,8 +2144,8 @@ and `not_resident` a session that is not running.
 nonnegative integer, the `revision` of the `attention.read` the person answered
 from) and `answer` (a JSON object, the answer of
 [Protocol 119](../protocol-change/119-attention-records.md), "The answer", without
-its `ask` key, which the daemon adds). It delivers one prompt to the asking strand
-and settles the ask as answered by the caller. Request and reply:
+its `ask` key, which the daemon adds). It delivers one prompt to the asking strand,
+worded as [Protocol 130](../protocol-change/130-ask-answer-wording.md) says, and settles the ask as answered by the caller. Request and reply:
 
 ```json
 {"v":2,"id":5,"cmd":"attention.answer","body":{"session":"0198c0de-0000-7000-8000-000000000001","ask":"ask-3f9c01a2b4","revision":41,"answer":{"answers":{"q1":true,"q2":"Retry"}},"epoch":"ep-7f3a"}}
