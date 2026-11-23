@@ -696,7 +696,7 @@ fn compose(
       [
         html.section([attribute.class("inbox-section inbox-msg")], [
           html.h2([attribute.class("inbox-label")], [
-            html.text("Message " <> inbox_rule.shown_name(thread)),
+            html.text("Message this session"),
           ]),
           keyed.div([attribute.class("inbox-send")], [
             #(

@@ -27,8 +27,8 @@
 //// A **pane** is a scrolling body and, below it, an outbox bar that stays at
 //// the foot of the pane whatever the body's length. The body's parts are the
 //// eyebrow (a kind chip and quiet words), the title, small-caps section labels,
-//// a raised card of facts and the dashed quote that holds a session's own
-//// words under a label saying whose they are.
+//// a raised card of facts and the tinted, hairline-bordered quote that holds a
+//// session's own words under a label saying whose they are.
 ////
 //// Every function takes strings and elements and decides nothing. A name, a
 //// head or a quote is the caller's text, drawn as a text node: no class,
@@ -533,9 +533,9 @@ pub fn facts(rows: List(#(String, Element(message)))) -> Element(message) {
   ])
 }
 
-/// The dashed box that holds a session's own words. `source` says whose they
-/// are and that they are untrusted, in the page's fixed words, and `words` is
-/// the text, which is a text node.
+/// The tinted box with a hairline border that holds a session's own words.
+/// `source` says whose they are and that they are untrusted, in the page's fixed
+/// words, and `words` is the text, which is a text node.
 ///
 /// ## Examples
 ///

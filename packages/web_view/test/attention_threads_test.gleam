@@ -34,7 +34,7 @@ const ask_id = "ask-0123456789"
 
 const find_id = "find-0123456789"
 
-const strand = "sub:main/audit"
+const strand = "sub:main/audit-0123456789abcdef"
 
 fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
   Entry(
@@ -404,6 +404,34 @@ pub fn an_asks_questions_are_fixed_controls_and_model_text_is_text_test() {
   assert !string.contains(html, "\" onclick=\"")
 }
 
+// A question is the pane's title in full and is not drawn a second time as a
+// visible heading, and Other is one option whose text field is inside it, so
+// choosing it is what shows the field.
+pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
+  let html = drawn(run(owner(), home.ItemPicked(ask_key())))
+
+  assert string.contains(html, "<h1 class=\"inbox-title\">Which branch?</h1>")
+  assert string.contains(html, "<span>Other</span><input")
+  assert string.contains(html, "inbox-other")
+  assert string.contains(html, "Message this session")
+  assert !string.contains(html, "Message web ui")
+
+  // Between Other's own control and its text field, no option closes.
+  let assert Ok(#(_, from_other)) = string.split_once(html, "value=\"other\"")
+  let assert Ok(#(inside, _)) =
+    string.split_once(from_other, "name=\"q1-other\"")
+  assert !string.contains(inside, "</label>")
+}
+
+// A record of a sub-agent's strand is named on its row by the strand, without
+// the identifier the agency appends, so two rows of one session differ.
+pub fn a_row_of_another_strand_is_named_by_the_strand_test() {
+  let html = drawn(owner())
+
+  assert string.contains(html, ">sub:main/audit</span>")
+  assert !string.contains(html, "0123456789abcdef</span>")
+}
+
 // Submitting stages the answer into the outbox and sends nothing. Send then
 // names the revision the ask was read at, and the daemon's word is shown.
 pub fn staging_an_answer_sends_nothing_until_send_test() {
@@ -578,8 +606,9 @@ pub fn retry_prompts_the_stuck_strand_test() {
     ))
   let retried = run(run(model, home.ItemPicked(stuck_key())), home.ItemRetried)
 
-  let assert [Messaged(session: "B", strand: "sub:main/audit", ..)] =
-    received(asked)
+  let assert [
+    Messaged(session: "B", strand: "sub:main/audit-0123456789abcdef", ..),
+  ] = received(asked)
   assert string.contains(drawn(retried), "Delivered to the strand · admitted")
 }
 
