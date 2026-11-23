@@ -86,6 +86,7 @@ import web_view/admin
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
 import web_view/ending
+import web_view/folder_browse
 import web_view/grants
 import web_view/home
 import web_view/invites
@@ -6499,6 +6500,42 @@ pub fn the_owners_recent_folders_are_listed_and_forgotten_test() {
         entry.path
       })
       == [home <> "/proj"]
+  })
+}
+
+// The folder picker's listing is answered for the owner's operating page alone
+// (protocol-change/132). A page that has ended, one minted to read and a member's
+// page get the refusal a missing folder gets, so the answer does not say which
+// it was, and none of them reaches the filesystem.
+pub fn the_folder_listing_is_answered_for_the_owners_operating_page_only_test() {
+  fixture(fn(ready, _, credential) {
+    let home = owners_home("browse")
+    let assert Ok(Nil) = simplifile.create_directory_all(home <> "/code/app")
+      as "a folder to list"
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+
+    let assert Ok(listing) = ui_socket.browse_for(standing, page_open, home, [])
+    assert list.contains(
+      listing.children,
+      folder_browse.Child("code", folder_browse.Plain),
+    )
+    let assert Ok(inner) =
+      ui_socket.browse_for(standing, page_open, home, ["code"])
+    assert inner.trail == ["code"]
+
+    let refused = Error(folder_browse.NotAFolder)
+    let #(readonly, _) = creator_standing(ready, credential, access.Observer)
+    assert ui_socket.browse_for(readonly, page_open, home, []) == refused
+    assert ui_socket.browse_for(standing, fn() { Error(Nil) }, home, [])
+      == refused
+    let existing = create_session(ready, "browse-known", 1124)
+    let grant = member(ready, "ui-browse", existing, access.Operator)
+    let #(members, _) = creator_standing(ready, grant, access.Operator)
+    let members = ui_socket.Standing(..members, principal: "ui-browse")
+    assert ui_socket.browse_for(members, page_open, home, []) == refused
+
+    // The owner's page is still refused a trail that leaves the home.
+    assert ui_socket.browse_for(standing, page_open, home, [".."]) == refused
   })
 }
 

@@ -194,6 +194,7 @@
 import broker/token
 import client/attention as store
 import client/daemon/attention_door
+import client/daemon/folder_listing
 import client/daemon/manager
 import client/daemon/new_folder
 import client/daemon/project_start
@@ -261,6 +262,7 @@ import web_view/component
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
 import web_view/ending
+import web_view/folder_browse
 import web_view/grants
 import web_view/home
 import web_view/invites
@@ -1156,6 +1158,18 @@ pub fn upgrade_home(
             case new_folder.home() {
               Ok(directory) -> forget_for(standing, open, directory, id)
               Error(_) -> []
+            }
+          })
+        },
+        // The folder picker's directory listing (protocol-change/132) is a read
+        // of the filesystem, so it runs in a task of its own like the reads
+        // above and never in the page's runtime.
+        browse: fn(trail, deliver) {
+          read_task(deliver, fn() {
+            // This branch resolves new_folder home before the operation continues.
+            case new_folder.home() {
+              Ok(directory) -> browse_for(standing, open, directory, trail)
+              Error(_) -> Error(folder_browse.NoHome)
             }
           })
         },
@@ -5464,6 +5478,31 @@ pub fn recent_for(
   case authorized_owner(standing, open) {
     Ok(_) -> listed_recent(standing, home)
     Error(_) -> []
+  }
+}
+
+/// One directory below the owner's home as the composer's folder picker may draw
+/// it (protocol-change/132). The same owner check as a creation runs first
+/// (`authorized_owner`), so a page that may not create is told nothing about the
+/// filesystem, and so is a page whose registry did not answer: both get the
+/// refusal a missing folder gets, so the answer does not say which it was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.browse_for(standing, open, "/Users/o", ["code"])
+/// ```
+@internal
+pub fn browse_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  home: String,
+  trail: List(String),
+) -> folder_browse.Answer {
+  // This branch resolves authorized_owner standing open before the operation continues.
+  case authorized_owner(standing, open) {
+    Ok(_) -> folder_listing.list_in(home, trail)
+    Error(_) -> Error(folder_browse.NotAFolder)
   }
 }
 
