@@ -157,6 +157,15 @@ accepts that cost when enrolling a machine. The design therefore draws its
 boundary around who may connect, and does not try to defend one connected node
 against another.
 
+Some checks compare a node a message declares with the node it came from, such
+as the `from_node` of a move's activation
+(`client/remote/orchestrator_port.gleam`). The node is read from the pid in the
+message's reply subject, and the sender supplies that pid. Such a check catches
+a misconfigured peer and keeps each port to its job. It does not stop an
+enrolled peer that wants to misattribute a message, because that peer can
+already call any function on the node. Enrolling an orchestrator is the trust
+decision, and no check inside a message adds to it.
+
 ### Untrusted executors
 
 Everything above is the trusted mode, and it stays the default. An executor whose

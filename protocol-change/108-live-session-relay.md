@@ -1241,7 +1241,9 @@ one it sends from is refused. The check is as strong as the spawn messages' and 
 stronger: the node is read from the pid in the message's reply subject, which the
 sender supplies, so a peer that also forges that pid (a live pid on the node it
 names) passes. Distribution authenticates the connection and gives a receiver no
-sender identity inside a message, and no binding of that kind exists in the tree.
+sender identity inside a message, and no binding of that kind exists in the tree (see "Trust and transport" in
+[`docs/architecture/distributed.md`](../docs/architecture/distributed.md) for why the
+check is not meant to be one).
 The fixture of
 `orchestrator_port_test` that declared a node other than the test's own now declares
 its own node, and `an_activation_declaring_another_nodes_name_is_refused_test`
