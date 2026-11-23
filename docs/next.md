@@ -1,84 +1,82 @@
 # Current handoff
 
-The attention inbox section is written on November 18 against stack #1290 at
-`89e81cd42` and its recorded local gates. The session hot-path section was
-re-baselined on November 13 against source `3e28c16f4`. Other sections retain
-their upstream baselines; this scoped update does not revalidate their hosted
-CI or live status.
+The web view and desktop section is written on November 23 against `main` at
+`c07f6af67` plus `web/live-fixes`. The project mode section was last updated
+on November 21. The session hot-path section was re-baselined on November 13
+against source `3e28c16f4`. Other sections retain their upstream baselines;
+this scoped update does not revalidate their hosted CI or live status.
 
-## The attention inbox: built, awaiting the owner's sign-off
+## The web view and the desktop app: what is next (2026-11-23)
 
-The web view now surfaces what needs the owner, grouped by need on Home, with
-a reading pane for evidence and a rail on a session's page.
-[`design-notes/attention-inbox/`](design-notes/attention-inbox/README.md)
-holds the design, and its section 7 says what was built and where the build
-departs from it.
+The owner's order, also posted on #1167: finish the web view's fidelity to the
+attention-inbox mockup, then the desktop's Mac-native pass, then project mode
+usable from the web.
 
-**Where it is.** Stack #1290 holds ten PRs, bottom to top. The top is
-`web/ticket-threads` (#1294). None is merged.
+**Where it is.**
 
-1. #1275 `web/oklch-tokens`: the OKLCH palette and a contrast gate (WCAG,
-   APCA, colour-vision deficiency and gamut) whose self-test plants violations
-   by token name.
-2. #1283 `client/main-glance`: a glance for `main` (protocol-change/121).
-3. #1285 `web/attention-inbox-phase0`: Home's inbox grouped by need, direct
-   messages from threads with Queue and Steer, and decide-once landing
-   (protocol-change/118 and the 051 addendum "the attention inbox on Home").
-4. #1286 `tools/attention-records`: the `ask` and `notice` tools with typed
-   answer kinds, their code-mode capabilities, and reserved records
-   (protocol-change/119).
-5. #1288 `storage/attention-summary`: catalogue version 22, so a restart still
-   counts pending approvals (protocol-change/122), with the feed's design in
-   protocol-change/120.
-6. #1287 `web/live-rail`: the live mode's rail (051 addendum "the live rail").
-7. #1289 `client/attention-feed`: `sessions.attention`, `attention.read`,
-   `attention.close_find`, typed answers and strand sends
-   (protocol-change/120).
-8. #1292 `web/attention-threads`: asks, finds, stuck strands and approval
-   evidence (`approval.read`, an addendum to 120) on Home, with asks answered
-   in the rail.
-9. #1293 `web/review-pane`: `sessions.review` (protocol-change/123) and the
-   review pane with a one-Send outbox.
-10. #1294 `web/ticket-threads`: project tickets as threads (051 addendum
-    "project tickets on Home"), Home's first-round landing rule
-    (`landing_rule`) and the fixes the end-to-end drive found.
+- The attention inbox is merged: the stack as #1316, then #1308, #1309, #1318
+  and #1322 as the queue #1328. #1330 stops a session that waits on the owner
+  from also folding as quiet. #1331 admits any top-level navigation to
+  `/ui/signin`, so a link opened from another app no longer reads "forbidden
+  navigation". #1332 redesigns the first-run Home.
+- The owner runs a release built from that `main` (installed 2026-11-23,
+  `~/.local/lib/loom/server`).
+- `web/live-fixes` fixes what the owner found on that release: a blocked
+  sidebar row whose notice squeezed its name to nothing and pushed its menu
+  off the column, the stream's strand dot touching the time, and the sidebar
+  that could not be dragged wider (`grip_rule` now has a sidebar side).
+- loom-desktop (`Roasbeef/loom-desktop`): #1 to #4 are merged. That covers
+  the inbox port, answering asks, and native slice 1 (one needs-you count on
+  every surface, approvals decided only beside their evidence). Slice 2 (the
+  inbox as an `HSplitView` with one selection) is a single `wip:` commit on
+  `native/split-inbox`. It is not verified: run the full UI suite and a release
+  build, take its captures, split the commit, then open its PR.
+  `docs/native-pass.md` there is the plan, and `docs/next.md` there is its
+  handoff.
 
-**How it was verified.**
+**Next, in order.**
 
-- Each PR was reviewed by an independent Fable reviewer, and every finding was
-  fixed or dispositioned on the PR.
-- Each PR passed its own package gates locally. The gated signoff box
-  (`gilgamesh-signoff`) was unreachable from this machine throughout, so no PR
-  has a signoff and the stack has not been through `make check` as one unit.
-- A Sonnet agent drove a freshly built daemon at the stack's top with a real
-  model and a real browser, and all 13 features (a to m) passed. Screenshots
-  are on each PR.
+1. **A fidelity pass of the web view against
+   `design-notes/attention-inbox/final/mockup.html`.** The owner's words: 100%
+   fidelity to the mockups, and do not feel attached to the earlier versions.
+   - Method: a fresh daemon built from `main` with seeded sessions in every
+     state (running, idle, needs-you, saved, blocked, failed start, moving,
+     relayed). Capture each page at desktop and phone widths beside the
+     mockup's frames, list every difference, and fix them in slices with
+     before and after captures.
+   - Section 7 of the design note lists the deliberate departures. Re-argue
+     each one against the mockup, not against the code as it stands.
+   - Known differences: the stream's strand dot, which the mockup does not
+     draw (the mockup marks the strand with a `.strand` label); the sidebar's
+     row anatomy and spacing; the composer's chips.
+2. **A folder picker in the web composer.** "Choose a folder…" in the Code
+   list only opens a typed path field, and the owner does not want to type
+   paths. A browser's native file dialog cannot return a path on the daemon's
+   machine, so the picker is drawn in the page and walks the daemon's
+   directories. That needs a protocol change: an owner-only, read-only
+   directory listing below the owner's home, bounded in entries and depth,
+   with no symlink escapes (`host/bootstrap.list_directory_bounded` is the
+   existing bounded reader). The recent folders stay as the list's first
+   section. loom-desktop already has the Finder picker (`NSOpenPanel`).
+3. **The desktop's Mac-native pass**, slices 2 to 5 in loom-desktop's
+   `docs/native-pass.md`.
+4. **Project mode usable from the web** (the project mode section below, and
+   the 2026-11-21 plan on #1167).
 
-**Left open on purpose.**
+**Smaller follow-ups the owner's passkey test raised.**
 
-- `person/check` is drawn as its raw stage word and the drive did not reach it
-  live. The owner rules on README question 6 (re-cut the pure half of
-  `project/visible-failures`, or merge `project/warm-template` first), and
-  until then there is no check output or Recheck.
-- The review pane does not show committed work (protocol-change/123's known
-  gap). A session that committed everything shows an empty review.
-- An approval carries no raise time, so an approval thread shows no age.
-- A `queued` answer delivery can be dropped by a later drain while the record
-  says answered (protocol-change/120, residual risk). It is rare, since an ask
-  ends its run.
-- Phase 3 (creating a project and posting a request from the web), the
-  project view and the project meta layer (#1168) are out of scope and have no
-  design.
+- A signal for whether a model is usable. Home cannot tell today.
+- A banner on the owner's page that offers to add a passkey while the account
+  has none.
+- Phone widths for the pages other than Home and a session.
+- Recheck that the top bar does not clip at narrow widths.
 
-**Next.**
-
-1. The owner signs off on the stack.
-2. Land it in one go: `gh stack merge`, or a queue PR cut at the signed top
-   per the repository's practice, since a stack needs signoff on every head.
-3. On the merged `main`, run `make check` and `make doc-check`, and fix
-   whatever the unified tree shows.
-4. Re-run the end-to-end drive against a daemon built from `main`.
-5. Rule on question 6, then start phase 2's `person/check` thread.
+**Open PRs older than this work.** None is in `main`; each has commits
+`main` lacks. #1243 (the epmd test fix) is mergeable. #1297 and #1158 are
+mergeable drafts. The other twelve conflict with `main`: #395, #396, #397,
+#433, #486, #508, #822, #1000, #1044, #1105, #1181 and #1183. Each needs a
+rebase, or a close with a note saying what superseded it. Ask the owner before
+closing any of them.
 
 ## Platform-selected JSON decoding
 
