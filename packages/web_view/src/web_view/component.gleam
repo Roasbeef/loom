@@ -7485,6 +7485,7 @@ pub fn lift(
       attention.lift_all(pieces, model.shared.approvals, rail_records(model)),
       dock,
       rail_time(model),
+      placement_time(model),
     ),
     dock:,
   )
@@ -7525,6 +7526,33 @@ fn rail_time(model: Model(socket)) -> fn(String) -> Option(Int) {
     case dict.get(model.view.stamps, key) {
       Ok(at) -> Some(at)
       Error(Nil) -> dict.get(records, key) |> option.from_result
+    }
+  }
+}
+
+/// When a lifted row may be matched to a turn of the transcript on screen: the
+/// row's time (`rail_time`), except that an ask of another strand has none. An
+/// ask's time is compared with the times of this lane's turns, and a turn of
+/// another strand is not in this lane, so such a match would tint a turn that
+/// did not ask.
+fn placement_time(model: Model(socket)) -> fn(String) -> Option(Int) {
+  let time = rail_time(model)
+  let elsewhere = case model.view.watching.row {
+    None -> []
+    Some(row) ->
+      list.filter_map(row.asks.items, fn(ask) {
+        // Only an ask of a strand other than the one on screen is withheld.
+        case ask.strand == model.shared.active_strand {
+          True -> Error(Nil)
+          False -> Ok(attention.ask_key(ask.id))
+        }
+      })
+  }
+
+  fn(key) {
+    case list.contains(elsewhere, key) {
+      True -> None
+      False -> time(key)
     }
   }
 }

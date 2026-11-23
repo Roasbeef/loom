@@ -178,6 +178,11 @@ pub type Rail(message) {
 /// The rows of the page's lane with the place each press goes: an approval
 /// goes to the dock, and any other row to the transcript row that holds it.
 ///
+/// `at` is when each row was raised, and is shown on the row. `placed` is the
+/// same question asked for placement: it answers only for a row that belongs to
+/// the strand on screen, so a row of another strand is never matched to a turn
+/// of this one.
+///
 /// A turn's failed steps are lifted under the turn's own key, and a failed
 /// response inside a fold by its block's key, but only the turn's row is in
 /// the lane, so the block resolves to the turn's key. A key that names no
@@ -186,16 +191,21 @@ pub type Rail(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert lifted.items([], [], lifted.InDock, fn(_) { None }) == []
+/// assert lifted.items([], [], lifted.InDock, fn(_) { None }, fn(_) { None }) == []
 /// ```
 pub fn items(
   pieces: List(turns.Piece),
   lifted: List(Lifted),
   dock: Dock,
   at: fn(String) -> Option(Int),
+  placed: fn(String) -> Option(Int),
 ) -> List(Item) {
   list.map(lifted, fn(row) {
-    Item(lifted: row, target: target(pieces, row, dock, at), at: at(row.key))
+    Item(
+      lifted: row,
+      target: target(pieces, row, dock, placed),
+      at: at(row.key),
+    )
   })
 }
 
