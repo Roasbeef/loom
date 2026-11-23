@@ -14,8 +14,11 @@ need. Loom has no built-in server profiles, and starts a server on demand.
 Fresh sessions expose `cap/lsp` through `code_mode` when a profile is available.
 The system prompt directs agents to prefer it for semantic questions, and
 `fs_read` at `cap://lsp` provides the full API and installed language hints.
-There are no default top-level `lsp_*` tools. Existing saved sessions retain
-their pinned prompt; start a fresh session to receive the new guidance.
+There are no default top-level `lsp_*` tools. A host whose agents call tools
+without code mode can set `[tools] lsp_tools = "on"` to register five query
+tools over the same servers (see [configuration](configuration.md#tools)).
+Existing saved sessions retain their pinned prompt; start a fresh session to
+receive the new guidance.
 Unsupported methods need a supported query or text search; a server load
 failure needs its reported setup or access problem corrected before retrying.
 
