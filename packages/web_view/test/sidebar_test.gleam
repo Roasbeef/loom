@@ -725,6 +725,28 @@ pub fn the_toggle_counts_saved_and_blocked_rows_apart_test() {
   assert string.contains(sidebar, ">1 saved · 1 needs attention<")
 }
 
+// A blocked row keeps its glyph in the leading slot and says why under its
+// name, so a long notice never takes the name's width in a narrow column: the
+// glyph comes first, the name is drawn, and the notice is its own line after
+// the tag.
+pub fn a_blocked_row_says_why_on_its_own_line_test() {
+  let rows = [
+    entry("A", "web ui", "/src/loom", 100, Live),
+    entry("Z", "stuck", "/src/weft", 50, sessions.Blocked),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  let assert Ok(sidebar) = sidebar_of(drawn)
+  let assert Ok(#(_, row)) =
+    string.split_once(sidebar, "residency saved notable")
+  let assert Ok(#(row, _)) = string.split_once(row, "</li>")
+
+  assert string.contains(row, ">stuck<")
+  let assert Ok(#(before_notice, _)) =
+    string.split_once(row, "class=\"session-notice\"")
+  assert string.contains(before_notice, "class=\"session-tag\"")
+  assert string.contains(row, ">needs attention</span></span>")
+}
+
 // A worktree row that also has a subtitle says both: the second line is the
 // watching words with the project, and the subtitle is its own third line as
 // text. The worktree's path is never drawn on a running row.
