@@ -629,7 +629,8 @@ fn folder_element(
     _ -> attribute.none()
   }
 
-  // Dispatch on folder_element state.
+  // A page that offers no press, such as one opened with no way home, draws
+  // the folder as text.
   case pick {
     Some(press) ->
       html.button(

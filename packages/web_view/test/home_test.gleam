@@ -1289,7 +1289,7 @@ pub fn the_owner_has_a_button_under_each_workspace_test() {
   assert !string.contains(html, "<form")
   let keys = handlers(home.view(model))
 
-  // The sidebar's "New session" button is one more.
+  // The rail adds "Everything, by need" and its "+ New session".
   assert list.length(keys) == 14
   assert list.all(keys, beneath_the_two_regions)
 }

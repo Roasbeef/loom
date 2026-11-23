@@ -324,6 +324,11 @@ pub fn the_cards_show_the_state_the_daemon_found_test() {
     "1 of 2 executors reachable. Tried in order: gpu, box.",
   )
   assert string.contains(html, "A state is advice")
+
+  // The rail's count note also says "not checked", about saved sessions, so
+  // the cards' wording is checked with that note taken out.
+  let cards = string.replace(html, "Saved sessions are not checked.", "")
+  assert !string.contains(cards, "not checked")
   assert !string.contains(html, "Checking which are reachable")
 }
 

@@ -820,7 +820,7 @@ pub fn the_inbox_control_shows_for_a_ticket_on_a_decided_composer_test() {
       ),
     ))
   assert string.contains(later, "<h1>New session</h1>")
-  assert string.contains(later, "Everything, by need")
+  assert string.contains(later, "class=\"folder need\"")
 }
 
 // A first list that cannot be read is no answer: a board that answers beside it

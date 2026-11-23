@@ -625,7 +625,7 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   assert !string.contains(drawn(listed), "<h1>Inbox</h1>")
 
   let composing = run(model, home.ShowingNew)
-  assert string.contains(drawn(composing), "Everything, by need")
+  assert string.contains(drawn(composing), "class=\"folder need\"")
 
   // The control returns to the inbox from either, and the selection kept.
   let pressed = run(model, home.InboxOpened("C"))
@@ -746,7 +746,7 @@ pub fn a_page_with_nothing_running_settles_on_the_composer_test() {
   let later = run(listed, home.Observed(reports()))
 
   assert !string.contains(drawn(later), "<h1>Inbox</h1>")
-  assert string.contains(drawn(later), "Everything, by need")
+  assert string.contains(drawn(later), "class=\"folder need\"")
 }
 
 // A kept report is drawn for its thread but is not counted as read: the
@@ -865,9 +865,10 @@ pub fn a_session_starting_later_does_not_change_the_centre_test() {
     )
   assert !string.contains(drawn(model), "<h1>Inbox</h1>")
 
+  assert !string.contains(drawn(model), "class=\"folder need\"")
   let later = run(model, home.Observed(reports()))
   assert !string.contains(drawn(later), "<h1>Inbox</h1>")
-  assert string.contains(drawn(later), "Everything, by need")
+  assert string.contains(drawn(later), "class=\"folder need\"")
 
   let back = run(later, home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
