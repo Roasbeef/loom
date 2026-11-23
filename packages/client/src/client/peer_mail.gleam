@@ -257,6 +257,11 @@ pub type Command {
   /// do it and, for an answer, delivered the prompt.
   AttentionSettle(id: String, revision: Int, settlement: attention.Settlement)
 
+  /// Records that `by` has seen a stuck strand's failure and set it aside, when
+  /// the strand's last result is still the failed run `operation` names
+  /// (`protocol-change/131`). The daemon has already decided who may do it.
+  StuckDismiss(strand: String, operation: String, by: String)
+
   /// Records an outgoing message in the sender's outbox before its first
   /// delivery attempt (`client/peer_outbox`). The answer says whether the
   /// caller should attempt delivery (`pending`) or already holds a receipt
@@ -689,6 +694,8 @@ pub fn handle_reporting(
 
       answer
     }
+    StuckDismiss(strand, failed_run, by) ->
+      stuck_dismiss(runtime, clock, strand, failed_run, by)
     OutboxClaim(source, strand, session, target, id, body) -> {
       let #(now, _) = clock.read(clock)
       peer_outbox_store.claim(
@@ -1562,6 +1569,25 @@ fn attention_settle(
       Error("conflict")
     Error(attention.WrongKind) -> Error("bad_request")
     Error(attention.Failed(reason:)) -> Error(reason)
+  }
+}
+
+/// Dismisses a stuck strand's failure and words the refusals as the other
+/// attention commands do: `not_found` for a strand with nothing to dismiss and
+/// `conflict` for a failure that is no longer the strand's own.
+fn stuck_dismiss(
+  runtime: api.Runtime,
+  time: clock.Clock,
+  strand: String,
+  failed_run: String,
+  by: String,
+) -> Result(JsonValue, String) {
+  case attention_feed.dismiss_stuck(runtime, time, strand, failed_run, by) {
+    Ok(Nil) -> Ok(json.Object([]))
+    Error(attention_feed.UnknownStrand) -> Error("not_found")
+    Error(attention_feed.StaleFailure) | Error(attention_feed.DismissalLost) ->
+      Error("conflict")
+    Error(attention_feed.DismissalUnavailable(reason:)) -> Error(reason)
   }
 }
 

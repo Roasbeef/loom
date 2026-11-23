@@ -66,6 +66,7 @@
 //// bound has room.
 
 import core/attention
+import core/attention_dismissal.{type Dismissal}
 import core/clock.{type Clock}
 import core/json.{type JsonValue}
 import gleam/bool
@@ -368,6 +369,92 @@ pub fn finds(runtime: api.Runtime) -> Result(List(attention.Find), String) {
   list.filter_map(cells, fn(cell) {
     attention.decode_find(cell.1) |> result.replace_error(Nil)
   })
+}
+
+// --- stuck strand dismissals (protocol-change/131) ---------------------------
+
+/// Why a dismissal was not written.
+pub type DismissFault {
+  /// The strand's cell moved between the read and the write, so another
+  /// dismissal of the same strand got there first.
+  DismissalMoved
+
+  /// The store could not be used, and why.
+  DismissalFailed(reason: String)
+}
+
+/// Reads every dismissal in the session, leaving out a cell that does not
+/// decode, as `asks` leaves out a damaged ask. A damaged cell covers nothing, so
+/// the strand it was written for is listed again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.dismissals(runtime)
+/// ```
+pub fn dismissals(runtime: api.Runtime) -> Result(List(Dismissal), String) {
+  // The prefix is the dismissals' own, so no guard cell shares it.
+  use cells <- result.map(
+    api.reserved_facts(runtime, prefix: attention_dismissal.prefix)
+    |> result.map_error(string.inspect),
+  )
+  list.filter_map(cells, fn(cell) {
+    attention_dismissal.decode(cell.1) |> result.replace_error(Nil)
+  })
+}
+
+/// Records a dismissal in the strand's own cell, replacing an earlier one.
+///
+/// A cell that already holds this strand and this failed operation is left as
+/// it is and the call succeeds, so a second press changes nothing and does not
+/// move the time or the person. The write is guarded by the sequence number read
+/// here, so two dismissals of one strand cannot both write over a third.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // attention.record_dismissal(runtime, dismissal)
+/// ```
+pub fn record_dismissal(
+  runtime: api.Runtime,
+  dismissal: Dismissal,
+) -> Result(Nil, DismissFault) {
+  let key = attention_dismissal.key(dismissal.strand)
+  use cell <- result.try(
+    api.fact_cell(runtime, key)
+    |> result.map_error(fn(error) { DismissalFailed(string.inspect(error)) }),
+  )
+
+  // A cell that already acknowledges this failure is the answer to the repeat.
+  let already = case cell {
+    Some(found) ->
+      case attention_dismissal.decode(found.value) {
+        Ok(held) ->
+          attention_dismissal.covers(
+            [held],
+            dismissal.strand,
+            dismissal.operation,
+          )
+        Error(_) -> False
+      }
+    None -> False
+  }
+
+  use <- bool.guard(when: already, return: Ok(Nil))
+
+  // The write names the sequence it read, so a lost race writes nothing.
+  case
+    api.put_reserved_fact_expecting(
+      runtime,
+      key,
+      attention_dismissal.encode(dismissal),
+      expected: option.map(cell, fn(found) { found.seq }),
+    )
+  {
+    Ok(_) -> Ok(Nil)
+    Error(api.RaceLost) -> Error(DismissalMoved)
+    Error(error) -> Error(DismissalFailed(string.inspect(error)))
+  }
 }
 
 // --- reading and settling --------------------------------------------------
