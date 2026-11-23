@@ -445,6 +445,54 @@ pub fn the_divider_names_the_last_failed_call_test() {
   assert !string.contains(last, "make lint")
 }
 
+// The line is cut at its limit, and a failed call whose result is empty is its
+// words alone.
+pub fn the_failure_line_is_bounded_and_may_have_no_result_test() {
+  let failing = fn(output) {
+    pieces_of(
+      [
+        item(1, 10_000, said("check it", None)),
+        item(
+          2,
+          11_000,
+          assistant([
+            call(
+              "c1",
+              "bash",
+              json.Object([#("command", json.String("make check"))]),
+            ),
+          ]),
+        ),
+        item(
+          3,
+          12_000,
+          message.ToolResultMessage(
+            "c1",
+            "bash",
+            [message.ToolResultText(output, None)],
+            None,
+            None,
+            None,
+            True,
+            12_000,
+          ),
+        ),
+      ],
+      [],
+    )
+  }
+
+  let assert [_, turns.Work(worked: long, ..)] =
+    failing(string.repeat("x", 500))
+  let assert Some(cut) = long.last_failure
+  assert string.length(cut) == 200
+
+  let assert [_, turns.Work(worked: bare, ..)] = failing("  ")
+  let assert Some(words) = bare.last_failure
+  assert !string.contains(words, " · ")
+  assert string.contains(words, "make check")
+}
+
 pub fn a_running_turn_is_drawn_open_test() {
   // The strand is still working on the first turn: no later input yet.
   let laid = pieces_of(list.take(items(), 7), [#("main", "op-1")])

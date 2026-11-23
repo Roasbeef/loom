@@ -2268,14 +2268,14 @@ fn worked(turn: Turn) -> Worked {
   // Read what the last failed call was, which names the failure for the rail.
   let last_failure =
     turn.rest
-    |> list.filter_map(fn(item) {
+    |> list.reverse
+    |> list.find_map(fn(item) {
       case item {
         Doing(item: Step(standing: Failed, words:, detail:, ..), ..) ->
           Ok(failure_line(words, detail))
         Doing(..) | Answer(..) | Input(..) | Outside(..) -> Error(Nil)
       }
     })
-    |> list.last
     |> option.from_result
 
   // Check whether any action in the turn ended in an interrupted state.
@@ -2340,9 +2340,9 @@ fn stopped(item: Classified) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1, turns.Finished))
+/// assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1, None, turns.Finished))
 ///   == "Worked 48s · 4 steps · 2 files · 1 failed"
-/// assert turns.divider(turns.Worked(Some(12_000), 0, 0, 0, turns.Interrupted))
+/// assert turns.divider(turns.Worked(Some(12_000), 0, 0, 0, None, turns.Interrupted))
 ///   == "Worked 12s · interrupted"
 /// ```
 pub fn divider(worked: Worked) -> String {
