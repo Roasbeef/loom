@@ -238,17 +238,23 @@ fn target(
   }
 }
 
-/// The key of the lane row an ask belongs to: the newest piece of the agent's
-/// own output (its words or the work of a turn) that happened at or before the
-/// ask was recorded, or nothing when the ask has no time or no piece qualifies.
+/// The key of the lane row an ask belongs to: the agent's own words that came
+/// with the ask when the lane has them, and otherwise the newest piece of the
+/// agent's output (its words or the work of a turn) that happened at or before
+/// the ask was recorded. Nothing when the ask has no time or no piece
+/// qualifies.
 ///
 /// The lane holds no identity of an ask. A settled turn is a divider with no
 /// steps in it (`turns.Folded`), the call's result that names the ask is in a
 /// step, and the record's anchor is a driver coordinate the lane does not
 /// carry. The one thing the ask and a row share is when they happened: an ask
 /// is recorded as its call runs, after the response that made the call, and the
-/// owner's next input comes later still. A press of the rail's jump on an ask
-/// that matches nothing does nothing, and the card in the dock is unaffected.
+/// owner's next input comes later still. That newest output piece is the
+/// turn's divider ("Worked <1s · 1 step"), which says nothing the reader came
+/// for, so the row is moved back to the agent's message that immediately
+/// precedes the divider, as the final design tints the agent's words and not the
+/// divider. A press of the rail's jump on an ask that matches nothing does
+/// nothing, and the card in the dock is unaffected.
 fn ask_row(
   pieces: List(turns.Piece),
   at: fn(String) -> Option(Int),
@@ -257,7 +263,44 @@ fn ask_row(
   // An ask with no time cannot be placed.
   case asked {
     None -> ""
-    Some(recorded) -> newest_stamped(list.reverse(pieces), at, recorded)
+    Some(recorded) -> {
+      let turn = newest_stamped(list.reverse(pieces), at, recorded)
+
+      option.unwrap(words_before(pieces, turn, at, recorded), turn)
+    }
+  }
+}
+
+/// The key of the agent's message that is the lane piece right before the turn
+/// with this key, when that turn's divider is the piece the ask was matched to
+/// and the message happened at or before the ask was recorded. Nothing for a
+/// key that is not a turn, a turn with no message directly before it, or a
+/// message the page cannot place in time.
+fn words_before(
+  pieces: List(turns.Piece),
+  turn: String,
+  at: fn(String) -> Option(Int),
+  recorded: Int,
+) -> Option(String) {
+  let before =
+    pieces
+    |> list.window_by_2
+    |> list.find_map(fn(pair) {
+      // Only the pair whose second piece is the asking turn can name a message.
+      case is_turn(pair.1, turn) {
+        True -> agent_words(pair.0)
+        False -> Error(Nil)
+      }
+    })
+
+  // A message that cannot be dated before the ask is not what asked.
+  case before {
+    Ok(key) ->
+      case at(key) {
+        Some(when) if when <= recorded -> Some(key)
+        Some(_) | None -> None
+      }
+    Error(Nil) -> None
   }
 }
 
@@ -283,6 +326,46 @@ fn newest_stamped(
           newest_stamped(older, at, recorded)
         True, Some(_) -> piece_key(piece)
       }
+  }
+}
+
+/// Whether a piece is the work of the turn with this key.
+fn is_turn(piece: turns.Piece, key: String) -> Bool {
+  // Only a turn's work carries a divider, and its key names the turn.
+  case piece {
+    turns.Work(key: own, ..) -> own == key
+    turns.Plain(..)
+    | turns.Prompt(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Commentary(..)
+    | turns.Peer(..)
+    | turns.Sibling(..)
+    | turns.Trigger(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> False
+  }
+}
+
+/// The key of a piece that is the agent's own words, which is the one kind of
+/// piece a response's text is drawn as.
+fn agent_words(piece: turns.Piece) -> Result(String, Nil) {
+  // The person's input, the harness's frames and a turn's divider are not the
+  // agent's words.
+  case piece {
+    turns.Plain(block:, ..) -> Ok(block.key)
+    turns.Work(..)
+    | turns.Prompt(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Commentary(..)
+    | turns.Peer(..)
+    | turns.Sibling(..)
+    | turns.Trigger(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> Error(Nil)
   }
 }
 

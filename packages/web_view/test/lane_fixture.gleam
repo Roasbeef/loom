@@ -1364,6 +1364,31 @@ pub fn asking_after_a_turn(
   id: String,
   prompt: String,
 ) -> session_channel.Update {
+  asking_in(id, prompt, None)
+}
+
+/// The same capture where the asking response also carries the words
+/// `words`, as a model's text ahead of its `ask` call: the lane then holds the
+/// agent's message ahead of the asking turn's divider.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.asking_with_words("ask-0123456789", "Which branch?", "One call from you.")
+/// ```
+pub fn asking_with_words(
+  id: String,
+  prompt: String,
+  words: String,
+) -> session_channel.Update {
+  asking_in(id, prompt, Some(words))
+}
+
+fn asking_in(
+  id: String,
+  prompt: String,
+  words: Option(String),
+) -> session_channel.Update {
   let outcome =
     message.ToolResultMessage(
       "a1",
@@ -1388,23 +1413,31 @@ pub fn asking_after_a_turn(
       item(
         4,
         11_000,
-        assistant([
-          call(
-            "a1",
-            "ask",
-            json.Object([
-              #(
-                "questions",
-                json.Array([
-                  json.Object([
-                    #("prompt", json.String(prompt)),
-                    #("kind", json.String("confirm")),
-                  ]),
+        assistant(
+          list.append(
+            case words {
+              Some(text) -> [message.AssistantText(text, None)]
+              None -> []
+            },
+            [
+              call(
+                "a1",
+                "ask",
+                json.Object([
+                  #(
+                    "questions",
+                    json.Array([
+                      json.Object([
+                        #("prompt", json.String(prompt)),
+                        #("kind", json.String("confirm")),
+                      ]),
+                    ]),
+                  ),
                 ]),
               ),
-            ]),
+            ],
           ),
-        ]),
+        ),
       ),
       item(5, 12_000, outcome),
     ],
