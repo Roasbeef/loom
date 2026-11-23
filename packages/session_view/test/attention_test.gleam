@@ -150,6 +150,25 @@ pub fn a_failed_turn_names_its_last_failed_call_test() {
   assert two.head == "Run make check-web_view · exit 2 · 2 steps failed"
 }
 
+// A long failed command is cut to leave room, so the count still ends the head
+// and the head stays within the limit.
+pub fn a_long_failure_line_keeps_the_count_test() {
+  let long = string.repeat("make check-web_view ", 20)
+  let piece =
+    turns.Work(
+      key: "7.0",
+      worked: turns.Worked(None, 3, 0, 12, Some(long), turns.Finished),
+      items: [],
+      folding: turns.Folded,
+      id: None,
+    )
+
+  let assert [row] = attention.lift([piece], [])
+  assert string.ends_with(row.head, " · 12 steps failed")
+  assert string.length(row.head) <= attention.head_limit
+  assert string.contains(row.head, "…")
+}
+
 pub fn a_failed_response_is_a_failed_turn_test() {
   let rows =
     attention.lift([plain("9.0", transcript_line.Failure, "model gave up")], [])

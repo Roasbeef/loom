@@ -354,13 +354,19 @@ fn failed_steps(
     0, _ -> []
     1, Some(what) -> [insight(work_key, FailedStep, what)]
     1, None -> [insight(work_key, FailedStep, "1 step failed")]
-    n, Some(what) -> [
-      insight(
-        work_key,
-        FailedStep,
-        what <> " · " <> int.to_string(n) <> " steps failed",
-      ),
-    ]
+    n, Some(what) -> {
+      let count = " · " <> int.to_string(n) <> " steps failed"
+
+      // The line is cut to leave room for the count, since the head's own cut
+      // would otherwise take the count, which the line cannot tell.
+      [
+        insight(
+          work_key,
+          FailedStep,
+          one_line_within(what, head_limit - string.length(count)) <> count,
+        ),
+      ]
+    }
     n, None -> [
       insight(work_key, FailedStep, int.to_string(n) <> " steps failed"),
     ]
@@ -395,6 +401,18 @@ fn failed_response(
 /// An insight row, with its head put on one line and cut.
 fn insight(key: String, kind: Kind, head: String) -> Lifted {
   Lifted(key:, kind:, hold: FoldsOnceOpened, head: one_line(head))
+}
+
+/// Text as one line of at most `room` graphemes, cut as `one_line` cuts it.
+fn one_line_within(text: String, room: Int) -> String {
+  let flat = one_line(text)
+  let graphemes = string.to_graphemes(flat)
+
+  // Cut only when the line is over the room; the cut ends in `…`.
+  case list.drop(graphemes, room) {
+    [_, ..] -> string.concat(list.take(graphemes, room - 1)) <> "…"
+    [] -> flat
+  }
 }
 
 /// Text as one line of at most `head_limit` graphemes: line breaks and tabs
