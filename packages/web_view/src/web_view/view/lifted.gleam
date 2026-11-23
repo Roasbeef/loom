@@ -74,6 +74,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -194,14 +195,19 @@ pub fn items(
   at: fn(String) -> Option(Int),
 ) -> List(Item) {
   list.map(lifted, fn(row) {
-    Item(lifted: row, target: target(pieces, row, dock), at: at(row.key))
+    Item(lifted: row, target: target(pieces, row, dock, at), at: at(row.key))
   })
 }
 
 /// Where one row's press goes: the dock for an approval on a page that has
 /// one, nowhere for an approval on a page that has not, and the lane's row
 /// that holds the lifted key for everything else.
-fn target(pieces: List(turns.Piece), row: Lifted, dock: Dock) -> String {
+fn target(
+  pieces: List(turns.Piece),
+  row: Lifted,
+  dock: Dock,
+  at: fn(String) -> Option(Int),
+) -> String {
   // Every kind of row is named, so a new kind has to say where it goes.
   case row.kind, dock {
     attention.ApprovalPending(..), InDock -> dock_target
@@ -212,12 +218,73 @@ fn target(pieces: List(turns.Piece), row: Lifted, dock: Dock) -> String {
     | attention.PeerMessage(..), _
     -> row_of(pieces, row.key)
 
-    // A record of the session's own is not a row of the lane, so a press has
-    // nowhere to jump.
-    attention.AskPending, _
-    | attention.StuckStrand(..), _
-    | attention.FindOpen(..), _
-    -> ""
+    // An ask is in the lane as the agent's newest output before it was
+    // recorded. A stuck strand and a find are records of the session's own,
+    // with no row of the lane, so a press has nowhere to jump.
+    attention.AskPending, _ -> ask_row(pieces, at, at(row.key))
+    attention.StuckStrand(..), _ | attention.FindOpen(..), _ -> ""
+  }
+}
+
+/// The key of the lane row an ask belongs to: the newest piece of the agent's
+/// own output (its words or the work of a turn) that happened at or before the
+/// ask was recorded, or nothing when the ask has no time or no piece qualifies.
+///
+/// The lane holds no identity of an ask. A settled turn is a divider with no
+/// steps in it (`turns.Folded`), the call's result that names the ask is in a
+/// step, and the record's anchor is a driver coordinate the lane does not
+/// carry. The one thing the ask and a row share is when they happened: an ask
+/// is recorded as its call runs, after the response that made the call, and the
+/// owner's next input comes later still. A press of the rail's jump on an ask
+/// that matches nothing does nothing, and the card in the dock is unaffected.
+fn ask_row(
+  pieces: List(turns.Piece),
+  at: fn(String) -> Option(Int),
+  asked: Option(Int),
+) -> String {
+  // An ask with no time cannot be placed.
+  case asked {
+    None -> ""
+    Some(recorded) ->
+      pieces
+      |> list.filter(fn(piece) {
+        is_output(piece) && stamped_by(piece, at, recorded)
+      })
+      |> list.last
+      |> result.map(piece_key)
+      |> result.unwrap("")
+  }
+}
+
+/// Whether a piece is the agent's own output: its words, or a turn's work.
+fn is_output(piece: turns.Piece) -> Bool {
+  // The person's input, another session's message and the advisor's frames are
+  // not what the agent wrote.
+  case piece {
+    turns.Plain(..) | turns.Work(..) -> True
+    turns.Prompt(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Commentary(..)
+    | turns.Peer(..)
+    | turns.Sibling(..)
+    | turns.Trigger(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> False
+  }
+}
+
+/// Whether the piece's row has a time at or before `recorded`.
+fn stamped_by(
+  piece: turns.Piece,
+  at: fn(String) -> Option(Int),
+  recorded: Int,
+) -> Bool {
+  // A row with no time is not placed before anything.
+  case at(piece_key(piece)) {
+    Some(when) -> when <= recorded
+    None -> False
   }
 }
 

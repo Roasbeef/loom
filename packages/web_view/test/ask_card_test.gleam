@@ -4,7 +4,8 @@
 //// ask, oldest first, with the questions drawn once and each option's note
 //// under its label. An operator's card holds the form and a Send, an
 //// observer's holds the questions as text, and an ask that is no longer open
-//// draws nothing.
+//// draws nothing. The turn that called `ask` is tinted in the lane and tagged
+//// `lifted · Ask`.
 
 import core/attention
 import core/clock
@@ -14,6 +15,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import lane_fixture
 import lustre/effect
 import lustre/element
 import page_fixture
@@ -257,6 +259,26 @@ pub fn an_answered_ask_is_not_drawn_test() {
     step(model, operator_page.Observed(component.RailRead(Ok(row([])))))
   assert !string.contains(operator(after), "Asks waiting")
   assert !string.contains(observer(after), "Asks waiting")
+}
+
+// The turn that called `ask` is the lane's row for the ask: tinted, tagged
+// `lifted · Ask`, and the rail's press names it.
+pub fn the_turn_that_asked_is_tinted_and_tagged_in_the_lane_test() {
+  let model =
+    component.new(start([], True))
+    |> component.apply([lane_fixture.asking(first_id, "Fold or separate?")])
+    |> lane_fixture.opened
+  let html =
+    step(
+      model,
+      operator_page.Observed(
+        component.RailRead(Ok(row([feed_ask(first_id, 12_500, "main")]))),
+      ),
+    )
+    |> operator
+
+  assert string.contains(html, "needs-you")
+  assert string.contains(html, "lifted · Ask")
 }
 
 fn index_of(html: String, needle: String) -> Int {

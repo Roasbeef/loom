@@ -1293,6 +1293,64 @@ pub fn programmed(program: String, output: String) -> session_channel.Update {
   )
 }
 
+/// A capture of a turn that calls `ask` with one question, `prompt`, and ends
+/// there: the call, and the result `tools/attention.ask_outcome` writes, which
+/// names the ask `id`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.asking("ask-0123456789", "Which branch?")
+/// ```
+pub fn asking(id: String, prompt: String) -> session_channel.Update {
+  let outcome =
+    message.ToolResultMessage(
+      "a1",
+      "ask",
+      [
+        message.ToolResultText(
+          "asked as " <> id <> ". End your turn now; the answer arrives later.",
+          None,
+        ),
+      ],
+      None,
+      None,
+      None,
+      False,
+      12_000,
+    )
+  capture_of(
+    [
+      item(1, 10_000, said("ask me", None)),
+      item(
+        2,
+        11_000,
+        assistant([
+          call(
+            "a1",
+            "ask",
+            json.Object([
+              #(
+                "questions",
+                json.Array([
+                  json.Object([
+                    #("prompt", json.String(prompt)),
+                    #("kind", json.String("confirm")),
+                  ]),
+                ]),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+      item(3, 12_000, outcome),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
 /// A capture of a turn that searches history for `deploy` and gets back
 /// `details` (the record the `history_search` tool writes, or whatever a
 /// damaged record held), then the answer: the rows a recall step draws.
