@@ -6,6 +6,7 @@ import client/daemon/domain as domain_service
 import client/daemon/lifetime
 import client/daemon/manager
 import client/daemon/server
+import client/delegate_key
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/internal/shared_history
@@ -2687,7 +2688,11 @@ fn delegate_request(
     parent_session:,
     child: "",
     creation: manager.Creation(
-      request_key: "delegate:" <> spawner <> ":" <> parent_session,
+      request_key: delegate_key.key(delegate_key.Key(
+        spawner,
+        parent_session,
+        "",
+      )),
       workspace: "repo",
       name: "delegate " <> spawner <> " " <> parent_session,
       configuration: "",
@@ -2742,6 +2747,49 @@ pub fn a_delegate_session_is_made_once_for_a_pair_and_a_return_finds_it_test() {
     manager.delegate_session(registry, delegate_request("laptop", 941, 2))
   assert other != session_id
   stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// Roasbeef/loom#1056 feared that a crash between registering a delegate
+// session and writing its delegate row lets a resent Spawn create a second
+// session. It cannot: the creation's request key is derived from the
+// (spawner, parent, child) triple, so the resend finds the registration the
+// crashed attempt left and claims the delegate row for that same session id. The
+// test builds the pre-crash state by registering the session under the derived
+// key without a delegate row, and checks that the resend adds no session.
+pub fn a_resend_after_a_crash_before_the_delegate_row_finds_the_session_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 4, fn(record, _) { Ok(record.id) })
+  let request = delegate_request("laptop", 950, 2)
+
+  // The crashed attempt registered the session and died before the row.
+  let assert Ok(manager.View(registration: crashed, ..)) =
+    manager.create_scoped(
+      registry,
+      request.creation,
+      directory: request.directory,
+      generator: request.generator,
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+    as "the crashed attempt registered the session"
+  assert catalogue.delegate_for(store, "laptop", request.parent_session)
+    == Ok(option.None)
+
+  // The crash also lost the registry's live slot. A fresh registry on the same
+  // store knows the session only from the catalogue, as a restarted daemon does,
+  // so the resend takes the path that prepares a slot rather than the admit path
+  // of a registry that still holds one.
+  stop(registry)
+  let restarted = start(store, 4, fn(record, _) { Ok(record.id) })
+
+  // The resend claims the row for the registration that already exists.
+  let assert Ok(manager.Delegated(session_id:, ..)) =
+    manager.delegate_session(restarted, request)
+    as "the resend finds the session"
+  assert session_id == crashed.id
+  assert catalogue.delegates_held(store, "laptop") == Ok(1)
+  stop(restarted)
   assert catalogue.close(store) == Ok(Nil)
 }
 
