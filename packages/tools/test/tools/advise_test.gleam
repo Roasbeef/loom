@@ -340,3 +340,28 @@ pub fn the_tool_asks_the_broker_for_nothing_test() {
   assert requirements.writable_roots == []
   assert requirements.env_allow == []
 }
+
+// An accepted verdict ends the advisor's run, so a model that would answer the
+// tool's reply with another call never gets the step to make it. Each verdict
+// word is checked, since every one of them answers a whole feed.
+pub fn an_accepted_verdict_ends_the_run_test() {
+  let calls = [
+    verdict_arguments("quiet"),
+    verdict_and_text("nudge", "check the test"),
+    verdict_and_text("block", "stop"),
+    verdict_and_text("continue", "keep going"),
+    verdict_and_text("complete", "all green"),
+  ]
+  list.each(calls, fn(arguments) {
+    let outcome = run(echoing_advice(), "advisor", arguments)
+    assert !outcome.is_error
+    assert outcome.terminate == tool.TerminateRun
+  })
+}
+
+// A refused call is an error the model can correct, so it leaves the run going.
+pub fn a_refused_verdict_leaves_the_run_going_test() {
+  let outcome = run(echoing_advice(), "advisor", verdict_arguments("nudge"))
+  assert outcome.is_error
+  assert outcome.terminate == tool.ContinueRun
+}
