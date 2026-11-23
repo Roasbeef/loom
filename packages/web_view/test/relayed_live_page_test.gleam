@@ -226,8 +226,8 @@ pub fn a_relayed_page_says_where_its_commands_run_test() {
       executor: "",
       pool: "",
     ))
-  assert string.contains(folder, "Agent on")
-  assert string.contains(folder, "Commands on")
+  assert string.contains(folder, ">On<")
+  assert !string.contains(folder, "Commands on")
   assert string.contains(folder, "box · …/work/proj")
 
   let registered =
