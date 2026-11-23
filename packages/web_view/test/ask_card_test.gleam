@@ -319,6 +319,19 @@ pub fn an_ended_page_draws_questions_without_a_form_test() {
   assert !string.contains(card, "Send")
 }
 
+// The daemon's word on an ask's answer is said under the ask cards.
+pub fn the_word_on_an_ask_answer_is_said_under_the_cards_test() {
+  let model =
+    opened(start([feed_ask(first_id, 10, "main")], True), "operator")
+    |> step(
+      operator_page.Observed(
+        component.RailAnswered(first_id, [#("q1", "1"), #("q2", "yes")]),
+      ),
+    )
+
+  assert string.contains(operator(model), "<p class=\"ask-words\">Answered.")
+}
+
 fn index_of(html: String, needle: String) -> Int {
   case string.split_once(html, needle) {
     Ok(#(before, _)) -> string.length(before)

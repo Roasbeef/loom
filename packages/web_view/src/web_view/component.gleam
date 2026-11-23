@@ -746,6 +746,10 @@ pub type Watch {
     sending: Option(String),
     /// The page's word on the last answer, in the daemon's fixed words.
     words: String,
+    /// The part of `words` that answers an ask, or empty. A find's close and a
+    /// stuck strand's retry write `words` too, and the ask cards in the dock
+    /// show only this one, so they do not repeat another row's word.
+    ask_words: String,
   )
 }
 
@@ -1718,6 +1722,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
         problems: dict.new(),
         sending: None,
         words: "",
+        ask_words: "",
       ),
       jobs_asked_at: None,
       decided: Owed,
@@ -7667,7 +7672,7 @@ pub fn asks(
                   #(ask.id, ask_card(model, ask, observed))
                 }),
               ),
-              case watching.words {
+              case watching.ask_words {
                 "" -> element.none()
                 words ->
                   html.p([attribute.class("ask-words")], [html.text(words)])
@@ -7986,6 +7991,7 @@ fn rail_answered(
                 problems: dict.delete(watching.problems, id),
                 sending: Some(id),
                 words: "",
+                ask_words: "",
               ),
             ),
           ),
@@ -8165,7 +8171,7 @@ fn rail_sent(model: Model(socket), id: String) -> Model(socket) {
     ..model,
     view: View(
       ..model.view,
-      watching: Watch(..watching, sending: Some(id), words: ""),
+      watching: Watch(..watching, sending: Some(id), words: "", ask_words: ""),
     ),
   )
 }
@@ -8195,7 +8201,13 @@ fn rail_answer_done(
           ..model,
           view: View(
             ..model.view,
-            watching: Watch(..watching, sending: None, words:, asked_at: asked),
+            watching: Watch(
+              ..watching,
+              sending: None,
+              words:,
+              ask_words: ask_words_of(watching, id, words),
+              asked_at: asked,
+            ),
           ),
         )
 
@@ -8206,6 +8218,20 @@ fn rail_answer_done(
         AnswerSent(..), None | AnswerFailed(..), _ -> #(model, effect.none())
       }
     }
+  }
+}
+
+/// The daemon's `words` when `id` names an ask the page holds, and nothing
+/// otherwise, so a find's close or a retry never reaches the ask cards.
+fn ask_words_of(watching: Watch, id: String, words: String) -> String {
+  let is_ask = case watching.row {
+    None -> False
+    Some(row) -> list.any(row.asks.items, fn(ask) { ask.id == id })
+  }
+
+  case is_ask {
+    True -> words
+    False -> ""
   }
 }
 
