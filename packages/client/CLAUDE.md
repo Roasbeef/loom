@@ -1612,7 +1612,15 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   `manager.recent_folders` and `forget_folder` read and edit it. `recent_for` and
   `forget_for` run `authorized_owner` first and list only entries inside home;
   `home_folders_capability` gives `Start.folders` on the creation capability's
-  condition, and `upgrade_home` builds its two functions with `read_task`.
+  condition, and `upgrade_home` builds its three functions (`recent`, `forget`, `browse`) with `read_task`.
+  The folder picker's listing (protocol-change/132): `client/daemon/folder_listing.list_in(home, trail)`
+  resolves a trail of names below the canonical home (`bootstrap.canonical_directory`,
+  then home or `creations.inside`), reads the directory with
+  `bootstrap.list_directory_bounded` at `folder_browse.entry_limit`, leaves out hidden
+  names, keeps only children that are directories inside the home, marks a `.git`,
+  caps at `shown_limit` and stops at `depth_limit`; every refusal is a
+  `folder_browse.Refusal`. `ui_socket.browse_for` runs it after `authorized_owner`
+  and is the `browse` of the `home.Folders` the owner's page is handed.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential
