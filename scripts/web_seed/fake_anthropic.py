@@ -175,10 +175,10 @@ def main_turn(messages):
             warm,
         )
     if "go stuck" in said.lower():
-        # A sub-agent whose provider answers 429, so its strand stops on a
+        # A sub-agent whose provider refuses the request outright, so its strand stops on a
         # failed run and the inbox draws a stuck thread for it.
         return (
-            [("tool_use", "agent_spawn", {"purpose": "rate limit review", "brief": "rate limit review of the meter pricing"})],
+            [("tool_use", "agent_spawn", {"purpose": "price the meter", "brief": "rate limit: price the meter"})],
             "tool_use",
             warm,
         )
@@ -190,7 +190,7 @@ def main_turn(messages):
         return [("text", "Checked: the sweep leaves the generated SQL alone.")], "end_turn", warm
     if "after the break" in said:
         return [("text", "Back after the break. The prefix had to be read again.")], "end_turn", usage(1500, 0, 41000, 30000)
-    if "review" in said:
+    if "review" in said and "child runs" not in said:
         return (
             [
                 ("thinking", "Plan the review: spawn a reviewer for the patch, write the notes, then wait."),
@@ -249,8 +249,8 @@ class Handler(BaseHTTPRequestHandler):
         if model == "fake-main" and messages:
             sys.stderr.write("fake-main last message: %s\n" % json.dumps(text_of(messages[-1].get("content", ""))))
         if model == "fake-sub" and "rate limit" in json.dumps(messages):
-            payload = json.dumps({"type": "error", "error": {"type": "rate_limit_error", "message": "rate limited"}}).encode()
-            self.send_response(429)
+            payload = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": "rate limit rules refuse this request"}}).encode()
+            self.send_response(400)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(payload)))
             self.end_headers()
