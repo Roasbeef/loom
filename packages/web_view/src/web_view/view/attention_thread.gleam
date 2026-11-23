@@ -857,30 +857,36 @@ fn close_button(
   )
 }
 
-/// A stuck strand's body: what the daemon knows of the failure, in the words its
-/// reason code gets, a card of what the page knows, and Retry. The sentence
-/// holds the failure time as the browser's clock and says what the provider
-/// said about a retry, and never guesses at a time the record lacks.
+/// A stuck strand's body: a card of what the page knows, as the final design's
+/// rows (the strand's status in the words its reason code gets, and its
+/// parent), then the Retry. The status holds the failure time as the browser's
+/// clock and says what the provider said about a retry, and never guesses at a
+/// time the record lacks.
 fn stuck_body(
   stuck: attention_feed.Stuck,
   offer: Offer(message),
 ) -> Element(message) {
   let failure = thread_words.kind_of(stuck.reason)
 
-  element.fragment([
-    parts.section("What the page knows", [
-      html.p(
-        [attribute.class("inbox-meta")],
+  let status = [
+    #(
+      "Strand status",
+      element.fragment(
         phrase.view(thread_words.stuck_phrase(
           failure,
           stuck.failed_at,
           stuck.retry_after_ms,
         )),
       ),
-      case stuck.parent {
-        Some(parent) -> parts.facts([#("Parent", html.text(parent))])
-        None -> element.none()
-      },
+    ),
+  ]
+
+  element.fragment([
+    parts.section("What the page knows", [
+      parts.facts(case stuck.parent {
+        Some(parent) -> list.append(status, [#("Parent", html.text(parent))])
+        None -> status
+      }),
     ]),
     stuck_decide(offer),
   ])
@@ -888,7 +894,7 @@ fn stuck_body(
 
 /// The stuck strand's Retry, or the words that say who can press it.
 fn stuck_decide(offer: Offer(message)) -> Element(message) {
-  parts.section("Decide", [
+  parts.section("Send it a nudge", [
     case offer.acting {
       Some(acting) ->
         html.div([attribute.class("inbox-acts")], [
@@ -898,7 +904,7 @@ fn stuck_decide(offer: Offer(message)) -> Element(message) {
               attribute.class("inbox-btn"),
               event.on_click(acting.retry),
             ],
-            [html.text("Retry")],
+            [html.text("Retry the last step")],
           ),
         ])
       None ->

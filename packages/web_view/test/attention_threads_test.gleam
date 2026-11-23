@@ -612,6 +612,16 @@ pub fn retry_prompts_the_stuck_strand_test() {
   assert string.contains(drawn(retried), "Delivered to the strand · admitted")
 }
 
+// The stuck pane is a card of rows, the strand's status first, and the nudge is
+// named in the final design's words.
+pub fn the_stuck_pane_is_a_card_of_what_the_page_knows_test() {
+  let html = drawn(run(owner(), home.ItemPicked(stuck_key())))
+
+  assert string.contains(html, "<td>Strand status</td>")
+  assert string.contains(html, "Send it a nudge")
+  assert string.contains(html, ">Retry the last step<")
+}
+
 // An observer's page reads the same threads and the same record and has no
 // form, no staging, no outbox and no Send, and its messages are ignored.
 pub fn an_observer_reads_and_cannot_stage_or_send_test() {
@@ -639,7 +649,7 @@ pub fn an_observer_reads_and_cannot_stage_or_send_test() {
   assert drawn(forced) == html
 
   let stuck = drawn(run(model, home.ItemPicked(stuck_key())))
-  assert !string.contains(stuck, ">Retry<")
+  assert !string.contains(stuck, ">Retry the last step<")
   let found = drawn(run(model, home.ItemPicked(find_key())))
   assert !string.contains(found, ">Fixed<")
 }
