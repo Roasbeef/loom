@@ -337,7 +337,7 @@ pub fn the_sidebar_lists_sessions_with_a_placement_tag_test() {
     "<aside aria-label=\"Sessions\" class=\"sidebar\" slot=\"left\">",
   )
   assert string.contains(drawn, "title=\"/src/loom\"")
-  assert string.contains(drawn, "<span class=\"tag-agent\">laptop</span>")
+  assert string.contains(drawn, "saved · /src/weft")
   assert string.contains(drawn, "vetting lint")
   assert string.contains(drawn, "Session D")
 
@@ -624,13 +624,13 @@ pub fn a_worktree_row_says_which_worktree_test() {
   let drawn = operator_html(listed_page(rows))
   assert string.contains(
     drawn,
-    "<span class=\"tag-code\" title=\""
+    "<span class=\"session-watch\" title=\""
       <> tree
-      <> "\">btcd · hungry-euclid-d93364</span>",
+      <> "\">saved · btcd · hungry-euclid-d93364</span>",
   )
   assert string.contains(
     drawn,
-    "<span class=\"tag-code\" title=\"/src/btcd\">/src/btcd</span>",
+    "<span class=\"session-watch\" title=\"/src/btcd\">saved · /src/btcd</span>",
   )
 
   // No project heading is drawn: the groups are by what the session needs.

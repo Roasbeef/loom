@@ -1020,12 +1020,11 @@ pub fn a_summary_that_counts_nothing_lands_the_composer_test() {
   let html = drawn(model)
   assert string.contains(html, "<h1>New session</h1>")
   assert !string.contains(html, "<h1>Inbox</h1>")
-  assert !string.contains(html, "Back to the inbox")
 
   let later = drawn(run(model, home.SavedRead([approval_waiting()])))
   assert string.contains(later, "<h1>New session</h1>")
   assert !string.contains(later, "<h1>Inbox</h1>")
-  assert string.contains(later, "Back to the inbox")
+  assert string.contains(later, "Everything, by need")
 }
 
 // The activity read answers first and says the one running session is quiet,
@@ -1106,11 +1105,10 @@ pub fn the_inbox_control_shows_on_a_decided_composer_with_a_summary_test() {
     )
   let calm = drawn(model)
   assert string.contains(calm, "<h1>New session</h1>")
-  assert !string.contains(calm, "Back to the inbox")
 
   let html = drawn(run(model, home.SavedRead([approval_waiting()])))
   assert string.contains(html, "<h1>New session</h1>")
-  assert string.contains(html, "Back to the inbox")
+  assert string.contains(html, "Everything, by need")
 }
 
 // With no saved session in the list no summary is coming, so nothing decides the
@@ -1184,5 +1182,5 @@ pub fn a_crashed_read_is_released_by_the_next_list_test() {
 
   assert string.contains(html, "<h1>New session</h1>")
   assert !string.contains(html, "<h1>Inbox</h1>")
-  assert string.contains(html, "Back to the inbox")
+  assert string.contains(html, "Everything, by need")
 }

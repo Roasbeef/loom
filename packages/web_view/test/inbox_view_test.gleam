@@ -17,6 +17,7 @@ import lustre/element.{type Element}
 import lustre/vdom/vnode
 import session_view/operator
 import web_view/home
+import web_view/inbox_rule
 import web_view/sessions.{
   type Entry, type Report, Entry, Glance, Live, Report, Saved,
 }
@@ -618,14 +619,13 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   let landed = drawn(model)
   assert string.contains(landed, "<h1>Inbox</h1>")
   assert !string.contains(landed, "home-new home-inbox")
-  assert !string.contains(landed, "Back to the inbox")
 
   let listed = run(model, home.ShowingList)
   assert string.contains(drawn(listed), "home-new home-inbox")
   assert !string.contains(drawn(listed), "<h1>Inbox</h1>")
 
   let composing = run(model, home.ShowingNew)
-  assert string.contains(drawn(composing), "Back to the inbox")
+  assert string.contains(drawn(composing), "Everything, by need")
 
   // The control returns to the inbox from either, and the selection kept.
   let pressed = run(model, home.InboxOpened("C"))
@@ -637,6 +637,41 @@ pub fn the_list_and_the_composer_lead_back_to_the_inbox_test() {
   )
   let back = run(run(pressed, home.ShowingNew), home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
+}
+
+// The rail draws the inbox's folders whatever the centre is, so the composer and
+// the list have the inbox one press away, and no folder is marked while the
+// inbox is not on screen. A folder's press brings the inbox back with that
+// folder chosen, and the selection the person made is kept.
+pub fn the_rail_folders_lead_back_to_the_inbox_from_any_centre_test() {
+  let model = opened(creating())
+  let composing = run(model, home.ShowingNew)
+  let listed = run(model, home.ShowingList)
+
+  // Both centres draw the folders, and neither marks one as the list's filter.
+  assert string.contains(drawn(composing), "rail-folders")
+  assert string.contains(drawn(listed), "rail-folders")
+  assert !string.contains(
+    drawn(composing),
+    "aria-pressed=\"true\" class=\"folder\"",
+  )
+  assert !string.contains(drawn(composing), "<h1>Inbox</h1>")
+
+  // A press from the composer, and from the list, lands on the inbox.
+  let pressed = run(model, home.InboxOpened("C"))
+  let from_form =
+    run(run(pressed, home.ShowingNew), home.FolderPicked(inbox_rule.Everything))
+  assert string.contains(drawn(from_form), "<h1>Inbox</h1>")
+  assert string.contains(
+    drawn(from_form),
+    "<span class=\"inbox-name\">docs sweep</span>",
+  )
+  let from_list =
+    run(
+      run(pressed, home.ShowingList),
+      home.FolderPicked(inbox_rule.Everything),
+    )
+  assert string.contains(drawn(from_list), "<h1>Inbox</h1>")
 }
 
 // The control is a click beneath the table's region, which every home's socket
@@ -711,7 +746,7 @@ pub fn a_page_with_nothing_running_settles_on_the_composer_test() {
   let later = run(listed, home.Observed(reports()))
 
   assert !string.contains(drawn(later), "<h1>Inbox</h1>")
-  assert string.contains(drawn(later), "Back to the inbox")
+  assert string.contains(drawn(later), "Everything, by need")
 }
 
 // A kept report is drawn for its thread but is not counted as read: the
@@ -832,7 +867,7 @@ pub fn a_session_starting_later_does_not_change_the_centre_test() {
 
   let later = run(model, home.Observed(reports()))
   assert !string.contains(drawn(later), "<h1>Inbox</h1>")
-  assert string.contains(drawn(later), "Back to the inbox")
+  assert string.contains(drawn(later), "Everything, by need")
 
   let back = run(later, home.ShowingInbox)
   assert string.contains(drawn(back), "<h1>Inbox</h1>")
@@ -894,7 +929,6 @@ pub fn the_inbox_control_follows_the_threads_test() {
         create: Some(fn(_, _, _, _, _, _, _) { Nil }),
       ),
     )
-  assert !string.contains(drawn(empty), "Back to the inbox")
   assert !string.contains(drawn(run(empty, home.ShowingList)), "‹ Inbox")
 }
 

@@ -6,10 +6,10 @@
 //// The sidebar draws a list the daemon's catalogue supplied
 //// (`web_view/sessions`) and decides nothing. How the rows are grouped and
 //// filtered is `web_view/listing`'s, and this module only draws it: the
-//// daemon's name and a "New session" button at the top, a row of machine
-//// filter pills when the sessions use more than one machine, the groups
-//// "Needs you", "Working" and "Idle" and a folded "Saved" group, and a foot
-//// with the pages that are not sessions. The same column is the home page's, a
+//// inbox's folders at the top, a row of machine filter pills when the
+//// sessions use more than one machine, the groups "Needs you", "Working" and
+//// "Idle" and a folded "Saved" group, a note and a "New session" button, and a
+//// foot with the pages that are not sessions. The same column is the home page's, a
 //// session page's and the admin page's, so a person who learns it once finds it
 //// where they go.
 ////
@@ -67,12 +67,14 @@
 ////
 //// ## The inbox folders
 ////
-//// On the home page, when the centre is the attention inbox, the column leads
-//// with the inbox's folders (`Folders`): "Everything, by need" and one folder
+//// The column leads with the inbox's folders (`Folders`) on every page that
+//// draws it and whatever its centre is: "Everything, by need" and one folder
 //// for each group that has threads, each with its count, which narrow the
 //// inbox's list. A press sends the message the page drew into the folder, naming
 //// a `Folder` the page itself offered, and the page honours it for a folder it
-//// lists. The sessions' list under it is headed "Watch live", and the column
+//// lists. On the home page a press also brings the inbox to the centre, so from
+//// the composer, the list, a ticket or a relayed session it is the way back, and
+//// the folder is marked only while the inbox is the centre. The sessions' list under it is headed "Watch live", and the column
 //// ends with a note saying what the counts read and the "New session" button.
 //// Every folder is beneath the sidebar's path, so the home's socket admits its
 //// press with no new rule. A session's page draws the same folders and the same
@@ -81,8 +83,9 @@
 //// and a press of one is a way back to the inbox.
 ////
 //// A row's second line is `Page.watching`'s words for the session when the page
-//// has them (`watch_rule`: `running · 2 lifted`, `aegis · asked`), and the
-//// placement tag otherwise.
+//// has them (`watch_rule`: `running · 2 lifted`, `aegis · asked`). A saved row
+//// says `saved · ` and where its code lives, since the catalogue holds no time
+//// the session last ran. Any other row keeps the placement tag.
 ////
 //// ## Sessions of other orchestrators
 ////
@@ -93,7 +96,9 @@
 //// A row is a button whose message names the orchestrator and the session the
 //// server drew, and the page opens the relayed page only for a row it holds. An
 //// orchestrator that stopped answering keeps its last rows, drawn quieter under
-//// one line that says so (`relayed-side-note`). A session page draws none of it.
+//// one line that says so (`relayed-side-note`), directly under the section's
+//// heading, which the stylesheet keeps visible in the rail so the line is never
+//// alone. A session page draws none of it.
 ////
 //// The module takes the groups the page holds and imports nothing from
 //// `web_view/component`, which imports it.
@@ -105,7 +110,7 @@
 ////
 //// 1. `view` is a session page's sidebar and `home` the home's. Each memoizes on
 ////    what it draws and hands `column` the groups.
-//// 2. `column` lays the column out: the top (or the inbox's folders), the pills,
+//// 2. `column` lays the column out: the inbox's folders, the "Watch live" heading, the pills,
 ////    a section for each state, the saved region, the other orchestrators'
 ////    sections, the folders' note and the foot.
 //// 3. `entry` draws one session's row and `lead` its two lines.
@@ -305,7 +310,7 @@ pub fn view(
         resume,
         archiving,
         None,
-        Some(folders),
+        folders,
       )
   }
 }
@@ -329,13 +334,13 @@ pub fn view(
 /// `relayed` adds the sessions of the orchestrators the daemon relays for, after
 /// the saved ones, and is the memo's key as the groups are.
 ///
-/// `folders` is the inbox's folders, drawn at the top when the centre is the
-/// inbox and `None` otherwise.
+/// `folders` is the inbox's folders, drawn at the top on every centre of the
+/// home, so the inbox is one press away from the composer and the list too.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.home(home.groups(model), dict.new(), page, Opening, resume.Never, archiving.Never, relayed, None)
+/// // sidebar.home(home.groups(model), dict.new(), page, Opening, resume.Never, archiving.Never, relayed, folders)
 /// ```
 pub fn home(
   groups: List(Group),
@@ -345,7 +350,7 @@ pub fn home(
   resume: Resume(message),
   archiving: Archiving(message),
   relayed: Relayed(message),
-  folders: Option(Folders(message)),
+  folders: Folders(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
@@ -354,11 +359,7 @@ pub fn home(
     element.ref(resume.pending(resume)),
     element.ref(archiving.stage(archiving)),
     element.ref(relayed.sections),
-    element.ref(
-      option.map(folders, fn(each) {
-        #(each.items, each.current, each.note, each.running)
-      }),
-    ),
+    element.ref(#(folders.items, folders.current, folders.note, folders.running)),
   ])
   column(
     groups,
@@ -399,10 +400,11 @@ fn memoed(
   )
 }
 
-/// The column itself: its title, the top (the daemon's name and "New session"),
+/// The column itself: its title, the inbox's folders, the "Watch live" heading,
 /// the pills, one section for each group that has a running session, the folded
-/// saved sessions and the foot. The sections sit in a scrolling region of their
-/// own so the top and the foot stay in view.
+/// saved sessions, the other orchestrators' sections, the note and "New session"
+/// and the foot. The sections sit in a scrolling region of their own so the
+/// folders and the foot stay in view.
 fn column(
   groups: List(Group),
   current: String,
@@ -412,7 +414,7 @@ fn column(
   resume: Resume(message),
   archiving: Archiving(message),
   relayed: Option(Relayed(message)),
-  folders: Option(Folders(message)),
+  folders: Folders(message),
 ) -> Element(message) {
   let all = listing.entries(groups)
   let rows =
@@ -427,15 +429,8 @@ fn column(
     ],
     [
       html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
-      case folders {
-        Some(shown) -> folders_nav(shown)
-        None -> top(page)
-      },
-      case folders {
-        Some(_) ->
-          html.h3([attribute.class("rail-heading")], [html.text("Watch live")])
-        None -> element.none()
-      },
+      folders_nav(folders),
+      html.h3([attribute.class("rail-heading")], [html.text("Watch live")]),
       pills(all, page),
       html.div([attribute.class("side-scroll")], [
         state("Needs you", "state-needs-you", rows.needs, draw),
@@ -443,10 +438,7 @@ fn column(
         idle(rows, draw),
         saved_region(rows.saved, draw),
         relayed_sections(relayed),
-        case folders {
-          Some(shown) -> rail_foot(shown, page)
-          None -> element.none()
-        },
+        rail_foot(folders, page),
       ]),
       foot(page),
     ],
@@ -583,49 +575,6 @@ fn activity_of(suffix: Suffix) -> Dict(String, Activity) {
     Doing(activity) -> activity
     Known(activity) -> activity
   }
-}
-
-/// The column's head: the product's name beside the serving daemon's, so a
-/// person with two pages open can tell them apart, and the "New session" button
-/// where the page offers one.
-fn top(page: Page(message)) -> Element(message) {
-  // Dispatch on top state.
-  let new = case page.starting {
-    Some(press) -> [
-      html.button(
-        [
-          attribute.type_("button"),
-          attribute.class("new-session"),
-          event.on_click(press),
-        ],
-        [
-          html.span([attribute.aria_hidden(True)], [html.text("+")]),
-          html.text("New session"),
-        ],
-      ),
-    ]
-    None -> []
-  }
-
-  html.div([attribute.class("side-top")], [
-    html.p([attribute.class("brand")], [
-      html.span([], [html.text("Loom")]),
-      html.span(
-        [
-          attribute.class("here"),
-          attribute.title("The daemon serving this page: " <> page.machine),
-        ],
-        [
-          html.span(
-            [attribute.class("dot-ok"), attribute.aria_hidden(True)],
-            [],
-          ),
-          html.span([attribute.class("here-name")], [html.text(page.machine)]),
-        ],
-      ),
-    ]),
-    ..new
-  ])
 }
 
 /// The inbox's folders: a button for each, its name at the left and its count at
@@ -1095,10 +1044,24 @@ fn lead(row: Row, watching: Dict(String, String)) -> Element(message) {
     html.span([attribute.class("session-name")], [
       html.text(sessions.label(entry)),
     ]),
-    case dict.get(watching, entry.id) {
-      Ok(words) ->
+    case dict.get(watching, entry.id), entry.residency {
+      // The page's own words for the session, as the home's rows say them.
+      Ok(words), _ ->
         html.span([attribute.class("session-watch")], [html.text(words)])
-      Error(Nil) ->
+
+      // A saved session says so and where its code lives, the two facts the
+      // catalogue holds for it: when it last ran is not among them.
+      Error(Nil), Saved ->
+        html.span([attribute.class("session-watch"), ..code], [
+          html.text("saved · " <> listing.entry_words(entry, row.place)),
+        ])
+
+      // Every other row keeps the placement tag.
+      Error(Nil), Live
+      | Error(Nil), Blocked
+      | Error(Nil), FailedStart(_)
+      | Error(Nil), Moving(_)
+      ->
         html.span([attribute.class("session-tag")], [
           html.span([attribute.class("tag-agent")], [
             html.text(row.place.agent),

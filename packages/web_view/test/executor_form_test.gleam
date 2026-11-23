@@ -324,7 +324,6 @@ pub fn the_cards_show_the_state_the_daemon_found_test() {
     "1 of 2 executors reachable. Tried in order: gpu, box.",
   )
   assert string.contains(html, "A state is advice")
-  assert !string.contains(html, "not checked")
   assert !string.contains(html, "Checking which are reachable")
 }
 

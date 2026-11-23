@@ -237,7 +237,7 @@ pub fn every_handler_of_the_region_is_beneath_its_path_test() {
       string.starts_with(key, home.table_path <> "\t")
       || string.starts_with(key, home.sidebar_path <> "\t")
     })
-  assert list.length(others) == 2
+  assert list.length(others) == 3
 }
 
 // A row's "Sign out" asks the daemon for the fingerprint the server drew, and
