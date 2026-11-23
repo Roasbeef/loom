@@ -43,7 +43,7 @@
    input 818924b5cc4fa8718f2e51bf0a69ea7548f91cf9a366d14c7a1eb9276b6dc6e8  packages/web_client/src/web_client/saved.gleam
    input 1cd181010669e2dfe37b7c51c9df331cbacfd889f5484766bb3fadcde4853344  packages/web_client/src/web_client/saved_rule.gleam
    input 91ae1081c4a243ee4f6eb8459b077fdb2e83bd7419e1d1559aafc495ff01cc5e  packages/web_client/src/web_client/shell.gleam
-   input b26c28d7422d8ce491333be5672d7d13a69c9d66952a4e6cd6ac6c600e7e3bb5  packages/web_client/src/web_client/shell_rule.gleam
+   input 47fe7d29954cc7e1ceaa46842f529fd148112613e5de839bd09ba7b7898689c0  packages/web_client/src/web_client/shell_rule.gleam
    input b2e3b58f4885a4ab8b0ccf6474b5a29fc714eaab7eb85b0de39eb62746cc349b  packages/web_client/src/web_client/switch.gleam
    input 30a2c1d2aa353323c622bf2f9e14e07c86ce786b22e8beb711b43549b3748f72  packages/web_client/src/web_client/switch_rule.gleam
    input 0f3b81b0ee0cc712e0447a3b6e2b21669a52b12b7eb1d8d0458078f2cf86c650  packages/web_client/src/web_client/switcher.gleam
@@ -165,7 +165,7 @@
    input 79de790a23d34dc69c1fc4f19818edcd812897f48604d3a9f5269285c5efa6ab  packages/web_view/src/web_view/view/session_tab.gleam
    input c43a7ffc9c4a4e0812866a144a02b7ad7511cb21f9e3e37889374f8689bfd4c0  packages/web_view/src/web_view/view/share.gleam
    input 3b5cd6878242e9976230213eb4f2f391073e69e3689b603f1fa36f05b6f7f5c2  packages/web_view/src/web_view/view/shell.gleam
-   input abe93bd1e1aaf48460a0ba03da6a6f70032b62a4b1bee6b13c1438bb592e2fb8  packages/web_view/src/web_view/view/sidebar.gleam
+   input 95e442e74b5067c3b304d4834bc752e6081b6fefd70eac223cbc6bb898633436  packages/web_view/src/web_view/view/sidebar.gleam
    input 379a1349cf6dd30058af926e6fffe7bd33d5c1705afd39bbd9524fabf8e216ea  packages/web_view/src/web_view/view/signins.gleam
    input 97c91d0092150273cbefc0fc4e49cab3dc0a90b53c4c621fa3250ed41e87263b  packages/web_view/src/web_view/view/stamp.gleam
    input 3378b51ac21094f2e52ce289e50b135fa77dea98a5cc11ccbb7a3337ec2a0709  packages/web_view/src/web_view/view/strand_detail.gleam
