@@ -1241,9 +1241,7 @@ one it sends from is refused. The check is as strong as the spawn messages' and 
 stronger: the node is read from the pid in the message's reply subject, which the
 sender supplies, so a peer that also forges that pid (a live pid on the node it
 names) passes. Distribution authenticates the connection and gives a receiver no
-sender identity inside a message, and no binding of that kind exists in the tree (see "Trust and transport" in
-[`docs/architecture/distributed.md`](../docs/architecture/distributed.md) for why the
-check is not meant to be one).
+sender identity inside a message, and no binding of that kind exists in the tree.
 The fixture of
 `orchestrator_port_test` that declared a node other than the test's own now declares
 its own node, and `an_activation_declaring_another_nodes_name_is_refused_test`
@@ -1253,3 +1251,7 @@ pins the refusal.
 `a_moved_session_stays_private_without_a_page_for_the_sender_test`) and
 `relayed_test` (`an_imported_session_gets_a_row_beside_the_caps_and_only_one_test`,
 `an_import_with_no_page_writes_no_row_test`), and `orchestrator_port_test` for the node check.
+
+## Addendum: what the declared-node check does not stop (2026-11-23)
+
+The 2026-11-20 addendum says the `from_node` check on an activation is no stronger than the spawn messages' check. [`docs/architecture/distributed.md`](../docs/architecture/distributed.md), "Trust and transport", says why: the node is read from a pid the sender supplies, so the check catches a misconfigured peer and does not stop an enrolled one, which can already call any function on the node. Enrolling an orchestrator is the trust decision. Nothing in this proposal changes.
