@@ -300,6 +300,7 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
       steps: 3,
       files: 2,
       failed: 0,
+      last_failure: None,
       ending: turns.Finished,
     )
   assert turns.divider(worked) == "Worked 48s · 3 steps · 2 files"
@@ -320,18 +321,32 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
 // A failed call is counted on the divider, so a folded turn says it went
 // wrong before anyone opens it.
 pub fn the_divider_counts_failed_calls_test() {
-  assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1, turns.Finished))
+  assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1, None, turns.Finished))
     == "Worked 48s · 4 steps · 2 files · 1 failed"
-  assert turns.divider(turns.Worked(None, 2, 0, 0, turns.Finished))
+  assert turns.divider(turns.Worked(None, 2, 0, 0, None, turns.Finished))
     == "Worked · 2 steps"
 }
 
 // A turn whose response was aborted says so on its divider, so a reader of the
 // folded turn can tell a stopped turn from one that finished.
 pub fn the_divider_says_a_turn_was_interrupted_test() {
-  assert turns.divider(turns.Worked(Some(12_000), 0, 0, 0, turns.Interrupted))
+  assert turns.divider(turns.Worked(
+      Some(12_000),
+      0,
+      0,
+      0,
+      None,
+      turns.Interrupted,
+    ))
     == "Worked 12s · interrupted"
-  assert turns.divider(turns.Worked(Some(12_000), 2, 1, 1, turns.Interrupted))
+  assert turns.divider(turns.Worked(
+      Some(12_000),
+      2,
+      1,
+      1,
+      None,
+      turns.Interrupted,
+    ))
     == "Worked 12s · 2 steps · 1 file · 1 failed · interrupted"
 }
 
@@ -382,6 +397,52 @@ pub fn a_command_stopped_on_request_makes_the_turn_interrupted_test() {
   }
   assert divider(False) == "Worked 2s · 1 step · 1 failed · interrupted"
   assert divider(True) == "Worked 2s · 1 step · 1 failed"
+}
+
+// The divider keeps the last failed call's words and the first line its
+// result said, so the live rail can name the failure while the turn is folded.
+pub fn the_divider_names_the_last_failed_call_test() {
+  let failing = fn(seq, id, command, output) {
+    [
+      item(
+        seq,
+        10_000 + seq * 1000,
+        assistant([
+          call(id, "bash", json.Object([#("command", json.String(command))])),
+        ]),
+      ),
+      item(
+        seq + 1,
+        11_000 + seq * 1000,
+        message.ToolResultMessage(
+          id,
+          "bash",
+          [message.ToolResultText(output, None)],
+          None,
+          None,
+          None,
+          True,
+          12_000,
+        ),
+      ),
+    ]
+  }
+  let laid =
+    pieces_of(
+      list.flatten([
+        [item(1, 10_000, said("check it", None))],
+        failing(2, "c1", "make lint", "lint: 3 errors"),
+        failing(4, "c2", "make check", "1 failing: fold_order_test"),
+      ]),
+      [],
+    )
+  let assert [_, turns.Work(worked:, ..)] = laid
+
+  assert worked.failed == 2
+  let assert Some(last) = worked.last_failure
+  assert string.contains(last, "make check")
+  assert string.contains(last, "1 failing: fold_order_test")
+  assert !string.contains(last, "make lint")
 }
 
 pub fn a_running_turn_is_drawn_open_test() {

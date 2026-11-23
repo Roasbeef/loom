@@ -53,7 +53,7 @@ fn step(
 fn worked(key: String, failed: Int, items: List(turns.Item)) -> turns.Piece {
   turns.Work(
     key:,
-    worked: turns.Worked(None, 0, 0, failed, turns.Finished),
+    worked: turns.Worked(None, 0, 0, failed, None, turns.Finished),
     items:,
     folding: turns.Folded,
     id: None,
@@ -121,6 +121,33 @@ pub fn a_closed_fold_with_no_steps_loaded_still_lifts_test() {
   let assert [row] = attention.lift([worked("7.0", 1, [])], [])
   assert row.head == "1 step failed"
   assert attention.lift([worked("7.0", 0, [step(turns.Failed, [])])], []) == []
+}
+
+// A turn whose divider names its last failed call lifts a head that says what
+// failed, and adds the count only when more than one call failed.
+pub fn a_failed_turn_names_its_last_failed_call_test() {
+  let named = fn(failed) {
+    turns.Work(
+      key: "7.0",
+      worked: turns.Worked(
+        None,
+        3,
+        0,
+        failed,
+        Some("Run make check-web_view · exit 2"),
+        turns.Finished,
+      ),
+      items: [],
+      folding: turns.Folded,
+      id: None,
+    )
+  }
+
+  let assert [one] = attention.lift([named(1)], [])
+  assert one.head == "Run make check-web_view · exit 2"
+
+  let assert [two] = attention.lift([named(2)], [])
+  assert two.head == "Run make check-web_view · exit 2 · 2 steps failed"
 }
 
 pub fn a_failed_response_is_a_failed_turn_test() {

@@ -106,7 +106,7 @@ pub fn no_turns_hold_no_rows_test() {
 fn work(id: Int, count: Int, folding: turns.Folding) -> turns.Piece {
   turns.Work(
     key: "work:1.0",
-    worked: turns.Worked(None, count, 0, 0, turns.Finished),
+    worked: turns.Worked(None, count, 0, 0, None, turns.Finished),
     items: steps(count),
     folding:,
     id: Some(id),

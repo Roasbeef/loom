@@ -293,7 +293,7 @@ fn piece_rows(piece: turns.Piece) -> List(Lifted) {
 
     turns.Work(key:, worked:, items:, ..) ->
       list.append(
-        failed_steps(key, worked.failed),
+        failed_steps(key, worked.failed, worked.last_failure),
         list.flat_map(items, narrated_failure),
       )
 
@@ -334,16 +334,36 @@ fn piece_rows(piece: turns.Piece) -> List(Lifted) {
 }
 
 /// One insight for a turn whose work had failed steps, or none when it had
-/// none. It is read from the turn's divider (`Worked.failed`), which the
-/// window keeps for a turn whose fold is closed and whose steps are not
-/// loaded, and it is keyed by the turn's own piece key, so the row stays the
-/// same row as steps are added and the fold is opened or closed.
-fn failed_steps(work_key: String, failed: Int) -> List(Lifted) {
-  // The count is the head: the steps themselves are in the turn's fold.
-  case failed {
-    0 -> []
-    1 -> [insight(work_key, FailedStep, "1 step failed")]
-    n -> [insight(work_key, FailedStep, int.to_string(n) <> " steps failed")]
+/// none. It is read from the turn's divider (`Worked.failed` and
+/// `Worked.last_failure`), which the window keeps for a turn whose fold is
+/// closed and whose steps are not loaded, and it is keyed by the turn's own
+/// piece key, so the row stays the same row as steps are added and the fold is
+/// opened or closed.
+///
+/// The head names the last failed call and what its result said, as the final
+/// design's insight does (`bash make check · exit 2`), and adds the count when
+/// more than one call failed. A turn whose divider holds no such line, because
+/// the only failure was a program's inner call, keeps the count alone.
+fn failed_steps(
+  work_key: String,
+  failed: Int,
+  last_failure: option.Option(String),
+) -> List(Lifted) {
+  // The count is the fallback head: the steps themselves are in the turn's fold.
+  case failed, last_failure {
+    0, _ -> []
+    1, Some(what) -> [insight(work_key, FailedStep, what)]
+    1, None -> [insight(work_key, FailedStep, "1 step failed")]
+    n, Some(what) -> [
+      insight(
+        work_key,
+        FailedStep,
+        what <> " · " <> int.to_string(n) <> " steps failed",
+      ),
+    ]
+    n, None -> [
+      insight(work_key, FailedStep, int.to_string(n) <> " steps failed"),
+    ]
   }
 }
 
