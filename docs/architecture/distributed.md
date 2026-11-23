@@ -1475,6 +1475,23 @@ it, after which the source's retry would import the session afresh. So
 until the origin answers `Moved` for the session. The web page's delete does
 not apply this hold yet.
 
+The hold is the only thing that prevents a failure the storage layer does not
+([#1259](https://github.com/Roasbeef/loom/issues/1259)). Under `Rows` custody
+(a daemon with no directory membership), `catalogue.begin_move` replaces an
+`imported` row with `moving`, and an abandon of that onward move returns the row
+to `resident`. After either, the receiver no longer remembers that the first move
+committed. A source that missed the activation answer would then ask again, get
+`Conflict`, abandon, and serve its stale copy while the receiver or a third
+orchestrator serves the session. The daemon's `inbound_settled` check
+(`client/daemon/server.gleam`) refuses the onward move until the origin says
+`Moved`, so the sequence cannot start through `sessions.move`. The limit is that
+the check lives in the daemon and not in the catalogue, so a caller of
+`begin_move` that skips it reopens the failure, and an origin that is down or no
+longer listed keeps the session from moving on. Moves between two orchestrators
+that share a directory use `Recorded` custody, where the owner record decides and
+the source's abandon is a compare-and-set that fails once the receiver has
+activated, so they have neither limit.
+
 ### Asking for a move
 
 The terminal, the owner's home and the Admin page ask for a move through the same two
