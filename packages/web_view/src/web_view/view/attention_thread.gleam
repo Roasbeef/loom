@@ -154,36 +154,49 @@ fn row_name(item: Item, name_of: fn(String) -> String) -> String {
   // The main strand is the session itself and keeps the session's name.
   case strand {
     "main" -> name_of(attention_rule.session_of(item))
-    other -> shortened(other)
+    other -> strand_name(other)
   }
 }
 
 /// The most graphemes of a strand's name that a row keeps.
 const strand_limit = 36
 
-/// A strand's name as a row's name: the trailing `-` and sixteen hexadecimal
-/// digits of a sub-agent's identifier are left off, and a name still longer than
-/// `strand_limit` ends in `…`.
-fn shortened(strand: String) -> String {
+/// A strand's name as a row's name. The sixteen hexadecimal digits the agency
+/// appends to a sub-agent's name are cut to `-…` and their last four, which keep
+/// two siblings of one purpose apart (`audit-…cdef`), and a name still longer
+/// than `strand_limit` has its purpose cut and ends in `…` before that tail.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_thread.strand_name("sub:main/audit-0123456789abcdef")
+///   == "sub:main/audit-…cdef"
+/// ```
+pub fn strand_name(strand: String) -> String {
   let graphemes = string.to_graphemes(strand)
   let count = list.length(graphemes)
   let tail = list.drop(graphemes, count - 17)
 
   // A name shorter than the suffix cannot carry it, so only a long name whose
-  // tail is a dash and sixteen hexadecimal digits is trimmed.
-  let bare = case count > 17, tail {
+  // tail is a dash and sixteen hexadecimal digits has a tail to keep.
+  let #(purpose, kept) = case count > 17, tail {
     True, ["-", ..digits] ->
       case list.all(digits, is_hex) {
-        True -> string.concat(list.take(graphemes, count - 17))
-        False -> strand
+        True -> #(
+          string.concat(list.take(graphemes, count - 17)),
+          "-…" <> string.concat(list.drop(digits, 12)),
+        )
+        False -> #(strand, "")
       }
-    True, [] | False, _ | True, [_, ..] -> strand
+    True, [] | False, _ | True, [_, ..] -> #(strand, "")
   }
 
-  // A name over the limit is cut and marked as cut.
-  case string.length(bare) > strand_limit {
-    True -> string.slice(bare, 0, strand_limit - 1) <> "…"
-    False -> bare
+  let room = strand_limit - string.length(kept)
+
+  // A purpose over the room is cut and marked as cut.
+  case string.length(purpose) > room {
+    True -> string.slice(purpose, 0, room - 1) <> "…" <> kept
+    False -> purpose <> kept
   }
 }
 

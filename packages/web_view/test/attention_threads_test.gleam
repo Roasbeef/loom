@@ -24,6 +24,7 @@ import web_view/saved_attention
 import web_view/sessions.{type Entry, Entry, Live, Report}
 import web_view/signins
 import web_view/thread_send
+import web_view/view/attention_thread
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: element.Element(message)) -> List(String)
@@ -428,8 +429,25 @@ pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
 pub fn a_row_of_another_strand_is_named_by_the_strand_test() {
   let html = drawn(owner())
 
-  assert string.contains(html, ">sub:main/audit</span>")
+  assert string.contains(html, ">sub:main/audit-…cdef</span>")
   assert !string.contains(html, "0123456789abcdef</span>")
+}
+
+// Two siblings of one purpose keep a short distinguishing tail, so their rows
+// do not read alike, and a long purpose is cut before the tail.
+pub fn sibling_strands_keep_a_distinguishing_tail_test() {
+  let a = attention_thread.strand_name("sub:main/audit-0123456789abcdef")
+  let b = attention_thread.strand_name("sub:main/audit-0123456789ab1234")
+  assert a == "sub:main/audit-…cdef"
+  assert b == "sub:main/audit-…1234"
+
+  let long =
+    attention_thread.strand_name(
+      "sub:main/review-the-meter-pricing-and-the-rate-card-0123456789abcdef",
+    )
+  assert string.length(long) == 36
+  assert string.ends_with(long, "…-…cdef")
+  assert attention_thread.strand_name("main") == "main"
 }
 
 // Submitting stages the answer into the outbox and sends nothing. Send then
