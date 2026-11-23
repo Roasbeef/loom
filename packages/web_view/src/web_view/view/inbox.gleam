@@ -1029,9 +1029,12 @@ fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
   // left whole is the title already, so its quote would repeat it.
   let head = inbox_rule.thread_head(thread)
 
+  // An approval leaves the words out, a working session quotes its brief, and
+  // any other thread quotes its last finished message.
   case kind, brief, thread.report.last_message {
     inbox_rule.ApprovalPending, _, _ -> element.none()
     inbox_rule.Working, Some(read), _ ->
+      // A brief message the title holds whole is not quoted again.
       case brief_said(read) == head {
         True -> element.none()
         False -> brief_view.latest(read)
@@ -1039,6 +1042,8 @@ fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
     _, _, Some(text) ->
       case string.trim(text) {
         "" -> element.none()
+
+        // A message the title holds whole is not quoted again.
         trimmed if trimmed == head -> element.none()
         _ ->
           html.div([attribute.class("inbox-said")], [
