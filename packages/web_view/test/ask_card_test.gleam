@@ -305,6 +305,20 @@ fn laned(at: Int, strand: String) -> String {
   |> operator
 }
 
+// A page that has ended draws the questions as text, because a submit there is
+// dropped: no form, no input and no Send, in the card or under the rail's row.
+pub fn an_ended_page_draws_questions_without_a_form_test() {
+  let model =
+    opened(start([feed_ask(first_id, 10, "main")], True), "operator")
+    |> step(operator_page.Observed(component.Refused("gone")))
+  let card = dock_of(operator(model))
+
+  assert string.contains(card, "Fold or separate?")
+  assert !string.contains(card, "<form")
+  assert !string.contains(card, "<input")
+  assert !string.contains(card, "Send")
+}
+
 fn index_of(html: String, needle: String) -> Int {
   case string.split_once(html, needle) {
     Ok(#(before, _)) -> string.length(before)

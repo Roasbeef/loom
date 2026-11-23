@@ -7707,14 +7707,27 @@ fn ask_body(
 ) -> Element(message) {
   let watching = model.view.watching
 
-  // The record is the questions, and the capability decides form or text.
-  case dict.get(watching.records, ask.id), model.view.transport.attention {
-    Ok(item_pane.AskRecord(ask: full, ..)), Some(Attention(answer: None, ..))
-    | Ok(item_pane.AskRecord(ask: full, ..)), None
+  // The record is the questions. The capability decides form or text, and a
+  // page that has ended draws text, because a submit there is dropped.
+  case
+    dict.get(watching.records, ask.id),
+    model.view.transport.attention,
+    model.view.status
+  {
+    Ok(item_pane.AskRecord(ask: full, ..)), _, Ended(_)
+    | Ok(item_pane.AskRecord(ask: full, ..)),
+      Some(Attention(answer: None, ..)),
+      _
+    | Ok(item_pane.AskRecord(ask: full, ..)), None, _
     -> attention_thread.questions_only(full)
-    Ok(item_pane.AskRecord(..)), Some(Attention(answer: Some(_), ..)) ->
-      rail_filled(watching, ask.id, "Send", observed)
-    Ok(item_pane.FindRecord(..)), _ | Error(Nil), _ ->
+    Ok(item_pane.AskRecord(..)),
+      Some(Attention(answer: Some(_), ..)),
+      Connecting
+    | Ok(item_pane.AskRecord(..)),
+      Some(Attention(answer: Some(_), ..)),
+      Connected
+    -> rail_filled(watching, ask.id, "Send", observed)
+    Ok(item_pane.FindRecord(..)), _, _ | Error(Nil), _, _ ->
       html.p([attribute.class("ask-cut")], [html.text(ask.head)])
   }
 }
@@ -7891,16 +7904,20 @@ fn rail_form(
 ) -> Element(message) {
   let watching = model.view.watching
 
-  // Only an ask's key names a form, and only a page with an answer draws it.
-  case model.view.transport.attention, watching.row {
-    Some(Attention(answer: Some(_), ..)), Some(row) ->
+  // Only an ask's key names a form, and only a page with an answer that has not
+  // ended draws it: a submit on an ended page is dropped.
+  case model.view.transport.attention, watching.row, model.view.status {
+    _, _, Ended(_) -> element.none()
+    Some(Attention(answer: Some(_), ..)), Some(row), Connecting
+    | Some(Attention(answer: Some(_), ..)), Some(row), Connected
+    ->
       case
         list.find(row.asks.items, fn(ask) { attention.ask_key(ask.id) == key })
       {
         Ok(ask) -> rail_filled(watching, ask.id, "Send answer", observed)
         Error(Nil) -> element.none()
       }
-    Some(_), _ | None, _ -> element.none()
+    Some(_), _, _ | None, _, _ -> element.none()
   }
 }
 
