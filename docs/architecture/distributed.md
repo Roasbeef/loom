@@ -2157,8 +2157,11 @@ three writes or none. The session's store is made afterwards by the path that
 turns any reservation into a session. A create resent after a crash or a lost
 answer finds the row by its request id and finishes the session. Nothing sweeps an
 unfinished reservation: it stays listed, counts against `max_sessions`, and is
-deleted on the box's own page, which removes it with its row (#1056 tracks the
-same shape for delegate sessions).
+deleted on the box's own page, which removes it with its row. The delegate path
+does not share this limit: its request key is derived from the spawner, parent
+and child, so a resend finds the registration and claims its row (#1056). A
+delegate registration whose laptop never resends stays `Reserved` or `Saved`,
+is not swept, and does not count against the delegate cap.
 
 Every other message names a session, which must have a row for this spawner
 (`NotRelayed`). A session the owner started, or another spawner did, is
