@@ -109,6 +109,12 @@ pub fn a_session_that_is_not_resident_stands_as_unopened_handed_archived_or_unhe
     assert server.standing(ready.registry, tombstone(store, 828))
       == server.Handed
     assert server.standing(ready.registry, archived) == server.Archived
+
+    // An archived tombstone still says the session was handed over.
+    let hidden = tombstone(store, 829)
+    let assert Ok(_) =
+      catalogue.set_visibility(store, hidden, catalogue.Archived)
+    assert server.standing(ready.registry, hidden) == server.Handed
     assert server.standing(ready.registry, unheld) == server.Unheld
     assert catalogue.close(store) == Ok(Nil)
   })

@@ -1211,6 +1211,8 @@ pub type Custody {
 
   /// This catalogue handed the session to `to`. It is a tombstone: `open`,
   /// `restore` and `delete` answer with the new owner and never run here.
+  /// `archive` is the one command that does run: it hides the stub and leaves
+  /// the row, so the tombstone keeps naming the owner.
   Moved(op: String, to: String)
 
   /// The orchestrator `from` handed the session to this catalogue under the
@@ -1728,7 +1730,8 @@ pub fn moving(catalogue: Catalogue) -> Result(List(Pending), Error) {
 /// the conversation file beside it. A repeat of the same op and source answers
 /// the stored `Imported`, which is what lets the receiver answer a lost
 /// activation reply a second time. A session that has moved away comes back
-/// under a new op: `Moved -> Imported` replaces the tombstone, and a session
+/// under a new op: `Moved -> Imported` replaces the tombstone and unarchives
+/// the stub if the owner archived it meanwhile, and a session
 /// that moved under this same `op` stays `Moved`. A session that is moving, or
 /// one imported under another op or from another source, is `Conflict`.
 ///
@@ -1778,6 +1781,10 @@ pub fn import_in_transaction(
       Ok(current)
     Moved(op: held, ..) if held != op -> {
       use Nil <- result.try(statement(catalogue, sql.delete_session_move(id)))
+
+      // The owner may have archived the stub while the session was away. The
+      // session is back and serves here again, so it must not return hidden.
+      use Nil <- result.try(statement(catalogue, sql.restore_session(id)))
       use Nil <- result.try(insert_move(catalogue, id, op, from, "imported"))
       Ok(Imported(op:, from:))
     }

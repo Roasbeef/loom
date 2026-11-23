@@ -987,6 +987,26 @@ pub fn archiving_frees_a_place_and_a_resent_capped_create_is_not_made_twice_test
     == Ok(Ok(Nil))
 }
 
+pub fn a_session_that_moved_away_is_archived_and_frees_its_place_test() {
+  let rig = rig("archive-moved-away")
+  let first = made(rig, 1)
+  let _second = made(rig, 2)
+  let _third = made(rig, 3)
+
+  // The session was handed to another orchestrator, so this catalogue keeps
+  // only the stub and its tombstone.
+  let assert Ok(_) =
+    catalogue.begin_move(rig.store, first, op: "0192f3c1", to: "desk")
+  let assert Ok(moved) = catalogue.finish_move(rig.store, first, op: "0192f3c1")
+
+  // Archiving the stub hides it and frees the place, and the tombstone still
+  // names the owner.
+  assert orchestrator_port.ask_top_archive(rig.port, first, answers_within_ms)
+    == Ok(Ok(Nil))
+  assert catalogue.relayed_held(rig.store, "laptop") == Ok(2)
+  assert catalogue.custody(rig.store, first) == Ok(moved)
+}
+
 pub fn the_hourly_cap_counts_the_rolling_hour_on_the_box_test() {
   let rig =
     rig_with(

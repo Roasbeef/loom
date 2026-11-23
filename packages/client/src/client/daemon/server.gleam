@@ -7801,8 +7801,12 @@ pub type Standing {
   Unheld
 }
 
-/// Reads a non-resident session's standing in one visibility read and, for a
-/// session that is not archived, one custody read.
+/// Reads a non-resident session's standing in one custody read and, for a
+/// session that has not moved away, one visibility read.
+///
+/// A session handed to another orchestrator is `Handed` whatever its
+/// visibility, because the owner may have archived the stub left behind and
+/// the answer must still name where the session went.
 ///
 /// ## Examples
 ///
@@ -7811,15 +7815,14 @@ pub type Standing {
 /// ```
 @internal
 pub fn standing(registry: manager.Manager(instance), id: String) -> Standing {
-  // This branch resolves manager visibility registry id before the operation continues.
-  case manager.visibility(registry, id) {
-    Error(_) -> Unheld
-    Ok(catalogue.Archived) -> Archived
-    Ok(catalogue.Active) ->
-      // This branch resolves manager custody registry id before the operation continues.
-      case manager.custody(registry, id) {
-        Ok(catalogue.Moved(..)) -> Handed
-        Ok(_) | Error(_) -> Unopened
+  // A tombstone answers first, so an archived stub is still `Handed`.
+  case manager.custody(registry, id) {
+    Ok(catalogue.Moved(..)) -> Handed
+    Ok(_) | Error(_) ->
+      case manager.visibility(registry, id) {
+        Error(_) -> Unheld
+        Ok(catalogue.Archived) -> Archived
+        Ok(catalogue.Active) -> Unopened
       }
   }
 }
