@@ -1048,6 +1048,19 @@ pub fn upgrade_home(
             |> close_outcome
           })
         },
+        dismiss_stuck: fn(session, strand, operation, deliver) {
+          read_task(deliver, fn() {
+            dismiss_stuck_for(
+              standing,
+              open,
+              attachment.attention_reach.endpoint,
+              session,
+              strand,
+              operation,
+            )
+            |> dismiss_outcome
+          })
+        },
         strand: fn(session, strand, text, delivery, deliver) {
           thread_send_within(
             fn() {
@@ -2325,6 +2338,41 @@ pub fn close_find_for(
   }
 }
 
+/// Dismisses a stuck strand's failure from a home page, or says why not
+/// (protocol-change/131), under the standing check of `close_find_for`: only the
+/// owner's operating page is admitted, and the door reads the caller's authority
+/// again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.dismiss_stuck_for(standing, open, endpoint, session, "sub:main/a", "0194f7b2-...")
+/// ```
+@internal
+pub fn dismiss_stuck_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+  session: String,
+  strand: String,
+  operation: String,
+) -> Result(Nil, attention_door.Refusal) {
+  case authorized_owner(standing, open) {
+    Error(_) ->
+      Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot dismiss a failure",
+      ))
+    Ok(_) ->
+      attention_door.dismiss_stuck(
+        reach_of(standing, endpoint),
+        session,
+        strand,
+        operation,
+      )
+  }
+}
+
 /// The door's reach for a page: the registry and credential are the page's
 /// standing and nothing else, so a pair that disagrees cannot be built. Only
 /// the resident's peer endpoint comes from outside, since the standing does
@@ -2552,6 +2600,23 @@ pub fn close_outcome(
   }
 }
 
+/// What the door's dismissal says to the page, in fixed words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.dismiss_outcome(Ok(Nil)) == home.Succeeded("Dismissed.")
+/// ```
+@internal
+pub fn dismiss_outcome(
+  result: Result(Nil, attention_door.Refusal),
+) -> home.ActOutcome {
+  case result {
+    Ok(Nil) -> home.Succeeded("Dismissed.")
+    Error(refusal) -> home.Failed("Not dismissed: " <> refusal.words)
+  }
+}
+
 /// The row a session's own page reads for its rail: the feed row of the one
 /// session, or fixed words when the daemon had none for it.
 ///
@@ -2636,6 +2701,35 @@ pub fn page_close_for(
     Error(_) ->
       Error(attention_door.Refusal("forbidden", "this page cannot close a find"))
     Ok(_) -> attention_door.close_find(reach, session, find, revision, closure)
+  }
+}
+
+/// Dismisses a stuck strand's failure from a session's own page, or says why
+/// not (protocol-change/131). The page must still be open, and the door reads the
+/// caller's authority from the registry, so only the owner and an Operator
+/// member dismiss one. The strand is the session's own: the page names no
+/// session, so a strand of another session cannot be reached from it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.page_dismiss_for(reach, open, session, "sub:main/a", "0194f7b2-...")
+/// ```
+@internal
+pub fn page_dismiss_for(
+  reach: attention_door.Reach(instance),
+  open: fn() -> Result(Int, Nil),
+  session: String,
+  strand: String,
+  operation: String,
+) -> Result(Nil, attention_door.Refusal) {
+  case open() {
+    Error(_) ->
+      Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot dismiss a failure",
+      ))
+    Ok(_) -> attention_door.dismiss_stuck(reach, session, strand, operation)
   }
 }
 
@@ -3413,6 +3507,19 @@ fn admit(
           retry: fn(strand, deliver) {
             read_task(deliver, fn() {
               page_retry_for(open, page_strand_send(attach), strand)
+              |> rail_outcome
+            })
+          },
+          dismiss_stuck: fn(strand, operation, deliver) {
+            read_task(deliver, fn() {
+              page_dismiss_for(
+                reach_of(standing, attachment.attention_reach.endpoint),
+                open,
+                attachment.session_id,
+                strand,
+                operation,
+              )
+              |> dismiss_outcome
               |> rail_outcome
             })
           },

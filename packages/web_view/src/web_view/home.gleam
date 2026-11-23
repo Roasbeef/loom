@@ -876,6 +876,10 @@ pub type Act {
     /// Closes a find: the session, the find, the revision and the way.
     close: fn(String, String, Int, attention.Closure, fn(ActOutcome) -> Nil) ->
       Nil,
+    /// Dismisses a stuck strand's failure (protocol-change/131): the session, the
+    /// strand and the operation of the failed run the page read from its feed
+    /// row. The daemon refuses a failure the strand no longer holds.
+    dismiss_stuck: fn(String, String, String, fn(ActOutcome) -> Nil) -> Nil,
     /// Sends a prompt or a steer to a named strand of a session, as a message
     /// typed on the session's own page is sent.
     strand: fn(
@@ -1346,6 +1350,9 @@ pub type Msg {
 
   /// Retry was pressed on a stuck strand.
   ItemRetried
+
+  /// Dismiss was pressed on a stuck strand.
+  ItemDismissed
 
   /// The daemon's word on an answer or a close.
   ItemActed(key: attention_rule.Key, outcome: ActOutcome)
@@ -2697,11 +2704,36 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         _, _, _ -> #(model, effect.none())
       }
 
+    // Dismiss names the failed run the page's last feed read held for the strand,
+    // so a strand that failed again since is refused by the daemon and not
+    // dismissed unseen. The daemon's word comes back as an answer's does.
+    ItemDismissed ->
+      case acting(model), model.item.key, model.item.progress {
+        Some(act), Some(key), item_pane.Resting
+        | Some(act), Some(key), item_pane.Settled(_)
+        -> dismissing(model, act, key)
+        _, _, _ -> #(model, effect.none())
+      }
+
     // The daemon's word on an answer or a close. A success is followed by the
     // staged note, which goes to the strand once the answer is settled; a
     // refusal leaves the outbox for the owner to fix and send again.
     ItemActed(key:, outcome:) ->
       case model.item.key == Some(key), acting(model), outcome {
+        // The only act on a stuck strand's thread that reaches this arm is a
+        // dismissal. A staged note is a message to the strand, and sending it
+        // would run the strand the owner just set aside, so it stays staged.
+        True, Some(_), Succeeded(words:)
+          if key.sort == attention_rule.StuckSort
+        -> {
+          let next =
+            Model(
+              ..model,
+              item: item_pane.settled(model.item, words, item_pane.Nothing),
+            )
+          #(next, attending(next))
+        }
+
         True, Some(act), Succeeded(words:) ->
           case item_pane.after_answer(model.item, strand_of(model, key)) {
             item_pane.NoteStep(session:, strand:, text:) -> #(
@@ -6161,6 +6193,40 @@ fn acting(model: Model) -> Option(Act) {
   }
 }
 
+/// Dismisses the open stuck strand's failure, naming the failed run the page's
+/// last feed read held for it. A thread that is not a stuck strand's, a strand the
+/// read no longer holds and a row that names no failed run ask nothing, because
+/// the daemon needs the operation to tell the failure the owner read from one
+/// that happened since (protocol-change/131).
+fn dismissing(
+  model: Model,
+  act: Act,
+  key: attention_rule.Key,
+) -> #(Model, Effect(Msg)) {
+  // Only a stuck strand's thread has a failure to dismiss.
+  let held = case key.sort {
+    attention_rule.StuckSort ->
+      case attention_rule.find_item(current_items(model), key) {
+        Some(attention_rule.StuckItem(stuck:, ..)) -> stuck.operation
+        Some(attention_rule.AskItem(..)) | Some(attention_rule.FindItem(..)) ->
+          None
+        None -> None
+      }
+    attention_rule.AskSort | attention_rule.FindSort -> None
+  }
+
+  // The press is asked of the daemon only with the failed run in hand.
+  case held {
+    Some(operation) -> #(Model(..model, item: item_pane.sending(model.item)), {
+      use dispatch <- effect.from
+      act.dismiss_stuck(key.session, key.id, operation, fn(outcome) {
+        dispatch(ItemActed(key, outcome))
+      })
+    })
+    None -> #(model, effect.none())
+  }
+}
+
 /// Every item the last feed read holds, for the sessions the page's list still
 /// holds as running. The rows are taken in the order of the session identity so
 /// two renders of one read agree.
@@ -6447,6 +6513,7 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
                         send: ItemSent,
                         close: ItemClosed,
                         retry: ItemRetried,
+                        dismiss: ItemDismissed,
                       ))
                     None -> None
                   },

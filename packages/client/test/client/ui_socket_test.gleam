@@ -1307,6 +1307,7 @@ pub fn only_an_owners_operating_home_may_act_on_attention_test() {
     home.Act(
       answer: fn(_, _, _, _, _) { Nil },
       close: fn(_, _, _, _, _) { Nil },
+      dismiss_stuck: fn(_, _, _, _) { Nil },
       strand: fn(_, _, _, _, _) { Nil },
     )
   let owner = home_principal(access.OwnerPrincipal)
@@ -1392,7 +1393,8 @@ pub fn only_an_operators_rail_answers_an_ask_test() {
 
 // The live rail's actions are an operator's page's alone (protocol-change/051,
 // the addendum "the live rail's actions"). Retry is at `component.rail_retry`'s
-// path and File issue and Dismiss at `component.rail_close`'s. An operator's
+// path, Dismiss on a stuck card at `component.rail_dismiss`'s (protocol-change/131)
+// and File issue and Dismiss on a find at `component.rail_close`'s. An operator's
 // and an owner's socket admit a click at each. An observer's socket refuses it
 // at each, alone and inside a batch, and at every neighbouring path, so its
 // list of admitted places is the one it had, and the capability to act is
@@ -1401,16 +1403,19 @@ pub fn only_an_operators_rail_retries_and_closes_test() {
   let retry = component.rail_path <> "\t1\t0\t1\t1\t2\t0"
   let file = component.rail_path <> "\t1\t1\t1\t0\t2\t0"
   let dismiss = component.rail_path <> "\t1\t1\t1\t0\t2\t1"
+  let dismiss_stuck = component.rail_path <> "\t1\t0\t1\t1\t2\t1"
 
   // The paths are the ones the predicates name, and none is an insight's press.
   assert component.rail_retry(retry)
   assert component.rail_close(file)
   assert component.rail_close(dismiss)
+  assert component.rail_dismiss(dismiss_stuck)
   assert !component.rail_click(retry)
   assert !component.rail_click(file)
   assert !component.rail_click(dismiss)
+  assert !component.rail_click(dismiss_stuck)
 
-  list.each([retry, file, dismiss], fn(path) {
+  list.each([retry, file, dismiss, dismiss_stuck], fn(path) {
     // An operator's page and the owner's admit the click.
     assert ui_socket.operator_accepts(click_on(path))
     assert ui_socket.owner_accepts(click_on(path))
@@ -1440,7 +1445,7 @@ pub fn only_an_operators_rail_retries_and_closes_test() {
       component.rail_path <> "\t1\t1\t1\t0\t1",
       component.rail_path <> "\t1\t1\t1\t0\t2\t0\t0",
       component.rail_path <> "\t1\t0\t1\t1\t2",
-      component.rail_path <> "\t1\t0\t1\t1\t2\t1",
+      component.rail_path <> "\t1\t0\t1\t1\t2\t2",
       component.rail_path <> "\t1\t1\t1\tx\t2\t0",
       component.rail_path <> "\t1\t2\t1\t0\t2\t0",
     ],
@@ -2331,6 +2336,7 @@ pub fn only_an_operating_page_is_handed_the_review_read_test() {
     home.Act(
       answer: fn(_, _, _, _, _) { Nil },
       close: fn(_, _, _, _, _) { Nil },
+      dismiss_stuck: fn(_, _, _, _) { Nil },
       strand: fn(_, _, _, _, _) { Nil },
     )
   let owner = home_principal(access.OwnerPrincipal)

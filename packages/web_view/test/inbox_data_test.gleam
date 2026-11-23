@@ -92,6 +92,7 @@ fn feed_rows(reason: Option(String)) -> List(#(String, attention_feed.Row)) {
             reason:,
             retry_after_ms: None,
             parent: Some("coord/web-inbox"),
+            operation: None,
           ),
         ]),
       ),

@@ -72,6 +72,8 @@ pub type Acting(message) {
     close: fn(Closure) -> message,
     /// Ask the stuck strand to retry.
     retry: message,
+    /// Dismiss the stuck strand's failure (protocol-change/131).
+    dismiss: message,
   )
 }
 
@@ -911,12 +913,16 @@ fn stuck_body(
         None -> status
       }),
     ]),
-    stuck_decide(offer),
+    stuck_decide(stuck, offer),
   ])
 }
 
-/// The stuck strand's Retry, or the words that say who can press it.
-fn stuck_decide(offer: Offer(message)) -> Element(message) {
+/// The stuck strand's Retry and, when the row names the failed run, Dismiss, or
+/// the words that say who can press them.
+fn stuck_decide(
+  stuck: attention_feed.Stuck,
+  offer: Offer(message),
+) -> Element(message) {
   parts.section("Send it a nudge", [
     case offer.acting {
       Some(acting) ->
@@ -929,10 +935,22 @@ fn stuck_decide(offer: Offer(message)) -> Element(message) {
             ],
             [html.text("Retry the last step")],
           ),
+          case stuck.operation {
+            Some(_) ->
+              html.button(
+                [
+                  attribute.type_("button"),
+                  attribute.class("inbox-btn"),
+                  event.on_click(acting.dismiss),
+                ],
+                [html.text("Dismiss")],
+              )
+            None -> element.none()
+          },
         ])
       None ->
         html.p([attribute.class("inbox-hold")], [
-          html.text("Only the owner's operating page can retry."),
+          html.text("Only the owner's operating page can retry or dismiss."),
         ])
     },
   ])
