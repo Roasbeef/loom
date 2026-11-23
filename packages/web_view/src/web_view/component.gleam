@@ -7542,6 +7542,8 @@ fn rail_time(model: Model(socket)) -> fn(String) -> Option(Int) {
 /// did not ask.
 fn placement_time(model: Model(socket)) -> fn(String) -> Option(Int) {
   let time = rail_time(model)
+
+  // The keys of the asks whose strand is not the one on screen.
   let elsewhere = case model.view.watching.row {
     None -> []
     Some(row) ->
@@ -7555,6 +7557,7 @@ fn placement_time(model: Model(socket)) -> fn(String) -> Option(Int) {
   }
 
   fn(key) {
+    // A withheld ask has no time to place by; every other row keeps its own.
     case list.contains(elsewhere, key) {
       True -> None
       False -> time(key)
@@ -8224,11 +8227,13 @@ fn rail_answer_done(
 /// The daemon's `words` when `id` names an ask the page holds, and nothing
 /// otherwise, so a find's close or a retry never reaches the ask cards.
 fn ask_words_of(watching: Watch, id: String, words: String) -> String {
+  // A page with no row holds no ask.
   let is_ask = case watching.row {
     None -> False
     Some(row) -> list.any(row.asks.items, fn(ask) { ask.id == id })
   }
 
+  // Only the word on an ask's answer is kept for the ask cards.
   case is_ask {
     True -> words
     False -> ""
