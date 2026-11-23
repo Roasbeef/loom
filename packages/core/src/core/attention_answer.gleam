@@ -15,8 +15,8 @@
 ////    the ask's question keys.
 //// 2. `value_of` checks each value against its question's kind. The first
 ////    failure is a `Rejection` naming the key.
-//// 3. `prompt_text` words the checked values as fixed sentence plus one fenced
-////    JSON object, the form protocol-change/119 specifies.
+//// 3. `prompt_text` words the checked values as each question with its answer
+////    under it, the form protocol-change/130 specifies.
 ////
 //// ## Why the prompt is checked here too
 ////
@@ -38,6 +38,7 @@ import core/attention.{
 import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/bool
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -102,41 +103,75 @@ pub fn check(
 
   // The prompt is built and measured because the bound is on the whole text.
   case
-    bit_array.byte_size(<<prompt_text(ask.header.id, values):utf8>>)
-    <= max_prompt_bytes
+    bit_array.byte_size(<<prompt_text(ask, values):utf8>>) <= max_prompt_bytes
   {
     True -> Ok(values)
     False -> Error(Rejection("answer", "the answer is too long to send"))
   }
 }
 
-/// The prompt that carries checked values to the asking strand: a sentence that
-/// names the ask, then the fenced JSON object `{"ask", "answers", "other"}`.
+/// The prompt that carries checked values to the asking strand: a line naming
+/// the ask, then each question in order with its answer under it
+/// (protocol-change/130).
 ///
-/// The words never include the ask's own text. The object is encoded by the
-/// JSON encoder, so a person's text is a string inside it and cannot close the
-/// fence: a JSON string has no raw newline, and the fence closes only at the
-/// start of a line.
+/// The same text is what every client draws in the transcript, so it is
+/// written for the person who answered as much as for the model. A label is
+/// quoted exactly as the ask offered it, so the model reads which option was
+/// chosen without a second encoding, and an answer given through Other says
+/// so. A person's text keeps its own lines, each indented under its question,
+/// so a line of theirs cannot read as the next question.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert attention_answer.prompt_text("ask-0123456789", [#("q1", attention.Yes)])
-///   == "Answer to ask-0123456789:\n\n```json\n{\"ask\":\"ask-0123456789\",\"answers\":{\"q1\":true},\"other\":{}}\n```"
+/// // ask: one confirm question, "Retry?", as ask-0123456789.
+/// assert attention_answer.prompt_text(ask, [#("q1", attention.Yes)])
+///   == "Answer to your ask ask-0123456789.\n\n1. Retry?\n   Yes"
 /// ```
-pub fn prompt_text(ask_id: String, values: List(#(String, Value))) -> String {
-  // The answer object is led by the ask it answers.
-  let object = case attention.answer_object(values) {
-    json.Object(fields) ->
-      json.Object([#("ask", json.String(ask_id)), ..fields])
-    other -> other
-  }
+pub fn prompt_text(ask: Ask, values: List(#(String, Value))) -> String {
+  let numbered =
+    list.index_map(ask.questions, fn(question, index) {
+      // `check` answers one value per question, so every question finds its
+      // own; the missing arm is for a caller that skipped `check`.
+      let answer = case list.key_find(values, question.key) {
+        Ok(value) -> answer_words(value)
+        Error(Nil) -> "(no answer)"
+      }
 
-  "Answer to "
-  <> ask_id
-  <> ":\n\n```json\n"
-  <> json.to_string(object)
-  <> "\n```"
+      int.to_string(index + 1)
+      <> ". "
+      <> indented(question.prompt)
+      <> "\n   "
+      <> indented(answer)
+    })
+
+  "Answer to your ask "
+  <> ask.header.id
+  <> ".\n\n"
+  <> string.join(numbered, "\n\n")
+}
+
+/// One answer as the words under its question.
+fn answer_words(value: Value) -> String {
+  case value {
+    Yes -> "Yes"
+    No -> "No"
+    Picked(label:) -> quoted(label)
+    PickedMany(labels: []) -> "None of the options"
+    PickedMany(labels:) -> string.join(list.map(labels, quoted), ", ")
+    Typed(text:) -> text
+    Other(text:) -> "Other (not one of the options): " <> text
+  }
+}
+
+/// A label in double quotes, so a label with a comma or spaces reads as one.
+fn quoted(label: String) -> String {
+  "\"" <> label <> "\""
+}
+
+/// Text whose later lines are indented three spaces, under the number.
+fn indented(text: String) -> String {
+  string.replace(text, "\n", "\n   ")
 }
 
 // --- the submitted object ----------------------------------------------------

@@ -623,10 +623,13 @@ pub fn an_answer_is_delivered_to_the_asking_strand_then_settled_test() {
       as "the answer is delivered and settled"
     assert settled > revision
 
-    // One prompt, to the strand that asked, worded as 119 specifies.
+    // One prompt, to the strand that asked, worded as 130 specifies.
     let assert Ok(#(strand, text)) = process.receive(seen, 0)
     assert strand == "sub:main/audit"
-    assert string.starts_with(text, "Answer to " <> rig.ask <> ":\n\n```json\n")
+    assert string.starts_with(
+      text,
+      "Answer to your ask " <> rig.ask <> ".\n\n1. ",
+    )
     assert process.receive(seen, 0) == Error(Nil)
 
     // The record is settled with the answer and the answerer.
@@ -1082,11 +1085,11 @@ pub fn the_owner_answers_an_ask_over_the_control_socket_test() {
     assert body(again, "may_answer") == json.Bool(False)
     assert field(body(again, "answer"), "by") == json.String(principal.id)
 
-    // One prompt reached the asking strand, worded as 119 specifies.
+    // One prompt reached the asking strand, worded as 130 specifies.
     let assert [prompt] = await_prompts(rig, 1)
     assert string.starts_with(
       prompt,
-      "Answer to " <> rig.ask <> ":\n\n```json\n",
+      "Answer to your ask " <> rig.ask <> ".\n\n1. ",
     )
 
     // An answered ask is not answered again, and nothing more is sent.

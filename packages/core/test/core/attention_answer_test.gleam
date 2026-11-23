@@ -243,33 +243,46 @@ pub fn the_whole_prompt_is_bounded_test() {
     as "five long texts overrun the prompt"
 }
 
-pub fn the_prompt_names_the_ask_and_carries_one_fenced_object_test() {
+pub fn the_prompt_reads_each_question_with_its_answer_test() {
   let assert Ok(values) =
     attention_answer.check(
       ask(),
       wire(list.key_set(good(), "q2", json.Null), [
-        #("q2", json.String("Use ``` and \"quotes\"\nand a newline.")),
+        #("q2", json.String("Use a branch.\nNot main.")),
       ]),
     )
     as "a valid answer"
-  let text = attention_answer.prompt_text("ask-3f9c01a2b4", values)
-  assert string.starts_with(text, "Answer to ask-3f9c01a2b4:\n\n```json\n")
-  assert string.ends_with(text, "\n```")
+  let text = attention_answer.prompt_text(ask(), values)
 
-  // The object between the fences is the answer, so the person's text cannot
-  // close the fence, and it parses back to what was checked.
-  let assert [_, rest] = string.split(text, "```json\n")
-    as "the opening fence appears once"
-  let assert Ok(body) = string.split_once(rest, "\n```")
-    as "the closing fence ends the text"
-  let assert Ok(json.Object(fields)) = json.parse(body.0)
-    as "the fenced text is one JSON object"
-  assert list.key_find(fields, "ask") == Ok(json.String("ask-3f9c01a2b4"))
-  let object = attention.answer_object(values)
-  let assert json.Object(expected) = object as "the answer is an object"
-  assert list.key_find(fields, "answers") == list.key_find(expected, "answers")
-  assert list.key_find(fields, "other") == list.key_find(expected, "other")
-  assert body.1 == ""
+  // The words are the questions and the answers, never the wire object, so a
+  // transcript shows what the person chose.
+  assert text
+    == "Answer to your ask ask-3f9c01a2b4.\n\n"
+    <> "1. Retry?\n   Yes\n\n"
+    <> "2. Branch?\n   Other (not one of the options): Use a branch.\n   Not main.\n\n"
+    <> "3. Files?\n   \"a\", \"c\"\n\n"
+    <> "4. Which?\n   None of the options\n\n"
+    <> "5. Where?\n   src/retry.gleam\n\n"
+    <> "6. How many?\n   -12.5\n\n"
+    <> "7. Link?\n   https://example.com/x\n\n"
+    <> "8. Say more\n   A paragraph.\n   With two lines."
+  assert !string.contains(text, "```")
+}
+
+pub fn a_confirm_answered_no_and_a_picked_label_are_worded_test() {
+  let assert Ok(values) =
+    attention_answer.check(
+      ask(),
+      wire(
+        good()
+          |> list.key_set("q1", json.Bool(False)),
+        [],
+      ),
+    )
+    as "a valid answer"
+  let text = attention_answer.prompt_text(ask(), values)
+  assert string.contains(text, "1. Retry?\n   No\n")
+  assert string.contains(text, "2. Branch?\n   \"topic\"\n")
 }
 
 pub fn the_prompt_bound_is_the_composers_test() {

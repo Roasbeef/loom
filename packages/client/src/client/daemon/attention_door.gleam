@@ -235,7 +235,7 @@ fn deliver_then_settle(
   values: List(#(String, records.Value)),
   principal: access.Principal,
 ) -> Result(Answered, AnswerFault) {
-  let text = attention_answer.prompt_text(ask.header.id, values)
+  let text = attention_answer.prompt_text(ask, values)
 
   // The prompt must be taken before the record is settled.
   use admission <- result.try(case send(ask.header.strand, text) {
