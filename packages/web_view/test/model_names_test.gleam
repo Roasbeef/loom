@@ -1,7 +1,8 @@
 //// Which model a session runs, as the page draws it: the main strand's
-//// catalogue name beside the session's name in the top bar, and the name on a
-//// strand's card only where the strand runs on another model than `main`
-//// (protocol-change/076, the addendum on showing the model).
+//// catalogue name beside the session's name in the top bar and in the stream's
+//// strip, and the name on every strand's card
+//// (protocol-change/076, the addendum on showing the model; every card names
+//// its model since 2026-11-23).
 ////
 //// The names come from the strands' configurations in the capture the page
 //// holds, so each test sends the page a real transfer whose metadata lists
@@ -56,28 +57,21 @@ pub fn the_bar_names_the_main_strands_model_test() {
   assert !string.contains(html, "upstream/test")
 }
 
-// A card names a model only where it is not the main strand's. Here the
-// advisor runs on another entry and the sub-agent shares `main`'s, so one card
-// says so and the sub-agent's and `main`'s say nothing.
-pub fn a_card_names_a_model_only_when_it_differs_from_main_test() {
+// Every card names its strand's model, whether or not it is the main
+// strand's, so a reader never opens a strand to learn it.
+pub fn every_card_names_its_model_test() {
   let html =
     page([#("advisor", "baseten-deepseek-v41"), #("sub:main/worker", "test")])
-  assert occurrences(html, "class=\"chip-model\"") == 1
   assert string.contains(
     html,
     "<span class=\"chip-model\">baseten-deepseek-v41</span>",
   )
 
-  // The advisor's card is the one that carries it, after its status.
+  // The advisor's card carries its own model, after its status.
   let assert Ok(#(_, after)) = string.split_once(html, ">advisor</span>")
   let assert Ok(#(card, _)) = string.split_once(after, "</li>")
   assert string.contains(card, "chip-model")
-}
-
-// Every strand on the main strand's model leaves the strip as it was.
-pub fn strands_on_the_main_model_draw_no_model_test() {
-  let html = page([#("advisor", "test"), #("sub:main/worker", "test")])
-  assert !string.contains(html, "chip-model")
+  assert occurrences(html, "<span class=\"chip-model\">test</span>") >= 2
 }
 
 // The catalogue's names are the owner's, but a card draws one as a text node

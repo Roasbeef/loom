@@ -328,6 +328,19 @@ The name is the owner's text from the configuration file and is drawn only as a
 text node. The terminal's identity line already shows the active strand's model,
 by the last segment of its upstream identifier, and is unchanged.
 
+## Addendum 2026-11-23: the model on every card and in the stream's strip
+
+The final attention-inbox design hid the top bar's model
+(`loom-shell.loom-inbox .session-head .session-model`), and the owner, reading a
+session on the release, could not find the model anywhere. Two changes follow,
+still with no new wire field:
+
+- The strip above the stream names the model of the strand on screen after the
+  place (`main · aperture · Kimi-K3.1-Pro`), from the same catalogue entry.
+- Every strand's card names its model, not only a strand whose entry differs
+  from the main strand's. A strand whose configuration the capture does not hold
+  still draws nothing.
+
 ## Addendum 2026-10-08: choosing a model beside a profile
 
 [080](080-session-model-choice.md) adds a second optional `sessions.create`

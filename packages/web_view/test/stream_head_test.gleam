@@ -7,6 +7,10 @@ import lustre/element
 import web_view/view/stream_head
 
 fn drawn(turn) -> String {
+  drawn_with(turn, None)
+}
+
+fn drawn_with(turn, model) -> String {
   stream_head.view(
     stream_head.Head(
       name: "coord/web-inbox",
@@ -14,6 +18,7 @@ fn drawn(turn) -> String {
       tone: stream_head.Running,
       state: "running",
       turn:,
+      model:,
       goal: None,
     ),
     element.none(),
@@ -33,4 +38,14 @@ pub fn a_strip_with_no_turn_draws_the_state_alone_test() {
   let html = drawn(None)
   assert string.contains(html, ">running</span>")
   assert !string.contains(html, "loom-elapsed")
+}
+
+pub fn the_model_is_named_after_the_place_test() {
+  let html = drawn_with(None, Some("kimi-k3"))
+  assert string.contains(html, "main · loom<span class=\"stream-model\"")
+  assert string.contains(html, " · kimi-k3</span>")
+}
+
+pub fn a_strip_with_no_model_names_none_test() {
+  assert !string.contains(drawn(None), "stream-model")
 }
