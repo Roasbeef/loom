@@ -312,6 +312,32 @@ pub fn the_agents_words_that_came_with_the_ask_are_tinted_test() {
   assert index_of(html, "lifted · Ask") < index_of(html, "Worked")
 }
 
+// A row that is not the agent's words, here a custom message directly before
+// the asking turn, is never tinted in its place: the divider keeps the tint.
+pub fn a_message_that_is_not_the_agents_words_is_not_tinted_test() {
+  let model =
+    component.new(start([], True))
+    |> component.apply([
+      lane_fixture.asking_after_a_note(
+        first_id,
+        "Which branch?",
+        "a compaction note",
+      ),
+    ])
+    |> lane_fixture.opened
+  let html =
+    step(
+      model,
+      operator_page.Observed(
+        component.RailRead(Ok(row([feed_ask(first_id, 12_500, "main")]))),
+      ),
+    )
+    |> operator
+
+  assert count(html, "lifted · Ask") == 1
+  assert index_of(html, "Worked") < index_of(html, "lifted · Ask")
+}
+
 // An ask stamped before every row of the lane has no row to tag.
 pub fn an_ask_older_than_every_row_tags_nothing_test() {
   assert count(laned(500, "main"), "lifted · Ask") == 0

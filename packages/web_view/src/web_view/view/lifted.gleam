@@ -73,6 +73,8 @@
 //// insights as the page's opened set says, and a jump closes it
 //// (`web_client/follow`).
 
+import core/entry
+import core/message
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -82,6 +84,8 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import session_view/attention.{type Lifted}
+import session_view/transcript_line
+import session_view/transcript_lines
 import session_view/turns
 import web_view/view/stamp
 
@@ -348,13 +352,20 @@ fn is_turn(piece: turns.Piece, key: String) -> Bool {
   }
 }
 
-/// The key of a piece that is the agent's own words, which is the one kind of
-/// piece a response's text is drawn as.
+/// The key of a piece that is the asking response's own words: a block drawn
+/// from an assistant message whose rows speak as the assistant and hold no
+/// failure line. A failed response's cause, a custom message, a compaction or
+/// branch summary and the harness's frames are also `Plain` pieces and are not
+/// the words that came with the ask, so a piece that cannot be told apart is
+/// not chosen and the ask keeps the turn's divider.
 fn agent_words(piece: turns.Piece) -> Result(String, Nil) {
-  // The person's input, the harness's frames and a turn's divider are not the
-  // agent's words.
+  // Only a plain block can be the agent's words, and its source says whose.
   case piece {
-    turns.Plain(block:, ..) -> Ok(block.key)
+    turns.Plain(block:, ..) ->
+      case is_assistant_source(block.source), speaks_cleanly(block.rows) {
+        True, True -> Ok(block.key)
+        True, False | False, _ -> Error(Nil)
+      }
     turns.Work(..)
     | turns.Prompt(..)
     | turns.Spawned(..)
@@ -367,6 +378,33 @@ fn agent_words(piece: turns.Piece) -> Result(String, Nil) {
     | turns.Missed(..)
     | turns.Decided(..) -> Error(Nil)
   }
+}
+
+/// Whether a block was drawn from one assistant message.
+fn is_assistant_source(source: transcript_lines.Source) -> Bool {
+  // Every kind of source is named, and only an entry can be a response.
+  case source {
+    transcript_lines.FromEntry(value:) ->
+      case value {
+        entry.MessageEntry(message: message.AssistantMessage(..), ..) -> True
+        entry.MessageEntry(..)
+        | entry.CompactionEntry(..)
+        | entry.BranchSummaryEntry(..)
+        | entry.CustomEntry(..) -> False
+      }
+    transcript_lines.FromTools(..)
+    | transcript_lines.FromNotice
+    | transcript_lines.FromAdvisor
+    | transcript_lines.FromSpacer -> False
+  }
+}
+
+/// Whether a block's rows include the assistant's speech and no failure line.
+fn speaks_cleanly(rows: List(#(String, transcript_line.Line))) -> Bool {
+  let speakers = list.map(rows, fn(row) { { row.1 }.speaker })
+
+  list.contains(speakers, transcript_line.Assistant)
+  && !list.contains(speakers, transcript_line.Failure)
 }
 
 /// Whether a piece is the agent's own output: its words, or a turn's work.
