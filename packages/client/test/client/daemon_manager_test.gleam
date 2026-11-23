@@ -2402,6 +2402,19 @@ pub fn a_finished_move_leaves_a_tombstone_that_answers_for_the_session_test() {
   assert manager.finish_move(registry, remote.id, op: op_a) == Ok(moved)
   assert manager.moving_sessions(registry) == Ok([])
 
+  // Archiving the stub hides it and leaves the tombstone naming the owner. It
+  // is not an error to ask again.
+  let assert Ok(_) =
+    manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      remote.id,
+      catalogue.Archived,
+    )
+  assert catalogue.visibility(store, remote.id) == Ok(catalogue.Archived)
+  assert manager.custody(registry, remote.id) == Ok(moved)
+
   // Open, restore, delete and a second move all answer with the new owner, and
   // none of them opens a slot or touches a file. The late abort of the move
   // that finished cannot undo it.

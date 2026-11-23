@@ -3802,7 +3802,12 @@ fn handle(
           False -> Ok(Nil)
         })
 
-        use Nil <- result.try(refuse_moved(book, id))
+        // A session that moved away may be archived here, which hides the
+        // stub, and may not be restored; a moving one may do neither.
+        use Nil <- result.try(case visibility {
+          catalogue.Archived -> refuse_moving(book, id)
+          catalogue.Active -> refuse_moved(book, id)
+        })
 
         // Archiving a session that a live project holds in place is refused.
         use Nil <- result.try(case visibility {
@@ -4808,12 +4813,28 @@ fn isolate_now(phase, book: Book(instance), caller, epoch, id, state_root) {
 // A session that is moving or has moved is not this catalogue's to archive,
 // restore or delete: the move row is the only record of who owns it. Both
 // answers name the other side, so the caller can say where the session went.
-/// Returns the refusal used when a session has already moved.
+/// Returns the refusal used when a session is moving or has already moved.
 fn refuse_moved(book: Book(instance), id: String) -> Result(Nil, AdminError) {
   case catalogue.custody(book.catalogue, id) {
     Ok(catalogue.Moving(op:, to:)) -> Error(AdminMoving(op:, to:))
     Ok(catalogue.Moved(to:, ..)) -> Error(AdminMoved(to:))
     Ok(catalogue.Resident) | Ok(catalogue.Imported(..)) -> Ok(Nil)
+    Error(error) -> Error(AdminMetadata(error))
+  }
+}
+
+// Archiving the stub of a session that moved away changes visibility and not
+// custody: the `moved` row stays and keeps naming the owner, and the session
+// itself is on the receiver and unaffected. Only a move in flight refuses,
+// because its outcome is not yet known.
+/// Returns the refusal used when a session is mid-move, and none once it has
+/// moved away.
+fn refuse_moving(book: Book(instance), id: String) -> Result(Nil, AdminError) {
+  case catalogue.custody(book.catalogue, id) {
+    Ok(catalogue.Moving(op:, to:)) -> Error(AdminMoving(op:, to:))
+    Ok(catalogue.Moved(..))
+    | Ok(catalogue.Resident)
+    | Ok(catalogue.Imported(..)) -> Ok(Nil)
     Error(error) -> Error(AdminMetadata(error))
   }
 }
@@ -4839,10 +4860,17 @@ fn begin_move_now(
     use record <- result.try(
       catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
     )
-    use Nil <- result.try(movable(book, record, departure))
     use custody <- result.try(
       catalogue.custody(book.catalogue, id) |> result.map_error(AdminMetadata),
     )
+
+    // A stub that moved away may be archived, so custody answers before the
+    // archive check inside `movable` can mask the owner.
+    use Nil <- result.try(case custody {
+      catalogue.Moved(to: owner, ..) -> Error(AdminMoved(to: owner))
+      catalogue.Moving(..) | catalogue.Resident | catalogue.Imported(..) ->
+        movable(book, record, departure)
+    })
 
     // begin_move_now distinguishes the custody outcomes before continuing the transition.
     case custody {
@@ -6014,8 +6042,12 @@ fn archive_relayed_now(
       use Nil <- result.try(case catalogue.custody(book.catalogue, id) {
         Ok(catalogue.Moving(op:, to:)) ->
           Error(ArchiveFailed(SessionMoving(op:, to:)))
-        Ok(catalogue.Moved(to:, ..)) -> Error(ArchiveFailed(SessionMoved(to:)))
-        Ok(catalogue.Resident) | Ok(catalogue.Imported(..)) -> Ok(Nil)
+
+        // A session that moved away is archived like any other: the row only
+        // hides the stub, and the session on the receiver is unaffected.
+        Ok(catalogue.Moved(..))
+        | Ok(catalogue.Resident)
+        | Ok(catalogue.Imported(..)) -> Ok(Nil)
         Error(error) -> Error(ArchiveFailed(Catalogue(error)))
       })
 
@@ -6544,20 +6576,11 @@ fn prepare_slot(
   record: catalogue.Registration,
 ) -> #(Book(instance), Result(Status, Error)) {
   let selected = {
-    use visibility <- result.try(
-      catalogue.visibility(book.catalogue, record.id)
-      |> result.map_error(Catalogue),
-    )
-
-    // prepare_slot distinguishes the the selected value outcomes before continuing the transition.
-    use Nil <- result.try(case visibility {
-      catalogue.Active -> Ok(Nil)
-      catalogue.Archived -> Error(SessionArchived)
-    })
-
     // A session that is being handed to another orchestrator, or was, is not
     // this catalogue's to run. The row is read here, in the turn that reserves
-    // the slot, so a move that began a turn earlier is always seen.
+    // the slot, so a move that began a turn earlier is always seen. It is read
+    // before visibility, because the stub of a session that moved away may be
+    // archived and must still name the owner.
     use custody <- result.try(
       catalogue.custody(book.catalogue, record.id)
       |> result.map_error(Catalogue),
@@ -6568,6 +6591,17 @@ fn prepare_slot(
       catalogue.Moving(op:, to:) -> Error(SessionMoving(op:, to:))
       catalogue.Moved(to:, ..) -> Error(SessionMoved(to:))
       catalogue.Resident | catalogue.Imported(..) -> Ok(Nil)
+    })
+
+    use visibility <- result.try(
+      catalogue.visibility(book.catalogue, record.id)
+      |> result.map_error(Catalogue),
+    )
+
+    // prepare_slot distinguishes the the selected value outcomes before continuing the transition.
+    use Nil <- result.try(case visibility {
+      catalogue.Active -> Ok(Nil)
+      catalogue.Archived -> Error(SessionArchived)
     })
 
     // A session whose deletion through the directory has begun is not served,

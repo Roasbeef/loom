@@ -1920,6 +1920,27 @@ pub fn a_moved_session_comes_back_under_a_new_op_and_never_under_its_own_test() 
   assert catalogue.close(reopened) == Ok(Nil)
 }
 
+pub fn a_stub_archived_while_away_is_unarchived_when_the_session_returns_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = registration(75)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(_) =
+    catalogue.begin_move(store, record.id, op: op_one, to: "laptop")
+  let assert Ok(moved) = catalogue.finish_move(store, record.id, op: op_one)
+
+  // The owner hides the stub. The tombstone stays and names the receiver.
+  let assert Ok(_) =
+    catalogue.set_visibility(store, record.id, catalogue.Archived)
+  assert catalogue.custody(store, record.id) == Ok(moved)
+
+  // The session comes back to a catalogue that serves it again, so it must not
+  // return hidden.
+  let assert Ok(_) =
+    catalogue.import_session(store, record.id, op: op_two, from: "laptop")
+  assert catalogue.visibility(store, record.id) == Ok(catalogue.Active)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 pub fn moves_still_in_flight_are_listed_in_session_order_test() {
   let path = fresh_path("move-listing")
   let assert Ok(store) = catalogue.open(path) as "catalogue opens"
