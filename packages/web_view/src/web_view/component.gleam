@@ -157,6 +157,7 @@ import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/server_component
 import session_view/advisor_history
 import session_view/advisor_pending
@@ -257,6 +258,7 @@ import web_view/view/queue_input
 import web_view/view/rename as rename_view
 import web_view/view/session_tab
 import web_view/view/shell
+import web_view/view/stamp
 import web_view/view/strand_detail
 import web_view/view/stream_head as stream_head_view
 import web_view/view/strip
@@ -7590,6 +7592,105 @@ pub fn sheet(
   lifted_view.sheet(lifted_rail(model, lift, None, observed))
 }
 
+/// The cards of the asks waiting on the owner, one for each open owner-routed
+/// ask in the session's feed row, oldest first, or nothing when none is open.
+/// The operator's page draws them in the dock above the composer and the
+/// observer's above its bar, so an open ask is on screen with the live rail
+/// closed and at a phone's width, where the rail is a sheet.
+///
+/// A card's header names when the ask has waited since and the strand that
+/// asked. Its body is the questions: the form for a page that may answer, sent
+/// as the rail's form is (`RailAnswered`), and the same questions as text for a
+/// page that may not. Until the ask has been read in full the body is the
+/// feed's cut of the first question. A card leaves with the next read of the
+/// row after its ask is answered or closed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.asks(model, fn(message) { message })
+/// ```
+pub fn asks(
+  model: Model(socket),
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  let watching = model.view.watching
+
+  // Only a page that has read its feed row has an ask to show.
+  case watching.row {
+    None -> element.none()
+    Some(row) ->
+      case
+        list.sort(row.asks.items, fn(left, right) {
+          int.compare(left.created_at, right.created_at)
+        })
+      {
+        [] -> element.none()
+        waiting ->
+          html.section(
+            [
+              attribute.class("ask-dock"),
+              attribute.aria_label("Asks waiting"),
+            ],
+            [
+              keyed.div(
+                [attribute.class("ask-list")],
+                list.map(waiting, fn(ask) {
+                  #(ask.id, ask_card(model, ask, observed))
+                }),
+              ),
+              case watching.words {
+                "" -> element.none()
+                words ->
+                  html.p([attribute.class("ask-words")], [html.text(words)])
+              },
+            ],
+          )
+      }
+  }
+}
+
+/// One card: the header, and under it the ask's questions as the page may
+/// draw them.
+fn ask_card(
+  model: Model(socket),
+  ask: attention_feed.Ask,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  html.article([attribute.class("ask-card")], [
+    html.p([attribute.class("ask-head")], [
+      html.span([attribute.class("ask-kind")], [html.text("Ask")]),
+      html.text(" · waiting since "),
+      stamp.time(ask.created_at, "ask-since"),
+      html.text(" · " <> ask.strand),
+    ]),
+    ask_body(model, ask, observed),
+  ])
+}
+
+/// The questions of one card. A page that may answer and has read the ask in
+/// full draws the rail's form, so both send one `RailAnswered`. A page that may
+/// not draws the questions as text. An ask not yet read in full is the feed's
+/// first question, which the daemon cut.
+fn ask_body(
+  model: Model(socket),
+  ask: attention_feed.Ask,
+  observed: fn(Msg(socket)) -> message,
+) -> Element(message) {
+  let watching = model.view.watching
+
+  // The record is the questions, and the capability decides form or text.
+  case dict.get(watching.records, ask.id), model.view.transport.attention {
+    Ok(item_pane.AskRecord(ask: full, ..)), Some(Attention(answer: None, ..))
+    | Ok(item_pane.AskRecord(ask: full, ..)), None
+    -> attention_thread.questions_only(full)
+    Ok(item_pane.AskRecord(..)), Some(Attention(answer: Some(_), ..)) ->
+      rail_filled(watching, ask.id, "Send", observed)
+    Ok(item_pane.FindRecord(..)), _ | Error(Nil), _ ->
+      html.p([attribute.class("ask-cut")], [html.text(ask.head)])
+  }
+}
+
 /// How often the page asks for the session's feed row, in milliseconds of the
 /// transport's clock. An answer asks for one at once, so this is only the pace
 /// at which a record the agent wrote reaches the rail.
@@ -7686,20 +7787,14 @@ fn rail_heard(
       let kept =
         dict.filter(watching.records, fn(id, _) { list.contains(held, id) })
 
-      // Only a page that may answer draws an ask's form, so only it reads the
-      // asks in full. A find is read in full only by a page that may close it,
-      // because the close names the revision the page read.
+      // Every page draws an open ask's questions in its card, so every page
+      // reads the asks in full. A find is read in full only by a page that may
+      // close it, because the close names the revision the page read.
       let wanted =
-        list.append(
-          case reads.answer {
-            Some(_) -> asks
-            None -> []
-          },
-          case reads.act {
-            Some(_) -> finds
-            None -> []
-          },
-        )
+        list.append(asks, case reads.act {
+          Some(_) -> finds
+          None -> []
+        })
       let missing = list.filter(wanted, fn(id) { !dict.has_key(kept, id) })
 
       #(
@@ -7774,7 +7869,7 @@ fn rail_form(
       case
         list.find(row.asks.items, fn(ask) { attention.ask_key(ask.id) == key })
       {
-        Ok(ask) -> rail_filled(watching, ask.id, observed)
+        Ok(ask) -> rail_filled(watching, ask.id, "Send answer", observed)
         Error(Nil) -> element.none()
       }
     Some(_), _ | None, _ -> element.none()
@@ -7782,10 +7877,12 @@ fn rail_form(
 }
 
 /// The form of one ask the page has read in full, or nothing while the read is
-/// out.
+/// out. `send` is the submit button's words, which the rail and the dock's card
+/// word differently.
 fn rail_filled(
   watching: Watch,
   id: String,
+  send: String,
   observed: fn(Msg(socket)) -> message,
 ) -> Element(message) {
   // The record is the ask's questions, and without it there is nothing to draw.
@@ -7797,7 +7894,7 @@ fn rail_filled(
         option.from_result(dict.get(watching.problems, id)),
         case watching.sending == Some(id) {
           True -> "Sending…"
-          False -> "Send answer"
+          False -> send
         },
         fn(fields) { observed(RailAnswered(id, fields)) },
       )
@@ -9232,10 +9329,10 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       },
 
       // The operator's page draws its session switcher here. The observer's
-      // has none, and the empty node keeps the strip at the index it has on
-      // the operator's page, so one path admits the context figure's Refresh
-      // on both.
-      element.none(),
+      // draws the open asks in the slot, as text, and nothing when none is
+      // open, so the strip stays at the index it has on the operator's page and
+      // one path admits the context figure's Refresh on both.
+      asks(model, fn(message) { message }),
 
       // The phone's sheet is the centre's last child but one, so no admitted
       // path moves with it; the stylesheet orders it above the bar.
