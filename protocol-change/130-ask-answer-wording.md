@@ -9,7 +9,8 @@ rather than its id); one sentence of the `ask` tool's description
 `loom.toml` key changes. The submitted answer (`attention.answer`'s `answer`
 object, and the page's form) is unchanged, and so is the stored `Answer`.
 **Amends**: [119](119-attention-records.md), "The answer", the paragraph that
-specifies the prompt's text and its fenced object.
+specifies the prompt's text and its fenced object, and
+[120](120-attention-feed.md), "The prompt", which specifies the same.
 
 ## Problem
 

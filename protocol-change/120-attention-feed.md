@@ -353,6 +353,9 @@ page draws no password field.
 
 #### The prompt
 
+Amended by [130](130-ask-answer-wording.md): the prompt is now worded as each
+question with its answer under it, not a sentence and a fenced object.
+
 The text of the delivered prompt is fixed words naming the ask, then the fenced
 object:
 
