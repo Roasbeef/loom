@@ -22,6 +22,10 @@
 #    "lint census" (peer card, stored).
 # 3. Wait more than a minute, then send "after the break": main reads its
 #    prefix again (cache-miss row; the rings show an idle age or a TTL).
+# 4. Send "ask me first". Main calls `ask` with a choice (three options, one
+#    recommended, each with a note) and a confirm, then ends its turn. The
+#    ask stays open until the owner answers it; the fake logs the next
+#    request's last message, which is the answer's readable text.
 #
 # The scripted endpoint answers by role and by what the last message says;
 # see fake_anthropic.py.
