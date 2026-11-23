@@ -1053,7 +1053,7 @@ fn lead(row: Row, watching: Dict(String, String)) -> Element(message) {
       // catalogue holds for it: when it last ran is not among them.
       Error(Nil), Saved ->
         html.span([attribute.class("session-watch"), ..code], [
-          html.text("saved · " <> listing.entry_words(entry, row.place)),
+          html.text("saved · " <> saved_words(entry, row.place)),
         ])
 
       // Every other row keeps the placement tag.
@@ -1077,6 +1077,26 @@ fn lead(row: Row, watching: Dict(String, String)) -> Element(message) {
     },
     ..list.append(notice_line(entry), subtitle(entry))
   ])
+}
+
+/// Where a saved session's code lives, short enough for the column: a folder is
+/// named by its project's last directory, and the full path stays in the row's
+/// `title`. A worktree names its repository and the worktree
+/// (`listing.entry_words`), and a registered or pooled workspace its own name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // saved_words(entry, place) == "weft" for a session in /src/weft
+/// ```
+fn saved_words(entry: Entry, place: listing.Place) -> String {
+  case place.code, sessions.worktree(entry) {
+    listing.Folder(_), None -> sessions.base_name(sessions.project_of(entry))
+    listing.Folder(_), Some(_)
+    | listing.Registered(..), _
+    | listing.Pooled(..), _
+    -> listing.entry_words(entry, place)
+  }
 }
 
 /// The notice of a row that cannot be resumed, as its own quiet line under the
