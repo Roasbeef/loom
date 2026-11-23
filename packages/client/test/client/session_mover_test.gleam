@@ -1449,12 +1449,23 @@ pub fn a_forced_open_on_the_source_after_the_move_is_not_owner_test() {
 
   assert manager.open(rig.source.registry, rig.session)
     == Error(manager.SessionMoved(to: "bravo"))
-  assert manager.set_visibility(
+
+  // Archiving the stub is served, because it hides the row and leaves the
+  // tombstone; restoring it is not, and still names the owner.
+  let assert Ok(_) =
+    manager.set_visibility(
       rig.source.registry,
       rig.source.owner,
       "move-test",
       rig.session,
       catalogue.Archived,
+    )
+  assert manager.set_visibility(
+      rig.source.registry,
+      rig.source.owner,
+      "move-test",
+      rig.session,
+      catalogue.Active,
     )
     == Error(manager.AdminMoved(to: "bravo"))
   assert manager.delete_session(
