@@ -13,6 +13,7 @@ Usage:
   control.py STATE PORT link SOURCE TARGET        main to main, may_wake
   control.py STATE PORT send SOURCE TARGET ID TEXT
   control.py STATE PORT ui SESSION operator|observer   prints the page link
+  control.py STATE PORT ui home operator|observer      prints the home page link
 """
 
 import base64
@@ -101,7 +102,9 @@ def main():
                                    "target_session": rest[1], "target_strand": "main",
                                    "message_id": rest[2], "text": rest[3], "epoch": epoch}
     elif command == "ui":
-        cmd, body = "ui.link", {"session_id": rest[0], "page": rest[1]}
+        cmd, body = "ui.link", {"page": rest[1]}
+        if rest[0] != "home":
+            body["session_id"] = rest[0]
     else:
         raise SystemExit(__doc__)
     sock.sendall(frame(json.dumps({"v": 2, "id": 1, "cmd": cmd, "body": body})))
