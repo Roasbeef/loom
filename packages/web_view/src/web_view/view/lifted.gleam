@@ -74,7 +74,6 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -255,14 +254,32 @@ fn ask_row(
   // An ask with no time cannot be placed.
   case asked {
     None -> ""
-    Some(recorded) ->
-      pieces
-      |> list.filter(fn(piece) {
-        is_output(piece) && stamped_by(piece, at, recorded)
-      })
-      |> list.last
-      |> result.map(piece_key)
-      |> result.unwrap("")
+    Some(recorded) -> newest_stamped(list.reverse(pieces), at, recorded)
+  }
+}
+
+/// The key of the first output piece, from the newest, that happened at or
+/// before `recorded`. A piece stamped after it is skipped, and an output piece
+/// with no time ends the search with nothing: its place relative to the ask is
+/// unknown, and taking the next older row would tint a turn that did not ask.
+fn newest_stamped(
+  newest_first: List(turns.Piece),
+  at: fn(String) -> Option(Int),
+  recorded: Int,
+) -> String {
+  case newest_first {
+    [] -> ""
+    [piece, ..older] ->
+      case is_output(piece), at(piece_key(piece)) {
+        // The person's input and other frames are not what asked.
+        False, _ -> newest_stamped(older, at, recorded)
+
+        // An unstamped output piece cannot be ordered against the ask.
+        True, None -> ""
+        True, Some(when) if when > recorded ->
+          newest_stamped(older, at, recorded)
+        True, Some(_) -> piece_key(piece)
+      }
   }
 }
 
@@ -282,19 +299,6 @@ fn is_output(piece: turns.Piece) -> Bool {
     | turns.Trigger(..)
     | turns.Missed(..)
     | turns.Decided(..) -> False
-  }
-}
-
-/// Whether the piece's row has a time at or before `recorded`.
-fn stamped_by(
-  piece: turns.Piece,
-  at: fn(String) -> Option(Int),
-  recorded: Int,
-) -> Bool {
-  // A row with no time is not placed before anything.
-  case at(piece_key(piece)) {
-    Some(when) -> when <= recorded
-    None -> False
   }
 }
 
