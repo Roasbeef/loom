@@ -321,13 +321,20 @@ Four rules keep them one surface over one door:
   `lsp_tools = "on"` and an `[lsp.<name>]` server is configured
   (`contributions.lsp_query_tools`). With either missing the tool array is
   byte for byte what it was. The tools are placed on the workspace side
-  (`tool_placement.opt_in_workspace_names`), where the door is; a workspace
-  on an executor has no door and never registers them.
+  (`tool_placement.opt_in_workspace_names`), where the door is. A workspace
+  on an executor builds its own door from its own `[lsp.<name>]` tables and
+  its own `lsp_tools` setting, and the owner's remote surface forwards the
+  five names to it (`tool_placement.runnable_workspace_names`).
 - **Typed errors in band.** A `QueryError` becomes a failed tool result, not a
   crash. `NoServer` (no server owns the file, or its path is past the owning
   server's root, or the server cannot start) and `Unavailable` (timeout,
   server died) both read "language server unavailable: ...", so a model can
   tell an absent server from a question the server answered with nothing.
+- **Bounded in total.** Besides the per-list caps, a site's source text is cut
+  to 400 bytes (after its anchor is taken from the whole line), and a whole
+  answer past the inline threshold is saved as a blob with head and tail
+  excerpts, as `grep` does, so a generated multi-megabyte line or a long
+  server message cannot be inlined fifty times.
 - **Decoded before asked.** `symbol` is required and non-empty; `line` needs
   a `path` and is at least 1; an empty `path` is refused. A malformed call
   costs no server request.

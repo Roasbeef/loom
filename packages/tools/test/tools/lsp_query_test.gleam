@@ -166,6 +166,7 @@ pub fn a_malformed_call_never_reaches_the_door_test() {
       #("line", json.Int(0)),
     ]),
     call(door, "lsp_definition", [symbol("greet"), #("line", json.String("3"))]),
+    call(door, "lsp_definition", [symbol("x"), #("path", json.String(" "))]),
     call(door, "lsp_symbols", []),
     call(door, "lsp_symbols", [#("path", json.String(" "))]),
     call(door, "lsp_diagnostics", [#("path", json.String(""))]),
@@ -427,4 +428,49 @@ pub fn an_ambiguous_name_lists_the_candidates_test() {
     )
   assert string.contains(text, "2 distinct definitions match")
   assert string.contains(text, hit("b/b.go", 2, "func Init()"))
+}
+
+// --- bounded output -----------------------------------------------------------
+
+pub fn a_very_long_source_line_is_cut_after_its_anchor_is_taken_test() {
+  let long = "x := \"" <> string.repeat("é", 200_000) <> "\""
+  let text =
+    lsp_query.render_references("x", [
+      query.Reference(site: site("gen.go", 3, long), container: None),
+    ])
+  assert string.contains(text, ":" <> hashline.anchor(long) <> "|x := ")
+  assert string.contains(text, "more bytes]")
+  assert string.byte_size(text) < 1500
+}
+
+pub fn the_whole_answer_is_bounded_even_when_every_entry_is_long_test() {
+  // 20 diagnostics, each with a huge message: each entry is within its own
+  // count cap, so only the overall bound limits the answer.
+  let message = string.repeat("m", 40_000)
+  let entries =
+    numbered(20)
+    |> list.map(fn(line) {
+      query.Diagnostic(
+        site: site("a.go", line, "x"),
+        severity: query.SeverityError,
+        message:,
+      )
+    })
+  let door =
+    query.Door(..door(), diagnostics: fn(_) { served(query.Settled(entries)) })
+  let outcome = call(door, "lsp_diagnostics", [])
+  assert !outcome.is_error
+  let text = text_of(outcome)
+  assert string.contains(text, "saved to")
+  assert string.byte_size(text) < 10_000
+}
+
+pub fn an_ambiguous_list_says_how_many_more_test() {
+  let sites =
+    numbered(lsp_query.max_definition_sites + 3)
+    |> list.map(fn(line) { site("a.go", line, "func Init()") })
+  assert string.contains(
+    lsp_query.render_error(query.Ambiguous(sites)),
+    "… 3 more",
+  )
 }

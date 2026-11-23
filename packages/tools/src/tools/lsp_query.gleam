@@ -65,6 +65,7 @@
 
 import broker/policy.{type SandboxPolicy}
 import core/json.{type JsonValue}
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -75,6 +76,7 @@ import lsp/query.{
   type Diagnostics, type QueryError, type Reference, type Site, type SymbolEntry,
   type SymbolQuery, type Warmth,
 }
+import tools/blob
 import tools/hashline
 import tools/lsp
 import tools/tool.{type Tool, type ToolOutcome}
@@ -178,7 +180,7 @@ fn definition_tool(door: query.Door, hints: List(#(String, String))) -> Tool {
     snippet: "`lsp_definition` finds where a symbol is defined, by name; "
       <> "results carry fs_edit anchors.",
     schema: symbol_schema(),
-    run: fn(args) { run_definition(ask, args) },
+    run: fn(ctx, args) { run_definition(ask, ctx, args) },
   )
 }
 
@@ -197,7 +199,7 @@ fn references_tool(door: query.Door) -> Tool {
     snippet: "`lsp_references` lists who refers to a symbol, grouped by file "
       <> "and containing function, with fs_edit anchors.",
     schema: symbol_schema(),
-    run: fn(args) { run_references(ask, args) },
+    run: fn(ctx, args) { run_references(ask, ctx, args) },
   )
 }
 
@@ -213,7 +215,7 @@ fn hover_tool(door: query.Door) -> Tool {
       <> addressing,
     snippet: "`lsp_hover` shows a symbol's type, signature and docs, by name.",
     schema: symbol_schema(),
-    run: fn(args) { run_hover(ask, args) },
+    run: fn(ctx, args) { run_hover(ask, ctx, args) },
   )
 }
 
@@ -235,7 +237,7 @@ fn symbols_tool(door: query.Door) -> Tool {
       [#("path", tool.string_property("the workspace file to outline"))],
       ["path"],
     ),
-    run: fn(args) { run_symbols(ask, args) },
+    run: fn(ctx, args) { run_symbols(ask, ctx, args) },
   )
 }
 
@@ -267,7 +269,7 @@ fn diagnostics_tool(door: query.Door) -> Tool {
       ],
       [],
     ),
-    run: fn(args) { run_diagnostics(ask, args) },
+    run: fn(ctx, args) { run_diagnostics(ask, ctx, args) },
   )
 }
 
@@ -279,7 +281,7 @@ fn read_tool(
   description description: String,
   snippet snippet: String,
   schema schema: JsonValue,
-  run run: fn(JsonValue) -> ToolOutcome,
+  run run: fn(tool.Ctx, JsonValue) -> ToolOutcome,
 ) -> Tool {
   tool.Tool(
     name:,
@@ -289,7 +291,7 @@ fn read_tool(
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(_ctx, args) { run(args) },
+    run:,
   )
 }
 
@@ -340,7 +342,7 @@ fn empty_requirements(workspace: String) -> SandboxPolicy {
 /// Decodes `symbol`, `path` and `line` into a `SymbolQuery`, or the refusal the model reads.
 fn decode_query(args: JsonValue) -> Result(SymbolQuery, String) {
   use symbol <- result.try(tool.required_string(args, "symbol"))
-  use path <- result.try(tool.optional_string(args, "path"))
+  use path <- result.try(decode_optional_path(args))
   use line <- result.try(tool.optional_int(args, "line"))
   let symbol = string.trim(symbol)
 
@@ -368,96 +370,121 @@ fn check_line(path: Option(String), line: Option(Int)) -> Result(Nil, String) {
   }
 }
 
-// A named path must be non-empty: the empty string would reach the door as
-// a path and be refused there with a message about the server's root.
-/// Decodes the required, non-empty `path` of `lsp_symbols`.
-fn decode_path(args: JsonValue) -> Result(String, String) {
-  use path <- result.try(tool.required_string(args, "path"))
-
-  // The empty string is a path the door would refuse with a message about
-  // the server's root; refuse it here in the model's terms.
-  case string.trim(path) {
+/// A path as the model gave it, trimmed and never empty: the empty string
+/// would reach the door as a path and be refused there with a message about
+/// the server's root, so it is refused here in the model's terms.
+fn clean_path(text: String) -> Result(String, String) {
+  case string.trim(text) {
     "" -> Error("`path` must name a file")
     trimmed -> Ok(trimmed)
   }
 }
 
-// An optional path, with the same refusal of an empty string.
-/// Decodes the optional `path` of `lsp_diagnostics`, refusing an empty one.
+/// Decodes the required `path` of `lsp_symbols`.
+fn decode_path(args: JsonValue) -> Result(String, String) {
+  use path <- result.try(tool.required_string(args, "path"))
+  clean_path(path)
+}
+
+/// Decodes the optional `path` of a symbol query or `lsp_diagnostics`.
+/// Absent is allowed (every file, or the server's root); present must name
+/// a file.
 fn decode_optional_path(args: JsonValue) -> Result(Option(String), String) {
   use path <- result.try(tool.optional_string(args, "path"))
 
-  // Absent means every file the server has reported on; present must name one.
+  // Absent is allowed; a path that is given must be a usable one.
   case path {
     None -> Ok(None)
-    Some(text) ->
-      case string.trim(text) {
-        "" -> Error("`path`, when given, must name a file")
-        trimmed -> Ok(Some(trimmed))
-      }
+    Some(text) -> result.map(clean_path(text), Some)
   }
 }
 
 // --- running the tools ----------------------------------------------------
 
-// The tools share one shape. Decode the arguments (`tool.with_arg` returns
-// the refusal as the outcome), ask the door (`tool.or_outcome` turns a
-// `QueryError` into `render_error`'s text), and render the answer behind its
-// warmth line.
-/// Runs `lsp_definition`: decode, ask the door, render the sites.
+/// The one shape every tool runs in: decode the arguments (a refusal is the
+/// outcome and costs no request), ask the door (a `QueryError` becomes
+/// `render_error`'s text), render the answer behind its warmth line, and
+/// bound the whole of it.
+///
+/// The per-list caps limit entry counts, but a site's text is a whole source
+/// line and a server's detail or diagnostic message is its own, so the
+/// rendered answer is also run through `blob.bound`, as `grep` does: past the
+/// inline threshold the full text is saved as a blob and the model gets
+/// head and tail excerpts with the path to read it.
+fn run(
+  ctx: tool.Ctx,
+  args: JsonValue,
+  decode: fn(JsonValue) -> Result(a, String),
+  ask: fn(a) -> Result(query.Served(b), QueryError),
+  render: fn(a, b) -> String,
+) -> ToolOutcome {
+  use asked <- tool.with_arg(decode(args))
+  use served <- tool.or_outcome(ask(asked), error_outcome)
+  bounded_success(ctx, with_warmth(served.warmth, render(asked, served.value)))
+}
+
+/// Wraps rendered text as a success, saving an oversized answer as a blob.
+/// A blob store that cannot be written falls back to a hard clip, so the
+/// answer is bounded either way.
+fn bounded_success(ctx: tool.Ctx, text: String) -> ToolOutcome {
+  // Inline text passes through; overflow keeps excerpts and a pointer.
+  case blob.bound(ctx, text) {
+    Ok(bounded) ->
+      tool.success(blob.bounded_text(ctx.blob_root, bounded))
+      |> blob.with_blob_details(bounded)
+    Error(_) -> tool.success(lsp.clip(text, blob.overflow_threshold_bytes))
+  }
+}
+
+/// Runs `lsp_definition`.
 fn run_definition(
   ask: fn(SymbolQuery) -> Result(query.Served(List(Site)), QueryError),
+  ctx: tool.Ctx,
   args: JsonValue,
 ) -> ToolOutcome {
-  use asked <- tool.with_arg(decode_query(args))
-  use served <- tool.or_outcome(ask(asked), error_outcome)
-  tool.success(with_warmth(
-    served.warmth,
-    render_definitions(asked.symbol, served.value),
-  ))
+  run(ctx, args, decode_query, ask, fn(asked, sites) {
+    render_definitions(asked.symbol, sites)
+  })
 }
 
-/// Runs `lsp_references`: decode, ask the door, render the grouped hits.
+/// Runs `lsp_references`.
 fn run_references(
   ask: fn(SymbolQuery) -> Result(query.Served(List(Reference)), QueryError),
+  ctx: tool.Ctx,
   args: JsonValue,
 ) -> ToolOutcome {
-  use asked <- tool.with_arg(decode_query(args))
-  use served <- tool.or_outcome(ask(asked), error_outcome)
-  tool.success(with_warmth(
-    served.warmth,
-    render_references(asked.symbol, served.value),
-  ))
+  run(ctx, args, decode_query, ask, fn(asked, references) {
+    render_references(asked.symbol, references)
+  })
 }
 
-/// Runs `lsp_hover`: decode, ask the door, render the clipped text.
+/// Runs `lsp_hover`.
 fn run_hover(
   ask: fn(SymbolQuery) -> Result(query.Served(query.Hover), QueryError),
+  ctx: tool.Ctx,
   args: JsonValue,
 ) -> ToolOutcome {
-  use asked <- tool.with_arg(decode_query(args))
-  use served <- tool.or_outcome(ask(asked), error_outcome)
-  tool.success(with_warmth(served.warmth, render_hover(served.value)))
+  run(ctx, args, decode_query, ask, fn(_asked, hover) { render_hover(hover) })
 }
 
-/// Runs `lsp_symbols`: decode the path, ask the door, render the outline.
+/// Runs `lsp_symbols`.
 fn run_symbols(
   ask: fn(String) -> Result(query.Served(List(SymbolEntry)), QueryError),
+  ctx: tool.Ctx,
   args: JsonValue,
 ) -> ToolOutcome {
-  use path <- tool.with_arg(decode_path(args))
-  use served <- tool.or_outcome(ask(path), error_outcome)
-  tool.success(with_warmth(served.warmth, render_outline(path, served.value)))
+  run(ctx, args, decode_path, ask, render_outline)
 }
 
-/// Runs `lsp_diagnostics`: decode the optional path, ask the door, render the block.
+/// Runs `lsp_diagnostics`.
 fn run_diagnostics(
   ask: fn(Option(String)) -> Result(query.Served(Diagnostics), QueryError),
+  ctx: tool.Ctx,
   args: JsonValue,
 ) -> ToolOutcome {
-  use path <- tool.with_arg(decode_optional_path(args))
-  use served <- tool.or_outcome(ask(path), error_outcome)
-  tool.success(with_warmth(served.warmth, lsp.render_diagnostics(served.value)))
+  run(ctx, args, decode_optional_path, ask, fn(_path, diagnostics) {
+    lsp.render_diagnostics(diagnostics)
+  })
 }
 
 // --- rendering ------------------------------------------------------------
@@ -493,8 +520,59 @@ fn render_anchored(site: Site) -> String {
   hashline.render_line(hashline.AnchoredLine(
     line: site.line,
     anchor: hashline.anchor(site.text),
-    text: site.text,
+    text: clip_line(site.text, max_site_text_bytes),
   ))
+}
+
+/// The most bytes of a site's source line shown in an answer. A line can be
+/// as long as a whole minified or generated file, and fifty references would
+/// inline it fifty times.
+pub const max_site_text_bytes = 400
+
+/// One site as `path:line:anchor|text`, as `lsp.render_site` prints it,
+/// except that the text is cut to `max_site_text_bytes`. The anchor is
+/// computed over the whole line first, so it is still the one `fs_read`
+/// prints and an edit anchored on it still lands.
+fn render_site(site: Site) -> String {
+  let text = clip_line(site.text, max_site_text_bytes)
+  site.path
+  <> ":"
+  <> int.to_string(site.line)
+  <> ":"
+  <> hashline.anchor(site.text)
+  <> "|"
+  <> text
+}
+
+/// The longest prefix of a line within `limit` bytes that is valid UTF-8,
+/// marked when something was cut.
+fn clip_line(text: String, limit: Int) -> String {
+  let size = string.byte_size(text)
+
+  // A line within the limit is shown whole; a longer one is cut and marked.
+  case size <= limit {
+    True -> text
+    False ->
+      utf8_prefix(<<text:utf8>>, limit)
+      <> " … ["
+      <> int.to_string(size - limit)
+      <> " more bytes]"
+  }
+}
+
+/// Backs off a byte at a time until the prefix decodes, which takes at most
+/// three steps.
+fn utf8_prefix(bytes: BitArray, length: Int) -> String {
+  let decoded =
+    bit_array.slice(bytes, 0, length)
+    |> result.try(bit_array.to_string)
+
+  // A cut inside a multi-byte character fails to decode; try one byte less.
+  case decoded, length > 0 {
+    Ok(text), _ -> text
+    Error(Nil), True -> utf8_prefix(bytes, length - 1)
+    Error(Nil), False -> ""
+  }
 }
 
 /// What `lsp_definition` answers: a count, then at most
@@ -518,7 +596,7 @@ pub fn render_definitions(symbol: String, sites: List(Site)) -> String {
       <> symbol
       <> "`:\n"
       <> string.join(
-        list.map(list.take(sites, max_definition_sites), lsp.render_site),
+        list.map(list.take(sites, max_definition_sites), render_site),
         "\n",
       )
       <> case hidden > 0 {
@@ -548,7 +626,7 @@ pub fn render_hover(hover: query.Hover) -> String {
     trimmed -> lsp.clip(trimmed, max_hover_bytes)
   }
 
-  lsp.render_site(hover.site) <> "\n\n" <> contents
+  render_site(hover.site) <> "\n\n" <> contents
 }
 
 /// What `lsp_references` answers: the count and file count first, then the
@@ -661,10 +739,7 @@ fn render_reference_file(
         None -> "  at top level:"
       }
 
-      [
-        heading,
-        ..list.map(pair.1, fn(hit) { "    " <> lsp.render_site(hit.site) })
-      ]
+      [heading, ..list.map(pair.1, fn(hit) { "    " <> render_site(hit.site) })]
       |> string.join("\n")
     })
   string.join(
@@ -827,9 +902,13 @@ pub fn render_error(error: QueryError) -> String {
       <> plural(list.length(candidates), "distinct definition")
       <> " match:\n"
       <> string.join(
-        list.map(list.take(candidates, max_definition_sites), lsp.render_site),
+        list.map(list.take(candidates, max_definition_sites), render_site),
         "\n",
       )
+      <> case list.length(candidates) - max_definition_sites {
+        hidden if hidden > 0 -> "\n… " <> int.to_string(hidden) <> " more"
+        _ -> ""
+      }
       <> "\nAsk again with `path` (and `line`) naming one of them, or "
       <> "qualify the name (`module.name`)."
     query.ServerRefused(message:) -> "the language server refused: " <> message
