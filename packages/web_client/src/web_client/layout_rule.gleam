@@ -1,6 +1,6 @@
 //// What `<loom-shell>` keeps in the browser's storage between page loads:
 //// the two side columns' open state per workspace, and the panel's active tab,
-//// the panel's width and the page's theme per browser.
+//// the two columns' widths and the page's theme per browser.
 ////
 //// The storage itself is two calls in `web_client/internal/ffi_dom`, one that
 //// reads an item and one that writes an item, which answer a `Result`
@@ -38,8 +38,8 @@ import gleam/result
 import gleam/string
 import web_client/grip_rule
 import web_client/shell_rule.{
-  type Layout, type State, type Tab, Changes, Closed, Evolution, Layout, Notes,
-  Open, Session, Strands, Trace,
+  type Layout, type Region, type State, type Tab, Changes, Closed, Evolution,
+  Layout, Notes, Open, Session, Strands, Trace,
 }
 
 /// The item the theme lives in. The theme is the reader's preference for the
@@ -58,6 +58,11 @@ pub const tab_key = "loom.panel.tab.v1"
 /// kept per browser, like the tab: a width chosen to read a diff is still there
 /// on the next session's page.
 pub const width_key = "loom.panel.width.v1"
+
+/// The item the sidebar's width lives in, kept per browser for the same reason
+/// as the panel's: it is a habit of the reader's screen. It is a separate item
+/// so a width written for one column is never read as the other's.
+pub const sidebar_width_key = "loom.sidebar.width.v1"
 
 /// Which workspace a page belongs to, as far as storage is concerned.
 pub type Workspace {
@@ -196,10 +201,34 @@ pub fn encode_width(width: Int) -> String {
 /// assert layout_rule.restored_width(Error(Nil)) == None
 /// ```
 pub fn restored_width(stored: Result(String, Nil)) -> Option(Int) {
+  restored_within(stored, shell_rule.Panel)
+}
+
+/// The sidebar width the browser's saved item names, or nothing when the item
+/// is missing, blocked, not a plain integer, or outside the sidebar's bounds
+/// (`grip_rule.sidebar_least_width` to `grip_rule.sidebar_most_width`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.restored_sidebar_width(Ok("320")) == Some(320)
+/// assert layout_rule.restored_sidebar_width(Ok("700")) == None
+/// assert layout_rule.restored_sidebar_width(Ok("100")) == None
+/// ```
+pub fn restored_sidebar_width(stored: Result(String, Nil)) -> Option(Int) {
+  restored_within(stored, shell_rule.Sidebar)
+}
+
+/// A stored integer that lies within `region`'s bounds, or nothing. It is the
+/// one reading both columns' widths share, so the two items differ only in the
+/// bounds they are held to.
+fn restored_within(stored: Result(String, Nil), region: Region) -> Option(Int) {
   stored
   |> result.try(int.parse)
   |> result.try(fn(width) {
-    case width >= grip_rule.least_width && width <= grip_rule.most_width {
+    case
+      width >= grip_rule.least_in(region) && width <= grip_rule.most_in(region)
+    {
       True -> Ok(width)
       False -> Error(Nil)
     }

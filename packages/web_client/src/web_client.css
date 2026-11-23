@@ -265,7 +265,7 @@
      padding: the dock carries its own, so it sits flush with the edge it is
      pinned to.
 
-     The widths: the sidebar is 232px, the panel 344px until the reader drags
+     The widths: the sidebar is 232px until the reader drags its grip (180px at least, 480px at most), the panel 344px until the reader drags
      its grip (280px at least, and never so wide that the transcript falls under
      360px, see .shell-centre), and the transcript at most 780px. Each side column is dropped where it would leave the
      transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
@@ -365,7 +365,7 @@
   /* Where the panel is a column the transcript keeps 360px (grip_rule.centre_floor), and the panel, which may shrink, gives way when a window cannot hold its width and that floor. */
   @media (min-width:980px){.shell-centre{min-width:360px;}}
   .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease,min-width 180ms ease;}
-  .region-sidebar{width:288px;}
+  .region-sidebar{flex:0 1 auto;width:var(--sidebar-width,232px);min-width:180px;}
   /* The panel's column holds the tab bar above the slot. It carries the
      column's border and background, so the bar and the panes share them. */
   .region-panel{flex:0 1 auto;width:var(--panel-width,344px);min-width:280px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg-sunk);border-left:1px solid var(--color-divider);}
@@ -386,7 +386,7 @@
      columns change at once, so a column saved as closed does not slide shut
      on every load. The class is removed after that frame is painted. */
   .shell.still .region,.shell.still .region.closed{transition:none;}
-  /* The panel's grip (web_client/shell): a 9px target straddling the panel's border, with no width of its own in the row. Only a hairline shows, on hover, focus and while it is held; the frame is not selectable and the width follows the pointer without easing for the length of a drag. */
+  /* The grips (web_client/shell), the panel's on its left edge and the sidebar's (.sidebar-grip) on its right: a 9px target straddling the column's border, with no width of its own in the row. Only a hairline shows, on hover, focus and while it is held; the frame is not selectable and the width follows the pointer without easing for the length of a drag. */
   .panel-grip{position:relative;z-index:6;flex:0 0 auto;width:9px;margin:0 -4px 0 -5px;cursor:col-resize;touch-action:none;outline:none;}
   .panel-grip::after{content:"";position:absolute;top:0;bottom:0;left:3px;width:3px;background:transparent;transition:background-color 120ms;}
   .panel-grip:hover::after{background:var(--color-fg-faint);}
@@ -862,7 +862,7 @@
     .inbox-row,.inbox-btn,button.inbox-open{min-height:44px;}
     .inbox-row.inbox-selected{background:transparent;box-shadow:none;}
   }
-  /* The frame, on every page: a 44px bar and a 184px rail, as the final design
+  /* The frame, on every page: a 44px bar and a rail (232px until dragged), as the final design
      draws them. The host class is `loom-inbox` (view/shell), which every
      audience carries, so Home, a session's page and the admin page share the
      bar's one row and the rail's width. The bar reads `loom  ‹ Inbox  workspace /
@@ -870,7 +870,6 @@
      right the chip that says who the page is for, a ghost Search with its
      shortcut and a ghost Theme. The connection's pill is drawn only when the
      page is not connected. */
-  :host(.loom-inbox) .region-sidebar{width:184px;}
   :host(.loom-inbox) .shell-bar{align-items:center;box-sizing:border-box;min-height:48px;height:48px;padding-top:env(safe-area-inset-top,0px);background:var(--color-bg);}
   :host(.loom-inbox) .shell-toggle{align-self:center;height:47px;}
   :host(.loom-inbox) .toggle-sidebar{width:44px;}
@@ -2399,8 +2398,8 @@
      height its content has: the strip's cards, never a clipped 41px of tabs.
      Below 640px the centre's padding shrinks. */
   @media (max-width:1211px){
-    .region-sidebar{display:none;}
-    .region-sidebar.drawer{display:block;position:absolute;z-index:20;top:0;bottom:0;left:0;max-width:calc(100vw - 48px);box-shadow:var(--shadow-float);}
+    .region-sidebar,.sidebar-grip{display:none;}
+    .region-sidebar.drawer{width:232px;display:block;position:absolute;z-index:20;top:0;bottom:0;left:0;max-width:calc(100vw - 48px);box-shadow:var(--shadow-float);}
     .drawer-scrim{position:absolute;z-index:19;inset:0;background:rgba(0,0,0,.3);}
   }
   @media (max-width:979px){

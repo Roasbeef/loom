@@ -138,6 +138,15 @@
 //// the bar) both read. It is kept per browser (`layout_rule.width_key`), once at
 //// the end of a gesture and not on every move. The server never learns it.
 ////
+//// The sessions sidebar has the same control on its right edge, dragged right
+//// to widen it. It is drawn only where the sidebar is a column: a drawer has
+//// no neighbour to trade width with, so the narrow frame omits the grip and
+//// shows the drawer at the default width. Its width reaches the stylesheet as
+//// `--sidebar-width` on the same root and is kept under its own item
+//// (`layout_rule.sidebar_width_key`). One drag, one set of document listeners
+//// and one set of messages serve both grips, and the `Region` a message names
+//// says which column it moves.
+////
 //// ## Flow
 ////
 //// `register` → `init` → `update` → `view` → `column`
@@ -219,17 +228,20 @@ pub type Model {
     /// How wide the strand panel is, in pixels. The stylesheet may draw it
     /// narrower when the window cannot hold it and the transcript's floor.
     width: Int,
-    /// The drag of the panel's grip in progress, if the reader holds it.
+    /// How wide the sessions sidebar is, in pixels. Where the sidebar is not a
+    /// column, or the page fixes its width, the stylesheet ignores it.
+    sidebar_width: Int,
+    /// The drag of a column's grip in progress, if the reader holds it.
     grip: Option(Grip),
   )
 }
 
-/// A drag in progress: where it began and the document listeners that follow
-/// the pointer. `hooks` is `None` from the press until the effect that
+/// A drag in progress: which column it resizes, where it began and the
+/// document listeners that follow the pointer. `hooks` is `None` from the press until the effect that
 /// registers them has reported back, which the runtime does in the same turn,
 /// before any pointer event can be heard.
 pub type Grip {
-  Grip(drag: grip_rule.Drag, hooks: Option(Hooks))
+  Grip(region: Region, drag: grip_rule.Drag, hooks: Option(Hooks))
 }
 
 /// The document's listeners for a drag: pointer moves, and the end of the
@@ -289,13 +301,15 @@ pub type Msg {
   /// the layout it has. `theme` is the browser's saved theme, which does not
   /// depend on the workspace. `tab` is the browser's saved panel tab, which
   /// does not either, and replaces the layout's tab when there is one. `width`
-  /// is the browser's saved panel width, per browser as well.
+  /// and `sidebar_width` are the browser's saved panel and sidebar widths, per
+  /// browser as well.
   Restored(
     workspace: Workspace,
     saved: Option(Layout),
     theme: Theme,
     tab: Option(Tab),
     width: Option(Int),
+    sidebar_width: Option(Int),
   )
 
   /// The frame that drew the restored layout has been painted, so later
@@ -313,9 +327,9 @@ pub type Msg {
   /// button inside the sidebar.
   DrawerDismissed
 
-  /// The reader pressed the panel's grip at `origin`, with the columns laid
+  /// The reader pressed `region`'s grip at `origin`, with the columns laid
   /// out as `room` says.
-  GripPressed(origin: Int, room: grip_rule.Room)
+  GripPressed(region: Region, origin: Int, room: grip_rule.Room)
 
   /// The document's drag listeners are in place.
   GripHooked(hooks: Hooks)
@@ -326,9 +340,13 @@ pub type Msg {
   /// The gesture ended: the button was released or the browser cancelled it.
   GripReleased
 
-  /// A key press on the grip, or a double click, asked for `adjustment`, with
-  /// the columns laid out as `room` says.
-  GripAdjusted(adjustment: grip_rule.Adjustment, room: grip_rule.Room)
+  /// A key press on `region`'s grip, or a double click, asked for
+  /// `adjustment`, with the columns laid out as `room` says.
+  GripAdjusted(
+    region: Region,
+    adjustment: grip_rule.Adjustment,
+    room: grip_rule.Room,
+  )
 }
 
 /// Registers the element with the browser.
@@ -397,6 +415,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       drawer: shell_rule.Closed,
       watch: None,
       width: grip_rule.default_width,
+      sidebar_width: grip_rule.sidebar_default_width,
       grip: None,
     ),
     component.set_pseudo_state(shell_rule.tab_state(layout.tab)),
@@ -535,7 +554,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // The frame is still while the restored layout is drawn, so the width
     // transition does not run for it, and the settle that follows the paint
     // turns motion on for the reader's own changes.
-    Restored(workspace:, saved:, theme:, tab:, width:) -> {
+    Restored(workspace:, saved:, theme:, tab:, width:, sidebar_width:) -> {
       let layout = option.unwrap(saved, model.layout)
       let layout =
         shell_rule.Layout(..layout, tab: option.unwrap(tab, layout.tab))
@@ -547,6 +566,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           layout:,
           theme:,
           width: option.unwrap(width, model.width),
+          sidebar_width: option.unwrap(sidebar_width, model.sidebar_width),
         ),
         effect.batch([
           tab_changed(model.layout.tab, layout.tab),
@@ -558,13 +578,18 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Settled -> #(Model(..model, motion: shell_rule.Animated), effect.none())
 
-    // A press on the grip starts a drag from the layout as it was measured in
-    // the event. Any drag still held is stopped as the new one starts, so a
-    // press that follows a lost release leaves one set of listeners.
-    GripPressed(origin:, room:) -> #(
+    // A press on a grip starts a drag of its column from the layout as it was
+    // measured in the event. Any drag still held is stopped as the new one
+    // starts, so a press that follows a lost release leaves one set of
+    // listeners.
+    GripPressed(region:, origin:, room:) -> #(
       Model(
         ..model,
-        grip: Some(Grip(drag: grip_rule.begin(origin, room), hooks: None)),
+        grip: Some(Grip(
+          region:,
+          drag: grip_rule.begin_in(region, origin, room),
+          hooks: None,
+        )),
       ),
       effect.batch([stop_grip(model.grip), follow_pointer()]),
     )
@@ -588,8 +613,8 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.grip, contact {
         None, _ -> #(model, effect.none())
         Some(_), grip_rule.Lifted -> released(model)
-        Some(Grip(drag:, ..)), grip_rule.Pressing -> #(
-          Model(..model, width: grip_rule.dragged(drag, pointer)),
+        Some(Grip(region:, drag:, ..)), grip_rule.Pressing -> #(
+          with_width(model, region, grip_rule.dragged_in(region, drag, pointer)),
           effect.none(),
         )
       }
@@ -602,9 +627,10 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     // A key or a double click steps from the width the model holds, so a held
     // arrow key accumulates even before the browser has drawn the last step.
-    GripAdjusted(adjustment:, room:) -> {
-      let width = grip_rule.adjusted(model.width, adjustment, room)
-      #(Model(..model, width:), save_width(width))
+    GripAdjusted(region:, adjustment:, room:) -> {
+      let width =
+        grip_rule.adjusted_in(region, width_of(model, region), adjustment, room)
+      #(with_width(model, region, width), save_width(region, width))
     }
 
     // The next theme is applied to the root and written to the storage in the
@@ -736,28 +762,55 @@ fn restore() -> Effect(Msg) {
   let tab = layout_rule.restored_tab(ffi_dom.storage_read(layout_rule.tab_key))
   let width =
     layout_rule.restored_width(ffi_dom.storage_read(layout_rule.width_key))
-  dispatch(Restored(workspace:, saved:, theme:, tab:, width:))
+  let sidebar_width =
+    layout_rule.restored_sidebar_width(ffi_dom.storage_read(
+      layout_rule.sidebar_width_key,
+    ))
+  dispatch(Restored(workspace:, saved:, theme:, tab:, width:, sidebar_width:))
 }
 
-// The end of a drag: the grip is let go, its listeners are stopped, and the
-// width the pointer left the panel at is written once. Writing on every move
-// would be a storage call for each pixel; the width on screen is right either
-// way, and a write the storage refuses costs the reader only the next load.
+/// The end of a drag: the grip is let go, its listeners are stopped, and the
+/// width the pointer left the column at is written once. Writing on every move
+/// would be a storage call for each pixel; the width on screen is right either
+/// way, and a write the storage refuses costs the reader only the next load.
 fn released(model: Model) -> #(Model, Effect(Msg)) {
-  #(
-    Model(..model, grip: None),
-    effect.batch([stop_grip(model.grip), save_width(model.width)]),
-  )
+  // Only a column that was being dragged has a width to write.
+  let save = case model.grip {
+    Some(Grip(region:, ..)) -> save_width(region, width_of(model, region))
+    None -> effect.none()
+  }
+
+  #(Model(..model, grip: None), effect.batch([stop_grip(model.grip), save]))
 }
 
-/// Persists panel resize width to local browser storage.
-fn save_width(width: Int) -> Effect(Msg) {
+// The width the model holds for `region`.
+fn width_of(model: Model, region: Region) -> Int {
+  case region {
+    shell_rule.Sidebar -> model.sidebar_width
+    shell_rule.Panel -> model.width
+  }
+}
+
+// The model with `region`'s width replaced.
+fn with_width(model: Model, region: Region, width: Int) -> Model {
+  case region {
+    shell_rule.Sidebar -> Model(..model, sidebar_width: width)
+    shell_rule.Panel -> Model(..model, width:)
+  }
+}
+
+/// Persists a column's resize width to local browser storage, under the item
+/// that belongs to `region`.
+fn save_width(region: Region, width: Int) -> Effect(Msg) {
   use _ <- effect.from
-  let _ =
-    ffi_dom.storage_write(
-      layout_rule.width_key,
-      layout_rule.encode_width(width),
-    )
+
+  // Each column's width has its own item, so one is never read as the other.
+  let key = case region {
+    shell_rule.Sidebar -> layout_rule.sidebar_width_key
+    shell_rule.Panel -> layout_rule.width_key
+  }
+
+  let _ = ffi_dom.storage_write(key, layout_rule.encode_width(width))
   Nil
 }
 
@@ -853,10 +906,11 @@ fn view(model: Model) -> Element(Msg) {
     ]),
     html.div([attribute.class("shell-body")], [
       column(model, shell_rule.Sidebar),
+      grip(model, shell_rule.Sidebar),
       html.div([attribute.class("shell-centre")], [
         component.default_slot([event.on("click", marker())], []),
       ]),
-      grip(model),
+      grip(model, shell_rule.Panel),
       column(model, shell_rule.Panel),
       scrim(model),
     ]),
@@ -865,11 +919,13 @@ fn view(model: Model) -> Element(Msg) {
 
 // The frame's own attributes: its motion classes, `dragging` while the grip is
 // held (the stylesheet turns the width transition and text selection off), and
-// the panel's width as a custom property. The property is on the frame's root
-// because the server draws the context popover in the bar's slot, outside the
-// panel's column, and it needs the width too; a slotted element inherits from
-// its slot's ancestors. A closed panel takes no width, so the property is
-// zero and the popover sits at the page's edge.
+// the panel's width and the sidebar's as custom properties. The properties are
+// on the frame's root because the server draws the context popover in the
+// bar's slot, outside the panel's column, and it needs the width too; a
+// slotted element inherits from its slot's ancestors. A closed panel takes no
+// width, so its property is zero and the popover sits at the page's edge. The
+// sidebar's property is always its width: the stylesheet's `closed` rule sets
+// a closed column's width and does not read it.
 /// Assembles CSS classes and panel width styling for root frame container.
 fn frame_attributes(model: Model) -> List(attribute.Attribute(Msg)) {
   let classes =
@@ -889,44 +945,86 @@ fn frame_attributes(model: Model) -> List(attribute.Attribute(Msg)) {
     shell_rule.Unreachable -> "0px"
   }
 
-  list.flatten([classes, held, [attribute.style("--panel-width", width)]])
+  let sidebar = int.to_string(model.sidebar_width) <> "px"
+
+  list.flatten([
+    classes,
+    held,
+    [
+      attribute.style("--panel-width", width),
+      attribute.style("--sidebar-width", sidebar),
+    ],
+  ])
 }
 
-/// Renders vertical separator resize grip when panel column is reachable.
-fn grip(model: Model) -> Element(Msg) {
-  case shell_rule.reach(shell_rule.state(model.layout, shell_rule.Panel)) {
-    shell_rule.Unreachable -> element.none()
-    shell_rule.Reachable ->
+/// Renders the vertical separator that resizes `region`'s column, when that
+/// column is on the page and is a column. The panel's grip is on its left edge
+/// and the sidebar's on its right; the sidebar has none where it is a drawer,
+/// since a drawer is a sheet with no neighbour to trade width with.
+fn grip(model: Model, region: Region) -> Element(Msg) {
+  let reach = shell_rule.reach(region_state(model, region))
+
+  // A narrow frame draws the sidebar as a drawer, which has no grip.
+  let drawn = case region, model.frame {
+    shell_rule.Sidebar, shell_rule.Narrow -> False
+    _, _ -> shell_rule.has_button(model.sidebar, region)
+  }
+
+  // The grip is drawn only for a column that is open and is a column.
+  case reach, drawn {
+    shell_rule.Reachable, True ->
       html.div(
         [
-          attribute.class("panel-grip"),
+          attribute.class(grip_class(region)),
           attribute.role("separator"),
           attribute.aria("orientation", "vertical"),
-          attribute.aria_label("Resize the panel"),
-          attribute.aria("valuenow", int.to_string(model.width)),
-          attribute.aria("valuemin", int.to_string(grip_rule.least_width)),
+          attribute.aria_label("Resize the " <> region_noun(region)),
+          attribute.aria("valuenow", int.to_string(width_of(model, region))),
+          attribute.aria("valuemin", int.to_string(grip_rule.least_in(region))),
+          attribute.aria("valuemax", int.to_string(grip_rule.most_in(region))),
           attribute.tabindex(0),
-          attribute.title("Drag to resize the panel. Double-click to reset."),
-          event.advanced("pointerdown", pressed()),
-          event.advanced("keydown", keyed()),
-          event.on("dblclick", doubled()),
+          attribute.title(
+            "Drag to resize the "
+            <> region_noun(region)
+            <> ". Double-click to reset.",
+          ),
+          event.advanced("pointerdown", pressed(region)),
+          event.advanced("keydown", keyed(region)),
+          event.on("dblclick", doubled(region)),
         ],
         [],
       )
+    _, _ -> element.none()
   }
 }
 
-/// Decodes primary pointerdown press on panel resize grip.
-fn pressed() -> decode.Decoder(event.Handler(Msg)) {
+// The stylesheet class of `region`'s grip.
+fn grip_class(region: Region) -> String {
+  case region {
+    shell_rule.Sidebar -> "panel-grip sidebar-grip"
+    shell_rule.Panel -> "panel-grip"
+  }
+}
+
+// The word for `region`'s column in a grip's title and label.
+fn region_noun(region: Region) -> String {
+  case region {
+    shell_rule.Sidebar -> "sidebar"
+    shell_rule.Panel -> "panel"
+  }
+}
+
+/// Decodes primary pointerdown press on `region`'s resize grip.
+fn pressed(region: Region) -> decode.Decoder(event.Handler(Msg)) {
   use event <- decode.then(decode.dynamic)
   use origin <- decode.field("clientX", decode.float)
   use button <- decode.field("button", decode.int)
 
   // Start drag only on primary mouse button press with measurable room.
-  case button, room_of(event) {
+  case button, room_of(region, event) {
     0, Ok(room) ->
       decode.success(event.handler(
-        GripPressed(origin: float.round(origin), room:),
+        GripPressed(region:, origin: float.round(origin), room:),
         prevent_default: True,
         stop_propagation: False,
       ))
@@ -942,17 +1040,17 @@ fn pressed() -> decode.Decoder(event.Handler(Msg)) {
   }
 }
 
-/// Decodes keyboard adjustment navigation keys focused on resize grip.
-fn keyed() -> decode.Decoder(event.Handler(Msg)) {
+/// Decodes keyboard adjustment navigation keys focused on `region`'s grip.
+fn keyed(region: Region) -> decode.Decoder(event.Handler(Msg)) {
   use event <- decode.then(decode.dynamic)
   use key <- decode.field("key", decode.string)
   use shift <- decode.field("shiftKey", modifier())
 
   // Adjust width according to arrow key direction and modifier scale.
-  case grip_rule.adjustment(key, shift), room_of(event) {
+  case grip_rule.adjustment_in(region, key, shift), room_of(region, event) {
     Some(adjustment), Ok(room) ->
       decode.success(event.handler(
-        GripAdjusted(adjustment:, room:),
+        GripAdjusted(region:, adjustment:, room:),
         prevent_default: True,
         stop_propagation: False,
       ))
@@ -968,27 +1066,37 @@ fn keyed() -> decode.Decoder(event.Handler(Msg)) {
   }
 }
 
-/// Decodes double-click on resize grip to reset panel width to default.
-fn doubled() -> decode.Decoder(Msg) {
+/// Decodes double-click on `region`'s grip to reset its width to the default.
+fn doubled(region: Region) -> decode.Decoder(Msg) {
   use event <- decode.then(decode.dynamic)
 
-  // Reset panel width to default when room can be measured.
-  case room_of(event) {
-    Ok(room) -> decode.success(GripAdjusted(adjustment: grip_rule.Reset, room:))
+  // Reset the width to the default when room can be measured.
+  case room_of(region, event) {
+    Ok(room) ->
+      decode.success(GripAdjusted(region:, adjustment: grip_rule.Reset, room:))
     Error(Nil) -> decode.failure(GripReleased, "a measurable layout")
   }
 }
 
-/// Measures current pixel widths of panel and centre transcript columns.
-fn room_of(event: Dynamic) -> Result(grip_rule.Room, Nil) {
+/// Measures the current pixel widths of `region`'s column and the centre
+/// transcript column.
+fn room_of(region: Region, event: Dynamic) -> Result(grip_rule.Room, Nil) {
   use target <- result.try(list.first(ffi_dom.composed_path(event)))
   use body <- result.try(ffi_dom.closest(target, ".shell-body"))
-  use panel <- result.try(ffi_dom.query_selector(body, ".region-panel"))
+  use column <- result.try(ffi_dom.query_selector(body, region_selector(region)))
   use centre <- result.try(ffi_dom.query_selector(body, ".shell-centre"))
   Ok(grip_rule.Room(
-    panel: float.round(ffi_dom.offset_width(panel)),
+    panel: float.round(ffi_dom.offset_width(column)),
     centre: float.round(ffi_dom.offset_width(centre)),
   ))
+}
+
+// The selector of `region`'s column inside the shell body.
+fn region_selector(region: Region) -> String {
+  case region {
+    shell_rule.Sidebar -> ".region-sidebar"
+    shell_rule.Panel -> ".region-panel"
+  }
 }
 
 /// Renders backdrop scrim behind open drawer on narrow screens.

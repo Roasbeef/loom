@@ -8,7 +8,7 @@ import web_client/grip_rule.{
   Coarse, Drag, Fine, Lifted, Narrower, Narrowest, Pressing, Reset, Room, Wider,
   Widest,
 }
-import web_client/shell_rule.{Free, Held}
+import web_client/shell_rule.{Free, Held, Panel, Sidebar}
 
 // A 1400 px window with the sidebar open leaves 1168 px for the two columns;
 // the panel is 340 of it, so the transcript has 828.
@@ -204,4 +204,171 @@ fn sweep(low: Int, high: Int) -> List(Int) {
     True -> []
     False -> [low, ..sweep(low + 1, high)]
   }
+}
+
+// The sidebar's side of the rule. A 1400 px window with the panel open leaves
+// the sidebar and the transcript about 1050 px between them; the measured
+// sidebar is 232 of it and the transcript the rest.
+const side_room = Room(panel: 232, centre: 820)
+
+pub fn the_sidebar_has_its_own_default_and_bounds_test() {
+  assert grip_rule.default_in(Sidebar) == 232
+  assert grip_rule.least_in(Sidebar) == 180
+  assert grip_rule.most_in(Sidebar) == 480
+  assert grip_rule.default_in(Panel) == grip_rule.default_width
+  assert grip_rule.least_in(Panel) == grip_rule.least_width
+  assert grip_rule.most_in(Panel) == grip_rule.most_width
+}
+
+// The panel's own functions are the `_in` forms applied to the panel.
+pub fn the_panels_functions_are_the_panel_forms_test() {
+  let drag = Drag(origin: 900, start: 340, ceiling: 680)
+  assert grip_rule.ceiling(room) == grip_rule.ceiling_in(Panel, room)
+  assert grip_rule.clamp(900, 600) == grip_rule.clamp_in(Panel, 900, 600)
+  assert grip_rule.adjustment("ArrowLeft", Free)
+    == grip_rule.adjustment_in(Panel, "ArrowLeft", Free)
+  assert grip_rule.dragged(drag, 800) == grip_rule.dragged_in(Panel, drag, 800)
+}
+
+// The transcript keeps its floor with the panel open: the room is what the
+// sidebar and the transcript share, so a wide sidebar stops where the
+// transcript would fall under the floor, and never past the sidebar's most.
+pub fn the_sidebars_ceiling_leaves_the_transcript_its_floor_test() {
+  assert grip_rule.ceiling_in(Sidebar, Room(panel: 232, centre: 500))
+    == 232 + 500 - grip_rule.centre_floor
+  assert grip_rule.ceiling_in(Sidebar, side_room)
+    == grip_rule.sidebar_most_width
+}
+
+pub fn a_small_window_keeps_the_sidebar_at_its_least_width_test() {
+  assert grip_rule.ceiling_in(Sidebar, Room(panel: 232, centre: 100))
+    == grip_rule.sidebar_least_width
+  assert grip_rule.ceiling_in(Sidebar, Room(panel: 0, centre: 0))
+    == grip_rule.sidebar_least_width
+}
+
+pub fn a_sidebar_width_is_held_between_its_bounds_test() {
+  assert grip_rule.clamp_in(Sidebar, 100, 400) == 180
+  assert grip_rule.clamp_in(Sidebar, 500, 400) == 400
+  assert grip_rule.clamp_in(Sidebar, 300, 400) == 300
+  assert grip_rule.clamp_in(Sidebar, 500, 10) == 180
+}
+
+pub fn a_sidebar_drag_records_its_own_ceiling_test() {
+  assert grip_rule.begin_in(Sidebar, 232, side_room)
+    == Drag(origin: 232, start: 232, ceiling: 480)
+}
+
+// The sidebar is the left column: the pointer moving right widens it and
+// moving left narrows it, the mirror of the panel.
+pub fn dragging_right_widens_the_sidebar_and_left_narrows_it_test() {
+  let drag = Drag(origin: 232, start: 232, ceiling: 480)
+  assert grip_rule.dragged_in(Sidebar, drag, 232) == 232
+  assert grip_rule.dragged_in(Sidebar, drag, 300) == 300
+  assert grip_rule.dragged_in(Sidebar, drag, 200) == 200
+  assert grip_rule.dragged_in(Sidebar, drag, 1000) == 480
+  assert grip_rule.dragged_in(Sidebar, drag, 0) == 180
+}
+
+// The width comes from where the drag began, so a pointer that went far past
+// the limit and came back finds the sidebar where it left it.
+pub fn a_sidebar_drag_has_no_dead_zone_test() {
+  let drag = Drag(origin: 232, start: 232, ceiling: 480)
+  assert grip_rule.dragged_in(Sidebar, drag, 5000) == 480
+  assert grip_rule.dragged_in(Sidebar, drag, 300) == 300
+}
+
+// Whatever the pointer does, the sidebar's width is in range, and moving the
+// pointer right never gives a narrower sidebar than moving it left.
+pub fn every_pointer_position_gives_a_sidebar_width_in_range_test() {
+  let drag = grip_rule.begin_in(Sidebar, 232, side_room)
+  let ceiling = grip_rule.ceiling_in(Sidebar, side_room)
+  let positions = sweep(-500, 1500)
+  assert list.all(positions, fn(pointer) {
+    let width = grip_rule.dragged_in(Sidebar, drag, pointer)
+    width >= grip_rule.sidebar_least_width && width <= ceiling
+  })
+  assert list.all(positions, fn(pointer) {
+    grip_rule.dragged_in(Sidebar, drag, pointer + 1)
+    >= grip_rule.dragged_in(Sidebar, drag, pointer)
+  })
+}
+
+// The arrows move the grip the way they point, so the sidebar's Right arrow
+// widens it, the reverse of the panel's; Home and End mean the same.
+pub fn the_sidebars_arrows_are_mirrored_test() {
+  assert grip_rule.adjustment_in(Sidebar, "ArrowRight", Free)
+    == Some(Wider(Fine))
+  assert grip_rule.adjustment_in(Sidebar, "ArrowLeft", Free)
+    == Some(Narrower(Fine))
+  assert grip_rule.adjustment_in(Sidebar, "ArrowRight", Held)
+    == Some(Wider(Coarse))
+  assert grip_rule.adjustment_in(Sidebar, "ArrowLeft", Held)
+    == Some(Narrower(Coarse))
+  assert grip_rule.adjustment_in(Sidebar, "Home", Free) == Some(Narrowest)
+  assert grip_rule.adjustment_in(Sidebar, "End", Free) == Some(Widest)
+  assert grip_rule.adjustment_in(Sidebar, "Tab", Free) == None
+  assert grip_rule.adjustment_in(Sidebar, "ArrowUp", Held) == None
+}
+
+pub fn a_sidebar_arrow_moves_by_a_step_and_shift_by_a_larger_one_test() {
+  assert grip_rule.adjusted_in(Sidebar, 232, Wider(Fine), side_room)
+    == 232 + grip_rule.fine_step
+  assert grip_rule.adjusted_in(Sidebar, 232, Wider(Coarse), side_room)
+    == 232 + grip_rule.coarse_step
+  assert grip_rule.adjusted_in(Sidebar, 300, Narrower(Fine), side_room)
+    == 300 - grip_rule.fine_step
+}
+
+pub fn the_sidebars_keys_stop_at_its_limits_test() {
+  assert grip_rule.adjusted_in(Sidebar, 479, Wider(Coarse), side_room) == 480
+  assert grip_rule.adjusted_in(Sidebar, 181, Narrower(Coarse), side_room) == 180
+  assert grip_rule.adjusted_in(Sidebar, 232, Widest, side_room) == 480
+  assert grip_rule.adjusted_in(Sidebar, 400, Narrowest, side_room) == 180
+}
+
+// A tight room lowers the sidebar's ceiling, and a width above it is brought
+// inside before the step.
+pub fn a_tight_room_lowers_the_sidebars_ceiling_test() {
+  let tight = Room(panel: 232, centre: 400)
+  let ceiling = grip_rule.ceiling_in(Sidebar, tight)
+  assert ceiling == 272
+  assert grip_rule.adjusted_in(Sidebar, 480, Narrower(Fine), tight)
+    == ceiling - grip_rule.fine_step
+  assert grip_rule.adjusted_in(Sidebar, 232, Widest, tight) == ceiling
+}
+
+pub fn reset_returns_the_sidebar_to_its_default_test() {
+  assert grip_rule.adjusted_in(Sidebar, 450, Reset, side_room) == 232
+  assert grip_rule.adjusted_in(Sidebar, 180, Reset, side_room) == 232
+  // A window that cannot hold the default lets the ceiling win.
+  let tight = Room(panel: 200, centre: 380)
+  assert grip_rule.adjusted_in(Sidebar, 200, Reset, tight)
+    == grip_rule.ceiling_in(Sidebar, tight)
+}
+
+pub fn no_key_takes_the_sidebar_out_of_range_test() {
+  let adjustments = [
+    Wider(Fine),
+    Wider(Coarse),
+    Narrower(Fine),
+    Narrower(Coarse),
+    Widest,
+    Narrowest,
+    Reset,
+  ]
+  let rooms = [
+    side_room,
+    Room(panel: 232, centre: 100),
+    Room(panel: 180, centre: 360),
+  ]
+  assert list.all(rooms, fn(room) {
+    let ceiling = grip_rule.ceiling_in(Sidebar, room)
+    list.all(adjustments, fn(adjustment) {
+      list.all(sweep(0, 20), fn(step) {
+        let width = grip_rule.adjusted_in(Sidebar, step * 50, adjustment, room)
+        width >= grip_rule.sidebar_least_width && width <= ceiling
+      })
+    })
+  })
 }

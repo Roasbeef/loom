@@ -266,3 +266,24 @@ fn sweep(low: Int, high: Int) -> List(Int) {
     False -> [low, ..sweep(low + 1, high)]
   }
 }
+
+pub fn a_sidebar_width_is_kept_under_its_own_item_test() {
+  assert layout_rule.sidebar_width_key == "loom.sidebar.width.v1"
+  assert layout_rule.sidebar_width_key != layout_rule.width_key
+}
+
+pub fn a_stored_sidebar_width_in_range_is_restored_test() {
+  assert layout_rule.restored_sidebar_width(Ok("180")) == Some(180)
+  assert layout_rule.restored_sidebar_width(Ok("232")) == Some(232)
+  assert layout_rule.restored_sidebar_width(Ok("480")) == Some(480)
+}
+
+// The sidebar's bounds are its own: a width that suits the panel is refused.
+pub fn a_stored_sidebar_width_out_of_range_or_malformed_is_ignored_test() {
+  assert layout_rule.restored_sidebar_width(Error(Nil)) == None
+  assert layout_rule.restored_sidebar_width(Ok("")) == None
+  assert layout_rule.restored_sidebar_width(Ok("wide")) == None
+  assert layout_rule.restored_sidebar_width(Ok("179")) == None
+  assert layout_rule.restored_sidebar_width(Ok("481")) == None
+  assert layout_rule.restored_sidebar_width(Ok("4000")) == None
+}
