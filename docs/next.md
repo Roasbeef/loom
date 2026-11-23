@@ -63,6 +63,16 @@ usable from the web.
 4. **Project mode usable from the web** (the project mode section below, and
    the 2026-11-21 plan on #1167).
 
+**An open ask was missed on a session's page (2026-11-23).** An agent
+called `ask` and the daemon recorded it (`catalogue_session_attention` showed
+`open_asks = 1`), but the owner, reading the session's transcript in the
+desktop app, saw no question. They typed "continue", and the agent took that
+as no answer and went ahead on its recommended option. An open ask must be
+visible and answerable where the owner is reading: in the stream as the
+mockup's tinted `lifted · Ask` row and beside the composer, not only in the
+inbox and the rail. Check both clients. In the web view, check the session
+page with the rail closed and at phone width.
+
 **Smaller follow-ups the owner's passkey test raised.**
 
 - A signal for whether a model is usable. Home cannot tell today.
