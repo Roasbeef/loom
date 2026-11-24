@@ -76,10 +76,13 @@ pub fn service(model: Model) -> Model {
 fn reset_for_session(model: Model) -> Model {
   let board = ask_board.for_session(model.view.asks, model.shared.session)
 
-  // A board of the same session is the same board, and nothing is repainted.
-  case board == model.view.asks {
-    True -> model
-    False -> shown(model, board)
+  // A board of the same session is the same board. Replacing a board that
+  // drew no card changes nothing a person can see, so only a card that goes
+  // away repaints.
+  case board == model.view.asks, ask_board.has_asks(model.view.asks) {
+    True, _ -> model
+    False, False -> held(model, board)
+    False, True -> shown(model, board)
   }
 }
 
