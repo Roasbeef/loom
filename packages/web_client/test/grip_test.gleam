@@ -212,7 +212,7 @@ fn sweep(low: Int, high: Int) -> List(Int) {
 const side_room = Room(panel: 232, centre: 820)
 
 pub fn the_sidebar_has_its_own_default_and_bounds_test() {
-  assert grip_rule.default_in(Sidebar) == 232
+  assert grip_rule.default_in(Sidebar) == 184
   assert grip_rule.least_in(Sidebar) == 180
   assert grip_rule.most_in(Sidebar) == 480
   assert grip_rule.default_in(Panel) == grip_rule.default_width
@@ -339,10 +339,10 @@ pub fn a_tight_room_lowers_the_sidebars_ceiling_test() {
 }
 
 pub fn reset_returns_the_sidebar_to_its_default_test() {
-  assert grip_rule.adjusted_in(Sidebar, 450, Reset, side_room) == 232
-  assert grip_rule.adjusted_in(Sidebar, 180, Reset, side_room) == 232
+  assert grip_rule.adjusted_in(Sidebar, 450, Reset, side_room) == 184
+  assert grip_rule.adjusted_in(Sidebar, 180, Reset, side_room) == 184
   // A window that cannot hold the default lets the ceiling win.
-  let tight = Room(panel: 200, centre: 380)
+  let tight = Room(panel: 200, centre: 342)
   assert grip_rule.adjusted_in(Sidebar, 200, Reset, tight)
     == grip_rule.ceiling_in(Sidebar, tight)
 }

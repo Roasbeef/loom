@@ -495,7 +495,7 @@ page keys and nonces, and the relay into the session's gateway.
   groups, the folded saved sessions, a native `<details>` for the quiet rows past
   `listing.idle_shown`, a row menu (`details.row-menu`) that holds the archive
   control and, on the home, "Rename, move or delete" (which shows the list), and a
-  foot. A row's second line is the tag `agent → code`; the subtitle is a third line.
+  foot. A row's second line is the tag `agent → code`; the subtitle is a third line in the tree that the rail's stylesheet hides (the switcher reads it), and the running groups draw no heading.
   The component carries `Standing.machine` (the serving daemon's name:
   `server.page_machine`, the node name when distributed and the host name when
   not), `View.filter`, `component.narrow`, `widen` and `waiting_count`, and
