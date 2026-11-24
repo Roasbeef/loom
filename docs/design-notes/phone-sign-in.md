@@ -40,7 +40,7 @@ starts from a credential the daemon has already issued:
 4. **The browser claim.** `POST /ui/claim` (`server.claim_submit`,
    `server.gleam`) turns an invitation token into a login. It is for a
    new person, not for the owner, and the owner would need a `loomclaim_`
-   token, which `loom` on the box also issues (`web-view.md:1784-1770`).
+   token, which `loom` on the box also issues (`web-view.md:1773-1770`).
 
 So the first browser ever signed in must come from `loom ui` on the box. A
 later browser must come either from a shell on the box again or from a
