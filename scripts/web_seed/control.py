@@ -10,6 +10,7 @@ text frames out, and unmasked frames in.
 Usage:
   control.py STATE PORT create NAME WORKSPACE     prints the session id
   control.py STATE PORT open SESSION
+  control.py STATE PORT stop SESSION              stop a resident session
   control.py STATE PORT link SOURCE TARGET        main to main, may_wake
   control.py STATE PORT send SOURCE TARGET ID TEXT
   control.py STATE PORT ui SESSION operator|observer   prints the page link
@@ -94,6 +95,8 @@ def main():
                                         "name": rest[0], "configuration": ""}
     elif command == "open":
         cmd, body = "sessions.open", {"session_id": rest[0], "epoch": epoch}
+    elif command == "stop":
+        cmd, body = "sessions.stop", {"session_id": rest[0], "epoch": epoch}
     elif command == "link":
         cmd, body = "peers.link", {"source_session": rest[0], "source_strand": "main",
                                    "target_session": rest[1], "target_strand": "main",

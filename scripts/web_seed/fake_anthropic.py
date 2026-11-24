@@ -334,8 +334,43 @@ def router_turn(body, messages):
     )
 
 
+def worker_commit_turn(messages):
+    """A worker that commits a file and reports waiting with no question.
+
+    The project's check rejects the commit and the host hands the worker the
+    failure, which is a new user message after the worker's first report. The
+    worker reports waiting again, and that second report is what leaves the
+    ticket at person/check: a failed check counts as handled only until the
+    worker reports again.
+    """
+    last = messages[-1]
+    results = tool_results(last)
+    names = {called(messages, r.get("tool_use_id")) for r in results}
+    waiting = ("tool_use", "project_report", {"status": "waiting"})
+    if "project_report" in names:
+        return [("text", "Waiting for a person.")], "end_turn", usage(500, 0, 0, 0)
+    if "bash" in names:
+        return [waiting], "tool_use", usage(500, 0, 0, 0)
+    committed = any(
+        block.get("type") == "tool_use" and block.get("name") == "bash"
+        for message in messages
+        if message.get("role") == "assistant" and not isinstance(message.get("content"), str)
+        for block in message["content"]
+    )
+    sys.stderr.write("fake-worker commit-mode message: %s\n" % json.dumps(text_of(last.get("content", ""))[:800]))
+    if committed:
+        return [waiting], "tool_use", usage(500, 0, 0, 0)
+    command = (
+        "printf 'retry log\\n' > retry.log && git add -A && "
+        "git -c user.name=worker -c user.email=worker@example.com commit -qm 'Add a retry log'"
+    )
+    return [("tool_use", "bash", {"command": command})], "tool_use", usage(500, 0, 0, 0)
+
+
 def worker_turn(body, messages):
     """A project worker asks a question and stops, which leaves its ticket at person/answer."""
+    if "commit then wait" in json.dumps(messages):
+        return worker_commit_turn(messages)
     last = messages[-1]
     if tool_results(last):
         return [("text", "Waiting for the answer.")], "end_turn", usage(500, 0, 0, 0)
