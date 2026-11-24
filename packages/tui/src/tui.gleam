@@ -156,6 +156,7 @@ import tui/note_panel
 import tui/pacing
 import tui/placement
 import tui/project_control
+import tui/project_settings_cli
 import tui/projection
 import tui/queue_editor
 import tui/recording
@@ -297,8 +298,34 @@ type Launch {
 /// What `loom project` was asked to do.
 @internal
 pub type ProjectCommand {
-  /// Make a project for the working directory and show its router session.
-  ProjectInit
+  /// Make a project for the working directory and show its router session,
+  /// then set its `check` and `setup`: from the flags when they are given, else
+  /// from the daemon's proposal, which a person confirms on a terminal.
+  ProjectInit(
+    /// The check command from `--check`, if given.
+    check: Option(String),
+    /// The setup command from `--setup`, if given.
+    setup: Option(String),
+  )
+
+  /// Show the project's settings, each with where its value came from.
+  ProjectSettings
+
+  /// Hold a value for the project, in place of the one `loom.toml` gives.
+  ProjectSet(
+    /// The key, such as `check`.
+    key: String,
+    /// The value's words.
+    values: List(String),
+    /// The URL `publish` is being turned on for, which must be named.
+    publish_to: Option(String),
+  )
+
+  /// Give a key back to the value `loom.toml` gives.
+  ProjectUnset(
+    /// The key.
+    key: String,
+  )
 
   /// Post the owner's text as an explicit trigger.
   ProjectPost(
@@ -1986,12 +2013,21 @@ fn parse_directory(arguments: List(String)) -> Launch {
 
 /// Establishes and coordinates directory usage operations for the TUI runtime.
 fn project_usage() -> String {
-  "usage: loom project init | post <text> | board [--watch] "
+  "usage: loom project init [--check <cmd>] [--setup <cmd>] | settings "
+  <> "| set <key> <value>... [--publish-to <url>] | unset <key> "
+  <> "| post <text> | board [--watch] "
   <> "| publish|retry|recheck|close|stop <ticket> | answer <ticket> <text> "
   <> "| mode <rule> off|observe|auto | verdict <rule> [--live] "
   <> "[--state-dir <path>] [--config <loom.toml>] [--server <path>]\n"
   <> "  init makes a project for the repository in the working directory, with\n"
-  <> "  a router session that decides what each message becomes. post sends\n"
+  <> "  a router session that decides what each message becomes, and sets its\n"
+  <> "  check and setup: from --check and --setup, or from what the repository\n"
+  <> "  suggests, which it asks you to confirm. Where no one can be asked it\n"
+  <> "  prints what it would use and the command that sets it. settings shows\n"
+  <> "  each of check, setup, publish, max_workers and protected_paths with\n"
+  <> "  where its value came from; set and unset change them for this project\n"
+  <> "  only, with no restart, over the [project] table of loom.toml. Turning\n"
+  <> "  publish on needs --publish-to with the URL settings shows. post sends\n"
   <> "  your text to the router as an explicit request, and board lists the\n"
   <> "  project's tickets with what needs you first; --watch keeps the board\n"
   <> "  open, answers a worker's question and opens its session. A project needs no\n"
@@ -2015,7 +2051,15 @@ fn parse_project(arguments: List(String)) -> Launch {
   // The verb names the subcommand, and what follows it is that subcommand's
   // arguments and then the local flags.
   case arguments {
-    ["init", ..flags] -> project_launch(flags, ProjectInit)
+    ["init", ..flags] -> {
+      // The two commands are optional flags, and an empty value is no value.
+      let #(check, rest) = take_flag(flags, "--check")
+      let #(setup, rest) = take_flag(rest, "--setup")
+      project_launch(rest, ProjectInit(non_empty(check), non_empty(setup)))
+    }
+    ["settings", ..flags] -> project_launch(flags, ProjectSettings)
+    ["unset", key, ..flags] -> project_launch(flags, ProjectUnset(key))
+    ["set", key, ..rest] -> parse_project_set(key, rest)
     ["board", ..flags] ->
       case list.contains(flags, "--watch") {
         True -> watch_launch(list.filter(flags, fn(each) { each != "--watch" }))
@@ -2059,6 +2103,22 @@ fn parse_project(arguments: List(String)) -> Launch {
       )
     }
     _unknown -> Invalid(project_usage())
+  }
+}
+
+/// `loom project set <key> <value>...`. The value is the words before the first
+/// flag, so a list of paths needs no quoting, and `--publish-to` names the URL
+/// that turning publish on needs.
+fn parse_project_set(key: String, rest: List(String)) -> Launch {
+  let #(url, rest) = take_flag(rest, "--publish-to")
+  let values =
+    list.take_while(rest, fn(each) { !string.starts_with(each, "--") })
+  let flags = list.drop(rest, list.length(values))
+
+  // A key with no value is a mistake, not a release; `unset` releases.
+  case values {
+    [] -> Invalid("set needs a value\n" <> project_usage())
+    _ -> project_launch(flags, ProjectSet(key, values, non_empty(url)))
   }
 }
 
@@ -2260,20 +2320,55 @@ fn project_outcome(
 
   // Each subcommand ends in one line of text for the terminal.
   case command {
-    ProjectInit -> {
+    ProjectInit(check, setup) -> {
       // The project is named for the directory, or "project" at the root.
       let name = case list.last(string.split(here, "/")) {
         Ok(last) if last != "" -> last
         _ -> "project"
       }
 
-      use made <- result.map(
+      use made <- result.try(
         project_request(host, "projects.create", [
           #("workspace", json.String(here)),
           #("name", json.String(name)),
         ]),
       )
-      project_reply_text(command, made)
+
+      // Then the project's own check and setup: given, or proposed and
+      // confirmed by the person at the terminal.
+      use settled <- result.map(project_settings_cli.init_settings(
+        fn(name, fields) { project_request(host, name, fields) },
+        ffi_terminal.read_console_reply,
+        project_text(made, "project"),
+        check,
+        setup,
+      ))
+      project_reply_text(command, made) <> "\n" <> settled
+    }
+    ProjectSettings -> {
+      use id <- result.try(project_here(host, here))
+      project_settings_cli.show(
+        fn(name, fields) { project_request(host, name, fields) },
+        id,
+      )
+    }
+    ProjectSet(key, values, publish_to) -> {
+      use id <- result.try(project_here(host, here))
+      project_settings_cli.set(
+        fn(name, fields) { project_request(host, name, fields) },
+        id,
+        key,
+        values,
+        publish_to,
+      )
+    }
+    ProjectUnset(key) -> {
+      use id <- result.try(project_here(host, here))
+      project_settings_cli.unset(
+        fn(name, fields) { project_request(host, name, fields) },
+        id,
+        key,
+      )
     }
     ProjectPost(text) -> {
       use id <- result.try(project_here(host, here))
@@ -2454,13 +2549,17 @@ pub fn project_reply_text(
 ) -> String {
   // Each subcommand prints one text built from its reply alone.
   case command {
-    ProjectInit ->
+    ProjectInit(..) ->
       "project "
       <> project_text(reply, "project")
       <> " ready for "
       <> project_text(reply, "workspace")
       <> "; router session "
       <> project_text(reply, "router_session")
+
+    // The settings verbs print the daemon's account of the settings in force,
+    // which `project_settings_cli` builds, so the generic reply says nothing.
+    ProjectSettings | ProjectSet(..) | ProjectUnset(..) -> ""
     ProjectPost(_) -> "posted " <> project_text(reply, "trigger")
     ProjectBoard -> board_text(reply)
     ProjectTicket(ticket, _) -> "done " <> text_hygiene.single_line(ticket)
@@ -2517,6 +2616,16 @@ fn project_here(
         _ -> Error("the project list was not understood")
       }
     _ -> Error("the project list was not understood")
+  }
+}
+
+/// A flag's value, or none when the flag was not given and the value is
+/// empty.
+fn non_empty(text: String) -> Option(String) {
+  // An absent flag reads as the empty string.
+  case text {
+    "" -> None
+    found -> Some(found)
   }
 }
 
