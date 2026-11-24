@@ -205,3 +205,34 @@ open and settled ask counts (`attention.max_open_asks` open, settled ones
 pruned past 200), and it reads no transcript. About 12 bytes in a row that is
 bounded at 2,300. A resident that cannot read its ask records answers an
 `unknown` row, as it does for any failed read.
+
+## Addendum: the last message keeps its newlines (2026-11-23)
+
+**Status**: ACCEPTED 2026-11-23.
+
+### The problem
+
+A row's `last_message` was the main strand's last text collapsed to one line and
+cut to 280 bytes. The web page now draws that text as Markdown and takes its
+first line as a thread's title, and neither works on a message with its
+paragraph and list breaks removed: a title ran from the first sentence into the
+list that followed.
+
+### The decision
+
+`last_message` keeps the newlines of the text. The text blocks of a message are
+joined by a blank line, and the text is cut to at most 280 bytes between blocks:
+whole blocks are kept while they fit, and a cut ends in a paragraph holding
+`…`. A first block longer than the bound is cut between its lines, and a single
+line longer than the bound is flattened and cut at a word. The member's name,
+type and bound are unchanged, and `last_message_at` and the row's 2,300-byte
+bound are as before. The cut is `web_view/block_clip`, the one the brief's
+assistant text uses (protocol-change/125, its addendum).
+
+### What it costs
+
+A reader that drew the member on one line must flatten it where it draws. The
+terminal already does, through `text_hygiene.single_line` in the session picker
+and its detail view, and the web page takes the first line for a title. A
+reader outside this repository that printed the string raw will now see newlines
+in it.
