@@ -230,6 +230,18 @@ renders again just for it:
   other press and Escape close. The server's only input is `wanted="open"`, which
   opens it while a device link is on show; any other word is no message. It
   sends the server nothing and adds no socket admission.
+- `<loom-picklist>` wraps the new-session composer's Code list (the light child,
+  drawn through one slot) and is on the page exactly while that list is open. It
+  keeps no state but one capture-phase `keydown` listener on the document. On
+  connect it focuses the list's `.search-field`. The arrow keys move the focus along
+  the column `.search-field, button.opt` while the focus is already inside the list
+  (`picklist_rule.after_key`, which holds at both ends and ignores a focus outside),
+  and Escape presses the `.pop-scrim` button of the enclosing `.place-chips`, which
+  is the ordinary click that closes the list, and is consumed so the shell's own
+  Escape does not also run. Enter needs no code: in the field it submits the
+  field's form and on a row it presses the button. It reads no attribute, sends the
+  server nothing and adds no socket admission (protocol-change/132, the addendum on
+  searching).
 - `<loom-dismiss>` is the empty sibling after the bar's context `<details>` (it
   draws nothing). Document listeners for `click` and `keydown` read only the fixed
   `data-dismiss="keep"` mark on the disclosure (`dismiss_rule.after_click`): a
