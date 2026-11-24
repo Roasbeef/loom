@@ -9,7 +9,7 @@
   folder in the inbox rail, ranked by the triage model. Static; the rows are
   invented. Each row's first lines are facts the classifier or the agent
   recorded; the violet chip and the "Triage model:" line are the model's
-  opinion. Light and dark follow the system setting.
+  opinion. Peer messages carry neither and sit outside the ranked groups. Light and dark follow the system setting.
 -->
 <style>
 :root{--bg:#f6f5f1;--sunk:#efede7;--raised:#fff;--fg:#1d1c1a;--quiet:#6b6962;--faint:#8f8c84;--divider:#dedbd3;--op-bg:#efedfe;--op-fg:#3c3489;--op-line:#afa9ec;--signal:#e8a33c}
@@ -74,20 +74,21 @@ h4{margin:18px 8px 6px;font-size:11px;font-weight:600;letter-spacing:.06em;text-
       <div class="why"><b>Triage model:</b> a correctness risk outside the task; the agent left it.</div>
     </div>
 
-    <div class="ghead"><span>Normal · 4</span><span></span></div>
+    <div class="ghead"><span>Normal · 3</span><span></span></div>
     <div class="row">
       <div class="l1"><span class="sn">coord/web-inbox</span><span class="kind">Result</span><span class="tri">triage · normal</span><span class="t">13:32</span></div>
       <div class="head">sub:mockup-a returned · 510 lines · settled</div>
       <div class="why"><b>Triage model:</b> the delegate finished; main has not read its result yet.</div>
     </div>
-    <div class="row">
-      <div class="l1"><span class="sn">runner/pod-reach</span><span class="kind">Peer</span><span class="tri">triage · normal</span><span class="t">13:15</span></div>
-      <div class="head">runner/pod-reach messaged storage/branch-index-repair at 13:15</div>
-      <div class="why"><b>Triage model:</b> the message mentions the write grant the other session is waiting on.</div>
-    </div>
     <div class="folded">2 more normal · Low · 5 folded: the triage model read them as routine.</div>
 
-    <p class="foot">Each row's first two lines are facts the classifier or the agent recorded. The violet chip and the "Triage model:" line are the opinion of the routed triage model, named here with its identity on hover. Approvals, asks and stuck strands are never ranked here; they stay in Needs you. The folder's count is the number of insights, not a need, and is never added to the need pill.</p>
+    <div class="ghead"><span>Unranked · 1</span><span>peer messages are listed by time, never ranked</span></div>
+    <div class="row">
+      <div class="l1"><span class="sn">runner/pod-reach</span><span class="kind">Peer</span><span class="t">13:15</span></div>
+      <div class="head">runner/pod-reach messaged storage/branch-index-repair at 13:15</div>
+    </div>
+
+    <p class="foot">Each row's first two lines are facts the classifier or the agent recorded. The violet chip and the "Triage model:" line are the opinion of the routed triage model, named here with its identity on hover. Approvals, asks and stuck strands are never ranked here; they stay in Needs you. Peer messages are never ranked either; they are listed by time with no chip and no model line. The folder's count is the number of insights, not a need, and is never added to the need pill.</p>
   </main>
 </div>
 </body>

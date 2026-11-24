@@ -1,6 +1,8 @@
 # Insight triage: a cheap model that labels what the inbox lifts
 
-Status: proposal, 2026-11-23. Not a commitment.
+Status: proposal, 2026-11-23. Not a commitment. Questions 1 to 7 in section 11
+have provisional answers from an advisor, which the owner may override; question
+8 is the owner's.
 
 The owner asked: "do we have another smaller model go over the transcript and
 surface those similar to advisor/summarize?" The attention inbox's design put
@@ -23,8 +25,9 @@ is worth keeping. It writes no code and no protocol change.
    routes the role.
 4. Its labels are durable, in a reserved namespace of the session store, and
    are drawn with a mark and wording that say they are a model's opinion.
-5. The inbox uses a label to order the Insights group and to show a "why" line.
-   Needs you is never reordered.
+5. The inbox uses a label to order the Insights group and to show a "why" line
+   under those rows. Needs you is never reordered. Pinned rows (approvals, asks
+   and stuck strands) and peer messages carry no label.
 6. The first test is offline and costs an hour of the owner's time: does the
    triage order beat "newest first" at putting the rows the owner would open
    first among the top three?
@@ -133,21 +136,38 @@ being asked to invent rows.
 
 ### 3.2 What a request contains
 
-For each of at most `max_rows` (initially 8) lifted rows that have no label
-yet, the harness includes:
+For each of at most `max_rows` (initially 8) lifted Insights rows that have no
+label yet, the harness includes:
 
-- the row's `key`, `kind` word and `head` as the classifier produced them
-  (`session_view/attention.gleam:110`, `Lifted`);
+- the row's position in the request (1 to `max_rows`), its `kind` word and its
+  `head` as the classifier produced them (`session_view/attention.gleam:110`,
+  `Lifted`). The row's `key` stays in the harness, which maps the model's index
+  back to it;
 - the rendering of the lane pieces within two pieces of the row's, with the
   advisor's rendering rules: no thinking, tool results clipped from the middle,
   and a per-block cap (initially 600 bytes, since the whole request has to stay
-  small);
+  small). A turn whose work had failed steps lifts one row under the turn's own
+  key, and its head names the last failed call and adds the count when more than
+  one failed (`turns.Worked.last_failure`, `session_view/attention.gleam`,
+  `failed_steps`). For that row "the row's piece" is the turn's work piece, so
+  the window is the work piece (its steps if the fold has loaded them, otherwise
+  the divider's head alone) and the pieces within two of it;
 - the text of the run's final assistant message, once, so the model knows how
   the run ended.
 
+Pinned rows (an approval, an open ask, a stuck strand) and `PeerMessage` rows
+are never in a request. Peer messages stay out in every slice, with no weight and
+no `why` line, unless the owner amends the ranking rule that peer messages are
+"listed by time and origin with no claim of relevance"
+(`attention-inbox/ranking.md`, "Text the page may not write"). A request may
+carry tool output, clipped as above, which can hold repository contents; the
+protocol change for the role must say that tool output reaches the triage
+provider (question 2).
+
 A request is capped at 8,192 bytes. Rows past the cap are left unlabelled for
 the next request. The rows are ordered newest first, so the cap drops the
-oldest.
+oldest. A row that once had a label is not requested again, even if its label
+has since been evicted (section 6), so a label never changes once written.
 
 The classifier today runs only in the web view
 (`packages/web_view/src/web_view/component.gleam:7468`). A request therefore
@@ -184,16 +204,25 @@ estimate. A session's triage stops when either bound is reached.
 | Requests per session | 24 | A long session has dozens of run ends. |
 | Input bytes per session | 131,072 | 16 full requests. |
 
-The values are first guesses to be replaced by measurement in the first test. A
+The values are first guesses to be replaced by slice 0's measurements. They do
+not agree: 24 requests of 8,192 bytes is 196,608 bytes, more than 131,072, so
+the byte bound stops a session at 16 full requests, and the request bound
+binds only when requests are small. A
 session that reaches a bound shows its rows unlabelled and says so once, in the
 reading pane: "Triage stopped: its budget for this session is spent." The
 counters live in a durable cell (section 6), so a restart does not reset them.
 Triage requests are metered here and not in the session's cost ledger, as the
-glance's are not, which is why the ceiling has to be this cell.
+glance's are not, which is why the ceiling has to be this cell. The ceiling is in
+counters and not dollars because pricing is optional: an unpriced model records
+a zero cost (`packages/client/src/client/catalog.gleam:256`, `pricing`), so a
+dollar ceiling would be no ceiling for those entries.
 
 ### 3.5 Which model
 
-A seventh routable role, `triage`, declared as `model.Custom("triage")` as the
+An eighth routable role, `triage`, after the seven in `routable_roles`
+(`packages/client/src/client/catalog.gleam:497`: `main`, `subagent`, `plan`,
+`summarize`, `vision`, `advisor` and `router`; `docs/architecture/models.md`
+lists only the first six), declared as `model.Custom("triage")` as the
 advisor's is (`packages/client/src/client/catalog.gleam:480`, `advisor_role`)
 and settable in `[roles]` and in `[profiles.<name>.roles]`
 (`catalog.gleam:1940`, `parse_profiles`). The role has these rules.
@@ -219,7 +248,8 @@ and settable in `[roles]` and in `[profiles.<name>.roles]`
 
 ### 4.1 The three kinds of output
 
-**(a) Labels on rows the classifier lifted.** Each label has a row `key`, a
+**(a) Labels on rows the classifier lifted.** Each label has a row index (the
+row's position in the request, which the harness maps back to the row's `key`), a
 `weight` from `high`, `normal` and `low`, and a `why` of at most 120
 graphemes, the classifier's own `head_limit` (`session_view/attention.gleam:56`).
 
@@ -244,11 +274,14 @@ that adds a row, so they need their own record kind, a distinct place in the
 page, and a way to measure false finds. Slice 1 gives the evidence for whether
 to build them.
 
-**Pinned rows are not ranked.** A pending approval, an open ask and a stuck
+**Pinned rows carry no label.** A pending approval, an open ask and a stuck
 strand are `PinnedUntilAnswered`, and all of them need the owner whatever a model
-thinks. Only the `FoldsOnceOpened` rows, the Insights group, are given a weight
-that orders them. A label may still be shown on a pinned row as a "why" line,
-which is the second use in section 7, but it never moves one.
+thinks. They are left out of the request, so the model never reads them and
+nothing is drawn beside them. A model line beside an approval would be advice that
+a hostile transcript could steer, in the place where the owner decides what to
+allow. Only the `FoldsOnceOpened` rows, the Insights group, are given a weight
+that orders them and a "why" line, and peer messages are excluded from that
+group's labels (section 4.2).
 
 ### 4.2 Three sources, drawn so the owner can tell them apart
 
@@ -268,18 +301,22 @@ are not in any string the page builds around a label. The page's own fixed
 strings obey the ranking's rule. The `why` line is model text, and the
 chip's presence is the page's statement that it is.
 
-A label's `why` for a peer message is an example of the hazard. The classifier
-says "`runner/pod-reach` messaged this session at 13:15". A label may add "The
-message mentions the grant this session is blocked on." That sentence is the
-model's reading, and it appears only inside the chip. It does not replace the
-classifier's line, and it does not appear in the thread's title.
+A `why` for a peer message would be the hazard the ranking found. The classifier
+says "`runner/pod-reach` messaged this session at 13:15". A label that added "The
+message mentions the grant this session is blocked on." would be a claim of
+relevance, which the ranking rule forbids the page to write. So `PeerMessage` rows
+are left out of triage entirely in every slice: no weight, no `why` line, and they
+keep the classifier's order. They are drawn as plain fact rows, outside the ranked
+groups of the digest, unless the owner amends the rule.
 
 ### 4.3 What a label cannot do to the owner
 
 A model's output is data under a closed schema, so the failures are bounded.
 
-- A `key` that is not in the request is dropped, so the model cannot label a row
-  it was not shown.
+- The model names a row by its index in the request, and the harness maps the
+  index to the row's `key`, so no key from the model is ever looked up and there is
+  no unknown-key case. An index outside the request is dropped, so the model
+  cannot label a row it was not shown.
 - A `weight` outside the three words refuses the whole answer, as the glance
   refuses an answer without its lines.
 - A `why` is cut to 120 graphemes on a grapheme boundary, and a `why` with a
@@ -328,7 +365,7 @@ request and stays.
 
 | Cell | Key in `fact.custom` | Content |
 |---|---|---|
-| State | `triage/state` | Requests used, input bytes used, the model identity of the last request, and the keys it covered most recently. |
+| State | `triage/state` | Requests used, input bytes used, the model identity of the last request, and a bounded set of the row keys that have been labelled (512 keys, oldest dropped first). |
 | Label | `triage/label/<digest>` | The row `key`, `weight`, `why`, `at` in Unix milliseconds on the daemon's clock, and the model identity that wrote it. |
 
 - **Reserved prefix.** `triage/` is reserved as `advisor/` and `attention/` are,
@@ -343,7 +380,11 @@ request and stays.
   with this decoder should not be trusted with the budget.
 - **Bounds.** At most 64 labels per session. A new label past the bound removes
   the label with the smallest `at`. A label's `why` is at most 120 graphemes,
-  enforced on write and on read.
+  enforced on write and on read. A row whose label was evicted is not requested
+  again, because its key is in the labelled-key set in `triage/state`, so a label
+  never changes once written. If the set itself overflows, its oldest key is
+  dropped, and a row that old and still lifted may be requested once more; the
+  session's budget bounds that cost.
 - **Lookup, not listing.** A label is found by the row `key` the classifier
   produces. A label whose row no longer exists (a compaction removed the piece)
   matches nothing and is pruned by the bound. A label is never drawn without its
@@ -351,11 +392,15 @@ request and stays.
 - **A restart.** Labels and counters survive. The in-flight request does not,
   and costs at most one run end's labels.
 - **The feed (protocol-change/120)** carries identities and heads and never
-  content. It should carry at most the weight word for a row and leave the `why`
-  line to `attention.read`, which is the per-record read that exists to hold
-  content read at the moment of the act. The protocol change decides whether the
-  weight word fits in the row's 2,300-byte bound or is the first thing dropped
-  when it does not.
+  content. In slices 1 and 2 it carries at most the weight word for a row and
+  leaves the `why` line to `attention.read`, which is the per-record read that
+  exists to hold content read at the moment of the act. The protocol change
+  decides whether the weight word fits in the row's 2,300-byte bound or is the
+  first thing dropped when it does not. Slice 3's digest draws a `why` line under
+  every row across sessions, and one `attention.read` per row would be one request
+  per row per session. The plan is that slice 3 puts the `why` line in a feed read,
+  as one protocol change (an addendum to 120 that raises or splits the row bound),
+  and not one read per row.
 - **The catalogue summary (protocol-change/122)** is unchanged. It holds the
   counts of pending approvals, open asks and open finds, and the age of the
   oldest. Triage never contributes to any of them, so a daemon restart with
@@ -370,10 +415,12 @@ and 2.3).
 **Order within the Insights group.** Today the rail lists insights newest first
 (`session_view/attention.gleam:40`, "Order"). With labels, a row weighted `high` sorts above
 `normal`, and `low` sorts last, with newest first inside each weight. Rows
-without a label count as `normal`. Pinned rows keep the order they have.
+without a label count as `normal`, and so do peer messages, which are never
+labelled. Pinned rows keep the order they have and carry no label.
 
-**A "why" line.** A thread row for an open find, and a rail row in Insights,
-gets a second line under its head: the chip, then the model's line. A row with no
+**A "why" line.** A thread row for an open find, and a rail row in Insights
+other than a peer message, gets a second line under its head: the chip, then the
+model's line. A row with no
 label draws exactly as it does today. The reading pane shows the same line with
 the model identity and the time, and a link to the transcript position the
 classifier already links.
@@ -394,7 +441,9 @@ static sketch in both themes. It has these properties.
   classifier-only, because a count that a model can change is not a count
   (section 4.1).
 - Approvals, asks and stuck strands are never in it; they stay in Needs you,
-  unranked.
+  unranked. Peer messages are listed in it as plain fact rows, outside the
+  ranked groups, with no chip.
+- Its why lines need the feed change in section 6.
 - "Since you last looked" needs a per-owner record of when the folder was last
   opened, which the inbox does not keep today. Until it exists the folder lists
   the last day's insights and says so.
@@ -408,16 +457,17 @@ A sketch of one rail row, in the mockup's terms, for the first slice:
 
 ```text
 Insights                                               3
-  Failed call · bash              14:06
-    "exit 1: could not resolve host"
+  Failed step · bash              14:06
+    "bash curl · exit 1: could not resolve host · 3 steps failed"
     [triage · high]  The same host failed three times; the agent moved on.
   Sub-agent result · pod-reach    14:03
     "no change needed"
     [triage · low]   Reports no change.
 ```
 
-The first two lines of each row are the classifier's, as today. The third is
-the label. The brackets stand for the chip, which carries the weight and has a
+The first two lines of each row are the classifier's, as today. A turn whose
+work failed lifts one such row under the turn's key, its head naming the last
+failed call and the count. The third line is the label. The brackets stand for the chip, which carries the weight and has a
 tooltip naming the model.
 
 ## 8. How to know it works
@@ -457,19 +507,24 @@ The first test uses the same quantity on past sessions.
 ### 8.3 The cheapest test that could prove the idea wrong
 
 1. Choose 30 finished sessions from the owner's own history, each with at least
-   five rows in the Insights group, the classifier run over each.
+   eight rows in the Insights group, the classifier run over each. With five
+   rows, newest first already puts an "open first" row in the top three in most
+   sessions by chance, so the test could not separate the two orderings.
 2. The owner marks every row "open first" or "fine to skip", on the rows alone,
    without seeing any label. About an hour.
 3. Run the triage model once per session on those rows, with the request
    described in section 3.2, on the cheap model the owner would route.
 4. Compare two orderings per session: newest first (the baseline, which is the
    classifier alone) and the triage order. The outcome per session is whether
-   at least one "open first" row is among the top three.
+   at least one "open first" row is among the top three. The fraction of the
+   top three that are "open first" is scored alongside it, as a second measure
+   with more resolution than the pass or fail outcome.
 5. Run `evalstat`'s paired verdict on the 30 pairs and print its minimum
    detectable effect first.
 
 The idea is wrong, and slice 1 is not built, if the triage order is not better
-than newest first by the verdict's rule. It is also wrong if more than a few
+than newest first by the verdict's rule. An Inconclusive verdict means the same:
+do not build. It is also wrong if more than a few
 of the `high` rows are ones the owner would skip, since a confident wrong label costs the
 owner more than an unlabelled row does. The
 cost is one hour of owner time and under a dollar of model use, and it needs no
@@ -513,8 +568,8 @@ whole slices, so its cost ceiling is revisited from slice 1's measurements.
 
 **Slice 3: the digest and the step threshold.** The Insights folder in section 7
 (with a per-owner record of when it was last opened), and
-an optional step-threshold cadence. A protocol change for the digest's read, if
-it needs one beyond the feed.
+an optional step-threshold cadence. One protocol change puts the `why` line in a
+feed read, so the digest does not read each row separately (section 6).
 
 **Not planned.** Any output that suppresses a row, changes a count, acts on a
 session, or reaches the primary.
@@ -536,23 +591,80 @@ Each can be answered with a choice.
 
 1. **Is the offline test (section 8.3) the gate before any code?** Yes, build
    nothing until it passes. Or: build slice 1 and measure on real use.
+
+   **Provisional (advisor, 2026-11-23; the owner may override):** Yes, the
+   offline test is the gate, and nothing is built until it passes. The test is
+   tightened in section 8.3: at least eight insight rows per session, and the
+   fraction of the top three that are "open first" is scored as well, because
+   with five rows newest first passes most sessions by chance. An Inconclusive
+   verdict means do not build. The cost is an hour of the owner's labelling and
+   a delay before any code exists.
+
 2. **May a request contain tool output, which can hold repository contents?**
    Yes, clipped as the advisor's are. Or: no, only the agent's own words and the
    classifier's heads, accepting weaker labels.
+
+   **Provisional (advisor, 2026-11-23; the owner may override):** Yes, a request
+   may carry tool output clipped as the advisor's feed clips it, and only when
+   triage is routed. Without tool output the model has no evidence
+   for a failed-call row and would label from the head alone. The cost is that
+   tool output, which can hold repository contents, reaches the triage provider,
+   and the protocol change for the role must say so.
+
 3. **Should `triage` fall back to the `summarize` route when it is not routed?**
    No, off unless routed (the proposal). Or: yes, as the glance does, with a
    `[triage] enabled = false` key to turn it off.
+
+   **Provisional (advisor, 2026-11-23; the owner may override):** Off unless
+   routed, with no fallback to `summarize`. A fallback would send transcript
+   text to a provider nobody chose. The cost is one line of config to turn
+   triage on; adding a default route later is additive and breaks nothing.
+
 4. **When does it run?** At a run end only (the proposal). Or: also every 20
    steps during a run, as the advisor's feed does.
+
+   **Provisional (advisor, 2026-11-23; the owner may override):** Run end only.
+   An unlabelled row is still a fact, so a late label misleads nobody. The step
+   threshold stays optional in slice 3. The cost is that a long single run shows
+   no labels until it ends.
+
 5. **How is acted-on against dismissed recorded?** A thumbs-up and thumbs-down on
    each label, which is explicit and small. Or: an implicit record of which rows
    the owner opened and which they folded unopened, which is larger and needs a
    seen cursor.
+
+   **Provisional (advisor, 2026-11-23; the owner may override):** A thumbs-up
+   and thumbs-down per label, no earlier than slice 2. It needs no seen cursor.
+   The thumbs never feed a triage request and never reach the primary. The cost
+   is an explicit action from the owner, so the record is smaller than an
+   implicit one would be.
+
 6. **What is the per-session ceiling?** 24 requests and 128 KB of input (the
    proposal). Or: a dollar figure the harness derives from the entry's price,
-   which needs a price in the catalogue.
+   which is no ceiling for an entry without a price, since pricing is optional
+   in the catalogue.
+
+   **Provisional (advisor, 2026-11-23; the owner may override):** Counters, not
+   dollars: 24 requests and 128 KB of input per session, and 8 KB per request.
+   All are first guesses to be replaced by slice 0's measurements. Pricing is
+   optional and an unpriced model records a zero cost
+   (`packages/client/src/client/catalog.gleam:256`), so a dollar ceiling would
+   be no ceiling for unpriced entries. The bounds do not agree: 24 × 8 KB
+   exceeds 128 KB, so the byte bound stops a session at 16 full requests. The
+   answer format also changes so the model answers by row index and not by row
+   key (sections 3.2 and 4.3), which removes the unknown-key case. The cost is
+   that the owner reads counters and not a spend.
+
 7. **May a `high` label be drawn on a pinned row, such as an ask?** Yes, as a
    "why" line only, with no reordering. Or: no, pinned rows carry no label at all.
+
+   **Provisional (advisor, 2026-11-23; the owner may override):** No. Pinned
+   rows (approvals, asks and stuck strands) carry no label and are left out of
+   the request. A model line beside an approval is advice that a hostile
+   transcript could steer. Sections 1, 4.1 and 7 are edited to match. The cost
+   is that the model's reading never helps with the rows that most need the
+   owner.
+
 8. **Does the Home digest belong in this work?** Answered by the owner on
    2026-11-23: yes, in slice 3, as an Insights folder in the inbox rail (see the
    mockup in section 7).
