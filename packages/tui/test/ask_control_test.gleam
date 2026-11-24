@@ -457,3 +457,13 @@ pub fn a_read_for_a_left_session_clears_the_stale_card_with_a_repaint_test() {
   assert loaded.view.asks.session == "another-session"
   assert loaded.shared.frame_revision == moved.shared.frame_revision + 1
 }
+
+// Quitting while a read runs cancels its job, so its connection is not left
+// open until the read's deadline.
+pub fn quitting_cancels_a_running_ask_read_test() {
+  let #(reading, _) = stepping.step(backend.Tick, connected())
+  let assert ask_board.Reading(job: awaiting) = reading.view.asks.phase
+  let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), reading)
+  assert list.contains(effects, effect.CancelJob(job.key(awaiting)))
+  assert !ask_board.in_flight(quit.view.asks)
+}

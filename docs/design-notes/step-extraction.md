@@ -524,7 +524,7 @@ they reach that it misses.
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
 - The command arms: `interrupt_active` (`session_view/commands.gleam:91`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:590`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:610`),
   `select_model`, `decide` (`session_view/commands.gleam:179`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
