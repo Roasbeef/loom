@@ -162,6 +162,7 @@
 import broker/internal/call
 import client/advisorguard
 import client/advisorslice
+import client/attention_hold
 import client/goalcheck
 import client/goalloop
 import client/goalstate
@@ -2202,6 +2203,10 @@ fn owing_review(state: State, delivery: api.Delivery) -> Option(OpId) {
   case delivery {
     api.Started(operation:) -> Some(operation)
     api.Steered(..) -> running(state.wiring.session, strand)
+
+    // Only the primary is ever held for an ask, and this send is to the
+    // advisor, so a held delivery names no review.
+    api.Held(..) -> None
   }
 }
 
@@ -2239,6 +2244,14 @@ fn wake_for_goal(
     // not measured for zero progress — the loop did not open it.
     Ok(api.Steered(..)) -> #(
       GoalReached(how: "steered the primary's open run"),
+      memory,
+    )
+
+    // The primary is waiting on the owner's answer to an ask, so the
+    // continuation waits with it and is placed ahead of the next run. The
+    // phase stays idle for the reason a steer leaves it idle.
+    Ok(api.Held(..)) -> #(
+      GoalReached(how: "held the continuation for the owner's answer"),
       memory,
     )
 
@@ -3103,6 +3116,15 @@ fn wake_primary(
     #(Held, memory)
   })
 
+  // A primary with an open ask is waiting for the owner, and a nudge is not
+  // the answer, so waking it would let it carry on without one. The queue
+  // stays in the guard cell and reaches the primary at its next run start,
+  // which the owner's message or the answer causes.
+  use <- bool.lazy_guard(
+    when: attention_hold.holds(state.wiring.session, primary),
+    return: fn() { #(Held, memory) },
+  )
+
   // State what the branch decides before dispatching.
   case running(state.wiring.session, primary) {
     None -> deliver_nudges(state, runtime, memory)
@@ -3146,6 +3168,7 @@ fn deliver_ending_nudges(
           Woken(how: carrying("steered the primary's open run", nudges)),
           spent,
         )
+        Ok(api.Held(..)) -> #(Woken(how: carrying(held_door, nudges)), spent)
         Error(reason) -> #(Refused(reason:), spent)
       }
     Error(error) -> #(Refused(reason: string.inspect(error)), spent)
@@ -3194,9 +3217,16 @@ fn deliver_nudges(
       spent,
     )
 
+    // An ask opened between the idle read and the send, so the nudges were
+    // held for the owner's answer instead of waking the primary.
+    Ok(api.Held(..)) -> #(Woken(how: carrying(held_door, nudges)), spent)
+
     Error(reason) -> #(Refused(reason:), spent)
   }
 }
+
+/// What the advisor is told when a delivery was held for the owner's answer.
+const held_door = "held for the owner's answer to the primary's open ask"
 
 // What the advisor is told a wake carried. The count is in it because
 // the queue drains whole: an advisor that wrote one nudge may well see
@@ -3295,7 +3325,7 @@ fn downgraded_ack(
 fn opened_run(sent: Result(api.Delivery, String)) -> Option(OpId) {
   case sent {
     Ok(api.Started(operation:)) -> Some(operation)
-    Ok(api.Steered(..)) | Error(_refused) -> None
+    Ok(api.Steered(..)) | Ok(api.Held(..)) | Error(_refused) -> None
   }
 }
 
@@ -3305,6 +3335,8 @@ fn opened_run(sent: Result(api.Delivery, String)) -> Option(OpId) {
 fn landed(delivery: api.Delivery) -> advise.Ack {
   case delivery {
     api.Steered(..) -> advise.Delivered(how: "steered the primary's open run")
+
+    api.Held(..) -> advise.Delivered(how: held_door)
 
     api.Started(..) ->
       advise.Delivered(how: "started a run on the idle primary")
@@ -3598,6 +3630,14 @@ fn follow_up(
 fn drained(wiring: Wiring, operation: OpId) -> Option(AgentMessage) {
   let mine = notes.strand_of(wiring.session, operation) == Ok(primary)
   use <- bool.guard(when: !mine, return: None)
+
+  // A run that ended on an ask has nothing to read the queue for. A follow-up
+  // placed here would continue the run, and the model would go on without the
+  // owner's answer, so the nudges wait in the guard cell for the next run.
+  use <- bool.guard(
+    when: attention_hold.holds(wiring.session, primary),
+    return: None,
+  )
 
   // A hook slot is replayable — a crash before the consuming commit may
   // run it again — and this drain is not two-phase, so a replayed run

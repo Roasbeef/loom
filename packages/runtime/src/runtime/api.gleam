@@ -60,6 +60,8 @@
 ////    backing off from 10 ms to a 250 ms gap so a long wait stays cheap.
 //// 8. `close` shuts the tree down, then releases the writer lease.
 
+import core/attention
+import core/attention_hold
 import core/clock
 import core/ids.{type EntryId, type OpId, type Seq, type SessionId}
 import core/json.{type JsonValue}
@@ -1927,6 +1929,13 @@ pub type Delivery {
 
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: OpId)
+
+  /// The target was idle with an open ask routed to the owner, so the message
+  /// was not allowed to start a run. It is a durable next-run item: the
+  /// strand's next run, which only the owner's message or the answer starts,
+  /// places it ahead of that run's own prompt. Nothing was woken and the
+  /// doorbell was not rung.
+  Held(entry: EntryId)
 }
 
 /// Sends a message to another strand, per the inter-agent doctrine
@@ -1936,6 +1945,12 @@ pub type Delivery {
 /// costs latency, never data. Peer-to-peer conversation is mutual
 /// `send_to_strand`; request/reply is `create_strand` + the child's
 /// terminal result via `await_strand_result`.
+///
+/// An idle target with an open ask routed to its owner is the exception to
+/// the fresh run: this door is how every automatic input reaches a strand, and
+/// none of them is the answer, so the message is held as a next-run item
+/// instead (`Held`, protocol-change/119, the 2026-11-23 addendum). The owner's
+/// own messages do not come through here.
 ///
 /// ## Examples
 ///
@@ -2043,10 +2058,21 @@ fn send_child_attempts(
     })
   }
 
+  // A child waiting on its owner's answer is held like any other strand. The
+  // exception is a send under async execution custody, whose run is the
+  // execution's own and is never an idle child with a question outstanding.
+  let start = fn() {
+    case continuation.execution, waiting_on_owner(target) {
+      None, True ->
+        hold_next_run(target, message, None) |> result.map(Held(entry: _))
+      Some(_), _ | None, False -> admission()
+    }
+  }
+
   // Determines whether to start fresh run or steer open run based on budget.
   case continuation.within_ms {
     Some(ms) if ms <= 0 -> Error(ReadFailed("within_ms must be positive"))
-    Some(_) -> admission()
+    Some(_) -> start()
     None ->
       case
         enqueue_guarded(
@@ -2062,7 +2088,7 @@ fn send_child_attempts(
           Ok(Steered(entry:))
         }
         Error(QueueRejected(reason: queue.NoActiveRun)) ->
-          case admission() {
+          case start() {
             Error(AcceptRejected(StrandBusy)) ->
               send_child_attempts(target, message, continuation, attempts - 1)
             outcome -> outcome
@@ -2088,19 +2114,134 @@ fn send_attempts(
       Ok(Steered(entry:))
     }
     Error(QueueRejected(reason: queue.NoActiveRun)) ->
-      case accept_request(target, AcceptRun(prompts: [message]), mark) {
-        Ok(operation) -> {
-          nudge(target)
-          Ok(Started(operation:))
-        }
-
-        // A run opened between the steer refusal and the accept: try
-        // the steer again.
-        Error(AcceptRejected(reason: StrandBusy)) ->
-          send_attempts(target, message, mark, attempts - 1)
-        Error(error) -> Error(error)
+      case waiting_on_owner(target) {
+        // An idle strand with a question outstanding is not woken by an
+        // automatic input. The message waits as a next-run item.
+        True -> hold_attempts(target, message, mark, attempts)
+        False -> start_attempts(target, message, mark, attempts)
       }
     Error(error) -> Error(error)
+  }
+}
+
+/// Starts a fresh run on an idle target for `send_attempts`.
+fn start_attempts(
+  target: Runtime,
+  message: AgentMessage,
+  mark: Option(Mark),
+  attempts: Int,
+) -> Result(Delivery, ApiError) {
+  case accept_request(target, AcceptRun(prompts: [message]), mark) {
+    Ok(operation) -> {
+      nudge(target)
+      Ok(Started(operation:))
+    }
+
+    // A run opened between the steer refusal and the accept: try
+    // the steer again.
+    Error(AcceptRejected(reason: StrandBusy)) ->
+      send_attempts(target, message, mark, attempts - 1)
+    Error(error) -> Error(error)
+  }
+}
+
+/// Holds a message for the idle target's next run for `send_attempts`.
+fn hold_attempts(
+  target: Runtime,
+  message: AgentMessage,
+  mark: Option(Mark),
+  attempts: Int,
+) -> Result(Delivery, ApiError) {
+  case hold_next_run(target, message, mark) {
+    Ok(entry) -> Ok(Held(entry:))
+
+    // A run opened between the idle read and the hold: the steer door is
+    // right again, so the ladder starts over from it.
+    Error(AcceptRejected(reason: StrandBusy)) ->
+      send_attempts(target, message, mark, attempts - 1)
+    Error(error) -> Error(error)
+  }
+}
+
+/// How many items a strand holds for its next run at most. An item is held
+/// for a run that only the owner starts, so a sender with a schedule would
+/// otherwise fill the queue for as long as the owner took to answer.
+pub const next_run_limit = 16
+
+/// Queues a message as a next-run item: durable, admitted while the strand is
+/// idle, and never starting a run.
+///
+/// The commit expects the strand state it read, so a run that opened since
+/// the read refuses the hold with `StrandBusy` and the caller steers instead.
+/// A mark, when there is one, spends in the same commit, so a sender that
+/// fires at most once spends its claim exactly when the message is held.
+fn hold_next_run(
+  runtime: Runtime,
+  message: AgentMessage,
+  mark: Option(Mark),
+) -> Result(EntryId, ApiError) {
+  retry_admission(4, fn() {
+    use <- attempt
+    use #(seq, strand_state) <- result.try(read_strand_state(runtime))
+    use <- bool.guard(
+      when: option.is_some(strand_state.current_operation),
+      return: Ok(Done(Error(AcceptRejected(reason: StrandBusy)))),
+    )
+    use <- bool.guard(
+      when: list.length(strand_state.pending_next_run) >= next_run_limit,
+      return: Ok(
+        Done(
+          Error(QueueRejected(reason: queue.NextRunFull(limit: next_run_limit))),
+        ),
+      ),
+    )
+    let #(_now, generator) = mint_context(runtime)
+    let #(entry, _next, plan_tx) =
+      queue.enqueue_next_run(
+        runtime.strand,
+        strand_state,
+        seq,
+        generator,
+        PendingMessage(message:),
+      )
+    commit_admission(
+      writer.commit(writer_subject(runtime), marked(plan_tx, mark)),
+      mark,
+      on_ok: entry,
+    )
+  })
+}
+
+/// The addressed strand's open asks that wait on the owner, oldest first.
+///
+/// An ask ends its run, and the strand then waits for a message that begins
+/// "Answer to your ask". While an ask is open, an input that nobody typed
+/// does not wake the strand (protocol-change/119, the 2026-11-23 addendum),
+/// and its next request carries a reminder.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.open_owner_asks(api.on_strand(runtime, "main")) == Ok([])
+/// ```
+///
+pub fn open_owner_asks(
+  runtime: Runtime,
+) -> Result(List(attention.Ask), ApiError) {
+  use cells <- result.map(reserved_facts(
+    runtime,
+    prefix: attention_ask_fact_prefix,
+  ))
+  attention_hold.holding(cells, runtime.strand)
+}
+
+/// Whether the target has a question outstanding. A store that will not
+/// answer reads as none, so the failure costs the old behavior, a wake, and
+/// never a message held by a read nobody could confirm.
+fn waiting_on_owner(target: Runtime) -> Bool {
+  case open_owner_asks(target) {
+    Ok([_, ..]) -> True
+    Ok([]) | Error(_) -> False
   }
 }
 

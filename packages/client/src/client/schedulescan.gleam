@@ -1351,7 +1351,10 @@ fn classify_steer(admitted: Result(EntryId, api.ApiError)) -> Fire {
 
 fn classify_send(admitted: Result(api.Delivery, api.ApiError)) -> Fire {
   case admitted {
-    Ok(api.Steered(..)) | Ok(api.Started(..)) -> Fired
+    // A held occurrence has spent its mark in the commit that queued it, so
+    // it has fired: it is delivered with the strand's next run, and firing it
+    // again would deliver it twice.
+    Ok(api.Steered(..)) | Ok(api.Started(..)) | Ok(api.Held(..)) -> Fired
     Error(error) -> classify_error(error)
   }
 }

@@ -372,6 +372,10 @@ fn deliver(
     )
   {
     Ok(api.Steered(entry:)) -> Ok(remote_mail.Steered(entry:))
+
+    // The strand waits on its owner's answer, so the message is admitted and
+    // no run opened.
+    Ok(api.Held(..)) -> Ok(remote_mail.Admitted)
     Ok(api.Started(operation:)) ->
       Ok(remote_mail.Started(operation:, remaining_ms: None))
 

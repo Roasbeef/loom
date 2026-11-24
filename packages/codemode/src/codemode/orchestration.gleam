@@ -731,7 +731,11 @@ fn send_plan(
               field("operation", text(ids.op_id_to_string(operation))),
             ]),
           )
-        Ok(agent.Queued) ->
+
+        // A held message is recorded and reaches the target with its next
+        // run, which is what a program is told `queued` means. A new kind
+        // would change the capability's public surface for one condition.
+        Ok(agent.Held(..)) | Ok(agent.Queued) ->
           answered(msgpack.MapValue([field("kind", text("queued"))]))
       }
     }),
