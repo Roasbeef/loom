@@ -52,15 +52,22 @@ usable from the web.
    - Known differences: the stream's strand dot, which the mockup does not
      draw (the mockup marks the strand with a `.strand` label); the sidebar's
      row anatomy and spacing; the composer's chips.
-2. **A folder picker in the web composer.** "Choose a folder…" in the Code
-   list only opens a typed path field, and the owner does not want to type
-   paths. A browser's native file dialog cannot return a path on the daemon's
-   machine, so the picker is drawn in the page and walks the daemon's
-   directories. That needs a protocol change: an owner-only, read-only
-   directory listing below the owner's home, bounded in entries and depth,
-   with no symlink escapes (`host/bootstrap.list_directory_bounded` is the
-   existing bounded reader). The recent folders stay as the list's first
-   section. loom-desktop already has the Finder picker (`NSOpenPanel`).
+2. **A folder picker in the web composer.** Built on `web/folder-picker`
+   (protocol-change/132); not yet merged or checked on the owner's release.
+   "Choose a folder…" in the Code list opens a picker drawn in the page, because
+   a browser's file dialog cannot return a path on the daemon's machine: a
+   breadcrumb, the child directories as rows, a way up, the recent folders at the
+   home, and "Use this folder". The daemon lists directories only, below the
+   owner's home, for the owner's operating page alone: at most 1000 entries read
+   (a directory with more is refused, not cut), 200 rows shown, 8 levels deep,
+   hidden names and `~/Library` left out, every link resolved so one that leaves
+   the home is refused and not listed. The page sends an index or a depth into the
+   listing it holds, never a path, and the chosen folder reaches the daemon as the
+   typed `~/` path that `new_folder.check` judges as before. "Type a path
+   instead" stays for a folder outside the home. What is left: the owner's check
+   on a real home, and whether `~/Library` and the 1000-entry bound get in the way
+   of how the owner organises code. loom-desktop already has the Finder picker
+   (`NSOpenPanel`) and needs nothing from this.
 3. **The desktop's Mac-native pass**, slices 2 to 5 in loom-desktop's
    `docs/native-pass.md`.
 4. **Project mode usable from the web** (the project mode section below, and

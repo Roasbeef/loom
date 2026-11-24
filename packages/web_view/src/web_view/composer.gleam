@@ -58,6 +58,7 @@ import gleam/result
 import gleam/string
 import session_view/text_hygiene
 import web_view/creations
+import web_view/folder_browse
 import web_view/listing
 import web_view/placements
 import web_view/sessions.{type Entry}
@@ -171,6 +172,15 @@ pub type Target {
   /// and is never drawn back.
   TypedFolder
 
+  /// A folder the owner chose from the picker (protocol-change/132): the
+  /// trail of directory names below the daemon's home, which the daemon listed
+  /// and the page kept. It is built only by `ChosePicked`, from a listing the page
+  /// holds, and the creation judges it as it judges a typed path.
+  Picked(
+    /// The canonical trail below the home, outermost first, never empty.
+    trail: List(String),
+  )
+
   /// A workspace on an executor. With a `workspace` it is one the page drew,
   /// from the executor's report or a session's catalogue row; with `None` the
   /// executor reported none and the form asks for a name.
@@ -187,6 +197,37 @@ pub type Target {
     pool: String,
     /// The workspace's registered name, or `None` to type one.
     workspace: Option(String),
+  )
+}
+
+/// The folder picker inside the Code chip's list (protocol-change/132). The page
+/// holds the listing it last drew, and a press names an index into it, so the
+/// browser never names a path.
+pub type Browser {
+  /// No picker is open: the Code list shows.
+  Closed
+
+  /// A read of this trail is out. `behind` is the listing the person was looking
+  /// at, kept so that a refusal leaves them where they were.
+  Reading(
+    /// The trail the daemon was asked for, which only its answer may settle.
+    trail: List(String),
+    /// The listing on screen before the press, if there was one.
+    behind: Option(folder_browse.Listing),
+  )
+
+  /// A directory, and the words of the last refusal over it, if any.
+  Browsing(
+    /// What the daemon listed.
+    listing: folder_browse.Listing,
+    /// Why the last press was refused, or `None`.
+    refusal: Option(folder_browse.Refusal),
+  )
+
+  /// The first read was refused, so there is no directory to show.
+  Failed(
+    /// Why.
+    refusal: folder_browse.Refusal,
   )
 }
 
@@ -256,6 +297,8 @@ pub type State {
     roles: creations.Roles,
     /// The code picker's search text, bounded by `search_limit`.
     search: String,
+    /// The folder picker, when "Choose a folder…" opened it.
+    browser: Browser,
     /// Whether a creation is out.
     sending: Sending,
     /// The fixed words of the last refusal, drawn under the form, or `None`.
@@ -295,6 +338,27 @@ pub type Msg {
   /// The code picker's search text changed.
   Searched(text: String)
 
+  /// "Choose a folder…" was pressed: open the picker at the home. It is honoured
+  /// only where the page may type a path, which is where the daemon serving the
+  /// page is the agent.
+  OpenedBrowser
+
+  /// A child directory's row was pressed. The index is into the listing the page
+  /// holds, and one outside it changes nothing.
+  Descended(index: Int)
+
+  /// A breadcrumb or the way up was pressed: the ancestor this many directories
+  /// below the home, `0` for the home. The listing's own depth and anything
+  /// beyond it change nothing.
+  Ascended(depth: Int)
+
+  /// "Use this folder" was pressed: choose the directory on screen. It is refused
+  /// for the home itself, where a session may not start.
+  ChosePicked
+
+  /// "Back to the list" was pressed: close the picker.
+  ClosedBrowser
+
   /// The form was submitted: the first message, and the one other field the
   /// chosen target needs, if any. The message is the browser's text: it names the
   /// session by its first line and, when it is not empty, is sent to the new
@@ -330,6 +394,13 @@ pub type Intent {
   ReadOn(
     /// The orchestrator's key, the agent in force.
     orchestrator: String,
+  )
+
+  /// Ask the daemon to list this directory for the picker (protocol-change/132).
+  /// The trail is the page's own, built from the listing it holds.
+  Browse(
+    /// The directory below the home, outermost first.
+    trail: List(String),
   )
 
   /// Ask the daemon to create a session and send it its first message.
@@ -433,6 +504,7 @@ pub fn new() -> State {
     target: None,
     roles: creations.default_roles,
     search: "",
+    browser: Closed,
     sending: Ready,
     refusal: None,
     unsent: None,
@@ -463,11 +535,19 @@ pub fn update(
   case message {
     Toggled(chip:) -> toggled(state, chip)
     ChoseAgent(agent:) -> #(chose_agent(state, offers, agent), Stay)
-    Dismissed -> #(State(..state, open: Shut, search: ""), Stay)
+    Dismissed -> #(
+      State(..state, open: Shut, search: "", browser: Closed),
+      Stay,
+    )
     ChoseTarget(target:) -> #(chose_target(state, offers, target), Stay)
     ChoseProfile(profile:) -> #(chose_profile(state, offers, profile), Stay)
     ChoseModel(model:) -> #(chose_model(state, offers, model), Stay)
     Searched(text:) -> #(searched(state, text), Stay)
+    OpenedBrowser -> opened_browser(state, offers)
+    Descended(index:) -> descended(state, index)
+    Ascended(depth:) -> ascended(state, depth)
+    ChosePicked -> #(chose_picked(state, offers), Stay)
+    ClosedBrowser -> #(State(..state, browser: Closed), Stay)
     ToggledLimits -> #(toggled_limits(state), Stay)
     Started(prompt:, typed:) ->
       started(state, offers, recent, prompt, typed, default_limits_input)
@@ -603,6 +683,8 @@ pub fn offered(offers: Offers, target: Target) -> Bool {
   case target {
     Folder(workspace:) -> list.contains(offers.folders, workspace)
     TypedFolder -> offers.typing == MayType
+    Picked(trail:) ->
+      offers.typing == MayType && trail != [] && folder_browse.trail_ok(trail)
     OnExecutor(executor:, workspace:) ->
       placements.offers(offers.cards, placements.OnExecutor(executor))
       && workspace_offered(offers, placements.OnExecutor(executor), workspace)
@@ -630,6 +712,7 @@ pub fn place(target: Target, typed: Typed) -> Result(creations.Place, String) {
       |> result.replace_error("Type the folder's path, or choose another.")
     TypedFolder, Nothing | TypedFolder, Workspace(_) ->
       Error("Type the folder's path, or choose another.")
+    Picked(trail:), _ -> Ok(creations.Typed(folder_browse.trail_text(trail)))
     OnExecutor(executor:, workspace: Some(workspace)), _ ->
       Ok(creations.Registered(executor, workspace))
     OnExecutor(executor:, workspace: None), Workspace(text:) ->
@@ -735,6 +818,7 @@ pub fn target_words(target: Target) -> String {
   case target {
     Folder(workspace:) -> listing.short_path(workspace)
     TypedFolder -> "a folder you type"
+    Picked(trail:) -> folder_browse.trail_text(trail)
     OnExecutor(executor:, workspace: Some(workspace)) ->
       executor <> " · " <> workspace
     OnExecutor(executor:, workspace: None) -> executor <> " · name it below"
@@ -794,6 +878,14 @@ pub fn sentence(machine: String, target: Option(Target)) -> List(Piece) {
         Plain("Commands run on "),
         Named(machine),
         Plain(", in the folder you type."),
+      ])
+    Some(Picked(trail:)) ->
+      list.append(agent, [
+        Plain("Commands run on "),
+        Named(machine),
+        Plain(", in "),
+        Named(folder_browse.trail_text(trail)),
+        Plain("."),
       ])
     Some(OnExecutor(executor:, workspace:)) ->
       list.append(agent, [
@@ -868,11 +960,11 @@ const unnamed = "Name the workspace, or choose another."
 fn toggled(state: State, chip: Chip) -> #(State, Intent) {
   case state.open {
     Showing(chip: open) if open == chip -> #(
-      State(..state, open: Shut, search: ""),
+      State(..state, open: Shut, search: "", browser: Closed),
       Stay,
     )
     Showing(_) | Shut -> #(
-      State(..state, open: Showing(chip), search: ""),
+      State(..state, open: Showing(chip), search: "", browser: Closed),
       case chip, state.agent {
         CodeChip, Here -> ReadPlacements
         CodeChip, Orchestrator(name:) -> ReadOn(orchestrator: name)
@@ -897,7 +989,15 @@ fn chose_agent(state: State, offers: Offers, agent: Agent) -> State {
         Orchestrator(_) -> LimitsClosed
       }
 
-      State(..state, agent:, open: Shut, search: "", refusal: None, limits:)
+      State(
+        ..state,
+        agent:,
+        open: Shut,
+        search: "",
+        browser: Closed,
+        refusal: None,
+        limits:,
+      )
     }
     False -> state
   }
@@ -939,7 +1039,7 @@ pub fn kept(state: State, offers: Offers) -> State {
         True -> Some(target)
         False -> None
       }
-    Some(Folder(_)) | Some(TypedFolder) | None -> None
+    Some(Folder(_)) | Some(TypedFolder) | Some(Picked(_)) | None -> None
   }
 
   // Retain selected roles when still offered or fall back to defaults.
@@ -971,16 +1071,128 @@ fn kept_profile(offers: Offers, profile: Option(String)) -> Option(String) {
 /// A row of the Code chip's list: honoured only for a target the page drew, and it
 /// closes the list. A message for a target the page did not draw changes nothing.
 fn chose_target(state: State, offers: Offers, target: Target) -> State {
-  case offered(offers, target) {
-    True ->
+  // A picked folder is made only by `ChosePicked`, from the listing the page
+  // holds, so a message that carries one is refused whatever the lists offer.
+  case target {
+    Picked(_) -> state
+    Folder(_) | TypedFolder | OnExecutor(..) | InPool(..) ->
+      case offered(offers, target) {
+        True ->
+          State(
+            ..state,
+            open: Shut,
+            target: Some(target),
+            search: "",
+            browser: Closed,
+            refusal: None,
+          )
+        False -> state
+      }
+  }
+}
+
+/// "Choose a folder…": open the picker at the home and owe the daemon a read of
+/// it. It is honoured only where the page may type a path, since only the daemon
+/// serving the page can list its own directories.
+fn opened_browser(state: State, offers: Offers) -> #(State, Intent) {
+  case offers.typing {
+    MayType -> #(
+      State(..state, browser: Reading(trail: [], behind: None)),
+      Browse(trail: []),
+    )
+    MayNotType -> #(state, Stay)
+  }
+}
+
+/// A child directory's row: read the directory below the one on screen. The index
+/// is checked against the listing the page holds, so a press the page did not
+/// draw reads nothing, and the trail asked for is built here, never taken from the
+/// browser.
+fn descended(state: State, index: Int) -> #(State, Intent) {
+  case state.browser {
+    Browsing(listing:, ..) ->
+      case folder_browse.below(listing, index) {
+        Ok(trail) -> reading(state, trail, listing)
+        Error(Nil) -> #(state, Stay)
+      }
+    Closed | Reading(..) | Failed(_) -> #(state, Stay)
+  }
+}
+
+/// A breadcrumb or the way up: read an ancestor of the directory on screen.
+fn ascended(state: State, depth: Int) -> #(State, Intent) {
+  case state.browser {
+    Browsing(listing:, ..) ->
+      case folder_browse.above(listing, depth) {
+        Ok(trail) -> reading(state, trail, listing)
+        Error(Nil) -> #(state, Stay)
+      }
+    Closed | Reading(..) | Failed(_) -> #(state, Stay)
+  }
+}
+
+/// The state while a read of `trail` is out, and the read the daemon is owed. The
+/// listing on screen is kept as `behind`, so a refusal of this read leaves the
+/// person where they were, and `browsed` settles the read when its answer arrives.
+fn reading(
+  state: State,
+  trail: List(String),
+  behind: folder_browse.Listing,
+) -> #(State, Intent) {
+  #(
+    State(..state, browser: Reading(trail:, behind: Some(behind))),
+    Browse(trail:),
+  )
+}
+
+/// The daemon's answer to a `Browse`. It is applied only when the picker is still
+/// waiting for that trail, so an answer that arrives after the person pressed
+/// something else, or closed the picker, is dropped. A refusal keeps the listing
+/// the person was on and says why, and a first read's refusal shows the words
+/// alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = composer.State(..composer.new(), browser: composer.Reading([], None))
+/// let listing = folder_browse.Listing([], [], folder_browse.Whole)
+/// assert composer.browsed(state, [], Ok(listing)).browser == composer.Browsing(listing, None)
+/// ```
+pub fn browsed(
+  state: State,
+  trail: List(String),
+  answer: folder_browse.Answer,
+) -> State {
+  case state.browser {
+    Reading(trail: waiting, behind:) if waiting == trail ->
+      case answer, behind {
+        Ok(listing), _ -> State(..state, browser: Browsing(listing, None))
+        Error(why), Some(listing) ->
+          State(..state, browser: Browsing(listing, Some(why)))
+        Error(why), None -> State(..state, browser: Failed(why))
+      }
+    Reading(..) | Closed | Browsing(..) | Failed(_) -> state
+  }
+}
+
+/// "Use this folder": the directory on screen becomes the code target and the
+/// list closes. The home itself is refused, since a session may not start there
+/// (`creations.inside`), so the press changes nothing and the view draws no button
+/// for it.
+fn chose_picked(state: State, offers: Offers) -> State {
+  case state.browser, offers.typing {
+    Browsing(listing: folder_browse.Listing(trail: [_, ..] as trail, ..), ..),
+      MayType
+    ->
       State(
         ..state,
         open: Shut,
-        target: Some(target),
+        target: Some(Picked(trail)),
         search: "",
+        browser: Closed,
         refusal: None,
       )
-    False -> state
+    Browsing(..), _ | Closed, _ | Reading(..), _ | Failed(_), _ -> state
   }
 }
 

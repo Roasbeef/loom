@@ -513,7 +513,17 @@ page keys and nonces, and the relay into the session's gateway.
   `sentence`. `view/new_session` draws it at `home.table_path`, so the owner's
   socket admits its clicks and its one submit there as before, and the code
   picker's search is the one `input` the owner's socket now admits
-  (`ui_socket.home_event`), beneath that region only. Every row is a button whose
+  (`ui_socket.home_event`), beneath that region only. The folder picker
+  (protocol-change/132) replaces that list while "Choose a folder…" has it open:
+  `composer.State.browser` (`Closed`, `Reading`, `Browsing`, `Failed`), the messages
+  `OpenedBrowser`, `Descended(index)`, `Ascended(depth)`, `ChosePicked` and
+  `ClosedBrowser`, the intent `Browse(trail)`, `composer.browsed` (applies the
+  daemon's answer only for the trail awaited) and `Target.Picked(trail)`, which
+  `place` writes as the typed `~/` path. `web_view/folder_browse` is the pure
+  vocabulary (`Listing`, `Child`, `Cut`, `Refusal`, the bounds, `component_ok`,
+  `trail_ok`, `below`, `above`); `Folders.browse` is the home's read, answered as
+  `FolderBrowsed`. A press names an index into the listing the page holds, never a
+  path. Every row is a button whose
   message carries a value the server built; the form's decoder (`new_session.fields`)
   takes exactly the name field and the one more field the chosen target needs. The
   composer creates through `Start.create` with `creations.Private`, so the server

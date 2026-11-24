@@ -2343,6 +2343,7 @@ fn folder_keeper(
           process.send(forgotten, id)
           deliver(after)
         },
+        browse: fn(_, _) { Nil },
       ),
     ),
   )
@@ -2596,9 +2597,11 @@ pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
     home.Start(
       ..creator(ask),
       folders: Some(
-        home.Folders(recent: fn(deliver) { deliver(rows) }, forget: fn(_, _) {
-          Nil
-        }),
+        home.Folders(
+          recent: fn(deliver) { deliver(rows) },
+          forget: fn(_, _) { Nil },
+          browse: fn(_, _) { Nil },
+        ),
       ),
     )
   let #(model, _) = opened(start)

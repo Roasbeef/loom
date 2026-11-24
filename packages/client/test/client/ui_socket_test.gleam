@@ -1462,7 +1462,12 @@ pub fn only_an_operators_rail_retries_and_closes_test() {
 
 // Only the owner's operating home is handed the recent-folders capability.
 pub fn only_an_owners_operating_home_is_handed_the_folders_capability_test() {
-  let folders = home.Folders(recent: fn(_) { Nil }, forget: fn(_, _) { Nil })
+  let folders =
+    home.Folders(
+      recent: fn(_) { Nil },
+      forget: fn(_, _) { Nil },
+      browse: fn(_, _) { Nil },
+    )
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)
   let assert Some(_) =
