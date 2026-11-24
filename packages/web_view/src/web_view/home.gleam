@@ -7228,11 +7228,31 @@ fn review_offer(model: Model) -> Option(inbox_view.Reviewed(Msg)) {
   }
 }
 
-/// The agent's last message under its label, for the review's pane, which draws
-/// it between the counts and the verdict. Nothing when the session said none.
+/// The agent's message under its label, for the review's pane, which draws it
+/// between the counts and the verdict. It is the brief's latest message when the
+/// page read one, which keeps the message's line breaks, and otherwise the last
+/// finished message the overview carries. Nothing when the session said none.
 fn review_message(model: Model, session: String) -> Element(Msg) {
-  case dict.get(model.reports, session) {
-    Ok(sessions.Report(last_message: Some(text), last_message_at: at, ..)) ->
+  // A brief with no words in it says nothing, so the overview's message is the
+  // fallback.
+  let read = case shown_brief(model, session) {
+    Some(brief) ->
+      case brief.assistant {
+        Some(assistant) ->
+          case string.trim(session_brief.untrusted_text(assistant.text)) {
+            "" -> None
+            _ -> Some(brief)
+          }
+        None -> None
+      }
+    None -> None
+  }
+
+  case read, dict.get(model.reports, session) {
+    Some(brief), _ ->
+      html.div([attribute.class("inbox-said")], [brief_view.latest(brief)])
+    None, Ok(sessions.Report(last_message: Some(text), last_message_at: at, ..))
+    ->
       case string.trim(text) {
         "" -> element.none()
         _ ->
@@ -7240,7 +7260,7 @@ fn review_message(model: Model, session: String) -> Element(Msg) {
             brief_view.finished(text, at),
           ])
       }
-    Ok(_) | Error(Nil) -> element.none()
+    None, Ok(_) | None, Error(Nil) -> element.none()
   }
 }
 

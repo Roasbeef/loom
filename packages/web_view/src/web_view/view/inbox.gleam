@@ -1017,11 +1017,12 @@ fn evidence_of(session: String, offer: Offer(message)) -> Element(message) {
   }
 }
 
-/// What the agent last said. A working session whose brief was read shows the
-/// brief's latest message, which may belong to the turn still running, with the
-/// time it was written. Any other thread shows the main strand's last finished
-/// message under a label that says it is not current work and not the page's
-/// words. Both are text nodes: the message is model text. An approval's thread
+/// What the agent last said. A session whose brief was read shows the brief's
+/// latest message, which may belong to the turn still running, with the time it
+/// was written. A thread with no brief read shows the main strand's last
+/// finished message under a label that says it is not current work and not the
+/// page's words. Both are drawn as Markdown (`markdown_view.quoted`), and the
+/// message is model text. An approval's thread
 /// leaves it out, as the approval is what the thread is about, and a review's
 /// thread draws it itself, between its counts and its verdict.
 fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
@@ -1029,17 +1030,25 @@ fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
   // left whole is the title already, so its quote would repeat it.
   let head = inbox_rule.thread_head(thread)
 
-  // An approval leaves the words out, a working session quotes its brief, and
-  // any other thread quotes its last finished message.
-  case kind, brief, thread.report.last_message {
-    inbox_rule.ApprovalPending, _, _ -> element.none()
-    inbox_rule.Working, Some(read), _ ->
-      // A brief message the title holds whole is not quoted again.
-      case brief_said(read) == head {
-        True -> element.none()
-        False -> brief_view.latest(read)
+  // A working session quotes its brief even when the brief has no words yet,
+  // and any other session quotes it only when it has some.
+  let by_brief = case kind, brief {
+    inbox_rule.Working, Some(read) -> Some(read)
+    _, Some(read) ->
+      case brief_said(read) {
+        "" -> None
+        _ -> Some(read)
       }
-    _, _, Some(text) ->
+    _, None -> None
+  }
+
+  // An approval leaves the words out. A brief's message keeps the paragraph and
+  // list breaks that the overview's short cut of the last message does not, so
+  // it is preferred. Any other thread quotes its last finished message.
+  case kind, by_brief, thread.report.last_message {
+    inbox_rule.ApprovalPending, _, _ -> element.none()
+    _, Some(read), _ -> brief_quote(read, head)
+    _, None, Some(text) ->
       case string.trim(text) {
         "" -> element.none()
 
@@ -1050,7 +1059,15 @@ fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
             brief_view.finished(text, thread.report.last_message_at),
           ])
       }
-    _, _, None -> element.none()
+    _, None, None -> element.none()
+  }
+}
+
+/// A brief's latest message, unless the title already holds it whole.
+fn brief_quote(read: Brief, head: String) -> Element(message) {
+  case brief_said(read) == head {
+    True -> element.none()
+    False -> brief_view.latest(read)
   }
 }
 

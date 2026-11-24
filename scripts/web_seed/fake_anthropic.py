@@ -80,6 +80,21 @@ MERMAID_MANY_ANSWER = "## Many diagrams\n\n" + "\n".join(
 
 
 
+# An answer in the shape agents write: bold, a list whose items name worktrees
+# with relative links, a code span and a link that is an address.
+STATUS_REPORT = "\n".join(
+    [
+        "**Neither is committed, pushed, or in a PR.**",
+        "",
+        "- **Native RPC mTLS** is in [`.worktrees/native-rpc-mtls`](.worktrees/native-rpc-mtls) and waits on `make check`.",
+        "- **Inbox markdown** is in [`.worktrees/inbox-md`](.worktrees/inbox-md), tests green.",
+        "- **Docs** are at [the guide](https://example.com/guide).",
+        "",
+        "Next I will run `make doc-check`, then ask you before anything is pushed.",
+    ]
+)
+
+
 def text_of(content):
     """The text of a message's content, blocks joined."""
     if isinstance(content, str):
@@ -187,7 +202,7 @@ def main_turn(messages):
     if "mermaid" in said.lower():
         return [("text", MERMAID_ANSWER)], "end_turn", warm
     if "advisor-nudges" in said or "[advisor nudges]" in said:
-        return [("text", "Checked: the sweep leaves the generated SQL alone.")], "end_turn", warm
+        return [("text", "Checked: the sweep leaves the generated SQL alone.\n\n" + STATUS_REPORT)], "end_turn", warm
     if "after the break" in said:
         return [("text", "Back after the break. The prefix had to be read again.")], "end_turn", usage(1500, 0, 41000, 30000)
     if "review" in said and "child runs" not in said:

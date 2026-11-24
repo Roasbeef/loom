@@ -135,7 +135,9 @@ fn full_evidence() -> approval_evidence.Evidence {
 fn the_brief() -> session_brief.Brief {
   Brief(
     assistant: Some(session_brief.Assistant(
-      text: session_brief.untrusted("List renders; <i>fold</i> test waits."),
+      text: session_brief.untrusted(
+        "**List renders;** <i>fold</i> test waits.\n\n- see [the file](notes/a.md)\n- and [the docs](https://example.com/d)",
+      ),
       at: now - 300_000,
     )),
     steps: [
@@ -390,8 +392,15 @@ pub fn an_update_draws_the_latest_message_and_the_last_steps_test() {
   assert string.contains(html, "The agent&#39;s latest message, untrusted text")
   assert string.contains(
     html,
-    "List renders; &lt;i&gt;fold&lt;/i&gt; test waits.",
+    "<strong>List renders;</strong> &lt;i&gt;fold&lt;/i&gt; test waits.",
   )
+
+  // The list items are on their own lines, a relative link is code, and an
+  // address keeps the stream's link element.
+  assert string.contains(html, "<li class=\"md-item\">")
+  assert string.contains(html, "<code class=\"md-code-span\">the file</code>")
+  assert string.contains(html, "<loom-link>")
+  assert !string.contains(html, "<i>fold</i>")
   assert string.contains(html, "Last few steps")
   assert string.contains(html, "brief-ok")
   assert string.contains(html, "brief-bad")
