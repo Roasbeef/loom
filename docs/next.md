@@ -6,6 +6,17 @@ on November 21. The session hot-path section was re-baselined on November 13
 against source `3e28c16f4`. Other sections retain their upstream baselines;
 this scoped update does not revalidate their hosted CI or live status.
 
+## November 23 live resource profile
+
+The [live profile](review/live-profile-2026-11-23.md) pins the installed daemon
+to `c07f6af67`. The attention feed's latest-strand-result decode is the first
+new-feature path to replay with fixed session and strand counts. The two observed
+Go language-server children were the largest observed descendant memory
+consumers, with substantial RSS variation between cuts. A separate lifetime
+replay should measure cold readiness, warm footprint and release. The profile
+records the limits of CPU sampling, cumulative allocation and feature
+coverage, including the newer merges beyond the running build.
+
 ## The web view and the desktop app: what is next (2026-11-23)
 
 The owner's order, also posted on #1167: finish the web view's fidelity to the
