@@ -6514,28 +6514,50 @@ pub fn the_folder_listing_is_answered_for_the_owners_operating_page_only_test() 
       as "a folder to list"
     let #(standing, _) = creator_standing(ready, credential, access.Operator)
 
-    let assert Ok(listing) = ui_socket.browse_for(standing, page_open, home, [])
+    let assert Ok(listing) =
+      ui_socket.browse_for(standing, page_open, fn() { Ok(home) }, [])
     assert list.contains(
       listing.children,
       folder_browse.Child("code", folder_browse.Plain),
     )
     let assert Ok(inner) =
-      ui_socket.browse_for(standing, page_open, home, ["code"])
+      ui_socket.browse_for(standing, page_open, fn() { Ok(home) }, ["code"])
     assert inner.trail == ["code"]
 
     let refused = Error(folder_browse.NotAFolder)
     let #(readonly, _) = creator_standing(ready, credential, access.Observer)
-    assert ui_socket.browse_for(readonly, page_open, home, []) == refused
-    assert ui_socket.browse_for(standing, fn() { Error(Nil) }, home, [])
+    assert ui_socket.browse_for(readonly, page_open, fn() { Ok(home) }, [])
+      == refused
+    assert ui_socket.browse_for(
+        standing,
+        fn() { Error(Nil) },
+        fn() { Ok(home) },
+        [],
+      )
       == refused
     let existing = create_session(ready, "browse-known", 1124)
     let grant = member(ready, "ui-browse", existing, access.Operator)
     let #(members, _) = creator_standing(ready, grant, access.Operator)
     let members = ui_socket.Standing(..members, principal: "ui-browse")
-    assert ui_socket.browse_for(members, page_open, home, []) == refused
+    assert ui_socket.browse_for(members, page_open, fn() { Ok(home) }, [])
+      == refused
+
+    // The home is a path resolution, so a page that fails the owner check never
+    // reads it.
+    let read = process.new_subject()
+    let watching = fn() {
+      process.send(read, Nil)
+      Ok(home)
+    }
+    assert ui_socket.browse_for(readonly, page_open, watching, []) == refused
+    assert ui_socket.browse_for(members, page_open, watching, []) == refused
+    assert process.receive(read, 0) == Error(Nil)
+    let assert Ok(_) = ui_socket.browse_for(standing, page_open, watching, [])
+    assert process.receive(read, 0) == Ok(Nil)
 
     // The owner's page is still refused a trail that leaves the home.
-    assert ui_socket.browse_for(standing, page_open, home, [".."]) == refused
+    assert ui_socket.browse_for(standing, page_open, fn() { Ok(home) }, [".."])
+      == refused
   })
 }
 
@@ -12372,4 +12394,24 @@ pub fn a_member_reads_and_removes_no_passkey_test() {
       )
       == passkeys.Declined(passkeys.NotAllowed)
   })
+}
+
+// A listing runs under a deadline: one that stalls is answered `Unreadable` when
+// the deadline passes, and a quick one is answered as it is (protocol-change/132).
+pub fn a_stalled_folder_listing_is_answered_unreadable_at_its_deadline_test() {
+  let answers = process.new_subject()
+  let listing = folder_browse.Listing([], [], folder_browse.Whole)
+
+  ui_socket.browse_within(
+    fn() {
+      process.sleep(2000)
+      Ok(listing)
+    },
+    100,
+    process.send(answers, _),
+  )
+  assert process.receive(answers, 1500) == Ok(Error(folder_browse.Unreadable))
+
+  ui_socket.browse_within(fn() { Ok(listing) }, 1000, process.send(answers, _))
+  assert process.receive(answers, 1500) == Ok(Ok(listing))
 }

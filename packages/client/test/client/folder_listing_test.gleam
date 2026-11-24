@@ -86,6 +86,10 @@ pub fn a_trail_that_names_nothing_listable_is_refused_test() {
   make(home <> "/code")
   make(home <> "/.ssh")
   make(home <> "/Library/Keychains")
+
+  // The same folder in lower case, so that on a case-sensitive filesystem it is
+  // the rule's case-folding that refuses it and not the folder's absence.
+  make(home <> "/library/Keychains")
   let assert Ok(Nil) = simplifile.write(home <> "/file", "x") as "a file"
 
   let refused = Error(folder_browse.NotAFolder)
@@ -234,4 +238,38 @@ pub fn an_unreadable_directory_is_refused_cleanly_test() {
       assert answer == Error(folder_browse.Unreadable)
     }
   }
+}
+
+// A directory of links out of the home costs a bounded number of resolutions: the
+// walk stops after `inspect_limit` names whether or not they were kept, and says
+// the listing is cut, so a folder past the bound is not listed.
+pub fn the_inspection_bound_counts_the_names_refused_test() {
+  let home = owners_home("listing-inspect")
+  let assert Ok(outside) =
+    bootstrap.canonical_directory(extensions.scratch("listing-inspect-outside"))
+    as "a folder outside home"
+  list.each(upto(folder_browse.inspect_limit), fn(each) {
+    let assert Ok(Nil) =
+      simplifile.create_symlink(outside, home <> "/a" <> pad(each))
+      as "a link out"
+    Nil
+  })
+  make(home <> "/zlast")
+
+  let assert Ok(listing) = folder_listing.list_in(home, [])
+  assert listing.children == []
+  assert listing.cut == folder_browse.CutShort
+}
+
+// A link to a directory whose real name `component_ok` refuses is refused, since
+// the canonical trail drawn for it could not be sent back.
+pub fn a_canonical_trail_with_an_unsendable_name_is_refused_test() {
+  let home = owners_home("listing-padded")
+  make(home <> "/padded ")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(home <> "/padded ", home <> "/shortcut")
+    as "a link to it"
+
+  assert folder_listing.list_in(home, ["shortcut"])
+    == Error(folder_browse.NotAFolder)
 }

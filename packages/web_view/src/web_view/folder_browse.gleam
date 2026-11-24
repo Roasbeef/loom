@@ -40,6 +40,11 @@ pub const depth_limit = 8
 /// as though it were the whole.
 pub const entry_limit = 1000
 
+/// The most names one listing makes canonical, kept or not. Each costs a process
+/// to resolve, so the bound counts the names refused as well as those shown: a
+/// directory of a thousand links out costs this many and no more.
+pub const inspect_limit = 300
+
 /// The most child directories one listing returns.
 pub const shown_limit = 200
 
@@ -70,7 +75,8 @@ pub type Cut {
   /// Every child directory is listed.
   Whole
 
-  /// The listing stopped at `shown_limit`, so there may be more.
+  /// The listing stopped at `shown_limit` rows or `inspect_limit` names examined,
+  /// so there may be more.
   CutShort
 
   /// The directory is `depth_limit` below the home, so its children are not

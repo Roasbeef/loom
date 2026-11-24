@@ -29,7 +29,8 @@
 ////    (`read_children`), so a directory with more entries than
 ////    `folder_browse.entry_limit` costs one listing and no further call.
 //// 3. `gather` walks the sorted names, keeps those that are directories inside
-////    the home, marks a Git checkout, and stops at `folder_browse.shown_limit`.
+////    the home, marks a Git checkout, and stops at `folder_browse.shown_limit` kept
+////    or `folder_browse.inspect_limit` examined.
 
 import gleam/list
 import gleam/result
@@ -66,6 +67,14 @@ pub fn list_in(home: String, trail: List(String)) -> Answer {
   use folder <- result.try(resolved(home, trail))
   let below = trail_below(home, folder)
   use Nil <- result.try(shallow(below))
+
+  // A link can end in a directory whose real name `component_ok` refuses, such
+  // as one with a space at either end. The trail drawn would then be one the
+  // page could not send back, so it is refused as a folder that is not there.
+  use Nil <- result.try(case list.all(below, folder_browse.component_ok) {
+    True -> Ok(Nil)
+    False -> Error(folder_browse.NotAFolder)
+  })
 
   // A directory at the limit is chosen or typed for, never opened further. The
   // trail passed `shallow`, so it is at the limit when it has a last component
@@ -114,6 +123,14 @@ fn resolved(home: String, trail: List(String)) -> Result(String, Refusal) {
     |> result.replace_error(folder_browse.NotAFolder),
   )
 
+  // The resolver trims a space at either end of a name, so a link to such a
+  // directory resolves to a path that is not there. The canonical path must be
+  // a directory as it is spelled.
+  use Nil <- result.try(case simplifile.is_directory(folder) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) | Error(_) -> Error(folder_browse.NotAFolder)
+  })
+
   // The home is listed, a directory inside it is listed, and everything else,
   // which includes a link that ended outside and a hidden or `Library` folder, is
   // refused in the words of a folder that is not there.
@@ -143,7 +160,7 @@ fn children_of(home: String, folder: String, below: List(String)) -> Answer {
     |> list.sort(fn(a, b) {
       string.compare(string.lowercase(a), string.lowercase(b))
     })
-  let #(children, cut) = gather(home, folder, sorted, [], 0)
+  let #(children, cut) = gather(home, folder, sorted, [], 0, 0)
 
   Ok(folder_browse.Listing(trail: below, children:, cut:))
 }
@@ -163,24 +180,30 @@ fn read_children(folder: String) -> Result(List(String), Refusal) {
 /// Walks the sorted names. A name is kept when it is a directory that is canonical
 /// inside the home, the same test the trail itself passes, so a link out of the
 /// home, a file and a dangling link are left out. The walk stops once
-/// `shown_limit` are kept and says so when a name remained, without examining it.
+/// `shown_limit` are kept or `inspect_limit` names are examined, and says so when a
+/// name remained, without examining it.
 fn gather(
   home: String,
   folder: String,
   names: List(String),
   kept: List(Child),
   count: Int,
+  examined: Int,
 ) -> #(List(Child), Cut) {
+  // The walk ends at the end of the names, or says it was cut when either bound
+  // is reached while names remain: rows kept, or names made canonical, which
+  // counts the ones that were refused.
   case names {
     [] -> #(list.reverse(kept), folder_browse.Whole)
-    [_, ..] if count >= folder_browse.shown_limit -> #(
-      list.reverse(kept),
-      folder_browse.CutShort,
-    )
+    [_, ..]
+      if count >= folder_browse.shown_limit
+      || examined >= folder_browse.inspect_limit
+    -> #(list.reverse(kept), folder_browse.CutShort)
     [name, ..rest] ->
       case child(home, folder, name) {
-        Ok(each) -> gather(home, folder, rest, [each, ..kept], count + 1)
-        Error(Nil) -> gather(home, folder, rest, kept, count)
+        Ok(each) ->
+          gather(home, folder, rest, [each, ..kept], count + 1, examined + 1)
+        Error(Nil) -> gather(home, folder, rest, kept, count, examined + 1)
       }
   }
 }
