@@ -358,7 +358,13 @@ fn question_lines(
     |> list.map(fn(entry) {
       let #(at, row) = entry
       let under = under_cursor(keyboard, form, at)
-      Drawn(Some(at), row_line(form, question, row, under, width))
+
+      // Only the card that has the keyboard has a cursor line to follow.
+      let followed = case keyboard {
+        Here -> Some(at)
+        Away -> None
+      }
+      Drawn(followed, row_line(form, question, row, under, width))
     })
 
   list.append(heading, rows)

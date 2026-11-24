@@ -215,3 +215,16 @@ pub fn the_delivered_answer_keeps_its_line_breaks_test() {
   assert index_of(frame, "2. Which branch?") == first + 5
   assert index_of(frame, "instead.") == first + 10
 }
+
+// The window follows the cursor of the card that has the keyboard. With the
+// second card focused and the cursor on its Send row, the window must reach it
+// even though the first card has a row at the same index.
+pub fn the_window_follows_the_cursor_of_the_focused_card_test() {
+  let model =
+    two_asks()
+    |> ask_control.focus
+    |> ask_control.key(keys.PageDown)
+    |> ask_control.key(keys.End)
+  let frame = lines(model, 100, 30)
+  assert drawn(frame, "› [ ] Send answer")
+}
