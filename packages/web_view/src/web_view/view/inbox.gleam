@@ -79,7 +79,6 @@ import web_view/session_brief.{type Brief}
 import web_view/sessions.{type Glance}
 import web_view/thread_send.{type Outbox}
 import web_view/view/brief_view
-import web_view/view/heading
 import web_view/view/inbox_parts as parts
 
 /// The thread the reading pane shows, and how it came to.
@@ -697,7 +696,7 @@ fn compose(
       [
         html.section([attribute.class("inbox-section inbox-msg")], [
           html.h2([attribute.class("inbox-label")], [
-            html.text("Message this session"),
+            html.text(message_label(thread, kind)),
           ]),
           keyed.div([attribute.class("inbox-send")], [
             #(
@@ -744,6 +743,21 @@ fn message_form(
       delivery_choice(kind),
     ],
   )
+}
+
+/// The heading over the message box, as the final design words it: `Or message
+/// <name>` where the thread has a decision of its own above, and `Message
+/// <name>` for a thread whose only action is the message. The name is the
+/// session's, drawn as text.
+fn message_label(thread: Thread, kind: Kind) -> String {
+  let name = inbox_rule.shown_name(thread)
+
+  // An approval or a failed run has its own control above the box.
+  case kind {
+    inbox_rule.ApprovalPending | inbox_rule.Failed -> "Or message " <> name
+    inbox_rule.Working | inbox_rule.Idle | inbox_rule.Settled ->
+      "Message " <> name
+  }
 }
 
 /// What the box says before anything is typed. The words say what a message does
@@ -924,12 +938,13 @@ fn form_field() -> decode.Decoder(#(String, String)) {
 /// session is doing in the page's own word, or in the words the data gives when
 /// it dates the turn (`working, 14 min into a turn`).
 fn eyebrow(thread: Thread, kind: Kind, dated: Option(Dated)) -> String {
-  let base = inbox_rule.shown_name(thread)
+  let base = inbox_rule.shown_name(thread) <> " · main"
 
-  // A row with no workspace has no third part.
+  // A row with no workspace has no project part. The project is the workspace's
+  // directory name, as the final design's eyebrow draws it, and not the path.
   let placed = case thread.workspace {
     "" -> base
-    workspace -> base <> " · " <> heading.shorten_path(workspace)
+    workspace -> base <> " · " <> sessions.base_name(workspace)
   }
 
   // What the data says the session is doing replaces the kind's own word, and a

@@ -431,7 +431,7 @@ pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
   )
   assert string.contains(html, "<span>Other</span><input")
   assert string.contains(html, "inbox-other")
-  assert string.contains(html, "Message this session")
+  assert string.contains(html, "Add a message to")
   assert !string.contains(html, "Message web ui")
 
   // Between Other's own control and its text field, no option closes.
@@ -666,6 +666,16 @@ pub fn the_stuck_pane_is_a_card_of_what_the_page_knows_test() {
   assert string.contains(html, "<td>Strand status</td>")
   assert string.contains(html, "Send it a nudge")
   assert string.contains(html, ">Retry the last step<")
+
+  // The nudge is the final design's option card: recommended, with the words it
+  // sends, and the thread's eyebrow names the delegate under its session. A
+  // thread with nothing staged has no Clear button.
+  assert string.contains(html, "inbox-nudge")
+  assert string.contains(html, "recommended")
+  assert string.contains(html, "Sends exactly: “")
+  assert string.contains(html, "sub:audit · under ")
+  assert string.contains(html, "Or message sub:audit")
+  assert !string.contains(html, ">Clear<")
 }
 
 // Dismiss names the strand and the failed run the page's feed read held, sends

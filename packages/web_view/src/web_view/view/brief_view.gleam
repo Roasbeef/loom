@@ -217,7 +217,12 @@ fn peer(each: Peer, name_of: fn(String) -> String) -> Element(message) {
 /// // brief_view.coordinator(brief)
 /// ```
 pub fn coordinator(brief: Brief) -> Element(message) {
-  let delegates = list.filter(brief.strands, fn(each) { each.name != "main" })
+  // The advisor is a strand of every session and is not a delegate: a card that
+  // counted it would draw a coordinator for a session that delegated nothing.
+  let delegates =
+    list.filter(brief.strands, fn(each) {
+      each.name != "main" && each.name != "advisor"
+    })
 
   // A session with no goal and no delegate has no coordinator to draw.
   case brief.goal, delegates {
