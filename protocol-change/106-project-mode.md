@@ -168,7 +168,7 @@ question's `seq`, and an answer whose `seq` is not the ticket's open question is
 `conflict` and records nothing. The board record gains `opened_ms`, the arrival time of the
 ticket's opening message, or null; a client shows an age only from it.
 
-**The page.** The owner's home draws a Projects section above its centre, and a ticket
+**The page.** The owner's home draws a Projects section above its centre (moved into the inbox's Projects folder by the addendum on creating a project; its clicks are beneath `home.table_path` and the region `home.projects_path` was removed), and a ticket
 opens as a pane of the centre. Both are part of the home's existing socket, so they add
 no route. Their authority is the creation capability's own, stated here because each new
 reach needs it written down:
@@ -847,6 +847,6 @@ costs one git-cow copy once per build, which copies the bytes where the file sys
 - The page is a pane of the centre (`web_view/project_create`, `view/project_create`) reached from a "New project" button in the Projects section, which a page that holds the capability at the owner's ceiling now draws even with no project. Nothing is created before Create is pressed, and the page draws the daemon's proposals and reasons as text nodes. The two command boxes start as the proposal and are the owner's own text after an edit.
 - The folder choice is one function of the page, `home.project_folder_choices`, which today is `composer.folders_offered` less the folders that already hold a project, so the searchable picker of the new-session form can replace it.
 
-**Authority.** Only the owner's operating page holds the capability (`ui_socket.home_projects_capability`), the button and every form of the page sit beneath `home.table_path` and `home.projects_path`, which the owner's socket already admits, and each of the two functions repeats the owner check and the folder judgement in the daemon. The browser supplies three strings: a folder, a check and a setup. Each form accepts exactly its fields and no other.
+**Authority.** Only the owner's operating page holds the capability (`ui_socket.home_projects_capability`), the button and every form of the page sit beneath `home.table_path`, where the home's socket already admits a click (to every home) and a submit (to the owner's only). A member's or observer's page holds no capability, so it draws no section and the component ignores the messages. Each of the two functions repeats the owner check and the folder judgement in the daemon. The browser supplies three strings: a folder, a check and a setup. Each form accepts exactly its fields and no other.
 
 **What it costs.** An owner with no project sees a Projects section where the page drew none. A project can exist without the settings the owner confirmed. A proposal is read from the folder when the owner chooses it, which is a bounded read of a dozen files.
