@@ -145,10 +145,38 @@ pub fn prompt_text(ask: Ask, values: List(#(String, Value))) -> String {
       <> indented(answer)
     })
 
-  "Answer to your ask "
-  <> ask.header.id
-  <> ".\n\n"
-  <> string.join(numbered, "\n\n")
+  answer_lead(ask.header.id) <> "\n\n" <> string.join(numbered, "\n\n")
+}
+
+/// The line a prompt opens with, naming the ask it answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_answer.answer_lead("ask-0123456789")
+///   == "Answer to your ask ask-0123456789."
+/// ```
+pub fn answer_lead(id: String) -> String {
+  "Answer to your ask " <> id <> "."
+}
+
+/// Whether `text` is the prompt that answers the ask `id`.
+///
+/// The text is the answer's own, built by `prompt_text`, so it opens with the
+/// line `answer_lead` words. A person who types that line themselves is
+/// answering in effect, which is harmless: the reminder that a match removes
+/// only tells the model the owner has not answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_answer.is_answer_to(
+///   "Answer to your ask ask-0123456789.\n\n1. Retry?\n   Yes",
+///   "ask-0123456789",
+/// )
+/// ```
+pub fn is_answer_to(text: String, id: String) -> Bool {
+  string.starts_with(text, answer_lead(id))
 }
 
 /// One answer as the words under its question.
