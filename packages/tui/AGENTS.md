@@ -376,6 +376,52 @@ and a decision echoes the exact captured action, grants and sequence. Legacy
 and exact decision atomically. See protocol 041.
 
 
+## Ask card (protocol-change/119, 120, 128, 130)
+
+An agent's `ask` tool records an open question for the owner and ends its run.
+The terminal draws every open ask routed to the owner above the composer and
+answers it from the keyboard. Five modules own it, in call order: `ask_jobs`
+(the control job: `sessions.attention` for the session's row, then
+`attention.read` for the first two asks, and `attention.answer`), `ask_board`
+(what the daemon said, decoded with `core/attention.decode_ask`, and who has the
+keyboard), `ask_form` (one ask's draft, its keys and the check against
+`core/attention_answer.check`), `ask_panel` (rows and height) and `ask_control`
+(polling, key routing, sending, filing outcomes). `View.asks` holds the board.
+
+Five things break if changed carelessly.
+
+- **An ask never takes the composer's keys.** `Board.focus` is `Composer` until
+  `Alt+a` (`update_main_key_composing`, bound only while `ask_control.answerable`)
+  sets `Card(index)`. A read, a new ask and a refused answer never move it, and
+  `interaction.update_normal_key` routes to `ask_control.key` only for
+  `Card`. Paste follows the same rule (`handle_paste`). Escape inside the card
+  returns the keyboard with the draft kept; Escape while typing only stops
+  typing.
+- **The check is the daemon's.** `ask_form.answer` builds typed values and calls
+  `attention_answer.check`; it holds no validation of its own. The object it
+  sends is `attention.answer_object(checked)`, the same one the stored record
+  carries.
+- **The card is layout, not an overlay.** `layout.layout` carves `ask_height`
+  rows out of the body, so the transcript is shorter and nothing is drawn over
+  it; `layout.ask_area` is the rows above the input frame, and
+  `render.render_ask_card` paints before any overlay. The height is at most
+  half the screen less three rows, and below three rows the card is not drawn.
+- **One control request, shared.** `ask_control.service` runs from
+  `session_control.service_activity` (so the tick chain does not grow) and starts
+  a read only when `control_request` is empty and no overlay owns it. A failed
+  job reaches `ask_control.failed` through `finish_control_failure` when
+  `Board.phase` is `Reading` or `Sending`; a failed read rests ten seconds
+  and says nothing, a failed send is worded on the card. A send that finds the
+  request busy keeps the draft.
+- **An observer sees no controls.** `may_answer` in the `attention.read` reply
+  sets `Form.standing`; an `ObserverOnly` form draws no Send row and no key
+  hint, and `ask_board.focus_card` skips it.
+
+`session_view/composer.transcript_text` recognises the answer prompt
+(`attention_answer.is_prompt`) and shows it whole; without that it counts as a
+large paste and folds to one clipped row. `transcript_lines.tool_call_summary`
+words the `ask` call as `ask · N questions: <first prompt>`.
+
 ## Session directory access
 
 `/add-dir PATH` adds read access; `/add-write-dir PATH` (also `/add-dir --write PATH`) adds read and write
