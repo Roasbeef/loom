@@ -2202,6 +2202,14 @@ const ask_prompt = "ask me first about the inbox"
 
 const ask_marker = "ask-answer-received"
 
+// The answer lines as the daemon words them and as they sit in a JSON body or
+// a stored entry: each question numbered, its answer under it, indented three
+// spaces, the line breaks and quotes escaped. The tool call in the history names
+// "Fold under open" too, so the label alone would prove nothing.
+const ask_answer_choice = "1. Fold or separate?\\n   \\\"Fold under open\\\""
+
+const ask_answer_confirm = "2. Keep the independent parts?\\n   Yes"
+
 pub fn an_ask_is_answered_from_the_keyboard_test_() -> EunitTest {
   Timeout(90 / gleeunit_timeout_scale, ask_drive)
 }
@@ -2214,14 +2222,13 @@ fn ask_drive() -> Nil {
     <> int.to_string(ffi_os.unique_positive_integer())
   let assert Ok(Nil) = simplifile.create_directory_all(test_root <> "/work")
     as "the ask fixture owns its workspace"
-  let requests = process.new_subject()
   let base = settings_at(test_root)
   let settings =
     serve.Settings(
       ..base,
       gateway: catalog.gateway(
         scripted_catalog(),
-        transport: ask_transport(requests),
+        transport: ask_transport(),
         secrets: secret.from_list([#("ACME_KEY", "tui-e2e-key")]),
         clock: clock.fixed(at: 0),
       ),
@@ -2255,7 +2262,8 @@ fn ask_drive() -> Nil {
 
   // The answer is a user message in the transcript, worded for the person.
   assert string.contains(persisted, "Answer to your ask ask-")
-  assert string.contains(persisted, "Fold under open")
+  assert string.contains(persisted, ask_answer_choice)
+  assert string.contains(persisted, ask_answer_confirm)
   assert simplifile.delete(test_root) == Ok(Nil)
 }
 
@@ -2331,14 +2339,16 @@ fn ask_turns(driver) -> Result(Nil, String) {
 
 // The first request makes the model call `ask`; the request after the answer
 // is answered with the marker only when it carries the readable answer.
-fn ask_transport(requests: process.Subject(String)) -> http.Transport {
+fn ask_transport() -> http.Transport {
   provider_test.transport(fn(request, events) {
-    process.send(requests, request.body)
     let response = case
       string.contains(request.body, "Answer to your ask ask-")
     {
       True ->
-        case string.contains(request.body, "Fold under open") {
+        case
+          string.contains(request.body, ask_answer_choice)
+          && string.contains(request.body, ask_answer_confirm)
+        {
           True -> sse_transcript(ask_marker)
           False -> sse_transcript("ask-answer-unreadable")
         }
