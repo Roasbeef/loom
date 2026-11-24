@@ -14,7 +14,7 @@ and reaches the page), **PARTIAL** (some of it exists, or it exists but does not
    See Q3.
 2. **The home page and the sidebar already group sessions by "what needs you"** (Needs you / Working / Idle /
    Saved) from a polled `sessions.activity` read. But the page keeps only a four-word state and throws away
-   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:7639-6558`).
+   the row's `last_message`, `glances`, `approvals` count and `model` (`client/daemon/server.gleam:7749-6558`).
 3. **Project mode is already a coordinator.** One router session, worker sessions per ticket, a ledger, a
    board whose stages are literally "who acts next" (`person/answer`, `person/review`, `person/blocked`,
    `person/failed`), a worker question with an answer box, and GitHub PR creation and polling. The web home
@@ -227,7 +227,7 @@ Legend for each row: **Origin** (package/module); **Durable?** store vs transien
   question{seq,text,options}, pull_request, failure, actions[CanAnswer|CanClose|CanRetry|CanPublish|CanStop]`
   (`session_view/project_board.gleam:107-189`). Board also carries `would` (what `observe` rules would have done), `rules`
   with verdicts, and source `notes` such as a rate-limit end time (`project_board.gleam:273-299`).
-- Gaps: `options` is decoded but the daemon writes `"options": []` always (`client/daemon/project_host.gleam:4296-4307`),
+- Gaps: `options` is decoded but the daemon writes `"options": []` always (`client/daemon/project_host.gleam:4630-4307`),
   and the worker tool has no options or recommendation field. Durable: yes (ledger). Not wired: `token_ceiling`
   has no consumer (`project-mode.md` "Known gaps"). Status: #1164 merged on 2026-11-02 (the handoff's "draft" heading was stale and is corrected in `docs/next.md`, "Project mode");
   "never run" lists publishing against real GitHub.
