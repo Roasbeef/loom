@@ -80,8 +80,8 @@ model scripted by `scripts/web_seed` (the harness commit on
   to the stream row.
 - h: a stuck delegate's thread retries.
 - i: a project ticket at `person/answer` has a thread with Answer, Close and
-  Stop. `person/check` is not reachable with the fake model. Retry shows only
-  for a ticket with no session.
+  Stop. A second drive reached `person/check` (now drawn raw) and pressed Retry
+  on a ticket whose worker was stopped, which started a new worker.
 - j: ask and notice work from a `code_mode` program.
 - k: a restart keeps a pending approval counted.
 - l: the phone viewport shows the inbox and the live sheet.

@@ -34,7 +34,13 @@
 #    Queue and Steer) and "code mode ask" (ask and notice from a program).
 #    `control.py ... raw projects.create` on "$DIR/project-ws" and then
 #    `projects.post` gives a ticket at person/answer: the router accepts the
-#    first candidate and the worker asks a question.
+#    first candidate and the worker asks a question. A post whose text holds
+#    "commit then wait" makes the worker commit a file and report waiting; the
+#    project's check (always failing, see [project] below) rejects the head,
+#    the worker is told and reports waiting again, and the ticket is then at
+#    person/check. Stopping a worker's session (`control.py PORT STATE stop
+#    SESSION`, which sends `sessions.stop`) leaves its ticket with no session,
+#    which is when the daemon offers Retry.
 #
 # The scripted endpoint answers by role and by what the last message says;
 # see fake_anthropic.py.
@@ -121,6 +127,11 @@ max_output_tokens = 2000
 
 [tools]
 network = "off"
+
+# A check that always fails, so a project worker that commits and then waits
+# leaves its ticket at person/check once the worker has reported again.
+[project]
+check = "echo 'check: 2 tests failed'; exit 1"
 
 [roles]
 main = ["fake-main"]
