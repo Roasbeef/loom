@@ -134,12 +134,21 @@ fn reminded(
   }
 }
 
-/// The text of every user block in the request, which is where an answer to an
+/// The text of every user block a person wrote, which is where an answer to an
 /// ask the record still calls open can be found.
+///
+/// A message from a peer session, another strand or a trigger is skipped, since
+/// anyone who can send one can choose its text, and a text that began with the
+/// answer's line would otherwise remove the reminder. The answer itself reaches
+/// the strand as the owner's message, with a human origin or none.
 fn user_texts(messages: List(AgentMessage)) -> List(String) {
   list.flat_map(messages, fn(item) {
     case item {
-      message.UserMessage(content:, ..) ->
+      message.UserMessage(origin: Some(message.PeerOrigin(..)), ..) -> []
+      message.UserMessage(origin: Some(message.StrandOrigin(..)), ..) -> []
+      message.UserMessage(origin: Some(message.TriggerOrigin(..)), ..) -> []
+      message.UserMessage(content:, origin: Some(message.Origin(..)), ..)
+      | message.UserMessage(content:, origin: None, ..) ->
         list.filter_map(content, fn(block) {
           case block {
             message.UserText(text:, ..) -> Ok(text)

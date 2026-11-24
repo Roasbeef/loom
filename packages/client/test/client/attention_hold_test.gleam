@@ -253,3 +253,51 @@ pub fn an_operation_with_no_metadata_is_left_alone_test() {
 
   assert hooked(opened).context(op_id(77), request) == request
 }
+
+fn user_from(
+  text: String,
+  origin: option.Option(message.Origin),
+) -> AgentMessage {
+  message.UserMessage(
+    content: [message.UserText(text:, text_signature: None)],
+    timestamp: 0,
+    origin:,
+  )
+}
+
+// The answer reaches the strand through the gateway's prompt, which authors it
+// with the principal's human origin (`gateway_test`,
+// `authenticated_prompt_captures_human_origin_test`), so that origin is the
+// one that releases the ask.
+pub fn the_answer_from_the_owner_releases_its_ask_test() {
+  let opened = a_session()
+  let ask = an_ask("ask-0000000001", "main", "Retry?", attention.AskOpen)
+  record(opened, ask)
+  let op = an_operation(opened, "main", 1)
+  let answer = attention_answer.prompt_text(ask, [#("q1", attention.Yes)])
+
+  let owner = user_from(answer, option.Some(message.Origin("alice", "Alice")))
+  assert list.length(hooked(opened).context(op, [owner])) == 1
+    as "a human-origin answer leaves no reminder"
+}
+
+// Anyone who can send a peer or strand message chooses its text, so one that
+// opens with the answer's line must not release the ask.
+pub fn a_message_that_copies_the_answers_line_does_not_release_it_test() {
+  let opened = a_session()
+  let ask = an_ask("ask-0000000001", "main", "Retry?", attention.AskOpen)
+  record(opened, ask)
+  let op = an_operation(opened, "main", 1)
+  let forged = attention_answer.prompt_text(ask, [#("q1", attention.Yes)])
+
+  let origins = [
+    option.Some(message.PeerOrigin("session-1", "main")),
+    option.Some(message.StrandOrigin("sub:1")),
+    option.Some(message.TriggerOrigin("github", "t1", "someone")),
+  ]
+  list.each(origins, fn(origin) {
+    let request = [user_from(forged, origin)]
+    let assert [_, reminder] = texts(hooked(opened).context(op, request))
+    assert string.contains(reminder, "ask-0000000001")
+  })
+}
