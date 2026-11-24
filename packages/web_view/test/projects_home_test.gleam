@@ -956,10 +956,11 @@ pub fn every_handler_of_the_section_is_beneath_its_own_region_test() {
     list.filter(keys, string.starts_with(_, home.table_path <> "\t"))
 
   // The section is the inbox's, so its buttons are beneath the table region,
-  // which the owner's socket admits a click in, and a session's rows too.
+  // where the home's socket admits a click and the owner's a submit. A member's
+  // or observer's page holds no capability, so it draws no section and ignores
+  // the messages.
   assert ticket_keys != []
   assert list.any(ticket_keys, string.ends_with(_, "\nclick"))
-  assert home.projects_path == "0\t2\t0"
   assert home.table_path == "0\t2\t1"
 }
 
@@ -1183,25 +1184,10 @@ pub fn a_page_with_no_project_offers_to_make_one_test() {
   assert string.contains(html, "No project yet.")
 }
 
-// A read-only page and a page with no capability have no button.
-pub fn only_the_operating_owner_is_offered_the_button_test() {
-  let observing =
-    home.Start(
-      ..start_with(
-        Some(
-          projects_with(
-            process.new_subject(),
-            fn() { feed.Heard([]) },
-            fn(_, _) { feed.TicketGone },
-            fn(_, _, _, _) { feed.Recorded },
-          ),
-        ),
-      ),
-      ceiling: home.ObserverCeiling,
-    )
-
-  assert !string.contains(shown(opened(observing)), "New project")
-  assert !string.contains(drawn(opened(start_with(None))), "New project")
+// A page with no capability, which is every member's and observer's page, has no
+// button and draws no section.
+pub fn a_page_without_the_capability_has_no_button_test() {
+  assert !string.contains(shown(opened(start_with(None))), "New project")
 }
 
 // A press on a page with no capability opens nothing.
@@ -1339,4 +1325,79 @@ pub fn cancel_returns_to_the_list_test() {
 
   assert !string.contains(html, "Choose the folder it is for.")
   assert string.contains(html, "Projects")
+}
+
+// A folder that already has a project says so and stores nothing. The page goes
+// back to the choice with the daemon's id and does not call the project made.
+pub fn a_folder_that_has_a_project_is_not_called_created_test() {
+  let asked = process.new_subject()
+  let html =
+    making(asked, feed.Proposed(proposal_body()), feed.Existing("p-old"))
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectFolderChosen("/src/loom"))
+    |> run(home.ProjectConfirmed("make check", ""))
+    |> drawn
+
+  assert string.contains(html, "That folder already has a project, p-old.")
+  assert !string.contains(html, "Project created")
+}
+
+// An owner who cancels while the daemon is making the project still gets the
+// project listed: the settled answer reads the boards again on whatever page the
+// owner is on.
+pub fn a_creation_settled_after_cancel_still_reads_the_boards_test() {
+  let asked = process.new_subject()
+  let reads = process.new_subject()
+  let projects =
+    home.Projects(
+      ..projects_with(
+        asked_unused(),
+        fn() { feed.Heard([]) },
+        fn(_, _) { feed.TicketGone },
+        fn(_, _, _, _) { feed.Recorded },
+      ),
+      boards: fn(deliver) {
+        process.send(reads, Nil)
+        deliver(feed.Heard([]))
+      },
+      propose: fn(_, deliver) { deliver(feed.Proposed(proposal_body())) },
+      create: fn(_, _, _, _) { Nil },
+    )
+  let _ = asked
+  let model =
+    opened(start_with(Some(projects)))
+    |> run(home.ProjectCreationOpened)
+    |> run(home.ProjectFolderChosen("/src/loom"))
+    |> run(home.ProjectConfirmed("make check", ""))
+    |> run(home.ProjectCreationClosed)
+  let _ = drain_reads(reads)
+
+  let _ =
+    run(
+      model,
+      home.ProjectCreateSettled("/src/loom", feed.Made("p", feed.SettingsHeld)),
+    )
+  assert list.length(drain_reads(reads)) == 1
+}
+
+fn asked_unused() -> Subject(Asked) {
+  process.new_subject()
+}
+
+fn drain_reads(reads: Subject(Nil)) -> List(Nil) {
+  case process.receive(reads, 0) {
+    Ok(next) -> [next, ..drain_reads(reads)]
+    Error(Nil) -> []
+  }
+}
+
+// The Projects folder draws each waiting ticket once: in the section, and not
+// again as a band of threads.
+pub fn the_projects_folder_draws_a_waiting_ticket_once_test() {
+  let html = shown(opened(serving(mixed()).0))
+  let title = "newer question"
+
+  assert at(html, title) < string.byte_size(html)
+  let assert Ok(#(_, after_first)) = string.split_once(html, title)
+  assert !string.contains(after_first, title)
 }

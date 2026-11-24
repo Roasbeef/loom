@@ -14,6 +14,7 @@ import client/daemon/project_start
 import client/daemon/protocol
 import client/daemon/ui_projects
 import client/internal/ffi_os
+import client/project_overrides
 import core/json
 import gleam/erlang/process
 import gleam/int
@@ -396,4 +397,100 @@ pub fn a_settings_write_naming_a_key_twice_is_malformed_test() {
   let once =
     "{\"v\":2,\"id\":5,\"cmd\":\"projects.set_settings\",\"body\":{\"project\":\"p1\",\"revision\":0,\"changes\":[{\"key\":\"check\",\"value\":[\"a\"]},{\"key\":\"setup\",\"value\":null}]}}"
   let assert Ok(_) = protocol.decode(once)
+}
+
+// The daemon half of making a project from the page: the feed makes the project
+// through the control, then stores the confirmed commands through the file's own
+// rules. A control that makes the project this actor already is, for a folder.
+fn creating(handle: project_host.Handle) -> project_start.Control {
+  let assert Ok(book) = project_book.start() as "the table starts"
+  project_book.put(book, handle)
+  project_start.Control(
+    book:,
+    create: fn(workspace, _) {
+      Ok(project_start.Created(
+        project: "p-made",
+        workspace:,
+        router_session: "router-1",
+      ))
+    },
+    judge: fn(_) { Error("not used") },
+  )
+}
+
+// The same, with the made project's actor in the table under its own id.
+fn creating_for_a_new_folder(
+  handle: project_host.Handle,
+) -> project_start.Control {
+  let assert Ok(book) = project_book.start() as "the table starts"
+  project_book.put(book, project_host.Handle(..handle, project: "p-made"))
+  project_start.Control(
+    book:,
+    create: fn(workspace, _) {
+      Ok(project_start.Created(
+        project: "p-made",
+        workspace:,
+        router_session: "router-1",
+      ))
+    },
+    judge: fn(_) { Error("not used") },
+  )
+}
+
+fn held_check(handle: project_host.Handle) -> List(String) {
+  let assert Ok(view) = project_host.settings(handle)
+  let assert Ok(entry) =
+    list.find(view.entries, fn(each) { each.key == project_overrides.CheckKey })
+  entry.values
+}
+
+pub fn making_a_project_stores_the_confirmed_commands_through_the_files_rules_test() {
+  let handle = start("make-stores")
+  let assert Some(feed) =
+    ui_projects.feed(Some(creating_for_a_new_folder(handle)))
+  let assert Ok(before) = project_host.settings(handle)
+
+  // A blank pair stores nothing: the revision does not move.
+  assert feed.create("/work/new", None, None)
+    == page_projects.Made("p-made", page_projects.SettingsHeld)
+  let assert Ok(unchanged) = project_host.settings(handle)
+  assert unchanged.revision == before.revision
+
+  // A valid check is stored and in force.
+  assert feed.create("/work/new", Some("make check"), None)
+    == page_projects.Made("p-made", page_projects.SettingsHeld)
+  assert held_check(handle) == ["make check"]
+  stop(handle)
+}
+
+pub fn a_refused_command_leaves_the_project_made_and_nothing_stored_test() {
+  let handle = start("make-refused")
+  let assert Some(feed) =
+    ui_projects.feed(Some(creating_for_a_new_folder(handle)))
+  let assert Ok(before) = project_host.settings(handle)
+  let too_long = string.repeat("x", 4097)
+
+  // The check is refused by the file's rule, so the valid setup beside it is not
+  // stored either: the write is checked whole before anything is written.
+  let assert page_projects.Made("p-made", page_projects.SettingsRefused(_)) =
+    feed.create("/work/new", Some(too_long), Some("make deps"))
+  let assert Ok(after) = project_host.settings(handle)
+  assert after.revision == before.revision
+  assert held_check(handle) == []
+  stop(handle)
+}
+
+pub fn a_folder_that_has_a_project_keeps_its_settings_test() {
+  let handle = start("make-existing")
+
+  // The actor's workspace is the folder, so the folder already has a project.
+  let assert Some(feed) = ui_projects.feed(Some(creating(handle)))
+  let assert Ok(before) = project_host.settings(handle)
+
+  assert feed.create("/work/repo", Some("make check"), Some("make deps"))
+    == page_projects.Existing("p1")
+  let assert Ok(after) = project_host.settings(handle)
+  assert after.revision == before.revision
+  assert held_check(handle) == []
+  stop(handle)
 }

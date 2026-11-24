@@ -136,8 +136,7 @@ pub fn workspace(creation: Creation) -> Option(String) {
   }
 }
 
-/// A folder was chosen. Only a step that is choosing, or confirming a proposal,
-/// takes a choice, so a late press during a read or a creation changes nothing.
+/// A folder was chosen. Only a step that is choosing takes a choice, so a late press during a read or a creation changes nothing.
 /// An empty choice is no choice.
 ///
 /// ## Examples
@@ -149,9 +148,8 @@ pub fn workspace(creation: Creation) -> Option(String) {
 pub fn chose(creation: Creation, workspace: String) -> Creation {
   case creation.step, string.trim(workspace) {
     _, "" -> creation
-    Choosing(_), chosen | Reviewing(..), chosen ->
-      Creation(Reading(workspace: chosen))
-    Reading(_), _ | Creating(..), _ | Done(..), _ -> creation
+    Choosing(_), chosen -> Creation(Reading(workspace: chosen))
+    Reading(_), _ | Reviewing(..), _ | Creating(..), _ | Done(..), _ -> creation
   }
 }
 
@@ -284,6 +282,14 @@ pub fn settled(
           Creation(Done(project:, workspace:, unsettled: None))
         projects.Made(project:, settled: projects.SettingsRefused(words:)) ->
           Creation(Done(project:, workspace:, unsettled: Some(words)))
+        projects.Existing(project:) ->
+          Creation(
+            Choosing(Some(
+              "That folder already has a project, "
+              <> project
+              <> ". Its settings were not changed.",
+            )),
+          )
         projects.NotMade(reason:) ->
           again(
             workspace,

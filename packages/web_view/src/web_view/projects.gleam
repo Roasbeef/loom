@@ -142,6 +142,13 @@ pub type Creation {
     settled: Settled,
   )
 
+  /// The folder already has a project. Nothing was made and nothing was
+  /// written to it, so the settings the owner confirmed were not stored.
+  Existing(
+    /// The project's id.
+    project: String,
+  )
+
   /// The folder was refused before anything was made.
   NotMade(
     /// Why, in the fixed vocabulary of `creations`.

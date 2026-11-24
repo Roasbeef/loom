@@ -366,18 +366,18 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
   }
 
   html.div([attribute.class("inbox-list")], [
+    // In the Projects folder the section is the head of the list: it lists each
+    // project and the tickets that wait in it, so the tickets are not drawn a
+    // second time as a band, and the empty sentence is its own.
     case offer.folder, offer.projects {
-      inbox_rule.Projecting, Some(_) -> element.none()
+      inbox_rule.Projecting, Some(section) -> section
       _, _ -> nothing_waits(offer)
     },
     case offer.folder, offer.projects {
-      inbox_rule.Projecting, Some(section) -> section
-      _, _ -> element.none()
-    },
-    case offer.folder {
-      inbox_rule.Projecting ->
+      inbox_rule.Projecting, Some(_) -> element.none()
+      inbox_rule.Projecting, None ->
         projects_group(list.append(attention.tickets, attention.reviews))
-      _ ->
+      _, _ ->
         draw(
           NeedsPart,
           inbox_rule.NeedsYou,

@@ -377,14 +377,6 @@ pub const sidebar_path = "0\t1"
 /// session.
 pub const table_path = "0\t2\t1"
 
-/// The Lustre event path of the Projects section on the owner's home
-/// (protocol-change/106, the addendum on the web view): the centre's first
-/// child, above the body at `table_path`. Every handler beneath it is one
-/// ticket's button, which opens that ticket's page. The home's socket admits a
-/// click beneath it for the owner's operating page only, and
-/// `home_test` and `projects_home_test` fail if the view moves the region.
-pub const projects_path = "0\t2\t0"
-
 /// The Lustre event path of the sign-ins region on the home page, which is the
 /// account panel the person's name in the bar opens: the centre
 /// column's third child, after the sessions. Every handler beneath it is one of
@@ -3428,10 +3420,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               )),
             ),
           )
-        Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
-          model,
-          effect.none(),
-        )
+        Ticketed(_) | NewSession | SessionList | Relayed(_) ->
+          // The owner left the page while the daemon worked, and a project it
+          // made is still to be listed, so the boards are read all the same.
+          case made {
+            feed.Made(..) -> reading_boards(model)
+            feed.Existing(_) | feed.NotMade(_) | feed.MakeFailed(_) -> #(
+              model,
+              effect.none(),
+            )
+          }
       }
 
     ProjectCreationClosed ->
@@ -5902,24 +5900,13 @@ fn centre_head(model: Model) -> Element(Msg) {
 /// can press it.
 fn projects_offer(model: Model) -> projects_view.Offer(Msg) {
   case model.start.projects, model.start.ceiling {
-    Some(_), OperatorCeiling ->
+    Some(_), _ ->
       projects_view.Shown(
         projects: model.boards,
         now: model.now,
         open: OpeningTicket,
         create: Some(ProjectCreationOpened),
       )
-    Some(_), ObserverCeiling ->
-      case model.boards {
-        [_, ..] ->
-          projects_view.Shown(
-            projects: model.boards,
-            now: model.now,
-            open: OpeningTicket,
-            create: None,
-          )
-        [] -> projects_view.Hidden
-      }
     None, _ -> projects_view.Hidden
   }
 }
@@ -7564,7 +7551,6 @@ fn centre_pane(model: Model) -> Element(Msg) {
         creation:,
         folders: project_folder_choices(model),
         chose: ProjectFolderChosen,
-        typed: ProjectFolderChosen,
         confirm: ProjectConfirmed,
         back: ProjectCreationClosed,
       ))

@@ -1206,10 +1206,11 @@ pub fn upgrade_home(
 
   // The owner's projects (protocol-change/106, the addendum on the web view) are
   // read and answered in tasks of the page's own, as the other orchestrators
-  // are. The section's buttons are clicks beneath `home.projects_path` and the
-  // answer form is a submit beneath `home.table_path`, both of which only the
-  // owner's socket admits (`home_event`), so the capability is what makes the
-  // section exist and `projects_for` is what decides each read and answer.
+  // are. The section is the head of the inbox list, beneath `home.table_path`,
+  // so its buttons are clicks and its forms are submits that region already
+  // admits (`home_event`) and no admission is added. The capability is what makes
+  // the section exist and each message the component ignores without it, and
+  // `projects_for` and its siblings are what decide each read and answer.
   let projecting =
     option.then(attachment.projects, fn(feed) {
       home_projects_capability(
@@ -3127,11 +3128,8 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
 
       // This branch resolves name rights before the operation continues.
       decode.success(case name, rights {
-        "click", Administering ->
-          home_row_path(path)
-          || owner_projects_path(path)
-          || path == home.admin_path
-        "click", Submitting -> home_row_path(path) || owner_projects_path(path)
+        "click", Administering -> home_row_path(path) || path == home.admin_path
+        "click", Submitting -> home_row_path(path)
         "click", Browsing -> home_row_path(path)
         "submit", Submitting | "submit", Administering ->
           string.starts_with(path, home.table_path <> "\t") || named_path(path)
@@ -3162,14 +3160,6 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
 // and nowhere else outside the owner's table forms.
 fn named_path(path: String) -> Bool {
   string.starts_with(path, home.signins_path <> "\t")
-}
-
-// A ticket's button is beneath the Projects section (protocol-change/106, the
-// addendum on the web view). Only the owner's socket admits it, so `Browsing`
-// never reaches this function, and the region's own path is not a button, so the
-// prefix includes the separator.
-fn owner_projects_path(path: String) -> Bool {
-  string.starts_with(path, home.projects_path <> "\t")
 }
 
 // A row's button is beneath the table's section or the sidebar's column. The

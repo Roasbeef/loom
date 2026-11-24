@@ -48,10 +48,9 @@ pub type Offer(message) {
     /// owner's recent folders and the folders of the sessions it lists, without
     /// those that already hold a project.
     folders: List(String),
-    /// The message a folder's button sends, given the folder.
+    /// The message a folder's button and the field for another folder send,
+    /// given the folder.
     chose: fn(String) -> message,
-    /// The message the field for another folder sends, given the typed path.
-    typed: fn(String) -> message,
     /// The message the Create form sends, given the check and the setup.
     confirm: fn(String, String) -> message,
     /// The message that closes the page.
@@ -188,7 +187,7 @@ fn typed_form(offer: Offer(message)) -> Element(message) {
   html.form(
     [
       attribute.class("place-composer"),
-      event.on("submit", one_field("folder", offer.typed))
+      event.on("submit", one_field("folder", offer.chose))
         |> event.prevent_default,
     ],
     [

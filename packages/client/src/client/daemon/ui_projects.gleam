@@ -270,29 +270,45 @@ fn proposal_for(workspace: String) -> projects.Proposal {
   |> projects.Proposed
 }
 
-/// The project for a folder, and then the settings the owner confirmed. The
-/// two are separate writes, as they are for `loom project init`, so the project
-/// is reported as made when its settings were refused, with the daemon's words.
-/// The name is the folder's, which is what the catalogue lists the project by.
+/// The project for a folder, and then the settings the owner confirmed. A folder
+/// that already has a running project is reported as it is, with nothing made
+/// and nothing written, because the commands the owner confirmed were proposed
+/// for a new project and must not replace the ones a project already holds.
+/// Otherwise the two are separate writes, as they are for `loom project init`,
+/// so the project is reported as made when its settings were refused, with the
+/// daemon's words. The name is the folder's, which is what the catalogue lists
+/// the project by.
 fn made(
   control: project_start.Control,
   workspace: String,
   check: Option(String),
   setup: Option(String),
 ) -> projects.Creation {
-  case control.create(workspace, creations.folder(workspace)) {
-    Error(words) -> projects.MakeFailed(words)
-    Ok(created) ->
-      projects.Made(
-        project: created.project,
-        settled: settled(control, created.project, check, setup),
-      )
+  let held =
+    list.find(project_book.all(control.book), fn(handle) {
+      handle.workspace == workspace
+    })
+
+  // A running project for the folder is reported and left alone; any other
+  // folder is made, and only then are its confirmed commands stored.
+  case held {
+    Ok(handle) -> projects.Existing(handle.project)
+    Error(Nil) ->
+      // The control makes the project, or refuses in its own words.
+      case control.create(workspace, creations.folder(workspace)) {
+        Error(words) -> projects.MakeFailed(words)
+        Ok(created) ->
+          projects.Made(
+            project: created.project,
+            settled: settled(control, created.project, check, setup),
+          )
+      }
   }
 }
 
 /// Stores the confirmed commands for a project that now exists. Nothing
-/// confirmed stores nothing. The revision is the one read just now, because the
-/// project has had no writer but this request.
+/// confirmed stores nothing. The revision is the one read just now, and a write
+/// that finds it moved is refused as stale and reported in words.
 fn settled(
   control: project_start.Control,
   project: String,
