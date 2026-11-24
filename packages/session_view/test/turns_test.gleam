@@ -493,6 +493,63 @@ pub fn the_failure_line_is_bounded_and_may_have_no_result_test() {
   assert string.contains(words, "make check")
 }
 
+// A foreground program has no result rows under its summary, because its
+// failure block is the summary, so the divider reads what the card says went
+// wrong. Before, the line was the call's words alone (`code_mode proc.run`).
+pub fn a_failed_program_names_what_its_card_said_test() {
+  let program = "pub fn main() { proc.run(proc.command([\"make\"])) }"
+  let failing = fn(details, text) {
+    pieces_of(
+      [
+        item(1, 10_000, said("run it", None)),
+        item(
+          2,
+          11_000,
+          assistant([
+            call(
+              "c1",
+              "code_mode",
+              json.Object([#("program", json.String(program))]),
+            ),
+          ]),
+        ),
+        item(
+          3,
+          12_000,
+          message.ToolResultMessage(
+            "c1",
+            "code_mode",
+            [message.ToolResultText(text, None)],
+            details,
+            None,
+            None,
+            True,
+            12_000,
+          ),
+        ),
+      ],
+      [],
+    )
+  }
+
+  let compile =
+    json.Object([
+      #("status", json.String("compile_failed")),
+      #("detail", json.String("error: Syntax error\n  at loom_program:7")),
+    ])
+  let assert [_, turns.Work(worked:, ..)] =
+    failing(Some(compile), "the program did not compile")
+  let assert Some(line) = worked.last_failure
+  assert string.contains(line, "code_mode")
+  assert string.ends_with(line, " · error: Syntax error")
+
+  // A result with no text at all still says its status.
+  let bare = json.Object([#("status", json.String("run_failed"))])
+  let assert [_, turns.Work(worked: empty, ..)] = failing(Some(bare), "")
+  let assert Some(line) = empty.last_failure
+  assert string.contains(line, " · ")
+}
+
 pub fn a_running_turn_is_drawn_open_test() {
   // The strand is still working on the first turn: no later input yet.
   let laid = pieces_of(list.take(items(), 7), [#("main", "op-1")])

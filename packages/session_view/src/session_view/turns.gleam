@@ -2271,8 +2271,8 @@ fn worked(turn: Turn) -> Worked {
     |> list.reverse
     |> list.find_map(fn(item) {
       case item {
-        Doing(item: Step(standing: Failed, words:, detail:, ..), ..) ->
-          Ok(failure_line(words, detail))
+        Doing(item: Step(standing: Failed, words:, detail:, program:, ..), ..) ->
+          Ok(failure_line(words, detail, program))
         Doing(..) | Answer(..) | Input(..) | Outside(..) -> Error(Nil)
       }
     })
@@ -2293,16 +2293,18 @@ fn worked(turn: Turn) -> Worked {
 const failure_limit = 200
 
 /// A failed call as one line: its words, then the first line of its result
-/// that says something, joined by a dot. A call whose result is empty is its
-/// words alone.
-fn failure_line(words: step_words.Words, detail: List(Line)) -> String {
+/// that says something, joined by a dot. A foreground `code_mode` call has no
+/// result rows under its summary, since its failure block is the summary
+/// itself, so its card's failure text is read instead. A call that said
+/// nothing in either place is its words alone.
+fn failure_line(
+  words: step_words.Words,
+  detail: List(Line),
+  program: Option(ProgramCard),
+) -> String {
   let said =
-    list.find_map(detail, fn(line) {
-      case string.trim(line.text) {
-        "" -> Error(Nil)
-        text -> Ok(text)
-      }
-    })
+    list.find_map(detail, fn(line) { first_said(line.text) })
+    |> result.lazy_or(fn() { program_said(program) })
 
   // A result with nothing to say leaves the call's words alone.
   let line = case said {
@@ -2311,6 +2313,32 @@ fn failure_line(words: step_words.Words, detail: List(Line)) -> String {
   }
 
   string.slice(line, 0, failure_limit)
+}
+
+/// The first line of a text that says something, trimmed.
+fn first_said(text: String) -> Result(String, Nil) {
+  text
+  |> string.split("\n")
+  |> list.find_map(fn(line) {
+    case string.trim(line) {
+      "" -> Error(Nil)
+      said -> Ok(said)
+    }
+  })
+}
+
+/// What a failed program's card says went wrong: the first line of its error
+/// text, or its status word when the result carried no text.
+fn program_said(program: Option(ProgramCard)) -> Result(String, Nil) {
+  case program {
+    Some(card) ->
+      case card.failure {
+        Some(failure) -> first_said(failure.text)
+        None -> Error(Nil)
+      }
+      |> result.lazy_or(fn() { first_said(card.status_word) })
+    None -> Error(Nil)
+  }
 }
 
 /// Whether a response of the turn was aborted: its rows lead with the words an

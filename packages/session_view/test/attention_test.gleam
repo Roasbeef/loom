@@ -205,11 +205,138 @@ pub fn a_refused_spawn_is_a_failed_turn_and_a_running_one_is_not_test() {
     == []
 }
 
-pub fn a_sub_agent_result_says_only_its_outcome_test() {
+// The outcome is one word every finished child shares, so the row carries the
+// first line of what the child reported after it. A child that reported
+// nothing keeps the word alone.
+pub fn a_sub_agent_result_carries_the_first_line_of_its_report_test() {
   let assert [row] = attention.lift([returned("r1")], [])
   assert row.kind == attention.SubagentResult("sub:tests")
-  assert row.head == "passed"
+  assert row.head == "passed · report"
   assert row.hold == attention.FoldsOnceOpened
+
+  let said = fn(report) {
+    turns.Returned("r2", "sub:tests", "completed", report, turns.Primary)
+  }
+  let assert [long] =
+    attention.lift([said("\n  \nFound 3 bugs in the lane.\nSecond line.")], [])
+  assert long.head == "completed · Found 3 bugs in the lane."
+
+  let assert [bare] = attention.lift([said(" \n ")], [])
+  assert bare.head == "completed"
+}
+
+fn failure(key: String, text: String) -> turns.Piece {
+  plain(key, transcript_line.Failure, text)
+}
+
+// Retries of one provider error lift as one row under the first response's
+// key, and the head says how many there were.
+pub fn repeated_failed_responses_lift_as_one_row_test() {
+  let same = "provider stream error (overloaded_error): try later"
+  let rows =
+    attention.lift(
+      [failure("a", same), failure("b", same), failure("c", same)],
+      [],
+    )
+  let assert [row] = rows
+  assert row.key == "a"
+  assert row.kind == attention.FailedTurn
+  assert row.head == same <> " · 3 times"
+}
+
+// A different failure, or another row between two failures, starts a new row.
+pub fn a_different_failure_or_another_row_between_keeps_rows_apart_test() {
+  let rows =
+    attention.lift(
+      [
+        failure("a", "stream error one"),
+        failure("b", "stream error one"),
+        failure("c", "stream error two"),
+        peer("p"),
+        failure("d", "stream error two"),
+      ],
+      [],
+    )
+  assert list.map(rows, fn(row) { row.key }) == ["d", "p", "c", "a"]
+  assert list.map(rows, fn(row) { row.head })
+    == [
+      "stream error two",
+      "messaged this session",
+      "stream error two",
+      "stream error one · 2 times",
+    ]
+}
+
+// Two failures that agree up to the cut are still two failures.
+pub fn failures_that_differ_after_the_cut_are_not_merged_test() {
+  let prefix = string.repeat("x", 200)
+  let rows =
+    attention.lift(
+      [failure("a", prefix <> " one"), failure("b", prefix <> " two")],
+      [],
+    )
+  assert list.length(rows) == 2
+}
+
+// A long failure is cut to leave room for the count.
+pub fn a_long_repeated_failure_keeps_the_count_test() {
+  let long = string.repeat("provider said no ", 20)
+  let assert [row] =
+    attention.lift([failure("a", long), failure("b", long)], [])
+  assert string.ends_with(row.head, " · 2 times")
+  assert string.length(row.head) <= attention.head_limit
+}
+
+fn failure_texts(index: Int, kind: Int) -> turns.Piece {
+  let key = "f" <> int.to_string(index)
+  case kind % 4 {
+    3 -> peer(key)
+    n -> failure(key, "failure " <> int.to_string(n))
+  }
+}
+
+// Collapsing never drops a distinct failure and never moves a key: the rows
+// are the maximal runs of equal adjacent failures, each under its first key,
+// and adding a later piece changes no earlier row's key.
+pub fn collapsing_keeps_every_run_and_never_moves_a_key_test() {
+  let config =
+    qcheck.default_config()
+    |> qcheck.with_test_count(300)
+    |> qcheck.with_seed(qcheck.seed(sweep_seed))
+  let generator =
+    qcheck.generic_list(
+      elements_from: qcheck.bounded_int(from: 0, to: 7),
+      length_from: qcheck.bounded_int(0, 14),
+    )
+
+  qcheck.run(config, generator, fn(kinds) {
+    let pieces =
+      list.index_map(kinds, fn(kind, index) { failure_texts(index, kind) })
+    let oldest_first = fn(pieces) {
+      attention.lift(pieces, [])
+      |> list.reverse
+      |> list.map(fn(row) { row.key })
+    }
+
+    // The expected keys are each run's first piece, in order.
+    let runs =
+      list.index_map(kinds, fn(kind, index) { #(kind % 4, index) })
+      |> list.fold([], fn(runs, entry) {
+        case runs, entry {
+          [#(before, _), ..], #(now, _) if before == now && now != 3 -> runs
+          _, _ -> [entry, ..runs]
+        }
+      })
+      |> list.reverse
+    let expected = list.map(runs, fn(run) { "f" <> int.to_string(run.1) })
+    assert oldest_first(pieces) == expected
+
+    // A later piece leaves every earlier key where it was.
+    let longer = list.append(pieces, [failure("later", "failure 0")])
+    let before = oldest_first(pieces)
+    let after = oldest_first(longer)
+    assert list.take(after, list.length(before)) == before
+  })
 }
 
 pub fn a_peer_message_claims_nothing_about_relevance_test() {

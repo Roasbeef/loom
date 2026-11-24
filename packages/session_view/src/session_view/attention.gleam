@@ -29,13 +29,28 @@
 //// failed count its divider carries, so the row exists while the fold is
 //// closed and its steps are not loaded, and it does not change identity as
 //// steps arrive. A row's `head` is one line of at most `head_limit`
-//// graphemes. Heads quote session text (a child's outcome, a refusal), so a
+//// graphemes. Heads quote session text (a child's report, a refusal), so a
 //// view must draw them as text nodes and never as markup. A head carries no
-//// identity: a child's result says only its outcome, and the head for a peer
-//// message says only that a message arrived. The daemon knows it stored the
+//// identity: a child's result says its outcome and the first line of what the
+//// child reported, and the head for a peer message says only that a message
+//// arrived. The daemon knows it stored the
 //// message, not that it is relevant or that anyone has answered it, and the
 //// rail must not claim either. The view names the source from the row's
 //// `kind`.
+////
+//// ## Quiet rows
+////
+//// A row earns its place by saying something the reader cannot get from the
+//// row above it. Three rules keep the rail from repeating itself. A child's
+//// result carries the first line of its report after the outcome word, since
+//// the outcome alone (`completed`) is the same for every child that finished.
+//// A failed call whose result said nothing on its own lines reads what its
+//// program card says went wrong (`turns.Worked.last_failure`). And failed
+//// responses that follow one another with the same failure, which is what
+//// retries of one provider error look like, lift as one row under the first
+//// response's key, with the count in the head (`provider stream error ... ·
+//// 6 times`). A different failure, or any other row between two failures,
+//// starts a new row.
 ////
 //// ## Order
 ////
@@ -163,6 +178,7 @@ pub fn lift_all(
   let insights =
     pieces
     |> list.flat_map(piece_rows)
+    |> collapse_repeats
     |> list.reverse
 
   list.flatten([pending, waiting, finds, insights])
@@ -287,15 +303,31 @@ fn approval_row(review: approval.Review) -> Result(Lifted, Nil) {
   }
 }
 
+/// A candidate insight row, with the whole text of the failure when the row is
+/// a failed response. Two failed responses are the same failure when that text
+/// is equal, which the row's head cannot tell once it is cut.
+type Candidate {
+  Candidate(row: Lifted, failure: option.Option(String))
+}
+
+/// A run of equal failed responses, or a single row of another kind, as the
+/// fold builds it. The row is the first of the run.
+type Run {
+  Run(row: Lifted, failure: option.Option(String), count: Int)
+}
+
 /// The insight rows of one lane piece, oldest first within it.
-fn piece_rows(piece: turns.Piece) -> List(Lifted) {
+fn piece_rows(piece: turns.Piece) -> List(Candidate) {
   // Each kind of piece lifts as its own kind of row, or not at all.
   case piece {
     turns.Plain(block:, ..) -> failed_response(block.key, block.rows)
 
     turns.Work(key:, worked:, items:, ..) ->
       list.append(
-        failed_steps(key, worked.failed, worked.last_failure),
+        list.map(
+          failed_steps(key, worked.failed, worked.last_failure),
+          plain_candidate,
+        ),
         list.flat_map(items, narrated_failure),
       )
 
@@ -309,16 +341,28 @@ fn piece_rows(piece: turns.Piece) -> List(Lifted) {
       }
 
       [
-        insight(key, FailedTurn, "Spawn of " <> named <> " failed · " <> why),
+        plain_candidate(insight(
+          key,
+          FailedTurn,
+          "Spawn of " <> named <> " failed · " <> why,
+        )),
       ]
     }
 
-    turns.Returned(key:, child:, outcome:, ..) -> [
-      insight(key, SubagentResult(child), outcome),
+    turns.Returned(key:, child:, outcome:, report:, ..) -> [
+      plain_candidate(insight(
+        key,
+        SubagentResult(child),
+        returned_head(outcome, report),
+      )),
     ]
 
     turns.Peer(key:, session:, strand:, ..) -> [
-      insight(key, PeerMessage(session, strand), "messaged this session"),
+      plain_candidate(insight(
+        key,
+        PeerMessage(session, strand),
+        "messaged this session",
+      )),
     ]
 
     // The remaining pieces are the owner's own words, the harness's
@@ -332,6 +376,66 @@ fn piece_rows(piece: turns.Piece) -> List(Lifted) {
     | turns.Trigger(..)
     | turns.Missed(..)
     | turns.Decided(..) -> []
+  }
+}
+
+/// A row that is never the same failure as another.
+fn plain_candidate(row: Lifted) -> Candidate {
+  Candidate(row:, failure: None)
+}
+
+/// A child's result as one line: the outcome word, then the first line of what
+/// the child reported. A child whose report is empty keeps the outcome alone,
+/// because that is all it said and an `aborted` child is worth seeing.
+fn returned_head(outcome: String, report: String) -> String {
+  let first =
+    report
+    |> string.split("\n")
+    |> list.map(string.trim)
+    |> list.find(fn(line) { line != "" })
+
+  // A report with a line of text adds it; one with none leaves the word.
+  case first {
+    Ok(line) -> outcome <> " · " <> line
+    Error(Nil) -> outcome
+  }
+}
+
+/// Merges failed responses that follow one another with the same failure into
+/// the first of them, with the count in its head. The rows arrive oldest first,
+/// so the first is the oldest and the key it carries does not change as
+/// retries add to the run. A row of any other kind ends the run, and a
+/// different failure starts another.
+fn collapse_repeats(candidates: List(Candidate)) -> List(Lifted) {
+  candidates
+  |> list.fold([], fn(runs: List(Run), candidate) {
+    case runs, candidate.failure {
+      [Run(failure: Some(before), ..) as run, ..earlier], Some(now)
+        if before == now
+      -> [Run(..run, count: run.count + 1), ..earlier]
+
+      _, failure -> [Run(candidate.row, failure, 1), ..runs]
+    }
+  })
+  |> list.reverse
+  |> list.map(run_row)
+}
+
+/// The row of one run: the first response's row for a run of one, and that row
+/// with the count after the failure's text for a longer run.
+fn run_row(run: Run) -> Lifted {
+  // Only a run of two or more failed responses has a count to say.
+  case run.count, run.failure {
+    1, _ | _, None -> run.row
+    n, Some(text) -> {
+      let count = " · " <> int.to_string(n) <> " times"
+
+      // The text is cut to leave room for the count, as `failed_steps` does.
+      Lifted(
+        ..run.row,
+        head: one_line_within(text, head_limit - string.length(count)) <> count,
+      )
+    }
   }
 }
 
@@ -376,7 +480,7 @@ fn failed_steps(
 }
 
 /// The failed response, if any, of one item folded under a turn's divider.
-fn narrated_failure(item: turns.Item) -> List(Lifted) {
+fn narrated_failure(item: turns.Item) -> List(Candidate) {
   // Only a narrated block can hold a failed response; steps are counted by
   // the divider and memory rows are not failures.
   case item {
@@ -385,17 +489,24 @@ fn narrated_failure(item: turns.Item) -> List(Lifted) {
   }
 }
 
-/// A failed response, once, from the first `Failure` row of its block.
+/// A failed response, once, from the first `Failure` row of its block. The
+/// candidate keeps the row's whole text, so that `collapse_repeats` can tell
+/// a repeat of the same failure from a different one.
 fn failed_response(
   key: String,
   rows: List(#(String, transcript_line.Line)),
-) -> List(Lifted) {
+) -> List(Candidate) {
   let failures =
     list.filter(rows, fn(row) { { row.1 }.speaker == transcript_line.Failure })
 
   // A block with several failure rows is still one failed response.
   case failures {
-    [#(_, line), ..] -> [insight(key, FailedTurn, line.text)]
+    [#(_, line), ..] -> [
+      Candidate(
+        row: insight(key, FailedTurn, line.text),
+        failure: Some(line.text),
+      ),
+    ]
     [] -> []
   }
 }
