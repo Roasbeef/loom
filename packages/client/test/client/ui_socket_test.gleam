@@ -2292,6 +2292,8 @@ pub fn the_admin_socket_admits_only_clicks_beneath_the_sidebar_test() {
 pub fn only_an_owners_operating_home_is_handed_the_projects_capability_test() {
   let projects =
     home.Projects(
+      propose: fn(_, _) { Nil },
+      create: fn(_, _, _, _) { Nil },
       boards: fn(_) { Nil },
       ticket: fn(_, _, _) { Nil },
       answer: fn(_, _, _, _, _) { Nil },
@@ -2309,19 +2311,6 @@ pub fn only_an_owners_operating_home_is_handed_the_projects_capability_test() {
     == None
   assert ui_socket.home_projects_capability(member, access.Observer, projects)
     == None
-}
-
-// A click on a ticket's button is admitted by the owner's socket and by no
-// other: a home that is not the owner's operating page drops it, alone or inside
-// a batch, and the same click anywhere outside the section is unaffected.
-pub fn only_an_owners_socket_admits_a_click_in_the_projects_section_test() {
-  let ticket = home.projects_path <> "\t0\t1\t0\t0\t0"
-  assert ui_socket.home_owner_accepts(click_on(ticket))
-  assert !ui_socket.home_accepts(click_on(ticket))
-  assert !ui_socket.home_accepts(click_on(home.projects_path))
-  assert !ui_socket.home_owner_accepts(click_on(home.projects_path))
-  assert !ui_socket.home_owner_accepts(click_on(home.projects_path <> "0\t1"))
-  assert ui_socket.home_accepts(click_on(home.table_path <> "\t0"))
 }
 
 // The review read is an operating page's, owner's or member's, and an
@@ -2419,14 +2408,7 @@ pub fn a_ticket_thread_needs_no_new_admission_test() {
   assert ui_socket.home_accepts(click_on(control))
   assert ui_socket.home_owner_accepts(click_on(control))
 
-  // Beneath the projects section's region only the owner's socket admits a
-  // click, and nothing admits a submit there.
-  let strip = home.projects_path <> "\t0\t1\t0\t0\t0"
-  assert !ui_socket.home_accepts(click_on(strip))
-  assert ui_socket.home_owner_accepts(click_on(strip))
-  assert !ui_socket.home_owner_accepts(submit_on(strip))
-
-  // Outside both regions a submit is admitted by no socket.
+  // Outside the table's region a submit is admitted by no socket.
   list.each([home.sidebar_path <> "\t1\t0\t2", "0\t0\t1"], fn(path) {
     assert !ui_socket.home_accepts(submit_on(path))
     assert !ui_socket.home_owner_accepts(submit_on(path))

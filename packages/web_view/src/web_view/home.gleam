@@ -316,6 +316,7 @@ import web_view/orchestrators
 import web_view/page
 import web_view/passkeys.{type Passkey}
 import web_view/placements
+import web_view/project_create
 import web_view/projects as feed
 import web_view/relayed
 import web_view/relayed_session
@@ -348,6 +349,7 @@ import web_view/view/inbox_parts
 import web_view/view/new_session
 import web_view/view/notice
 import web_view/view/passkeys as passkeys_view
+import web_view/view/project_create as project_create_view
 import web_view/view/projects as projects_view
 import web_view/view/relayed_session as relayed_view
 import web_view/view/resume.{type Resume}
@@ -374,14 +376,6 @@ pub const sidebar_path = "0\t1"
 /// one running session's name, which asks the daemon for a ticket to open that
 /// session.
 pub const table_path = "0\t2\t1"
-
-/// The Lustre event path of the Projects section on the owner's home
-/// (protocol-change/106, the addendum on the web view): the centre's first
-/// child, above the body at `table_path`. Every handler beneath it is one
-/// ticket's button, which opens that ticket's page. The home's socket admits a
-/// click beneath it for the owner's operating page only, and
-/// `home_test` and `projects_home_test` fail if the view moves the region.
-pub const projects_path = "0\t2\t0"
 
 /// The Lustre event path of the sign-ins region on the home page, which is the
 /// account panel the person's name in the bar opens: the centre
@@ -815,6 +809,16 @@ pub type Projects {
     stop: fn(String, String, fn(feed.Acted) -> Nil) -> Nil,
     /// Asks for a new worker on a stalled ticket, with the same arguments.
     retry: fn(String, String, fn(feed.Acted) -> Nil) -> Nil,
+    /// Starts the read of a proposal for a folder: the check and setup the
+    /// daemon would suggest from the folder's own files. The text is a folder
+    /// the page drew or the owner typed; the daemon judges it as it judges a new
+    /// session's folder before it reads anything, and the read runs nothing.
+    propose: fn(String, fn(feed.Proposal) -> Nil) -> Nil,
+    /// Makes the project for a folder, with the check and setup the owner
+    /// confirmed (none when blank), and answers what was made. The daemon judges
+    /// the folder again, and a folder that already has a project keeps it.
+    create: fn(String, Option(String), Option(String), fn(feed.Creation) -> Nil) ->
+      Nil,
   )
 }
 
@@ -1257,6 +1261,10 @@ pub type Pane {
   /// with an answer box, and a link to the worker's session.
   Ticketed(ticket: OpenTicket)
 
+  /// The owner is making a project (`view/project_create`): a folder, the
+  /// daemon's proposal for its check and setup, and the confirmation.
+  ProjectCreating(creation: project_create.Creation)
+
   /// The new-session composer (`view/new_session`).
   NewSession
 
@@ -1591,6 +1599,29 @@ pub type Msg {
 
   /// The daemon's word on a close. It is the effect's own message.
   CloseSettled(project: String, ticket: String, closing: feed.Closing)
+
+  /// The Projects section's "New project" was pressed: show the page that makes
+  /// one. Only a page that holds the projects capability at the owner's ceiling
+  /// takes it.
+  ProjectCreationOpened
+
+  /// A folder was chosen for the new project: a button of the list, whose text
+  /// is a folder the server drew, or the typed field, whose text is the
+  /// browser's and is judged by the daemon.
+  ProjectFolderChosen(folder: String)
+
+  /// The daemon's proposal for the folder arrived. It is the effect's own
+  /// message, and no handler carries it.
+  ProjectProposalRead(folder: String, read: feed.Proposal)
+
+  /// The confirmation form was submitted: the check and the setup as typed.
+  ProjectConfirmed(check: String, setup: String)
+
+  /// The daemon's word on the creation. It is the effect's own message.
+  ProjectCreateSettled(folder: String, made: feed.Creation)
+
+  /// The new-project page's Cancel or Done was pressed.
+  ProjectCreationClosed
 
   /// A row's "Where" was pressed: open its detail. The orchestrator's key and
   /// the session are the group's and the row's, fixed when the tree was drawn,
@@ -3240,10 +3271,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.pane {
         Ticketed(open) if open.project == project && open.ticket == ticket ->
           ticket_heard(model, open, read)
-        Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
-          model,
-          effect.none(),
-        )
+        Ticketed(_)
+        | ProjectCreating(_)
+        | NewSession
+        | SessionList
+        | Relayed(_) -> #(model, effect.none())
       }
 
     ClosingTicket -> #(Model(..model, pane: resting_pane(model)), effect.none())
@@ -3261,6 +3293,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Ticketed(_), Some(_), Connecting
         | Ticketed(_), Some(_), Ended(_)
         | Ticketed(_), None, _
+        | ProjectCreating(_), _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3276,6 +3309,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Ticketed(_), Some(_), Connecting
         | Ticketed(_), Some(_), Ended(_)
         | Ticketed(_), None, _
+        | ProjectCreating(_), _, _
         | NewSession, _, _
         | SessionList, _, _
         | Relayed(_), _, _
@@ -3288,11 +3322,118 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.pane {
         Ticketed(open) if open.project == project && open.ticket == ticket ->
           close_settled(model, open, closing)
+        Ticketed(_)
+        | ProjectCreating(_)
+        | NewSession
+        | SessionList
+        | Relayed(_) -> #(model, effect.none())
+      }
+
+    // The page that makes a project opens only for the owner's operating page,
+    // connected, which is the page that holds the capability. Everything the
+    // page then asks goes through the same capability, and the daemon judges the
+    // folder and the owner again whatever the page said.
+    ProjectCreationOpened ->
+      case model.start.projects, model.start.ceiling, model.status {
+        Some(_), OperatorCeiling, Connected -> #(
+          Model(
+            ..model,
+            pane: ProjectCreating(project_create.open()),
+            note: None,
+          ),
+          effect.none(),
+        )
+        Some(_), OperatorCeiling, Connecting
+        | Some(_), OperatorCeiling, Ended(_)
+        | Some(_), ObserverCeiling, _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    // A folder was chosen, from the list or typed. The step moves only from
+    // choosing or confirming, so a press that arrives during a read is dropped,
+    // and the proposal is asked for the folder the step now holds.
+    ProjectFolderChosen(folder:) ->
+      case model.pane, model.start.projects, model.status {
+        ProjectCreating(creation), Some(Projects(propose:, ..)), Connected ->
+          project_folder_chosen(model, creation, folder, propose)
+        ProjectCreating(_), Some(_), Connecting
+        | ProjectCreating(_), Some(_), Ended(_)
+        | ProjectCreating(_), None, _
+        | Ticketed(_), _, _
+        | NewSession, _, _
+        | SessionList, _, _
+        | Relayed(_), _, _
+        -> #(model, effect.none())
+      }
+
+    // The proposal for the folder the page is reading. An answer for another
+    // folder, or for a page that has moved on, changes nothing.
+    ProjectProposalRead(folder:, read:) ->
+      case model.pane {
+        ProjectCreating(creation) -> #(
+          Model(
+            ..model,
+            pane: ProjectCreating(project_create.proposal_heard(
+              creation,
+              folder,
+              read,
+            )),
+          ),
+          effect.none(),
+        )
         Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
           model,
           effect.none(),
         )
       }
+
+    // The owner pressed Create. The daemon is asked once: the step that waits
+    // for it takes no second confirmation.
+    ProjectConfirmed(check:, setup:) ->
+      case model.pane, model.start.projects, model.status {
+        ProjectCreating(creation), Some(Projects(create:, ..)), Connected ->
+          project_confirmed(model, creation, check, setup, create)
+        ProjectCreating(_), Some(_), Connecting
+        | ProjectCreating(_), Some(_), Ended(_)
+        | ProjectCreating(_), None, _
+        | Ticketed(_), _, _
+        | NewSession, _, _
+        | SessionList, _, _
+        | Relayed(_), _, _
+        -> #(model, effect.none())
+      }
+
+    // The daemon's word on the creation. A project that was made appears in the
+    // Projects section at the next read of the boards, which is started now so
+    // the owner need not wait for the timer.
+    ProjectCreateSettled(folder:, made:) ->
+      case model.pane {
+        ProjectCreating(creation) ->
+          reading_boards(
+            Model(
+              ..model,
+              pane: ProjectCreating(project_create.settled(
+                creation,
+                folder,
+                made,
+              )),
+            ),
+          )
+        Ticketed(_) | NewSession | SessionList | Relayed(_) ->
+          // The owner left the page while the daemon worked, and a project it
+          // made is still to be listed, so the boards are read all the same.
+          case made {
+            feed.Made(..) -> reading_boards(model)
+            feed.Existing(_) | feed.NotMade(_) | feed.MakeFailed(_) -> #(
+              model,
+              effect.none(),
+            )
+          }
+      }
+
+    ProjectCreationClosed ->
+      reading_boards(Model(..model, pane: resting_pane(model)))
 
     // The daemon's word on an answer. A recorded one leaves an empty box, and a
     // refusal keeps the text and says why in words. Either way the ticket is read
@@ -3301,10 +3442,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.pane {
         Ticketed(open) if open.project == project && open.ticket == ticket ->
           settled(model, open, answer)
-        Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
-          model,
-          effect.none(),
-        )
+        Ticketed(_)
+        | ProjectCreating(_)
+        | NewSession
+        | SessionList
+        | Relayed(_) -> #(model, effect.none())
       }
 
     // The first pages of the other orchestrators. An answer a newer read
@@ -4743,6 +4885,7 @@ fn relay_reading(
     Some(_), NewSession
     | Some(_), SessionList
     | Some(_), Ticketed(_)
+    | Some(_), ProjectCreating(_)
     | None, _
     -> #(model, effect.none())
   }
@@ -4774,7 +4917,7 @@ fn relay_heard(model: Model, read: relayed.Read) -> Model {
         ..model,
         pane: Relayed(relayed_session.heard(state, read, model.start.now())),
       )
-    NewSession | SessionList | Ticketed(_) -> model
+    NewSession | SessionList | Ticketed(_) | ProjectCreating(_) -> model
   }
 }
 
@@ -4834,7 +4977,10 @@ fn relay_after(
   case model.pane {
     Relayed(state) ->
       relay_reading(Model(..model, pane: Relayed(apply(state))), RelayAnswered)
-    NewSession | SessionList | Ticketed(_) -> #(model, effect.none())
+    NewSession | SessionList | Ticketed(_) | ProjectCreating(_) -> #(
+      model,
+      effect.none(),
+    )
   }
 }
 
@@ -5141,6 +5287,7 @@ fn boards_heard(
             True -> reading_ticket_thread(model, opened.key)
             False -> #(model, effect.none())
           }
+        ProjectCreating(_), _ -> #(model, effect.none())
         NewSession, None | SessionList, None | Relayed(_), None -> #(
           model,
           effect.none(),
@@ -5225,7 +5372,7 @@ fn ticket_heard(
 /// own way back does.
 fn inbox_pane(model: Model) -> Pane {
   case model.pane {
-    Ticketed(_) | Relayed(_) -> resting_pane(model)
+    Ticketed(_) | Relayed(_) | ProjectCreating(_) -> resting_pane(model)
     NewSession | SessionList -> model.pane
   }
 }
@@ -5286,6 +5433,72 @@ fn answering(
       },
     )
   }
+}
+
+/// A folder was chosen: the step moves to reading it, and the daemon is asked for
+/// its proposal. A choice the step does not take asks nothing.
+fn project_folder_chosen(
+  model: Model,
+  creation: project_create.Creation,
+  folder: String,
+  propose: fn(String, fn(feed.Proposal) -> Nil) -> Nil,
+) -> #(Model, Effect(Msg)) {
+  let next = project_create.chose(creation, folder)
+
+  // A choice the step does not take leaves it equal to what it was, and then the
+  // daemon is not asked; otherwise the step names the folder to read.
+  case next == creation, project_create.workspace(next) {
+    False, Some(workspace) -> #(Model(..model, pane: ProjectCreating(next)), {
+      use dispatch <- effect.from
+      propose(workspace, fn(read) {
+        dispatch(ProjectProposalRead(workspace, read))
+      })
+    })
+    True, _ | False, None -> #(model, effect.none())
+  }
+}
+
+/// The owner pressed Create. The step either waits for the daemon and the
+/// daemon is asked, or it stays with a sentence about what is wrong.
+fn project_confirmed(
+  model: Model,
+  creation: project_create.Creation,
+  check: String,
+  setup: String,
+  create: fn(String, Option(String), Option(String), fn(feed.Creation) -> Nil) ->
+    Nil,
+) -> #(Model, Effect(Msg)) {
+  case
+    project_create.confirmed(creation, check, setup),
+    project_create.workspace(creation)
+  {
+    Ok(#(next, checked, setup_found)), Some(workspace) -> #(
+      Model(..model, pane: ProjectCreating(next)),
+      {
+        use dispatch <- effect.from
+        create(workspace, checked, setup_found, fn(made) {
+          dispatch(ProjectCreateSettled(workspace, made))
+        })
+      },
+    )
+    Error(next), _ -> #(
+      Model(..model, pane: ProjectCreating(next)),
+      effect.none(),
+    )
+    Ok(_), None -> #(model, effect.none())
+  }
+}
+
+/// The folders the new-project page offers: the ones the new-session composer
+/// offers on this machine (the directories the listed sessions run in, then the
+/// remembered folders), without the folders that already hold a project. This is
+/// the one place the page decides which folders to offer, so the searchable
+/// folder picker of the new-session form can replace it here.
+fn project_folder_choices(model: Model) -> List(String) {
+  let held = list.map(model.boards, fn(each) { each.workspace })
+
+  composer.folders_offered(listing.entries(model.groups), model.recent)
+  |> list.filter(fn(path) { !list.contains(held, path) })
 }
 
 /// Sends a close, unless one is already out.
@@ -5619,6 +5832,7 @@ pub fn view(model: Model) -> Element(Msg) {
         NewSession, False -> "New session"
         SessionList, False -> "Sessions"
         Ticketed(_), _ -> "Ticket"
+        ProjectCreating(_), _ -> "New project"
         Relayed(_), _ -> "Session"
       },
       who: home_bar.account(
@@ -5666,45 +5880,34 @@ pub fn view(model: Model) -> Element(Msg) {
   )
 }
 
-/// The centre's first child, which sits above the body: the Projects section on
-/// the owner's page when it has one to draw, with the strip that says the daemon
-/// lists a peer orchestrator, and the strip alone, or nothing, otherwise. A page
-/// without projects draws exactly what it drew before this section existed. The
-/// section's buttons are beneath `projects_path`, which only the owner's socket
-/// admits.
+/// The centre's first child, which sits above the body: the strip that says the
+/// daemon lists a peer orchestrator, on the list alone, and nothing otherwise.
+/// The Projects section is not here: it was 211 px of every page's first screen,
+/// and it now lives where projects do, in the inbox's "Projects" folder
+/// (`view/inbox`), so the inbox list starts at the top of the page.
 fn centre_head(model: Model) -> Element(Msg) {
   // The peer strip belongs to the list alone, as it did before the section.
-  let strip = case model.pane {
-    NewSession | Relayed(_) | Ticketed(_) -> element.none()
+  case model.pane {
+    NewSession | Relayed(_) | Ticketed(_) | ProjectCreating(_) -> element.none()
     SessionList -> elsewhere_view.strip(elsewhere_offer(model))
-  }
-
-  // The section is drawn above the composer and the list and not above a
-  // ticket's page or a relayed session, which are the centre's whole subject.
-  case projects_offer(model), model.pane {
-    projects_view.Hidden, _ -> strip
-    projects_view.Shown(..), Ticketed(_)
-    | projects_view.Shown(..), Relayed(_)
-    -> strip
-    offer, NewSession | offer, SessionList ->
-      html.div([attribute.class("home-head")], [
-        projects_view.section(offer),
-        strip,
-      ])
   }
 }
 
-/// What the page offers for projects: the section on a page with
-/// `Start.projects` that has read at least one project, and nothing otherwise.
+/// What the page offers for projects, which the inbox's "Projects" folder draws: the
+/// section on a page with `Start.projects`, and nothing otherwise. A page with no project yet still
+/// draws the section, because it holds the button that makes the first one. The
+/// button is drawn only for the owner's operating page, which is the page that
+/// can press it.
 fn projects_offer(model: Model) -> projects_view.Offer(Msg) {
-  case model.start.projects, model.boards {
-    Some(_), [_, ..] ->
+  case model.start.projects, model.start.ceiling {
+    Some(_), _ ->
       projects_view.Shown(
         projects: model.boards,
         now: model.now,
         open: OpeningTicket,
+        create: Some(ProjectCreationOpened),
       )
-    Some(_), [] | None, _ -> projects_view.Hidden
+    None, _ -> projects_view.Hidden
   }
 }
 
@@ -6039,6 +6242,7 @@ fn landed_inbox(model: Model) -> Bool {
   case model.pane, model.centre_choice {
     NewSession, Decided(InboxCentre) | SessionList, Decided(InboxCentre) -> True
     Ticketed(_), _
+    | ProjectCreating(_), _
     | Relayed(_), _
     | NewSession, Awaiting
     | SessionList, Awaiting
@@ -6710,6 +6914,10 @@ fn inbox_page(model: Model) -> Element(Msg) {
           ))
         None -> None
       },
+      projects: case projects_offer(model) {
+        projects_view.Hidden -> None
+        shown -> Some(projects_view.section(shown))
+      },
       attention: with_tickets(model, attention_threads(model)),
       review: review_offer(model),
       checking: checking_ids(model),
@@ -7312,6 +7520,7 @@ fn inbox_return(model: Model) -> Option(Msg) {
     NewSession, _, _
     | SessionList, _, _
     | Ticketed(_), _, _
+    | ProjectCreating(_), _, _
     | Relayed(_), _, _
     -> None
   }
@@ -7337,6 +7546,14 @@ fn centre_pane(model: Model) -> Element(Msg) {
   case model.pane, model.start.create {
     NewSession, Some(_) -> new_session.view(new_pane(model))
     Ticketed(open), _ -> ticket_page(model, open)
+    ProjectCreating(creation), _ ->
+      project_create_view.view(project_create_view.Offer(
+        creation:,
+        folders: project_folder_choices(model),
+        chose: ProjectFolderChosen,
+        confirm: ProjectConfirmed,
+        back: ProjectCreationClosed,
+      ))
     Relayed(state), _ -> relayed_view.view(state, relayed_presses())
     NewSession, None | SessionList, _ ->
       home_table.view(
@@ -7855,12 +8072,16 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
 /// The folders the rail draws and their counts, in the rail's order. The final
 /// design lists "Needs you", "To review", "Finds" and "Updates" whether or not
 /// they hold anything, so a person learns where a thing would appear and the rail
-/// does not change its shape as work comes and goes; "Projects" is drawn only
-/// while a ticket waits, because a page that has no project has no such folder.
+/// does not change its shape as work comes and goes; "Projects" is drawn while a
+/// ticket waits and on every page that holds the projects capability, because
+/// the folder is where a project is made and listed, and a page that holds no
+/// capability has no such folder.
 /// A press on an empty folder is not offered (`view/sidebar.folders_nav`).
 fn offered_folders(model: Model) -> List(#(inbox_rule.Folder, Int)) {
   list.filter(all_folder_counts(model), fn(entry) {
-    entry.0 != inbox_rule.Projecting || entry.1 > 0
+    entry.0 != inbox_rule.Projecting
+    || entry.1 > 0
+    || model.start.projects != None
   })
 }
 
@@ -7871,7 +8092,10 @@ fn offered_folders(model: Model) -> List(#(inbox_rule.Folder, Int)) {
 /// review" holds the finished sessions and the tickets whose work waits to be
 /// read (`ticket_rule.lane`).
 fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
-  list.filter(all_folder_counts(model), fn(entry) { entry.1 > 0 })
+  list.filter(all_folder_counts(model), fn(entry) {
+    entry.1 > 0
+    || { entry.0 == inbox_rule.Projecting && model.start.projects != None }
+  })
 }
 
 /// Every folder but "Everything" with its count, empty ones included, so the two
