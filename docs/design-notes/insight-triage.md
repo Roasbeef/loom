@@ -40,15 +40,15 @@ An inbox row today has one of two origins.
 
 - **The classifier** is a pure function over the lane's pieces, the register's
   approvals and the session's open records
-  (`packages/session_view/src/session_view/attention.gleam:152`, `lift_all`).
+  (`packages/session_view/src/session_view/attention.gleam:174`, `lift_all`).
   Its `Kind` is a closed set: a pending approval, a failed step, a failed turn,
   a sub-agent's result, a peer message, an open ask, a stuck strand and an open
-  find (`session_view/attention.gleam:69`). It states facts the harness holds: a call
+  find (`session_view/attention.gleam:89`). It states facts the harness holds: a call
   returned an error, a message arrived. Its module comment says what it will not
   state: "The daemon knows it stored the message, not that it is relevant or
   that anyone has answered it, and the rail must not claim either"
-  (`session_view/attention.gleam:35`). A peer message's head is the fixed phrase
-  "messaged this session" (`session_view/attention.gleam:289`, `piece_rows`).
+  (`session_view/attention.gleam:36`). A peer message's head is the fixed phrase
+  "messaged this session" (`session_view/attention.gleam:339`, `piece_rows`).
 - **The agent** records an `ask` or a `notice`
   (`packages/tools/src/tools/attention.gleam:68` and `:71`, protocol-change/119
   and 120). A find has a kind, free text and an optional path and line
@@ -140,7 +140,7 @@ For each of at most `max_rows` (initially 8) lifted Insights rows that have no
 label yet, the harness includes:
 
 - the row's position in the request (1 to `max_rows`), its `kind` word and its
-  `head` as the classifier produced them (`session_view/attention.gleam:110`,
+  `head` as the classifier produced them (`session_view/attention.gleam:133`,
   `Lifted`). The row's `key` stays in the harness, which maps the model's index
   back to it;
 - the rendering of the lane pieces within two pieces of the row's, with the
@@ -414,7 +414,7 @@ rail's groups, and the reading pane (`attention-inbox/README.md`, sections 2.1
 and 2.3).
 
 **Order within the Insights group.** Today the rail lists insights newest first
-(`session_view/attention.gleam:40`, "Order"). With labels, a row weighted `high` sorts above
+(`session_view/attention.gleam:59`, "Order"). With labels, a row weighted `high` sorts above
 `normal`, and `low` sorts last, with newest first inside each weight. Rows
 without a label count as `normal`, and so do peer messages, which are never
 labelled. Pinned rows keep the order they have and carry no label.

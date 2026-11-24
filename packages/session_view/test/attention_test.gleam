@@ -225,6 +225,21 @@ pub fn a_sub_agent_result_carries_the_first_line_of_its_report_test() {
   assert bare.head == "completed"
 }
 
+// A report is Markdown: a heading loses its marks, a rule is no line at all,
+// and a report whose breaks arrived as the characters `\n` reads as lines.
+pub fn a_result_head_reads_the_reports_words_not_its_marks_test() {
+  let head = fn(report) {
+    let piece =
+      turns.Returned("r", "sub:tests", "completed", report, turns.Primary)
+    let assert [row] = attention.lift([piece], [])
+    row.head
+  }
+  assert head("# calc\nTiny calculator.") == "completed · calc"
+  assert head("---\n\n## Summary\nbody") == "completed · Summary"
+  assert head("# calc \\n Tiny calculator.") == "completed · calc"
+  assert head("---\n***") == "completed"
+}
+
 fn failure(key: String, text: String) -> turns.Piece {
   plain(key, transcript_line.Failure, text)
 }
@@ -267,14 +282,70 @@ pub fn a_different_failure_or_another_row_between_keeps_rows_apart_test() {
     ]
 }
 
-// Two failures that agree up to the cut are still two failures.
-pub fn failures_that_differ_after_the_cut_are_not_merged_test() {
+// Sameness is the head the reader sees: two failures that differ only past the
+// cut read the same, and the owner would see identical rows, so they are one
+// row. This is the case of provider retries that differ in a request size.
+pub fn failures_that_differ_only_after_the_cut_are_merged_test() {
   let prefix = string.repeat("x", 200)
-  let rows =
+  let assert [row] =
     attention.lift(
       [failure("a", prefix <> " one"), failure("b", prefix <> " two")],
       [],
     )
+  assert row.key == "a"
+  assert string.ends_with(row.head, " · 2 times")
+}
+
+// A piece that lifts no row and is not an answer, such as the bookkeeping that
+// comes with a heartbeat, does not separate two failures.
+pub fn bookkeeping_between_failures_does_not_separate_them_test() {
+  let assert [row] =
+    attention.lift(
+      [
+        failure("a", "same"),
+        turns.Missed("m", "miss"),
+        failure("b", "same"),
+      ],
+      [],
+    )
+  assert row.key == "a"
+  assert row.head == "same · 2 times"
+}
+
+// An answer that did not fail, or the owner's own prompt, ends a run: the owner
+// who has moved past a failure has not seen it come back.
+pub fn an_answer_or_a_prompt_between_failures_separates_them_test() {
+  let owner =
+    turns.Prompt(block("o", transcript_line.User, "go on"), "owner", "Me", None)
+  list.each(
+    [plain("ok", transcript_line.Assistant, "done"), owner],
+    fn(between) {
+      let rows =
+        attention.lift(
+          [failure("a", "same"), between, failure("b", "same")],
+          [],
+        )
+      assert list.map(rows, fn(row) { row.key }) == ["b", "a"]
+      assert list.all(rows, fn(row) { row.head == "same" })
+    },
+  )
+
+  // A step that worked ends it as well.
+  let rows =
+    attention.lift(
+      [
+        failure("a", "same"),
+        worked("w", 0, [step(turns.Done, [])]),
+        failure("b", "same"),
+      ],
+      [],
+    )
+  assert list.length(rows) == 2
+}
+
+// Two failures with no text read as nothing, so each stays a row of its own.
+pub fn failures_with_no_text_are_not_counted_test() {
+  let rows = attention.lift([failure("a", " "), failure("b", " ")], [])
   assert list.length(rows) == 2
 }
 
@@ -289,15 +360,65 @@ pub fn a_long_repeated_failure_keeps_the_count_test() {
 
 fn failure_texts(index: Int, kind: Int) -> turns.Piece {
   let key = "f" <> int.to_string(index)
-  case kind % 4 {
+
+  // Kinds 0 and 1 are failures that differ only past the cut, so they read the
+  // same, and 2 is a different failure. 3 is a row of another kind, 4 a piece
+  // that lifts no row and is not an answer, 5 an answer that did not fail and
+  // 6 the owner's own prompt.
+  case kind % 7 {
+    0 -> failure(key, string.repeat("e", 150) <> "a")
+    1 -> failure(key, string.repeat("e", 150) <> "b")
+    2 -> failure(key, "other failure")
     3 -> peer(key)
-    n -> failure(key, "failure " <> int.to_string(n))
+    4 -> turns.Missed(key, "miss")
+    5 -> plain(key, transcript_line.Assistant, "fine")
+    _ ->
+      turns.Prompt(
+        block(key, transcript_line.User, "go on"),
+        "owner",
+        "Me",
+        None,
+      )
   }
 }
 
-// Collapsing never drops a distinct failure and never moves a key: the rows
-// are the maximal runs of equal adjacent failures, each under its first key,
-// and adding a later piece changes no earlier row's key.
+// The runs the owner should see, from the kinds alone: each is the index of
+// its first piece and how many failed responses it holds. This is the model
+// the classifier is checked against, written as a plain fold.
+fn model_runs(kinds: List(Int)) -> List(#(Int, Int)) {
+  let #(runs, _) =
+    list.index_fold(kinds, #([], None), fn(state, kind, index) {
+      let #(runs, open) = state
+      case kind % 7 {
+        0 | 1 -> grow(runs, open, 0, index)
+        2 -> grow(runs, open, 2, index)
+        3 -> #([#(index, 1), ..runs], None)
+        4 -> #(runs, open)
+        _ -> #(runs, None)
+      }
+    })
+  list.reverse(runs)
+}
+
+fn grow(
+  runs: List(#(Int, Int)),
+  open: option.Option(Int),
+  reading: Int,
+  index: Int,
+) -> #(List(#(Int, Int)), option.Option(Int)) {
+  case runs, open {
+    [#(first, count), ..earlier], Some(now) if now == reading -> #(
+      [#(first, count + 1), ..earlier],
+      open,
+    )
+    _, _ -> #([#(index, 1), ..runs], Some(reading))
+  }
+}
+
+// Collapsing never drops a distinct reading and never moves a key: the rows are
+// the model's runs, each under its first key, and a run of more than one says
+// its count. Taking the oldest pieces away, as a window that has not loaded
+// them does, changes the key of at most the first run that remains.
 pub fn collapsing_keeps_every_run_and_never_moves_a_key_test() {
   let config =
     qcheck.default_config()
@@ -305,37 +426,35 @@ pub fn collapsing_keeps_every_run_and_never_moves_a_key_test() {
     |> qcheck.with_seed(qcheck.seed(sweep_seed))
   let generator =
     qcheck.generic_list(
-      elements_from: qcheck.bounded_int(from: 0, to: 7),
+      elements_from: qcheck.bounded_int(from: 0, to: 13),
       length_from: qcheck.bounded_int(0, 14),
     )
 
   qcheck.run(config, generator, fn(kinds) {
     let pieces =
       list.index_map(kinds, fn(kind, index) { failure_texts(index, kind) })
-    let oldest_first = fn(pieces) {
-      attention.lift(pieces, [])
-      |> list.reverse
-      |> list.map(fn(row) { row.key })
-    }
+    let rows = attention.lift(pieces, []) |> list.reverse
+    let expected = model_runs(kinds)
 
-    // The expected keys are each run's first piece, in order.
-    let runs =
-      list.index_map(kinds, fn(kind, index) { #(kind % 4, index) })
-      |> list.fold([], fn(runs, entry) {
-        case runs, entry {
-          [#(before, _), ..], #(now, _) if before == now && now != 3 -> runs
-          _, _ -> [entry, ..runs]
-        }
+    assert list.map(rows, fn(row) { row.key })
+      == list.map(expected, fn(run) { "f" <> int.to_string(run.0) })
+    assert list.zip(rows, expected)
+      |> list.all(fn(pair) {
+        let #(row, #(_, count)) = pair
+        count == 1
+        || string.ends_with(row.head, " · " <> int.to_string(count) <> " times")
       })
-      |> list.reverse
-    let expected = list.map(runs, fn(run) { "f" <> int.to_string(run.1) })
-    assert oldest_first(pieces) == expected
 
-    // A later piece leaves every earlier key where it was.
-    let longer = list.append(pieces, [failure("later", "failure 0")])
-    let before = oldest_first(pieces)
-    let after = oldest_first(longer)
-    assert list.take(after, list.length(before)) == before
+    // A window that gains older pieces moves at most one key.
+    let keys = list.map(rows, fn(row) { row.key })
+    list.index_map(pieces, fn(_, index) { index })
+    |> list.each(fn(dropped) {
+      let later =
+        attention.lift(list.drop(pieces, dropped), [])
+        |> list.reverse
+        |> list.map(fn(row) { row.key })
+      assert list.all(list.drop(later, 1), fn(key) { list.contains(keys, key) })
+    })
   })
 }
 

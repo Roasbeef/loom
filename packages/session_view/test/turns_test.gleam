@@ -1018,6 +1018,11 @@ pub fn the_divider_counts_a_program_whose_call_failed_test() {
     )
   let assert [_, turns.Work(worked:, ..), ..] = pieces
   assert worked.failed == 1
+
+  // The divider names the program and its count, not nothing.
+  let assert Some(line) = worked.last_failure
+  assert string.starts_with(line, "code_mode")
+  assert string.ends_with(line, "1 call · 1 failed")
 }
 
 pub fn a_host_that_skips_keeps_no_whole_program_in_the_card_test() {

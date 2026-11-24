@@ -187,10 +187,11 @@ pub type Worked {
     failed: Int,
     /// What the turn's last failed tool call was and what its result said, on
     /// one line (`Run make check · exit 2`), so a reader of the folded turn
-    /// can tell what went wrong without opening it. `None` when no call
-    /// failed, or when the only failure was a program's inner call, whose
-    /// words the divider does not hold. Tool text, so a host draws it as a
-    /// text node.
+    /// can tell what went wrong without opening it. A program that finished
+    /// while one of its calls failed is named with its call count
+    /// (`code_mode proc.run · 7 calls · 1 failed`), since the divider holds
+    /// no words of the inner call. `None` when no call failed. Tool text, so
+    /// a host draws it as a text node.
     last_failure: Option(String),
     /// Whether a response of the turn was aborted.
     ending: Ending,
@@ -2257,10 +2258,7 @@ fn worked(turn: Turn) -> Worked {
         // A program that finished while one of its calls did not still
         // went wrong somewhere, and its card says so; the divider that
         // folds it away says the same.
-        Doing(item: Step(program: Some(card), ..), ..) ->
-          list.any(card.chips, fn(chip) {
-            chip.kind == program_card.FailedCalls && chip.count > 0
-          })
+        Doing(item: Step(program: Some(card), ..), ..) -> failed_calls(card)
         Doing(..) | Answer(..) | Input(..) | Outside(..) -> False
       }
     })
@@ -2273,6 +2271,14 @@ fn worked(turn: Turn) -> Worked {
       case item {
         Doing(item: Step(standing: Failed, words:, detail:, program:, ..), ..) ->
           Ok(failure_line(words, detail, program))
+
+        // A program that finished while one of its calls did not has only
+        // its count to say.
+        Doing(item: Step(words:, program: Some(card), ..), ..) ->
+          case failed_calls(card) {
+            True -> Ok(finished_with_failures(words, card))
+            False -> Error(Nil)
+          }
         Doing(..) | Answer(..) | Input(..) | Outside(..) -> Error(Nil)
       }
     })
@@ -2330,15 +2336,30 @@ fn first_said(text: String) -> Result(String, Nil) {
 /// What a failed program's card says went wrong: the first line of its error
 /// text, or its status word when the result carried no text.
 fn program_said(program: Option(ProgramCard)) -> Result(String, Nil) {
-  case program {
-    Some(card) ->
-      case card.failure {
-        Some(failure) -> first_said(failure.text)
-        None -> Error(Nil)
-      }
-      |> result.lazy_or(fn() { first_said(card.status_word) })
-    None -> Error(Nil)
-  }
+  use card <- result.try(option.to_result(program, Nil))
+
+  card.failure
+  |> option.to_result(Nil)
+  |> result.try(fn(failure) { first_said(failure.text) })
+  |> result.lazy_or(fn() { first_said(card.status_word) })
+}
+
+/// Whether a program's card marks a call that failed inside it.
+fn failed_calls(card: ProgramCard) -> Bool {
+  list.any(card.chips, fn(chip) {
+    chip.kind == program_card.FailedCalls && chip.count > 0
+  })
+}
+
+/// A program that finished with failed calls as one line: its words, then its
+/// count (`7 calls · 1 failed`), or its outcome when the card holds no count.
+fn finished_with_failures(
+  words: step_words.Words,
+  card: ProgramCard,
+) -> String {
+  let said = option.unwrap(card.count_words, card.outcome)
+
+  string.slice(step_words.text(words) <> " · " <> said, 0, failure_limit)
 }
 
 /// Whether a response of the turn was aborted: its rows lead with the words an
