@@ -173,8 +173,8 @@ pub fn a_second_answer_of_the_same_read_does_not_close_the_round_test() {
 // A running session that works lands the inbox, and so does one that said
 // something when it stopped.
 pub fn a_running_session_lands_the_inbox_test() {
-  let working = Report(sessions.Working, None, [], None, None)
-  let said = Report(sessions.Idle, Some("Done."), [], None, None)
+  let working = Report(sessions.Working, None, [], None, None, 0)
+  let said = Report(sessions.Idle, Some("Done."), [], None, None, 0)
 
   assert landing_rule.landing(picture([working], 0, 0, 0)) == inbox_rule.Inbox
   assert landing_rule.landing(picture([said], 0, 0, 0)) == inbox_rule.Inbox
@@ -192,7 +192,7 @@ pub fn each_kind_of_waiting_item_lands_the_inbox_test() {
 // A quiet running session lands the inbox only when something else waits, which
 // is the case the first round exists for: the activity read alone says form.
 pub fn a_quiet_session_lands_the_form_unless_something_waits_test() {
-  let quiet = Report(sessions.Idle, None, [], None, None)
+  let quiet = Report(sessions.Idle, None, [], None, None, 0)
 
   assert landing_rule.landing(picture([quiet], 0, 0, 0)) == inbox_rule.Form
   assert landing_rule.landing(picture([quiet], 1, 0, 0)) == inbox_rule.Inbox

@@ -1672,7 +1672,7 @@ fn admit_live(
       },
       activity: session_activity_for(
         role,
-        server.states_of(attachment.activity),
+        server.watches_of(attachment.activity),
       ),
       open: fn(session) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, session) })
@@ -3891,9 +3891,9 @@ pub fn listed_for(
 @internal
 pub fn activity_for(
   role: Role,
-  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ask: fn(List(String)) -> List(#(String, sessions.Watch)),
   ids: List(String),
-  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+  deliver: fn(List(#(String, sessions.Watch))) -> Nil,
 ) -> Nil {
   // This branch resolves role before the operation continues.
   case role {
@@ -5779,7 +5779,8 @@ pub fn forget_for(
 /// `deliver` is called, from that run, with what `ask` returned.
 ///
 /// `ask` is the daemon's `sessions.activity` read (`server.home_activity`, whose
-/// answers are reports, or `server.session_activity`, whose are states),
+/// answers are reports, `server.session_watches`, whose are states and ask
+/// counts for the session page, or `server.session_activity`, whose are states),
 /// which asks every named session concurrently under one deadline of its own
 /// and leaves out any that did not answer, so the run ends within that
 /// deadline. The run is linked to the calling process, which is the page's

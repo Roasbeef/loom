@@ -16,7 +16,9 @@ import lane_fixture
 import lustre/effect
 import lustre/element.{type Element}
 import page_fixture
+import session_view/connection_event
 import web_view/component
+import web_view/ending
 import web_view/inbox_rule
 import web_view/listing as session_listing
 import web_view/operator_page
@@ -774,6 +776,18 @@ fn with_activity(
   entries: List(Entry),
   rows: List(#(String, sessions.Activity)),
 ) {
+  with_watches(entries, watches(rows))
+}
+
+// Rows of states as the read answers them when no session has an ask open.
+fn watches(
+  rows: List(#(String, sessions.Activity)),
+) -> List(#(String, sessions.Watch)) {
+  list.map(rows, fn(pair) { #(pair.0, sessions.Watch(pair.1, 0)) })
+}
+
+// The same page with the read answering `rows`, states and asks both.
+fn with_watches(entries: List(Entry), rows: List(#(String, sessions.Watch))) {
   let asked = process.new_subject()
   let start = page_fixture.start()
   let start =
@@ -870,7 +884,8 @@ pub fn the_current_row_follows_the_lane_not_the_read_test() {
       component.new(page_fixture.start()) |> component.apply([capture])
     let #(model, _) =
       component.update(model, component.SessionsListed(listing()))
-    let #(model, _) = component.update(model, component.ActivityObserved(said))
+    let #(model, _) =
+      component.update(model, component.ActivityObserved(watches(said)))
     let assert Ok(sidebar) = sidebar_of(operator_html(model))
     let assert Ok(#(_, from_current)) =
       string.split_once(sidebar, "class=\"session current\"")
@@ -958,10 +973,104 @@ pub fn the_current_row_uses_the_read_before_a_capture_test() {
   let #(model, _) =
     component.update(
       model,
-      component.ActivityObserved([#("A", sessions.NeedsYou)]),
+      component.ActivityObserved(watches([#("A", sessions.NeedsYou)])),
     )
   assert dict.get(component.session_activity(model), "A")
     == Ok(sessions.NeedsYou)
+}
+
+// A session with an ask open for the owner reads "asked" on the session page's
+// sidebar, as on the home's, and one with none keeps its state's word. The ask
+// outranks `running` and is outranked by a pending approval.
+pub fn a_session_with_an_open_ask_reads_asked_on_the_session_page_test() {
+  let #(model, _) =
+    with_watches(listing(), [
+      #("B", sessions.Watch(sessions.Idle, 1)),
+      #("A", sessions.Watch(sessions.Working, 1)),
+    ])
+  let assert Ok(words) = dict.get(component.session_watching(model), "B")
+  assert words == "asked"
+
+  // A working session with an ask reads asked, not running.
+  let assert Ok(working) = dict.get(component.session_watching(model), "A")
+  assert working == "asked"
+
+  // A pending approval outranks the ask.
+  let #(model, _) =
+    with_watches(listing(), [#("B", sessions.Watch(sessions.NeedsYou, 1))])
+  let assert Ok(approval) = dict.get(component.session_watching(model), "B")
+  assert approval == "approval"
+
+  // Asks are the daemon's count, so the page's own row reads them too, while
+  // its state stays the lane's.
+  let #(model, _) =
+    with_watches(listing(), [
+      #("B", sessions.Watch(sessions.Working, 0)),
+      #("A", sessions.Watch(sessions.Idle, 2)),
+    ])
+  let assert Ok(own) = dict.get(component.session_watching(model), "A")
+  assert own == "asked"
+  let assert Ok(other) = dict.get(component.session_watching(model), "B")
+  assert other == "running"
+}
+
+// A page whose session stopped receives no more reads, so the rail it keeps
+// drawing is the last one it got. It says so: each running row reads "out of
+// date" and not the word it last had, the rail's note says the list is out of
+// date, and the notice offers the one control that works without the socket,
+// which goes back in the browser. A connected page has none of these.
+pub fn a_stopped_pages_rail_is_marked_out_of_date_test() {
+  let #(live, _) =
+    with_watches(listing(), [#("B", sessions.Watch(sessions.Idle, 1))])
+  let before = operator_html(live)
+  assert string.contains(before, ">asked</span>")
+  assert !string.contains(before, "out of date")
+  assert !string.contains(before, "<loom-back")
+
+  let #(opened, _) =
+    component.update(live, component.Opened(process.new_subject()))
+  let #(stopped, _) =
+    component.update(
+      opened,
+      component.Arrived([
+        connection_event.Closed(ending.reason(ending.SessionStopped)),
+      ]),
+    )
+  let drawn = operator_html(stopped)
+  assert component.final_ending(stopped) == Some(ending.SessionStopped)
+  assert string.contains(drawn, ending.headline(ending.SessionStopped))
+  assert string.contains(drawn, "<loom-back>Go back</loom-back>")
+  assert string.contains(
+    drawn,
+    "This page lost its session, so this list is out of date.",
+  )
+  assert string.contains(drawn, ">out of date</span>")
+  assert !string.contains(drawn, ">asked</span>")
+  assert !string.contains(drawn, "Counts are read on the inbox.")
+}
+
+// An ending the browser recovers from by itself leaves no control to press, and
+// the rail is not marked: a held page keeps receiving the sidebar's reads, so
+// its words stay current, and its rail note is unchanged.
+pub fn a_page_that_will_reconnect_offers_no_way_back_test() {
+  let #(live, _) =
+    with_watches(listing(), [#("B", sessions.Watch(sessions.Idle, 1))])
+  let #(opened, _) =
+    component.update(live, component.Opened(process.new_subject()))
+  let #(waiting, _) =
+    component.update(
+      opened,
+      component.Arrived([
+        connection_event.Closed(ending.reason(ending.DaemonNotReady)),
+      ]),
+    )
+  let drawn = operator_html(waiting)
+  assert string.contains(drawn, ending.headline(ending.DaemonNotReady))
+  assert !string.contains(drawn, "<loom-back")
+  assert component.final_ending(waiting) == None
+  assert string.contains(drawn, ">asked</span>")
+  assert string.contains(drawn, "Counts are read on the inbox.")
+  assert !string.contains(drawn, "out of date")
 }
 
 // The activity is read again every `activity_refresh_ms`, on the tick, apart

@@ -559,8 +559,9 @@ pub type Attachment(instance) {
     /// read the home makes (`home_activity`), with the page's own credential,
     /// so a member is told only about sessions they hold. It blocks for the
     /// read's deadline, so the page runs it from a task
-    /// (`ui_socket.activity_task`).
-    activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
+    /// (`ui_socket.activity_task`). Each answer is the session's state and
+    /// its count of asks waiting on the owner, and nothing it said.
+    activity: fn(List(String)) -> List(#(String, listed_sessions.Watch)),
     /// The daemon's resident-only peer lookups, which an owner's page reads
     /// and changes its session's peer links through (`client/daemon/ui_peers`,
     /// protocol-change/077). They are the daemon's own and a page never
@@ -2927,7 +2928,7 @@ fn resident_upgrade(
                 state_root: state.state_root,
                 sessions_directory: state.sessions_directory,
                 registration:,
-                activity: session_activity(config, state.registry, digest),
+                activity: session_watches(config, state.registry, digest),
                 peers: peer_directory(config, state.registry),
                 models: fn() {
                   profiles.model_keys(config.domain_configuration)
@@ -7572,6 +7573,48 @@ pub fn states_of(
   }
 }
 
+/// The activity read the session page's sidebar is handed: `home_activity`
+/// reduced to what each running session is doing and how many asks wait on the
+/// owner (`listed_sessions.Watch`). As with `session_activity`, the narrowing
+/// is here, so the page is never given another session's last message or
+/// glances.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.session_watches(config, registry, digest)(["0198..."])
+/// ```
+@internal
+pub fn session_watches(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(List(String)) -> List(#(String, listed_sessions.Watch)) {
+  watches_of(home_activity(config, registry, digest))
+}
+
+/// Narrows a read of reports to a read of watches, as `states_of` narrows to
+/// states: the state word and the count of asks, and nothing a session said. A
+/// live page the home opened passes the home's reports through here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.watches_of(reports)(["0198..."])
+/// ```
+@internal
+pub fn watches_of(
+  reports: fn(List(String)) -> List(#(String, listed_sessions.Report)),
+) -> fn(List(String)) -> List(#(String, listed_sessions.Watch)) {
+  fn(ids) {
+    reports(ids)
+    |> list.map(fn(pair) {
+      let report = pair.1
+      #(pair.0, listed_sessions.Watch(report.activity, report.asks))
+    })
+  }
+}
+
 /// The identities among `ids` the credential holds a membership in, at any role,
 /// in their order. The owner holds every session in the catalogue. An identity
 /// the credential does not hold is dropped exactly as one the registry has never
@@ -7650,7 +7693,7 @@ pub fn activity_reports(
 /// ## Examples
 ///
 /// ```gleam
-/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [], None, None)))
+/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [], None, None, 0)))
 /// ```
 @internal
 pub fn report_of(
@@ -7681,8 +7724,12 @@ pub fn report_of(
           glances,
           // A time of any type but a whole non-negative number is no time,
           // and an old daemon's row has neither.
-          time_field(fields, "last_message_at"),
-          time_field(fields, "turn_started_at"),
+          count_field(fields, "last_message_at"),
+          count_field(fields, "turn_started_at"),
+          // The count of asks waiting on the owner. A daemon that predates the
+          // field, or a value that is not a whole non-negative number, says
+          // none.
+          count_field(fields, "asks") |> option.unwrap(0),
         ),
       ))
     }
@@ -7695,9 +7742,13 @@ pub fn report_of(
   }
 }
 
-/// A Unix-millisecond time of a row, or nothing for a member that is missing,
-/// null, not a whole number or negative.
-fn time_field(fields: List(#(String, JsonValue)), name: String) -> Option(Int) {
+/// A whole non-negative number of a row (a Unix-millisecond time, or a count),
+/// or nothing for a member that is missing, null, not a whole number or
+/// negative.
+fn count_field(
+  fields: List(#(String, JsonValue)),
+  name: String,
+) -> Option(Int) {
   case list.key_find(fields, name) {
     Ok(json.Int(at)) if at >= 0 -> Some(at)
     Ok(_) | Error(Nil) -> None

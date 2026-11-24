@@ -62,8 +62,8 @@ fn entry(id: String, name: String) -> Entry {
 
 fn reports() -> List(#(String, sessions.Report)) {
   [
-    #("A", Report(sessions.Idle, Some("Done <b>it</b>."), [], None, None)),
-    #("B", Report(sessions.Idle, Some("Nothing changed."), [], None, None)),
+    #("A", Report(sessions.Idle, Some("Done <b>it</b>."), [], None, None, 0)),
+    #("B", Report(sessions.Idle, Some("Nothing changed."), [], None, None, 0)),
   ]
 }
 
@@ -698,9 +698,12 @@ pub fn the_receipt_goes_when_the_agent_next_speaks_test() {
       home.Observed([
         #(
           "A",
-          Report(sessions.Working, Some("Done <b>it</b>."), [], None, None),
+          Report(sessions.Working, Some("Done <b>it</b>."), [], None, None, 0),
         ),
-        #("B", Report(sessions.Idle, Some("Nothing changed."), [], None, None)),
+        #(
+          "B",
+          Report(sessions.Idle, Some("Nothing changed."), [], None, None, 0),
+        ),
       ]),
     )
   let html = drawn(working)
@@ -714,8 +717,14 @@ pub fn the_receipt_goes_when_the_agent_next_speaks_test() {
     run(
       working,
       home.Observed([
-        #("A", Report(sessions.Idle, Some("Capped the wait."), [], None, None)),
-        #("B", Report(sessions.Idle, Some("Nothing changed."), [], None, None)),
+        #(
+          "A",
+          Report(sessions.Idle, Some("Capped the wait."), [], None, None, 0),
+        ),
+        #(
+          "B",
+          Report(sessions.Idle, Some("Nothing changed."), [], None, None, 0),
+        ),
       ]),
     )
   assert !string.contains(drawn(spoke), "Delivered to the session · queued")
@@ -851,7 +860,7 @@ fn gate_loop(inbox: Subject(Gate), left: Int, asked: Int) -> Nil {
 
 fn five() -> List(#(String, sessions.Report)) {
   list.map(["S1", "S2", "S3", "S4", "S5"], fn(id) {
-    #(id, Report(sessions.Idle, Some("Done " <> id), [], None, None))
+    #(id, Report(sessions.Idle, Some("Done " <> id), [], None, None, 0))
   })
 }
 

@@ -494,7 +494,7 @@ pub fn a_busy_rows_question_says_it_is_mid_turn_test() {
     run(
       opened(home_start(Some(answering(asked)))),
       home.Observed([
-        #("B", sessions.Report(sessions.Working, None, [], None, None)),
+        #("B", sessions.Report(sessions.Working, None, [], None, None, 0)),
       ]),
     )
   let html = home_html(run(busy, home.SidebarArchiveAsked("B")))
@@ -504,7 +504,7 @@ pub fn a_busy_rows_question_says_it_is_mid_turn_test() {
     run(
       opened(home_start(Some(answering(asked)))),
       home.Observed([
-        #("B", sessions.Report(sessions.NeedsYou, None, [], None, None)),
+        #("B", sessions.Report(sessions.NeedsYou, None, [], None, None, 0)),
       ]),
     )
   let html = home_html(run(waiting, home.SidebarArchiveAsked("B")))
@@ -514,7 +514,7 @@ pub fn a_busy_rows_question_says_it_is_mid_turn_test() {
     run(
       opened(home_start(Some(answering(asked)))),
       home.Observed([
-        #("B", sessions.Report(sessions.Idle, None, [], None, None)),
+        #("B", sessions.Report(sessions.Idle, None, [], None, None, 0)),
       ]),
     )
   let html = home_html(run(idle, home.SidebarArchiveAsked("B")))

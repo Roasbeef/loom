@@ -637,6 +637,19 @@ pub fn an_ask_to_a_strand_does_not_lower_the_oldest_time_test() {
   assert summary.oldest_open_at == Some(400)
 }
 
+// The `asks` count of `sessions.activity` is this list's length, so it must
+// leave out an ask routed to a strand and one that is settled.
+pub fn open_owner_asks_leaves_out_strand_routed_and_settled_asks_test() {
+  let owner = open_ask_at(10, records.ToOwner)
+  let kept =
+    attention.open_owner_asks([
+      owner,
+      open_ask_at(20, records.ToStrand("sub:helper")),
+      settled_ask("ask-0000000002", 9),
+    ])
+  assert kept == [owner]
+}
+
 pub fn approvals_alone_leave_the_oldest_time_empty_test() {
   let summary =
     attention.summarize([escalation_with(durable.Pending)], [], [], 7)

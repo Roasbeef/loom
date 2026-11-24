@@ -215,10 +215,7 @@ pub fn summarize(
 ) -> AttentionSummary {
   let pending =
     list.count(escalations, fn(record) { record.status == escalation.Pending })
-  let owner_asks =
-    list.filter(asks, fn(ask) {
-      ask.state == attention.AskOpen && ask.header.routing == attention.ToOwner
-    })
+  let owner_asks = open_owner_asks(asks)
   let open_finds =
     list.filter(finds, fn(find) { find.state == attention.FindOpen })
   let times =
@@ -233,6 +230,22 @@ pub fn summarize(
     oldest_open_at: list.reduce(times, int.min) |> option.from_result,
     updated_at: now,
   )
+}
+
+/// The asks that wait on the owner: open, and routed to the owner. An ask
+/// routed to a strand needs no person, so it is not counted here. The attention
+/// summary and the `asks` count of `sessions.activity` (protocol-change/050,
+/// the addendum on open asks) both read it, so the two cannot disagree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention.open_owner_asks([]) == []
+/// ```
+pub fn open_owner_asks(asks: List(attention.Ask)) -> List(attention.Ask) {
+  list.filter(asks, fn(ask) {
+    ask.state == attention.AskOpen && ask.header.routing == attention.ToOwner
+  })
 }
 
 /// Where a record stands for the purposes of the bound and of pruning.

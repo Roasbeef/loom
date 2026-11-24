@@ -254,10 +254,7 @@ pub fn feed(runtime: api.Runtime) -> Result(JsonValue, String) {
 /// assert attention_feed.row_of([], [], []).asks.count == 0
 /// ```
 pub fn row_of(asks: List(Ask), finds: List(Find), stuck: List(Stuck)) -> Row {
-  let owed =
-    list.filter(asks, fn(ask) {
-      ask.state == attention.AskOpen && ask.header.routing == attention.ToOwner
-    })
+  let owed = store.open_owner_asks(asks)
   let open = list.filter(finds, fn(find) { find.state == attention.FindOpen })
   Row(
     waiting_since: oldest(list.map(owed, fn(ask) { ask.header.created_at })),

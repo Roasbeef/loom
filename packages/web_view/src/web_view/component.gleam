@@ -808,7 +808,7 @@ pub type Transport(socket) {
     /// from there with one state for each session that answered, so the page's
     /// runtime never waits for it. An observer's page lists nothing and asks
     /// nothing.
-    activity: fn(List(String), fn(List(#(String, sessions.Activity))) -> Nil) ->
+    activity: fn(List(String), fn(List(#(String, sessions.Watch))) -> Nil) ->
       Nil,
     /// Asks the daemon for a ticket to open the named session, for an
     /// operator's page that pressed its row: the daemon checks that the page's
@@ -1303,11 +1303,12 @@ type View(socket) {
     /// daemon or the browser except as a name `listing.chosen` found among the
     /// pills the page drew.
     filter: listing.Filter,
-    /// What the sidebar's running sessions were last said to be doing, by
-    /// identity. It is asked for after each read of the list and again every
-    /// `activity_refresh_ms`, and a session with no answer says "running".
-    /// The page's own session is never read from here (`session_activity`).
-    activity: dict.Dict(String, sessions.Activity),
+    /// What the sidebar's running sessions were last said to be doing and how
+    /// many asks wait on the owner, by identity. It is asked for after each
+    /// read of the list and again every `activity_refresh_ms`, and a session
+    /// with no answer says "running". The page's own session's state is never
+    /// read from here (`session_activity`); its asks are.
+    activity: dict.Dict(String, sessions.Watch),
     /// When the activity was last asked for on the transport's clock, so the
     /// next ask on a `Ticked` waits `activity_refresh_ms`.
     activity_asked_at: Option(Int),
@@ -1562,11 +1563,11 @@ pub type Msg(socket) {
   /// handler carries it, so a browser cannot send one.
   SessionsListed(entries: List(sessions.Entry))
 
-  /// The daemon's answer to the activity read a list started: one state for
-  /// each running session that answered. Like `SessionsListed` it is the
-  /// effect's own message, dispatched from the daemon's task, and no handler
-  /// carries it.
-  ActivityObserved(rows: List(#(String, sessions.Activity)))
+  /// The daemon's answer to the activity read a list started: one state and
+  /// one count of owner asks for each running session that answered. Like
+  /// `SessionsListed` it is the effect's own message, dispatched from the
+  /// daemon's task, and no handler carries it.
+  ActivityObserved(rows: List(#(String, sessions.Watch)))
 
   /// The daemon judged which browser sign-ins a remembered permission came
   /// from have ended. It is the effect's own message, dispatched from the
@@ -8976,8 +8977,10 @@ pub fn waiting_count(model: Model(socket)) -> Int {
 
 /// The second line of each running session's row in the rail, by identity, in
 /// the words of `watch_rule`. The page reads no attention feed, so a line says
-/// what the session is doing and its project and nothing of the live rail's
-/// count: `running`, `approval`, `aegis · quiet`.
+/// what the session is doing, whether it has asks open for the owner (from the
+/// activity read), and its project, and nothing of the live rail's count:
+/// `running`, `approval`, `aegis · asked`, `aegis · quiet`. On a page that has
+/// ended every line says `out of date` instead.
 ///
 /// ## Examples
 ///
@@ -8986,6 +8989,7 @@ pub fn waiting_count(model: Model(socket)) -> Int {
 /// ```
 pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
   let activity = session_activity(model)
+  let asking = session_asks(model)
 
   // The approvals the page holds are read once for the render, not once for
   // each listed session.
@@ -9008,7 +9012,7 @@ pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
           watch_rule.words(watch_rule.Facts(
             activity: doing,
             pinned:,
-            asks: 0,
+            asks: dict.get(asking, entry.id) |> result.unwrap(0),
             review: watch_rule.NothingToRead,
             project: option.map(entry.project, creations.folder),
           )),
@@ -9021,7 +9025,28 @@ pub fn session_watching(model: Model(socket)) -> dict.Dict(String, String) {
     }
   })
   |> dict.from_list
+  |> out_of_date_once_ended(model)
 }
+
+/// The rail's lines for a page that has ended: each says `out_of_date_words`
+/// where it said what the session was doing. An ended page is sent no more
+/// reads, so the words it holds are the last ones it received, and a line that
+/// kept saying `running` for a session that has since finished would be read as
+/// current.
+fn out_of_date_once_ended(
+  watching: dict.Dict(String, String),
+  model: Model(socket),
+) -> dict.Dict(String, String) {
+  // A page that is connecting, connected or retrying keeps the words it was
+  // given, since the reads still reach it.
+  case final_ending(model) {
+    Some(_) -> dict.map_values(watching, fn(_, _) { out_of_date_words })
+    None -> watching
+  }
+}
+
+/// What a row of the rail says once its page has ended.
+pub const out_of_date_words = "out of date"
 
 /// How many sessions the rail lists as running, for the line above its folders.
 ///
@@ -9069,10 +9094,29 @@ pub fn can_go_home(model: Model(socket)) -> Bool {
 pub fn session_activity(
   model: Model(socket),
 ) -> dict.Dict(String, sessions.Activity) {
+  let observed =
+    dict.map_values(model.view.activity, fn(_, watch) { watch.activity })
+
+  // The page's own lane, when it has captured one, outranks the daemon's read
+  // of the session, which is a few seconds old.
   case live_activity(model) {
-    Some(own) -> dict.insert(model.view.activity, model.shared.session, own)
-    None -> model.view.activity
+    Some(own) -> dict.insert(observed, model.shared.session, own)
+    None -> observed
   }
+}
+
+/// How many asks each running session has open and routed to the owner, by
+/// identity, as the activity read last said. The page's own session is read
+/// from here too, since the page's lane holds approvals and strands but not
+/// the asks, which the daemon keeps.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_asks(model)
+/// ```
+pub fn session_asks(model: Model(socket)) -> dict.Dict(String, Int) {
+  dict.map_values(model.view.activity, fn(_, watch) { watch.asks })
 }
 
 /// What the page's own session is doing, from the strip it draws. The rule is
@@ -9158,6 +9202,29 @@ pub fn strand(model: Model(socket)) -> String {
 /// ```
 pub fn status(model: Model(socket)) -> Status {
   model.view.status
+}
+
+/// Why the page has no connection to its session for good, or nothing while it
+/// has one, is making one, or will make one by itself. A `Final` ending closes
+/// the page's socket (`ending.close`), so the page is sent nothing more and
+/// what it draws is the last frame it received. A `Retry` ending leaves the
+/// page held open, and it keeps receiving the sidebar's reads, so it is not
+/// marked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.final_ending(model) == Some(ending.SessionStopped)
+/// ```
+pub fn final_ending(model: Model(socket)) -> Option(Ending) {
+  case ended_ending(model.view.status) {
+    Some(reason) ->
+      case ending.close(reason) {
+        ending.Final -> Some(reason)
+        ending.Retry -> None
+      }
+    None -> None
+  }
 }
 
 /// The escalations still waiting for a decision, in the order the capture

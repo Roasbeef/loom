@@ -1948,7 +1948,9 @@ pub fn only_an_operating_home_may_rename_itself_test() {
 // nothing of the principal's other sessions.
 pub fn the_sidebars_activity_read_is_an_operators_alone_test() {
   let answers = process.new_subject()
-  let ask = fn(ids) { list.map(ids, fn(id) { #(id, sessions.Working) }) }
+  let ask = fn(ids) {
+    list.map(ids, fn(id) { #(id, sessions.Watch(sessions.Working, 0)) })
+  }
   ui_socket.activity_for(ui_socket.Observing, ask, ["a"], fn(rows) {
     process.send(answers, rows)
   })
@@ -1956,7 +1958,8 @@ pub fn the_sidebars_activity_read_is_an_operators_alone_test() {
   ui_socket.activity_for(ui_socket.Operating, ask, ["a"], fn(rows) {
     process.send(answers, rows)
   })
-  assert process.receive(answers, patience_ms) == Ok([#("a", sessions.Working)])
+  assert process.receive(answers, patience_ms)
+    == Ok([#("a", sessions.Watch(sessions.Working, 0))])
 }
 
 // Protocol-change/073: a member operator's socket admits the remembered

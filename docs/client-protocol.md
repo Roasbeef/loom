@@ -1227,6 +1227,7 @@ opens a saved session and never reads its database.
 | `last_message` | string or null | optional | Main's final assistant text for that run, on one line, at most 280 bytes. |
 | `last_message_at` | integer or null | optional | Unix milliseconds of the entry behind `last_message`; `null` whenever `last_message` is. See [Protocol 050](../protocol-change/050-session-activity.md), the addendum on times. |
 | `turn_started_at` | integer or null | optional | Unix milliseconds at which the turn now open on main began; `null` while main runs nothing. |
+| `asks` | integer | optional | Number of asks that are open and routed to the owner. An ask routed to a strand is not counted. A client reads a missing member as 0. See [Protocol 050](../protocol-change/050-session-activity.md), the addendum on open asks. |
 | `model` | string or null | optional | Main's configured model identity, at most 64 bytes. |
 | `glances` | array | optional | At most four glances of strands whose operation is still current (`main` included), newest first, each with `strand` (at most 96 bytes), `title` (at most 60), and `summary` (at most 160, possibly empty). |
 
