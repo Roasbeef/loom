@@ -141,6 +141,7 @@ fn whole_lines(
   case lines {
     [] -> kept
     [next, ..rest] -> {
+      // The first line costs its bytes alone, a later one a newline as well.
       let cost = case kept {
         [] -> string.byte_size(next)
         [_, ..] -> string.byte_size(next) + 1

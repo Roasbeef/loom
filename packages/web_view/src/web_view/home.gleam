@@ -7234,6 +7234,8 @@ fn review_offer(model: Model) -> Option(inbox_view.Reviewed(Msg)) {
 /// finished message the overview carries. Nothing when the session said none.
 fn review_message(model: Model, session: String) -> Element(Msg) {
   let report = dict.get(model.reports, session)
+
+  // The overview's last message time, when the overview has one.
   let finished_at = case report {
     Ok(sessions.Report(last_message_at:, ..)) -> last_message_at
     Error(Nil) -> None
