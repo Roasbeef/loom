@@ -300,9 +300,9 @@ fn same(got: List(Asked), want: List(Asked)) -> Bool {
   && list.all(want, fn(each) { list.contains(got, each) })
 }
 
-// A ticket waiting on a person is a row under Needs you, in the board's order,
-// and one that needs nobody is not a thread. The headline counts the tickets as
-// their own clause.
+// A ticket waiting on a person is a row, in the board's order: under Needs you,
+// or under To review for a review or a failed check. One that needs nobody is
+// not a thread. The headline counts the tickets as their own clause.
 pub fn waiting_tickets_are_rows_under_needs_you_test() {
   let #(model, _) = owner(accepting())
   let html = drawn(model)
@@ -311,6 +311,7 @@ pub fn waiting_tickets_are_rows_under_needs_you_test() {
   assert string.contains(html, "<span class=\"inbox-kind\">Ticket</span>")
   assert string.contains(html, " · review</span>")
   assert string.contains(html, "t-check · person/check")
+  assert !string.contains(html, "t-check · check failed")
   assert string.contains(
     html,
     "<span class=\"nm\">Projects</span><span class=\"n\">4</span>",
@@ -326,6 +327,7 @@ pub fn person_check_is_named_with_only_what_is_listed_test() {
   let html = drawn(picked(model, "t-check"))
 
   assert string.contains(html, "t-check · person/check")
+  assert !string.contains(html, "t-check · check failed")
   assert string.contains(html, "Retry")
   assert !string.contains(html, "Recheck")
   assert !string.contains(html, "Close ticket")
