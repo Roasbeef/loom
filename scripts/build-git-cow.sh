@@ -57,6 +57,7 @@ fi
 
 # Same flags as scripts/go-build.sh, for the same reasons: -trimpath removes
 # the build directory from the binary and -s -w drops symbols nothing reads.
-GOBIN="$work/bin" go install -trimpath -ldflags="-s -w" "$GIT_COW_MODULE/cmd/git-cow@$GIT_COW_COMMIT"
+# CGO is off so the binary links no libc, as release.sh builds loom-vm.
+CGO_ENABLED=0 GOBIN="$work/bin" go install -trimpath -ldflags="-s -w" "$GIT_COW_MODULE/cmd/git-cow@$GIT_COW_COMMIT"
 install -m 0755 "$work/bin/git-cow" "$output"
 echo "built $output from $GIT_COW_MODULE@${GIT_COW_COMMIT:0:12}"
