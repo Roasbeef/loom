@@ -265,7 +265,7 @@
      padding: the dock carries its own, so it sits flush with the edge it is
      pinned to.
 
-     The widths: the sidebar is 232px until the reader drags its grip (180px at least, 480px at most), the panel 344px until the reader drags
+     The widths: the sidebar is 184px until the reader drags its grip (180px at least, 480px at most), the panel 344px until the reader drags
      its grip (280px at least, and never so wide that the transcript falls under
      360px, see .shell-centre), and the transcript at most 780px. Each side column is dropped where it would leave the
      transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
@@ -365,7 +365,7 @@
   /* Where the panel is a column the transcript keeps 360px (grip_rule.centre_floor), and the panel, which may shrink, gives way when a window cannot hold its width and that floor. */
   @media (min-width:980px){.shell-centre{min-width:360px;}}
   .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease,min-width 180ms ease;}
-  .region-sidebar{flex:0 1 auto;width:var(--sidebar-width,232px);min-width:180px;}
+  .region-sidebar{flex:0 1 auto;width:var(--sidebar-width,184px);min-width:180px;}
   /* The panel's column holds the tab bar above the slot. It carries the
      column's border and background, so the bar and the panes share them. */
   .region-panel{flex:0 1 auto;width:var(--panel-width,344px);min-width:280px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg-sunk);border-left:1px solid var(--color-divider);}
@@ -855,7 +855,7 @@
     .inbox-row,.inbox-btn,button.inbox-open{min-height:44px;}
     .inbox-row.inbox-selected{background:transparent;box-shadow:none;}
   }
-  /* The frame, on every page: a 44px bar and a rail (232px until dragged), as the final design
+  /* The frame, on every page: a 44px bar and a rail (184px until dragged), as the final design
      draws them. The host class is `loom-inbox` (view/shell), which every
      audience carries, so Home, a session's page and the admin page share the
      bar's one row and the rail's width. The bar reads `loom  ‹ Inbox  workspace /
@@ -863,14 +863,14 @@
      right the chip that says who the page is for, a ghost Search with its
      shortcut and a ghost Theme. The connection's pill is drawn only when the
      page is not connected. */
-  :host(.loom-inbox) .shell-bar{align-items:flex-start;box-sizing:border-box;min-height:48px;height:auto;padding-top:env(safe-area-inset-top,0px);background:var(--color-bg);}
-  :host(.loom-inbox) .shell-toggle{align-self:flex-start;height:47px;}
+  :host(.loom-inbox) .shell-bar{align-items:flex-start;box-sizing:border-box;min-height:44px;height:auto;padding-top:env(safe-area-inset-top,0px);background:var(--color-bg);}
+  :host(.loom-inbox) .shell-toggle{align-self:flex-start;height:43px;}
   :host(.loom-inbox) .toggle-sidebar{width:44px;}
   :host(.loom-inbox) .toggle-hint{display:none;}
-  :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:flex-start;box-sizing:border-box;width:auto;height:auto;margin:11px 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:flex-start;box-sizing:border-box;width:auto;height:auto;margin:8px 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
   :host(.loom-inbox) .shell-theme{margin-right:12px;}
   :host(.loom-inbox) .bar-search:hover,:host(.loom-inbox) .shell-theme:hover{background:var(--color-bg-raised);color:var(--color-fg);}
-  loom-shell.loom-inbox .session-head{flex-wrap:nowrap;align-items:center;gap:0 14px;min-height:47px;padding:0 16px 0 4px;overflow:hidden;}
+  loom-shell.loom-inbox .session-head{flex-wrap:nowrap;align-items:center;gap:0 14px;min-height:43px;padding:0 16px 0 4px;overflow:hidden;}
   loom-shell.loom-inbox .session-head > *{order:3;flex:0 0 auto;}
   loom-shell.loom-inbox .session-head .brand{display:block;order:0;font:650 14px/26px var(--font-sans);letter-spacing:.01em;}
   loom-shell.loom-inbox .session-head > h1{order:1;flex:0 1 auto;color:var(--color-fg-quiet);font:400 14px/26px var(--font-sans);}
@@ -914,6 +914,15 @@
      alone under the saved rows. */
   loom-shell.loom-inbox .state-heading{display:flex;margin:14px 8px 4px 8px;padding:0;font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;}
   loom-shell.loom-inbox .relayed-side-group .state-heading{margin:18px 8px 6px 8px;}
+  /* The running sessions are one flat list under "Watch live", as the final
+     design draws it: the dot's colour and the row's second line carry the state,
+     so the three running groups draw no heading. The groups stay in the document
+     in their order (needs you, working, idle), and the saved, blocked and other
+     orchestrators' groups keep theirs, which the mockup has no frame for. A row's
+     third line, the session's last prompt, is hidden for the same reason: the
+     final design's row is two lines. */
+  loom-shell.loom-inbox .state-needs-you > .state-heading,loom-shell.loom-inbox .state-working > .state-heading,loom-shell.loom-inbox .state-idle > .state-heading{display:none;}
+  loom-shell.loom-inbox .session-subtitle{display:none;}
   loom-shell.loom-inbox section.state-group{margin:0;}
   loom-shell.loom-inbox li.session{min-height:0;border-radius:6px;font-size:13px;}
   loom-shell.loom-inbox li.session:hover{background:var(--color-bg-raised);}

@@ -183,16 +183,16 @@ fn band(name: String, count: String) -> String {
 }
 
 // `B` has an approval pending, `A` finished a run and said something, and `C`
-// works. So "Needs you" and "Updates" hold one thread each, and nothing else
-// has a folder.
+// works. So "Needs you" and "Updates" hold one thread each, the other two of
+// the four always-listed folders read 0, and Projects is not listed.
 pub fn only_the_groups_that_hold_something_have_a_folder_test() {
   let html = drawn(opened(start()))
 
   assert string.contains(html, "<span class=\"nm\">Everything, by need</span>")
   assert string.contains(html, count("Needs you", "1"))
   assert string.contains(html, count("Updates", "1"))
-  assert !string.contains(html, "<span class=\"nm\">To review</span>")
-  assert !string.contains(html, "<span class=\"nm\">Finds</span>")
+  assert string.contains(html, count("To review", "0"))
+  assert string.contains(html, count("Finds", "0"))
   assert !string.contains(html, "<span class=\"nm\">Projects</span>")
 }
 
@@ -242,7 +242,7 @@ pub fn an_emptied_folder_draws_as_everything_test() {
   ]
   let html = drawn(run(narrowed, home.Observed(quiet)))
 
-  assert !string.contains(html, "<span class=\"nm\">Updates</span>")
+  assert string.contains(html, count("Updates", "0"))
   assert string.contains(html, "aria-pressed=\"true\"")
 }
 

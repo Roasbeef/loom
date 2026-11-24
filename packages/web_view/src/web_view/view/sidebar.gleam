@@ -608,9 +608,21 @@ fn folders_nav(folders: Folders(message)) -> Element(message) {
       ..list.map(folders.items, fn(entry) {
         let #(folder, count) = entry
 
+        // A folder with nothing in it is drawn as text: a press on it would change
+        // nothing, so it is not offered, and it is still listed so that the rail's
+        // shape does not move as work comes and goes.
         folder_element(
-          folders.way,
+          case folder, count {
+            inbox_rule.Everything, _ | _, None -> folders.way
+            _, Some(0) ->
+              case folders.way {
+                Pick(_) -> Text
+                Return | Text -> folders.way
+              }
+            _, Some(_) -> folders.way
+          },
           folder,
+          count,
           case Some(folder) == folders.current {
             True -> Chosen
             False -> Offered
@@ -640,13 +652,16 @@ fn folders_nav(folders: Folders(message)) -> Element(message) {
 fn folder_element(
   way: Way(message),
   folder: Folder,
+  count: Option(Int),
   mark: Mark,
   parts: List(Element(message)),
 ) -> Element(message) {
-  // The folder that asks something of the person carries the signal count.
-  let need = case folder {
-    inbox_rule.Needing -> attribute.class("need")
-    _ -> attribute.none()
+  // The folder that asks something of the person carries the signal count, and
+  // only while it holds something: a signal-coloured zero would ask for nothing.
+  let need = case folder, count {
+    inbox_rule.Needing, Some(0) -> attribute.none()
+    inbox_rule.Needing, _ -> attribute.class("need")
+    _, _ -> attribute.none()
   }
 
   // The page chooses what a press does: send the folder it drew, step back in

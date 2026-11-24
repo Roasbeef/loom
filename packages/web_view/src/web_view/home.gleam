@@ -6541,6 +6541,11 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
             |> option.map(fn(nodes) { #(entry.0, nodes) })
             |> option.to_result(Nil)
           }),
+          subjects: list.filter_map(dict.to_list(model.evidence), fn(entry) {
+            attention_thread.approval_subject(entry.1)
+            |> option.map(fn(words) { #(entry.0, words) })
+            |> option.to_result(Nil)
+          }),
           evidence: list.map(dict.to_list(model.evidence), fn(entry) {
             #(entry.0, attention_thread.evidence(entry.1))
           }),
@@ -6605,6 +6610,7 @@ fn with_tickets(
           finds: [],
           pane: None,
           titles: [],
+          subjects: [],
           evidence: [],
         ),
         waiting,
@@ -7840,7 +7846,7 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
   sidebar.Folders(
     items: [
       #(inbox_rule.Everything, Some(0)),
-      ..list.map(folder_counts(model), fn(entry) { #(entry.0, Some(entry.1)) })
+      ..list.map(offered_folders(model), fn(entry) { #(entry.0, Some(entry.1)) })
     ],
     current: case landed_inbox(model) {
       True -> Some(shown_folder(model))
@@ -7849,6 +7855,35 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
     way: sidebar.Pick(FolderPicked),
     note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
     running: running_sessions(model),
+  )
+}
+
+/// The folders the rail draws and their counts, in the rail's order. The final
+/// design lists "Needs you", "To review", "Finds" and "Updates" whether or not
+/// they hold anything, so a person learns where a thing would appear and the rail
+/// does not change its shape as work comes and goes; "Projects" is drawn only
+/// while a ticket waits, because a page that has no project has no such folder.
+/// A press on an empty folder changes nothing (`shown_folder`).
+fn offered_folders(model: Model) -> List(#(inbox_rule.Folder, Int)) {
+  let held = folder_counts(model)
+  let count = fn(folder) {
+    case list.key_find(held, folder) {
+      Ok(found) -> found
+      Error(Nil) -> 0
+    }
+  }
+
+  list.append(
+    list.map(
+      [
+        inbox_rule.Needing,
+        inbox_rule.Reviewing,
+        inbox_rule.Finding,
+        inbox_rule.Updating,
+      ],
+      fn(folder) { #(folder, count(folder)) },
+    ),
+    list.filter(held, fn(entry) { entry.0 == inbox_rule.Projecting }),
   )
 }
 

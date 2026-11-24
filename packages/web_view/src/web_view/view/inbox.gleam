@@ -212,6 +212,11 @@ pub type Threads(message) {
     /// pane draws in place of the page's own sentence when the evidence has one
     /// (`attention_thread.approval_title`).
     titles: List(#(String, List(Element(message)))),
+    /// The plain subject of a session's pending approval, by session, which its
+    /// list row says in place of the session's last message
+    /// (`attention_thread.approval_subject`): what the approval asks, as the final
+    /// design's row does.
+    subjects: List(#(String, String)),
     /// The evidence of a session's pending approval, by session, drawn in that
     /// session's thread above the one control that leads to its page.
     evidence: List(#(String, Element(message))),
@@ -343,6 +348,7 @@ fn threads_list(offer: Offer(message)) -> Element(message) {
         finds: [],
         pane: None,
         titles: [],
+        subjects: [],
         evidence: [],
       )
   }
@@ -515,7 +521,7 @@ fn row(
       kind: row_word(kind, which),
       head: case which, list.key_find(offer.sized, thread.id) {
         inbox_rule.ToReview, Ok(size) -> parts.words(size)
-        _, _ -> parts.words(inbox_rule.thread_head(thread))
+        _, _ -> parts.words(subject_of(thread, kind, offer))
       },
       selection: case offer.selected, item_open(offer) {
         Some(pick), False if pick.session == thread.id -> parts.Selected
@@ -524,6 +530,21 @@ fn row(
     ),
     offer.pick(thread.id),
   )
+}
+
+/// A row's one-line subject. An approval's says what it asks (`bash · wants a
+/// network grant`) when the page has read the evidence for it, because the
+/// session's last message says nothing of the approval; any other row's is the
+/// head the rule words from the report.
+fn subject_of(thread: Thread, kind: Kind, offer: Offer(message)) -> String {
+  case kind, offer.attention {
+    inbox_rule.ApprovalPending, Some(threads) ->
+      case list.key_find(threads.subjects, thread.id) {
+        Ok(words) -> words
+        Error(Nil) -> inbox_rule.thread_head(thread)
+      }
+    _, _ -> inbox_rule.thread_head(thread)
+  }
 }
 
 /// Whether an attention item's or a ticket's pane is open, which takes the
