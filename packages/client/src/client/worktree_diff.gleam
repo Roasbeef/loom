@@ -161,7 +161,7 @@ pub type Content {
   /// Index and worktree changes cancel out relative to the captured HEAD.
   NoNetChange
 
-  /// An untracked nested repository is listed without traversing it.
+  /// An untracked directory or nested repository is listed without traversing it.
   MetadataOnly
 }
 
@@ -194,7 +194,9 @@ pub type Board {
     repository: Repository,
     /// Files retained within both the count and encoded-byte ceilings.
     entries: List(File),
-    /// The exact count from the complete bounded status response.
+    /// The count of status entries and untracked records, each untracked
+    /// directory counting once. Exact unless `extent` is `Limited` because the
+    /// untracked listing was cut, when it is a lower bound.
     total: Int,
     /// Status entries absent from `entries`: beyond the file limit, past the
     /// encoded-byte ceiling, or not reached before the execution deadline.
@@ -379,7 +381,10 @@ fn capture_repository(
   use Nil <- result.try(complete(prefix))
   use prefix <- result.try(line_value(prefix.stdout))
   use identities <- result.try(parse_status(status.stdout, prefix))
-  use #(capture, untracked) <- result.try(capture_untracked(capture, prefix))
+  use #(capture, untracked, untracked_extent) <- result.try(capture_untracked(
+    capture,
+    prefix,
+  ))
   let identities = list.append(identities, untracked)
   use #(capture, head) <- result.try(run_git(
     capture,
@@ -392,7 +397,7 @@ fn capture_repository(
   let #(capture, committed) =
     capture_committed(capture, start, repository, revision)
 
-  // The status count is exact only because an oversized status was refused.
+  // The tracked count is exact only because an oversized status was refused.
   // Files beyond this prefix are counted, not silently treated as unchanged.
   let total = list.length(identities)
   use files <- result.try(
@@ -406,7 +411,14 @@ fn capture_repository(
   )
   let board =
     Board(observed_at_ms, committed, repository, [], total, total, Complete)
-  Ok(fit_board(board, files))
+  let fitted = fit_board(board, files)
+
+  // A cut untracked listing leaves `total` a lower bound, so the board says so
+  // even when every listed entry was drawn.
+  Ok(case untracked_extent {
+    Complete -> fitted
+    Limited -> Board(..fitted, extent: Limited)
+  })
 }
 
 // A failed history read is an explicit unavailable section. The shared deadline
@@ -519,43 +531,94 @@ fn commit_range(
 // whose old store is still on disk and would otherwise list every artifact
 // as an untracked file.
 
-/// Establishes capture untracked for the caller, keeping its validation and result policy at this boundary.
-fn capture_untracked(capture: Capture, prefix: String) {
+/// Lists the untracked entries of the workspace, one per untracked directory.
+///
+/// `--directory` makes Git stop at the first wholly untracked directory and
+/// name it with a trailing slash, and `--no-empty-directory` drops a directory
+/// that holds nothing. A tool home with ten thousand files therefore costs one
+/// short record, so the listing's size follows the number of directories and
+/// loose files rather than the number of files beneath them. That is what keeps
+/// the listing under `status_byte_limit` on a workspace with large untracked
+/// trees; `capture_file` draws a record ending in a slash as `MetadataOnly`.
+///
+/// A listing that still exceeds the limit is cut at its last whole record and
+/// reported as `Limited`. The tracked changes do not depend on it, so the
+/// board degrades to a partial untracked list instead of failing.
+fn capture_untracked(
+  capture: Capture,
+  prefix: String,
+) -> Result(#(Capture, List(Identity), Extent), Error) {
+  use #(capture, records, extent) <- result.try(untracked_records(
+    capture,
+    Collapsed,
+  ))
+
+  // When the attached directory is itself wholly untracked, Git collapses the
+  // listing to that directory's own record, which names no entry inside it.
+  // Only then is the flat listing needed; it is bounded like any other, so the
+  // worst case is a cut list rather than a failure.
+  use #(capture, records, extent) <- result.try(case records == [prefix] {
+    True -> untracked_records(capture, Flat)
+    False -> Ok(#(capture, records, extent))
+  })
+
+  use identities <- result.try(
+    list.try_map(records, fn(path) { status_identity("?? " <> path, prefix) }),
+  )
+  Ok(#(capture, identities, extent))
+}
+
+/// How `untracked_records` asks Git to group untracked files.
+type Listing {
+  /// One record for each wholly untracked directory.
+  Collapsed
+
+  /// One record for each untracked file.
+  Flat
+}
+
+/// Runs the untracked listing and returns its whole NUL-terminated records.
+fn untracked_records(
+  capture: Capture,
+  listing: Listing,
+) -> Result(#(Capture, List(String), Extent), Error) {
+  // The two groupings differ only in whether Git folds an untracked directory
+  // into one record.
+  let grouping = case listing {
+    Collapsed -> ["--directory", "--no-empty-directory"]
+    Flat -> []
+  }
+
   use #(capture, output) <- result.try(run_git(
     capture,
-    [
-      "ls-files",
-      "--others",
-      "--exclude-standard",
-      "--full-name",
-      "-z",
-      "--exclude=" <> codemode.work_directory <> "/",
-      "--exclude=" <> codemode.legacy_blob_directory <> "/",
-      "--",
-      ".",
-    ],
+    list.flatten([
+      ["ls-files", "--others", "--exclude-standard", "--full-name"],
+      grouping,
+      [
+        "-z",
+        "--exclude=" <> codemode.work_directory <> "/",
+        "--exclude=" <> codemode.legacy_blob_directory <> "/",
+        "--",
+        ".",
+      ],
+    ]),
     status_byte_limit,
   ))
   use Nil <- result.try(successful(output))
-  use Nil <- result.try(complete(output))
-  use text <- result.try(
-    bit_array.to_string(output.stdout) |> result.replace_error(InvalidOutput),
+  use text <- result.try(patch_text(output.stdout, output.extent))
+
+  // A complete listing ends with the NUL that terminates its last record.
+  use <- bool.guard(
+    output.extent == Complete && text != "" && !string.ends_with(text, "\u{0}"),
+    Error(InvalidOutput),
   )
 
-  // Decide how to handle text {.
-  case text {
-    "" -> Ok(#(capture, []))
-    _ -> {
-      use <- bool.guard(!string.ends_with(text, "\u{0}"), Error(InvalidOutput))
-      use identities <- result.try(
-        text
-        |> string.drop_end(1)
-        |> string.split("\u{0}")
-        |> list.try_map(fn(path) { status_identity("?? " <> path, prefix) }),
-      )
-      Ok(#(capture, identities))
-    }
-  }
+  // A cut listing ends inside a record, or exactly between two. Dropping the
+  // final piece after splitting on NUL removes the partial record in the first
+  // case and an empty string in the second, so a kept record is always whole.
+  // A complete listing's final piece is the empty string after its last NUL.
+  let pieces = string.split(text, "\u{0}")
+  Ok(#(capture, list.take(pieces, list.length(pieces) - 1), output.extent))
 }
 
 /// Establishes comparison for the caller, keeping its validation and result policy at this boundary.
@@ -652,8 +715,9 @@ fn capture_file(
       Complete,
     )
 
-  // Porcelain lists an untracked nested repository as one directory. It is
-  // an identity in this workspace, not permission to recursively diff it.
+  // An untracked directory, a nested repository included, is one record ending
+  // in a slash. It is an identity in this workspace, not permission to
+  // recursively diff it.
   use <- bool.guard(
     string.ends_with(identity.path, "/"),
     Ok(#(capture, File(..empty, kind: MetadataOnly))),
