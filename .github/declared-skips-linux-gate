@@ -20,3 +20,12 @@ declared|linux|SKIP lsp manager gopls: gopls or go is not installed|The ordinary
 # Landlock guest kernel and an exported guest root (ADR-022); the hosted Linux
 # runner carries none of them.
 declared|linux|SKIP shipped microvm executor: LOOM_VM is unset|The microVM fixture needs a hypervisor and a built guest root; the hosted runner has neither, and it runs on a developer machine.
+
+# The project template's copy-on-write fixture
+# (`client/project_template_test`) runs only where `git-cow` is installed.
+# Neither a hosted runner nor the signoff container carries it, and git-cow's
+# Linux reflink path is unmeasured. The plain-copy fallback, which is what a
+# host without git-cow uses, runs everywhere in the same module
+# (`a_program_that_cannot_run_falls_back_to_the_plain_copy_test`). Remove this
+# line once the runner installs a pinned git-cow.
+declared|linux|SKIP project_template: git-cow is not installed|git-cow is not installed on hosted runners or in the signoff container; the plain-copy fallback runs in the same module.
