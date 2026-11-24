@@ -635,9 +635,9 @@ fn rail_folders(
       #(inbox_rule.Projecting, None),
     ],
     current: None,
-    pick: case component.can_go_home(model) {
-      True -> Some(fn(_) { Observed(component.GoingHome) })
-      False -> None
+    way: case component.can_go_home(model) {
+      True -> sidebar.Pick(fn(_) { Observed(component.GoingHome) })
+      False -> sidebar.Text
     },
     note: case component.final_ending(model) {
       // The list is the last one the page received and nothing updates it.

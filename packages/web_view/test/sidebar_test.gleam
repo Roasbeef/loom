@@ -85,7 +85,7 @@ fn no_folders() -> sidebar.Folders(Nil) {
   sidebar.Folders(
     items: [#(inbox_rule.Everything, None)],
     current: None,
-    pick: None,
+    way: sidebar.Text,
     note: "",
     running: 0,
   )

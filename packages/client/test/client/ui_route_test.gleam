@@ -3026,7 +3026,8 @@ pub fn a_switch_carries_the_pages_own_reach_test() {
 // A page opened from a home may go home: the daemon mints a home ticket whose
 // exchange is the home's, for the same principal. A page a link for one session
 // opened has no capability to call, so the way home is not offered to it, and
-// the daemon's own answer would be the same refusal to a forged call.
+// that holds for the owner's own operating link (`operate`): the link grants one
+// session, and a home would widen it.
 pub fn only_a_workspace_page_may_go_home_test() {
   fixture_with(Switching, fn(ready, port, credential) {
     let session = create_session(ready, "go-home", 973)
