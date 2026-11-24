@@ -1398,13 +1398,14 @@ fn revision_field(fields: List(#(String, JsonValue))) -> Result(Int, String) {
 fn bounded_changes(
   items: List(JsonValue),
 ) -> Result(List(SettingChange), String) {
+  // More than the bound is refused before any item is read.
   case list.length(items) <= max_setting_changes {
     False -> Error("a settings request holds at most five changes")
     True -> {
       use changes <- result.try(list.try_map(items, setting_change))
+      let keys = list.map(changes, fn(change) { change.key })
 
       // Two changes to one key would make the outcome depend on their order.
-      let keys = list.map(changes, fn(change) { change.key })
       case list.length(list.unique(keys)) == list.length(keys) {
         True -> Ok(changes)
         False -> Error("a settings request names each key at most once")
