@@ -36,6 +36,7 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import session_view/markdown.{type Block, type Inline}
+import session_view/text_hygiene
 import web_view/code_view
 
 /// The elements for a parsed Markdown tree, one per top-level block.
@@ -71,7 +72,7 @@ pub fn blocks(tree: List(Block)) -> List(Element(message)) {
 /// let children = markdown_view.quoted("**Done.** See [the file](notes/a.md)")
 /// ```
 pub fn quoted(text: String) -> List(Element(message)) {
-  markdown.parse(text)
+  markdown.parse(text_hygiene.multiline(text))
   |> list.map(unlink_block)
   |> blocks
 }
