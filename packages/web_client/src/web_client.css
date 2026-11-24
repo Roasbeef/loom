@@ -907,11 +907,13 @@
   .folder .n{min-width:20px;color:var(--color-fg-quiet);font-size:12px;text-align:center;}
   .folder.need .n{padding:0 6px;border-radius:10px;background:var(--color-signal);color:var(--color-on-signal);font-weight:700;}
   .rail-heading{flex:0 0 auto;margin:18px 18px 6px 18px;color:var(--color-fg-quiet);font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;}
-  loom-shell.loom-inbox .state-heading{display:none;}
-  /* A section of another orchestrator keeps its heading in the rail, drawn as the
-     rail's own "Watch live" heading, so the line saying the box is not reachable
-     sits under the name it describes and not alone under the saved rows. */
-  loom-shell.loom-inbox .relayed-side-group .state-heading{display:flex;margin:18px 8px 6px 8px;padding:0;font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;}
+  /* A group's heading names the state its rows share (running, saved, blocked),
+     which no row repeats, so it stays in the rail, drawn as the rail's own "Watch
+     live" heading. A section of another orchestrator is the same, so the line
+     saying the box is not reachable sits under the name it describes and not
+     alone under the saved rows. */
+  loom-shell.loom-inbox .state-heading{display:flex;margin:14px 8px 4px 8px;padding:0;font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;}
+  loom-shell.loom-inbox .relayed-side-group .state-heading{margin:18px 8px 6px 8px;}
   loom-shell.loom-inbox section.state-group{margin:0;}
   loom-shell.loom-inbox li.session{min-height:0;border-radius:6px;font-size:13px;}
   loom-shell.loom-inbox li.session:hover{background:var(--color-bg-raised);}
@@ -924,8 +926,10 @@
   :host(.loom-inbox) .toggle-sidebar{position:relative;}
   @media (min-width:1212px){:host(.loom-inbox[waiting]) .toggle-sidebar::after{display:none;}}
   loom-shell.loom-inbox .tag-agent{color:var(--color-fg-quiet);font-weight:400;}
-  loom-shell.loom-inbox .tag-arrow,loom-shell.loom-inbox .tag-code{display:none;}
-  loom-shell.loom-inbox .session-subtitle{display:none;}
+  /* A row that carries the placement tag (the admin page's, and a session the
+     page has no live words for) says where the code lives after the agent: that is
+     the one fact the row holds about the session's place, so it is not hidden. */
+  loom-shell.loom-inbox .tag-code{color:var(--color-fg-quiet);}
   .rail-note{margin:16px 8px 0 8px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .rail-new{display:block;box-sizing:border-box;width:calc(100% - 16px);margin:16px 8px 0 8px;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:13px/1.45 var(--font-sans);text-align:left;cursor:pointer;}
   .rail-new:hover{background:var(--color-bg-raised);}
@@ -1693,6 +1697,10 @@
   button.ended-back:hover{background:var(--color-bg-raised);}
   button.ended-back:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   .ended-document loom-back{display:block;margin-top:12px;}
+  /* The admin page's rail folders are Back controls: the page mints no home
+     ticket, so each folder is a <loom-back> drawn as a folder row. */
+  .folder-back{display:block;width:100%;}
+  :host(.folder-back) button.ended-back{display:block;box-sizing:border-box;width:100%;padding:6px 8px;border-color:transparent;border-radius:6px;color:var(--color-fg);font:13.5px/1.45 var(--font-sans);text-align:left;}
   a.ended-link{color:inherit;text-decoration:underline;text-underline-offset:2px;}
   /* The todo panel: the strand's board and the reviewer band, above the
      composer in the operator's dock and above the observer's bar. Its height
@@ -2664,7 +2672,7 @@
   @media (max-width:640px){
     :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme,:host(.loom-inbox) .toggle-panel{display:none;}
     :host(.loom-session:not(.loom-home)) .toggle-sidebar,:host(.loom-session:not(.loom-home)) .region-panel{display:none;}
-    loom-shell.loom-inbox .session-head .role-chip,loom-shell.loom-inbox .session-head .workspace{display:none;}
+    loom-shell.loom-inbox .session-head .workspace{display:none;}
     loom-shell.loom-inbox:not(.loom-home) .session-head .home-who{display:none;}
     loom-shell.loom-home .session-head .home-who{display:flex;min-width:0;}
     loom-shell.loom-home .session-head .home-who-button{min-height:36px;max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -2673,6 +2681,7 @@
     loom-shell.loom-inbox .session-head .session-title{flex:0 1 auto;min-width:0;}
     loom-shell.loom-inbox .session-head .session-title h1{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     loom-shell.loom-inbox .session-head .need-pill,loom-shell.loom-inbox .session-head .brand,loom-shell.loom-inbox .session-head .home-link,.live-mark{flex:0 0 auto;}
+    loom-shell.loom-inbox .session-head .role-chip{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;}
   }
   /* The review's count chips and the last command share one line where there is
      room: the counts keep their size and the command's chip takes what is left,
