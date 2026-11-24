@@ -8,6 +8,11 @@ there and a model's `put_fact` is refused, so a question a person is about to
 answer, and an answer, cannot be forged. The runtime treats the payloads as
 opaque; `core/attention` owns their shape and the host owns the bounds.
 
+`attention/stuck/<strand>` is a third reserved prefix (protocol-change/131): the
+owner's dismissal of a stuck strand's failure, owned by `core/attention_dismissal`
+and written by `client/attention`. A model's `put_fact` is refused there too, so
+a strand cannot hide its own failure from the feed.
+
 ## Native evolution fact ownership
 
 The `evolution/` FactCustom prefix and existing `client/` and `prompt/`

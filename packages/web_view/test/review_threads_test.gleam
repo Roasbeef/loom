@@ -291,6 +291,7 @@ fn acting(
       process.send(acted, Closed(session, find, revision, closure))
       deliver(close)
     },
+    dismiss_stuck: fn(_, _, _, deliver) { deliver(home.Failed("unused")) },
     strand: fn(session, strand, text, _delivery, deliver) {
       process.send(acted, Messaged(session, strand, text))
       deliver(prompt)

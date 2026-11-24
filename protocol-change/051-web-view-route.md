@@ -5566,3 +5566,23 @@ title, Other inside its option, the fixed header words and the strand on the row
 against the scripted model (`scripts/web_seed`, the prompts "fail the check", "ask
 me first" and "go stuck") was run at 1440 and 375 pixels, light and dark; the
 captures are kept outside the repository.
+
+## Addendum: Dismiss on a stuck strand's card (2026-11-23)
+
+[131](131-dismiss-stuck-strand.md) adds a second action to a stuck strand's card
+in the live rail, "Dismiss", beside "Retry the last step". It is drawn for the page
+that is handed `component.Attention.act` and only when the feed row names the failed
+run, so an observer's page, which has no `act`, draws neither button.
+
+The button is the second button of the same `div.lift-acts` that holds Retry, so
+its path is Retry's with the last step `1` instead of `0`:
+`rail_path`, then `1\t0\t1`, the card's position, then `2\t1`. `component.rail_dismiss`
+names it as `rail_retry` and `rail_close` name theirs. No socket consults it: an
+operator's or an owner's socket admits a click at any path, and an observer's list of
+admitted places is unchanged, so an event at this path from an observer is dropped as
+one at Retry's is. The test `client/test/client/ui_socket_test.gleam` pins the
+observer's refusal at the path, alone and in a batch, and `rail_actions_test` pins
+that the button is at that path and the only handler the card gained.
+
+No message, route or frame is added to the observer's list, and nothing else in this
+document changes.

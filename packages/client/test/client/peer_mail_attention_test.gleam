@@ -17,17 +17,21 @@ import client/peer_mail
 import client/permissions
 import core/accounting
 import core/attention as records
+import core/attention_dismissal
 import core/clock
 import core/entry
 import core/ids
 import core/json.{type JsonValue}
 import core/message
+import core/register
+import core/tx
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import machine/codec
 import machine/operation
 import machine/strand as machine_strand
 import provider/stream
@@ -35,6 +39,7 @@ import qcheck
 import runtime/api
 import runtime/effects
 import runtime/escalation
+import runtime/writer
 import session/session
 import simplifile
 import tools/agent
@@ -452,7 +457,7 @@ pub fn a_failed_idle_strand_is_stuck_with_the_exact_time_of_its_failure_test() {
   let results = [#("sub:main/audit-1a2b", failed(Some(leaf)))]
 
   // The time is the response entry's own, not the mint time of its id.
-  assert attention_feed.stuck_strands([], results, evidence)
+  assert attention_feed.stuck_strands([], results, evidence, [])
     == [
       attention_feed.Stuck(
         strand: "sub:main/audit-1a2b",
@@ -460,6 +465,7 @@ pub fn a_failed_idle_strand_is_stuck_with_the_exact_time_of_its_failure_test() {
         reason: "provider",
         retry_after_ms: Some(30_000),
         parent: Some("main"),
+        operation: ids.op_id_to_string(operation_id()),
       ),
     ]
 }
@@ -498,6 +504,7 @@ pub fn a_leaf_that_is_not_a_failed_response_gives_no_time_test() {
       [],
       [#("sub:main/a", failed(Some(leaf)))],
       evidence,
+      [],
     )
     == [
       attention_feed.Stuck(
@@ -506,6 +513,7 @@ pub fn a_leaf_that_is_not_a_failed_response_gives_no_time_test() {
         reason: "provider",
         retry_after_ms: None,
         parent: None,
+        operation: ids.op_id_to_string(operation_id()),
       ),
     ]
 }
@@ -515,6 +523,7 @@ pub fn a_result_with_no_leaf_gives_no_failed_at_test() {
       [],
       [#("sub:main/a", failed(None))],
       attention_feed.no_evidence(),
+      [],
     )
     == [
       attention_feed.Stuck(
@@ -523,6 +532,7 @@ pub fn a_result_with_no_leaf_gives_no_failed_at_test() {
         reason: "provider",
         retry_after_ms: None,
         parent: None,
+        operation: ids.op_id_to_string(operation_id()),
       ),
     ]
 }
@@ -546,6 +556,7 @@ pub fn the_reason_is_a_fixed_word_or_failed_test() {
         [],
         [#("sub:main/a", last)],
         attention_feed.no_evidence(),
+        [],
       )
     item.reason
   }
@@ -595,7 +606,231 @@ pub fn only_a_failed_run_of_a_non_main_idle_strand_is_stuck_test() {
   ]
   let states = [#("sub:main/running", Some(operation_id()))]
   let assert [attention_feed.Stuck(strand: "sub:main/stuck", ..)] =
-    attention_feed.stuck_strands(states, results, attention_feed.no_evidence())
+    attention_feed.stuck_strands(
+      states,
+      results,
+      attention_feed.no_evidence(),
+      [],
+    )
+}
+
+// --- dismissing a stuck strand (protocol-change/131) -------------------------
+
+// A distinct operation per seed, so a strand can fail twice with two failures.
+fn run_of(seed: Int) -> ids.OpId {
+  let #(id, _) = ids.mint_op(ids.generator(clock.fixed(at: 5), seed:))
+  id
+}
+
+fn failed_run(run: ids.OpId) -> operation.LastResult {
+  operation.RunLastResult(
+    operation: run,
+    leaf: None,
+    outcome: operation.RunFailed(operation.OperationError(
+      "provider",
+      "overloaded",
+      None,
+    )),
+    final_assistant: None,
+  )
+}
+
+fn seen(strand: String, run: ids.OpId) -> attention_dismissal.Dismissal {
+  attention_dismissal.Dismissal(
+    strand:,
+    operation: ids.op_id_to_string(run),
+    at: now,
+    by: "owner",
+  )
+}
+
+pub fn a_dismissed_failure_is_not_listed_but_a_new_one_is_test() {
+  let results = [
+    #("sub:main/a", failed_run(run_of(1))),
+    #("sub:main/b", failed_run(run_of(2))),
+  ]
+  let listed = fn(dismissals) {
+    attention_feed.stuck_strands(
+      [],
+      results,
+      attention_feed.no_evidence(),
+      dismissals,
+    )
+    |> list.map(fn(item) { item.strand })
+  }
+
+  // Nothing dismissed: both are listed.
+  assert listed([]) == ["sub:main/a", "sub:main/b"]
+
+  // A dismissal of one failure leaves only the other strand.
+  assert listed([seen("sub:main/a", run_of(1))]) == ["sub:main/b"]
+
+  // A dismissal of an earlier failure of the same strand covers nothing: the
+  // strand failed again, with another operation.
+  assert listed([seen("sub:main/a", run_of(9))]) == ["sub:main/a", "sub:main/b"]
+
+  // Another strand's dismissal at the same operation covers nothing.
+  assert listed([seen("sub:main/c", run_of(1))]) == ["sub:main/a", "sub:main/b"]
+}
+
+// Writes a strand's last result into the store the way a run's end does.
+fn fail(runtime: api.Runtime, strand: String, run: ids.OpId) -> Nil {
+  let assert Ok(_) =
+    writer.commit(
+      runtime.tree.writer,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.StrandLastResult,
+            strand,
+            register.value(codec.encode_last_result(failed_run(run))),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the failed result is committed"
+  Nil
+}
+
+fn dismiss(
+  runtime: api.Runtime,
+  at: Int,
+  strand: String,
+  run: ids.OpId,
+) -> Result(JsonValue, String) {
+  peer_mail.handle(
+    runtime,
+    clock.fixed(at:),
+    peer_mail.StuckDismiss(strand, ids.op_id_to_string(run), "owner"),
+  )
+}
+
+pub fn a_dismissed_stuck_strand_leaves_the_feed_and_its_count_test() {
+  let runtime = open()
+  fail(runtime, "sub:main/a", run_of(1))
+  fail(runtime, "sub:main/b", run_of(2))
+  assert count(feed(runtime), "stuck") == json.Int(2)
+
+  // The dismissal takes one strand out of the items and the count.
+  let assert Ok(_) = dismiss(runtime, now, "sub:main/a", run_of(1))
+  let row = feed(runtime)
+  assert count(row, "stuck") == json.Int(1)
+  let assert [only] = items(row, "stuck")
+  assert field(only, "strand") == json.String("sub:main/b")
+  assert field(only, "operation") == json.String(ids.op_id_to_string(run_of(2)))
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_strand_that_fails_again_is_listed_again_test() {
+  let runtime = open()
+  fail(runtime, "sub:main/a", run_of(1))
+  let assert Ok(_) = dismiss(runtime, now, "sub:main/a", run_of(1))
+  assert count(feed(runtime), "stuck") == json.Int(0)
+
+  // A later failed run overwrites the last result with a new operation.
+  fail(runtime, "sub:main/a", run_of(3))
+  let row = feed(runtime)
+  assert count(row, "stuck") == json.Int(1)
+  let assert [again] = items(row, "stuck")
+  assert field(again, "operation")
+    == json.String(ids.op_id_to_string(run_of(3)))
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_stale_or_unknown_dismissal_is_refused_and_writes_nothing_test() {
+  let runtime = open()
+  fail(runtime, "sub:main/a", run_of(1))
+  fail(runtime, "main", run_of(1))
+  fail(runtime, "advisor", run_of(1))
+  fail(runtime, "sub:main/running", run_of(1))
+
+  // This strand began a run after it failed, as a retry racing the press does.
+  let assert Ok(_) =
+    writer.commit(
+      runtime.tree.writer,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.StrandState,
+            "sub:main/running",
+            register.value(
+              codec.encode_strand_state(
+                machine_strand.StrandState(
+                  current_operation: Some(run_of(2)),
+                  pending_next_run: [],
+                ),
+              ),
+            ),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the running state is committed"
+
+  // The caller read a failure the strand no longer holds.
+  assert dismiss(runtime, now, "sub:main/a", run_of(7)) == Error("conflict")
+
+  // The failure is the named one, but the strand is running again.
+  assert dismiss(runtime, now, "sub:main/running", run_of(1))
+    == Error("conflict")
+
+  // A strand the session does not have, and the two that are never stuck.
+  assert dismiss(runtime, now, "sub:main/none", run_of(1)) == Error("not_found")
+  assert dismiss(runtime, now, "main", run_of(1)) == Error("not_found")
+  assert dismiss(runtime, now, "advisor", run_of(1)) == Error("not_found")
+
+  // Nothing was written, and the strand is still listed (the running strand
+  // is not stuck, so it is not).
+  let assert Ok([]) = attention.dismissals(runtime)
+  assert count(feed(runtime), "stuck") == json.Int(1)
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_repeat_dismissal_succeeds_and_keeps_the_first_test() {
+  let runtime = open()
+  fail(runtime, "sub:main/a", run_of(1))
+  let assert Ok(_) = dismiss(runtime, now, "sub:main/a", run_of(1))
+  let assert Ok(_) = dismiss(runtime, now + 5000, "sub:main/a", run_of(1))
+
+  // One dismissal, at the first time.
+  let assert Ok([held]) = attention.dismissals(runtime)
+  assert held.at == now
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_new_dismissal_of_a_later_failure_replaces_the_cell_test() {
+  let runtime = open()
+  fail(runtime, "sub:main/a", run_of(1))
+  let assert Ok(_) = dismiss(runtime, now, "sub:main/a", run_of(1))
+  fail(runtime, "sub:main/a", run_of(3))
+  let assert Ok(_) = dismiss(runtime, now + 9, "sub:main/a", run_of(3))
+
+  // The strand still has one cell, and it covers the latest failure.
+  let assert Ok([held]) = attention.dismissals(runtime)
+  assert held.operation == ids.op_id_to_string(run_of(3))
+  assert count(feed(runtime), "stuck") == json.Int(0)
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_damaged_dismissal_cell_covers_nothing_test() {
+  let runtime = open()
+  fail(runtime, "sub:main/a", run_of(1))
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      attention_dismissal.key("sub:main/a"),
+      json.String("not a dismissal"),
+    )
+
+  // The cell is left out of every read, so the strand is listed.
+  assert count(feed(runtime), "stuck") == json.Int(1)
+
+  // A dismissal then replaces the damaged cell.
+  let assert Ok(_) = dismiss(runtime, now, "sub:main/a", run_of(1))
+  assert count(feed(runtime), "stuck") == json.Int(0)
+  let assert Ok(Nil) = api.close(runtime)
 }
 
 pub fn the_reserved_strand_names_are_the_advisors_test() {
@@ -649,6 +884,7 @@ fn stuck_of(index: Int) -> attention_feed.Stuck {
     reason: "provider_error",
     retry_after_ms: Some(30_000),
     parent: Some("sub:main/" <> string.repeat("日", 40)),
+    operation: ids.op_id_to_string(operation_id()),
   )
 }
 

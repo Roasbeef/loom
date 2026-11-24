@@ -105,6 +105,7 @@ fn feed_rows() -> List(#(String, attention_feed.Row)) {
             reason: None,
             retry_after_ms: None,
             parent: None,
+            operation: Some(failed_run),
           ),
         ]),
       ),
@@ -211,6 +212,9 @@ fn read_of(id: String) -> Result(item_pane.Record, String) {
   }
 }
 
+/// The failed run the stuck row of session B names.
+const failed_run = "0194f7b2-aaaa-7000-8000-000000000001"
+
 pub type Acted {
   Answered(session: String, ask: String, revision: Int, form: JsonValue)
   Closed(
@@ -220,6 +224,7 @@ pub type Acted {
     closure: attention.Closure,
   )
   Messaged(session: String, strand: String, text: String)
+  Dismissed(session: String, strand: String, operation: String)
 }
 
 fn start(
@@ -295,6 +300,10 @@ fn acting(
     },
     close: fn(session, find, revision, closure, deliver) {
       process.send(asked, Closed(session, find, revision, closure))
+      deliver(outcome)
+    },
+    dismiss_stuck: fn(session, strand, operation, deliver) {
+      process.send(asked, Dismissed(session, strand, operation))
       deliver(outcome)
     },
     strand: fn(session, strand, text, _delivery, deliver) {
@@ -660,6 +669,59 @@ pub fn the_stuck_pane_is_a_card_of_what_the_page_knows_test() {
   assert string.contains(html, ">Retry the last step<")
 }
 
+// Dismiss names the strand and the failed run the page's feed read held, sends
+// nothing to the strand, and says the daemon's word.
+pub fn dismiss_names_the_strand_and_the_failed_run_test() {
+  let asked = process.new_subject()
+  let model =
+    opened(start(
+      listing(),
+      reports(),
+      [],
+      Some(acting(
+        asked,
+        home.Succeeded("Dismissed."),
+        thread_send.Delivered(thread_send.Admitted),
+      )),
+    ))
+  let picked = run(model, home.ItemPicked(stuck_key()))
+  assert string.contains(drawn(picked), ">Dismiss</button>")
+
+  // A note staged before the press is not sent: it would run the strand.
+  let noted = run(picked, home.ItemNoted("x"))
+  let dismissed = run(noted, home.ItemDismissed)
+  assert received(asked)
+    == [Dismissed(session: "B", strand:, operation: failed_run)]
+  assert string.contains(drawn(dismissed), "Dismissed.")
+}
+
+// A dismissal is asked only for a strand the page's feed row holds stuck, at a
+// thread that is a stuck strand's. An ask's thread has no Dismiss to press and a
+// message that arrives for it sends nothing.
+pub fn dismiss_is_not_sent_for_a_thread_that_is_not_a_stuck_strand_test() {
+  let asked = process.new_subject()
+  let model =
+    opened(start(
+      listing(),
+      reports(),
+      [],
+      Some(acting(
+        asked,
+        home.Succeeded("Answered."),
+        thread_send.Delivered(thread_send.Admitted),
+      )),
+    ))
+
+  // No thread is open.
+  let _ = run(model, home.ItemDismissed)
+
+  // An ask's thread is open.
+  let picked = run(model, home.ItemPicked(ask_key()))
+  assert !string.contains(drawn(picked), ">Dismiss</button>")
+  let _ = run(picked, home.ItemDismissed)
+  assert received(asked) == []
+}
+
 // An observer's page reads the same threads and the same record and has no
 // form, no staging, no outbox and no Send, and its messages are ignored.
 pub fn an_observer_reads_and_cannot_stage_or_send_test() {
@@ -928,6 +990,7 @@ pub fn a_hostile_strand_name_is_in_no_attribute_test() {
             reason: None,
             retry_after_ms: None,
             parent: None,
+            operation: None,
           ),
         ]),
       ),

@@ -3560,6 +3560,7 @@ fn control(
             | protocol.SessionBrief(..)
             | protocol.ReviewSession(..)
             | protocol.CloseFind(..)
+            | protocol.DismissStuck(..)
             | protocol.AnswerAsk(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -3658,6 +3659,7 @@ fn control_use(command: protocol.Command) {
     | protocol.RunProjectVerdict(..)
     | protocol.PublishTicket(..)
     | protocol.CloseFind(..)
+    | protocol.DismissStuck(..)
     | protocol.AnswerAsk(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
@@ -3888,6 +3890,27 @@ fn dispatch(
             #("ask", json.String(ask)),
             #("delivery", json.String(delivery_word(answered.delivery))),
             #("revision", json.Int(answered.revision)),
+          ]),
+        )
+      })
+    }
+    protocol.DismissStuck(session, strand, operation, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      attention_door.dismiss_stuck(
+        attention_reach(config, state.registry, digest),
+        session,
+        strand,
+        operation,
+      )
+      |> result.map_error(attention_refusal)
+      |> result.map(fn(_) {
+        #(
+          "attention.dismiss_stuck",
+          json.Object([
+            #("strand", json.String(strand)),
+            #("operation", json.String(operation)),
           ]),
         )
       })
@@ -5580,6 +5603,7 @@ fn dispatch_class(
     | protocol.SessionBrief(..)
     | protocol.ReviewSession(..)
     | protocol.CloseFind(..)
+    | protocol.DismissStuck(..)
     | protocol.AnswerAsk(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))

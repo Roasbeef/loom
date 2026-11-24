@@ -714,6 +714,11 @@ pub type Act {
     /// (`thread_send.retry_prompt`). The page names the strand and never the
     /// words.
     retry: fn(String, fn(AnswerOutcome) -> Nil) -> Nil,
+    /// Dismisses a stuck strand's failure so the feed stops listing it until the
+    /// strand fails again (protocol-change/131): the strand, the operation of the
+    /// failed run the page read from its feed row, and the function the daemon's
+    /// word goes to.
+    dismiss_stuck: fn(String, String, fn(AnswerOutcome) -> Nil) -> Nil,
   )
 }
 
@@ -1514,6 +1519,12 @@ pub type Msg(socket) {
   /// row still holds it stuck. The words sent are the daemon's own.
   RailRetried(strand: String)
 
+  /// "Dismiss" was pressed on a stuck strand's card. The strand is the one the
+  /// row was drawn for, and the page honours it only while the feed row still
+  /// holds it stuck, naming the failed run that row read. The daemon refuses a
+  /// failure the strand no longer holds.
+  RailDismissed(strand: String)
+
   /// A chip of the agent strip was pressed: show this strand and address it.
   /// The strand is the name the strip was drawn with, never text the browser
   /// sent, because a handler's message is fixed when the tree is drawn and
@@ -1999,6 +2010,7 @@ pub fn update(
     RailClosed(key:, closure:) -> rail_closed(model, key, closure)
 
     RailRetried(strand:) -> rail_retried(model, strand)
+    RailDismissed(strand:) -> rail_dismissed(model, strand)
 
     FocusRequested(strand:) -> focus_at(model, strand, at) |> peers_due(at)
 
@@ -8043,7 +8055,13 @@ fn rail_offer(
     Ok(_), attention.StuckStrand(strand:) ->
       case watching.sending == Some(attention.stuck_key(strand)) {
         True -> lifted_view.OfferSent
-        False -> lifted_view.RetryOffer(observed(RailRetried(strand)))
+        False ->
+          lifted_view.RetryOffer(
+            observed(RailRetried(strand)),
+            option.map(rail_failure(watching, strand), fn(_) {
+              observed(RailDismissed(strand))
+            }),
+          )
       }
     Ok(_), attention.FindOpen(..) ->
       rail_find_offer(watching, row.key, observed)
@@ -8161,6 +8179,46 @@ fn rail_retried(
       act.retry(strand, fn(outcome) { dispatch(RailAnswerDone(id, outcome)) })
     })
     Ok(_), True, Some(_) | Ok(_), False, _ | Error(Nil), _, _ -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
+/// The failed run the feed row holds for a stuck strand, when the row names it.
+fn rail_failure(watching: Watch, strand: String) -> Option(String) {
+  case watching.row {
+    Some(row) ->
+      list.find_map(row.stuck.items, fn(stuck) {
+        case stuck.strand == strand {
+          True -> option.to_result(stuck.operation, Nil)
+          False -> Error(Nil)
+        }
+      })
+      |> option.from_result
+    None -> None
+  }
+}
+
+/// Dismisses a stuck strand's failure, naming the failed run the feed row held.
+/// A page that may not act, a strand the row does not hold stuck with an
+/// operation, an action already out and a page that ended ask nothing.
+fn rail_dismissed(
+  model: Model(socket),
+  strand: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let watching = model.view.watching
+  let id = attention.stuck_key(strand)
+
+  // The failure is dismissed only while the row still holds it.
+  case rail_acting(model), rail_failure(watching, strand), watching.sending {
+    Ok(act), Some(operation), None -> #(rail_sent(model, id), {
+      use dispatch <- effect.from
+      act.dismiss_stuck(strand, operation, fn(outcome) {
+        dispatch(RailAnswerDone(id, outcome))
+      })
+    })
+    Ok(_), Some(_), Some(_) | Ok(_), None, _ | Error(Nil), _, _ -> #(
       model,
       effect.none(),
     )
@@ -8355,8 +8413,9 @@ pub fn rail_click(path: String) -> Bool {
 /// is an item of the "Needs you" group (the groups' first child), whose list is
 /// that group's second child. The card holds its own button, the ask's place
 /// (empty for any row but an ask) and then the actions, so the actions are the
-/// item's third child, and Retry is their first and only button: a click is at
-/// `rail_path`, then `1\t0\t1`, then the item's position, then `2\t0`.
+/// item's third child, and Retry is their first button, with Dismiss (`rail_dismiss`)
+/// second when the page may dismiss: a click is at `rail_path`, then `1\t0\t1`,
+/// then the item's position, then `2\t0`.
 ///
 /// No socket consults this predicate: an operator's or an owner's socket admits
 /// a click at any path, and an observer's admits `rail_click` and the other
@@ -8375,6 +8434,27 @@ pub fn rail_click(path: String) -> Bool {
 pub fn rail_retry(path: String) -> Bool {
   case string.split(path, "\t") {
     ["0", "3", "0", "4", "1", "0", "1", position, "2", "0"] ->
+      is_counter(position)
+    _ -> False
+  }
+}
+
+/// Whether a Lustre event path is the "Dismiss" button of a stuck strand's card
+/// in the live rail (protocol-change/131). It is the second button of the same
+/// actions as Retry, so its path is `rail_retry`'s with the last step `1`. The
+/// socket admissions are those of `rail_retry`: an operator's or an owner's
+/// socket admits a click at any path, and an observer's page draws no such
+/// button and its socket admits no event here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.rail_dismiss("0\t3\t0\t4\t1\t0\t1\t1\t2\t1")
+/// assert !component.rail_dismiss("0\t3\t0\t4\t1\t0\t1\t1\t2\t0")
+/// ```
+pub fn rail_dismiss(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "3", "0", "4", "1", "0", "1", position, "2", "1"] ->
       is_counter(position)
     _ -> False
   }

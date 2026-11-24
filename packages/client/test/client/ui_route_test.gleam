@@ -5690,6 +5690,78 @@ pub fn a_rail_close_needs_an_open_page_and_the_doors_authority_test() {
   })
 }
 
+// A rail's dismissal needs the page open and then the door's own authority, as a
+// close does: an ended page is refused as `forbidden` before the door is read, and
+// a session the credential does not hold is told no such session
+// (protocol-change/131).
+pub fn a_rail_dismissal_needs_an_open_page_and_the_doors_authority_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let reach =
+      attention_door.Reach(
+        registry: ready.registry,
+        digest: standing.digest,
+        endpoint: fn(_) { None },
+      )
+
+    assert ui_socket.page_dismiss_for(
+        reach,
+        fn() { Error(Nil) },
+        "S1",
+        "sub:a",
+        "op-1",
+      )
+      == Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot dismiss a failure",
+      ))
+
+    let assert Error(attention_door.Refusal(code: "not_found", ..)) =
+      ui_socket.page_dismiss_for(reach, page_open, "S1", "sub:a", "op-1")
+
+    Nil
+  })
+}
+
+// The home's dismissal is the owner's operating page's alone: an ended page is
+// refused as `forbidden`, and the door's words are the page's fixed ones.
+pub fn the_homes_dismissal_needs_an_open_owner_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+
+    assert ui_socket.dismiss_stuck_for(
+        standing,
+        fn() { Error(Nil) },
+        fn(_) { None },
+        "S1",
+        "sub:a",
+        "op-1",
+      )
+      == Error(attention_door.Refusal(
+        "forbidden",
+        "this page cannot dismiss a failure",
+      ))
+
+    // The door reads the registry afterwards, and an unknown session is told so.
+    let assert Error(attention_door.Refusal(code: "not_found", ..)) =
+      ui_socket.dismiss_stuck_for(
+        standing,
+        page_open,
+        fn(_) { None },
+        "S1",
+        "sub:a",
+        "op-1",
+      )
+
+    assert ui_socket.dismiss_outcome(Ok(Nil)) == home.Succeeded("Dismissed.")
+    assert ui_socket.dismiss_outcome(
+        Error(attention_door.Refusal("conflict", "that failure moved")),
+      )
+      == home.Failed("Not dismissed: that failure moved")
+    Nil
+  })
+}
+
 // A rail's retry needs the page open, sends the one fixed prompt to the strand
 // it names and words the gateway's answer as the home words the same act.
 pub fn a_rail_retry_sends_the_fixed_prompt_from_an_open_page_test() {

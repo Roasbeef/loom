@@ -59,6 +59,7 @@ fn row() -> attention_feed.Row {
         reason: None,
         retry_after_ms: None,
         parent: None,
+        operation: None,
       ),
     ]),
   )

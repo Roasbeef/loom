@@ -138,8 +138,10 @@ pub type Offer(message) {
   /// page has not read what the action needs.
   NoOffer
 
-  /// A stuck strand's "Retry the last step". The message names the strand.
-  RetryOffer(press: message)
+  /// A stuck strand's "Retry the last step", and beside it "Dismiss" when the
+  /// page may dismiss the failure it read (protocol-change/131). Each message
+  /// names the strand.
+  RetryOffer(press: message, dismiss: Option(message))
 
   /// A find's two ways to close it: "File issue" and "Dismiss".
   CloseOffer(file: message, dismiss: message)
@@ -770,9 +772,14 @@ fn acts(offer: Offer(message)) -> Element(message) {
   // The card's last child is always drawn, so its place in the list is fixed.
   case offer {
     NoOffer -> element.none()
-    RetryOffer(press:) ->
+    RetryOffer(press:, dismiss: None) ->
       html.div([attribute.class("lift-acts")], [
         act("Retry the last step", press),
+      ])
+    RetryOffer(press:, dismiss: Some(dismiss)) ->
+      html.div([attribute.class("lift-acts")], [
+        act("Retry the last step", press),
+        act("Dismiss", dismiss),
       ])
     CloseOffer(file:, dismiss:) ->
       html.div([attribute.class("lift-acts")], [

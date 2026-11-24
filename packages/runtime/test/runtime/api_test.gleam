@@ -507,6 +507,8 @@ pub fn attention_cells_are_reserved_test() {
   assert api.reserved_fact_key("attention/find/find-0123456789")
   assert api.reserved_fact_key(api.attention_ask_fact_prefix)
   assert api.reserved_fact_key(api.attention_find_fact_prefix)
+  assert api.reserved_fact_key("attention/stuck/sub:main/a")
+  assert api.reserved_fact_key(api.attention_stuck_fact_prefix)
   assert !api.reserved_fact_key("agent/main/attention/ask/x")
   assert !api.reserved_fact_key("attention/other")
 
@@ -514,6 +516,8 @@ pub fn attention_cells_are_reserved_test() {
     api.put_fact(rt, "attention/ask/ask-0123456789", json.Null)
   let assert Error(api.ReservedFactKey(key: "attention/find/find-0123456789")) =
     api.put_fact(rt, "attention/find/find-0123456789", json.Null)
+  let assert Error(api.ReservedFactKey(key: "attention/stuck/sub:main/a")) =
+    api.put_fact(rt, "attention/stuck/sub:main/a", json.Null)
   let assert Ok(Nil) =
     api.put_reserved_fact(rt, "attention/ask/ask-0123456789", json.Null)
   let assert Ok(asks) =

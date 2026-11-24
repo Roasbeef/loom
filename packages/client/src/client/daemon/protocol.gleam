@@ -351,6 +351,17 @@ pub type Command {
     epoch: String,
   )
 
+  /// Dismisses a stuck strand's failure, so the feed stops listing the strand
+  /// until it fails again (`protocol-change/131`). `operation` is the failed run
+  /// the caller read. The owner, or a member that holds the session as an
+  /// Operator.
+  DismissStuck(
+    session: String,
+    strand: String,
+    operation: String,
+    epoch: String,
+  )
+
   /// Lists the owner's archived metadata without admitting execution.
   ListArchivedSessions(after: String, revision: Option(Int))
 
@@ -935,6 +946,13 @@ fn decode_fields(
       use outcome <- result.try(closure_field(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       CloseFind(session, find, revision, outcome, epoch)
+    }
+    "attention.dismiss_stuck" -> {
+      use session <- result.try(attention_session(fields))
+      use strand <- result.try(text_field(fields, "strand", 128))
+      use operation <- result.try(text_field(fields, "operation", 64))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      DismissStuck(session, strand, operation, epoch)
     }
     "sessions.archived" -> {
       use after <- result.try(cursor(fields))

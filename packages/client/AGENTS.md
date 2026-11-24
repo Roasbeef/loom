@@ -7333,6 +7333,19 @@ main-strand defaults, and the gateway's `unknown_strand` is
 (protocol-change/122) with `server.saved_rows`, the one read it shares with
 `home_saved_attention`; an unreadable catalogue is `unavailable`, never an empty list.
 
+`attention.dismiss_stuck` (protocol-change/131) is the third act of `attention_door`:
+`dismiss_stuck` takes the owner or an Operator member (`held_for_acting`, the principals
+that may retry), needs a resident session and sends `peer_mail.StuckDismiss(strand,
+operation, by)`, which `attention_feed.dismiss_stuck` answers: the strand must be stuck
+at that operation (`UnknownStrand` is `not_found`, `StaleFailure` and `DismissalLost` are
+`conflict`) and `attention.record_dismissal` writes the `core/attention_dismissal` cell
+`attention/stuck/<strand>` under the seq it read, succeeding without a write when the cell
+already covers that failure. `attention_feed.feed` reads `attention.dismissals` and
+`stuck_strands` leaves out a strand a dismissal covers, so `stuck.count` falls; a new failed
+run has a new operation and lists again. `ui_socket.dismiss_stuck_for` (owner's home) and
+`page_dismiss_for` (a session page) are the pages' acts, with `dismiss_outcome` for the
+words. The catalogue summary has no stuck column, so a saved session's summary is unchanged.
+
 Stuck items (addendum to 120) carry `reason` (the run's error code if it is a short
 lower-case word, else `failed`), `retry_after_ms` and `failed_at` from the failed
 response entry the run's leaf names (an assistant entry with `Errored`; any other
