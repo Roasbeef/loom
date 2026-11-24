@@ -414,6 +414,11 @@ pub fn the_buttons_name_their_delivery_test() {
   assert string.contains(working, "value=\"steer\"")
   assert string.contains(working, "aria-label=\"Message this session\"")
   assert string.contains(working, "name=\"draft\"")
+
+  // The box is headed with the session's name, and an approval's with `Or`.
+  assert string.contains(working, ">Message docs sweep<")
+  let waiting = drawn(run(model, home.InboxOpened("B")))
+  assert string.contains(waiting, ">Or message vetting lint<")
 }
 
 // A page that holds no capability draws no field: a member's home, an

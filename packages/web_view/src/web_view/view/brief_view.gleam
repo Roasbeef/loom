@@ -204,6 +204,9 @@ fn peer(each: Peer, name_of: fn(String) -> String) -> Element(message) {
   )
 }
 
+/// The name of the advisor's strand, which every session has.
+const advisor_strand = "advisor"
+
 /// The coordinator's card: the goal's objective and status, the delegates'
 /// counts, the tokens spent of the budget, and a line for each delegate with its
 /// state and the time it began. A delegate is a strand other than `main`, which
@@ -221,7 +224,7 @@ pub fn coordinator(brief: Brief) -> Element(message) {
   // counted it would draw a coordinator for a session that delegated nothing.
   let delegates =
     list.filter(brief.strands, fn(each) {
-      each.name != "main" && each.name != "advisor"
+      each.name != "main" && each.name != advisor_strand
     })
 
   // A session with no goal and no delegate has no coordinator to draw.

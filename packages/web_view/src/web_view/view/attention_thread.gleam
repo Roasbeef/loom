@@ -148,16 +148,14 @@ pub fn row(
 /// appends to a sub-agent's name, which tells siblings of one purpose apart in
 /// the data and not on a row.
 fn row_name(item: Item, name_of: fn(String) -> String) -> String {
-  // Each kind of record names the strand it is about.
-  let strand = case item {
-    attention_rule.AskItem(ask:, ..) -> ask.strand
-    attention_rule.FindItem(find:, ..) -> find.strand
-    attention_rule.StuckItem(stuck:, ..) -> stuck.strand
-  }
+  target_name(item, name_of(attention_rule.session_of(item)))
+}
 
-  // The main strand is the session itself and keeps the session's name.
-  case strand {
-    "main" -> name_of(attention_rule.session_of(item))
+/// The name a record's strand is addressed by: `session_name` for the main
+/// strand, which is the session itself, and the delegate's purpose for another.
+fn target_name(item: Item, session_name: String) -> String {
+  case strand_of(item) {
+    "main" -> session_name
     other -> strand_name(other)
   }
 }
@@ -378,8 +376,8 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
   }
 }
 
-/// The quiet words of a pane's eyebrow: the session's name and the strand the
-/// record is about.
+/// The quiet words of a pane's eyebrow: `<session> · main` for the session's own
+/// strand, and `sub:<purpose> · under <session>` for a delegate.
 fn eyebrow(item: Item, session_name: String) -> String {
   let strand = strand_of(item)
 
@@ -938,7 +936,9 @@ fn stuck_decide(
                 html.text("recommended"),
               ]),
               html.small([attribute.class("inbox-note")], [
-                html.text("Sends exactly: “" <> thread_send.retry_prompt <> "”"),
+                html.text(
+                  "Sends now, exactly: “" <> thread_send.retry_prompt <> "”",
+                ),
               ]),
             ],
           ),
@@ -976,13 +976,8 @@ fn message_words(item: Item, target: String) -> String {
 /// The note field: one box that stages a message for the thread's strand. A
 /// page that may not act has none.
 fn message_field(item: Item, offer: Offer(message)) -> Element(message) {
-  // The heading names the strand the message goes to: the session for its main
-  // strand, and the delegate's purpose for another.
-  // The main strand is the session itself.
-  let target = case strand_of(item) {
-    "main" -> offer.session_name
-    other -> strand_name(other)
-  }
+  // The heading names the strand the message goes to.
+  let target = target_name(item, offer.session_name)
 
   // A page that may not act has no message box.
   case offer.acting {
@@ -1049,7 +1044,10 @@ fn outbox(offer: Offer(message)) -> Element(message) {
           _, [] -> "Not sent."
           _, _ ->
             "To "
-            <> offer.session_name
+            <> case offer.item {
+              Some(item) -> target_name(item, offer.session_name)
+              None -> offer.session_name
+            }
             <> " · "
             <> int.to_string(list.length(chips))
             <> " staged."

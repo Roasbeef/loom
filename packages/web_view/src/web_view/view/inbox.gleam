@@ -79,6 +79,7 @@ import web_view/session_brief.{type Brief}
 import web_view/sessions.{type Glance}
 import web_view/thread_send.{type Outbox}
 import web_view/view/brief_view
+import web_view/view/heading
 import web_view/view/inbox_parts as parts
 
 /// The thread the reading pane shows, and how it came to.
@@ -944,7 +945,7 @@ fn eyebrow(thread: Thread, kind: Kind, dated: Option(Dated)) -> String {
   // directory name, as the final design's eyebrow draws it, and not the path.
   let placed = case thread.workspace {
     "" -> base
-    workspace -> base <> " · " <> sessions.base_name(workspace)
+    workspace -> base <> " · " <> project_name(workspace)
   }
 
   // What the data says the session is doing replaces the kind's own word, and a
@@ -956,6 +957,16 @@ fn eyebrow(thread: Thread, kind: Kind, dated: Option(Dated)) -> String {
     Some(words), _ -> placed <> " · " <> words
     None, Some(_) -> placed
     None, None -> placed <> " · " <> state_words(kind)
+  }
+}
+
+/// The project part of an eyebrow: the workspace's directory name, or `~` for the
+/// home directory itself, which would otherwise show the operating-system user's
+/// name.
+fn project_name(workspace: String) -> String {
+  case heading.shorten_path(workspace) {
+    "~" -> "~"
+    _ -> sessions.base_name(workspace)
   }
 }
 

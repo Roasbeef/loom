@@ -2568,13 +2568,14 @@
   .lift label.inbox-option .inbox-note,.ask-card .inbox-option .inbox-note,.inbox-reading .inbox-option .inbox-note{grid-column:2 / -1;grid-row:2;margin-top:2px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
   /* Other is the last option and carries no number, as the final design's option
      cards have none beyond the choices the agent offered. */
-  .inbox-reading label.inbox-option.inbox-other::before{content:none;}
+  .inbox-reading label.inbox-option.inbox-other::before,.inbox-reading label.inbox-option.inbox-other:has(> input:checked)::before{content:none;}
   .inbox-reading label.inbox-option.inbox-other > span{grid-column:1 / 3;}
   /* A stuck strand's one nudge is drawn as the final design's option card: the
      number, the label, the recommended mark and the words it sends. */
   .inbox-reading button.inbox-nudge{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:8px;align-items:baseline;box-sizing:border-box;width:100%;margin:0 0 8px 0;padding:10px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);text-align:left;cursor:pointer;}
   .inbox-reading button.inbox-nudge:hover{border-color:var(--color-fg-faint);}
   .inbox-reading button.inbox-nudge:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .inbox-reading .inbox-acts button.inbox-nudge{flex:1 1 20rem;width:auto;margin:0;}
   .inbox-nudge-num{grid-column:1;color:var(--color-fg-quiet);font:12px/1.45 var(--font-mono);}
   .inbox-nudge-lbl{grid-column:2;font:600 13.5px/1.45 var(--font-sans);}
   .inbox-reading button.inbox-nudge .inbox-mark{grid-column:3;padding:0 7px;border-radius:8px;background:var(--color-pill-ok-bg);color:var(--color-added-text);font:600 11px/18px var(--font-sans);font-style:normal;}
