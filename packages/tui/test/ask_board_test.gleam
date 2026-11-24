@@ -350,3 +350,14 @@ pub fn the_keyboard_stays_with_its_ask_when_an_earlier_ask_goes_test() {
   assert gone.focus == ask_board.Composer
   assert ask_board.focused(gone) == None
 }
+
+// Every read opens a connection, so a board with nothing to show backs off, and
+// one that counted an ask returns to the short rest.
+pub fn a_read_that_finds_no_ask_rests_longer_than_one_that_does_test() {
+  let idle = ask_board.loaded(ask_board.empty(), 0, [], 1000)
+  assert idle.phase == ask_board.Resting(1000 + ask_board.idle_rest_ms)
+  assert ask_board.idle_rest_ms > ask_board.rest_ms
+
+  let busy = ask_board.loaded(idle, 1, [], 2000)
+  assert busy.phase == ask_board.Resting(2000 + ask_board.rest_ms)
+}

@@ -36,6 +36,7 @@ import session_view/surfaces
 import session_view/worktree_view
 import tui/agent_strip
 import tui/agents
+import tui/ask_board
 import tui/attachment
 import tui/effect
 import tui/inbound
@@ -550,6 +551,22 @@ pub fn quit(model: Model) -> Model {
     ActivityAsking(job: awaiting, ..) ->
       Model(..model, view: view_set.activity_poll(model.view, ActivityDue))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
+  }
+
+  // Cancel a running ask read, so quitting does not leave the connection the
+  // read opened for itself until the read's deadline. The slot is cleared in
+  // the same step, as for the jobs above.
+  let model = case model.view.asks.phase {
+    ask_board.Reading(job: awaiting) ->
+      Model(
+        ..model,
+        view: view_set.asks(
+          model.view,
+          ask_board.read_failed(model.view.asks, model.shared.stamp.now_ms),
+        ),
+      )
+      |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
+    ask_board.ReadDue | ask_board.Resting(..) | ask_board.Sending(..) -> model
   }
 
   // Cancel active configuration job.

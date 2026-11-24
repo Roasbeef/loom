@@ -50,8 +50,23 @@ import tui/job
 /// How many asks are drawn at once.
 pub const drawn_limit = 2
 
-/// How long the board rests after a read, in milliseconds.
+/// How long the board rests after a read that found an open ask, in
+/// milliseconds. An owner who is looking at a card wants an answer's effect
+/// and a second ask seen quickly.
 pub const rest_ms = 4000
+
+/// How long the board rests after a read that found no open ask, in
+/// milliseconds.
+///
+/// Every read opens a connection of its own, and most of the time a terminal
+/// has nothing to ask. The `ask` tool ends the run that calls it, and
+/// `ask_control.watch` cuts the rest short when the session's last running
+/// strand stops, so a plain ask is read at once. Three asks wait out the rest:
+/// one a `code_mode` program raises, since its run goes on; one a sub-strand
+/// raises while another strand keeps running, since no edge is seen; and one a
+/// peer or another client raised. Fifteen seconds bounds that wait, and an idle
+/// terminal reconnects four times a minute instead of fifteen.
+pub const idle_rest_ms = 15_000
 
 /// How long the board rests after a request failed, in milliseconds.
 pub const failure_rest_ms = 10_000
@@ -260,7 +275,7 @@ pub fn is_sending(board: Board) -> Bool {
 ///
 /// ```gleam
 /// let board = ask_board.loaded(ask_board.empty(), 0, [], 1000)
-/// assert board.phase == ask_board.Resting(1000 + ask_board.rest_ms)
+/// assert board.phase == ask_board.Resting(1000 + ask_board.idle_rest_ms)
 /// ```
 pub fn loaded(
   board: Board,
@@ -282,7 +297,14 @@ pub fn loaded(
       }
     })
 
-  settled(Board(..board, forms:, open: count), now_ms + rest_ms)
+  // A read that counted an ask, drawn or not, keeps the short rest; a read
+  // that counted none backs off to the idle rest.
+  let rest = case count > 0 {
+    True -> rest_ms
+    False -> idle_rest_ms
+  }
+
+  settled(Board(..board, forms:, open: count), now_ms + rest)
 }
 
 /// The held form for an ask identifier.

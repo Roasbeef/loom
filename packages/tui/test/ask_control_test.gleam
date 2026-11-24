@@ -433,3 +433,37 @@ pub fn a_change_of_session_clears_the_card_before_anything_else_is_asked_test() 
   assert ticked.view.asks.forms == []
   assert ticked.view.asks.session == "another-session"
 }
+
+// A read that lands after the terminal attached elsewhere drops its asks, and
+// the card the board still drew for the old session is repainted away.
+pub fn a_read_for_a_left_session_clears_the_stale_card_with_a_repaint_test() {
+  let model = with_form(connected(), the_form())
+  let due =
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        asks: ask_board.Board(..model.view.asks, phase: ask_board.ReadDue),
+      ),
+    )
+  let #(reading, _) = stepping.step(backend.Tick, due)
+  let moved =
+    tui_model.Model(
+      ..reading,
+      shared: session_model.Shared(..reading.shared, session: "another-session"),
+    )
+  let loaded = deliver_read(moved, job.AsksRead(ask_scene.session, 1, []))
+  assert loaded.view.asks.forms == []
+  assert loaded.view.asks.session == "another-session"
+  assert loaded.shared.frame_revision == moved.shared.frame_revision + 1
+}
+
+// Quitting while a read runs cancels its job, so its connection is not left
+// open until the read's deadline.
+pub fn quitting_cancels_a_running_ask_read_test() {
+  let #(reading, _) = stepping.step(backend.Tick, connected())
+  let assert ask_board.Reading(job: awaiting) = reading.view.asks.phase
+  let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), reading)
+  assert list.contains(effects, effect.CancelJob(job.key(awaiting)))
+  assert !ask_board.in_flight(quit.view.asks)
+}
