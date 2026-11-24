@@ -559,8 +559,36 @@ pub fn an_oversized_untracked_listing_degrades_the_board_test() {
   let assert Ok(board) = worktree_diff.capture(wiring)
     as "an oversized untracked listing does not fail the board"
   assert board.extent == worktree_diff.Limited
-  assert board.total > 1
+
+  // The cut listing holds fewer records than the 2,799 files written.
+  assert board.total > 1 && board.total < 2799
   assert string.contains(file(board, "tracked.txt").patch, "+after")
+}
+
+// A mass change to tracked files, such as a deleted vendored tree, can push the
+// tracked status past its byte bound. The board keeps the whole records that
+// fit and reports limited instead of failing.
+pub fn an_oversized_tracked_status_degrades_the_board_test() {
+  use wiring <- worktree_wiring.with_fixture("tracked-oversized")
+  setup(wiring, ["init", "--quiet"])
+  let padding = string.repeat("t", 120)
+  int.range(from: 1, to: 2800, with: Nil, run: fn(_, index) {
+    write(wiring, padding <> int.to_string(index), "before\n")
+  })
+  write(wiring, "edited.txt", "before\n")
+  setup(wiring, ["add", "--", "."])
+  setup(wiring, [
+    "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c",
+    "commit.gpgsign=false", "commit", "--quiet", "-m", "tracked fixture",
+  ])
+  int.range(from: 1, to: 2800, with: Nil, run: fn(_, index) {
+    write(wiring, padding <> int.to_string(index), "after\n")
+  })
+  let assert Ok(board) = worktree_diff.capture(wiring)
+    as "an oversized tracked status does not fail the board"
+  assert board.extent == worktree_diff.Limited
+  assert board.total > 1 && board.total < 2799
+  assert board.entries != []
 }
 
 // A session whose workspace is a linked worktree under a hidden directory, as

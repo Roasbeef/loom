@@ -62,8 +62,9 @@ control characters without changing the stored path identity.
 The `kind` values are `text`, `binary`, `no_net_change`, and `metadata_only`.
 An untracked nested repository, or any wholly untracked directory, is listed as one
 entry whose `path` ends in `/` and whose `kind` is `metadata_only`, without recursive
-traversal. If the untracked listing exceeds its byte bound, the board keeps the
-records that fit and reports `limited`; it does not fail.
+traversal. If the tracked status or the untracked listing exceeds its byte bound,
+the board keeps the whole records that fit and reports `limited`; it does not
+fail. When `extent` is `limited`, `total` and `omitted` are lower bounds.
 `extent` is `complete` or `limited`, on both the board and individual entries.
 An unsupported command is an explicit unavailable surface for an older peer. An
 empty complete ready entry list authoritatively reports a clean captured status.

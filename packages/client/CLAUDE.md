@@ -7169,7 +7169,8 @@ Only loose untracked files get a patch. When the attached directory is itself
 wholly untracked, Git answers with that directory alone, and the observer
 repeats the query without `--directory`. A listing past `status_byte_limit` is
 cut at its last whole record and the board reports `limited`; the tracked
-changes are never lost to it.
+changes are never lost to it. A tracked status past the bound is cut the same
+way.
 
 Session assembly keeps `.codemode` out of the operator's own
 `git status` without editing a repository file either: `prepare_directories`

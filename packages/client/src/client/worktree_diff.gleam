@@ -371,7 +371,6 @@ fn capture_repository(
   start: Start,
 ) -> Result(Board, Error) {
   use Nil <- result.try(successful(status))
-  use Nil <- result.try(complete(status))
   use #(capture, prefix) <- result.try(run_git(
     capture,
     ["rev-parse", "--show-prefix"],
@@ -380,11 +379,12 @@ fn capture_repository(
   use Nil <- result.try(successful(prefix))
   use Nil <- result.try(complete(prefix))
   use prefix <- result.try(line_value(prefix.stdout))
-  use identities <- result.try(parse_status(status.stdout, prefix))
-  use #(capture, untracked, untracked_extent) <- result.try(capture_untracked(
-    capture,
+  use identities <- result.try(parse_status(
+    status.stdout,
+    status.extent,
     prefix,
   ))
+  use #(capture, untracked) <- result.try(capture_untracked(capture, prefix))
   let identities = list.append(identities, untracked)
   use #(capture, head) <- result.try(run_git(
     capture,
@@ -397,8 +397,9 @@ fn capture_repository(
   let #(capture, committed) =
     capture_committed(capture, start, repository, revision)
 
-  // The tracked count is exact only because an oversized status was refused.
-  // Files beyond this prefix are counted, not silently treated as unchanged.
+  // The count is exact unless a listing was cut at its byte bound, when it is
+  // a lower bound (see `whole_records`). Files beyond the displayed prefix are
+  // counted, not silently treated as unchanged.
   let total = list.length(identities)
   use files <- result.try(
     capture_files(
@@ -411,14 +412,7 @@ fn capture_repository(
   )
   let board =
     Board(observed_at_ms, committed, repository, [], total, total, Complete)
-  let fitted = fit_board(board, files)
-
-  // A cut untracked listing leaves `total` a lower bound, so the board says so
-  // even when every listed entry was drawn.
-  Ok(case untracked_extent {
-    Complete -> fitted
-    Limited -> Board(..fitted, extent: Limited)
-  })
+  Ok(fit_board(board, files))
 }
 
 // A failed history read is an explicit unavailable section. The shared deadline
@@ -547,25 +541,22 @@ fn commit_range(
 fn capture_untracked(
   capture: Capture,
   prefix: String,
-) -> Result(#(Capture, List(Identity), Extent), Error) {
-  use #(capture, records, extent) <- result.try(untracked_records(
-    capture,
-    Collapsed,
-  ))
+) -> Result(#(Capture, List(Identity)), Error) {
+  use #(capture, records) <- result.try(untracked_records(capture, Collapsed))
 
   // When the attached directory is itself wholly untracked, Git collapses the
   // listing to that directory's own record, which names no entry inside it.
   // Only then is the flat listing needed; it is bounded like any other, so the
   // worst case is a cut list rather than a failure.
-  use #(capture, records, extent) <- result.try(case records == [prefix] {
+  use #(capture, records) <- result.try(case records == [prefix] {
     True -> untracked_records(capture, Flat)
-    False -> Ok(#(capture, records, extent))
+    False -> Ok(#(capture, records))
   })
 
   use identities <- result.try(
     list.try_map(records, fn(path) { status_identity("?? " <> path, prefix) }),
   )
-  Ok(#(capture, identities, extent))
+  Ok(#(capture, identities))
 }
 
 /// How `untracked_records` asks Git to group untracked files.
@@ -581,7 +572,7 @@ type Listing {
 fn untracked_records(
   capture: Capture,
   listing: Listing,
-) -> Result(#(Capture, List(String), Extent), Error) {
+) -> Result(#(Capture, List(String)), Error) {
   // The two groupings differ only in whether Git folds an untracked directory
   // into one record.
   let grouping = case listing {
@@ -605,20 +596,34 @@ fn untracked_records(
     status_byte_limit,
   ))
   use Nil <- result.try(successful(output))
-  use text <- result.try(patch_text(output.stdout, output.extent))
+  use records <- result.try(whole_records(output.stdout, output.extent))
+  Ok(#(capture, records))
+}
 
-  // A complete listing ends with the NUL that terminates its last record.
+/// Splits NUL-framed Git output into its whole records.
+///
+/// A complete listing must end with the NUL that terminates its last record.
+/// A cut listing ends inside a record, or exactly between two; dropping the
+/// final piece after splitting on NUL removes the partial record in the first
+/// case and an empty string in the second, so a kept record is always whole.
+/// A complete listing's final piece is the empty string after its last NUL.
+///
+/// A cut needs more than `status_byte_limit` (262,144) bytes of records, each
+/// at most 4,096 bytes of path plus a short prefix, so at least 63 records
+/// existed, more than `file_limit`. The board's `omitted` is then positive and
+/// its extent is already `Limited` without a separate flag, and `total` is a
+/// lower bound. A change to either constant must re-check that arithmetic.
+fn whole_records(
+  bytes: BitArray,
+  extent: Extent,
+) -> Result(List(String), Error) {
+  use text <- result.try(patch_text(bytes, extent))
   use <- bool.guard(
-    output.extent == Complete && text != "" && !string.ends_with(text, "\u{0}"),
+    extent == Complete && text != "" && !string.ends_with(text, "\u{0}"),
     Error(InvalidOutput),
   )
-
-  // A cut listing ends inside a record, or exactly between two. Dropping the
-  // final piece after splitting on NUL removes the partial record in the first
-  // case and an empty string in the second, so a kept record is always whole.
-  // A complete listing's final piece is the empty string after its last NUL.
   let pieces = string.split(text, "\u{0}")
-  Ok(#(capture, list.take(pieces, list.length(pieces) - 1), output.extent))
+  Ok(list.take(pieces, list.length(pieces) - 1))
 }
 
 /// Establishes comparison for the caller, keeping its validation and result policy at this boundary.
@@ -985,7 +990,7 @@ pub fn decode_status(
   bytes: BitArray,
   prefix: String,
 ) -> Result(List(File), Error) {
-  use identities <- result.map(parse_status(bytes, prefix))
+  use identities <- result.map(parse_status(bytes, Complete, prefix))
   list.map(identities, fn(identity) {
     File(
       identity.path,
@@ -1001,23 +1006,11 @@ pub fn decode_status(
 /// Establishes parse status for the caller, keeping its validation and result policy at this boundary.
 fn parse_status(
   bytes: BitArray,
+  extent: Extent,
   prefix: String,
 ) -> Result(List(Identity), Error) {
-  use text <- result.try(
-    bit_array.to_string(bytes) |> result.replace_error(InvalidOutput),
-  )
-
-  // Decide how to handle text {.
-  case text {
-    "" -> Ok([])
-    _ -> {
-      use <- bool.guard(!string.ends_with(text, "\u{0}"), Error(InvalidOutput))
-      text
-      |> string.drop_end(1)
-      |> string.split("\u{0}")
-      |> list.try_map(fn(record) { status_identity(record, prefix) })
-    }
-  }
+  use records <- result.try(whole_records(bytes, extent))
+  list.try_map(records, fn(record) { status_identity(record, prefix) })
 }
 
 /// Establishes status identity for the caller, keeping its validation and result policy at this boundary.
