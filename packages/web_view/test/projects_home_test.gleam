@@ -46,6 +46,16 @@ fn ticket(
 }
 
 fn asking(id: String, seq: Int, title: String) -> json.JsonValue {
+  asking_words(id, seq, title, "which database?")
+}
+
+// The same ticket with the worker's question worded as `text`.
+fn asking_words(
+  id: String,
+  seq: Int,
+  title: String,
+  text: String,
+) -> json.JsonValue {
   json.Object([
     #("id", json.String(id)),
     #("title", json.String(title)),
@@ -66,7 +76,7 @@ fn asking(id: String, seq: Int, title: String) -> json.JsonValue {
       "question",
       json.Object([
         #("seq", json.Int(seq)),
-        #("text", json.String("which database?")),
+        #("text", json.String(text)),
         #("options", json.Array([])),
       ]),
     ),
@@ -103,10 +113,14 @@ fn mixed() -> json.JsonValue {
 }
 
 fn detail(seq: Int) -> json.JsonValue {
+  detail_saying(seq, "which database?")
+}
+
+fn detail_saying(seq: Int, text: String) -> json.JsonValue {
   json.Object([
     #("project", json.String("p1")),
     #("revision", json.Int(12)),
-    #("ticket", asking("t-ask", seq, "pick a database")),
+    #("ticket", asking_words("t-ask", seq, "pick a database", text)),
     #("assignments", json.Array([])),
     #(
       "inputs",
@@ -610,6 +624,50 @@ pub fn pressing_a_ticket_reads_it_and_shows_why_it_was_allowed_test() {
   assert string.contains(html, "Send answer")
   assert string.contains(html, "add storage")
   assert string.contains(html, "Open the worker")
+}
+
+pub fn a_question_is_drawn_as_markdown_with_unopenable_links_as_code_test() {
+  let words = "Use **Postgres**?\n\n- one\n- two\n\nSee [the file](notes/a.md)."
+  let asked = process.new_subject()
+  let projects =
+    projects_with(
+      asked,
+      fn() { listed(board_body(12, [asking("t-ask", 9, "pick")])) },
+      fn(_, _) { feed.TicketHeard(detail_saying(9, words)) },
+      fn(_, _, _, _) { feed.Recorded },
+    )
+  let html =
+    drawn(run(
+      opened(start_with(Some(projects))),
+      home.OpeningTicket("p1", "t-ask"),
+    ))
+
+  assert string.contains(html, "<strong>Postgres</strong>")
+  assert string.contains(html, "<li class=\"md-item\">")
+  assert string.contains(html, "<code class=\"md-code-span\">the file</code>")
+  assert !string.contains(html, "notes/a.md")
+  assert !string.contains(html, "**Postgres**")
+}
+
+pub fn a_long_question_is_drawn_whole_test() {
+  let words = string.repeat("word ", 400) <> "\n\nthe final sentence"
+  let asked = process.new_subject()
+  let projects =
+    projects_with(
+      asked,
+      fn() { listed(board_body(12, [asking("t-ask", 9, "pick")])) },
+      fn(_, _) { feed.TicketHeard(detail_saying(9, words)) },
+      fn(_, _, _, _) { feed.Recorded },
+    )
+  let html =
+    drawn(run(
+      opened(start_with(Some(projects))),
+      home.OpeningTicket("p1", "t-ask"),
+    ))
+
+  assert string.byte_size(words) > 1600
+  assert string.contains(html, "the final sentence")
+  assert !string.contains(html, "…")
 }
 
 pub fn a_press_for_a_ticket_the_page_does_not_hold_opens_nothing_test() {

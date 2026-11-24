@@ -524,6 +524,7 @@
   .peek-entry{display:grid;row-gap:2px;min-width:0;}
   .peek-speaker{color:var(--color-fg-quiet);font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;}
   .peek-text{margin:0;font:12px/1.5 var(--font-sans);white-space:pre-wrap;overflow-wrap:anywhere;}
+  .home-card-fact.markdown .md-p{white-space:pre-line;}
   /* The session sidebar, the left column (web_view/view/sidebar): the daemon's
      name and "New session" at the top, the machine pills, the sessions by what
      each needs from the person, and the pages that are not sessions at the foot.
@@ -2008,6 +2009,7 @@
   li.home-folder:has(> button.home-ticket){padding:0;}
   .home-ticket-page{max-width:780px;}
   .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  .home-ticket-page .home-card-fact.markdown{white-space:normal;}
   /* A check's output is a process's text. It wraps at any character and a long log scrolls inside its own box, so at phone width nothing runs past the edge and nothing is cut off. */
   .home-ticket-page pre.home-check-output{box-sizing:border-box;max-width:100%;max-height:24rem;margin:0 0 12px 0;padding:8px 10px;overflow:auto;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;}
   @media (max-width:640px){
@@ -2032,6 +2034,7 @@
   li.home-folder:has(> button.home-ticket){padding:0;}
   .home-ticket-page{max-width:780px;}
   .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  .home-ticket-page .home-card-fact.markdown{white-space:normal;}
   /* A check's output is a process's text. It wraps at any character and a long log scrolls inside its own box, so at phone width nothing runs past the edge and nothing is cut off. */
   .home-ticket-page pre.home-check-output{box-sizing:border-box;max-width:100%;max-height:24rem;margin:0 0 12px 0;padding:8px 10px;overflow:auto;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;}
   @media (max-width:640px){
