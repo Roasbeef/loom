@@ -108,6 +108,7 @@ pub const system_path = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 ///   == "/r/erts-1/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 /// ```
 pub fn check_path(daemon: String, bundled: List(String)) -> String {
+  // A daemon with no `PATH` of its own leaves the system directories.
   let base = case daemon {
     "" -> system_path
     inherited -> inherited

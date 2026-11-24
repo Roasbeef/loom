@@ -224,10 +224,14 @@ pub fn erl() -> String {
 ///
 pub fn toolchain_directories() -> List(String) {
   let erts = root() <> "/erts-" <> ffi_os.erts_version() <> "/bin"
+
+  // A bundled `gleam` is what marks the root as a release tree.
   let release = case existing_file(gleam_compiler()) {
     Ok(_) -> [root() <> "/bin"]
     Error(Nil) -> []
   }
+
+  // The running ERTS directory is named only when it is on disk.
   case existing_directory(erts) {
     Ok(_) -> [erts, ..release]
     Error(Nil) -> release
