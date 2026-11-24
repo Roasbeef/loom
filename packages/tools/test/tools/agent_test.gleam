@@ -27,6 +27,12 @@ import tools/tool.{type Ctx}
 
 // --- fixtures --------------------------------------------------------------
 
+fn an_entry() -> ids.EntryId {
+  let #(id, _generator) =
+    ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: 13))
+  id
+}
+
 fn an_op(seed: Int) -> OpId {
   let #(op, _generator) = ids.mint_op(ids.generator(clock.fixed(at: 0), seed:))
   op
@@ -1553,6 +1559,33 @@ pub fn send_forwards_a_budget_and_returns_a_waitable_new_handle_test() {
   assert agent.parse_handle(handle)
     == Ok(agent.Handle(strand: "sub:review", operation: next))
   assert list.key_find(fields, "deadline_ms") == Ok(json.Int(901_000))
+}
+
+// A message held for a target that waits on its owner started no run, so the
+// sender is told that the budget it passed did not apply.
+pub fn a_held_send_tells_the_sender_its_budget_did_not_apply_test() {
+  let seam =
+    agent.Agency(..echoing_agency(), send: fn(_caller, _to, _text, _budget) {
+      Ok(agent.Held(entry: an_entry()))
+    })
+  let outcome =
+    run(
+      "agent_send",
+      ctx_for("main", "turn", 0),
+      seam,
+      json.Object([
+        #("to", json.String("sub:review")),
+        #("message", json.String("continue")),
+        #("within_ms", json.Int(900_000)),
+      ]),
+    )
+  assert !outcome.is_error
+  let text = text_of(outcome)
+  assert string.contains(text, "held for `sub:review`")
+  assert string.contains(text, "within_ms")
+  assert string.contains(text, "did not apply")
+  let assert option.Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "delivery") == Ok(json.String("held"))
 }
 
 pub fn wait_exposes_abort_causes_without_changing_the_wire_outcome_test() {

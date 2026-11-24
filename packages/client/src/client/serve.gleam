@@ -69,6 +69,7 @@ import client/approval_evidence
 import client/async_codemode
 import client/async_runs
 import client/attention
+import client/attention_hold
 import client/blobs
 import client/blocksummary
 import client/blocksummarybook
@@ -5016,6 +5017,11 @@ fn assemble_in(
         // other session adds nothing.
         |> project_run_end(settings.project)
         |> notes.digest_hooks(opened, clock)
+        // While an ask of the strand is open, each of its requests ends with a
+        // reminder that the owner has not answered. It is built from the ask
+        // records at request time and stored nowhere, so it is gone the
+        // request after the last ask is answered.
+        |> attention_hold.hooks(opened, clock)
         // The notes index is read at every run start rather than once here,
         // because a `remember` call in any session rewrites it, and an index
         // captured at assembly would hold every session one note behind.

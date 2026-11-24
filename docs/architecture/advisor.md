@@ -86,8 +86,8 @@ a model's request, and carries a `lineage/` cell naming its parent.
 `agent_send` and `agent_wait` check that cell before one strand may
 address another, and `strand.roster` lists strands from it.
 
-`ensure_strand` (`client/advisor.gleam:3661`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1757`) instead. That is the
+`ensure_strand` (`client/advisor.gleam:3705`) creates the advisor through
+`create_idle_strand` (`runtime/api.gleam:1779`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
 
@@ -351,9 +351,19 @@ the run-end hook holds the boundary open until the advisor answers, would
 put a provider round trip on the driver process at every run end. See
 "Deferred" below.
 
-`Delivery` distinguishes the two admissions, and the advisor is told
-which one the message went through: `Steered` renders as "steered the
-primary's open run" and `Started` as "started a run on the idle primary".
+`Delivery` distinguishes the admissions, and the advisor is told which one
+the message went through: `Steered` renders as "steered the primary's open
+run", `Started` as "started a run on the idle primary", and `Held` as "held
+for the owner's answer to the primary's open ask".
+
+A primary that stopped on an `ask` is waiting for the owner, and the advisor
+does not wake it (protocol-change/119, "Addendum 2026-11-23: an open ask holds
+the strand"). A nudge stays in the guard cell and the turn's one unsolicited
+wake is not spent. The run-end hook places no nudge as a follow-up on the run
+that made the ask, because that would continue the run past its question. The
+queue reaches the primary at its next run start, which is the owner's message
+or the answer. A block and a goal continuation go through `send_to_strand`,
+which holds them as next-run items for the same reason.
 
 The run-end hook checks the pending nudge queue before the primary's
 terminal transaction. If a nudge is judged after that check while the
@@ -478,7 +488,7 @@ rather than becoming `Woke` or `Delivered`. A downgrade means the primary
 was *not* stopped for it, and either of those acks would claim
 otherwise. The wake is appended to the downgrade's own reason instead.
 
-The actor's `decide` (`client/advisor.gleam:3010`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:3027`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the
 send costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the

@@ -354,6 +354,12 @@ pub fn beat(
   use <- bool.guard(when: !may_wake(strand), return: Ok(Nil))
   let target = api.on_strand(runtime, strand)
 
+  // A strand waiting on the owner's answer to an ask is not asked again about
+  // its jobs. The heartbeat carries no mark and its clock is volatile, so
+  // skipping it holds nothing: the next beat after the answer finds the
+  // strand idle and says the same thing.
+  use <- bool.guard(when: api.waiting_on_owner(target), return: Ok(Nil))
+
   // beat handles the api.prompt(target, [harness_message(runtime, text)]) outcomes before continuing the operation.
   case api.prompt(target, [harness_message(runtime, text)]) {
     Ok(_operation) -> Ok(Nil)

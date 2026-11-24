@@ -195,6 +195,22 @@ steer first. If the target reports no active run, it accepts a new run,
 and if a run opens in that gap it retries the steer. A target flipping
 between busy and idle therefore never drops the message.
 
+`Held(entry)` is the third admission. A strand that stopped on an `ask` is
+idle with a question outstanding, and none of the inputs that come through
+`send_to_strand` is the answer. When the target has an open ask routed to
+the owner, the message is queued as a durable next-run item instead of
+opening a run or joining the open one, since a steer would continue the run
+that made the ask past its question. The doorbell is not rung. A person's
+message to a relayed session goes through `send_as_owner_marking`, which never
+holds, and `steer_marking` holds only for an open run. The strand's next run places
+held items, in order, ahead of its own prompt. That run is started by the
+owner's message or by the answer, neither of which comes through
+`send_to_strand`. The queue holds at most 32 items, and a send past that is
+refused with `NextRunFull`. A mark spends in the same commit as the hold, so
+a send that fires at most once is not repeated when it is delivered. The
+decision and its costs are in protocol-change/119, "Addendum 2026-11-23: an
+open ask holds the strand".
+
 ### What a child can call, and what it is told
 
 A child's active tools are the parent's set minus `agent_spawn` by default.

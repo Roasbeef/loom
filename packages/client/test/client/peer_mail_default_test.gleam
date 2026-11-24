@@ -12,13 +12,15 @@ import client/peer_mail.{
   BusyOnly, Defaults, MayWake, NoDefaultLinks, Policy, SameOwner,
 }
 import client/peers
+import core/attention
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
 import gleam/int
 import gleam/list
-import gleam/option
+import gleam/option.{None, Some}
 import runtime/api
+import session/session
 
 fn session_id(seed: Int) -> ids.SessionId {
   let #(id, _) =
@@ -472,4 +474,48 @@ pub fn default_entries_share_the_explicit_link_bound_test() {
     Defaults(Policy(SameOwner, BusyOnly), fn() { [name(first), ..many] })
   let listed = rows(call(runtime, defaults, peer_mail.Links("main")))
   assert list.length(listed) == peer_mail.outgoing_link_limit
+}
+
+// A peer message is an automatic input. A recipient that stopped on an ask is
+// waiting for its owner, so a may-wake link delivers the message durably and
+// starts no run: the receipt is spent, the strand stays idle, and the message
+// waits as a next-run item (protocol-change/119, the 2026-11-23 addendum).
+pub fn a_peer_message_does_not_wake_a_strand_waiting_on_the_owner_test() {
+  let mine = session_id(619)
+  let other = session_id(620)
+  let runtime = gateway_test.reserved_fixture(mine).runtime
+  let defaults = same_owner(MayWake, [name(mine), name(other)])
+  let ask =
+    attention.Ask(
+      header: attention.Header(
+        id: "ask-0000000001",
+        created_at: 1,
+        routing: attention.ToOwner,
+        anchor: attention.Anchor(
+          operation: ids.mint_op(ids.generator(clock.fixed(at: 5), seed: 9)).0,
+          step_id: "turn-1:tools",
+          source_index: 0,
+        ),
+        strand: "main",
+        parents: [],
+      ),
+      why: None,
+      questions: [attention.Question("q1", "Retry?", attention.Confirm, [])],
+      state: attention.AskOpen,
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      attention.ask_key(ask.header.id),
+      attention.encode_ask(ask),
+    )
+    as "the ask record must be written"
+
+  let assert Ok(_) = send(runtime, defaults, name(other), "main", "m1")
+    as "the message is admitted"
+  let assert Ok(Some(session.Cell(value: state, ..))) =
+    session.strand_state(runtime.session, "main")
+  assert state.current_operation == None as "the strand was not woken"
+  assert list.length(state.pending_next_run) == 1
+    as "the message waits for the strand's next run"
 }

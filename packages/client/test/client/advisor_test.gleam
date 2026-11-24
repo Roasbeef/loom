@@ -21,6 +21,7 @@ import client/notes
 import client/remote_child
 import client/remote_spawn
 import core/accounting
+import core/attention
 import core/clock
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type UsageId}
@@ -988,6 +989,94 @@ pub fn a_second_nudge_in_one_turn_is_held_test() {
   stop(rig)
 }
 
+// --- an open ask holds the primary ------------------------------------------
+
+// A primary that stopped on an ask is waiting for the owner. A nudge is not
+// the answer, so it is queued exactly as it is for a working primary, and it
+// reaches the primary with the next run, which the owner's message or the
+// answer starts.
+pub fn a_nudge_does_not_wake_a_primary_waiting_on_the_owner_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  an_open_ask(rig.runtime, "ask-0000000001", advisor.primary)
+
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "the nudge must be held for the owner's answer"
+  assert primary_texts(rig.opened) == [] as "nothing reached the idle primary"
+  assert strand_operation(rig.opened, advisor.primary) == None
+    as "and no run was opened on it"
+
+  // The owner's message starts a run, whose start folds the queue in.
+  assert settle(subject) == ["rebase before you push"]
+  stop(rig)
+}
+
+// The wake is held, not spent: the turn keeps its one unsolicited delivery,
+// so once the ask is answered the next nudge can still wake the primary.
+pub fn a_held_wake_does_not_spend_the_turn_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  an_open_ask(rig.runtime, "ask-0000000001", advisor.primary)
+  let assert Ok(advise.Queued) = judge(subject, advise.Nudge(text: "first"))
+    as "the nudge must be held"
+
+  an_answered_ask(rig.runtime, "ask-0000000001", advisor.primary)
+  let assert Ok(advise.Woke(..)) = judge(subject, advise.Nudge(text: "second"))
+    as "with the ask answered the idle primary is woken again"
+  let assert [woken] = primary_texts(rig.opened)
+  assert string.contains(woken, "first")
+  assert string.contains(woken, "second")
+  stop(rig)
+}
+
+// The run that made the ask ends at once, and the run-end hook is where a
+// queued nudge would be placed as a follow-up that keeps the run going. With
+// an ask open the hook places nothing, and the queue stays queued.
+pub fn the_run_end_of_an_asking_run_places_no_nudge_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  a_working_primary(rig)
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "the nudge must queue against a working primary"
+  an_open_ask(rig.runtime, "ask-0000000001", advisor.primary)
+
+  let hooked =
+    advisor.hooks(
+      hooks.build(hooks.new()),
+      a_wiring_named(rig.opened, rig.name),
+    )
+  let mine = an_operation(rig.opened, advisor.primary, 51)
+  assert hooked.run_end(mine) == None
+    as "an ask is open, so the run ends and the nudge is not read"
+
+  assert settle(subject) == ["rebase before you push"]
+    as "the nudge is still queued for the next run start"
+  stop(rig)
+}
+
+// A block is delivered now, and now is the wrong moment for a primary that
+// is waiting for an answer: it is held for the next run and the advisor is
+// told so.
+pub fn a_block_is_held_for_a_primary_waiting_on_the_owner_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  an_open_ask(rig.runtime, "ask-0000000001", advisor.primary)
+
+  let assert Ok(advise.Delivered(how:)) =
+    judge(subject, advise.Block(text: "the migration has no down step"))
+    as "a block is accepted"
+  assert string.contains(how, "held for the owner's answer")
+  assert strand_operation(rig.opened, advisor.primary) == None
+    as "the block did not start a run"
+  stop(rig)
+}
+
 // The turn comes back at a run start this actor did not open, and not at
 // one it did. Without that distinction the woken run's own start would
 // pay for the next wake, and the loop would sustain itself.
@@ -1572,6 +1661,61 @@ fn entry_text(each: Entry) -> Result(String, Nil) {
     | entry.BranchSummaryEntry(..)
     | entry.CustomEntry(..) -> Error(Nil)
   }
+}
+
+// An ask of `strand`, routed to the owner and still open.
+fn an_open_ask(runtime: api.Runtime, id: String, strand: String) -> Nil {
+  write_ask(runtime, an_ask(id, strand, attention.AskOpen))
+}
+
+// The same ask once the owner has answered it.
+fn an_answered_ask(runtime: api.Runtime, id: String, strand: String) -> Nil {
+  write_ask(
+    runtime,
+    an_ask(
+      id,
+      strand,
+      attention.Answered(
+        at: 1,
+        answer: attention.Answer(values: [#("q1", attention.Yes)], by: "owner"),
+      ),
+    ),
+  )
+}
+
+fn write_ask(runtime: api.Runtime, ask: attention.Ask) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      attention.ask_key(ask.header.id),
+      attention.encode_ask(ask),
+    )
+    as "the ask record must be written"
+  Nil
+}
+
+fn an_ask(
+  id: String,
+  strand: String,
+  state: attention.AskState,
+) -> attention.Ask {
+  attention.Ask(
+    header: attention.Header(
+      id:,
+      created_at: 1,
+      routing: attention.ToOwner,
+      anchor: attention.Anchor(
+        operation: an_op_id(5),
+        step_id: "turn-1:tools",
+        source_index: 0,
+      ),
+      strand:,
+      parents: [],
+    ),
+    why: None,
+    questions: [attention.Question("q1", "Retry?", attention.Confirm, [])],
+    state:,
+  )
 }
 
 // --- fixtures --------------------------------------------------------------

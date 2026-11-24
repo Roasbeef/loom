@@ -10565,6 +10565,14 @@ fn describe_api_error(
       protocol.code_conflict,
       "strand " <> strand <> " has no live operation",
     )
+    api.QueueRejected(reason: queue.NextRunFull(limit:)) -> #(
+      protocol.code_conflict,
+      "strand "
+        <> strand
+        <> " already holds "
+        <> int.to_string(limit)
+        <> " messages for its next run",
+    )
     api.ReadFailed(reason:) -> #(protocol.code_internal, reason)
     api.CommitFailed(error: _) -> #(
       protocol.code_internal,
