@@ -11850,3 +11850,36 @@ The capture-multiplicity regression lives in `client/codemode_test`.
 
 - **Shared per-session provider and hooks holders.** `client/wiring.hold_provider` and `client/wiring.hold_hooks` park the session-invariant provider closure and runtime hook closures in two per-session actors alongside `client/tool_holder`, publishing them under `custody.ToolConfig` in `client/serve`. Steady-state strands no longer retain or copy ~158 KiB of shared `Effects` closures per process.
 - **Per-session `AgencyLimits` and raised defaults.** `client/agency.Config` uses `core/agency_limits.DepthCap` (`BoundedDepth` | `UnlimitedDepth`) with shipped defaults `default_fan_out = 100`, `default_session_strands = 256`, `default_depth_cap = 1`, and `max_ancestor_walk = 256`. `client/daemon/protocol`, `client/daemon/domain`, `client/daemon/manager`, `client/daemon/server`, `client/daemon/ui_socket`, and `client/serve.Settings` thread optional `AgencyLimits` through session creation and recovery (persisted in catalogue v21 `catalogue_session_agency`).
+
+## Insight triage slice 0 (offline test)
+
+`client/insight/*` and `dev/insight_slice0.gleam` are the developer script behind
+slice 0 of `docs/design-notes/insight-triage.md` (section 8.3): does a cheap
+model's order beat newest first at putting the rows the owner would open first
+among the top three. It adds no protocol change and no daemon code, and its
+only product is a verdict and a recorded run.
+
+- `insight/lane` rebuilds a finished session's lane from the primary strand's
+  branch (`transcript.branch_blocks` into `turns.pieces`, with no history
+  window bound) and `candidates` keeps the classifier's Insights rows, peer
+  messages excluded, each with the lane index of its piece.
+- `insight/request` builds the section 3.2 request: eight rows, two-piece
+  windows, 600-byte blocks, an 8,192-byte request, the run's last assistant
+  message once, no reasoning. Rows are numbered from one; `Request.rows` maps a
+  number back to its candidate.
+- `insight/answer` parses `<number> <weight> <reason>` lines totally: a bad line,
+  weight or control character refuses the whole answer, and a number the request
+  did not issue is dropped.
+- `insight/score` orders rows by weight with the classifier's order breaking
+  ties, scores whether an "open first" row is in the top three, and asks
+  `evalstat.paired_verdict` over one task per session. `render` prints the
+  minimum detectable effect first.
+- `insight/sheet` writes the label sheet and `rows.json`, and reads the owner's
+  checkboxes back; `insight/record` is the replay file for one request and its
+  answer.
+- The script runs only on copies of the owner's stores
+  (`sqlite3 <store> ".backup '<copy>'"`), opens them under a far-future clock so
+  a copied writer lease has expired, and never prints a key. Commands: `select`,
+  `sheet`, `run <dir> <loom.toml> <role>` and `verdict`, each as
+  `gleam dev -m insight_slice0 -- <command> <dir>`; `run` replays a session whose
+  record already holds the same prompt, so a second run costs nothing.
