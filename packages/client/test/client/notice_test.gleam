@@ -12,6 +12,7 @@ import client/notice
 import core/attention
 import core/clock
 import core/ids
+import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -328,6 +329,33 @@ pub fn a_heartbeat_still_wakes_an_idle_strand_with_no_ask_test() {
 
   assert notice.beat(runtime, "main", "[loom] idle heartbeat") == Ok(Nil)
   assert main_has_run(runtime)
+}
+
+// Past the held queue's limit a completion notice is refused with the queue's
+// own words and spends no mark. The jobs and executions services drop a
+// failed delivery, as they always have, because the finished record is read by
+// `job_poll` or `join`, so what the model loses is the wake and not the result.
+pub fn a_notice_past_the_held_limit_is_refused_and_spends_no_mark_test() {
+  let runtime = gateway_test.reserved_fixture(session_id(703)).runtime
+  an_ask_of_main(runtime)
+  list.each(list.repeat(Nil, api.next_run_limit), fn(_) {
+    let assert Ok(api.Held(..)) =
+      api.send_to_strand(
+        runtime,
+        to: "main",
+        message: message.UserMessage(
+          content: [message.UserText(text: "held", text_signature: None)],
+          timestamp: 0,
+          origin: None,
+        ),
+      )
+    Nil
+  })
+
+  let assert Error(reason) =
+    notice.deliver(runtime, "main", notice.Job(id: "j1"), "[loom] job j1 done")
+  assert string.contains(reason, "NextRunFull")
+  assert api.fact(runtime, notice.key(notice.Job(id: "j1"))) == Ok(None)
 }
 
 fn session_id(seed: Int) -> ids.SessionId {
