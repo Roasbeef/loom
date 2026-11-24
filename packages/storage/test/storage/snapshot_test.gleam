@@ -366,7 +366,7 @@ pub fn exact_key_preflight_refuses_before_fetch_and_never_scans_prefix_test() {
         process.send(fetched, "header")
         Ok(snapshot.Header(namespace, key, 1, snapshot.metadata_bytes_limit + 1))
       },
-      cell: fn(_) {
+      cells: fn(_) {
         process.send(fetched, "payload")
         Error(snapshot.InvalidRequest)
       },
@@ -1040,7 +1040,7 @@ pub fn key_page_validation_and_budget_precede_payload_fetch_test() {
         ])
       },
       header: fn(_, _) { Error(snapshot.InvalidRequest) },
-      cell: fn(_) {
+      cells: fn(_) {
         process.send(fetched, "payload")
         Error(snapshot.InvalidRequest)
       },

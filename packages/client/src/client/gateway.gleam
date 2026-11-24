@@ -3252,10 +3252,11 @@ fn captured_transfer(
         json.Array(case window {
           transfer.Escalations(ids) ->
             list.filter_map(ids, fn(id) {
+              let keys = snapshot_view.lookup_keys(id)
+
+              // Both local and relayed spellings depend only on the request.
               case
-                list.any(cut.cells, fn(cell) {
-                  list.contains(snapshot_view.lookup_keys(id), cell.key)
-                })
+                list.any(cut.cells, fn(cell) { list.contains(keys, cell.key) })
               {
                 True -> Error(Nil)
                 False -> Ok(json.String(id))

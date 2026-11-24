@@ -15,6 +15,7 @@ import core/register
 import gleam/bit_array
 import gleam/bool
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -89,7 +90,7 @@ fn capture_cut(
         page_headers(conn, namespace, prefix, after, limit)
       },
       header: fn(namespace, key) { header(conn, namespace, key) },
-      cell: fn(header) { cell(conn, header) },
+      cells: fn(headers) { cells(conn, headers) },
     ),
     initial_bytes: usage_bytes,
   ))
@@ -331,8 +332,29 @@ fn header(
   snapshot.Header(namespace, key, row.seq, byte_length)
 }
 
-/// Reads a single register cell value from SQLite for a given header.
-fn cell(
+/// Materializes only headers already admitted by the shared snapshot budget.
+/// Three bindings per header fit under SQLite's 999-variable minimum.
+fn cells(
+  conn: sqlight.Connection,
+  headers: List(snapshot.Header),
+) -> Result(List(snapshot.Cell), Error) {
+  // The single-cell plan already has an exact indexed statement.
+  case headers {
+    [] -> Ok([])
+    [header] -> read_point_cell(conn, header) |> result.map(list.wrap)
+    [_, _, ..] -> {
+      use chunks <- result.map(
+        headers
+        |> list.sized_chunk(into: 256)
+        |> list.try_map(fn(chunk) { read_cell_batch(conn, chunk) }),
+      )
+      list.flatten(chunks)
+    }
+  }
+}
+
+/// Keeps the point decoder's exact SQLite fault report for a malformed value.
+fn read_point_cell(
   conn: sqlight.Connection,
   header: snapshot.Header,
 ) -> Result(snapshot.Cell, Error) {
@@ -344,7 +366,76 @@ fn cell(
       header.seq,
     ),
   ))
-  use value <- result.map(payload(row.value))
+  decode_cell(header, row.value)
+}
+
+/// Joins admitted header identities to exact payloads in the capture transaction.
+/// Each VALUES row is generated from its ordinal and placeholders alone. The
+/// left join preserves a missing payload at its original decode position.
+fn read_cell_batch(
+  conn: sqlight.Connection,
+  headers: List(snapshot.Header),
+) -> Result(List(snapshot.Cell), Error) {
+  let tuples =
+    headers
+    |> list.index_map(fn(_, index) {
+      "(?, ?, ?, " <> int.to_string(index) <> ")"
+    })
+    |> string.join(", ")
+  let bindings =
+    list.flat_map(headers, fn(header) {
+      [
+        sqlight.text(register.ns_to_string(header.namespace)),
+        sqlight.text(header.key),
+        sqlight.int(header.seq),
+      ]
+    })
+
+  // Keep one row per ordinal. A non-BLOB value goes through the point
+  // decoder in order. In particular, SQLite's TEXT length can undercount
+  // bytes after a NUL, so the batch must not materialize such values.
+  let statement =
+    "WITH requested(ns, key, seq, ordinal) AS (VALUES "
+    <> tuples
+    <> ") SELECT CASE typeof(registers.value)"
+    <> " WHEN 'blob' THEN registers.value WHEN 'null' THEN NULL ELSE 0 END"
+    <> " FROM requested LEFT JOIN registers"
+    <> " ON registers.ns = requested.ns AND registers.key = requested.key"
+    <> " AND registers.seq = requested.seq ORDER BY requested.ordinal"
+  use rows <- result.try(
+    sqlight.query(
+      statement,
+      on: conn,
+      with: bindings,
+      expecting: decode.at([0], decode.dynamic),
+    )
+    |> result.map_error(database_error),
+  )
+
+  // An unmatched sequence has the same refusal as a missing point read.
+  use <- bool.lazy_guard(list.length(rows) != list.length(headers), fn() {
+    Error(invalid_row("one stored row per admitted header"))
+  })
+  list.try_map(list.zip(headers, rows), fn(pair) {
+    let #(header, value) = pair
+
+    // Decode after joining so a later SQLite type error cannot mask an
+    // earlier payload refusal. Re-read only a malformed column through the
+    // generated point decoder to preserve its BackendFault report.
+    case decode.run(value, decode.optional(decode.bit_array)) {
+      Ok(Some(bytes)) -> decode_cell(header, bytes)
+      Ok(None) -> Error(snapshot.MissingRecord)
+      Error(_) -> read_point_cell(conn, header)
+    }
+  })
+}
+
+/// Decodes the admitted payload using the snapshot reader's total decoder.
+fn decode_cell(
+  header: snapshot.Header,
+  bytes: BitArray,
+) -> Result(snapshot.Cell, Error) {
+  use value <- result.map(payload(bytes))
   snapshot.Cell(
     header.namespace,
     header.key,

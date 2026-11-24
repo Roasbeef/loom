@@ -1006,35 +1006,24 @@ const passing_check = "test -f only-on-executor && echo checked-in $(pwd)"
 
 const failing_check = "test -f only-on-orchestrator"
 
-// The reviewer's two answers, one per goal. Each feed is answered with one
-// `advise` call and then a closing text, so the review ends and the goal is
-// judged complete whatever the check said: the reviewer is not what is under
-// test, the check is.
+// An accepted `advise` verdict ends the reviewer's run. Give each goal one
+// verdict so each check reaches completion using only its own feed.
 fn advisor_script() -> List(provider.Exchange) {
-  let review = fn(feed_call: String, answer_call: String) {
-    [
-      provider.ComputedExchange(
-        provider.AwaitPromptPrefix(advisorslice.goal_feed_header),
-        fn(_seen) {
-          provider.ReplyToolUse(
-            feed_call,
-            advise.name,
-            json.Object([
-              #("verdict", json.String("complete")),
-              #("text", json.String("reviewed")),
-            ]),
-          )
-        },
-      ),
-      provider.ComputedExchange(provider.AwaitToolResult(feed_call), fn(_seen) {
-        provider.ReplyText("noted " <> answer_call)
-      }),
-    ]
-  }
-  list.append(
-    review("advise-first", "first"),
-    review("advise-second", "second"),
-  )
+  list.map(["advise-first", "advise-second"], fn(feed_call) {
+    provider.ComputedExchange(
+      provider.AwaitPromptPrefix(advisorslice.goal_feed_header),
+      fn(_seen) {
+        provider.ReplyToolUse(
+          feed_call,
+          advise.name,
+          json.Object([
+            #("verdict", json.String("complete")),
+            #("text", json.String("reviewed")),
+          ]),
+        )
+      },
+    )
+  })
 }
 
 /// Pins goals whose checks run in the executor's checkout, one that passes
@@ -1086,15 +1075,10 @@ fn goal(prepared: Pair) -> Nil {
             assert remote_daemons.field(second, "objective")
               == json.String(second_objective)
 
-            // The board turns `complete` when the reviewer's `advise` call is
-            // judged, which is before the reviewer's turn is over: the tool
-            // result still has to reach it and it answers with a closing text.
-            // Stopping the session on the board alone races that last request
-            // and leaves the script unexhausted. The provider's own record is
-            // the barrier, since it has answered the closing text only once the
-            // request carrying the tool result has arrived.
+            // The provider's record proves that both feeds reached the
+            // reviewer before the session is stopped.
             let assert Ok(Nil) = provider.await_exhausted(advisor_watch, 30_000)
-              as "the reviewer's closing turn reached its provider"
+              as "the provider received both goal feeds"
             remote_pair.stop_and_close(prepared, opened, 1)
             remote_pair.close_daemons([opened.orchestrator])
           },
@@ -1178,16 +1162,16 @@ fn assert_check(board: json.JsonValue, command: String, status: Int) -> Nil {
 // What the reviewer was shown: the passing check's own output, which names the
 // executor's checkout, then the failing one's status.
 fn assert_feeds(prepared: Pair, feeds: List(provider.ObservedRequest)) -> Nil {
-  let bodies =
-    list.map(feeds, fn(request) { remote_pair.request_text(request.body) })
-  let assert Ok(first) = list.find(bodies, string.contains(_, first_objective))
-    as "the reviewer was fed the first goal"
+  let assert [first, second] = feeds
+    as "the reviewer gets one request for each goal"
+  let first = remote_pair.request_text(first.body)
+  let second = remote_pair.request_text(second.body)
+
+  assert string.contains(first, first_objective)
   assert string.contains(first, "exit status 0")
   assert string.contains(first, "(the check passed)")
   assert string.contains(first, "checked-in " <> prepared.checkout)
-  let assert Ok(second) =
-    list.find(bodies, string.contains(_, second_objective))
-    as "the reviewer was fed the second goal"
+  assert string.contains(second, second_objective)
   assert string.contains(second, "exit status 1")
   assert string.contains(second, "(the check failed)")
 }

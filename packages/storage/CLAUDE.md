@@ -457,7 +457,11 @@ independent test oracle, including Unicode rejection and length boundaries.
   scans prefix neighbors. Capture
   copies a coherent high-water, stats and metadata; later descriptor pages and
   raw entry fragments retain no transaction. The existing backend actor owns
-  every read. This capability creates neither a reader process nor a lease.
+  every read. The snapshot collector admits complete header budgets before
+  materialization. SQLite joins admitted namespace, key and sequence identities
+  in batches of up to 256 while keeping the same deferred transaction and decode
+  order. A single header uses the exact point read. This capability creates
+  neither a reader process nor a lease.
   Each function takes a final wait budget in milliseconds, capped at 5,000.
   The shared monitored exchange in `internal/snapshot_call` returns
   `ReadTimedOut` or `ReaderUnavailable` instead of panicking. Only the
