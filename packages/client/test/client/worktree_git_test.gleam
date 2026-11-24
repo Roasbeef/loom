@@ -247,3 +247,27 @@ pub fn alternates_preserve_spaces_and_refuse_separators_test() {
   let assert Ok(Nil) = worktree_git.stop(git)
   worktrees.stop(rig.trees)
 }
+
+// --- the PATH a project's setup and check see --------------------------------
+
+pub fn a_checks_path_names_the_bundled_toolchain_before_the_daemons_test() {
+  assert worktree_git.check_path("/usr/bin:/bin", ["/r/erts-1/bin", "/r/bin"])
+    == "/r/erts-1/bin:/r/bin:/usr/bin:/bin"
+}
+
+pub fn a_directory_the_daemon_already_names_is_not_repeated_test() {
+  assert worktree_git.check_path("/usr/bin:/r/erts-1/bin:/bin", [
+      "/r/erts-1/bin",
+    ])
+    == "/r/erts-1/bin:/usr/bin:/bin"
+}
+
+pub fn a_daemon_with_no_path_leaves_the_system_directories_behind_the_bundle_test() {
+  assert worktree_git.check_path("", ["/r/erts-1/bin"])
+    == "/r/erts-1/bin:" <> worktree_git.system_path
+}
+
+pub fn an_installation_with_no_bundle_leaves_the_daemons_path_alone_test() {
+  assert worktree_git.check_path("/opt/go/bin::/usr/bin", [])
+    == "/opt/go/bin:/usr/bin"
+}
