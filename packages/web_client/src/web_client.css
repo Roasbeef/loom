@@ -863,11 +863,11 @@
      right the chip that says who the page is for, a ghost Search with its
      shortcut and a ghost Theme. The connection's pill is drawn only when the
      page is not connected. */
-  :host(.loom-inbox) .shell-bar{align-items:center;box-sizing:border-box;min-height:48px;height:48px;padding-top:env(safe-area-inset-top,0px);background:var(--color-bg);}
-  :host(.loom-inbox) .shell-toggle{align-self:center;height:47px;}
+  :host(.loom-inbox) .shell-bar{align-items:flex-start;box-sizing:border-box;min-height:48px;height:auto;padding-top:env(safe-area-inset-top,0px);background:var(--color-bg);}
+  :host(.loom-inbox) .shell-toggle{align-self:flex-start;height:47px;}
   :host(.loom-inbox) .toggle-sidebar{width:44px;}
   :host(.loom-inbox) .toggle-hint{display:none;}
-  :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:center;box-sizing:border-box;width:auto;height:auto;margin:0 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  :host(.loom-inbox) .bar-search,:host(.loom-inbox) .shell-theme{align-self:flex-start;box-sizing:border-box;width:auto;height:auto;margin:11px 6px 0 0;padding:3px 9px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
   :host(.loom-inbox) .shell-theme{margin-right:12px;}
   :host(.loom-inbox) .bar-search:hover,:host(.loom-inbox) .shell-theme:hover{background:var(--color-bg-raised);color:var(--color-fg);}
   loom-shell.loom-inbox .session-head{flex-wrap:nowrap;align-items:center;gap:0 14px;min-height:47px;padding:0 16px 0 4px;overflow:hidden;}
@@ -888,6 +888,11 @@
   loom-shell.loom-inbox .session-head .home-who-button{padding:2px 8px;border:1px solid var(--color-divider);border-radius:10px;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
   loom-shell.loom-inbox .session-head .home-who-button:hover,loom-shell.loom-inbox .session-head .home-who-button[aria-expanded="true"]{background:var(--color-bg-raised);}
   loom-shell.loom-inbox .session-head .role-chip{order:4;}
+  /* A page that has ended draws its notice in the bar. The bar is one line that
+     clips its overflow, so the notice would be laid over the chips after it:
+     the bar wraps instead, and the notice takes the row below all of them. */
+  loom-shell.loom-inbox .session-head:has(> .ended-notice){flex-wrap:wrap;overflow:visible;padding-bottom:8px;}
+  loom-shell.loom-inbox .session-head > .ended-notice{order:9;flex:1 1 100%;}
   .need-pill{order:2;flex:0 0 auto;padding:2px 8px;border:1px solid color-mix(in srgb,var(--color-signal) 40%,transparent);border-radius:10px;background:var(--color-pill-wait-bg);color:var(--color-signal-text);font:600 12px/1.45 var(--font-sans);white-space:nowrap;}
   /* The rail: the folders at its top, the running sessions under "Watch live"
      in the mockup's two-line rows, then what the counts read and "New session". */
