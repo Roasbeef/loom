@@ -3474,6 +3474,15 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   holder. `contributions.attention_tools` registers both tools after
   `propose`; `project_jail.worker_tools.refused_names` refuses `ask` to a
   project worker, which keeps `notice`.
+- `client/attention_hold.{open_asks, holds, hooks}` — the daemon's half of an
+  open ask holding its strand (protocol-change/119, the 2026-11-23 addendum).
+  `hooks` wraps the `context` slot so every request of a strand with an open
+  ask routed to the owner ends with `core/attention_hold.reminder`, built from
+  the records at request time and stored nowhere. `holds` is the advisor's
+  question: `wake_primary` does not wake a primary that holds, and the run-end
+  hook places no nudge as a follow-up on the run that made the ask. The job
+  heartbeat (`notice.beat`) skips a strand that holds. Held automatic inputs
+  are the runtime's (`api.Held`); a schedule counts a held tick as fired.
 - `client/proposals.{rules_file, key_prefix, lease_owner, max_rules_bytes,
   max_listed, Kind, State, Decision, Source, Proposal, Listing, Wiring, Admin,
   seam, admin, channel, submit, listing, decide, rules, read_rules,

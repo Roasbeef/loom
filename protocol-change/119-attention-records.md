@@ -463,3 +463,189 @@ what the code does.
   ask `to` the asking strand itself is refused, since the answer could never
   reach a run that has ended its turn waiting.
 
+
+## Addendum 2026-11-23: an open ask holds the strand
+
+**Status**: ACCEPTED 2026-11-23. The owner chose the design below after a
+session on 2026-11-23 in which the agent asked, the owner did not see the
+question and typed "continue", and the agent took that as no answer and went
+ahead. No stored record, wire frame, event, control command or `loom.toml` key
+changes. The `ask` tool's description is unchanged, because it already says to
+end the turn and to do no work the answer decides. The additions are one new
+`Delivery` variant in `runtime/api` (`Held`), one new queue refusal
+(`NextRunFull`), one new `agent.Delivery` variant that `agent_send` words, and
+a reminder on a strand's requests.
+
+### The problem
+
+"The answer" above says that an ask ends the run, so the strand is idle with an
+open ask and the answer arrives later as a new user message. Nothing keeps
+another input from waking it first, and nothing tells it, once woken, that its
+question is still open.
+
+- The owner's own message wakes it. The owner may not have seen the question.
+- The advisor's nudge wakes it when the primary is idle (`client/advisor`,
+  `wake_primary`), and the run-end hook places a queued nudge as a follow-up on
+  the run that made the ask, which continues that run past its question. A test
+  drive had to suppress the advisor to keep `main` waiting.
+- A peer message, a model-created schedule that may wake, a job completion
+  notice and a parent's `agent_send` to an idle child each start a run through
+  `send_to_strand`, `send_to_strand_marking` or `send_to_child`.
+- A code-mode `attention.ask` does not end the run at all, so the model is only
+  told to end its turn and may not.
+
+A woken model reads no sign that a question is outstanding. It cannot tell "no
+answer yet" from "go ahead".
+
+### What was considered
+
+- **A blocking ask held open.** The tool parks until the owner answers. 119
+  rejected this above: an answer can take hours, a call held that long keeps a
+  tool effect process and the call's budget deadline alive, and a restart loses
+  the wait. That reasoning is unchanged. Nothing here makes `ask` wait.
+- **Only the reminder.** Every wake carries the reminder and nothing is held.
+  The model is told the question is open, but an advisor nudge or a schedule
+  tick still starts a run that spends the owner's provider budget on a strand
+  that has been told to wait, and each such run may read the reminder wrongly.
+  It also leaves the run-end follow-up, which continues the asking run itself.
+- **Only the hold.** Automatic inputs wait and the owner's wake carries
+  nothing. That removes the advisor and peer cases and leaves the case that
+  caused this change, an owner who has not seen the question.
+- **A reminder stored in the transcript.** Written as a message at each run
+  start, as the notes digest is. It is wrong from the moment the owner answers,
+  sits in the history until compaction summarises it, and is added again at
+  every wake. The transcript is meant to record what was said, and an
+  instruction that was true when written and false later does not belong in it.
+- **A reminder at the head of the request**, as the advisor's standing brief
+  is. It is also transient, but it changes the byte prefix a provider caches for
+  the whole conversation when the ask opens and again when it is answered.
+- **Hand-written queues and timers for the held inputs.** The runtime already
+  has a durable strand-owned queue, `pending_next_run`, whose items the next
+  accepted run places ahead of its own prompt (`queue.enqueue_next_run`,
+  `acceptance.accept_run`). Nothing used it. It survives a restart, it needs no
+  process and no timer, and it delivers in order.
+
+### The decision
+
+**The reminder.** While a strand has an open ask routed to the owner, every
+request it makes ends with one fixed message, built from the ask records at
+request time and stored nowhere. It is a `context` hook (`client/attention_hold`)
+that appends a user message after the projected conversation, as the near-limit
+reminder does (`client/checkpoint`). A request-time message is true as of the
+request, is not part of what compaction keeps, so it survives compaction by
+being rebuilt, is absent on the request after the last ask is answered, and
+keeps the provider's cached prefix intact because it is last. The text names
+each open ask by id and first question (at most four asks, each question at
+most 100 bytes, then a count of the rest), says that the owner has not
+answered, that only a message beginning "Answer to your ask" is an answer, and
+that the model must not do what the answer decides, may do other work, and
+otherwise ends its turn. `core/attention_hold` holds the wording.
+
+An answer is delivered before its record is settled (`client/daemon/attention_door`,
+"Why delivery comes before settling"), so the run the answer starts can read the
+ask as still open. The reminder drops an ask when the request already contains
+the answer's own text, which opens with the line `core/attention_answer.answer_lead`
+words. When the answer settles one of several open asks, the reminder names only
+the others.
+
+**The hold.** An input that no person typed does not start a run on an idle
+strand that has an open ask routed to the owner. `runtime/api.send_to_strand`
+and `send_to_strand_marking`, through which the advisor's block and goal
+continuation, peer messages, model-created schedule ticks, job completion notices
+and an agent's `agent_send` reach a strand, queue the message as a next-run item
+and return `Held(entry)`. The doorbell is not rung. A parent's
+`send_to_child` to an idle child is held the same way, except under async
+execution custody, whose runs are the execution's own. The strand's next run,
+which is the owner's message or the answer, places held items in order ahead of
+its own prompt. A mark spends in the same commit as the hold.
+
+The advisor adds two rules of its own, because two of its wake paths do not go
+through `send_to_strand`. A nudge stays in the guard cell while the primary
+holds an ask and does not spend the turn's one unsolicited wake, and the
+run-end hook places no nudge as a follow-up on the run that made the ask. The
+job heartbeat (`client/notice.beat`) is skipped for a strand that holds an ask.
+
+The owner's own input always goes through. The composer, a thread send and the
+answer reach the strand as `prompt`, `steer` and `follow_up` commands through
+the gateway, and the hold does not touch them. A held item rides ahead of the
+owner's next message whatever it says, "continue" included. The reminder is on
+that run's requests, so the model reads the held item and the reminder
+together.
+
+**Restart.** A held item is a `pending.entry/{id}` register and an entry in
+`strand.state`'s `pending_next_run`, committed in one transaction with the
+sender's mark. A daemon that stops with items held places them when the reopened
+session's next run starts. A sender whose original path was durable (a schedule
+tick with its fired-mark, a peer message with its receipt, a completion notice
+with its mark, an advisor block or goal continuation committed by
+`send_to_strand`) is therefore as durable held as it was unheld. Three inputs
+were not durable and stay that way. The advisor's nudge queue is the guard cell,
+which is durable, but the existing rule stands that a crash between draining it
+and delivering loses the drained nudges. The job heartbeat has no mark and its
+idle clock is volatile, so a skipped beat is not carried: the next beat after
+the answer says the same thing. A prompt the gateway queued in memory behind an
+open run is the hub's custody, as `client/daemon/attention_door` records, and the
+hold does not change it.
+
+**Bounds.** A strand holds at most 16 items (`api.next_run_limit`). A send past
+that is refused with `QueueRejected(NextRunFull(16))`, which a schedule treats
+like any other refusal and attempts again on a later tick, and which an
+`agent_send` reports to the model. Without a bound a minutely schedule would
+queue 1440 items a day for as long as the owner took to answer, and the next
+run would place all of them.
+
+**What is not held.** The hold covers the doors named above. It does not cover
+a run-end follow-up that another layer places: the Agency's wait on unfinished
+children and an imported `Stop` hook. Both are the strand's own continuation and
+neither is an input from outside it. It does not cover a strand that has no ask
+of its own, and an ask routed to a strand does not hold the asker. A store that
+will not answer reads as no open ask, which costs the old behavior, a wake, and
+never a message held by a read nobody could confirm.
+
+### What it costs
+
+- The reminder is under 1.5 KB on every request while an ask is open,
+  and it is not cached, since it follows the cached prefix.
+- Each provider request of a strand scans `attention/ask/` once. The prefix
+  holds at most 32 open and 200 settled asks, and a session with none returns an
+  empty list.
+- A held item can wait as long as the owner does. The owner may then read a
+  stale advisor nudge or a schedule tick ahead of the answer's own text.
+- An advisor `block` to an idle primary no longer wakes it. The advisor is told
+  "held for the owner's answer", and the block is read with the next run.
+- `agent_send` has a third result for the sender, `held`. A code-mode program
+  sees it as `queued`, since a new kind would change the capability's public
+  surface for one condition.
+- The owner's "continue" still starts a run, and the model reads the reminder
+  rather than being stopped. The hold prevents the agents from waking the strand,
+  and the reminder tells the strand what its question's state is. It does not
+  prevent the owner from telling the strand to proceed, and it should not.
+- A code-mode ask still does not end the run (see "Code mode"). The reminder is
+  on the requests the run makes after it, which is the only thing that changes
+  for it.
+
+### Verification
+
+- `core/test/core/attention_hold_test`: which asks hold a strand (open, routed
+  to the owner, this strand's, a damaged cell and the guard cell left out), the
+  oldest first, the answer's prompt releasing its own ask only, the reminder's
+  words, its bound on the asks listed and on a long question.
+- `runtime/test/runtime/ask_hold_test`: a send to an idle strand with an open
+  ask is `Held` and starts no run, held items are placed in order ahead of the
+  next prompt, another strand's ask and an ask routed to a strand hold nothing,
+  an open run is steered, a mark spends with the hold and a second fire is
+  refused, the queue refuses the 17th item, and a held item survives a restart
+  on a SQLite session.
+- `client/test/client/attention_hold_test`: a woken strand with an open ask is
+  reminded and one with none is not, the reminder is gone on the request after
+  the answer settles, two open asks with one answered name only the other, the
+  answer's own run is not reminded of the ask it answers, another strand's ask
+  does not remind this one, and an earlier layer's `context` is kept.
+- `client/test/client/advisor_test`: a nudge on an idle primary with an open ask
+  is queued and reaches the next run start, the held wake does not spend the
+  turn, the run end of an asking run places no nudge, and a block is held and
+  reported as held.
+- `client/test/client/peer_mail_default_test`, `agency_test` and `notice_test`:
+  a may-wake peer message and a parent's send to an idle child are held, and a
+  heartbeat is skipped for a strand that holds an ask and still wakes one that
+  does not.

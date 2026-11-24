@@ -410,6 +410,17 @@ extended by the M3 runtime wave.
   scheduled heartbeat is the first caller ever needing exactly-once
   admission on the fresh-run path, because nothing before it was allowed
   to wake an idle strand at all.
+- `runtime/api.{Held, next_run_limit, open_owner_asks}` — the third `Delivery`.
+  An idle target with an open ask routed to its owner (`attention/ask/`,
+  read through `core/attention_hold`) does not start a run for
+  `send_to_strand`, `send_to_strand_marking` or a parent's `send_to_child`:
+  the message is queued with `queue.enqueue_next_run`, in one commit with the
+  mark if there is one, the doorbell is not rung, and the strand's next run
+  places the held items ahead of its own prompt. A store that will not answer
+  reads as no ask. The queue holds `next_run_limit` (16) items and refuses the
+  next with `queue.NextRunFull`. The owner's own input reaches the strand
+  through `prompt`, `steer` and `follow_up`, which this does not touch
+  (protocol-change/119, the 2026-11-23 addendum).
 - `runtime/api.{FactCell, fact_cell, put_fact_expecting}` — the
   compare-and-set half of the blackboard: read a cell with the seq of
   the write that put it there, then write only if it has not moved. The
