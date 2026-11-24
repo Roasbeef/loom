@@ -53,6 +53,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/project_board as board
+import web_view/markdown_view
 import web_view/projects.{type Loaded}
 
 /// The most bytes of an answer the page sends. The daemon takes more; this is
@@ -526,8 +527,9 @@ fn noticed(notice: Option(Note)) -> List(Element(message)) {
   }
 }
 
-/// The worker's question and the answer form, or a line that says there is no
-/// open question.
+/// The worker's question, drawn as Markdown and never cut (this page is the only
+/// one that shows the whole question, and the answer form sits below it), and
+/// the answer form, or a line that says there is no open question.
 fn question(page: Page(message)) -> List(Element(message)) {
   case page.ticket.question {
     None -> [
@@ -537,7 +539,10 @@ fn question(page: Page(message)) -> List(Element(message)) {
       html.p([attribute.class("home-folder-path")], [
         html.text("QUESTION " <> int.to_string(asked.seq)),
       ]),
-      html.p([attribute.class("home-card-fact")], [html.text(asked.text)]),
+      html.div(
+        [attribute.class("home-card-fact"), attribute.class("markdown")],
+        markdown_view.quoted(asked.text),
+      ),
       case asked.options {
         [] -> element.none()
         found ->
