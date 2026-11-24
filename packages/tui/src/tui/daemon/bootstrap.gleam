@@ -170,6 +170,7 @@ fn reconnect_probe(paths, record, owner, deadline) {
         | Ok(protocol.DirectoryReply(_))
         | Ok(protocol.ElsewhereReply(_))
         | Ok(protocol.ProjectsReply(_))
+        | Ok(protocol.AttentionReply(_))
         | Ok(protocol.UiLinkReply(..))
         | Error(_) -> {
           daemon.close(connected.control)

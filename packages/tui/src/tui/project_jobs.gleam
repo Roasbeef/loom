@@ -267,6 +267,7 @@ fn send(
     | control_protocol.DirectoryReply(_)
     | control_protocol.ElsewhereReply(_)
     | control_protocol.ActivityReply(_)
+    | control_protocol.AttentionReply(_)
     | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
       Error(daemon.Invalid(name <> " returned an unexpected control reply"))

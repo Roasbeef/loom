@@ -767,6 +767,7 @@ fn load_page(host, command, collection, session, workspace) {
     | control_protocol.DirectoryReply(_)
     | control_protocol.ElsewhereReply(_)
     | control_protocol.ProjectsReply(_)
+    | control_protocol.AttentionReply(_)
     | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
       Error("catalogue returned an unexpected control reply")
@@ -943,6 +944,7 @@ fn activity(
     | control_protocol.DirectoryReply(_)
     | control_protocol.ElsewhereReply(_)
     | control_protocol.ProjectsReply(_)
+    | control_protocol.AttentionReply(_)
     | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
       Error("activity returned an unexpected control reply")

@@ -423,6 +423,7 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     | protocol.DirectoryReply(_), _
     | protocol.ElsewhereReply(_), _
     | protocol.ProjectsReply(_), _
+    | protocol.AttentionReply(_), _
     | protocol.UiLinkReply(..), _
     | protocol.ShutdownReply, _
     -> True
