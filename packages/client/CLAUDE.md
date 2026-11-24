@@ -11891,5 +11891,5 @@ only product is a verdict and a recorded run.
   (`sqlite3 <store> ".backup '<copy>'"`), opens them under a far-future clock so
   a copied writer lease has expired, and never prints a key. Commands: `select`,
   `sheet`, `run <dir> <loom.toml> <role>` and `verdict`, each as
-  `gleam dev -m insight_slice0 -- <command> <dir>`; `run` replays a session whose
+  `gleam run -m insight_slice0 -- <command> <dir>`; `run` replays a session whose
   record already holds the same prompt, so a second run costs nothing.

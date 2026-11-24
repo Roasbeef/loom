@@ -5,10 +5,10 @@
 //// code, and it reads only copies of the owner's stores.
 ////
 //// ```text
-//// gleam dev -m insight_slice0 -- select  <dir>
-//// gleam dev -m insight_slice0 -- sheet   <dir>
-//// gleam dev -m insight_slice0 -- run     <dir> <loom.toml> <role>
-//// gleam dev -m insight_slice0 -- verdict <dir>
+//// gleam run -m insight_slice0 -- select  <dir>
+//// gleam run -m insight_slice0 -- sheet   <dir>
+//// gleam run -m insight_slice0 -- run     <dir> <loom.toml> <role>
+//// gleam run -m insight_slice0 -- verdict <dir>
 //// ```
 ////
 //// `<dir>` holds `store/catalogue.db` and `store/sessions/<id>.db`, which are
@@ -101,10 +101,10 @@ pub fn main() {
 
 /// What a bad command line prints.
 const usage =
-  "usage: gleam dev -m insight_slice0 -- select <dir>
-       gleam dev -m insight_slice0 -- sheet <dir>
-       gleam dev -m insight_slice0 -- run <dir> <loom.toml> <role>
-       gleam dev -m insight_slice0 -- verdict <dir>"
+  "usage: gleam run -m insight_slice0 -- select <dir>
+       gleam run -m insight_slice0 -- sheet <dir>
+       gleam run -m insight_slice0 -- run <dir> <loom.toml> <role>
+       gleam run -m insight_slice0 -- verdict <dir>"
 
 /// Prints a command's report, or its failure and a non-zero exit.
 fn finish(outcome: Result(String, String)) -> Nil {
