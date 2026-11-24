@@ -751,18 +751,29 @@ fn object_fields(
   }
 }
 
-/// Refuses a field outside `allowed`. The schema declares no identifier and no
-/// markup field, so a model that sends one hears that it was not taken.
+/// Refuses a field outside `allowed`, and names the fields that are taken. The
+/// schema declares no identifier and no markup field, so a model that sends
+/// one hears that it was not taken. A model that guesses a name (a question's
+/// text as `description` rather than `prompt`) reads the right one in the same
+/// reply and corrects the call in one step instead of guessing again.
 fn known_fields(
   fields: List(#(String, JsonValue)),
   allowed: List(String),
   name: String,
 ) -> Result(Nil, String) {
+  // The first field outside the schema decides the refusal.
   case list.find(fields, fn(entry) { !list.contains(allowed, entry.0) }) {
     Error(Nil) -> Ok(Nil)
     Ok(#(key, _)) ->
       Error(
-        name <> ": unknown field `" <> key <> "`; there is no such argument",
+        name
+        <> ": unknown field `"
+        <> key
+        <> "`; the fields are "
+        <> string.join(
+          list.map(allowed, fn(field) { "`" <> field <> "`" }),
+          ", ",
+        ),
       )
   }
 }
