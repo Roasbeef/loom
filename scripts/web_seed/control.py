@@ -14,6 +14,7 @@ Usage:
   control.py STATE PORT send SOURCE TARGET ID TEXT
   control.py STATE PORT ui SESSION operator|observer   prints the page link
   control.py STATE PORT ui home operator|observer      prints the home page link
+  control.py STATE PORT raw CMD JSON-BODY         any owner command; prints the reply body
 """
 
 import base64
@@ -101,6 +102,8 @@ def main():
         cmd, body = "peers.send", {"source_session": rest[0], "source_strand": "main",
                                    "target_session": rest[1], "target_strand": "main",
                                    "message_id": rest[2], "text": rest[3], "epoch": epoch}
+    elif command == "raw":
+        cmd, body = rest[0], json.loads(rest[1])
     elif command == "ui":
         cmd, body = "ui.link", {"page": rest[1]}
         if rest[0] != "home":
@@ -116,6 +119,8 @@ def main():
         print(body.get("session_id") or body.get("id") or json.dumps(body))
     elif command == "ui":
         print(body.get("path", json.dumps(body)))
+    elif command == "raw":
+        print(json.dumps(body))
     else:
         print(json.dumps(body))
 
