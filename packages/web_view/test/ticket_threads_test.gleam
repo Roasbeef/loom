@@ -310,7 +310,7 @@ pub fn waiting_tickets_are_rows_under_needs_you_test() {
   assert string.contains(html, "Needs you")
   assert string.contains(html, "<span class=\"inbox-kind\">Ticket</span>")
   assert string.contains(html, " · review</span>")
-  assert string.contains(html, "t-check · check failed")
+  assert string.contains(html, "t-check · person/check")
   assert string.contains(
     html,
     "<span class=\"nm\">Projects</span><span class=\"n\">4</span>",
@@ -318,13 +318,14 @@ pub fn waiting_tickets_are_rows_under_needs_you_test() {
   assert !string.contains(html, "building")
 }
 
-// A failed check is named in words, and the pane draws only what the daemon
+// A failed check keeps the daemon's stage word, person/check, until the owner
+// rules on what the inbox calls it, and the pane draws only what the daemon
 // lists: here a Retry and nothing else, so no Recheck.
 pub fn person_check_is_named_with_only_what_is_listed_test() {
   let #(model, _) = owner(accepting())
   let html = drawn(picked(model, "t-check"))
 
-  assert string.contains(html, "t-check · check failed")
+  assert string.contains(html, "t-check · person/check")
   assert string.contains(html, "Retry")
   assert !string.contains(html, "Recheck")
   assert !string.contains(html, "Close ticket")

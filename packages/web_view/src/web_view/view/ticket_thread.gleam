@@ -108,7 +108,7 @@ pub fn row(
   parts.row(
     parts.Facts(
       reading: parts.reading(opened, ticket_rule.opened_key(waiting.key)),
-      name: ticket.id <> " · " <> board.stage_word(ticket.stage),
+      name: ticket.id <> " · " <> stage_words(ticket.stage),
       age: option.map(ticket.opened_ms, fn(_) {
         parts.Age(board.age_words(ticket.opened_ms, now), parts.Ordinary)
       }),
@@ -139,7 +139,7 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
     [
       parts.eyebrow(
         "Ticket",
-        ticket.id <> " · " <> board.stage_word(ticket.stage),
+        ticket.id <> " · " <> stage_words(ticket.stage),
         None,
       ),
       parts.title(board.title_words(ticket)),
@@ -158,6 +158,29 @@ pub fn pane(offer: Offer(message)) -> Element(message) {
     ],
     outbox(offer),
   )
+}
+
+/// The stage word a thread draws beside the ticket's id.
+///
+/// The board's own word is used for every stage but one. `person/check` is
+/// drawn as the daemon spells it, because what that stage is called on the
+/// inbox waits on the owner's ruling on question 6 of
+/// `docs/design-notes/attention-inbox/README.md`. Until then the thread must
+/// not name the stage in words of its own, such as the board's "check failed".
+fn stage_words(stage: board.Stage) -> String {
+  case stage {
+    board.PersonCheck -> "person/check"
+    board.PersonDelivery
+    | board.PersonAnswer
+    | board.PersonReview
+    | board.PersonBlocked
+    | board.PersonFailed
+    | board.Queued
+    | board.Idle
+    | board.Working
+    | board.Ended(_)
+    | board.UnknownStage(_) -> board.stage_word(stage)
+  }
 }
 
 /// The ticket's check output under its own label, when the board carries one.
