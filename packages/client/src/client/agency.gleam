@@ -810,14 +810,14 @@ pub fn start(
   |> actor.start
 }
 
-/// accepted.
-/// delegate holder never hibernates. That costs only the holder's memory and is
-/// The 15 s beat is shorter than `residency.hibernate_after_ms` (30 s), so a
-///
-/// children belong to a spawner that may never return to wait on them.
-/// never queues a backlog of them. Only a delegate session has one: its
-/// fire after this one's handler returns, so a slow pass slows the ticks and
 /// The heartbeat is a weft periodic timeout, whose fixed delay arms the next
+/// fire after this one's handler returns, so a slow pass slows the ticks and
+/// never queues a backlog of them. Only a delegate session has one: its
+/// children belong to a spawner that may never return to wait on them.
+///
+/// The 15 s beat is shorter than `residency.hibernate_after_ms` (30 s), so a
+/// delegate holder never hibernates. That costs only the holder's memory and is
+/// accepted.
 fn with_deadline_tick(
   builder: actor.Builder(api.Runtime, Message, Subject(Message)),
   every: Option(Int),
@@ -895,12 +895,12 @@ fn seam_with_custody(
   )
 }
 
-/// policy; every `Error` still means the caller proceeds no further.
-/// their own refusals, so a transient fault reads as one rather than as
-/// down, an unreadable store and a strand with no configuration cell keep
-/// genuinely missing from a readable list is `ToolNotHeld`. A holder that is
-/// time from the same cell the tool registry's clearance reads. Only a tool
 /// `Ok` when `strand`'s durable active tool list names `tool`, read at call
+/// time from the same cell the tool registry's clearance reads. Only a tool
+/// genuinely missing from a readable list is `ToolNotHeld`. A holder that is
+/// down, an unreadable store and a strand with no configuration cell keep
+/// their own refusals, so a transient fault reads as one rather than as
+/// policy; every `Error` still means the caller proceeds no further.
 fn holds(config: Config, strand: String, tool: String) -> Result(Nil, Refusal) {
   use runtime <- result.try(borrow(config))
   use configuration <- result.try(read_configuration(runtime, strand))
@@ -1012,10 +1012,10 @@ pub fn metering_hooks(
   })
 }
 
-/// cannot be reached leaves the judgment to the child's next request.
-/// delegate session's own strand) has no run record, and a ledger or a holder that
-/// to stop it when the budget is spent. An operation that belongs to no child (the
 /// Judges the child that ran `operation` against its budget and asks the holder
+/// to stop it when the budget is spent. An operation that belongs to no child (the
+/// delegate session's own strand) has no run record, and a ledger or a holder that
+/// cannot be reached leaves the judgment to the child's next request.
 fn stop_if_spent(config: Config, operation: OpId, budget: Option(Int)) -> Nil {
   // State what the branch decides before dispatching.
   case budget {
@@ -1052,8 +1052,8 @@ fn stop_if_spent(config: Config, operation: OpId, budget: Option(Int)) -> Nil {
   }
 }
 
-/// one, and the delegate session's own strand has none.
 /// The strand an operation ran on, from its run record. A child's every run has
+/// one, and the delegate session's own strand has none.
 fn run_strand(
   runtime: api.Runtime,
   operation: OpId,
@@ -1075,9 +1075,9 @@ fn run_strand(
   }
 }
 
-/// child running past the same budget that agent_wait would enforce.
-/// Expiry is observed here too, so repeated attempts to finish cannot leave a
 /// The parent operation, rather than the original spawn, owns renewed work.
+/// Expiry is observed here too, so repeated attempts to finish cannot leave a
+/// child running past the same budget that agent_wait would enforce.
 fn unfinished_children(
   config: Config,
   operation: OpId,
@@ -1234,9 +1234,9 @@ fn borrow_named(
   Ok(process.call(subject, timeout, Borrow))
 }
 
-/// lookup per hop for every question asked of it.
-/// live strand count (16 by default), and one listing beats a point
 /// The whole ledger, once per Agency call. It is bounded by the session's
+/// live strand count (16 by default), and one listing beats a point
+/// lookup per hop for every question asked of it.
 fn read_ledger(runtime: api.Runtime) -> Result(Dict(String, Lineage), Refusal) {
   case api.reserved_facts(runtime, prefix: lineage.key_prefix) {
     Error(error) -> Error(agent.PlaneFailed(reason: describe_api(error)))
@@ -1349,18 +1349,18 @@ type Source {
   Delegated(delegation: remote_spawn.Delegation)
 }
 
-/// limit its spawns meet the same.
-/// the Agency with another cap, where it keeps the tool a child holds and the
-/// equal and the clamp never binds there. It binds only for a host that builds
-/// its spawner's `max_depth` (`client/daemon/main.depth_cap_of`), so the two are
-/// addendum of 2026-10-17). The daemon sets a delegate session's `depth_cap` to
-/// The clamp is kept, and documented rather than refused (protocol-change/084,
-///
-/// every call of it would be refused.
-/// against the cap, so a limit above it would hand the child a spawn tool that
-/// above that same cap. A remote child's own spawn is judged as a local one
-/// this session, and for a remote parent the spawner's `max_depth` but never
 /// The deepest child this source may have: the Agency's own cap for a strand of
+/// this session, and for a remote parent the spawner's `max_depth` but never
+/// above that same cap. A remote child's own spawn is judged as a local one
+/// against the cap, so a limit above it would hand the child a spawn tool that
+/// every call of it would be refused.
+///
+/// The clamp is kept, and documented rather than refused (protocol-change/084,
+/// addendum of 2026-10-17). The daemon sets a delegate session's `depth_cap` to
+/// its spawner's `max_depth` (`client/daemon/main.depth_cap_of`), so the two are
+/// equal and the clamp never binds there. It binds only for a host that builds
+/// the Agency with another cap, where it keeps the tool a child holds and the
+/// limit its spawns meet the same.
 fn depth_limit(config: Config, source: Source) -> DepthCap {
   // Clamp delegated depth against local depth_cap when bounded.
   case source {
@@ -1448,14 +1448,14 @@ fn spawn_on(
   }
 }
 
-/// cannot deadlock.
-/// created. The registry never waits on a holder, so the holder waiting on it
-/// the ended or released fence refuses is not counted, and before the child is
-/// counted nor refused at the cap. The claim comes after the fences, so a spawn
-/// child that `spawn_on` adopts, from a new one, and a resend must be neither
-/// session: only the holder can tell a resent spawn, whose call site already has a
-/// claimed here, in the holder, and not in the registry's turn that admitted the
 /// A spawn for a remote parent, as the holder serves it. A spawner's day cap is
+/// claimed here, in the holder, and not in the registry's turn that admitted the
+/// session: only the holder can tell a resent spawn, whose call site already has a
+/// child that `spawn_on` adopts, from a new one, and a resend must be neither
+/// counted nor refused at the cap. The claim comes after the fences, so a spawn
+/// the ended or released fence refuses is not counted, and before the child is
+/// created. The registry never waits on a holder, so the holder waiting on it
+/// cannot deadlock.
 fn spawn_delegated(
   config: Config,
   runtime: api.Runtime,
@@ -1469,9 +1469,9 @@ fn spawn_delegated(
   |> result.map_error(refused(config, _))
 }
 
-/// its own words, and nothing is claimed for them.
-/// derived and a ledger that cannot be read are left for `spawn_on` to refuse in
 /// Claims the spawn when the call site has no child yet. A name that cannot be
+/// derived and a ledger that cannot be read are left for `spawn_on` to refuse in
+/// its own words, and nothing is claimed for them.
 fn claim_if_new(
   config: Config,
   runtime: api.Runtime,
@@ -1499,10 +1499,10 @@ fn claim_if_new(
   }
 }
 
-/// exists and so leaves nothing for the run end to have missed.
-/// not on the adoption path above it: adopting hands back a child that already
-/// says so is read here, on the path that would create or finish a child, and
 /// A remote parent's run that has ended owns no more children. The fence that
+/// says so is read here, on the path that would create or finish a child, and
+/// not on the adoption path above it: adopting hands back a child that already
+/// exists and so leaves nothing for the run end to have missed.
 fn admit_run(
   runtime: api.Runtime,
   caller: Caller,
@@ -1547,28 +1547,28 @@ fn ended_key(operation: OpId) -> String {
   api.delegate_fact_prefix <> "ended/" <> ids.op_id_to_string(operation)
 }
 
-/// recorded, and only one of those two is evidence.
-/// hard; it is here because a name is derived and a ledger cell is
-/// The check is cheap and the name derivation already makes reaching it
-/// `CallSite` has no field of its own for it. Anything else is refused.
-/// *and* the same minter inside it — a program's ordinal included, since
-/// caller" mean the same operation, the same step, the same planned call
-/// name was derived from, and `agent.minting_step` is what makes "the same
-/// So the ledger, not the name, decides. `minted_by` is the call site the
-///
-/// reports its answer as the answer to a question it never asked.
-/// `fan_out`. The caller then waits on a strand doing something else and
-/// is skipped, so the adopted child costs its new parent nothing against
-/// `write_result_schema` runs on the other branch — and `check_capacity`
-/// `within_ms`, `detach` and `result_schema` are all silently dropped —
-/// one is an ownership *transfer*: the adopting caller's brief, tools,
-/// A name match on its own is not an ownership proof, and treating it as
-///
-/// that minted it.
-/// `ReplaySafe` — but only when the ledger agrees this caller is the one
-/// handed back, which is the whole of what makes `agent_spawn`
-/// replay path — the first execution completed and the same handle is
 /// A child already sits under the derived name. That is the ordinary
+/// replay path — the first execution completed and the same handle is
+/// handed back, which is the whole of what makes `agent_spawn`
+/// `ReplaySafe` — but only when the ledger agrees this caller is the one
+/// that minted it.
+///
+/// A name match on its own is not an ownership proof, and treating it as
+/// one is an ownership *transfer*: the adopting caller's brief, tools,
+/// `within_ms`, `detach` and `result_schema` are all silently dropped —
+/// `write_result_schema` runs on the other branch — and `check_capacity`
+/// is skipped, so the adopted child costs its new parent nothing against
+/// `fan_out`. The caller then waits on a strand doing something else and
+/// reports its answer as the answer to a question it never asked.
+///
+/// So the ledger, not the name, decides. `minted_by` is the call site the
+/// name was derived from, and `agent.minting_step` is what makes "the same
+/// caller" mean the same operation, the same step, the same planned call
+/// *and* the same minter inside it — a program's ordinal included, since
+/// `CallSite` has no field of its own for it. Anything else is refused.
+/// The check is cheap and the name derivation already makes reaching it
+/// hard; it is here because a name is derived and a ledger cell is
+/// recorded, and only one of those two is evidence.
 fn adopt(
   runtime: api.Runtime,
   caller: Caller,
@@ -1581,8 +1581,8 @@ fn adopt(
   spawn_receipt(runtime, existing)
 }
 
-/// request here could report a newly configured route for an older child.
 /// Read the durable choice on both creation and replay. Re-resolving the
+/// request here could report a newly configured route for an older child.
 fn spawn_receipt(
   runtime: api.Runtime,
   cell: Lineage,
@@ -1598,9 +1598,9 @@ fn spawn_receipt(
   ))
 }
 
-/// never drift apart.
-/// function, so the cell that is written and the cell that is compared can
 /// The call site a spawn is recorded under and reconciled against. One
+/// function, so the cell that is written and the cell that is compared can
+/// never drift apart.
 fn call_site(caller: Caller) -> CallSite {
   CallSite(
     operation: caller.operation,
@@ -1671,10 +1671,10 @@ pub fn child_name(caller: Caller, purpose: String) -> Result(String, Refusal) {
   )
 }
 
-/// converge on one child with one handle.
-/// `create_strand`'s two commits and left one that does. All four arms
-/// (the ordinary path) or a previous execution crashed between
 /// No lineage cell for the minted name. Either the strand does not exist
+/// (the ordinary path) or a previous execution crashed between
+/// `create_strand`'s two commits and left one that does. All four arms
+/// converge on one child with one handle.
 fn reconcile(
   config: Config,
   runtime: api.Runtime,
@@ -1791,9 +1791,9 @@ fn reconcile(
   spawn_receipt(runtime, cell)
 }
 
-/// refusing every later replay because the first write already exists.
-/// that admission with its original deadline rather than granting extra time or
 /// A crash can leave the run record committed before the lineage cell. Resume
+/// that admission with its original deadline rather than granting extra time or
+/// refusing every later replay because the first write already exists.
 fn seed_original_run(
   runtime: api.Runtime,
   cell: Lineage,
@@ -1840,16 +1840,16 @@ fn write_result_schema(
   }
 }
 
-/// no authority the caller did not have.
-/// was in fact asked for — a wrong answer, but a legible one that names
-/// nothing. It costs a join that reports `NoResultAsked` when a schema
-/// would grant an addressing right, while a missing contract grants
-/// ledger, and the difference is worth stating: a missing lineage fact
-/// repair. Failing open is safe *here* in a way it is not in the lineage
-/// contract" rather than faulting a join nobody inside the session could
-/// decode — corrupt, or hand-written by an operator — degrades into "no
-/// and `parse_result_schema` is total over it, so a cell that will not
 /// The contract, read back. `render_result_schema` is the canonical form
+/// and `parse_result_schema` is total over it, so a cell that will not
+/// decode — corrupt, or hand-written by an operator — degrades into "no
+/// contract" rather than faulting a join nobody inside the session could
+/// repair. Failing open is safe *here* in a way it is not in the lineage
+/// ledger, and the difference is worth stating: a missing lineage fact
+/// would grant an addressing right, while a missing contract grants
+/// nothing. It costs a join that reports `NoResultAsked` when a schema
+/// was in fact asked for — a wrong answer, but a legible one that names
+/// no authority the caller did not have.
 fn read_result_schema(
   runtime: api.Runtime,
   strand: String,
@@ -1861,13 +1861,13 @@ fn read_result_schema(
   }
 }
 
-/// every reboot and which never does anything.
-/// arm the name stays claimed forever on a strand the booter restarts on
-/// recover — re-seeding is refused as `StrandExists`, and without this
-/// commit and the brief commit leaves behind, which nothing else can
-/// operation id; the last one is the state a crash between the seed
-/// accepted and has already finished. The first two arms recover the
 /// The registers are seeded but the brief run was never accepted, or was
+/// accepted and has already finished. The first two arms recover the
+/// operation id; the last one is the state a crash between the seed
+/// commit and the brief commit leaves behind, which nothing else can
+/// recover — re-seeding is refused as `StrandExists`, and without this
+/// arm the name stays claimed forever on a strand the booter restarts on
+/// every reboot and which never does anything.
 fn recover_brief(
   config: Config,
   runtime: api.Runtime,
@@ -2070,17 +2070,17 @@ fn accept_async_brief(
   }
 }
 
-/// subagent model has not asked for a different one.
-/// subagent role inherits rather than refusing: a host that named no
-/// a reboot and a `set_config` the operator makes afterwards. An unrouted
-/// what makes "subagents run on the subagent model" true across a crash,
-/// every later dispatch, admission and compaction reads, so seeding it is
-/// creation — never per request. A child's durable configuration is what
-/// Role follows identity, and the identity is chosen once, here, at
-///
-/// catalogue choice, or the host's `subagent` route when none was named.
-/// child's tool set, with identity and seed thinking from an explicit
 /// The configuration a child is seeded with: the parent's, narrowed to the
+/// child's tool set, with identity and seed thinking from an explicit
+/// catalogue choice, or the host's `subagent` route when none was named.
+///
+/// Role follows identity, and the identity is chosen once, here, at
+/// creation — never per request. A child's durable configuration is what
+/// every later dispatch, admission and compaction reads, so seeding it is
+/// what makes "subagents run on the subagent model" true across a crash,
+/// a reboot and a `set_config` the operator makes afterwards. An unrouted
+/// subagent role inherits rather than refusing: a host that named no
+/// subagent model has not asked for a different one.
 fn child_configuration(
   config: Config,
   parent: machine_strand.StrandConfiguration,
@@ -2121,29 +2121,29 @@ fn child_configuration(
   }
 }
 
-/// and the depth check below still takes it from a child at the cap.
-/// above one. So a delegated child keeps the spawn tool the ceiling gave it,
-/// phase 4): the default ceiling holds `agent_spawn` only when `max_depth` is
-/// where the box's owner says whether a child may spawn (protocol-change/084,
-/// tools arrive already narrowed to the spawner's ceiling, and the ceiling is
-/// A parent on another orchestrator is the one exception to the default. Its
-///
-/// the byte prefix of the provider's cached region.
-/// list renders to the wire in that order, ahead of the system prompt, as
-/// The result is sorted and deduplicated because a strand's active tool
-///
-/// subset of the parent's own set like everything else here.
-/// to any explicit list, limited to what the parent holds: the floor is a
-/// parent. So the communication floor (`agent.child_floor_tools`) is added
-/// `agent_send` and `agent_note` left a child unable to report to its
-/// An explicit list replaces the default, and a list that omitted
-///
-/// tool whatever it asked for.
-/// cannot see is one it never tries. A child at the cap loses the spawn
-/// the depth cap and worth more than the numeric check — a tool the model
-/// the parent's set minus `agent_spawn`, which is the structural half of
-/// parent does not hold is a refusal, not a silent drop. The default is
 /// A child may narrow its parent's tool set and never widen it: a name the
+/// parent does not hold is a refusal, not a silent drop. The default is
+/// the parent's set minus `agent_spawn`, which is the structural half of
+/// the depth cap and worth more than the numeric check — a tool the model
+/// cannot see is one it never tries. A child at the cap loses the spawn
+/// tool whatever it asked for.
+///
+/// An explicit list replaces the default, and a list that omitted
+/// `agent_send` and `agent_note` left a child unable to report to its
+/// parent. So the communication floor (`agent.child_floor_tools`) is added
+/// to any explicit list, limited to what the parent holds: the floor is a
+/// subset of the parent's own set like everything else here.
+///
+/// The result is sorted and deduplicated because a strand's active tool
+/// list renders to the wire in that order, ahead of the system prompt, as
+/// the byte prefix of the provider's cached region.
+///
+/// A parent on another orchestrator is the one exception to the default. Its
+/// tools arrive already narrowed to the spawner's ceiling, and the ceiling is
+/// where the box's owner says whether a child may spawn (protocol-change/084,
+/// phase 4): the default ceiling holds `agent_spawn` only when `max_depth` is
+/// above one. So a delegated child keeps the spawn tool the ceiling gave it,
+/// and the depth check below still takes it from a child at the cap.
 fn child_tools(
   source: Source,
   depth_cap: DepthCap,
@@ -2186,14 +2186,14 @@ fn child_tools(
   Ok(chosen |> list.sort(string.compare) |> list.unique)
 }
 
-/// currently reaches.
-/// counter cell, and it is deliberately not built for a bound nothing
-/// makes it live, and the cap is then **advisory**: the fix is one CAS'd
-/// `Exclusive`, so its calls never overlap within a batch. Raising the cap
-/// that cannot happen — only the root strand spawns, and `agent_spawn` is
-/// could both pass a session-wide check. At the shipped `depth_cap: 1`
-/// commits with no expectation, so two spawns that genuinely overlap
 /// Both caps are read-then-write with no compare-and-set: `put_fact`
+/// commits with no expectation, so two spawns that genuinely overlap
+/// could both pass a session-wide check. At the shipped `depth_cap: 1`
+/// that cannot happen — only the root strand spawns, and `agent_spawn` is
+/// `Exclusive`, so its calls never overlap within a batch. Raising the cap
+/// makes it live, and the cap is then **advisory**: the fix is one CAS'd
+/// counter cell, and it is deliberately not built for a bound nothing
+/// currently reaches.
 fn check_capacity(
   config: Config,
   runtime: api.Runtime,
@@ -2252,18 +2252,18 @@ fn at_least(values: List(a), bound: Int) -> Bool {
   bound <= 0 || list.drop(values, bound - 1) != []
 }
 
-/// clamped.
-/// no cell or no deadline, which is every strand a human talks to, is not
-/// left. A parent past its deadline may not start a child at all. A parent with
-/// other orchestrator does not know to clamp, so it is sent what the parent has
-/// default for a child here, and `None` for a child elsewhere, whose default the
-/// has left. A request that names no budget takes `fallback` first: the Agency's
-/// grandchild's budget is the smaller of what it asked for and what its parent
-/// budget and could run past it, and past the spawner's `max_within_s`. So the
-/// its delegate session or on a third orchestrator, would otherwise get a fresh
-/// orchestrator has the deadline its spawner gave it, and a child it starts, in
-/// parent's (protocol-change/084, phase 4). A child at depth one on another
 /// A spawn whose parent has a deadline, with its own deadline no later than the
+/// parent's (protocol-change/084, phase 4). A child at depth one on another
+/// orchestrator has the deadline its spawner gave it, and a child it starts, in
+/// its delegate session or on a third orchestrator, would otherwise get a fresh
+/// budget and could run past it, and past the spawner's `max_within_s`. So the
+/// grandchild's budget is the smaller of what it asked for and what its parent
+/// has left. A request that names no budget takes `fallback` first: the Agency's
+/// default for a child here, and `None` for a child elsewhere, whose default the
+/// other orchestrator does not know to clamp, so it is sent what the parent has
+/// left. A parent past its deadline may not start a child at all. A parent with
+/// no cell or no deadline, which is every strand a human talks to, is not
+/// clamped.
 fn within_parent(
   ledger: Dict(String, Lineage),
   caller: Caller,
@@ -2300,10 +2300,10 @@ fn within_parent(
   }
 }
 
-/// milliseconds after it.
-/// capped at the parent's deadline as well and cannot fall even a few
-/// cell's deadline is computed from a later reading of the clock, so the cell is
 /// The absolute half of `within_parent`. The budget it cut is relative, and the
+/// cell's deadline is computed from a later reading of the clock, so the cell is
+/// capped at the parent's deadline as well and cannot fall even a few
+/// milliseconds after it.
 fn no_later_than_parent(
   ledger: Dict(String, Lineage),
   caller: Caller,
@@ -2332,10 +2332,10 @@ fn deadline_of(
   }
 }
 
-/// tell it from its operator's own channel.
-/// quotation of hostile repository content, and the child must be able to
-/// for the same reason: it is model-authored text that may be a laundered
 /// The brief is framed the same way a message from another agent is, and
+/// for the same reason: it is model-authored text that may be a laundered
+/// quotation of hostile repository content, and the child must be able to
+/// tell it from its operator's own channel.
 fn brief_message(
   config: Config,
   caller: Caller,
@@ -2477,8 +2477,8 @@ fn wait(
   }
 }
 
-/// parent has no `Caller` of its own to give, only the reference `^main`.
 /// A wait needs only the strand that asks, to judge descent from. A remote
+/// parent has no `Caller` of its own to give, only the reference `^main`.
 fn wait_for(
   config: Config,
   waiter: String,
@@ -2511,9 +2511,9 @@ fn wait_for(
   )
 }
 
-/// is polled once more.
-/// `found` map: already-settled handles are left alone, an unsettled one
 /// One handle's non-blocking settlement check, folded into the running
+/// `found` map: already-settled handles are left alone, an unsettled one
+/// is polled once more.
 fn settle_handle(
   runtime: api.Runtime,
   found: Dict(String, LastResult),
@@ -2536,22 +2536,22 @@ fn settle_handle(
   }
 }
 
-/// second rather than a hundred.
-/// interval, which is what keeps a long join at roughly four store reads a
-/// successor clock. The slice still backs off, now as a `Doubling`
-/// `client/internal/timebase` has that argument and the ruling on the
-/// a simulated session's join is bounded by logical time its runner steps;
-/// The wait runs on `config.clock` rather than on the monotonic clock, so
-///
-/// only the ones that did not are `Pending`.
-/// join needs — the children that did settle are reported as `Ready` and
-/// instead of only reporting that time ran out, which is exactly what a
-/// answered on the first one. Expiry hands that map back (`RanOut`)
-/// attempt, or every slice would re-ask the store about children that
-/// the map of handles that have already settled has to reach the next
-/// The loop is `weft/poll`'s folding form, and the fold is what earns it:
-///
 /// One wait, one budget, every handle.
+///
+/// The loop is `weft/poll`'s folding form, and the fold is what earns it:
+/// the map of handles that have already settled has to reach the next
+/// attempt, or every slice would re-ask the store about children that
+/// answered on the first one. Expiry hands that map back (`RanOut`)
+/// instead of only reporting that time ran out, which is exactly what a
+/// join needs — the children that did settle are reported as `Ready` and
+/// only the ones that did not are `Pending`.
+///
+/// The wait runs on `config.clock` rather than on the monotonic clock, so
+/// a simulated session's join is bounded by logical time its runner steps;
+/// `client/internal/timebase` has that argument and the ruling on the
+/// successor clock. The slice still backs off, now as a `Doubling`
+/// interval, which is what keeps a long join at roughly four store reads a
+/// second rather than a hundred.
 fn wait_loop(
   config: Config,
   runtime: api.Runtime,
@@ -2593,18 +2593,18 @@ fn wait_loop(
   })
 }
 
-/// that runs on a timer.
-/// list on every slice of every wait, which is the one loop in this module
-/// counter; `list.drop` stops at it. The alternative walked the handle
-/// have settled". `dict.size` is a constant-time read of the map's own
-/// handles" is the same question as "no handle sits past the ones that
-/// the dict can never outgrow the list, and "as many settled as there are
-/// inserts under `handle_to_string` and nothing else puts a key in — so
-/// Every key in `settled` is one of *these* handles' own — the fold below
-/// "Everything has settled" is asked at the bound rather than by counting.
-///
-/// last one needed.
 /// One pass over every handle, and the question of whether that was the
+/// last one needed.
+///
+/// "Everything has settled" is asked at the bound rather than by counting.
+/// Every key in `settled` is one of *these* handles' own — the fold below
+/// inserts under `handle_to_string` and nothing else puts a key in — so
+/// the dict can never outgrow the list, and "as many settled as there are
+/// handles" is the same question as "no handle sits past the ones that
+/// have settled". `dict.size` is a constant-time read of the map's own
+/// counter; `list.drop` stops at it. The alternative walked the handle
+/// list on every slice of every wait, which is the one loop in this module
+/// that runs on a timer.
 fn settle_pass(
   runtime: api.Runtime,
   handles: List(Handle),
@@ -2655,9 +2655,9 @@ fn ready(
   ))
 }
 
-/// to this operation or presented as a completed review.
-/// are mutable strand state, so they are labelled as such rather than attributed
 /// A failed reviewer can still have useful saved observations. These notes
+/// are mutable strand state, so they are labelled as such rather than attributed
+/// to this operation or presented as a completed review.
 fn partial_report(
   outcome: Outcome,
   final: String,
@@ -2781,11 +2781,11 @@ fn structural_outcome(outcome: operation.StructuralOutcome) -> Outcome {
   }
 }
 
-/// may separately present saved notes as explicitly labelled partial work.
-/// abort, or a batch every tool terminated — has no final answer. The caller
-/// back through the writer. A run that ended without one — a failure, an
-/// only the entry id of the final assistant response, so the text is read
 /// The report is a projection, not a stored field: `LastResult` carries
+/// only the entry id of the final assistant response, so the text is read
+/// back through the writer. A run that ended without one — a failure, an
+/// abort, or a batch every tool terminated — has no final answer. The caller
+/// may separately present saved notes as explicitly labelled partial work.
 fn report_of(runtime: api.Runtime, last: LastResult) -> String {
   case last {
     operation.RunLastResult(final_assistant: Some(entry), ..) ->
@@ -3028,11 +3028,11 @@ fn runs_elsewhere(ledger: Dict(String, Lineage), to: String) -> Bool {
   }
 }
 
-/// laptop's node is connected (`client/delegate_outbox`).
-/// so a replayed call finds its own row, and the drainer sends it when the
-/// and the model is told it is queued. The row is keyed by the sending call site,
-/// reach the parent's orchestrator on demand, so the message becomes an outbox row
 /// A remote child's `agent_send` to its parent. The delegate session cannot
+/// reach the parent's orchestrator on demand, so the message becomes an outbox row
+/// and the model is told it is queued. The row is keyed by the sending call site,
+/// so a replayed call finds its own row, and the drainer sends it when the
+/// laptop's node is connected (`client/delegate_outbox`).
 fn queue_upward(
   config: Config,
   runtime: api.Runtime,
@@ -3067,11 +3067,11 @@ fn queue_upward(
   agent.Queued
 }
 
-/// and lost the reply, and the message id is what makes the resend safe.
-/// tells the model the message is queued: the orchestrator may have delivered it
-/// a refusal. No answer leaves a `remote-send/{id}` row for the remote drainer and
-/// is asked once, here, on the caller's own process. An answer is the delivery or
 /// A parent's `agent_send` to a child on another orchestrator. The orchestrator
+/// is asked once, here, on the caller's own process. An answer is the delivery or
+/// a refusal. No answer leaves a `remote-send/{id}` row for the remote drainer and
+/// tells the model the message is queued: the orchestrator may have delivered it
+/// and lost the reply, and the message id is what makes the resend safe.
 fn send_remote(
   config: Config,
   runtime: api.Runtime,
@@ -3147,8 +3147,8 @@ fn send_remote(
   }
 }
 
-/// yet is still starting, and anything else is not the caller's to address.
 /// Why a send found no child: one whose spawn the orchestrator has not answered
+/// yet is still starting, and anything else is not the caller's to address.
 fn still_starting_or_unknown(
   kept: List(remote_child.Kept),
   to: String,
@@ -3169,9 +3169,9 @@ fn still_starting_or_unknown(
   }
 }
 
-/// to this one's now.
-/// The deadline of a started run is a duration on the other clock, so it is added
 /// How the orchestrator says a message landed, as the delivery the model reads.
+/// The deadline of a started run is a duration on the other clock, so it is added
+/// to this one's now.
 fn delivery_of(config: Config, landing: remote_mail.Landing) -> Delivery {
   // State what the branch decides before dispatching.
   case landing {
@@ -3250,10 +3250,10 @@ fn note(
   })
 }
 
-/// refusal covers code mode as well as `agent_note`.
-/// a board it cannot read. `cap/notes.put` reaches this same closure, so the
-/// has passed `todo_list.validate` and the TUI's panel never has to explain
 /// The todo cell has one writer, the `todo` tool, so that every stored board
+/// has passed `todo_list.validate` and the TUI's panel never has to explain
+/// a board it cannot read. `cap/notes.put` reaches this same closure, so the
+/// refusal covers code mode as well as `agent_note`.
 fn refuse_todo_key(key: String) -> Result(Nil, Refusal) {
   case key == todos.note_key {
     True ->
@@ -3266,10 +3266,10 @@ fn refuse_todo_key(key: String) -> Result(Nil, Refusal) {
   }
 }
 
-/// attempts is far more than a real batch needs.
-/// only come from a sibling `todo` call in the same batch, so a handful of
-/// after a lost compare-and-set costs nothing but the read; a conflict can
 /// The todo tool's read-modify-write. The step is pure, so running it again
+/// after a lost compare-and-set costs nothing but the read; a conflict can
+/// only come from a sibling `todo` call in the same batch, so a handful of
+/// attempts is far more than a real batch needs.
 fn update_todos(
   config: Config,
   caller: Caller,
@@ -3325,10 +3325,10 @@ fn plane_failed(error: api.ApiError) -> Refusal {
   agent.PlaneFailed(reason: describe_api(error))
 }
 
-/// pays nothing for the feature.
-/// is looked up only for the one key that owes one, so an ordinary note
-/// why it is the child's own write and not the parent's read. The schema
 /// The enforcement point for a result contract — see the module doc for
+/// why it is the child's own write and not the parent's read. The schema
+/// is looked up only for the one key that owes one, so an ordinary note
+/// pays nothing for the feature.
 fn check_result_contract(
   runtime: api.Runtime,
   caller: Caller,
@@ -3374,8 +3374,8 @@ fn notes(
   notes_under(runtime, prefix)
 }
 
-/// refusal for direct reads and for child joins that include saved notes.
 /// A failed scan is not evidence that the register is empty. Preserve the
+/// refusal for direct reads and for child joins that include saved notes.
 fn notes_under(
   runtime: api.Runtime,
   prefix: String,
@@ -3386,11 +3386,11 @@ fn notes_under(
   })
 }
 
-/// should be readable, and an unbounded one should not.
-/// test that `..` cannot defeat — but a key that renders back to the model
-/// depend on this — the prefix is prepended, and reservation is a prefix
-/// its shape is checked rather than trusted. The containment does not
 /// A blackboard key is model text that becomes half of a register key, so
+/// its shape is checked rather than trusted. The containment does not
+/// depend on this — the prefix is prepended, and reservation is a prefix
+/// test that `..` cannot defeat — but a key that renders back to the model
+/// should be readable, and an unbounded one should not.
 fn validate_key(
   key: String,
   within max_length: Int,
@@ -3459,11 +3459,11 @@ fn roster(config: Config, caller: Caller) -> Result(List(Peer), Refusal) {
   list.flatten([parent, children, elsewhere])
 }
 
-/// has passed is not shown as running.
-/// the last answer left the stub, read at `now` so that a child whose deadline
-/// edge, and nothing in this session runs the child, so how it stands is how
-/// stub is the whole record of such a child: the lineage cell only records the
 /// The caller's children on other orchestrators, from the stubs it wrote. A
+/// stub is the whole record of such a child: the lineage cell only records the
+/// edge, and nothing in this session runs the child, so how it stands is how
+/// the last answer left the stub, read at `now` so that a child whose deadline
+/// has passed is not shown as running.
 fn remote_peers(
   runtime: api.Runtime,
   caller: Caller,
@@ -3535,9 +3535,9 @@ fn placed_peer(
 
 // --- reaping ---------------------------------------------------------------
 
-/// that races a continuation can never abort the successor on that strand.
-/// Each stop is durable before its exact operation is cancelled; an observation
 /// Enforcement observes current operations, not the immutable spawn handle.
+/// Each stop is durable before its exact operation is cancelled; an observation
+/// that races a continuation can never abort the successor on that strand.
 fn reap_overdue(
   config: Config,
   runtime: api.Runtime,
@@ -3565,8 +3565,8 @@ fn reap_run(config: Config, operation: OpId) -> Nil {
   }
 }
 
-/// state, since borrowing from inside the holder would wait on itself.
 /// `reap_run` on a runtime already in hand. The holder calls it with its own
+/// state, since borrowing from inside the holder would wait on itself.
 fn reap_run_in(config: Config, runtime: api.Runtime, operation: OpId) -> Nil {
   let _owned =
     drain_owned(config.abort_effects, runtime, child_run.ParentRun(operation))
@@ -3586,11 +3586,11 @@ fn reap_run_in(config: Config, runtime: api.Runtime, operation: OpId) -> Nil {
   }
 }
 
-/// so a repeated message counts nothing.
-/// before the reap, of the runs this operation owns that nobody had stopped yet,
-/// and one that reached it before is a child this reap stops. The count is taken
-/// are stopped second, so a spawn that reaches the holder next finds the fence
 /// A run of a remote parent ended. The fence is written first, and the children
+/// are stopped second, so a spawn that reaches the holder next finds the fence
+/// and one that reached it before is a child this reap stops. The count is taken
+/// before the reap, of the runs this operation owns that nobody had stopped yet,
+/// so a repeated message counts nothing.
 fn run_ended_in(
   config: Config,
   runtime: api.Runtime,
@@ -3614,12 +3614,12 @@ fn run_ended_in(
   stopping
 }
 
-/// it. The count is of runs nobody had stopped yet, so a repeat counts nothing.
-/// no lifetime but its own deadline, so every one is stopped whatever started
-/// reached it before is a child this stop reaches. A child that is running owns
-/// gives: a spawn that reaches the holder next finds the fence, and one that
-/// first, and every child is stopped second, for the reason `run_ended_in`
 /// The parent session of a remote parent was deleted. The fence is written
+/// first, and every child is stopped second, for the reason `run_ended_in`
+/// gives: a spawn that reaches the holder next finds the fence, and one that
+/// reached it before is a child this stop reaches. A child that is running owns
+/// no lifetime but its own deadline, so every one is stopped whatever started
+/// it. The count is of runs nobody had stopped yet, so a repeat counts nothing.
 fn released_in(config: Config, runtime: api.Runtime) -> Result(Int, Refusal) {
   use Nil <- result.try(
     api.put_reserved_fact(runtime, released_key(), json.Null)
@@ -3647,10 +3647,10 @@ fn released_in(config: Config, runtime: api.Runtime) -> Result(Int, Refusal) {
   })
 }
 
-/// no cell, or none running, is nothing to stop.
-/// recorded is the cause, and `reap` would not overwrite it anyway. A strand with
-/// that already holds a stop is left alone, whatever its reason: the first cause
 /// One child's current run is stopped for `stop`, if nobody has stopped it. A run
+/// that already holds a stop is left alone, whatever its reason: the first cause
+/// recorded is the cause, and `reap` would not overwrite it anyway. A strand with
+/// no cell, or none running, is nothing to stop.
 fn stop_child_in(
   config: Config,
   runtime: api.Runtime,
@@ -3673,8 +3673,8 @@ fn stop_child_in(
   }
 }
 
-/// observation to read the winner; it never sends an unrecorded cancellation.
 /// A cause is written once for this operation. Losing its CAS leaves the next
+/// observation to read the winner; it never sends an unrecorded cancellation.
 fn reap(
   abort_effects: fn(OpId) -> Nil,
   runtime: api.Runtime,
@@ -3744,10 +3744,10 @@ fn is_live(runtime: api.Runtime, cell: Lineage) -> Bool {
   }
 }
 
-/// nothing as zero is no cap.
-/// Unreadable stubs refuse the spawn: the count is a cap, and a cap that reads
-/// has passed is not counted, whether or not anything has settled its stub.
 /// The stubs whose child is, or may be, running at `now`. A child whose deadline
+/// has passed is not counted, whether or not anything has settled its stub.
+/// Unreadable stubs refuse the spawn: the count is a cap, and a cap that reads
+/// nothing as zero is no cap.
 fn live_stubs(
   runtime: api.Runtime,
   now: Int,
@@ -4169,8 +4169,8 @@ pub fn workflow_child(
   })
 }
 
-/// child. Those executions apply the same rule recursively to their children.
 /// Parent settlement includes background executions launched by every owned
+/// child. Those executions apply the same rule recursively to their children.
 fn backgrounds_settled(
   runtime: api.Runtime,
   operation: OpId,
@@ -4335,12 +4335,12 @@ fn seeded(
   }
 }
 
-/// resumes asking, one already answered returns what it recorded.
-/// holder. Replaying the same call site finds its stub: one still `Requested`
-/// long part, the network, runs here on the caller's own process, never in the
-/// of the caps and the write cannot interleave with another admission, and the
-/// attempt began. The holder admits the spawn and writes the stub, so the check
 /// Starts a child on another orchestrator, or finishes the spawn an earlier
+/// attempt began. The holder admits the spawn and writes the stub, so the check
+/// of the caps and the write cannot interleave with another admission, and the
+/// long part, the network, runs here on the caller's own process, never in the
+/// holder. Replaying the same call site finds its stub: one still `Requested`
+/// resumes asking, one already answered returns what it recorded.
 fn spawn_elsewhere(
   config: Config,
   subject: Subject(Message),
@@ -4391,10 +4391,10 @@ const unstated_refusal =
 const shared_refusal =
   "a child can be started on another orchestrator only in a session that you hold alone"
 
-/// one to ask, and a session with other members may not send its work elsewhere.
-/// the background has no turn to be told in, a name that is not configured has no
-/// model. A conversation is not copied to another machine, a program that runs in
 /// What cannot be asked of another orchestrator, each said in words for the
+/// model. A conversation is not copied to another machine, a program that runs in
+/// the background has no turn to be told in, a name that is not configured has no
+/// one to ask, and a session with other members may not send its work elsewhere.
 fn refuse_unusable_placement(
   config: Config,
   request: agent.SpawnRequest,
@@ -4432,10 +4432,10 @@ fn refuse_unusable_placement(
   Ok(Nil)
 }
 
-/// an ownership proof any more than a child's name is (`adopt`).
-/// this caller's own, because the stub is keyed by a digest and the digest is not
-/// call site that already has a stub is returned that stub, after checking it is
 /// The holder's half: judge the spawn against the caps and write its stub. A
+/// call site that already has a stub is returned that stub, after checking it is
+/// this caller's own, because the stub is keyed by a digest and the digest is not
+/// an ownership proof any more than a child's name is (`adopt`).
 fn admit_remote(
   config: Config,
   runtime: api.Runtime,
@@ -4574,16 +4574,16 @@ fn is_same_call(
   )
 }
 
-/// passes, and the other orchestrator's retention sweep removes it after that.
-/// detached says what will happen: it runs until it finishes or its deadline
-/// holds as attached would be reaped by a message that never comes. Sending it
-/// when the run that asked for it ends, and a child that the other orchestrator
-/// parent's run end is not sent across, so nothing could stop an attached child
-/// A remote child is always detached, whatever `detach` the model gave. The
-///
-/// orchestrator.
-/// because a remote child's is always fresh, and the placement is the stub's own
 /// The request as the other orchestrator is sent it. The context is dropped,
+/// because a remote child's is always fresh, and the placement is the stub's own
+/// orchestrator.
+///
+/// A remote child is always detached, whatever `detach` the model gave. The
+/// parent's run end is not sent across, so nothing could stop an attached child
+/// when the run that asked for it ends, and a child that the other orchestrator
+/// holds as attached would be reaped by a message that never comes. Sending it
+/// detached says what will happen: it runs until it finishes or its deadline
+/// passes, and the other orchestrator's retention sweep removes it after that.
 fn remote_request(
   request: agent.SpawnRequest,
   seed: Option(state_object.State),
@@ -4600,14 +4600,14 @@ fn remote_request(
   )
 }
 
-/// has moved on.
-/// each of those cases the drainer is rung, and it keeps asking after the model
-/// `Requested`, and so does an answer or a refusal that could not be recorded; in
-/// it does when the drainer hears one. The window running out leaves the stub
-/// A refusal is recorded on the stub as `Refused` and the stub stays, exactly as
-/// call site already made, so an answer lost on the way back is returned again.
-/// doubling pause. A resend is safe because the receiver adopts the child the
 /// Asks until the orchestrator answers or the window runs out, resending with a
+/// doubling pause. A resend is safe because the receiver adopts the child the
+/// call site already made, so an answer lost on the way back is returned again.
+/// A refusal is recorded on the stub as `Refused` and the stub stays, exactly as
+/// it does when the drainer hears one. The window running out leaves the stub
+/// `Requested`, and so does an answer or a refusal that could not be recorded; in
+/// each of those cases the drainer is rung, and it keeps asking after the model
+/// has moved on.
 fn ask_until_answered(
   config: Config,
   key: String,
@@ -4654,11 +4654,11 @@ fn ask_until_answered(
   }
 }
 
-/// one millisecond is the last attempt `poll` still makes at the deadline.
-/// bound, and the model would be kept for nearly twice the window. The floor of
-/// an attempt begun just before the window closes would wait out its own full
-/// spawn started, and never more than a single call is worth. Without the clip
 /// How long one attempt may wait for its answer: what is left of the window the
+/// spawn started, and never more than a single call is worth. Without the clip
+/// an attempt begun just before the window closes would wait out its own full
+/// bound, and the model would be kept for nearly twice the window. The floor of
+/// one millisecond is the last attempt `poll` still makes at the deadline.
 fn window_left(config: Config, started: Int) -> Int {
   let #(now, _clock) = clock.read(config.clock)
   int.max(
@@ -4667,16 +4667,16 @@ fn window_left(config: Config, started: Int) -> Int {
   )
 }
 
-/// would, and told no refusal.
-/// `Settled`: the child exists, so the model is given it as `record_answer`
-/// answered with a child first, and then the stub already says `Spawned` or
-/// rung, which asks again and hears the same refusal. The drainer may have been
-/// refusal cannot be recorded the stub stays `Requested` and the drainer is
-/// with a lineage cell and no stub to count it, list it or wait on it. If the
-/// answered with a child. A stub that was deleted here would leave that child
-/// recovers), and the drainer or a replay of the same call site may still be
-/// removed: a refusal can be transient (a cap that clears, a store that
 /// A refusal heard where the model asked. The stub is kept as `Refused`, never
+/// removed: a refusal can be transient (a cap that clears, a store that
+/// recovers), and the drainer or a replay of the same call site may still be
+/// answered with a child. A stub that was deleted here would leave that child
+/// with a lineage cell and no stub to count it, list it or wait on it. If the
+/// refusal cannot be recorded the stub stays `Requested` and the drainer is
+/// rung, which asks again and hears the same refusal. The drainer may have been
+/// answered with a child first, and then the stub already says `Spawned` or
+/// `Settled`: the child exists, so the model is given it as `record_answer`
+/// would, and told no refusal.
 fn record_refusal(
   config: Config,
   key: String,
@@ -4706,11 +4706,11 @@ fn record_refusal(
   }
 }
 
-/// running child to ask about, and after a failed one it has the spawn to resend.
-/// is not lost. The drainer is rung either way: after a `Spawned` write it has a
-/// returns the same answer, so the model is told the spawn failed and the child
-/// be written the stub stays `Requested` and the drainer asks again, which
 /// The answer to a spawn is written down before the model sees it. If it cannot
+/// be written the stub stays `Requested` and the drainer asks again, which
+/// returns the same answer, so the model is told the spawn failed and the child
+/// is not lost. The drainer is rung either way: after a `Spawned` write it has a
+/// running child to ask about, and after a failed one it has the spawn to resend.
 fn record_answer(
   config: Config,
   key: String,
@@ -4777,10 +4777,10 @@ type Part {
   )
 }
 
-/// strand, for the reason `Target` gives.
-/// do not hold is a local one, and the local wait judges it. The match is by
-/// own record of it and not by anything in the handle's text. A handle the stubs
 /// The handles that name a child on another orchestrator, found by the parent's
+/// own record of it and not by anything in the handle's text. A handle the stubs
+/// do not hold is a local one, and the local wait judges it. The match is by
+/// strand, for the reason `Target` gives.
 fn remote_targets(
   kept: List(remote_child.Kept),
   handles: List(Handle),
@@ -4810,13 +4810,13 @@ fn placed_of(stub: remote_child.Stub) -> Option(remote_child.Placed) {
   }
 }
 
-/// name, and a wait is a read, so asking again is always safe.
-/// ask. An orchestrator that does not answer leaves its handles pending, with its
-/// window an orchestrator is asked to wait is the budget cut to what one join may
-/// overlap and the whole is as long as the longest of them and not their sum. The
-/// some of the handles is sent one `Join`, in a task of its own, so the waits
-/// handles are waited on as ever, in one task, and each orchestrator that holds
 /// One wait over local and remote handles together, against one budget. The local
+/// handles are waited on as ever, in one task, and each orchestrator that holds
+/// some of the handles is sent one `Join`, in a task of its own, so the waits
+/// overlap and the whole is as long as the longest of them and not their sum. The
+/// window an orchestrator is asked to wait is the budget cut to what one join may
+/// ask. An orchestrator that does not answer leaves its handles pending, with its
+/// name, and a wait is a read, so asking again is always safe.
 fn wait_across(
   config: Config,
   runtime: api.Runtime,
@@ -4884,8 +4884,8 @@ fn local_task(
   }
 }
 
-/// so the task itself cannot fail.
 /// One `Join` as a task. Its answer, or its silence, is data for `joined_waits`,
+/// so the task itself cannot fail.
 fn remote_task(
   config: Config,
   caller: Caller,
@@ -4904,8 +4904,8 @@ fn remote_task(
   }
 }
 
-/// appear, each group keeping its handles in the order they were given.
 /// The targets grouped by orchestrator, in the order the orchestrators first
+/// appear, each group keeping its handles in the order they were given.
 fn by_orchestrator(targets: List(Target)) -> List(#(String, List(Handle))) {
   let names =
     targets |> list.map(fn(target) { target.orchestrator }) |> list.unique
@@ -4922,10 +4922,10 @@ fn by_orchestrator(targets: List(Target)) -> List(#(String, List(Handle))) {
   })
 }
 
-/// returns its refusals.
-/// is the plane failing, since the remote tasks cannot fail and the local one
-/// refuses the whole call, as it would alone. A task that did not finish at all
 /// One task's outcome as the waits it contributes. A local wait that was refused
+/// refuses the whole call, as it would alone. A task that did not finish at all
+/// is the plane failing, since the remote tasks cannot fail and the local one
+/// returns its refusals.
 fn part_of(
   config: Config,
   runtime: api.Runtime,
@@ -4990,10 +4990,10 @@ fn joined_waits(
   }
 }
 
-/// it, since the next wait asks the orchestrator again and gets the same answer.
-/// settled; the record is the parent's own account and the answer does not wait on
-/// finished is recorded on its stub, so the roster and the fan-out count see it
 /// One handle's entry in a join, as the wait the tool renders. A child reported
+/// finished is recorded on its stub, so the roster and the fan-out count see it
+/// settled; the record is the parent's own account and the answer does not wait on
+/// it, since the next wait asks the orchestrator again and gets the same answer.
 fn settle_entry(
   config: Config,
   runtime: api.Runtime,
@@ -5178,8 +5178,8 @@ fn bounded_reason(reason: String) -> String {
   glance.clip(reason, 300)
 }
 
-/// for fewer handles than it was asked about leaves the rest pending.
 /// The waits in the order the handles were given. An orchestrator that answered
+/// for fewer handles than it was asked about leaves the rest pending.
 fn in_order(handles: List(Handle), waited: List(Waited)) -> List(Waited) {
   let by_handle =
     waited
@@ -5325,10 +5325,10 @@ fn joined(
   })
 }
 
-/// stranded by the end.
-/// keeps asking until this is zero, so mail written just before the end is not
-/// mail rows that no answer has settled. A parent that is told a child finished
 /// How many of a child's messages the delegate session has not delivered: its
+/// mail rows that no answer has settled. A parent that is told a child finished
+/// keeps asking until this is zero, so mail written just before the end is not
+/// stranded by the end.
 fn undelivered(
   rows: List(#(String, delegate_outbox.Mail)),
   strand: String,
@@ -5339,10 +5339,10 @@ fn undelivered(
   })
 }
 
-/// built lazily and never reached.
-/// plain form, but lint R4 bars it from `src`, so the miss arm is a zero that is
-/// asked about, so the lookup cannot miss. A `let assert` saying so would be the
 /// A settled child's usage. `child_usage.of_strands` keys every strand it is
+/// asked about, so the lookup cannot miss. A `let assert` saying so would be the
+/// plain form, but lint R4 bars it from `src`, so the miss arm is a zero that is
+/// built lazily and never reached.
 fn usage_of(
   usage: Dict(String, remote_spawn.ChildUsage),
   strand: String,
@@ -5419,12 +5419,12 @@ pub fn delegate_release(
 // milliseconds.
 const release_settle_ms = 3000
 
-/// wait having succeeded.
-/// bound is stopped with the session all the same, and nothing depends on the
-/// the slot the registry stops right after this returns. A run that outlasts the
-/// and ends the run when it handles the abort, and for a clean `Normal` drain of
-/// orders it. The wait is for the strand driver, which logs `operation.aborted`
 /// The durable stop reason is written by `reap` before this wait, so nothing here
+/// orders it. The wait is for the strand driver, which logs `operation.aborted`
+/// and ends the run when it handles the abort, and for a clean `Normal` drain of
+/// the slot the registry stops right after this returns. A run that outlasts the
+/// bound is stopped with the session all the same, and nothing depends on the
+/// wait having succeeded.
 fn settle_released(config: Config) -> Nil {
   // State what the branch decides before dispatching.
   case borrow(config) {
@@ -5442,8 +5442,8 @@ fn settle_released(config: Config) -> Nil {
   }
 }
 
-/// cannot be read says no, since the wait is a courtesy to the drivers.
 /// Whether any child of the session has a run that has not ended. A ledger that
+/// cannot be read says no, since the wait is a courtesy to the drivers.
 fn runs_in_flight(runtime: api.Runtime) -> Bool {
   case read_ledger(runtime) {
     Error(_refusal) -> False
@@ -5491,11 +5491,11 @@ pub fn delegate_occupancy(config: Config) -> Occupancy {
 // session is the safe one.
 const occupancy_budget_ms = 8000
 
-/// exit.
-/// borrow is a `try_call`, which answers an error where `process.call` would
-/// fault, and the caller is the sweep, which must outlive any one session. The
-/// writer that is gone, ends the task and not the caller. Every read here can
 /// The question itself, run in a task so that a holder that exits mid-call, or a
+/// writer that is gone, ends the task and not the caller. Every read here can
+/// fault, and the caller is the sweep, which must outlive any one session. The
+/// borrow is a `try_call`, which answers an error where `process.call` would
+/// exit.
 fn occupancy_in_task(config: Config) -> Result(Occupancy, Refusal) {
   use subject <- result.try(holder_subject(config))
   use runtime <- result.try(
@@ -5915,10 +5915,10 @@ fn history_page(
   }
 }
 
-/// message's receipt.
-/// id reused for other content is refused and never answered with the first
-/// derived from the sender's call site and is not a proof of what was said, so an
 /// A receipt answers a repeat only if it is a receipt for this message. The id is
+/// derived from the sender's call site and is not a proof of what was said, so an
+/// id reused for other content is refused and never answered with the first
+/// message's receipt.
 fn same_send(
   held: JsonValue,
   request: JsonValue,
@@ -5998,10 +5998,10 @@ pub fn child_inbox(config: Config) -> ChildInbox {
   )
 }
 
-/// answer says what it was and nothing is retried on a guess.
-/// `ParentSessionNotOpen`, and a store failure settles the row, which is why the
-/// answer in its bound, is a store failure: the box asks again only for
 /// Asks the holder to admit the mail. A holder that is not up, or that does not
+/// answer in its bound, is a store failure: the box asks again only for
+/// `ParentSessionNotOpen`, and a store failure settles the row, which is why the
+/// answer says what it was and nothing is retried on a guess.
 fn admit_child_mail(
   config: Config,
   parent: remote_spawn.Parent,
@@ -6031,11 +6031,11 @@ fn admit_child_mail(
   answer
 }
 
-/// whatever state the spawn has reached.
-/// handle: the stub is written before the first `Spawn` leaves, so it exists
-/// orchestrator that stub names. Nothing here reads the lineage cell or the
-/// parent strand it reports to, and checks that the message came from the
 /// Finds the stub a message about a child concerns, by the child's name and the
+/// parent strand it reports to, and checks that the message came from the
+/// orchestrator that stub names. Nothing here reads the lineage cell or the
+/// handle: the stub is written before the first `Spawn` leaves, so it exists
+/// whatever state the spawn has reached.
 fn stub_for(
   runtime: api.Runtime,
   parent: remote_spawn.Parent,
@@ -6251,9 +6251,9 @@ fn mail_failure(error: api.ApiError) -> remote_mail.ChildRefusal {
   remote_mail.Busy(reason: describe_api(error))
 }
 
-/// under, at a character boundary.
-/// the title and the summary are cut to the bounds a local glance is written
 /// A glance from another machine is text a model wrote, and the stub stores it, so
+/// the title and the summary are cut to the bounds a local glance is written
+/// under, at a character boundary.
 fn bounded_glance(seen: Glance) -> Glance {
   glance.Glance(
     ..seen,
@@ -6273,10 +6273,10 @@ fn cut(text: String, bytes: Int) -> String {
   })
 }
 
-/// compare-and-set on the stub, which does not need the holder's serialization.
-/// `spawned` writes the state. It runs on the caller's process: the write is one
-/// so one that arrives before the answer to the `Spawn` is still there when
 /// Keeps a child's glance on its stub. A glance for a stub in any state is kept,
+/// so one that arrives before the answer to the `Spawn` is still there when
+/// `spawned` writes the state. It runs on the caller's process: the write is one
+/// compare-and-set on the stub, which does not need the holder's serialization.
 fn child_progress(
   config: Config,
   parent: remote_spawn.Parent,
@@ -6297,12 +6297,12 @@ fn child_progress(
   |> result.map_error(fn(reason) { remote_mail.Busy(reason:) })
 }
 
-/// repeat and to reorder.
-/// compare-and-set on the cell, which `remote_escalation_store.keep` makes safe to
-/// finds it. It runs on the caller's process, because the write is one
-/// `Spawn` leaves, so a request that overtakes the answer to the `Spawn` still
-/// any state, for the reason a glance is: the stub is written before the first
 /// Files a child's request for the parent's operator. It is found by the stub, in
+/// any state, for the reason a glance is: the stub is written before the first
+/// `Spawn` leaves, so a request that overtakes the answer to the `Spawn` still
+/// finds it. It runs on the caller's process, because the write is one
+/// compare-and-set on the cell, which `remote_escalation_store.keep` makes safe to
+/// repeat and to reorder.
 fn child_escalation(
   config: Config,
   parent: remote_spawn.Parent,
@@ -6338,9 +6338,9 @@ fn refused(config: Config, refusal: Refusal) -> remote_spawn.SpawnRefusal {
   )
 }
 
-/// local spawn derives the child's name from.
-/// strand, and the planned call it is minting under, which are the coordinates a
 /// The caller a remote parent's call site stands for: the reference to its
+/// strand, and the planned call it is minting under, which are the coordinates a
+/// local spawn derives the child's name from.
 fn delegated_caller(
   parent: remote_spawn.Parent,
   site: remote_spawn.CallSite,
@@ -6354,10 +6354,10 @@ fn delegated_caller(
   )
 }
 
-/// spawn one, so the zero for that case is never read.
-/// left. A child with no deadline cannot be admitted, since the terms give every
-/// session's clock and clocks never cross as instants, so it becomes the time
 /// A spawn as the spawner is told of it. The deadline is an instant on this
+/// session's clock and clocks never cross as instants, so it becomes the time
+/// left. A child with no deadline cannot be admitted, since the terms give every
+/// spawn one, so the zero for that case is never read.
 fn delegated_spawn(config: Config, spawned: Spawned) -> remote_spawn.Spawned {
   let #(now, _clock) = clock.read(config.clock)
   remote_spawn.Spawned(
