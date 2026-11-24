@@ -84,6 +84,13 @@ that never echo the trail or the filesystem's error:
    cap says `CutShort`, and a listing at `depth_limit` returns no children and
    says `AtDepthLimit`.
 
+At most `inspect_limit` = 300 names are made canonical in one listing, counting
+those refused, so a directory of links out costs 300 resolutions and no more; the
+listing then says `CutShort`. The whole read runs under a 5 second deadline and
+answers `Unreadable` when it expires, and the home is read only after the owner
+check. A canonical trail that holds a name `component_ok` refuses, or is not a
+directory as spelled, is `NotAFolder`.
+
 The answer is `Listing(trail, children, cut)`, where `trail` is the canonical
 trail the page shows as a breadcrumb, and each child is a name and whether it
 holds a `.git`. Hidden directories are never listed, because a session cannot
