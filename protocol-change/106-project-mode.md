@@ -724,8 +724,9 @@ model-based test says so.
 `setting`. One new field on the template build request. `loom project` gains `settings`, `set` and
 `unset`, and `init` gains `--check` and `--setup`. A release gains `bin/git-cow`. No engine event, no
 frozen interface, no catalogue or ledger schema, and no SQL changes: a host record is a JSON line in the
-ledger, and a reader that predates it reads the line as a record it does not know and keeps its
-defaults.
+ledger. A build that predates the record refuses the ledger: it decodes a host line by its `host` word,
+and an unknown word is an error, so a project that holds a setting cannot be started by an older
+daemon until the record is removed.
 
 **The problem.** `[project]` was daemon-wide and read once at boot. Two repositories on one daemon shared
 one `check` and one `setup`, and any change meant editing `loom.toml` and restarting the daemon. A person
@@ -755,7 +756,10 @@ setting a project up had to know the commands and where to write them.
   `values` is the new words (one for a command, the mode or the count; any number for `protected_paths`)
   or `null` to give the key back to the file. Replay folds the records in order and so rebuilds what the
   project holds, with who changed it and when. Compaction keeps every record. A record this build cannot
-  read is skipped, since a ledger line is history and must not stop a project from starting.
+  read is handled in two ways. A key this build does not know, or a value it would now refuse, is skipped
+  at replay, since a ledger line is history and must not stop a project from starting. A line that does
+  not decode, such as one with an unknown `host` word or a `setting` line of the wrong shape, is not
+  skipped: it stops the project's boot, as every other malformed host line does.
 - *The same rules as the file.* A value is parsed by the functions `client/project_settings` checks the
   file with, so it is refused for the same reason and in the same words.
 - *No restart.* The actor replaces its policy and the engine's `max_workers` when a record is written.
@@ -763,7 +767,10 @@ setting a project up had to know the commands and where to write them.
   not used, a build with the new ones is queued, and new workers wait for it while workers already
   running keep their clones and are not stopped. A build that was in flight under the old commands ends,
   has its answer dropped because it carries the digest it started with, and the wanted build is asked
-  for. A change to `publish`, `max_workers` or `protected_paths` rebuilds nothing.
+  for. A check that was running under the old `check` command when it changed is dropped the same way:
+  an answer whose command differs from the `check` in force settles nothing, and its row stays deferred
+  and runs again under the new command. A change to `publish`, `max_workers` or `protected_paths`
+  rebuilds nothing.
 - *Authority.* The three commands are the owner's alone, checked per request like every `projects.*`
   mutation. The router has `route`, `project_read` and `reply`; a worker has `project_report` and
   `project_handback`. None of them reaches a setting and `project_read` has no resource for one, so no

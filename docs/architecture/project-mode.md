@@ -460,7 +460,7 @@ flowchart TD
 | Question | Answer |
 | --- | --- |
 | Where is a setting stored? | A `{"host":"setting","key","values","by","at_ms"}` line in the project's ledger. No schema, catalogue or SQL change: a host record is a JSON line, and retention keeps every one. |
-| What does replay do with a line it cannot use? | Skips it. A key this build does not know, or a value it would now refuse, is history and must not stop a project from starting. |
+| What does replay do with a line it cannot use? | It depends. A `setting` line whose key this build does not know, or whose value it would now refuse, is skipped: it is history and must not stop a project from starting. A line that does not decode (an unknown `host` word, a `setting` line of the wrong shape) stops the project's boot, so a build that predates the record refuses the ledger. |
 | What happens to a build in flight when `setup` changes? | `TemplateSettled` carries the digest the build started with. A different digest is dropped without being recorded, `building` clears, and the build that is wanted is queued. The row is not requeued while one runs, so two builds never share `.template.making`. |
 | What does a running worker see? | Nothing. Its session, clone and jail are untouched. A changed `max_workers` changes only how many new workers are scheduled. |
 | Who can reach a setting? | The owner, through three commands that `project_command_in_words` checks on every request. The router's tools are `route`, `project_read` and `reply`, a worker's are `project_report` and `project_handback`, and none has a settings seam. |
