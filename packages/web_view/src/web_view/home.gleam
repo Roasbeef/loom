@@ -6541,11 +6541,6 @@ fn attention_threads(model: Model) -> Option(inbox_view.Threads(Msg)) {
             |> option.map(fn(nodes) { #(entry.0, nodes) })
             |> option.to_result(Nil)
           }),
-          subjects: list.filter_map(dict.to_list(model.evidence), fn(entry) {
-            attention_thread.approval_subject(entry.1)
-            |> option.map(fn(words) { #(entry.0, words) })
-            |> option.to_result(Nil)
-          }),
           evidence: list.map(dict.to_list(model.evidence), fn(entry) {
             #(entry.0, attention_thread.evidence(entry.1))
           }),
@@ -6610,7 +6605,6 @@ fn with_tickets(
           finds: [],
           pane: None,
           titles: [],
-          subjects: [],
           evidence: [],
         ),
         waiting,
@@ -7845,7 +7839,7 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
 
   sidebar.Folders(
     items: [
-      #(inbox_rule.Everything, Some(0)),
+      #(inbox_rule.Everything, None),
       ..list.map(offered_folders(model), fn(entry) { #(entry.0, Some(entry.1)) })
     ],
     current: case landed_inbox(model) {
@@ -7863,28 +7857,11 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
 /// they hold anything, so a person learns where a thing would appear and the rail
 /// does not change its shape as work comes and goes; "Projects" is drawn only
 /// while a ticket waits, because a page that has no project has no such folder.
-/// A press on an empty folder changes nothing (`shown_folder`).
+/// A press on an empty folder is not offered (`view/sidebar.folders_nav`).
 fn offered_folders(model: Model) -> List(#(inbox_rule.Folder, Int)) {
-  let held = folder_counts(model)
-  let count = fn(folder) {
-    case list.key_find(held, folder) {
-      Ok(found) -> found
-      Error(Nil) -> 0
-    }
-  }
-
-  list.append(
-    list.map(
-      [
-        inbox_rule.Needing,
-        inbox_rule.Reviewing,
-        inbox_rule.Finding,
-        inbox_rule.Updating,
-      ],
-      fn(folder) { #(folder, count(folder)) },
-    ),
-    list.filter(held, fn(entry) { entry.0 == inbox_rule.Projecting }),
-  )
+  list.filter(all_folder_counts(model), fn(entry) {
+    entry.0 != inbox_rule.Projecting || entry.1 > 0
+  })
 }
 
 /// The folders with something in them and their counts, in the rail's order. A
@@ -7894,6 +7871,12 @@ fn offered_folders(model: Model) -> List(#(inbox_rule.Folder, Int)) {
 /// review" holds the finished sessions and the tickets whose work waits to be
 /// read (`ticket_rule.lane`).
 fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
+  list.filter(all_folder_counts(model), fn(entry) { entry.1 > 0 })
+}
+
+/// Every folder but "Everything" with its count, empty ones included, so the two
+/// views of the counts (`folder_counts`, `offered_folders`) filter one list.
+fn all_folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
   let groups = model_groups(model)
   let in_group = fn(which) {
     case list.key_find(groups, which) {
@@ -7922,16 +7905,13 @@ fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
     list.length(attention_rule.finds(items))
     + list.length(attention_rule.saved_finding(saved))
 
-  list.filter(
-    [
-      #(inbox_rule.Needing, needing),
-      #(inbox_rule.Reviewing, in_group(inbox_rule.ToReview) + reading),
-      #(inbox_rule.Finding, finds),
-      #(inbox_rule.Updating, in_group(inbox_rule.Updates)),
-      #(inbox_rule.Projecting, tickets),
-    ],
-    fn(entry) { entry.1 > 0 },
-  )
+  [
+    #(inbox_rule.Needing, needing),
+    #(inbox_rule.Reviewing, in_group(inbox_rule.ToReview) + reading),
+    #(inbox_rule.Finding, finds),
+    #(inbox_rule.Updating, in_group(inbox_rule.Updates)),
+    #(inbox_rule.Projecting, tickets),
+  ]
 }
 
 /// How many things wait on the owner, as the top bar's pill counts them: the

@@ -268,7 +268,7 @@
      The widths: the sidebar is 184px until the reader drags its grip (180px at least, 480px at most), the panel 344px until the reader drags
      its grip (280px at least, and never so wide that the transcript falls under
      360px, see .shell-centre), and the transcript at most 780px. Each side column is dropped where it would leave the
-     transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
+     transcript under 640px: the sidebar below 1212px (the breakpoint was 232 + 340 + 640 and stays, though the sidebar is now 184, so the narrow frames do not move), and
      the panel, which then becomes a row of cards beneath the bar, below 980px
      (340 + 640). Where the sidebar is dropped it is a drawer: the same
      wrapper placed over the centre behind a scrim (the narrow frames at the
@@ -915,14 +915,13 @@
   loom-shell.loom-inbox .state-heading{display:flex;margin:14px 8px 4px 8px;padding:0;font:600 11px/1.45 var(--font-sans);letter-spacing:.06em;}
   loom-shell.loom-inbox .relayed-side-group .state-heading{margin:18px 8px 6px 8px;}
   /* The running sessions are one flat list under "Watch live", as the final
-     design draws it: the dot's colour and the row's second line carry the state,
-     so the three running groups draw no heading. The groups stay in the document
-     in their order (needs you, working, idle), and the saved, blocked and other
-     orchestrators' groups keep theirs, which the mockup has no frame for. A row's
-     third line, the session's last prompt, is hidden for the same reason: the
-     final design's row is two lines. */
-  loom-shell.loom-inbox .state-needs-you > .state-heading,loom-shell.loom-inbox .state-working > .state-heading,loom-shell.loom-inbox .state-idle > .state-heading{display:none;}
+     design draws it, and its groups draw no heading. A row's third line, the
+     session's last prompt, is hidden here and not left out of the tree because
+     the session switcher reads it (view/switcher). */
   loom-shell.loom-inbox .session-subtitle{display:none;}
+  /* A folder with nothing in it is text, not a button: it looks inert. */
+  .folder:is(div){cursor:default;color:var(--color-fg-quiet);}
+  .folder:is(div):hover{background:transparent;}
   loom-shell.loom-inbox section.state-group{margin:0;}
   loom-shell.loom-inbox li.session{min-height:0;border-radius:6px;font-size:13px;}
   loom-shell.loom-inbox li.session:hover{background:var(--color-bg-raised);}
@@ -2433,7 +2432,7 @@
      the sidebar's top line where the sidebar is a column. */
   .session-head .home-admin{display:none;}
   /* The narrow frames. Below 1212px the sidebar's column is dropped, and the
-     sidebar is a 232px drawer over the page, opened by its bar button or the
+     sidebar is a 232px drawer over the page (kept at 232, not the rail's 184, because a drawer holds the same rows with more room and is a different frame), opened by its bar button or the
      shortcut, behind a scrim that a click closes (web_client/shell). The
      drawer floats, so it alone takes the float shadow. Below 980px the panel
      moves under the bar, one row of cards that scrolls sideways, and the body

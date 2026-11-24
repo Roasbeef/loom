@@ -342,7 +342,7 @@ pub fn reset_returns_the_sidebar_to_its_default_test() {
   assert grip_rule.adjusted_in(Sidebar, 450, Reset, side_room) == 184
   assert grip_rule.adjusted_in(Sidebar, 180, Reset, side_room) == 184
   // A window that cannot hold the default lets the ceiling win.
-  let tight = Room(panel: 200, centre: 340)
+  let tight = Room(panel: 200, centre: 342)
   assert grip_rule.adjusted_in(Sidebar, 200, Reset, tight)
     == grip_rule.ceiling_in(Sidebar, tight)
 }

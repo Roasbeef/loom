@@ -185,7 +185,7 @@ fn band(name: String, count: String) -> String {
 // `B` has an approval pending, `A` finished a run and said something, and `C`
 // works. So "Needs you" and "Updates" hold one thread each, the other two of
 // the four always-listed folders read 0, and Projects is not listed.
-pub fn only_the_groups_that_hold_something_have_a_folder_test() {
+pub fn the_four_folders_are_always_listed_and_projects_only_with_a_ticket_test() {
   let html = drawn(opened(start()))
 
   assert string.contains(html, "<span class=\"nm\">Everything, by need</span>")
@@ -194,6 +194,17 @@ pub fn only_the_groups_that_hold_something_have_a_folder_test() {
   assert string.contains(html, count("To review", "0"))
   assert string.contains(html, count("Finds", "0"))
   assert !string.contains(html, "<span class=\"nm\">Projects</span>")
+
+  // A folder at 0 is text, not a button, and "Needs you" at 0 has no signal
+  // class; the count helper cannot tell either from a pressable folder.
+  assert string.contains(
+    html,
+    "<div class=\"folder \"><span class=\"nm\">To review",
+  )
+  assert !string.contains(
+    html,
+    "type=\"button\" class=\"folder\" aria-pressed=\"false\"><span class=\"nm\">To review",
+  )
 }
 
 // A press narrows the list to the folder's group and "Everything, by need"

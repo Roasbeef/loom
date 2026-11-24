@@ -420,7 +420,7 @@ fn memoed(
 }
 
 /// The column itself: its title, the inbox's folders, the "Watch live" heading,
-/// the pills, one section for each group that has a running session, the folded
+/// the pills, one heading-less section for each group that has a running session, the folded
 /// saved sessions, the other orchestrators' sections, the note and "New session"
 /// and the foot. The sections sit in a scrolling region of their own so the
 /// folders and the foot stay in view.
@@ -612,14 +612,13 @@ fn folders_nav(folders: Folders(message)) -> Element(message) {
         // nothing, so it is not offered, and it is still listed so that the rail's
         // shape does not move as work comes and goes.
         folder_element(
-          case folder, count {
-            inbox_rule.Everything, _ | _, None -> folders.way
-            _, Some(0) ->
+          case count {
+            Some(0) ->
               case folders.way {
                 Pick(_) -> Text
                 Return | Text -> folders.way
               }
-            _, Some(_) -> folders.way
+            Some(_) | None -> folders.way
           },
           folder,
           count,
@@ -808,9 +807,10 @@ fn pill(
   )
 }
 
-/// One group of running rows: a heading with the count, then the rows. A group
-/// with no row is nothing, so a person who has nothing waiting sees no empty
-/// "Needs you".
+/// One group of running rows. The group draws no heading: the final design's
+/// "Watch live" is one flat list whose dots and second lines carry the state, so
+/// the section only names itself to assistive technology. A group with no row is
+/// nothing, so a person who has nothing waiting sees no empty "Needs you".
 fn state(
   title: String,
   class: String,
@@ -820,10 +820,14 @@ fn state(
   case rows {
     [] -> element.none()
     [_, ..] ->
-      html.section([attribute.class("state-group"), attribute.class(class)], [
-        heading(title, rows),
-        keyed_rows(rows, draw),
-      ])
+      html.section(
+        [
+          attribute.class("state-group"),
+          attribute.class(class),
+          attribute.aria_label(title <> " " <> listing.count_words(rows)),
+        ],
+        [keyed_rows(rows, draw)],
+      )
   }
 }
 
@@ -835,17 +839,21 @@ fn idle(rows: Rows, draw: fn(Row) -> Element(message)) -> Element(message) {
     #([], _) -> element.none()
     #(shown, []) ->
       html.section(
-        [attribute.class("state-group"), attribute.class("state-idle")],
         [
-          heading("Idle", rows.idle),
-          keyed_rows(shown, draw),
+          attribute.class("state-group"),
+          attribute.class("state-idle"),
+          attribute.aria_label("Idle " <> listing.count_words(rows.idle)),
         ],
+        [keyed_rows(shown, draw)],
       )
     #(shown, more) ->
       html.section(
-        [attribute.class("state-group"), attribute.class("state-idle")],
         [
-          heading("Idle", rows.idle),
+          attribute.class("state-group"),
+          attribute.class("state-idle"),
+          attribute.aria_label("Idle " <> listing.count_words(rows.idle)),
+        ],
+        [
           keyed_rows(shown, draw),
           html.details([attribute.class("idle-more")], [
             html.summary([], [
@@ -856,16 +864,6 @@ fn idle(rows: Rows, draw: fn(Row) -> Element(message)) -> Element(message) {
         ],
       )
   }
-}
-
-/// A group's heading: its words and the number of rows it holds.
-fn heading(title: String, rows: List(Row)) -> Element(message) {
-  html.h3([attribute.class("state-heading")], [
-    html.text(title),
-    html.span([attribute.class("group-count")], [
-      html.text(listing.count_words(rows)),
-    ]),
-  ])
 }
 
 /// The saved sessions: a quiet line that says how many there are, and under it

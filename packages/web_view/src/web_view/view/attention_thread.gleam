@@ -46,6 +46,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import lustre/event
+import session_view/strand_name
 import web_view/answer_rule
 import web_view/approval_evidence.{type Seen}
 import web_view/attention_feed
@@ -165,12 +166,10 @@ const strand_limit = 36
 
 /// A strand's name as a row's name, in the final design's form: `sub:` and the
 /// purpose (`sub:mockup-b`). The agency names a sub-agent
-/// `sub:<parent>/<purpose>-<sixteen hexadecimal digits>`; the parent and the
-/// digits tell siblings apart in the data, and a row that carried them read as an
-/// identifier and not as a name. The cost is that two siblings of one purpose
-/// read alike on a row; the thread's own page still carries the full strand. A
-/// name that is not of that form is kept as it is, and one over `strand_limit`
-/// ends in `…`.
+/// `sub:<parent>/<purpose>-<digits>`, and `session_view/strand_name.short` cuts
+/// that to the purpose, as the live page does. Two siblings of one purpose read
+/// alike on a row; the thread's own page still carries the full strand. Any
+/// other name is kept, and a name over `strand_limit` ends in `…`.
 ///
 /// ## Examples
 ///
@@ -179,39 +178,17 @@ const strand_limit = 36
 ///   == "sub:audit"
 /// ```
 pub fn strand_name(strand: String) -> String {
-  // Only a name of the agency's `sub:<parent>/<purpose>` form has a parent to drop.
-  let purpose = case string.split_once(strand, "/") {
-    Ok(#("sub:" <> _, rest)) -> "sub:" <> without_digits(rest)
-    Ok(_) | Error(Nil) -> strand
+  // Only a delegate (`sub:`) has a parent and digits to drop; any other name stays.
+  let name = case string.starts_with(strand, "sub:") {
+    True -> "sub:" <> strand_name.short(strand)
+    False -> strand
   }
 
-  // A purpose over the room is cut and marked as cut.
-  case string.length(purpose) > strand_limit {
-    True -> string.slice(purpose, 0, strand_limit - 1) <> "…"
-    False -> purpose
+  // A name over the room is cut and marked as cut.
+  case string.length(name) > strand_limit {
+    True -> string.slice(name, 0, strand_limit - 1) <> "…"
+    False -> name
   }
-}
-
-/// A purpose without the dash and sixteen hexadecimal digits the agency appends.
-/// A name that does not end that way is returned whole.
-fn without_digits(name: String) -> String {
-  let graphemes = string.to_graphemes(name)
-  let count = list.length(graphemes)
-
-  // Only a dash and sixteen hexadecimal digits at the end are the agency's tail.
-  case count > 17, list.drop(graphemes, count - 17) {
-    True, ["-", ..digits] ->
-      case list.all(digits, is_hex) {
-        True -> string.concat(list.take(graphemes, count - 17))
-        False -> name
-      }
-    True, [] | False, _ | True, [_, ..] -> name
-  }
-}
-
-/// Whether a grapheme is a lowercase hexadecimal digit.
-fn is_hex(grapheme: String) -> Bool {
-  string.contains("0123456789abcdef", grapheme) && grapheme != ""
 }
 
 /// The age a row draws, marked when an ask or a stuck strand has waited on the
@@ -1176,47 +1153,6 @@ pub fn approval_title(seen: Seen) -> Option(List(Element(message))) {
         [first, ..] -> composed_title(first)
         [] -> None
       }
-  }
-}
-
-/// What a pending approval asks, in the few plain words a list row has room for:
-/// the tool and the kind of grant it wants (`bash · wants a network grant`), or
-/// nothing when the evidence was not read or the call wants no grant the final
-/// design words. The tool is text a model's call carried and is drawn as a text
-/// node.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert attention_thread.approval_subject(approval_evidence.Unseen("not answered")) == None
-/// ```
-pub fn approval_subject(seen: Seen) -> Option(String) {
-  case seen {
-    approval_evidence.Unseen(..) -> None
-    approval_evidence.Seen(evidence: read) ->
-      case read.items {
-        [first, ..] -> subject_words(first)
-        [] -> None
-      }
-  }
-}
-
-/// The subject one pending approval words.
-fn subject_words(item: approval_evidence.Item) -> Option(String) {
-  // A record that names no tool is a program's call, as the title says.
-  let tool = case item.tool {
-    "" -> "this program"
-    tool -> tool
-  }
-
-  // A write grant is worded first, as the title does, then a network grant.
-  case
-    list.any(item.wanted, fn(grant) { grant.kind == "writable_root" }),
-    list.any(item.wanted, fn(grant) { grant.kind == "network" })
-  {
-    True, _ -> Some(tool <> " · wants a write grant")
-    False, True -> Some(tool <> " · wants a network grant")
-    False, False -> None
   }
 }
 
