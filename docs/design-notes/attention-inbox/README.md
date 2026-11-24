@@ -4,8 +4,9 @@
 section 2 describes and [`final/mockup.html`](final/mockup.html) draws.
 Section 3 records the ruling on each open question, and section 4 orders the
 build. Sections 1 to 6 are the design as decided and are not rewritten;
-**built 2026-11-18 as stack #1290, awaiting the owner's sign-off**, and
-section 7 says what was built and where it departs from them.
+**phases 0, 1 and 2 and the live mode are built and merged, and were driven end
+to end on 2026-11-23**. Section 7 says what was built, where it departs from
+the design, and what follows.
 
 The owner asked for a web UI in the manner of a coordinator and an inbox,
 because "needing to read thru context is such a major drag vs surfacing
@@ -321,10 +322,11 @@ The final mockup corrects the last two of these.
 
 ## 7. As built (2026-11-18)
 
-The build is stack #1290: ten PRs, #1275 at the bottom and #1294 at the top.
-Each was reviewed by an independent reviewer, and a final end-to-end drive with
-a real model and a real browser passed all 13 features. The stack is not
-merged. `docs/next.md` says what follows.
+The build was stack #1290: ten PRs, #1275 at the bottom and #1294 at the top.
+Each was reviewed by an independent reviewer, and a drive with a real model and
+a real browser passed all 13 features. The stack merged as #1316 and the queue
+#1328, and later PRs added what section 7.4 lists. `docs/next.md` says what
+follows.
 
 ### 7.1 What each phase delivered
 
@@ -434,3 +436,69 @@ Known gaps carried forward:
 | protocol-change/122 | Catalogue version 22 and the durable attention counts. |
 | protocol-change/123 | `sessions.review` and the review hunks. |
 | 051 addenda | "The attention inbox on Home", "the live rail", "the live rail, answered", "the review pane" and "project tickets on Home", which cover the page's click paths. |
+
+### 7.4 Built since, and the end-to-end drive (2026-11-23)
+
+These PRs merged after the stack. Together with section 7.1, phases 0, 1 and 2
+and the live mode are built.
+
+- **Asks.** An open ask is a card above the composer, and its answer is drawn
+  as readable text, not the wire record (#1348, protocol-change/130). Asks have
+  a thread and a rail entry (#1350). While an ask is open, wakes are held and
+  placed after the answer (#1355, an addendum to protocol-change/119). The
+  terminal draws the same card (#1362). The sidebar shows "asked" for other
+  sessions, counted on the `sessions.activity` row (#1363, an addendum to
+  protocol-change/050), and a stopped page marks its rail out of date and offers
+  "Go back".
+- **Folders and navigation.** The inbox folders are drawn on every page that can
+  mint a home ticket (#1345). The composer has a folder picker (#1353,
+  protocol-change/132).
+- **Stuck strands, insights and quotes.** A stuck strand can be dismissed (#1351,
+  protocol-change/131). Insights fold into Updates (#1358) and a band lists the
+  top items across sessions (#1359). Quotes are drawn as Markdown, and
+  `last_message` keeps its newlines (#1364, addenda to protocol-change/125 and
+  050).
+
+A fresh daemon on `main` at `d0a8d99d0`, with the model scripted by
+`scripts/web_seed`, ran thirteen checks, all passing: Home lands on the threads
+or on the new-session form; an approval thread shows its evidence and is decided
+from the session's dock; an ask with every answer kind delivers typed values; a
+notice appears under Finds, in the live rail and in the review pane; the review
+pane shows worktree hunks and sends a verdict, a find action and a file comment
+in one Send with a receipt; Queue and Steer work from an Update thread and show
+the held input; the rail pins asks, approvals and stuck strands, folds insights
+and jumps to the stream row; a stuck delegate's thread retries; a project ticket
+at `person/answer` has Answer, Close and Stop; ask and notice work from
+`code_mode`; a restart keeps a pending approval counted; the phone viewport shows
+the inbox and the live sheet; and an observer sees the threads with no controls.
+`person/check` could not be reached with the fake model.
+
+**What still differs from the final mockup.**
+
+- `person/check` is drawn as its raw stage word, with no check output and no
+  Recheck, until the owner rules on question 6. Retry shows only for a ticket
+  with no session.
+- The drive checked behaviour and not pixels. The comparison at desktop and phone
+  widths has not been repeated since these PRs, and the owner's order is a
+  fidelity pass to the mockup's frames.
+- The departures in 7.2 stand.
+
+**Follow-ups that belong to the inbox.**
+
+- A session page's sidebar never shows "to review" for other sessions, because
+  `component.gleam` hard-codes `NothingToRead`.
+- The stopped notice overlaps the top bar's chips, and "N running" stays stale on
+  a stopped page.
+- Some text is flat where Markdown is expected: the project worker's question
+  (`projects.gleam`) and the remote's said text (`peek.gleam`).
+- The Projects folder popover may stay drawn after a ticket thread is clicked
+  (seen once, unconfirmed).
+- The admin page and a session page opened from a bare link cannot get back to
+  the inbox, because neither can mint a home ticket.
+- The `.loom-inbox` CSS hides some facts: `tag-code` on the admin page, the state
+  headings, the session subtitle, and the role chip on a phone.
+- On the terminal, each attached client reconnects every 4 s to read asks even
+  when none is open, `ask_control` does not repaint on a session mismatch, and
+  the Asks job is not cancelled at quit.
+- The native client's slices 3 to 5 and the insight triage proposal are tracked
+  in `docs/next.md`.
