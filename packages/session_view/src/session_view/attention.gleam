@@ -409,7 +409,8 @@ fn returned_head(outcome: String, report: String) -> String {
 }
 
 /// A report line as the words it opens on: a Markdown heading loses its
-/// marks, and a line of nothing but marks, such as a rule, is nothing.
+/// marks, and a line of nothing but marks, such as a rule, or one that opens a
+/// code fence is nothing.
 fn opening_words(line: String) -> String {
   let words =
     line
@@ -421,7 +422,11 @@ fn opening_words(line: String) -> String {
   let marks = ["-", "*", "_", "=", "`", ">", "|", "~", " "]
 
   // A line that is only marks says nothing, so the next line is tried.
-  case list.all(string.to_graphemes(words), fn(g) { list.contains(marks, g) }) {
+  let only_marks =
+    list.all(string.to_graphemes(words), fn(g) { list.contains(marks, g) })
+
+  // A line that is only marks, or a fence, says nothing; the next is tried.
+  case only_marks || string.starts_with(words, "```") {
     True -> ""
     False -> words
   }

@@ -238,6 +238,7 @@ pub fn a_result_head_reads_the_reports_words_not_its_marks_test() {
   assert head("---\n\n## Summary\nbody") == "completed · Summary"
   assert head("# calc \\n Tiny calculator.") == "completed · calc"
   assert head("---\n***") == "completed"
+  assert head("```json\n{\"ok\": true}") == "completed · {\"ok\": true}"
 }
 
 fn failure(key: String, text: String) -> turns.Piece {
