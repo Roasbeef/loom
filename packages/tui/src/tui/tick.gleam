@@ -149,7 +149,11 @@ pub fn update_tick(model: Model) -> Model {
   let switched = drain_candidate(session_control.drain_control(animated))
   let switched = session_control.drain_reconnect(switched)
   let switched = session_control.drain_activity(switched)
+
+  // The ask poll's job replies, which its own slot collects like the picker's
+  // activity poll's.
   let switched = ask_control.drain(switched)
+
   let switched = session_control.drain_configuration(switched)
   let switched = image_drain.drain(switched)
   let drained = inbound.drain_connection(switched, tui_model.connection_batch)

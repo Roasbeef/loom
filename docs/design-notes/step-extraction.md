@@ -426,7 +426,7 @@ fields the adoption arm resets today (`tui/interaction.gleam:260`
 `Attached`. `next_due` is
 `option.then(model.channel, session_channel.next_due)`; a host that has
 other reasons to wake, as the terminal does, combines it with its own
-(`tui/tick.gleam:604` (`lane_wait`)).
+(`tui/tick.gleam:610` (`lane_wait`)).
 
 ### The shells
 
@@ -531,9 +531,9 @@ they reach that it misses.
   `service_todo_seed` (`session_view/surfaces.gleam:140`) onward, `sync_context`,
   `sync_advisor_nudges`, `sync_goal`, `receive_jobs`, `receive_goal` and
   `receive_advisor_nudges`, less `notes_target` and `notes_surface`.
-- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:320`)
+- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:329`)
   and `advance_generation_clock` read the stamp and shared fields;
-  `drain_replay` (`tui/tick.gleam:288`) and `apply_replay_change`.
+  `drain_replay` (`tui/tick.gleam:294`) and `apply_replay_change`.
 - `queue_owner`, `queue_namespace`, `active_strand_phase`,
   `append_system`, `append_error`, `append_notice`, `start_step`, `emit`,
   `record`, `hold_channel` and `presentation` from `tui/model`.
@@ -665,10 +665,10 @@ The worst cases in the code, and the cut for each:
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
    (`tui/inbound.gleam:1189` (`tick_strip`)) reads the strip's focus and
-   stays; `advance_cache_outlook` (`tui/tick.gleam:355`
+   stays; `advance_cache_outlook` (`tui/tick.gleam:361`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
-   bookkeeping stays terminal (`tui/tick.gleam:167` (`settle_tick`)).
+   bookkeeping stays terminal (`tui/tick.gleam:160` (`settle_tick`)).
 
 9. **Key dispatch** (`tui/interaction.gleam:1109`
    (`update_conversation_key`)) reads `help_open`, `notes_open`, the

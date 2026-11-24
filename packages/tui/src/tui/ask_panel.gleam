@@ -364,6 +364,7 @@ fn question_lines(
         Here -> Some(at)
         Away -> None
       }
+
       Drawn(followed, row_line(form, question, row, under, width))
     })
 
