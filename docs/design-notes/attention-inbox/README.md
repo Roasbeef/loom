@@ -471,13 +471,17 @@ and jumps to the stream row; a stuck delegate's thread retries; a project ticket
 at `person/answer` has Answer, Close and Stop; ask and notice work from
 `code_mode`; a restart keeps a pending approval counted; the phone viewport shows
 the inbox and the live sheet; and an observer sees the threads with no controls.
-`person/check` could not be reached with the fake model.
+A second drive on main 29c5c06f7 reached `person/check` with a failing project
+check, and found the thread drew it as "check failed"; the thread now draws
+`person/check`. The same drive showed Retry on a ticket whose worker session was
+stopped, and pressing it started a new worker.
 
 **What still differs from the final mockup.**
 
 - `person/check` is drawn as its raw stage word, with no check output and no
-  Recheck, until the owner rules on question 6. Retry shows only for a ticket
-  with no session.
+  Recheck, until the owner rules on question 6. It is filed under To review,
+  not Needs you. The daemon lists `recheck` and carries the check output, and
+  the page draws neither yet. Retry shows only for a ticket with no session.
 - The drive checked behaviour and not pixels. The comparison at desktop and phone
   widths has not been repeated since these PRs, and the owner's order is a
   fidelity pass to the mockup's frames.
