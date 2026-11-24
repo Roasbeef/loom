@@ -2229,7 +2229,8 @@ refused during a drain.
 0) and the current `epoch`, and answers `{"brief": {...}}`: a bounded account of
 the session's recent work for Home ([Protocol 125](../protocol-change/125-session-brief.md)).
 Its members, each omitted when it has nothing: `assistant` (`{text, trust, at}`,
-the latest assistant text even mid-turn, at most 600 bytes), `steps` (at most four
+the latest assistant text even mid-turn, newlines kept, at most 1600 bytes, cut
+between blocks), `steps` (at most four
 `{at, tool, words, trust, outcome}`, newest first, `outcome` being `running`,
 `succeeded` or `failed`), `strands` (at most twelve `{name, state, since}`, `state`
 being `working`, `idle` or `stopped`), `goal` (`{objective, status, tokens_used,

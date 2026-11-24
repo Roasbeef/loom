@@ -132,7 +132,7 @@ pub fn the_latest_text_is_the_newest_assistant_message_that_has_any_test() {
   ]
   let brief = session_brief.of_window(newest_first, 0)
   let assert Some(wire.Assistant(text:, at:)) = brief.assistant
-  assert wire.untrusted_text(text) == "Looking at it."
+  assert wire.untrusted_text(text) == "Looking\n at it."
   assert at == 20
 }
 

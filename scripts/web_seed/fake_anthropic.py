@@ -137,11 +137,11 @@ def main_turn(messages):
             return [("tool_use", "agent_wait", {"handles": handles, "within_ms": 120000})], "tool_use", warm
         answer = "\n".join(
             [
-                "Done. The reviewer read both files and found nothing that blocks the patch.",
+                "**Done.** The reviewer read both files and found nothing that blocks the patch.",
                 "",
                 "What changed:",
-                "- `notes/review.md` records the reviewer's brief and what it checked.",
-                "- `notes/plan.md` lists the follow-ups: tighten the census and rerun the lint.",
+                "- [`notes/review.md`](notes/review.md) records the reviewer's brief and what it checked.",
+                "- [`notes/plan.md`](notes/plan.md) lists the follow-ups: tighten the census and rerun the lint.",
                 "",
                 "The reviewer's one nit was the ordering of two imports in b.gleam, which "
                 "the formatter settles on the next run. I left it for that pass rather than "
