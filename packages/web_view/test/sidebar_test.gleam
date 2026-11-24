@@ -1015,6 +1015,31 @@ pub fn the_activity_is_read_on_its_own_faster_cadence_test() {
   assert process.receive(asked, 0) == Ok(["B", "A"])
 }
 
+// The activity read is armed on the page's one timer, so a page whose own lane
+// has nothing due still ticks to read it. The page here has no lane at all,
+// which is the state of a page before its first capture or of a saved
+// session: before the fix no `Ticked` was ever due and every other row kept
+// the word it had when the list was read. A list with no running session has
+// nothing to read in five seconds, and its only reason to wake is the list.
+pub fn a_page_with_no_lane_due_still_wakes_for_the_activity_test() {
+  let start = page_fixture.start()
+  let model = component.new(start)
+  assert component.next_wake(model, 0) == None
+
+  // A list naming running sessions makes the next ask due after the interval.
+  let #(running, _) =
+    component.update(model, component.SessionsListed(listing()))
+  assert component.next_wake(running, 0) == Some(component.activity_refresh_ms)
+
+  // A list of saved sessions only has no activity to read.
+  let saved = [
+    entry("C", "hex release", "/src/weft", 900, Saved),
+    entry("D", "", "/src/notes", 500, Saved),
+  ]
+  let #(quiet, _) = component.update(model, component.SessionsListed(saved))
+  assert component.next_wake(quiet, 0) == None
+}
+
 // A session being handed to another orchestrator is in the saved region, says
 // where it goes in place of "saved", and draws no resume press, which the
 // registry would refuse until the move ends. A saved row beside it keeps its
