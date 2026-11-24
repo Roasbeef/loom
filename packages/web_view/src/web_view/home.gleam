@@ -7839,8 +7839,8 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
 
   sidebar.Folders(
     items: [
-      #(inbox_rule.Everything, Some(0)),
-      ..list.map(folder_counts(model), fn(entry) { #(entry.0, Some(entry.1)) })
+      #(inbox_rule.Everything, None),
+      ..list.map(offered_folders(model), fn(entry) { #(entry.0, Some(entry.1)) })
     ],
     current: case landed_inbox(model) {
       True -> Some(shown_folder(model))
@@ -7852,6 +7852,18 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
   )
 }
 
+/// The folders the rail draws and their counts, in the rail's order. The final
+/// design lists "Needs you", "To review", "Finds" and "Updates" whether or not
+/// they hold anything, so a person learns where a thing would appear and the rail
+/// does not change its shape as work comes and goes; "Projects" is drawn only
+/// while a ticket waits, because a page that has no project has no such folder.
+/// A press on an empty folder is not offered (`view/sidebar.folders_nav`).
+fn offered_folders(model: Model) -> List(#(inbox_rule.Folder, Int)) {
+  list.filter(all_folder_counts(model), fn(entry) {
+    entry.0 != inbox_rule.Projecting || entry.1 > 0
+  })
+}
+
 /// The folders with something in them and their counts, in the rail's order. A
 /// count is the number of rows the group's band draws, so a folder and its band
 /// agree: "Needs you" holds the asks, stuck strands, saved sessions' needs, the
@@ -7859,6 +7871,12 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
 /// review" holds the finished sessions and the tickets whose work waits to be
 /// read (`ticket_rule.lane`).
 fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
+  list.filter(all_folder_counts(model), fn(entry) { entry.1 > 0 })
+}
+
+/// Every folder but "Everything" with its count, empty ones included, so the two
+/// views of the counts (`folder_counts`, `offered_folders`) filter one list.
+fn all_folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
   let groups = model_groups(model)
   let in_group = fn(which) {
     case list.key_find(groups, which) {
@@ -7887,16 +7905,13 @@ fn folder_counts(model: Model) -> List(#(inbox_rule.Folder, Int)) {
     list.length(attention_rule.finds(items))
     + list.length(attention_rule.saved_finding(saved))
 
-  list.filter(
-    [
-      #(inbox_rule.Needing, needing),
-      #(inbox_rule.Reviewing, in_group(inbox_rule.ToReview) + reading),
-      #(inbox_rule.Finding, finds),
-      #(inbox_rule.Updating, in_group(inbox_rule.Updates)),
-      #(inbox_rule.Projecting, tickets),
-    ],
-    fn(entry) { entry.1 > 0 },
-  )
+  [
+    #(inbox_rule.Needing, needing),
+    #(inbox_rule.Reviewing, in_group(inbox_rule.ToReview) + reading),
+    #(inbox_rule.Finding, finds),
+    #(inbox_rule.Updating, in_group(inbox_rule.Updates)),
+    #(inbox_rule.Projecting, tickets),
+  ]
 }
 
 /// How many things wait on the owner, as the top bar's pill counts them: the

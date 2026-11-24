@@ -46,6 +46,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import lustre/event
+import session_view/strand_name
 import web_view/answer_rule
 import web_view/approval_evidence.{type Seen}
 import web_view/attention_feed
@@ -163,48 +164,31 @@ fn row_name(item: Item, name_of: fn(String) -> String) -> String {
 /// The most graphemes of a strand's name that a row keeps.
 const strand_limit = 36
 
-/// A strand's name as a row's name. The sixteen hexadecimal digits the agency
-/// appends to a sub-agent's name are cut to `-…` and their last four, which keep
-/// two siblings of one purpose apart (`audit-…cdef`), and a name still longer
-/// than `strand_limit` has its purpose cut and ends in `…` before that tail.
+/// A strand's name as a row's name, in the final design's form: `sub:` and the
+/// purpose (`sub:mockup-b`). The agency names a sub-agent
+/// `sub:<parent>/<purpose>-<digits>`, and `session_view/strand_name.short` cuts
+/// that to the purpose, as the live page does. Two siblings of one purpose read
+/// alike on a row; the thread's own page still carries the full strand. Any
+/// other name is kept, and a name over `strand_limit` ends in `…`.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert attention_thread.strand_name("sub:main/audit-0123456789abcdef")
-///   == "sub:main/audit-…cdef"
+///   == "sub:audit"
 /// ```
 pub fn strand_name(strand: String) -> String {
-  let graphemes = string.to_graphemes(strand)
-  let count = list.length(graphemes)
-  let tail = list.drop(graphemes, count - 17)
-
-  // A name shorter than the suffix cannot carry it, so only a long name whose
-  // tail is a dash and sixteen hexadecimal digits has a tail to keep.
-  let #(purpose, kept) = case count > 17, tail {
-    True, ["-", ..digits] ->
-      case list.all(digits, is_hex) {
-        True -> #(
-          string.concat(list.take(graphemes, count - 17)),
-          "-…" <> string.concat(list.drop(digits, 12)),
-        )
-        False -> #(strand, "")
-      }
-    True, [] | False, _ | True, [_, ..] -> #(strand, "")
+  // Only a delegate (`sub:`) has a parent and digits to drop; any other name stays.
+  let name = case string.starts_with(strand, "sub:") {
+    True -> "sub:" <> strand_name.short(strand)
+    False -> strand
   }
 
-  let room = strand_limit - string.length(kept)
-
-  // A purpose over the room is cut and marked as cut.
-  case string.length(purpose) > room {
-    True -> string.slice(purpose, 0, room - 1) <> "…" <> kept
-    False -> purpose <> kept
+  // A name over the room is cut and marked as cut.
+  case string.length(name) > strand_limit {
+    True -> string.slice(name, 0, strand_limit - 1) <> "…"
+    False -> name
   }
-}
-
-/// Whether a grapheme is a lowercase hexadecimal digit.
-fn is_hex(grapheme: String) -> Bool {
-  string.contains("0123456789abcdef", grapheme) && grapheme != ""
 }
 
 /// The age a row draws, marked when an ask or a stuck strand has waited on the
