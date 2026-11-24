@@ -44,6 +44,7 @@ import argv
 import client/auxiliary
 import client/catalog
 import client/insight/answer
+import client/insight/guard
 import client/insight/lane
 import client/insight/record
 import client/insight/request
@@ -129,16 +130,28 @@ type Opened {
   )
 }
 
+/// A finished session and the rows its lane lifts.
+type Finished {
+  Finished(
+    /// The session's identity.
+    id: String,
+    /// When its newest entry was stored, in Unix milliseconds.
+    at: Int,
+    /// Every row a request may carry, newest first.
+    rows: List(lane.Candidate),
+  )
+}
+
 /// What the census learned about one store.
 type Studied {
-  /// The session finished, and these are the rows its lane lifts.
-  Studied(id: String, at: Int, rows: List(lane.Candidate))
+  /// The session finished.
+  Done(Finished)
 
   /// The session had an operation in flight, or never ran.
   Unfinished
 
-  /// The store could not be read.
-  Unreadable(reason: String)
+  /// The store could not be read, and why.
+  Unreadable(id: String, reason: String)
 }
 
 /// Reads every copied store and writes the most recent qualifying sessions
@@ -154,19 +167,19 @@ fn select(dir: String) -> Result(String, String) {
     |> list.sort(string.compare)
   let studied = list.map(stores, study)
   let finished =
-    list.filter(studied, fn(found) {
+    list.filter_map(studied, fn(found) {
       case found {
-        Studied(..) -> True
-        Unfinished | Unreadable(..) -> False
+        Done(session) -> Ok(session)
+        Unfinished | Unreadable(..) -> Error(Nil)
       }
     })
   let qualifying =
-    list.filter(finished, fn(found) { enough_rows(found) })
-    |> list.sort(fn(left, right) { int.compare(at_of(right), at_of(left)) })
+    list.filter(finished, fn(found) { list.length(found.rows) >= minimum_rows })
+    |> list.sort(fn(left, right) { int.compare(right.at, left.at) })
   let picked = list.take(qualifying, wanted)
 
   use _ <- result.try(
-    list.filter_map(picked, fn(found) { sheet_session(found, names) })
+    list.map(picked, sheet_session(_, names))
     |> sheet.selection_json
     |> simplifile.write(dir <> "/selection.json", _)
     |> result.replace_error("selection.json cannot be written"),
@@ -175,49 +188,37 @@ fn select(dir: String) -> Result(String, String) {
   Ok(census(studied, finished, qualifying, picked))
 }
 
-/// Whether a studied session has the rows the test needs.
-fn enough_rows(found: Studied) -> Bool {
-  case found {
-    Studied(rows:, ..) -> list.length(rows) >= minimum_rows
-    Unfinished | Unreadable(..) -> False
-  }
-}
-
-/// When a studied session last moved.
-fn at_of(found: Studied) -> Int {
-  case found {
-    Studied(at:, ..) -> at
-    Unfinished | Unreadable(..) -> 0
-  }
-}
-
-/// The count lines `select` prints.
+/// The count lines `select` prints, and the reason each unreadable store gave.
 fn census(
   studied: List(Studied),
-  finished: List(Studied),
-  qualifying: List(Studied),
-  picked: List(Studied),
+  finished: List(Finished),
+  qualifying: List(Finished),
+  picked: List(Finished),
 ) -> String {
-  let count = fn(items: List(Studied)) { int.to_string(list.length(items)) }
+  let count = fn(items: List(a)) { int.to_string(list.length(items)) }
   let unreadable =
-    list.filter(studied, fn(found) {
+    list.filter_map(studied, fn(found) {
       case found {
-        Unreadable(..) -> True
-        Studied(..) | Unfinished -> False
+        Unreadable(id:, reason:) -> Ok(id <> ": " <> reason)
+        Done(..) | Unfinished -> Error(Nil)
       }
     })
 
   string.join(
-    [
-      "stores copied: " <> count(studied),
-      "finished: " <> count(finished),
-      "unreadable: " <> count(unreadable),
-      "qualified, with at least "
-        <> int.to_string(minimum_rows)
-        <> " insight rows: "
-        <> count(qualifying),
-      "selected, most recent first: " <> count(picked),
-    ],
+    list.append(
+      [
+        "stores copied: " <> count(studied),
+        "finished: " <> count(finished),
+        "unreadable: " <> count(unreadable),
+      ],
+      list.append(unreadable, [
+        "qualified, with at least "
+          <> int.to_string(minimum_rows)
+          <> " insight rows: "
+          <> count(qualifying),
+        "selected, most recent first: " <> count(picked),
+      ]),
+    ),
     "\n",
   )
 }
@@ -225,39 +226,33 @@ fn census(
 /// A session's rows as the sheet shows them: at most one request's worth,
 /// newest first.
 fn sheet_session(
-  found: Studied,
+  found: Finished,
   names: Dict(String, String),
-) -> Result(sheet.SheetSession, Nil) {
-  case found {
-    Unfinished | Unreadable(..) -> Error(Nil)
-    Studied(id:, at:, rows:) ->
-      Ok(sheet.SheetSession(
-        id:,
-        name: dict.get(names, id) |> result.unwrap(id),
-        at:,
-        rows: list.take(rows, request.standard.max_rows)
-          |> list.map(fn(candidate) {
-            sheet.SheetRow(
-              key: candidate.row.key,
-              kind: lifted.kind_word(candidate.row),
-              head: candidate.row.head,
-            )
-          }),
-      ))
-  }
+) -> sheet.SheetSession {
+  sheet.SheetSession(
+    id: found.id,
+    name: dict.get(names, found.id) |> result.unwrap(found.id),
+    at: found.at,
+    rows: list.take(found.rows, request.standard.max_rows)
+      |> list.map(fn(candidate) {
+        sheet.SheetRow(
+          key: candidate.row.key,
+          kind: lifted.kind_word(candidate.row),
+          head: candidate.row.head,
+        )
+      }),
+  )
 }
 
 /// Reads one copied store.
 fn study(path: String) -> Studied {
+  let id = session_id(path)
+
   case open_lane(path) {
-    Error(reason) -> Unreadable(reason)
+    Error(reason) -> Unreadable(id, reason)
     Ok(None) -> Unfinished
     Ok(Some(opened)) ->
-      Studied(
-        id: session_id(path),
-        at: opened.at,
-        rows: lane.candidates(opened.pieces),
-      )
+      Done(Finished(id:, at: opened.at, rows: lane.candidates(opened.pieces)))
   }
 }
 
@@ -344,7 +339,9 @@ fn failed(read: Result(a, e), what: String) -> Result(a, String) {
 /// Every session's name, from the copied catalogue: the owner's rename when
 /// there is one, and the name the session was created with otherwise.
 fn session_names(path: String) -> Result(Dict(String, String), String) {
-  use db <- result.try(sqlight.open(path) |> failed("catalogue"))
+  use db <- result.try(
+    sqlight.open("file:" <> path <> "?mode=ro") |> failed("catalogue"),
+  )
   let named =
     sqlight.query(
       "select s.session_id, coalesce(n.name, s.name) from catalogue_sessions s
@@ -364,25 +361,12 @@ fn session_names(path: String) -> Result(Dict(String, String), String) {
 
 // --- sheet -----------------------------------------------------------------
 
-/// Writes the sheet the owner marks and its machine-readable twin.
+/// Writes the sheet the owner marks and its machine-readable twin, unless a
+/// sheet is already there.
 fn write_sheet(dir: String) -> Result(String, String) {
   use selection <- result.try(read_selection(dir))
-  use _ <- result.try(
-    simplifile.write(dir <> "/label-sheet.md", sheet.render(selection))
-    |> failed("label-sheet.md"),
-  )
-  use _ <- result.try(
-    simplifile.write(dir <> "/rows.json", sheet.rows_json(selection))
-    |> failed("rows.json"),
-  )
 
-  Ok(
-    "sheet written for "
-    <> int.to_string(list.length(selection))
-    <> " sessions: "
-    <> dir
-    <> "/label-sheet.md",
-  )
+  guard.write_sheet(dir, selection)
 }
 
 /// The sessions `select` chose.
@@ -450,7 +434,7 @@ fn role_of(name: String) -> Result(model.Role, String) {
 }
 
 /// One session's request, replayed from its record when the record holds the
-/// same prompt and sent to the model otherwise.
+/// same prompt, role and model, and sent to the model otherwise.
 fn run_session(
   dir: String,
   role_name: String,
@@ -478,11 +462,30 @@ fn run_session(
     },
   )
   let built = request.build(found.pieces, candidates, request.standard)
+  let asked = list.length(built.rows)
   let path = dir <> "/runs/" <> chosen.id <> ".json"
 
-  case replayed(path, built.prompt) {
-    True -> Ok(chosen.id <> ": replayed, no spend")
-    False ->
+  case held_record(path, built.prompt, role_name, identity) {
+    Some(held) ->
+      case answer.parse(held.answer, asked) {
+        Ok(labels) ->
+          Ok(
+            chosen.id
+            <> ": replayed, no spend, "
+            <> int.to_string(list.length(labels))
+            <> " of "
+            <> int.to_string(asked)
+            <> " labelled",
+          )
+        Error(refusal) ->
+          Ok(
+            chosen.id
+            <> ": replayed, no spend, REFUSED: "
+            <> answer.describe(refusal)
+            <> ". Delete the record to retry.",
+          )
+      }
+    None ->
       summarizer.ask(built.prompt)
       |> result.map_error(fn(failure) { chosen.id <> ": " <> failure.reason })
       |> result.try(fn(reply) {
@@ -497,18 +500,45 @@ fn run_session(
         |> record.encode
         |> simplifile.write(path, _)
         |> failed(path)
-        |> result.replace(chosen.id <> ": answered")
+        |> result.replace(
+          chosen.id <> ": answered, " <> readable(reply.text, asked),
+        )
       })
   }
 }
 
-/// Whether a record on disk holds exactly this prompt.
-fn replayed(path: String, prompt: String) -> Bool {
-  case
-    simplifile.read(path) |> result.try(fn(text) { Ok(record.decode(text)) })
-  {
-    Ok(Ok(held)) -> held.prompt == prompt
-    Ok(Error(_)) | Error(_) -> False
+/// Whether an answer was usable, in words that show no weight, so the owner's
+/// marks stay blind to what the model said.
+fn readable(text: String, asked: Int) -> String {
+  case answer.parse(text, asked) {
+    Ok(labels) ->
+      int.to_string(list.length(labels))
+      <> " of "
+      <> int.to_string(asked)
+      <> " labelled"
+    Error(refusal) -> "REFUSED: " <> answer.describe(refusal)
+  }
+}
+
+/// The record on disk when it was made for exactly this prompt, role and
+/// model. Any other record is stale and is asked for again.
+fn held_record(
+  path: String,
+  prompt: String,
+  role_name: String,
+  identity: String,
+) -> Option(record.Record) {
+  case simplifile.read(path) {
+    Error(_) -> None
+    Ok(text) ->
+      case record.decode(text) {
+        Ok(held)
+          if held.prompt == prompt
+          && held.role == role_name
+          && held.model == identity
+        -> Some(held)
+        Ok(_) | Error(_) -> None
+      }
   }
 }
 
@@ -517,23 +547,28 @@ fn replayed(path: String, prompt: String) -> Bool {
 /// Scores the recorded answers against the owner's marks.
 fn verdict(dir: String) -> Result(String, String) {
   use selection <- result.try(read_selection(dir))
-  use counts_text <- result.try(
+  use numbers_text <- result.try(
     simplifile.read(dir <> "/rows.json") |> failed("rows.json"),
   )
-  use counts <- result.try(sheet.row_counts(counts_text))
+  use numbers <- result.try(sheet.row_numbers(numbers_text))
   use marked <- result.try(
     simplifile.read(dir <> "/label-sheet.md") |> failed("label-sheet.md"),
   )
   let marks = sheet.marks(marked)
   use judged <- result.try(
-    list.try_map(selection, judge(dir, counts, marks, _)),
+    list.try_map(selection, judge(dir, numbers, marks, _)),
   )
   let refused = list.count(judged, fn(each) { each.1 == Refused })
+  let models =
+    list.map(judged, fn(each) { each.2 })
+    |> list.unique
+    |> list.sort(string.compare)
 
   Ok(
-    score.render(score.report(list.map(judged, fn(each) { each.0 })))
-    <> "\n\nAnswers refused whole (scored as all normal): "
-    <> int.to_string(refused),
+    score.render(score.report(list.map(judged, fn(each) { each.0 })), [
+      "Models: " <> string.join(models, ", "),
+      "Answers refused whole (scored as all normal): " <> int.to_string(refused),
+    ]),
   )
 }
 
@@ -543,32 +578,28 @@ type Reading {
   Refused
 }
 
-/// One session's rows, marked and weighed.
+/// One session's rows, marked and weighed, after the selection, `rows.json`,
+/// the record and the sheet are shown to agree on which rows these are.
 fn judge(
   dir: String,
-  counts: Dict(String, Int),
+  numbers: Dict(String, Dict(String, Int)),
   marks: Dict(String, List(#(Int, sheet.Mark))),
   chosen: sheet.SheetSession,
-) -> Result(#(score.Judged, Reading), String) {
-  let rows = list.length(chosen.rows)
-
-  use _ <- result.try(case dict.get(counts, chosen.id) {
-    Ok(held) if held == rows -> Ok(Nil)
-    _ -> Error(chosen.id <> ": rows.json does not number the rows selected")
-  })
+) -> Result(#(score.Judged, Reading, String), String) {
+  use held_numbers <- result.try(
+    dict.get(numbers, chosen.id)
+    |> result.replace_error(chosen.id <> ": rows.json does not list it"),
+  )
   use marked <- result.try(
     dict.get(marks, chosen.id)
     |> result.replace_error(chosen.id <> ": the sheet has no marks for it"),
   )
-  use _ <- result.try(case list.length(marked) == rows {
-    True -> Ok(Nil)
-    False -> Error(chosen.id <> ": the sheet lost or added a row")
-  })
   use text <- result.try(
     simplifile.read(dir <> "/runs/" <> chosen.id <> ".json")
     |> failed(chosen.id <> " has no record, so run it first"),
   )
   use held <- result.try(record.decode(text))
+  use _ <- result.try(guard.session(chosen, held.rows, held_numbers, marked))
   let asked = list.length(held.rows)
   let opened =
     list.filter_map(marked, fn(mark) {
@@ -585,5 +616,6 @@ fn judge(
   Ok(#(
     score.Judged(session: chosen.id, rows: score.rank(asked, labels, opened)),
     reading,
+    held.model,
   ))
 }

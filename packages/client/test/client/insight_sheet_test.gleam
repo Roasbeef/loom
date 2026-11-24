@@ -35,7 +35,13 @@ pub fn the_twin_is_keyed_by_session_and_row_key_and_counts_rows_test() {
   let text = sheet.rows_json(sessions())
 
   assert string.contains(text, "\"work:1.0\"")
-  assert sheet.row_counts(text) == Ok(dict.from_list([#("s1", 2), #("s2", 1)]))
+  assert sheet.row_numbers(text)
+    == Ok(
+      dict.from_list([
+        #("s1", dict.from_list([#("work:1.0", 1), #("2.0", 2)])),
+        #("s2", dict.from_list([#("3.0", 1)])),
+      ]),
+    )
   assert sheet.rows_json([]) == "{}"
 }
 

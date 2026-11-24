@@ -59,6 +59,12 @@ pub fn the_first_line_for_a_row_is_the_label_test() {
     == Ok([answer.Label(1, answer.High, "first")])
 }
 
+pub fn a_refusal_is_described_without_quoting_the_answer_test() {
+  assert answer.describe(answer.BadWeight("urgent"))
+    == "a weight is not high, normal or low"
+  assert !string.contains(answer.describe(answer.BadLine("secret")), "secret")
+}
+
 pub fn an_empty_answer_has_no_labels_test() {
   assert answer.parse("", 3) == Error(answer.NoLabels)
   assert answer.parse("  \n\n", 3) == Error(answer.NoLabels)

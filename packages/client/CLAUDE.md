@@ -11884,6 +11884,9 @@ only product is a verdict and a recorded run.
   ties, scores whether an "open first" row is in the top three, and asks
   `evalstat.paired_verdict` over one task per session. `render` prints the
   minimum detectable effect first.
+- `insight/guard` refuses to overwrite a marked sheet and checks, per session,
+  that the record, `rows.json` and the sheet's numbers all describe the
+  selection's rows in order, so a mark never lands on another row.
 - `insight/sheet` writes the label sheet and `rows.json`, and reads the owner's
   checkboxes back; `insight/record` is the replay file for one request and its
   answer.

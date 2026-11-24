@@ -9,17 +9,17 @@
 ////
 //// ## Flow
 ////
-//// `build` → `fixed_part` → `events` → `event` → `window` → `render_piece`
+//// `build` → `fixed_part` → `event` → `window` → `render_piece`
 ////
 //// 1. `build` takes the newest candidates, as many as the limits allow. The
 ////    newest are kept because the request cap drops the oldest.
 //// 2. `fixed_part` writes the instructions and the final assistant message.
 ////    Their size is subtracted from the request cap first, so the rows share
-////    what is left and the cap cannot be spent before a row is reached.
-//// 3. `events` gives each row an equal share of that room. A row whose text
-////    outgrows its share is clipped from the middle, and a row that no longer
-////    fits is left out together with every older one, which the next request
-////    would label.
+////    what is left, and the shares add up to no more than the request cap.
+//// 3. `build` gives each row an equal share of that room, so no row is dropped
+////    for coming after a large one. `event` clips within the share: the row's
+////    own piece keeps half of it and its neighbours divide the rest, so a
+////    neighbour never pushes the own piece out.
 //// 4. `window` renders the pieces within the limits' reach of the row's own
 ////    piece, and `render_piece` turns each into text under the advisor's
 ////    rules: no reasoning, and every block cut from the middle at the block
@@ -124,9 +124,11 @@ pub fn build(
       limits:,
       ended_at: option.map(ended, fn(held) { held.0 }),
       each:,
-      room:,
     )
-  let shown = events(frame, wanted, 1, [])
+  let shown =
+    list.index_map(wanted, fn(candidate, index) {
+      #(candidate, event(frame, candidate, index + 1))
+    })
 
   Request(
     prompt: fixed <> string.join(list.map(shown, fn(event) { event.1 }), "\n\n"),
@@ -200,36 +202,15 @@ type Frame {
     /// The index of the piece holding the run's last assistant message, which
     /// the request already shows once and a window leaves out.
     ended_at: Option(Int),
-    /// The bytes one event may take.
+    /// The bytes one event may take. Every row of the request gets an equal
+    /// share of what the instructions leave, so no row is dropped for coming
+    /// after a large one.
     each: Int,
-    /// The bytes all events may take together.
-    room: Int,
   )
 }
 
-/// The numbered events that fit, each with the row it stands for.
-fn events(
-  frame: Frame,
-  wanted: List(Candidate),
-  number: Int,
-  kept: List(#(Candidate, String)),
-) -> List(#(Candidate, String)) {
-  // Rows are taken newest first until the list or the room runs out.
-  case wanted {
-    [] -> list.reverse(kept)
-    [next, ..rest] -> {
-      let text = event(frame, next, number)
-      let used = list.fold(kept, 0, fn(sum, held) { sum + size(held.1) })
-
-      // A row that no longer fits ends the list. Every older row is further
-      // from the owner's attention, so none is skipped to make room for it.
-      case used + size(text) > frame.room {
-        True -> list.reverse(kept)
-        False -> events(frame, rest, number + 1, [#(next, text), ..kept])
-      }
-    }
-  }
-}
+/// The bytes the words "[this event]" and their line break add.
+const marker_bytes = 13
 
 /// One event as the model reads it: its number, its kind word and head, and
 /// its window.
@@ -241,40 +222,72 @@ fn event(frame: Frame, candidate: Candidate, number: Int) -> String {
     <> lifted.kind_word(candidate.row)
     <> " · "
     <> candidate.row.head
-  let text = title <> "\n" <> window(frame, candidate.at)
+  let from = int.max(0, candidate.at - frame.limits.reach)
+  let last =
+    int.min(list.length(frame.lane) - 1, candidate.at + frame.limits.reach)
+  let pieces = last - from + 1
 
-  advisorslice.middle_clip(text, int.max(0, frame.each - clip_marker))
+  // What is left of the share after the title, the own-piece marker and the
+  // cut notes each piece may carry is split between the pieces. The row's own
+  // piece keeps half, because it is what the head describes, and its
+  // neighbours share the rest, so a neighbour can never push the own piece out.
+  let spare =
+    int.max(
+      0,
+      frame.each - size(title) - 1 - marker_bytes - pieces * { clip_marker + 1 },
+    )
+  let context = pieces - 1
+
+  // With no neighbours the own piece takes the whole share.
+  let own = case context {
+    0 -> spare
+    _ -> spare / 2
+  }
+
+  // The neighbours divide what the own piece left.
+  let around = case context {
+    0 -> 0
+    _ -> { spare - own } / context
+  }
+
+  title <> "\n" <> window(frame, candidate.at, from, last, own, around)
 }
 
-/// The pieces within `reach` of the row's own, as text, with the row's own
-/// marked.
-fn window(frame: Frame, at: Int) -> String {
-  let from = int.max(0, at - frame.limits.reach)
-
+/// The pieces from `from` to `last` as text, with the row's own marked. The
+/// own piece is cut to `own` bytes and each other piece to `around`.
+fn window(
+  frame: Frame,
+  at: Int,
+  from: Int,
+  last: Int,
+  own: Int,
+  around: Int,
+) -> String {
   frame.lane
   |> list.drop(from)
-  |> list.take(at + frame.limits.reach - from + 1)
+  |> list.take(last - from + 1)
   |> list.index_map(fn(piece, offset) {
     let index = from + offset
+    let text = render_piece(piece, frame.limits.block_bytes)
 
-    // The run's last message is already in the request, and the row's own
-    // piece is marked so the model knows which piece the head belongs to.
+    // The row's own piece is always shown. The run's last message is already
+    // in the request, so another piece that holds it is left out.
     case index == at, Some(index) == frame.ended_at {
-      _, True -> ""
-      True, False -> marked(render_piece(piece, frame.limits.block_bytes))
-      False, False -> render_piece(piece, frame.limits.block_bytes)
+      True, _ -> marked(advisorslice.middle_clip(text, own), text)
+      False, True -> ""
+      False, False -> advisorslice.middle_clip(text, around)
     }
   })
   |> list.filter(fn(text) { text != "" })
   |> string.join("\n")
 }
 
-/// A piece's text marked as the event's own, or nothing for a piece with no
-/// text.
-fn marked(text: String) -> String {
-  case text {
+/// A piece's cut text marked as the event's own. A piece that rendered as
+/// nothing stays nothing, since the model has no words to tie the head to.
+fn marked(cut: String, whole: String) -> String {
+  case whole {
     "" -> ""
-    _ -> "[this event]\n" <> text
+    _ -> "[this event]\n" <> cut
   }
 }
 

@@ -85,6 +85,14 @@ pub fn a_window_reaches_two_pieces_either_side_test() {
   assert string.contains(asked.prompt, "turn 0: run the build")
 }
 
+pub fn every_row_keeps_its_own_piece_whatever_surrounds_it_test() {
+  let asked = built(8, string.repeat("a", 3000))
+
+  assert list.length(asked.rows) == 8
+  assert list.length(string.split(asked.prompt, "[this event]")) == 9
+  assert notes.byte_size(asked.prompt) <= request.standard.request_bytes
+}
+
 pub fn a_session_with_no_rows_asks_about_none_test() {
   assert request.build([], [], request.standard).rows == []
 }

@@ -111,8 +111,20 @@ pub type Report {
     high_rows: Int,
     /// How many of those the owner marked "fine to skip".
     high_skipped: Int,
+    /// The positions, from one, of the sessions with no "open first" row.
+    /// Such a session passes neither ordering, so it may be one the owner
+    /// never marked.
+    unmarked: List(Int),
+    /// The positions of the sessions with `crowded_from` or more "open first"
+    /// rows. Newest first passes such a session by construction.
+    crowded: List(Int),
   )
 }
+
+/// How many "open first" rows make a session pass newest first whatever the
+/// model does: six rows leave at most two of eight skippable, so any three
+/// rows include one.
+pub const crowded_from = 6
 
 /// The rows of a session as the owner marked them and the model weighed
 /// them, newest first.
@@ -281,7 +293,19 @@ pub fn report(sessions: List(Judged)) -> Report {
     high_skipped: list.count(high, fn(ranked) {
       ranked.open_first == FineToSkip
     }),
+    unmarked: positions(sessions, fn(opened) { opened == 0 }),
+    crowded: positions(sessions, fn(opened) { opened >= crowded_from }),
   )
+}
+
+/// The positions, from one, of the sessions whose count of "open first" rows
+/// satisfies `wanted`.
+fn positions(sessions: List(Judged), wanted: fn(Int) -> Bool) -> List(Int) {
+  list.index_map(sessions, fn(judged, index) {
+    #(index + 1, list.count(judged.rows, fn(r) { r.open_first == OpenFirst }))
+  })
+  |> list.filter(fn(entry) { wanted(entry.1) })
+  |> list.map(fn(entry) { entry.0 })
 }
 
 /// The minimum detectable effect a verdict was read against, when the plan
@@ -302,14 +326,17 @@ pub fn mde(decided: Verdict) -> Result(Float, Nil) {
   }
 }
 
-/// The report as text, the minimum detectable effect first.
+/// The report as text, the minimum detectable effect first, then `notes`, then
+/// the sessions the owner may have left unmarked or marked too freely, and then
+/// the verdict. Everything that bears on whether the verdict can be trusted
+/// comes before it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.starts_with(score.render(score.report([])), "Minimum detectable effect")
+/// assert string.starts_with(score.render(score.report([]), []), "Minimum detectable effect")
 /// ```
-pub fn render(report: Report) -> String {
+pub fn render(report: Report, notes: List(String)) -> String {
   let sessions = list.length(report.outcomes)
   let passed = fn(found: fn(Outcome) -> Int) {
     list.count(report.outcomes, fn(outcome) { found(outcome) > 0 })
@@ -323,25 +350,44 @@ pub fn render(report: Report) -> String {
 
   [
     minimum_line(report.verdict),
-    "Verdict: " <> describe(report.verdict),
-    "Sessions: " <> int.to_string(sessions),
-    "Sessions with an open-first row in the top three: newest first "
-      <> int.to_string(passed(fn(outcome) { outcome.baseline_hits }))
-      <> ", triage "
-      <> int.to_string(passed(fn(outcome) { outcome.candidate_hits })),
-    "Mean share of the top three that is open first: newest first "
-      <> percent(mean(fn(outcome) { outcome.baseline_hits }))
-      <> ", triage "
-      <> percent(mean(fn(outcome) { outcome.candidate_hits })),
-    "High rows the owner would skip: "
-      <> int.to_string(report.high_skipped)
-      <> " of "
-      <> int.to_string(report.high_rows),
-    "",
-    "Per session (open-first rows in the top three, newest first / triage):",
-    ..list.map(report.outcomes, session_line)
+    ..list.append(notes, [
+      "Sessions with no open-first row: " <> listed(report.unmarked),
+      "Sessions with "
+        <> int.to_string(crowded_from)
+        <> " or more open-first rows: "
+        <> listed(report.crowded),
+      "Verdict: " <> describe(report.verdict),
+      "Sessions: " <> int.to_string(sessions),
+      "Sessions with an open-first row in the top three: newest first "
+        <> int.to_string(passed(fn(outcome) { outcome.baseline_hits }))
+        <> ", triage "
+        <> int.to_string(passed(fn(outcome) { outcome.candidate_hits })),
+      "Mean share of the top three that is open first: newest first "
+        <> percent(mean(fn(outcome) { outcome.baseline_hits }))
+        <> ", triage "
+        <> percent(mean(fn(outcome) { outcome.candidate_hits })),
+      "High rows the owner would skip: "
+        <> int.to_string(report.high_skipped)
+        <> " of "
+        <> int.to_string(report.high_rows),
+      "",
+      "Per session (open-first rows in the top three, newest first / triage):",
+      ..list.map(report.outcomes, session_line)
+    ])
   ]
   |> string.join("\n")
+}
+
+/// A count and the session numbers behind it, as `2 (sessions 3, 7)`.
+fn listed(positions: List(Int)) -> String {
+  case positions {
+    [] -> "0"
+    _ ->
+      int.to_string(list.length(positions))
+      <> " (sessions "
+      <> string.join(list.map(positions, int.to_string), ", ")
+      <> ")"
+  }
 }
 
 /// The first line of a report: the minimum detectable effect.
@@ -363,7 +409,7 @@ fn describe(decided: Verdict) -> String {
       <> two_places(effect)
       <> " (p "
       <> two_places(p)
-      <> "). The triage order beat newest first."
+      <> "). The triage order beat newest first. Check the high-rows line below."
     verdict.Harmed(effect:, p:, ..) ->
       "Harmed by "
       <> two_places(effect)

@@ -124,11 +124,13 @@ pub fn a_model_that_labels_nothing_cannot_improve_on_newest_first_test() {
 }
 
 pub fn the_report_prints_the_minimum_detectable_effect_first_test() {
-  let text = score.render(score.report(judged_sessions()))
+  let text = score.render(score.report(judged_sessions()), ["a note"])
   let assert [first, ..] = string.split(text, "\n")
 
   assert string.starts_with(first, "Minimum detectable effect: ")
   assert string.contains(text, "Verdict: Improved")
+  assert string.contains(text, "Check the high-rows line below.")
+  assert string.contains(text, "a note")
   assert string.contains(text, "High rows the owner would skip: 6 of 18")
 }
 
@@ -170,4 +172,18 @@ pub fn the_triage_order_is_a_permutation_with_a_stable_top_test() {
       == list.map(rows, fn(r) { r.row })
     assert score.triage_order(ordered) == ordered
   })
+}
+
+pub fn unmarked_and_crowded_sessions_are_listed_above_the_verdict_test() {
+  let sessions = [
+    score.Judged("a", score.rank(8, [], [])),
+    score.Judged("b", score.rank(8, [], [1])),
+    score.Judged("c", score.rank(8, [], [1, 2, 3, 4, 5, 6])),
+  ]
+  let text = score.render(score.report(sessions), [])
+  let assert [_, unmarked, crowded, verdict_line, ..] = string.split(text, "\n")
+
+  assert unmarked == "Sessions with no open-first row: 1 (sessions 1)"
+  assert crowded == "Sessions with 6 or more open-first rows: 1 (sessions 3)"
+  assert string.starts_with(verdict_line, "Verdict: ")
 }

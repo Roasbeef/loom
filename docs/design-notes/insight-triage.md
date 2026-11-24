@@ -584,7 +584,9 @@ and the owner's labels. If it fails, stop. The script is
 sheet from copies of the owner's stores, and `run` and `verdict` send the
 section 3.2 request and print `evalstat`'s verdict with its minimum detectable
 effect first. The sheet covers each session's newest eight rows, the rows one
-request carries, so both orderings rank the same rows.
+request carries, so both orderings rank the same rows. The request gives each
+row an equal share of the room the instructions leave and clips within the
+share, keeping each row's own piece, instead of dropping rows past the cap.
 
 **Slice 1: labels on lifted rows, off by default.** The `triage` role, the
 daemon-side classifier call, the request and parser, the `triage/` cells, the

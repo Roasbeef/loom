@@ -234,20 +234,21 @@ pub fn read_selection(text: String) -> Result(List(SheetSession), String) {
   |> result.map_error(fn(_) { "the selection file does not hold sessions" })
 }
 
-/// How many rows each session of a `rows_json` text numbers.
+/// The number `rows_json` gave each row, by session and then by the row's key.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert sheet.row_counts("{\"s\":{\"k\":{\"n\":1,\"kind\":\"Failed\",\"head\":\"h\"}}}")
-///   == Ok(dict.from_list([#("s", 1)]))
+/// assert sheet.row_numbers("{\"s\":{\"k\":{\"n\":1,\"kind\":\"Failed\",\"head\":\"h\"}}}")
+///   == Ok(dict.from_list([#("s", dict.from_list([#("k", 1)]))]))
 /// ```
-pub fn row_counts(text: String) -> Result(Dict(String, Int), String) {
-  let row = decode.field("n", decode.int, fn(_) { decode.success(Nil) })
+pub fn row_numbers(
+  text: String,
+) -> Result(Dict(String, Dict(String, Int)), String) {
+  let row = decode.field("n", decode.int, fn(number) { decode.success(number) })
   let session = decode.dict(decode.string, row)
 
   json.parse(text, decode.dict(decode.string, session))
-  |> result.map(dict.map_values(_, fn(_, rows) { dict.size(rows) }))
   |> result.map_error(fn(_) {
     "rows.json does not hold sessions of numbered rows"
   })

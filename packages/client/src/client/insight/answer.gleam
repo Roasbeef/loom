@@ -76,6 +76,23 @@ pub fn weight_word(weight: Weight) -> String {
   }
 }
 
+/// Why an answer was refused, in words that quote none of it, so a report that
+/// prints them shows nothing the owner has not yet marked against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert answer.describe(answer.NoLabels) == "no line labels a row the request issued"
+/// ```
+pub fn describe(refusal: Refusal) -> String {
+  case refusal {
+    BadLine(..) -> "a line is not in the form number, weight, reason"
+    BadWeight(..) -> "a weight is not high, normal or low"
+    ControlCharacter(..) -> "a line holds a control character"
+    NoLabels -> "no line labels a row the request issued"
+  }
+}
+
 /// Reads the model's answer to a request that numbered `rows` rows.
 ///
 /// ## Examples
