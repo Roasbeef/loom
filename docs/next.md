@@ -6,6 +6,14 @@ on November 21. The session hot-path section was re-baselined on November 13
 against source `3e28c16f4`. Other sections retain their upstream baselines;
 this scoped update does not revalidate their hosted CI or live status.
 
+## Checkpoint threshold hook
+
+The [fixed replay](review/checkpoint-threshold-replay-2026-11-23.md) moves the
+threshold hook to the running checkpoint passes that can consume its answer.
+The held-assistant fixture returned the same planner action and used seven
+SQLite queries for reload and plan, down from eight. The running-checkpoint
+case retains its hook and still responds to a crossed threshold.
+
 ## Bounded inbox and snapshot read replay
 
 The [fixed replay](review/bounded-read-replay-2026-11-23.md) follows three
