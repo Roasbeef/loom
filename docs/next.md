@@ -935,6 +935,21 @@ findings. Require final-head hosted CI and Linux signoff before readiness;
 their current outcomes belong in the PR verification record.
 No deployment, restart or live model call was made.
 
+### In-stream capacity errors
+
+An HTTP 200 Responses stream can still fail with `server_is_overloaded` or
+`policy_capacity_unavailable`. Loom ends the run on either code unless the
+failure event carries valid retry advice. A direct `error` event can carry
+advice under `error.headers` or, as a fallback, at the event level. A
+`response.failed` event uses `response.error.headers`. The enclosing HTTP
+200 headers do not authorize a retry. Other failures keep their prior policy.
+
+The durable retry scheduler waits at least as long as the advice and permits
+at most five retries, subject to any lower configured budget. The gateway
+does not switch models before that wait. This follows Codex's decision to
+require advice for streamed capacity errors, while retaining Loom's numeric
+header parser and local backoff floor.
+
 ## Responses completion and returned identity (issue #1139)
 
 Source baseline: `6a2d8f4b4` on `codex/responses-done-arguments`, over main
