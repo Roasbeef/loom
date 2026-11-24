@@ -50,8 +50,8 @@ question that only the owner can settle.
 
 **Choosing an executor.** `sessions.create` decodes `executor` and `pool` as
 exclusive names and then reads `workspace` as a registered name, not a path
-(`created_workspace`, `client/daemon/protocol.gleam:1619`; `executor_field`,
-`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1600`).
+(`created_workspace`, `client/daemon/protocol.gleam:1628`; `executor_field`,
+`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1609`).
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:96`). The web home is told only the names
