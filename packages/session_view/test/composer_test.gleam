@@ -68,3 +68,16 @@ pub fn a_lead_and_a_fence_from_different_injectors_do_not_pair_test() {
     <> "\n- (fact) a\n```"
   assert composer.memory_context_lines(digest) == Some(1)
 }
+
+// The answer to an ask runs past the line threshold, and is still the owner's
+// own few lines: it is drawn whole, not folded as a large paste.
+pub fn an_asks_answer_is_never_folded_as_a_paste_test() {
+  let answer =
+    "Answer to your ask ask-3f9c01a2b4.\n\n1. Retry?\n   Yes\n\n2. Which branch?\n   \"topic\"\n\n3. Files?\n   \"a\", \"b\"\n\n4. Anything else?\n   Other (not one of the options): later"
+  assert composer.transcript_text(answer, False) == answer
+  assert composer.transcript_text(answer, True) == answer
+
+  // The same length under another first line is still a paste.
+  let paste = string.replace(answer, "Answer to your ask", "Notes on the ask")
+  assert composer.transcript_text(paste, False) != paste
+}

@@ -179,6 +179,35 @@ pub fn is_answer_to(text: String, id: String) -> Bool {
   string.starts_with(text, answer_lead(id))
 }
 
+/// Whether `text` is a prompt `prompt_text` made: its first line names an ask.
+///
+/// A client that draws the transcript uses this to show an answer whole. The
+/// answer is a few short lines the owner wrote, and a client that folded it
+/// like a large paste would show the answer as one clipped row, which is the
+/// opposite of what protocol-change/130 words it for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attention_answer.is_prompt("Answer to your ask ask-3f9c01a2b4.\n\n1. Retry?\n   Yes")
+/// assert !attention_answer.is_prompt("Answer to your question.")
+/// ```
+pub fn is_prompt(text: String) -> Bool {
+  // Only the first line is read, so the person's own text cannot change it.
+  let first = case string.split_once(text, "\n") {
+    Ok(#(line, _)) -> line
+    Error(Nil) -> text
+  }
+
+  // The first line is the sentence `prompt_text` opens with and an ask id.
+  case first {
+    "Answer to your ask " <> rest ->
+      string.ends_with(rest, ".")
+      && attention.is_ask_id(string.drop_end(rest, 1))
+    _ -> False
+  }
+}
+
 /// One answer as the words under its question.
 fn answer_words(value: Value) -> String {
   case value {
