@@ -106,7 +106,7 @@ read with the page's credential digest (`listed_for`
 (`ui_socket.gleam:663`), `authorized_page`
 (`client/daemon/manager.gleam:1263`)), grouped by workspace (`grouped`
 (`web_view/sessions.gleam:154`)), and a row for a running session is a button
-that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:103`),
+that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:111`),
 `target` (`web_client/switch_rule.gleam:67`)). The observer page has no
 sidebar, by ruling (051, the addendum on the session sidebar): an observer
 link is the one a person hands to someone who may only watch one session.

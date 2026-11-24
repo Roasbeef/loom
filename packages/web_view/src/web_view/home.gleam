@@ -7846,7 +7846,7 @@ fn rail_folders(model: Model) -> sidebar.Folders(Msg) {
       True -> Some(shown_folder(model))
       False -> None
     },
-    pick: Some(FolderPicked),
+    way: sidebar.Pick(FolderPicked),
     note: inbox_rule.count_note(list.length(inbox_threads(model)), saved),
     running: running_sessions(model),
   )

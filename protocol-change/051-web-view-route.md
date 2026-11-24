@@ -5586,3 +5586,36 @@ that the button is at that path and the only handler the card gained.
 
 No message, route or frame is added to the observer's list, and nothing else in this
 document changes.
+
+## Addendum: the way back to the inbox (2026-11-24)
+
+**Status**: IMPLEMENTED in the change that adds it. It adds no route, no frame,
+no event on any socket's list of admitted paths, no field on the wire and no
+capability.
+
+The rail's folders are the way to the inbox on every page that can draw one
+(#1345). Two pages drew them as text.
+
+**The admin page returns by history.** A home minted from the admin page would
+carry the admin page's deadline, at most fifteen minutes, which the addendum on
+navigation gave as the reason the page has no ticket-minting Home. That reason
+still holds, so the folders do what the bar's Home does: each is a `<loom-back>`
+(`sidebar.Return`), which sends the component nothing, mints nothing and steps
+back to the home the page was opened from. The element takes no address, and
+`class` only restyles it. The admin socket's admitted paths do not change.
+`sidebar.Folders` names what a folder does as `way`: `Pick` (a message naming the
+folder), `Return` (the admin page) or `Text` (no way).
+
+**A page opened from a link for one session has no way home, by design.** Its
+link grants one session, and `home_capability` hands such a page no capability.
+That stays, so its folders are text. The alternative considered was to hand the
+capability to the daemon's owner's operating page and mint a `Resumed` home. It
+was rejected: an owner who gives an operating link for one session to someone
+else would then also give them the owner's whole home at the operator's ceiling
+for as long as the page lives, which widens what a shared link grants, and the
+page cannot tell its owner from the person the link was passed to.
+
+**Tests.** `admin_test` pins that the admin page's folders are `<loom-back>`
+elements with no handler. `session_switch_test` pins that a session page's
+folders are buttons only where the page holds the capability. `ui_route_test`
+pins that the owner's operating link for one session is refused the way home.

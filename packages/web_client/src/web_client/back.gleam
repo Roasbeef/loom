@@ -5,10 +5,11 @@
 //// the admin page to the home the owner came from is Back. The admin page
 //// has no control that mints a ticket for the home, because a ticket minted
 //// there would carry the admin page's fifteen-minute deadline; this control
-//// mints nothing. It takes no attribute and no address, so nothing the server
-//// writes can steer it anywhere: `history.back()` reaches only a page the tab
-//// already visited, and the page it reaches connects with the nonce it kept
-//// for itself (protocol-change/051, the addendum on navigation).
+//// mints nothing. It takes no address, so nothing the server writes can steer
+//// it anywhere (a `class` only restyles it, as the admin rail's folders do):
+//// `history.back()` reaches only a page the tab already visited, and the page
+//// it reaches connects with the nonce it kept for itself (protocol-change/051,
+//// the addendum on navigation).
 ////
 //// The button's label is the element's light content, projected through a
 //// slot, so the server (or the ended document's fixed HTML) says what the

@@ -80,7 +80,10 @@
 //// press with no new rule. A session's page draws the same folders and the same
 //// "Watch live" list, since the final design gives every page one rail; its
 //// folders carry no count, because that page does not read the attention feed,
-//// and a press of one is a way back to the inbox.
+//// and a press of one is a way back to the inbox. The admin page's folders are
+//// Back controls (`Return`), since it cannot mint a home ticket without carrying
+//// its own fifteen minutes to the home; a page with no way at all draws them as
+//// text (`Text`).
 ////
 //// A row's second line is `Page.watching`'s words for the session when the page
 //// has them (`watch_rule`: `running · 2 lifted`, `aegis · asked`). A saved row
@@ -236,6 +239,24 @@ pub type Relayed(message) {
   )
 }
 
+/// What pressing one of the inbox's folders does on a page.
+pub type Way(message) {
+  /// The page sends a message naming the folder it drew the button for, and
+  /// honours it for a folder it lists (the home's, and a session page that may
+  /// go home).
+  Pick(fn(Folder) -> message)
+
+  /// Each folder is a `<loom-back>`: the browser goes one step back in the
+  /// tab's history, to the home the page was opened from, and the page sends
+  /// nothing and mints no ticket. The admin page's way, because a ticket minted
+  /// there would carry its fifteen-minute deadline to a home
+  /// (protocol-change/051, the addendum on navigation).
+  Return
+
+  /// The page has no way to the inbox, so each folder is drawn as text.
+  Text
+}
+
 /// The inbox's folders in the column, with what the counts read.
 pub type Folders(message) {
   Folders(
@@ -246,10 +267,8 @@ pub type Folders(message) {
     items: List(#(Folder, Option(Int))),
     /// The folder the list is narrowed to.
     current: Option(Folder),
-    /// A folder's press, given the folder the page drew it for, or nothing on a
-    /// page whose socket admits no press beneath the column (the admin page's),
-    /// which draws each folder as text.
-    pick: Option(fn(Folder) -> message),
+    /// What a folder's press does, which depends on the page.
+    way: Way(message),
     /// The words under the sessions: what the counts read.
     note: String,
     /// How many running sessions the page lists, for the line at the top.
@@ -590,7 +609,7 @@ fn folders_nav(folders: Folders(message)) -> Element(message) {
         let #(folder, count) = entry
 
         folder_element(
-          folders.pick,
+          folders.way,
           folder,
           case Some(folder) == folders.current {
             True -> Chosen
@@ -615,10 +634,11 @@ fn folders_nav(folders: Folders(message)) -> Element(message) {
 }
 
 /// One folder: a button where the page offers a press, with `aria-pressed` saying
-/// whether it is the one the list is narrowed to, and a block of the same shape
-/// where it does not.
+/// whether it is the one the list is narrowed to; a `<loom-back>` on the admin
+/// page, which steps back in history and carries its name as light text; and a
+/// block of the same shape where the page offers no way.
 fn folder_element(
-  pick: Option(fn(Folder) -> message),
+  way: Way(message),
   folder: Folder,
   mark: Mark,
   parts: List(Element(message)),
@@ -629,10 +649,10 @@ fn folder_element(
     _ -> attribute.none()
   }
 
-  // A page that offers no press, such as one opened with no way home, draws
-  // the folder as text.
-  case pick {
-    Some(press) ->
+  // The page chooses what a press does: send the folder it drew, step back in
+  // history, or offer nothing.
+  case way {
+    Pick(press) ->
       html.button(
         [
           attribute.type_("button"),
@@ -643,7 +663,17 @@ fn folder_element(
         ],
         parts,
       )
-    None -> html.div([attribute.class("folder"), need], parts)
+
+    // The back control's label is its light content, so the count the folder
+    // would carry is left out: this page reads none.
+    Return ->
+      element.element("loom-back", [attribute.class("folder-back")], [
+        html.text(inbox_rule.folder_words(folder)),
+      ])
+
+    // A page that offers no press, such as one opened with no way home, draws
+    // the folder as text.
+    Text -> html.div([attribute.class("folder"), need], parts)
   }
 }
 
