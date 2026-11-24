@@ -298,7 +298,13 @@ fn content(
     review_feed.Binary -> notice("Binary file: named, with no hunks.")
     review_feed.NoNetChange -> notice("Touched, and its content is the same.")
     review_feed.MetadataOnly ->
-      notice("Its mode or other metadata changed, with no text to show.")
+      case string.ends_with(each.path, "/") {
+        // The observation lists an untracked directory as one entry ending in
+        // a slash and reads nothing beneath it.
+        True -> notice("An untracked directory, not expanded.")
+        False ->
+          notice("Its mode or other metadata changed, with no text to show.")
+      }
     review_feed.Text ->
       html.div(
         [attribute.class("review-hunks")],

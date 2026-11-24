@@ -205,11 +205,258 @@ pub fn a_refused_spawn_is_a_failed_turn_and_a_running_one_is_not_test() {
     == []
 }
 
-pub fn a_sub_agent_result_says_only_its_outcome_test() {
+// The outcome is one word every finished child shares, so the row carries the
+// first line of what the child reported after it. A child that reported
+// nothing keeps the word alone.
+pub fn a_sub_agent_result_carries_the_first_line_of_its_report_test() {
   let assert [row] = attention.lift([returned("r1")], [])
   assert row.kind == attention.SubagentResult("sub:tests")
-  assert row.head == "passed"
+  assert row.head == "passed · report"
   assert row.hold == attention.FoldsOnceOpened
+
+  let said = fn(report) {
+    turns.Returned("r2", "sub:tests", "completed", report, turns.Primary)
+  }
+  let assert [long] =
+    attention.lift([said("\n  \nFound 3 bugs in the lane.\nSecond line.")], [])
+  assert long.head == "completed · Found 3 bugs in the lane."
+
+  let assert [bare] = attention.lift([said(" \n ")], [])
+  assert bare.head == "completed"
+}
+
+// A report is Markdown: a heading loses its marks, a rule is no line at all,
+// and a report whose breaks arrived as the characters `\n` reads as lines.
+pub fn a_result_head_reads_the_reports_words_not_its_marks_test() {
+  let head = fn(report) {
+    let piece =
+      turns.Returned("r", "sub:tests", "completed", report, turns.Primary)
+    let assert [row] = attention.lift([piece], [])
+    row.head
+  }
+  assert head("# calc\nTiny calculator.") == "completed · calc"
+  assert head("---\n\n## Summary\nbody") == "completed · Summary"
+  assert head("# calc \\n Tiny calculator.") == "completed · calc"
+  assert head("---\n***") == "completed"
+  assert head("```json\n{\"ok\": true}") == "completed · {\"ok\": true}"
+}
+
+fn failure(key: String, text: String) -> turns.Piece {
+  plain(key, transcript_line.Failure, text)
+}
+
+// Retries of one provider error lift as one row under the first response's
+// key, and the head says how many there were.
+pub fn repeated_failed_responses_lift_as_one_row_test() {
+  let same = "provider stream error (overloaded_error): try later"
+  let rows =
+    attention.lift(
+      [failure("a", same), failure("b", same), failure("c", same)],
+      [],
+    )
+  let assert [row] = rows
+  assert row.key == "a"
+  assert row.kind == attention.FailedTurn
+  assert row.head == same <> " · 3 times"
+}
+
+// A different failure, or another row between two failures, starts a new row.
+pub fn a_different_failure_or_another_row_between_keeps_rows_apart_test() {
+  let rows =
+    attention.lift(
+      [
+        failure("a", "stream error one"),
+        failure("b", "stream error one"),
+        failure("c", "stream error two"),
+        peer("p"),
+        failure("d", "stream error two"),
+      ],
+      [],
+    )
+  assert list.map(rows, fn(row) { row.key }) == ["d", "p", "c", "a"]
+  assert list.map(rows, fn(row) { row.head })
+    == [
+      "stream error two",
+      "messaged this session",
+      "stream error two",
+      "stream error one · 2 times",
+    ]
+}
+
+// Sameness is the head the reader sees: two failures that differ only past the
+// cut read the same, and the owner would see identical rows, so they are one
+// row. This is the case of provider retries that differ in a request size.
+pub fn failures_that_differ_only_after_the_cut_are_merged_test() {
+  let prefix = string.repeat("x", 200)
+  let assert [row] =
+    attention.lift(
+      [failure("a", prefix <> " one"), failure("b", prefix <> " two")],
+      [],
+    )
+  assert row.key == "a"
+  assert string.ends_with(row.head, " · 2 times")
+}
+
+// A piece that lifts no row and is not an answer, such as the bookkeeping that
+// comes with a heartbeat, does not separate two failures.
+pub fn bookkeeping_between_failures_does_not_separate_them_test() {
+  let assert [row] =
+    attention.lift(
+      [
+        failure("a", "same"),
+        turns.Missed("m", "miss"),
+        failure("b", "same"),
+      ],
+      [],
+    )
+  assert row.key == "a"
+  assert row.head == "same · 2 times"
+}
+
+// An answer that did not fail, or the owner's own prompt, ends a run: the owner
+// who has moved past a failure has not seen it come back.
+pub fn an_answer_or_a_prompt_between_failures_separates_them_test() {
+  let owner =
+    turns.Prompt(block("o", transcript_line.User, "go on"), "owner", "Me", None)
+  list.each(
+    [plain("ok", transcript_line.Assistant, "done"), owner],
+    fn(between) {
+      let rows =
+        attention.lift(
+          [failure("a", "same"), between, failure("b", "same")],
+          [],
+        )
+      assert list.map(rows, fn(row) { row.key }) == ["b", "a"]
+      assert list.all(rows, fn(row) { row.head == "same" })
+    },
+  )
+
+  // A step that worked ends it as well.
+  let rows =
+    attention.lift(
+      [
+        failure("a", "same"),
+        worked("w", 0, [step(turns.Done, [])]),
+        failure("b", "same"),
+      ],
+      [],
+    )
+  assert list.length(rows) == 2
+}
+
+// Two failures with no text read as nothing, so each stays a row of its own.
+pub fn failures_with_no_text_are_not_counted_test() {
+  let rows = attention.lift([failure("a", " "), failure("b", " ")], [])
+  assert list.length(rows) == 2
+}
+
+// A long failure is cut to leave room for the count.
+pub fn a_long_repeated_failure_keeps_the_count_test() {
+  let long = string.repeat("provider said no ", 20)
+  let assert [row] =
+    attention.lift([failure("a", long), failure("b", long)], [])
+  assert string.ends_with(row.head, " · 2 times")
+  assert string.length(row.head) <= attention.head_limit
+}
+
+fn failure_texts(index: Int, kind: Int) -> turns.Piece {
+  let key = "f" <> int.to_string(index)
+
+  // Kinds 0 and 1 are failures that differ only past the cut, so they read the
+  // same, and 2 is a different failure. 3 is a row of another kind, 4 a piece
+  // that lifts no row and is not an answer, 5 an answer that did not fail and
+  // 6 the owner's own prompt.
+  case kind % 7 {
+    0 -> failure(key, string.repeat("e", 150) <> "a")
+    1 -> failure(key, string.repeat("e", 150) <> "b")
+    2 -> failure(key, "other failure")
+    3 -> peer(key)
+    4 -> turns.Missed(key, "miss")
+    5 -> plain(key, transcript_line.Assistant, "fine")
+    _ ->
+      turns.Prompt(
+        block(key, transcript_line.User, "go on"),
+        "owner",
+        "Me",
+        None,
+      )
+  }
+}
+
+// The runs the owner should see, from the kinds alone: each is the index of
+// its first piece and how many failed responses it holds. This is the model
+// the classifier is checked against, written as a plain fold.
+fn model_runs(kinds: List(Int)) -> List(#(Int, Int)) {
+  let #(runs, _) =
+    list.index_fold(kinds, #([], None), fn(state, kind, index) {
+      let #(runs, open) = state
+      case kind % 7 {
+        0 | 1 -> grow(runs, open, 0, index)
+        2 -> grow(runs, open, 2, index)
+        3 -> #([#(index, 1), ..runs], None)
+        4 -> #(runs, open)
+        _ -> #(runs, None)
+      }
+    })
+  list.reverse(runs)
+}
+
+fn grow(
+  runs: List(#(Int, Int)),
+  open: option.Option(Int),
+  reading: Int,
+  index: Int,
+) -> #(List(#(Int, Int)), option.Option(Int)) {
+  case runs, open {
+    [#(first, count), ..earlier], Some(now) if now == reading -> #(
+      [#(first, count + 1), ..earlier],
+      open,
+    )
+    _, _ -> #([#(index, 1), ..runs], Some(reading))
+  }
+}
+
+// Collapsing never drops a distinct reading and never moves a key: the rows are
+// the model's runs, each under its first key, and a run of more than one says
+// its count. Taking the oldest pieces away, as a window that has not loaded
+// them does, changes the key of at most the first run that remains.
+pub fn collapsing_keeps_every_run_and_never_moves_a_key_test() {
+  let config =
+    qcheck.default_config()
+    |> qcheck.with_test_count(300)
+    |> qcheck.with_seed(qcheck.seed(sweep_seed))
+  let generator =
+    qcheck.generic_list(
+      elements_from: qcheck.bounded_int(from: 0, to: 13),
+      length_from: qcheck.bounded_int(0, 14),
+    )
+
+  qcheck.run(config, generator, fn(kinds) {
+    let pieces =
+      list.index_map(kinds, fn(kind, index) { failure_texts(index, kind) })
+    let rows = attention.lift(pieces, []) |> list.reverse
+    let expected = model_runs(kinds)
+
+    assert list.map(rows, fn(row) { row.key })
+      == list.map(expected, fn(run) { "f" <> int.to_string(run.0) })
+    assert list.zip(rows, expected)
+      |> list.all(fn(pair) {
+        let #(row, #(_, count)) = pair
+        count == 1
+        || string.ends_with(row.head, " · " <> int.to_string(count) <> " times")
+      })
+
+    // A window that gains older pieces moves at most one key.
+    let keys = list.map(rows, fn(row) { row.key })
+    list.index_map(pieces, fn(_, index) { index })
+    |> list.each(fn(dropped) {
+      let later =
+        attention.lift(list.drop(pieces, dropped), [])
+        |> list.reverse
+        |> list.map(fn(row) { row.key })
+      assert list.all(list.drop(later, 1), fn(key) { list.contains(keys, key) })
+    })
+  })
 }
 
 pub fn a_peer_message_claims_nothing_about_relevance_test() {
