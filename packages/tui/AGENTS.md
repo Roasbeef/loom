@@ -412,7 +412,12 @@ Five things break if changed carelessly.
   `job.Activity`; `ask_control.drain` takes its replies from the tick. Only the
   answer (`job.AnswerAsk`) uses the borrowed request, and a failed one reaches
   `ask_control.failed` through `finish_control_failure` while `Board.phase` is
-  `Sending`. A read that counts no open ask rests `idle_rest_ms` (30 s), one that counts an ask `rest_ms` (4 s), and the end of the last run cuts either short (`ask_control.watch`); a reply for a session the terminal left clears the stale card with a repaint, and quit cancels a running read (`submit.quit`). A failed read rests ten seconds and says nothing, and a read that
+  `Sending`. A read that counts no open ask rests `idle_rest_ms` (15 s), one
+  that counts an ask `rest_ms` (4 s), and the end of the last run cuts either
+  short (`ask_control.watch`); a `code_mode` ask or a sub-strand's ask waits out
+  the rest. A reply for a session the terminal left clears the stale card with
+  a repaint, and quit cancels a running read (`submit.quit`). A failed read
+  rests ten seconds and says nothing, and a read that
   fails on any ask fails whole (`ask_jobs.read_asks`), so the board keeps its
   drafts. A send that finds the request busy keeps the draft.
 - **An observer sees no controls.** `may_answer` in the `attention.read` reply

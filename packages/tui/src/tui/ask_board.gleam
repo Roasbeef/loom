@@ -59,13 +59,14 @@ pub const rest_ms = 4000
 /// milliseconds.
 ///
 /// Every read opens a connection of its own, and most of the time a terminal
-/// has nothing to ask. An ask is created when an agent's run ends, and
-/// `ask_control.watch` cuts the rest short on that edge, so the long rest only
-/// delays an ask that arrives without a local run ending, such as one a peer
-/// or another client raised. Thirty seconds is the longest that wait should
-/// be: past it a card that appears feels missing, and below it an idle
-/// terminal still reconnects several times a minute.
-pub const idle_rest_ms = 30_000
+/// has nothing to ask. The `ask` tool ends the run that calls it, and
+/// `ask_control.watch` cuts the rest short when the session's last running
+/// strand stops, so a plain ask is read at once. Three asks wait out the rest:
+/// one a `code_mode` program raises, since its run goes on; one a sub-strand
+/// raises while another strand keeps running, since no edge is seen; and one a
+/// peer or another client raised. Fifteen seconds bounds that wait, and an idle
+/// terminal reconnects four times a minute instead of fifteen.
+pub const idle_rest_ms = 15_000
 
 /// How long the board rests after a request failed, in milliseconds.
 pub const failure_rest_ms = 10_000

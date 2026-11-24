@@ -30,8 +30,9 @@
 ////
 //// A read that finds no open ask rests the poll for `ask_board.idle_rest_ms`,
 //// and one that finds an ask for `ask_board.rest_ms`. A read that fails rests
-//// the poll for `ask_board.failure_rest_ms` and says nothing, because an older daemon or a saved session cannot read asks and
-//// that is not an error the owner can act on. A send that fails says so, since
+//// the poll for `ask_board.failure_rest_ms` and says nothing, because an
+//// older daemon or a saved session cannot read asks and that is not an error
+//// the owner can act on. A send that fails says so, since
 //// the answer may have arrived.
 
 import core/json
