@@ -598,12 +598,19 @@ the answer says the same thing. A prompt the gateway queued in memory behind an
 open run is the hub's custody, as `client/daemon/attention_door` records, and the
 hold does not change it.
 
-**Bounds.** A strand holds at most 16 items (`api.next_run_limit`). A send past
-that is refused with `QueueRejected(NextRunFull(16))`, which a schedule treats
-like any other refusal and attempts again on a later tick, and which an
-`agent_send` reports to the model. Without a bound a minutely schedule would
-queue 1440 items a day for as long as the owner took to answer, and the next
-run would place all of them.
+**Bounds.** A strand holds at most 32 items (`api.next_run_limit`), the bound
+on open asks. A send past that is refused with `QueueRejected(NextRunFull(32))`
+and writes nothing, so a marked send leaves its mark unspent. What happens next
+depends on the sender. A schedule treats the refusal like any other and attempts
+again on a later tick, and an `agent_send` reports it to the model. The job and
+execution completion notices (`client/jobs`, `client/async_runs`) drop a failed
+delivery, as they do for every error, and nothing re-derives them, because the
+finished record is terminal and `job_poll` or `join` reads it. A notice refused
+at the limit is therefore lost as a wake and not as a result. The number covers
+the four live jobs a strand may have and a rationed advisor with room to spare,
+and keeps what the next run places near 200 KB, since a notice quotes at most
+about 5 KB. Without a bound a minutely schedule would queue 1440 items a day for
+as long as the owner took to answer, and the next run would place all of them.
 
 **What is not held.** The hold covers the doors named above. It does not cover
 `api.steer_async`, which carries async execution custody, or a send under that
@@ -633,9 +640,18 @@ never a message held by a read nobody could confirm.
   delivers before it settles (`client/daemon/attention_door`), and a settling
   write that fails or loses a race returns `Unsettled` after the prompt has
   reached the strand. The record stays open, so the strand holds automatic
-  inputs, up to the queue's 16 items, and the reminder returns once compaction
+  inputs, up to the queue's 32 items, and the reminder returns once compaction
   drops the answer from the request. The owner's second answer settles it, as
   119 already says the later answer stands.
+- The hold applies to every run of a strand while an ask of it is open, and not
+  only to the tail of the run that made the ask. If the owner says "continue"
+  and that run works for an hour, an advisor block, a rule injection, peer mail,
+  a job or execution completion notice and a child's mail are all held, their
+  marks are spent, and none of them reaches the run that is working. They are
+  placed at the next run's start. The advisor's block is the most visible case,
+  since it exists to interrupt a run in progress. Narrowing the hold to the
+  asking run's tail would need the planner to say that a run ended on a
+  terminating call, which it does not record, and that is not done.
 - The owner's "continue" still starts a run, and the model reads the reminder
   rather than being stopped. The hold prevents the agents from waking the strand,
   and the reminder tells the strand what its question's state is. It does not

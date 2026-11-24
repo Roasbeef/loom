@@ -418,7 +418,7 @@ extended by the M3 runtime wave.
   the message is queued with `queue.enqueue_next_run`, in one commit with the
   mark if there is one, the doorbell is not rung, and the strand's next run
   places the held items ahead of its own prompt. A store that will not answer
-  reads as no ask. The queue holds `next_run_limit` (16) items and refuses the
+  reads as no ask. The queue holds `next_run_limit` (32) items and refuses the
   next with `queue.NextRunFull`. The owner's own input reaches the strand
   through `prompt`, `steer` and `follow_up`, which this does not touch, and a
   relayed page's prompt through `send_as_owner_marking`, which never holds

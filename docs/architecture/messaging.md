@@ -205,7 +205,7 @@ message to a relayed session goes through `send_as_owner_marking`, which never
 holds, and `steer_marking` holds only for an open run. The strand's next run places
 held items, in order, ahead of its own prompt. That run is started by the
 owner's message or by the answer, neither of which comes through
-`send_to_strand`. The queue holds at most 16 items, and a send past that is
+`send_to_strand`. The queue holds at most 32 items, and a send past that is
 refused with `NextRunFull`. A mark spends in the same commit as the hold, so
 a send that fires at most once is not repeated when it is delivered. The
 decision and its costs are in protocol-change/119, "Addendum 2026-11-23: an
