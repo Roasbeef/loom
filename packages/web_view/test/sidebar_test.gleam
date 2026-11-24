@@ -1037,7 +1037,7 @@ pub fn a_stopped_pages_rail_is_marked_out_of_date_test() {
       ]),
     )
   let drawn = operator_html(stopped)
-  assert component.ending(stopped) == Some(ending.SessionStopped)
+  assert component.final_ending(stopped) == Some(ending.SessionStopped)
   assert string.contains(drawn, ending.headline(ending.SessionStopped))
   assert string.contains(drawn, "<loom-back>Go back</loom-back>")
   assert string.contains(
@@ -1050,9 +1050,11 @@ pub fn a_stopped_pages_rail_is_marked_out_of_date_test() {
 }
 
 // An ending the browser recovers from by itself leaves no control to press, and
-// the rail still reads out of date until the page is connected again.
+// the rail is not marked: a held page keeps receiving the sidebar's reads, so
+// its words stay current, and its rail note is unchanged.
 pub fn a_page_that_will_reconnect_offers_no_way_back_test() {
-  let #(live, _) = with_watches(listing(), [])
+  let #(live, _) =
+    with_watches(listing(), [#("B", sessions.Watch(sessions.Idle, 1))])
   let #(opened, _) =
     component.update(live, component.Opened(process.new_subject()))
   let #(waiting, _) =
@@ -1065,6 +1067,10 @@ pub fn a_page_that_will_reconnect_offers_no_way_back_test() {
   let drawn = operator_html(waiting)
   assert string.contains(drawn, ending.headline(ending.DaemonNotReady))
   assert !string.contains(drawn, "<loom-back")
+  assert component.final_ending(waiting) == None
+  assert string.contains(drawn, ">asked</span>")
+  assert string.contains(drawn, "Counts are read on the inbox.")
+  assert !string.contains(drawn, "out of date")
 }
 
 // The activity is read again every `activity_refresh_ms`, on the tick, apart

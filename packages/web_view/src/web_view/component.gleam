@@ -1564,9 +1564,9 @@ pub type Msg(socket) {
   SessionsListed(entries: List(sessions.Entry))
 
   /// The daemon's answer to the activity read a list started: one state and
-  /// one count of owner asks for each running session that answered. Like `SessionsListed` it is the
-  /// effect's own message, dispatched from the daemon's task, and no handler
-  /// carries it.
+  /// one count of owner asks for each running session that answered. Like
+  /// `SessionsListed` it is the effect's own message, dispatched from the
+  /// daemon's task, and no handler carries it.
   ActivityObserved(rows: List(#(String, sessions.Watch)))
 
   /// The daemon judged which browser sign-ins a remembered permission came
@@ -9037,8 +9037,9 @@ fn out_of_date_once_ended(
   watching: dict.Dict(String, String),
   model: Model(socket),
 ) -> dict.Dict(String, String) {
-  // A page that is connecting or connected keeps the words it was given.
-  case ending(model) {
+  // A page that is connecting, connected or retrying keeps the words it was
+  // given, since the reads still reach it.
+  case final_ending(model) {
     Some(_) -> dict.map_values(watching, fn(_, _) { out_of_date_words })
     None -> watching
   }
@@ -9203,17 +9204,27 @@ pub fn status(model: Model(socket)) -> Status {
   model.view.status
 }
 
-/// Why the page has no connection to its session, or nothing while it has one
-/// or is still making it. A page that has an ending is no longer sent anything:
-/// what it draws is the last frame it received.
+/// Why the page has no connection to its session for good, or nothing while it
+/// has one, is making one, or will make one by itself. A `Final` ending closes
+/// the page's socket (`ending.close`), so the page is sent nothing more and
+/// what it draws is the last frame it received. A `Retry` ending leaves the
+/// page held open, and it keeps receiving the sidebar's reads, so it is not
+/// marked.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.ending(model) == Some(ending.SessionStopped)
+/// // component.final_ending(model) == Some(ending.SessionStopped)
 /// ```
-pub fn ending(model: Model(socket)) -> Option(Ending) {
-  ended_ending(model.view.status)
+pub fn final_ending(model: Model(socket)) -> Option(Ending) {
+  case ended_ending(model.view.status) {
+    Some(reason) ->
+      case ending.close(reason) {
+        ending.Final -> Some(reason)
+        ending.Retry -> None
+      }
+    None -> None
+  }
 }
 
 /// The escalations still waiting for a decision, in the order the capture
