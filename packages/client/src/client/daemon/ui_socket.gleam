@@ -5779,7 +5779,8 @@ pub fn forget_for(
 /// `deliver` is called, from that run, with what `ask` returned.
 ///
 /// `ask` is the daemon's `sessions.activity` read (`server.home_activity`, whose
-/// answers are reports, or `server.session_activity`, whose are states),
+/// answers are reports, `server.session_watches`, whose are states and ask
+/// counts for the session page, or `server.session_activity`, whose are states),
 /// which asks every named session concurrently under one deadline of its own
 /// and leaves out any that did not answer, so the run ends within that
 /// deadline. The run is linked to the calling process, which is the page's

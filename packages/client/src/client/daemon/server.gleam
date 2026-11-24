@@ -7693,7 +7693,7 @@ pub fn activity_reports(
 /// ## Examples
 ///
 /// ```gleam
-/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [], None, None)))
+/// // server.report_of(row) == Ok(#("0198...", Report(Idle, None, [], None, None, 0)))
 /// ```
 @internal
 pub fn report_of(
@@ -7724,12 +7724,12 @@ pub fn report_of(
           glances,
           // A time of any type but a whole non-negative number is no time,
           // and an old daemon's row has neither.
-          time_field(fields, "last_message_at"),
-          time_field(fields, "turn_started_at"),
+          count_field(fields, "last_message_at"),
+          count_field(fields, "turn_started_at"),
           // The count of asks waiting on the owner. A daemon that predates the
           // field, or a value that is not a whole non-negative number, says
           // none.
-          time_field(fields, "asks") |> option.unwrap(0),
+          count_field(fields, "asks") |> option.unwrap(0),
         ),
       ))
     }
@@ -7745,7 +7745,10 @@ pub fn report_of(
 /// A whole non-negative number of a row (a Unix-millisecond time, or a count),
 /// or nothing for a member that is missing, null, not a whole number or
 /// negative.
-fn time_field(fields: List(#(String, JsonValue)), name: String) -> Option(Int) {
+fn count_field(
+  fields: List(#(String, JsonValue)),
+  name: String,
+) -> Option(Int) {
   case list.key_find(fields, name) {
     Ok(json.Int(at)) if at >= 0 -> Some(at)
     Ok(_) | Error(Nil) -> None
