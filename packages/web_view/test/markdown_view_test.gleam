@@ -410,7 +410,16 @@ pub fn a_script_and_a_javascript_link_are_not_followed_test() {
 
   assert !string.contains(html, "<script>")
   assert string.contains(html, "&lt;script&gt;")
+  assert string.contains(html, "<code class=\"md-code-span\">x</code>")
   assert !string.contains(html, "loom-link")
+
+  // A scheme in another letter case and a scheme-relative address are not web
+  // addresses either.
+  let mixed = quoted("[x](JavaScript:alert(1)) [y](//evil.com/a)")
+
+  assert string.contains(mixed, "<code class=\"md-code-span\">x</code>")
+  assert string.contains(mixed, "<code class=\"md-code-span\">y</code>")
+  assert !string.contains(mixed, "loom-link")
 }
 
 pub fn an_http_link_is_the_streams_link_element_test() {

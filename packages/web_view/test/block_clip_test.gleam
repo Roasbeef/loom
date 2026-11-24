@@ -55,6 +55,44 @@ pub fn no_cut_leaves_a_fence_open_test() {
       )
 
     assert fences % 2 == 0
+    assert string.byte_size(clipped) <= budget
     assert markdown.parse(clipped) != []
   })
+}
+
+pub fn a_tilde_fence_is_kept_or_dropped_whole_test() {
+  let text = "a\n\n~~~\nfirst\n\nsecond\n~~~\n\nbbbbbbbbbb"
+
+  assert block_clip.clip(text, 14) == "a\n\n…"
+  assert block_clip.clip(text, 30) == "a\n\n~~~\nfirst\n\nsecond\n~~~\n\n…"
+}
+
+pub fn a_long_tight_list_keeps_whole_items_test() {
+  let items =
+    list.index_map(list.repeat("", 40), fn(_, n) {
+      "- item number " <> int.to_string(n + 1)
+    })
+  let clipped = block_clip.clip(string.join(items, "\n"), 100)
+
+  assert string.byte_size(clipped) <= 100
+  assert string.ends_with(clipped, "\n\n…")
+
+  // Every line before the ellipsis is a whole item.
+  let lines = string.split(clipped, "\n")
+  assert list.all(list.take(lines, list.length(lines) - 2), fn(line) {
+    string.starts_with(line, "- item number ")
+  })
+}
+
+pub fn an_oversized_fence_keeps_whole_code_lines_and_closes_test() {
+  let code =
+    list.index_map(list.repeat("", 30), fn(_, n) {
+      "let x" <> int.to_string(n + 1)
+    })
+  let text = "```gleam\n" <> string.join(code, "\n") <> "\n```"
+  let clipped = block_clip.clip(text, 60)
+
+  assert string.byte_size(clipped) <= 60
+  assert string.starts_with(clipped, "```gleam\nlet x1\n")
+  assert string.ends_with(clipped, "\n```\n\n…")
 }

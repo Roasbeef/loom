@@ -136,6 +136,33 @@ pub fn the_latest_text_is_the_newest_assistant_message_that_has_any_test() {
   assert at == 20
 }
 
+// The text blocks of one message are joined by a blank line, so each stays a
+// block of its own and the page can draw them as paragraphs.
+pub fn the_text_blocks_of_a_message_are_separate_paragraphs_test() {
+  let brief =
+    session_brief.of_window(
+      [assistant(20, [text("First para."), text("- a\n- b")])],
+      0,
+    )
+  let assert Some(wire.Assistant(text:, ..)) = brief.assistant
+
+  assert wire.untrusted_text(text) == "First para.\n\n- a\n- b"
+}
+
+// A message over the bound is cut between blocks, keeps its newlines, and ends
+// in the ellipsis paragraph.
+pub fn a_message_over_the_bound_is_cut_between_blocks_test() {
+  let paragraph = string.repeat("word ", 60)
+  let long = string.join(list.repeat(paragraph, 10), "\n\n")
+  let brief = session_brief.of_window([assistant(20, [text(long)])], 0)
+  let assert Some(wire.Assistant(text:, ..)) = brief.assistant
+  let shown = wire.untrusted_text(text)
+
+  assert string.byte_size(shown) <= wire.assistant_bytes
+  assert string.ends_with(shown, "\n\n…")
+  assert string.contains(shown, "\n\n")
+}
+
 pub fn a_step_is_worded_by_the_pages_own_words_and_its_result_test() {
   // Oldest first: a finished failing call, a finished one, and one still going.
   let newest_first = [
