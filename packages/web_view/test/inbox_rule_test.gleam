@@ -23,6 +23,7 @@ fn report(activity: Activity, message: option.Option(String)) -> Report {
     glances: [],
     last_message_at: None,
     turn_started_at: None,
+    asks: 0,
   )
 }
 
@@ -119,7 +120,7 @@ pub fn the_head_falls_back_in_order_test() {
   assert inbox_rule.head(report(sessions.Idle, Some("\n  First line  \nSecond")))
     == "First line"
 
-  assert inbox_rule.head(Report(sessions.Working, None, glances, None, None))
+  assert inbox_rule.head(Report(sessions.Working, None, glances, None, None, 0))
     == "newest"
   assert inbox_rule.head(Report(
       sessions.Working,
@@ -127,6 +128,7 @@ pub fn the_head_falls_back_in_order_test() {
       glances,
       None,
       None,
+      asks: 0,
     ))
     == "newest"
 
@@ -140,6 +142,7 @@ pub fn the_head_falls_back_in_order_test() {
       [Glance("s", "t", "  ")],
       None,
       None,
+      asks: 0,
     ))
     == "Quiet"
 }

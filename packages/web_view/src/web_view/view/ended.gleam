@@ -25,7 +25,7 @@ import web_view/ending.{type Ending}
 /// // ended.view(Some(ending.PageEnded), "0192ab34cd")
 /// ```
 pub fn view(reason: Option(Ending), session_id: String) -> Element(message) {
-  notice(reason, ending.headline, ending.advice(_, session_id))
+  notice(reason, ending.headline, ending.advice(_, session_id), going_back)
 }
 
 /// The notice for a page of a session on another orchestrator that has ended.
@@ -38,7 +38,7 @@ pub fn view(reason: Option(Ending), session_id: String) -> Element(message) {
 /// // ended.relayed(Some(ending.PeerUnreachable))
 /// ```
 pub fn relayed(reason: Option(Ending)) -> Element(message) {
-  notice(reason, ending.headline, ending.relayed_advice)
+  notice(reason, ending.headline, ending.relayed_advice, going_back)
 }
 
 /// The words of `content_unavailable`.
@@ -114,7 +114,7 @@ pub fn content_unavailable_pane(
 /// // ended.home(Some(ending.AccessRevoked))
 /// ```
 pub fn home(reason: Option(Ending)) -> Element(message) {
-  notice(reason, ending.home_headline, ending.home_advice)
+  notice(reason, ending.home_headline, ending.home_advice, no_way_back)
 }
 
 /// The notice for an admin page that has ended, in the admin page's words
@@ -127,14 +127,40 @@ pub fn home(reason: Option(Ending)) -> Element(message) {
 /// // ended.admin(Some(ending.PageEnded))
 /// ```
 pub fn admin(reason: Option(Ending)) -> Element(message) {
-  notice(reason, ending.admin_headline, ending.admin_advice)
+  notice(reason, ending.admin_headline, ending.admin_advice, no_way_back)
 }
 
-/// The notice for `reason`, worded by `headline` and `advice`, or nothing.
+/// What a session page's notice offers after its advice: a control that goes
+/// back, for an ending the browser will not recover from by itself.
+///
+/// A `Final` ending closes the page's socket (`ending.close`), so nothing the
+/// server draws can answer a press afterwards: a button wired to the server,
+/// such as the heading's home link, is dead on an ended page. `<loom-back>` is
+/// answered in the browser alone, by `history.back()`, and reaches only a page
+/// the tab already visited (`web_client/back`, protocol-change/051, the
+/// addendum on navigation). That page is the one the person came from, usually
+/// the inbox, which is why the label says "Go back" and does not name it. A
+/// `Retry` ending reconnects on its own, so it offers nothing.
+fn going_back(reason: Ending) -> List(Element(message)) {
+  case ending.close(reason) {
+    ending.Final -> [element.element("loom-back", [], [html.text("Go back")])]
+    ending.Retry -> []
+  }
+}
+
+/// The notice of a page that offers no way back: the home and the admin page
+/// have their own controls for it.
+fn no_way_back(_reason: Ending) -> List(Element(message)) {
+  []
+}
+
+/// The notice for `reason`, worded by `headline` and `advice`, with `after`'s
+/// controls under the advice, or nothing.
 fn notice(
   reason: Option(Ending),
   headline: fn(Ending) -> String,
   advice: fn(Ending) -> String,
+  after: fn(Ending) -> List(Element(message)),
 ) -> Element(message) {
   case reason {
     None -> element.none()
@@ -144,6 +170,7 @@ fn notice(
           html.text(headline(reason)),
         ]),
         html.p([attribute.class("ended-advice")], [html.text(advice(reason))]),
+        ..after(reason)
       ])
   }
 }

@@ -59,6 +59,7 @@ fn reports() -> List(#(String, Report)) {
         [],
         last_message_at: None,
         turn_started_at: None,
+        asks: 0,
       ),
     ),
     #(
@@ -71,6 +72,7 @@ fn reports() -> List(#(String, Report)) {
         ],
         last_message_at: None,
         turn_started_at: None,
+        asks: 0,
       ),
     ),
     #(
@@ -84,6 +86,7 @@ fn reports() -> List(#(String, Report)) {
         ],
         last_message_at: None,
         turn_started_at: None,
+        asks: 0,
       ),
     ),
   ]
@@ -233,6 +236,7 @@ pub fn an_emptied_folder_draws_as_everything_test() {
         [],
         last_message_at: None,
         turn_started_at: None,
+        asks: 0,
       ),
     ),
   ]
@@ -259,6 +263,7 @@ pub fn the_bar_counts_what_waits_on_the_owner_test() {
         [],
         last_message_at: None,
         turn_started_at: None,
+        asks: 0,
       ),
     ),
   ]

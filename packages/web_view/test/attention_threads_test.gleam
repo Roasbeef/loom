@@ -58,8 +58,8 @@ fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
 
 fn reports() -> List(#(String, sessions.Report)) {
   [
-    #("A", Report(sessions.Idle, Some("Done."), [], None, None)),
-    #("B", Report(sessions.Idle, None, [], None, None)),
+    #("A", Report(sessions.Idle, Some("Done."), [], None, None, 0)),
+    #("B", Report(sessions.Idle, None, [], None, None, 0)),
   ]
 }
 
@@ -937,7 +937,7 @@ pub fn an_approval_thread_lists_its_evidence_and_still_only_points_away_test() {
   let model =
     opened(start(
       listing(),
-      [#("A", Report(sessions.NeedsYou, None, [], None, None))],
+      [#("A", Report(sessions.NeedsYou, None, [], None, None, 0))],
       [],
       None,
     ))
@@ -1144,7 +1144,7 @@ fn quiet_and_saved() -> List(Entry) {
 }
 
 fn quiet_report() -> List(#(String, sessions.Report)) {
-  [#("A", Report(sessions.Idle, None, [], None, None))]
+  [#("A", Report(sessions.Idle, None, [], None, None, 0))]
 }
 
 // A saved session with nothing pending lands the composer once its summary has
@@ -1226,7 +1226,7 @@ pub fn a_decided_composer_is_never_covered_by_a_later_read_test() {
     |> run(home.FeedRead(feed_rows()))
     |> run(home.SavedRead([approval_waiting()]))
     |> run(
-      home.Observed([#("A", Report(sessions.Working, None, [], None, None))]),
+      home.Observed([#("A", Report(sessions.Working, None, [], None, None, 0))]),
     )
   let html = drawn(later)
 

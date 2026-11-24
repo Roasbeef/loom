@@ -1672,7 +1672,7 @@ fn admit_live(
       },
       activity: session_activity_for(
         role,
-        server.states_of(attachment.activity),
+        server.watches_of(attachment.activity),
       ),
       open: fn(session) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, session) })
@@ -3891,9 +3891,9 @@ pub fn listed_for(
 @internal
 pub fn activity_for(
   role: Role,
-  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ask: fn(List(String)) -> List(#(String, sessions.Watch)),
   ids: List(String),
-  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+  deliver: fn(List(#(String, sessions.Watch))) -> Nil,
 ) -> Nil {
   // This branch resolves role before the operation continues.
   case role {

@@ -50,13 +50,13 @@ fn listing() -> List(Entry) {
 
 fn reports() -> List(#(String, sessions.Report)) {
   [
-    #("A", Report(sessions.NeedsYou, None, [], None, None)),
-    #("W", Report(sessions.Working, None, [], None, Some(now - 840_000))),
+    #("A", Report(sessions.NeedsYou, None, [], None, None, 0)),
+    #("W", Report(sessions.Working, None, [], None, Some(now - 840_000), 0)),
     #(
       "B",
-      Report(sessions.Idle, Some("Waiting."), [], Some(now - 60_000), None),
+      Report(sessions.Idle, Some("Waiting."), [], Some(now - 60_000), None, 0),
     ),
-    #("S", Report(sessions.Idle, Some("Stopped."), [], None, None)),
+    #("S", Report(sessions.Idle, Some("Stopped."), [], None, None, 0)),
   ]
 }
 
@@ -573,7 +573,7 @@ pub fn a_quiet_session_with_an_open_ask_is_drawn_once_test() {
           deliver(home.Listed([entry("Q", "quiet-with-ask")]))
         },
         activity: fn(_, deliver) {
-          deliver([#("Q", Report(sessions.Idle, None, [], None, None))])
+          deliver([#("Q", Report(sessions.Idle, None, [], None, None, 0))])
         },
         attention: Some(
           home.Attention(..attention, feed: fn(_, deliver) {

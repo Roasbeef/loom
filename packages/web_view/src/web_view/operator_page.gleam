@@ -639,7 +639,11 @@ fn rail_folders(
       True -> Some(fn(_) { Observed(component.GoingHome) })
       False -> None
     },
-    note: "Counts are read on the inbox.",
+    note: case component.ending(model) {
+      // The list is the last one the page received and nothing updates it.
+      Some(_) -> "This page lost its session, so this list is out of date."
+      None -> "Counts are read on the inbox."
+    },
     running: component.running_count(model),
   )
 }
