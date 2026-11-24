@@ -288,8 +288,9 @@ the argument and receipt contract.
 
 ## Roles and chains
 
-Six roles are routable: `main`, `subagent`, `plan`, `summarize`,
-`vision`, and `advisor`. Each row of `[roles]` is an ordered chain of entry names, best
+Seven roles are routable: `main`, `subagent`, `plan`, `summarize`,
+`vision`, `advisor`, and `router` (project mode's ticket router,
+`catalog.router_role`). Each row of `[roles]` is an ordered chain of entry names, best
 first. `gateway.resolve(role)` returns the first target in that chain whose
 provider is registered. For a gateway built from a catalogue that is always
 the head, since every name in a chain names a registered entry. The
