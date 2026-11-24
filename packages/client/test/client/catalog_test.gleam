@@ -1317,14 +1317,13 @@ pub fn a_tools_table_is_allowed_at_the_top_level_test() {
 pub fn absent_tools_table_permits_network_without_inheriting_secrets_test() {
   assert catalog.parse_tools(minimal) == Ok(catalog.default_tools())
   assert catalog.parse_tools(minimal)
-    == Ok(
-      catalog.ToolsConfig(
-        network: catalog.ToolNetworkFull,
-        env: [],
-        set: [],
-        path: [],
-      ),
-    )
+    == Ok(catalog.ToolsConfig(
+      network: catalog.ToolNetworkFull,
+      env: [],
+      set: [],
+      path: [],
+      lsp_tools: catalog.LspToolsOff,
+    ))
 }
 
 pub fn the_example_catalogue_uses_the_development_default_test() {
@@ -1340,14 +1339,29 @@ pub fn a_full_tools_table_parses_test() {
 path = [\"/opt/homebrew/bin\", \"/usr/local/go/bin\"]\n\n[tools.set]\nGH_CONFIG_DIR = \"/home/me/.config/gh\"",
     )
   assert catalog.parse_tools(text)
+    == Ok(catalog.ToolsConfig(
+      network: catalog.ToolNetworkFull,
+      env: ["GH_TOKEN"],
+      set: [#("GH_CONFIG_DIR", "/home/me/.config/gh")],
+      path: ["/opt/homebrew/bin", "/usr/local/go/bin"],
+      lsp_tools: catalog.LspToolsOff,
+    ))
+}
+
+pub fn the_lsp_tools_word_is_off_by_default_and_strict_test() {
+  assert catalog.parse_tools(with_tools("lsp_tools = \"on\""))
     == Ok(
       catalog.ToolsConfig(
-        network: catalog.ToolNetworkFull,
-        env: ["GH_TOKEN"],
-        set: [#("GH_CONFIG_DIR", "/home/me/.config/gh")],
-        path: ["/opt/homebrew/bin", "/usr/local/go/bin"],
+        ..catalog.default_tools(),
+        lsp_tools: catalog.LspToolsOn,
       ),
     )
+  assert catalog.parse_tools(with_tools("lsp_tools = \"off\""))
+    == Ok(catalog.default_tools())
+  assert catalog.parse_tools(with_tools("lsp_tools = \"yes\""))
+    == Error("tools.lsp_tools must be \"off\" or \"on\", got \"yes\"")
+  assert catalog.parse_tools(with_tools("lsp_tools = true"))
+    == Error("tools.lsp_tools must be a string")
 }
 
 pub fn tools_set_pairs_come_back_sorted_test() {

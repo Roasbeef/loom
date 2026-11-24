@@ -462,11 +462,18 @@ was asked.
   threshold reads (`client/checkpoint.remaining_seam`), so asked and told
   are one number. Read-only, `Safe`, `Concurrent`, no sandbox
   requirements.
+- `tools/lsp_query.{tools, render_error, tool_names}` is the opt-in surface:
+  `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols` and
+  `lsp_diagnostics`, each decoding its arguments totally and calling one
+  closure of `lsp/query.Door` (it keeps that closure, not the door). Lists are
+  bounded and say when they cut; `NoServer` and `Unavailable` render as
+  "language server unavailable". `client/contributions.lsp_query_tools`
+  registers them only for `[tools] lsp_tools = "on"` with a door. Default
+  registries are unchanged.
 - `tools/lsp.{land, diagnostics_observer, render_diagnostics, clip,
   changed_spans, ChangedSpan, max_rendered_diagnostics}` keeps the shared
-  implementation used by code mode and observed writes. The seven top-level
-  `lsp_*` constructors, argument decoders and obsolete renderer tests are
-  removed. `land` needs no `Ctx`: code mode supplies `fs.write_target`, then
+  implementation used by code mode and observed writes. The seven former
+  top-level `lsp_*` constructors are removed; the opt-in five above are new. `land` needs no `Ctx`: code mode supplies `fs.write_target`, then
   the shared path plans every file, resolves every target and checks every base
   before its first write. A failure writes nothing and reports failed files as
   `Rejected`, the rest as `NotAttempted`. Files then land in path order, and

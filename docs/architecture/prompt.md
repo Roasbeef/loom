@@ -550,7 +550,7 @@ This instruction is build-constant and conditional; it does not claim every
 host has a language server. The code-mode offer supplies actual availability
 and the served profiles' naming hints.
 
-Default tool registration exposes no `lsp_*` schemas. Automatic write
+Default tool registration exposes no `lsp_*` schemas; `[tools] lsp_tools = "on"` adds them. Automatic write
 diagnostics remain, and rename requires an explicit preview followed by model
 inspection before a separate apply program. The prompt distinguishes an
 unsupported request from a server setup failure and does not treat an empty

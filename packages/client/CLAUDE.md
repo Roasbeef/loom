@@ -4552,7 +4552,10 @@ eight pooled children placed three, three and two) and `catalogue_test` (the key
   last argument is the served profiles' hints as `#(server name, hint)`,
   attached to offers that admit and serve `cap/lsp`. The `code_mode`
   description and `cap://lsp` read carry them with the native API. The default
-  registry does not register top-level `lsp_*` tools. Without a served LSP
+  registry does not register top-level `lsp_*` tools unless `[tools] lsp_tools
+  = "on"` (`catalog.LspTools`) and a door both exist; `contributions.lsp_query_tools`
+  then appends the five `tools/lsp_query` tools and `tool_placement`
+  places them on the workspace. Without a served LSP
   capability it advertises no naming hints.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters

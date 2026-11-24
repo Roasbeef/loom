@@ -14,8 +14,10 @@ import client/remote/host
 import client/remote/owner_port
 import client/remote/protocol
 import client/remote/surface
+import client/tool_placement
 import core/clock
 import core/json
+import core/message
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
@@ -632,4 +634,34 @@ pub fn a_repair_the_executor_cannot_make_is_the_answer_test() {
   assert string.contains(reason, restart_rig.broken_reason)
   assert fixtures.run_count(rig.probe, "call_1") == 0
   stop(restarted)
+}
+
+// An executor that opted in to the `lsp_*` tools and has a language-server
+// door answers them, so the owner's surface must forward them. The default
+// list leaves them out and refuses the call unsent.
+pub fn the_opt_in_lsp_tools_run_on_the_executor_test() {
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+  let base = fixtures.tool_run("call_1", 0)
+  let lsp_run =
+    effects.ToolRun(
+      ..base,
+      call: message.ToolCall(..base.call, name: "lsp_definition"),
+    )
+  let forwarding =
+    surface.Config(
+      ..config(rig, 1),
+      remote_tools: tool_placement.runnable_workspace_names(),
+    )
+  let assert Ok(surface.Attachment(surface: remote, ..)) =
+    surface.attach(forwarding)
+  assert surface.places(remote, "lsp_definition")
+  assert surface.run(remote, lsp_run) == fixtures.expected_outcome(lsp_run)
+  assert fixtures.run_count(rig.probe, "call_1") == 1
+  stop(rig)
+
+  let rig = restart_rig.rig("surface", fixtures.Open, fixtures.AsksNothing)
+  let assert Ok(surface.Attachment(surface: plain, ..)) =
+    surface.attach(config(rig, 1))
+  assert !surface.places(plain, "lsp_definition")
+  stop(rig)
 }

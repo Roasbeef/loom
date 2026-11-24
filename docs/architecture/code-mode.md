@@ -281,7 +281,7 @@ harness-side bridges over it:
   gated on `code_mode` and placed on the owner. Candidates are vetted without
   it. See [evolution](evolution.md#reaching-evolution-from-code-mode).
 - `codemode/lsp.routing` serves `lsp.*` over the session's
-  language-server door, the same door the `lsp_*` tools call. It is
+  language-server door, the same door the opt-in `lsp_*` tools call. It is
   installed, and `cap/lsp` admitted, only on a host where an
   `[lsp.<name>]` server is configured; `lsp.md` §"Code mode" says why.
 - For an installed extension, `client/extension/seam.routing` serves
