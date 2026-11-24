@@ -378,15 +378,26 @@ label draws exactly as it does today. The reading pane shows the same line with
 the model identity and the time, and a link to the transcript position the
 classifier already links.
 
-**An Insights digest.** On Home, a collapsed group named "Insights from the
-triage model" lists the sessions that have at least one `high` row, each as a
-session name and the count of its `high` rows, with the chip. It has these
-properties.
+**An Insights digest.** An Insights folder in the inbox rail, beside Finds and
+Updates, that opens in the same list and reading pane as every other folder.
+The owner chose this form on 2026-11-23 over a collapsed group on Home. It lists
+the insights of every running session since the owner last opened the folder,
+grouped by the triage model's weight (High, Normal, then Low folded to one
+line), newest first within a group. Each row is the classifier's or the agent's
+own row, unchanged, with the chip and the model's line under it.
+[`insight-triage/digest-mockup.html`](insight-triage/digest-mockup.html) is a
+static sketch in both themes. It has these properties.
 
 - It appears only where a triage role is routed.
-- It is not counted in the need pill. The pill and the phone bar's "2 need you ·
-  3 insights" stay classifier-only, because a count that a model can change is
-  not a count (section 4.1).
+- Its count is a number of insights, not a need, and is never added to the need
+  pill. The pill and the phone bar's "2 need you · 3 insights" stay
+  classifier-only, because a count that a model can change is not a count
+  (section 4.1).
+- Approvals, asks and stuck strands are never in it; they stay in Needs you,
+  unranked.
+- "Since you last looked" needs a per-owner record of when the folder was last
+  opened, which the inbox does not keep today. Until it exists the folder lists
+  the last day's insights and says so.
 - It says what it read, as every page does: "read through 14:02 in 6 sessions;
   4 had no labels".
 
@@ -500,7 +511,8 @@ acted-on event record, shared with the meta layer. Protocol changes: a record
 kind and its feed row, and the event record. The request in this slice reads
 whole slices, so its cost ceiling is revisited from slice 1's measurements.
 
-**Slice 3: the digest and the step threshold.** The Home group in section 7, and
+**Slice 3: the digest and the step threshold.** The Insights folder in section 7
+(with a per-owner record of when it was last opened), and
 an optional step-threshold cadence. A protocol change for the digest's read, if
 it needs one beyond the feed.
 
@@ -541,5 +553,6 @@ Each can be answered with a choice.
    which needs a price in the catalogue.
 7. **May a `high` label be drawn on a pinned row, such as an ask?** Yes, as a
    "why" line only, with no reordering. Or: no, pinned rows carry no label at all.
-8. **Does the Home digest belong in this work?** Yes, in slice 3. Or: not at all,
-   and triage stays in the rail and the finds.
+8. **Does the Home digest belong in this work?** Answered by the owner on
+   2026-11-23: yes, in slice 3, as an Insights folder in the inbox rail (see the
+   mockup in section 7).
