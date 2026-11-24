@@ -19,6 +19,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
+import web_view/creations
 import web_view/home
 import web_view/projects as feed
 import web_view/saved_attention
@@ -140,6 +141,12 @@ fn detail_of(id: String) -> json.JsonValue {
 
 fn projects_for(asked: Subject(Asked), says: Says) -> home.Projects {
   home.Projects(
+    propose: fn(_, deliver) {
+      deliver(feed.ProposalRefused(creations.Unavailable))
+    },
+    create: fn(_, _, _, deliver) {
+      deliver(feed.NotMade(creations.Unavailable))
+    },
     boards: fn(deliver) {
       process.send(asked, ReadBoards)
       deliver(feed.Heard([feed.Listed("p1", "/src/loom", board_body(9))]))
@@ -850,5 +857,5 @@ pub fn an_unread_first_list_leaves_the_round_open_test() {
 
   let decided = drawn(run(model, home.Ticked))
   assert string.contains(decided, "<h1>Inbox</h1>")
-  assert string.contains(decided, "4 tickets need you")
+  assert string.contains(decided, "Needs you")
 }

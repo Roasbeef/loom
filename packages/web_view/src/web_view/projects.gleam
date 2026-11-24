@@ -24,6 +24,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import session_view/project_board
+import web_view/creations
 
 /// The result of reading every project's board.
 pub type Read {
@@ -109,6 +110,62 @@ pub type Acted {
   Declined(
     /// The daemon's error code.
     code: String,
+  )
+}
+
+/// What the daemon said to a request to propose settings for a folder. The
+/// proposal reads at most a dozen named files in the folder and runs nothing.
+pub type Proposal {
+  /// The daemon read the folder. The body is the `projects.propose` reply, to be
+  /// decoded by `session_view/project_settings_view.decode_proposed`.
+  Proposed(
+    /// The reply, as the daemon sent it.
+    body: JsonValue,
+  )
+
+  /// The daemon would not read the folder. The reason is the one a new session's
+  /// folder gets, so the page words it the same way.
+  ProposalRefused(
+    /// Why, in the fixed vocabulary of `creations`.
+    reason: creations.Reason,
+  )
+}
+
+/// What the daemon said to a request to create a project.
+pub type Creation {
+  /// The project exists. A workspace that already had one keeps it, so this is
+  /// also the answer for a repeat.
+  Made(
+    /// The project's id.
+    project: String,
+    /// What became of the settings the owner confirmed.
+    settled: Settled,
+  )
+
+  /// The folder was refused before anything was made.
+  NotMade(
+    /// Why, in the fixed vocabulary of `creations`.
+    reason: creations.Reason,
+  )
+
+  /// The daemon refused to make the project and said why in its own words.
+  MakeFailed(
+    /// The daemon's sentence. It is drawn as a text node.
+    words: String,
+  )
+}
+
+/// What became of the check and setup the owner confirmed when a project was
+/// made. They are two writes, so the second can fail after the first succeeded.
+pub type Settled {
+  /// The settings were stored, or the owner confirmed none.
+  SettingsHeld
+
+  /// The project exists and its settings were not stored. Nothing is rolled
+  /// back, because a project with no check is a valid project.
+  SettingsRefused(
+    /// The daemon's sentence about the refusal.
+    words: String,
   )
 }
 

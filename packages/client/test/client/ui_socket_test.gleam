@@ -2292,6 +2292,8 @@ pub fn the_admin_socket_admits_only_clicks_beneath_the_sidebar_test() {
 pub fn only_an_owners_operating_home_is_handed_the_projects_capability_test() {
   let projects =
     home.Projects(
+      propose: fn(_, _) { Nil },
+      create: fn(_, _, _, _) { Nil },
       boards: fn(_) { Nil },
       ticket: fn(_, _, _) { Nil },
       answer: fn(_, _, _, _, _) { Nil },

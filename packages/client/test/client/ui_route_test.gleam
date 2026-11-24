@@ -11513,6 +11513,8 @@ pub fn a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test() {
     let reached = process.new_subject()
     let feed =
       ui_projects.Feed(
+        propose: fn(_) { page_projects.ProposalRefused(creations.Unavailable) },
+        create: fn(_, _, _) { page_projects.NotMade(creations.Unavailable) },
         boards: fn() { page_projects.Unread },
         ticket: fn(_, _) { page_projects.TicketUnread },
         answer: fn(_, _, _, _) { page_projects.Refused("unused") },
@@ -11544,6 +11546,119 @@ pub fn a_ticket_stop_and_retry_run_the_owner_check_before_the_actor_test() {
 
     // No refused page reached an actor.
     assert process.receive(reached, 0) == Error(Nil)
+  })
+}
+
+// Making a project from Home is the owner's alone, and the folder is judged as a
+// new session's is before anything is read from it or made for it
+// (protocol-change/106, the addendum on creating a project from the web view). A
+// page that fails the owner check, and a folder the daemon cannot use, reach no
+// actor and are refused in the fixed words; a workspace the owner holds a session
+// in reaches the feed with the canonical folder.
+pub fn a_project_is_proposed_and_made_only_for_the_owner_and_a_usable_folder_test() {
+  fixture(fn(ready, _, credential) {
+    let reached = process.new_subject()
+    let feed =
+      ui_projects.Feed(
+        propose: fn(folder) {
+          process.send(reached, "propose " <> folder)
+          page_projects.Proposed(json.Null)
+        },
+        create: fn(folder, check, setup) {
+          process.send(
+            reached,
+            "create "
+              <> folder
+              <> " "
+              <> string.inspect(check)
+              <> " "
+              <> string.inspect(setup),
+          )
+          page_projects.Made("p-new", page_projects.SettingsHeld)
+        },
+        boards: fn() { page_projects.Unread },
+        ticket: fn(_, _) { page_projects.TicketUnread },
+        answer: fn(_, _, _, _) { page_projects.Refused("unused") },
+        close: fn(_, _) { page_projects.NotClosed("unused") },
+        stop: fn(_, _) { page_projects.Declined("unused") },
+        retry: fn(_, _) { page_projects.Declined("unused") },
+      )
+    let folder = new_folder.check(_, ready.state_root)
+    let _known = create_session(ready, "project-known", 1140)
+    let #(owner, _) = creator_standing(ready, credential, access.Operator)
+
+    // The pages that fail the owner check reach no actor.
+    list.each(
+      [
+        #(owner, fn() { Error(Nil) }),
+        #(ui_socket.Standing(..owner, ceiling: access.Observer), page_open),
+      ],
+      fn(page) {
+        assert ui_socket.propose_for(
+            page.0,
+            page.1,
+            folder,
+            feed,
+            ready.state_root,
+          )
+          == page_projects.ProposalRefused(creations.NotOwner)
+        assert ui_socket.create_project_for(
+            page.0,
+            page.1,
+            folder,
+            feed,
+            ready.state_root,
+            None,
+            None,
+          )
+          == page_projects.NotMade(creations.NotOwner)
+      },
+    )
+    assert process.receive(reached, 0) == Error(Nil)
+
+    // A folder that does not exist is refused before the feed is asked.
+    assert ui_socket.propose_for(
+        owner,
+        page_open,
+        folder,
+        feed,
+        "/no/such/folder/for/a/project",
+      )
+      == page_projects.ProposalRefused(creations.NotAFolder)
+    assert ui_socket.create_project_for(
+        owner,
+        page_open,
+        folder,
+        feed,
+        "/no/such/folder/for/a/project",
+        None,
+        None,
+      )
+      == page_projects.NotMade(creations.NotAFolder)
+    assert process.receive(reached, 0) == Error(Nil)
+
+    // A workspace the owner holds a session in is the folder, as the feed gets it.
+    assert ui_socket.propose_for(
+        owner,
+        page_open,
+        folder,
+        feed,
+        ready.state_root,
+      )
+      == page_projects.Proposed(json.Null)
+    assert process.receive(reached, 0) == Ok("propose " <> ready.state_root)
+    assert ui_socket.create_project_for(
+        owner,
+        page_open,
+        folder,
+        feed,
+        ready.state_root,
+        Some("make check"),
+        None,
+      )
+      == page_projects.Made("p-new", page_projects.SettingsHeld)
+    assert process.receive(reached, 0)
+      == Ok("create " <> ready.state_root <> " Some(\"make check\") None")
   })
 }
 
