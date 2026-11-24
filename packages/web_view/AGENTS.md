@@ -497,7 +497,7 @@ page keys and nonces, and the relay into the session's gateway.
   groups, the folded saved sessions, a native `<details>` for the quiet rows past
   `listing.idle_shown`, a row menu (`details.row-menu`) that holds the archive
   control and, on the home, "Rename, move or delete" (which shows the list), and a
-  foot. A row's second line is the tag `agent → code`; the subtitle is a third line.
+  foot. A row's second line is the tag `agent → code`; the subtitle is a third line in the tree that the rail's stylesheet hides (the switcher reads it), and the running groups draw no heading.
   The component carries `Standing.machine` (the serving daemon's name:
   `server.page_machine`, the node name when distributed and the host name when
   not), `View.filter`, `component.narrow`, `widen` and `waiting_count`, and
@@ -1442,7 +1442,8 @@ page keys and nonces, and the relay into the session's gateway.
   page's `PeerUnreachable` and `PeerCrowded`): why a page
   has no session, as a closed type. `OtherPage` is `page_grant`'s 403 for a live
   page key whose grant names another page (a home key typed onto a session's
-  address); it is final and says the link was opened for a different page, not
+  address, or a session's key onto the home's or the admin page's, which
+  have their own headlines); it is final and says the link was opened for a different page, not
   that the page ended (protocol-change/051, the addendum of 2026-11-20). `PageEnded` means eight hours ran out, the
   daemon restarted, or the page was the oldest of `ending.max_pages` (four)
   when a newer link opened; a newer link ends nothing below that bound. `headline` and `advice(ending,

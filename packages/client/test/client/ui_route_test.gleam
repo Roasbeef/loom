@@ -11753,6 +11753,50 @@ pub fn a_session_key_on_another_sessions_address_says_it_is_another_page_test() 
   })
 }
 
+// The home and the admin page refuse a key issued for another page the same
+// way: the link was opened for a different page, and the page has not ended.
+// A session's key on the home's address and the home's key on the admin
+// page's address are the two a person reaches by editing an address.
+pub fn a_key_for_another_page_on_home_or_admin_says_it_is_another_page_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "other-home", 973)
+    let one = enter(port, link(port, credential, session))
+    let on_home = string.replace(one.page, "/sessions/" <> session, "/home")
+    let refused =
+      get(port, on_home, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> one.cookie),
+      ])
+    assert refused.status == 403
+    assert string.contains(refused.body, ending.home_headline(ending.OtherPage))
+    assert !string.contains(
+      refused.body,
+      ending.home_headline(ending.PageEnded),
+    )
+    assert open_page(port, one).status == 200
+
+    let home = enter(port, forgotten_home(port, credential))
+    let on_admin = string.replace(home.page, "/home", "/admin")
+    let refused =
+      get(port, on_admin, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> home.cookie),
+      ])
+    assert refused.status == 403
+    assert string.contains(
+      refused.body,
+      ending.admin_headline(ending.OtherPage),
+    )
+    assert !string.contains(
+      refused.body,
+      ending.admin_headline(ending.PageEnded),
+    )
+    assert open_page(port, home).status == 200
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Passkeys (protocol-change/127). Each test drives the real router with keys
 // the test makes, as a browser's authenticator would: a P-256 key pair, the

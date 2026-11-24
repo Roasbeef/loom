@@ -442,11 +442,11 @@ pub fn an_ask_is_titled_by_its_question_and_other_is_one_control_test() {
 }
 
 // A record of a sub-agent's strand is named on its row by the strand, without
-// the identifier the agency appends, so two rows of one session differ.
+// its parent and the identifier the agency appends.
 pub fn a_row_of_another_strand_is_named_by_the_strand_test() {
   let html = drawn(owner())
 
-  assert string.contains(html, ">sub:main/audit-…cdef</span>")
+  assert string.contains(html, ">sub:audit</span>")
   assert !string.contains(html, "0123456789abcdef</span>")
 }
 
@@ -462,20 +462,19 @@ fn count_of(html: String, needle: String) -> Int {
   list.length(string.split(html, needle)) - 1
 }
 
-// Two siblings of one purpose keep a short distinguishing tail, so their rows
-// do not read alike, and a long purpose is cut before the tail.
-pub fn sibling_strands_keep_a_distinguishing_tail_test() {
-  let a = attention_thread.strand_name("sub:main/audit-0123456789abcdef")
-  let b = attention_thread.strand_name("sub:main/audit-0123456789ab1234")
-  assert a == "sub:main/audit-…cdef"
-  assert b == "sub:main/audit-…1234"
+// A sub-agent's strand is named by its purpose alone, and a long purpose is cut.
+pub fn a_strand_is_named_by_its_purpose_test() {
+  assert attention_thread.strand_name("sub:main/audit-0123456789abcdef")
+    == "sub:audit"
+  assert attention_thread.strand_name("sub:coord/audit-0123456789ab1234")
+    == "sub:audit"
 
   let long =
     attention_thread.strand_name(
       "sub:main/review-the-meter-pricing-and-the-rate-card-0123456789abcdef",
     )
   assert string.length(long) == 36
-  assert string.ends_with(long, "…-…cdef")
+  assert string.ends_with(long, "…")
   assert attention_thread.strand_name("main") == "main"
 }
 
