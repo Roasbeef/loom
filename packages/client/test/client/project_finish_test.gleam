@@ -10,6 +10,7 @@ import client/daemon/project_host
 import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
+import client/project_overrides as overrides
 import client/project_records
 import client/project_settings
 import client/project_template
@@ -977,4 +978,42 @@ pub fn a_check_waits_for_a_template_that_cannot_vouch_for_it_test() {
     "the check is red on the clean base",
   )
   assert checks(seen(rig)) == []
+}
+
+// An answer from a check that ran under a command the owner has since changed
+// is no verdict on the ticket. It must not make the ticket ready or publish it.
+pub fn a_check_that_ends_under_a_changed_command_is_not_taken_test() {
+  let #(gate, open) = cell("closed")
+  let held = fn() {
+    Script(..script(), hold: fn(commit) { wait_until_open(gate, commit) })
+  }
+  let rig =
+    rig(
+      "changed-command",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      held,
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+  assert checks(seen(rig)) == ["aaaaaaa"]
+
+  // The owner changes the check while the old command is still running.
+  let assert Ok(changed) = overrides.parse(overrides.CheckKey, ["make other"])
+  let assert Ok(current) = project_host.settings(handle)
+  let assert Ok(_) =
+    project_host.change_settings(
+      handle,
+      current.revision,
+      [overrides.Hold(changed)],
+      None,
+      "owner",
+    )
+
+  // The old run ends, passing. Nothing is published and the board does not
+  // call the ticket checked, since the row waits to run again under the new
+  // command.
+  open("both")
+  process.sleep(1000)
+  assert publishes(seen(rig)) == []
+  assert !string.contains(board(handle), "\"outcome\":\"passed\"")
 }

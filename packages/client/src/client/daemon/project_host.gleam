@@ -1619,19 +1619,17 @@ fn hold_setting(
     // No words is a release of the key. Words must pass the rules the file's
     // values pass, since a line written by another build may not.
     case values {
-      None -> Ok(#(found, project_overrides.without(host.held, found)))
+      None -> Ok(project_overrides.without(host.held, found))
       Some(words) ->
         project_overrides.parse(found, words)
-        |> result.map(fn(override) {
-          #(found, project_overrides.with(host.held, override))
-        })
+        |> result.map(project_overrides.with(host.held, _))
     }
   }
 
   // Only a value that checked is held, and it counts as one change.
   case next {
     Error(_) -> host
-    Ok(#(_, held)) ->
+    Ok(held) ->
       Host(
         ..host,
         held:,
@@ -1716,7 +1714,8 @@ fn change_settings_now(
         })
 
       // A write the ledger refused part way leaves the changes before it in
-      // force, since each one is a record, and says which came to nothing.
+      // the ledger and not in memory: they take effect at the next restart,
+      // which is the known gap docs/architecture/project-mode.md records.
       case written {
         Error(reason) -> #(
           host,
@@ -1774,14 +1773,21 @@ fn publish_refusal(
   changes: List(Change),
   publishing_to: Option(String),
 ) -> Option(String) {
-  let turns_on =
-    list.any(changes, fn(change) {
+  // What the project would publish under once every change is applied, read
+  // the way `in_force` reads it, so a release of the key that gives the file's
+  // `pull_request` back counts as turning it on.
+  let held_after =
+    list.fold(changes, host.held, fn(held, change) {
       case change {
-        project_overrides.Hold(project_overrides.PublishIs(PublishPullRequest)) ->
-          host.config.policy.publish == PublishOff
-        _ -> False
+        project_overrides.Hold(override) ->
+          project_overrides.with(held, override)
+        project_overrides.Release(key) -> project_overrides.without(held, key)
       }
     })
+  let after = project_overrides.effective(host.file_values, held_after)
+  let turns_on =
+    host.config.policy.publish == PublishOff
+    && after.publish == PublishPullRequest
 
   // Only a change from `off` to `pull_request` needs naming.
   case turns_on, host.ports.remote_url(), publishing_to {
@@ -1809,19 +1815,21 @@ fn retemplate(before: Host, after: Host) -> Host {
   case template_digest(before) == template_digest(after) {
     True -> after
     False ->
-      case after.config.policy.setup, after.building {
-        None, _ -> Host(..after, template: template_state.Unmanaged)
-        Some(_), Some(_) ->
-          Host(
-            ..after,
-            template: template_state.Preparing(after.ports.now_ms()),
-          )
-        Some(_), None ->
-          Host(
-            ..after,
-            template: template_state.Preparing(after.ports.now_ms()),
-          )
-          |> ask_for_build
+      case after.config.policy.setup {
+        None -> Host(..after, template: template_state.Unmanaged)
+        Some(_) -> {
+          let preparing =
+            Host(
+              ..after,
+              template: template_state.Preparing(after.ports.now_ms()),
+            )
+
+          // A build under way asks for the next one itself when it ends.
+          case preparing.building {
+            Some(_) -> preparing
+            None -> ask_for_build(preparing)
+          }
+        }
       }
   }
 }
@@ -2596,10 +2604,10 @@ fn start_template(host: Host, row: project_ledger.Effect) -> Host {
   // has given no answer too often is recorded as failed. Any other row starts
   // a build.
   case host.config.policy.setup {
-    None -> settle(host, row)
+    None -> settle(Host(..host, building: None), row)
     Some(setup) if row.attempts >= max_task_attempts ->
       template_outcome(
-        host,
+        Host(..host, building: None),
         project_template.Failed(project_template.Failure(
           project_template.Cutting,
           "the build gave no result "
@@ -3220,6 +3228,8 @@ fn check_settled(
   result: goalstate.CheckResult,
 ) -> Host {
   let id = model.TicketId(ticket)
+  let ran = result.command
+  let command_changed = Some(ran) != host.config.policy.check
 
   // A ticket gone or moved on has no use for the answer.
   case state.ticket(host.engine, id) {
@@ -3227,6 +3237,11 @@ fn check_settled(
     Ok(found) ->
       case awaits_check(found, commit) {
         False -> settle_key(host, "check", key)
+
+        // An answer from a command the owner has since changed is no verdict
+        // on the ticket under the command in force. The row is left deferred,
+        // not settled, and runs again under the new command when it falls due.
+        True if command_changed -> host
         True ->
           case result.ending {
             goalstate.Exited(status: 0) ->
@@ -6578,6 +6593,9 @@ fn from_document(
     Host(
       ..host,
       engine: current,
+      held: project_overrides.none,
+      changed: dict.new(),
+      revision: 0,
       texts: dict.new(),
       questions: dict.new(),
       replies: [],

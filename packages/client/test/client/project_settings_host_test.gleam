@@ -342,6 +342,10 @@ pub fn the_whole_history_survives_a_compaction_and_a_restart_test() {
   let assert Ok(_) =
     hold_value(first, overrides.ProtectedPathsKey, ["Makefile", "ci/**"])
   let assert Ok(_) = project_host.compact(first)
+
+  // Compaction rebuilds the host from its records and must not count them on
+  // top of what the host already held.
+  assert view(first).revision == 2
   stop(first)
   let second =
     start(config(path, seen, hold(Open), file_policy("c", "s"), None))
@@ -708,4 +712,28 @@ pub fn no_router_or_worker_tool_reaches_a_projects_settings_test() {
   )
   assert result.is_error(tools.parse_resource("settings"))
   assert result.is_error(tools.parse_resource("project/settings"))
+}
+
+pub fn releasing_publish_back_to_the_files_pull_request_must_name_the_url_test() {
+  let path = directory("release-publish")
+  let seen = process.new_subject()
+  let policy =
+    project_host.Policy(
+      ..file_policy("c", "s"),
+      publish: project_settings.PublishPullRequest,
+    )
+  let handle = start(config(path, seen, hold(Open), policy, Some(url)))
+
+  // The project holds `off` over the file's `pull_request`, which needs no
+  // confirmation.
+  let assert Ok(_) = hold_value(handle, overrides.PublishKey, ["off"])
+  assert entry(handle, overrides.PublishKey).values == ["off"]
+
+  // Giving the key back to the file turns publishing on again, so it is
+  // refused until the URL is named.
+  let assert Error(project_host.RefusedSettings(words)) =
+    release(handle, overrides.PublishKey)
+  assert string.contains(words, url)
+  assert entry(handle, overrides.PublishKey).values == ["off"]
+  stop(handle)
 }

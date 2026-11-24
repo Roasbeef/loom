@@ -392,14 +392,8 @@ pub type View {
 /// ```
 pub fn value_words(values: Values, key: Key) -> List(String) {
   case key {
-    CheckKey ->
-      option.to_result(values.check, Nil)
-      |> result.map(fn(c) { [c] })
-      |> result.unwrap([])
-    SetupKey ->
-      option.to_result(values.setup, Nil)
-      |> result.map(fn(c) { [c] })
-      |> result.unwrap([])
+    CheckKey -> option.map(values.check, list.wrap) |> option.unwrap([])
+    SetupKey -> option.map(values.setup, list.wrap) |> option.unwrap([])
     PublishKey -> [project_settings.publish_mode_word(values.publish)]
     MaxWorkersKey -> [int.to_string(values.max_workers)]
     ProtectedPathsKey -> values.protected_paths

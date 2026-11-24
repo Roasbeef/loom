@@ -1399,8 +1399,17 @@ fn bounded_changes(
   items: List(JsonValue),
 ) -> Result(List(SettingChange), String) {
   case list.length(items) <= max_setting_changes {
-    True -> list.try_map(items, setting_change)
     False -> Error("a settings request holds at most five changes")
+    True -> {
+      use changes <- result.try(list.try_map(items, setting_change))
+
+      // Two changes to one key would make the outcome depend on their order.
+      let keys = list.map(changes, fn(change) { change.key })
+      case list.length(list.unique(keys)) == list.length(keys) {
+        True -> Ok(changes)
+        False -> Error("a settings request names each key at most once")
+      }
+    }
   }
 }
 
