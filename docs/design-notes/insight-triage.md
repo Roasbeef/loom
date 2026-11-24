@@ -307,7 +307,8 @@ message mentions the grant this session is blocked on." would be a claim of
 relevance, which the ranking rule forbids the page to write. So `PeerMessage` rows
 are left out of triage entirely in every slice: no weight, no `why` line, and they
 keep the classifier's order. They are drawn as plain fact rows, outside the ranked
-groups of the digest, unless the owner amends the rule.
+groups, unless the owner amends the rule. In the Updates section they are
+listed by time after the ranked rows.
 
 ### 4.3 What a label cannot do to the owner
 
@@ -396,9 +397,9 @@ request and stays.
   leaves the `why` line to `attention.read`, which is the per-record read that
   exists to hold content read at the moment of the act. The protocol change
   decides whether the weight word fits in the row's 2,300-byte bound or is the
-  first thing dropped when it does not. Slice 3's digest draws a `why` line under
-  every row across sessions, and one `attention.read` per row would be one request
-  per row per session. The plan is that slice 3 puts the `why` line in a feed read,
+  first thing dropped when it does not. Slice 3's Updates section draws a `why` line
+  under every ranked row of a session, and one `attention.read` per row would be one request
+  per row. The plan is that slice 3 puts the `why` line in a feed read,
   as one protocol change (an addendum to 120 that raises or splits the row bound),
   and not one read per row.
 - **The catalogue summary (protocol-change/122)** is unchanged. It holds the
@@ -425,33 +426,59 @@ label draws exactly as it does today. The reading pane shows the same line with
 the model identity and the time, and a link to the transcript position the
 classifier already links.
 
-**An Insights digest.** An Insights folder in the inbox rail, beside Finds and
-Updates, that opens in the same list and reading pane as every other folder.
-The owner chose this form on 2026-11-23 over a collapsed group on Home. It lists
-the insights of every running session since the owner last opened the folder,
-grouped by the triage model's weight (High, Normal, then Low folded to one
-line), newest first within a group. Each row is the classifier's or the agent's
-own row, unchanged, with the chip and the model's line under it.
-[`insight-triage/digest-mockup.html`](insight-triage/digest-mockup.html) is a
-static sketch in both themes. It has these properties.
+**Insights in the Updates folder.** The inbox already has an Updates folder:
+one thread per running session with nothing asked, showing the session's latest
+message, its last few steps and its delegates, with a message box offering Queue
+and Steer (`attention-inbox/README.md`, section 2.1). The owner decided on
+2026-11-23 to fold the insights into that folder, rather than add a separate
+Insights folder. This revises an earlier form of this note, which had a separate
+folder. The change has two parts, which share one set of rows.
 
-- It appears only where a triage role is routed.
-- Its count is a number of insights, not a need, and is never added to the need
+- **The list.** Updates orders its sessions by each session's most important
+  insight. A session with a `high` label shows a "1 high" chip in the triage chip
+  style. A session whose insights are unlabelled or `normal` shows a neutral
+  count, "2 insights". Sessions with no insights sort last. With no triage role
+  routed, the order stays as today (newest first) and the counts are the
+  classifier's, with no chip.
+- **The reading pane.** Each Update thread gains an "Insights since you looked"
+  section above "Last few steps". It lists that session's insight rows ranked by
+  weight, each with its triage chip and its "Triage model:" line, and folds `low`
+  rows to one line ("1 low folded").
+
+[`insight-triage/updates-mockup.html`](insight-triage/updates-mockup.html) is a
+static sketch of both parts in both themes.
+
+Which rows appear is fixed by the classifier's `FoldsOnceOpened` kinds
+(`session_view/attention.gleam`, `Kind`). Four of them are Updates insights:
+`FailedStep` (a tool call or code-mode program that returned an error),
+`FailedTurn` (a response that failed, or a refused sub-agent spawn),
+`SubagentResult` (a child's result) and `PeerMessage` (a message another session
+stored for this one). The fifth, `FindOpen`, is not in Updates. A find is the
+agent's own statement, so Finds keeps it as its own folder and it appears there
+only. `PeerMessage` rows appear in the Updates section as plain fact rows, listed
+by time after the ranked rows, with no chip and no model line (section 4.2).
+Because finds are left out, a session's insight count in Updates can be lower
+than the "Insights" count on that session's own page, which includes its finds.
+
+These properties apply.
+
+- The ranking and the chips appear only where a triage role is routed.
+- The counts are numbers of insights, not needs, and are never added to the need
   pill. The pill and the phone bar's "2 need you · 3 insights" stay
   classifier-only, because a count that a model can change is not a count
-  (section 4.1).
-- Approvals, asks and stuck strands are never in it; they stay in Needs you,
-  unranked. Peer messages are listed in it as plain fact rows, outside the
-  ranked groups, with no chip.
-- Its why lines need the feed change in section 6.
-- "Since you last looked" needs a per-owner record of when the folder was last
-  opened, which the inbox does not keep today. Until it exists the folder lists
+  (section 4.1). The "1 high" chip is a label drawn beside a count, and it does
+  not change the count.
+- Approvals, asks and stuck strands are never in the section; they stay in Needs
+  you, unranked and unlabelled.
+- Its `why` lines need the feed change in section 6.
+- "Since you looked" needs a per-owner record of when each Update thread was last
+  opened, which the inbox does not keep today. Until it exists the section lists
   the last day's insights and says so.
-- It says what it read, as every page does: "read through 14:02 in 6 sessions;
-  4 had no labels".
+- It says what it read, as every page does: "read through 14:02; 1 of 3 insights
+  had no label".
 
-The digest is the third slice (section 9). The first slice is the order and the
-why line.
+The folded Updates view is the third slice (section 9). The first slice is the
+order and the why line.
 
 A sketch of one rail row, in the mockup's terms, for the first slice:
 
@@ -566,10 +593,11 @@ acted-on event record, shared with the meta layer. Protocol changes: a record
 kind and its feed row, and the event record. The request in this slice reads
 whole slices, so its cost ceiling is revisited from slice 1's measurements.
 
-**Slice 3: the digest and the step threshold.** The Insights folder in section 7
-(with a per-owner record of when it was last opened), and
-an optional step-threshold cadence. One protocol change puts the `why` line in a
-feed read, so the digest does not read each row separately (section 6).
+**Slice 3: insights in Updates and the step threshold.** The Updates list order,
+its "1 high" and "2 insights" chips and its "Insights since you looked" section,
+as in section 7 (with a per-owner record of when each thread was last opened),
+and an optional step-threshold cadence. One protocol change puts the `why` line in
+a feed read, so the Updates section does not read each row separately (section 6).
 
 **Not planned.** Any output that suppresses a row, changes a count, acts on a
 session, or reaches the primary.
@@ -666,5 +694,5 @@ Each can be answered with a choice.
    owner.
 
 8. **Does the Home digest belong in this work?** Answered by the owner on
-   2026-11-23: yes, in slice 3, as an Insights folder in the inbox rail (see the
-   mockup in section 7).
+   2026-11-23: yes, in slice 3, folded into the Updates folder (revised the same
+   day from a separate Insights folder; see the mockup in section 7).
