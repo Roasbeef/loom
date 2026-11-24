@@ -27,9 +27,20 @@
 # They land in packages/web_view/priv/static, which the daemon reads once at
 # startup and a release carries like any application's priv.
 #
-# lustre_dev_tools downloads and verifies Bun. This script pins Tailwind
-# separately because Lustre 2.4.0 selects a standalone macOS binary whose
-# signature fails on macOS 27. Only `make gen-client` downloads tools.
+# lustre_dev_tools downloads its bundler (Bun) and Tailwind the first time,
+# checking each against a sha256 it carries for its pinned version, and
+# caches them under packages/web_client/.lustre/bin. That is the one step
+# that needs the network, and only `make gen-client` takes it.
+#
+# On macOS the Tailwind it downloads does not run as shipped. Tailwind's
+# standalone binary is built with `bun --compile`, which appends the program
+# after the linker's ad-hoc signature, so the signature no longer covers the
+# file and the kernel kills it on exec. The cache is per working tree and
+# ignored by git, so every fresh worktree downloads a copy that fails the
+# same way. lustre_build re-signs that one file ad hoc and runs the build
+# again. An ad-hoc signature adds no trust: the file is still the one whose
+# sha256 lustre_dev_tools checked before writing it, and the signature only
+# makes it match itself again.
 #
 # ## Why the gate needs no toolchain
 #
@@ -58,11 +69,9 @@ bundle_inputs() {
 	find "$client/src" \( -name '*.gleam' -o -name '*.mjs' \) | LC_ALL=C sort
 }
 
-# The stylesheet records the Tailwind pin, the Lustre configuration, and
-# the sources Tailwind scans.
+# The stylesheet's inputs: the Tailwind input, every source it scans, and
+# the lock that names the lustre_dev_tools, and so the Tailwind, version.
 stylesheet_inputs() {
-	echo scripts/web_assets.sh
-	echo "$client/gleam.toml"
 	echo "$client/src/web_client.css"
 	echo "$client/manifest.toml"
 	find packages/web_view/src "$client/src" -name '*.gleam' | LC_ALL=C sort
@@ -205,49 +214,33 @@ stamp() {
 	} >"$output"
 }
 
-# Keep unverified downloads away from Lustre's executable path. The digest
-# also rejects a cache populated for another platform or Tailwind version.
-prepare_tailwind() (
-	local version=4.3.5 target sha binary download platform
-	platform="$(uname -s)/$(uname -m)"
-	if [[ $platform == Linux/* && $(ldd --version 2>&1 || true) == *musl* ]]; then
-		platform+=/musl
-	fi
-	case "$platform" in
-	Darwin/arm64) target=macos-arm64; sha=f3f4f5d1727e2b693b8f1c9a1492b5dd87008c86ea286bee1589cb458e6235fc ;;
-	Darwin/x86_64) target=macos-x64; sha=a63702686a3ed048b3135d84a73be49ea9d47f880c9b20e54b3ef60934ad8cdf ;;
-	Linux/aarch64|Linux/arm64) target=linux-arm64; sha=ffcd0d21dbd7c605dc12743ff0c0b47debc963c86b399674084c1c8f2c96ecad ;;
-	Linux/x86_64) target=linux-x64; sha=e47695cee3f0d90623a91f3939b08bdee610eb5ad99340adff9d4145b284d6cc ;;
-	Linux/aarch64/musl|Linux/arm64/musl) target=linux-arm64-musl; sha=564dad3028c029b0c69042c66a7a79873ed7289b73fcb7b37973fbf79cb9a32f ;;
-	Linux/x86_64/musl) target=linux-x64-musl; sha=bb050edd13f15006d872a9bb1772b908618a8df6806d30bf095cba26a09e640b ;;
-	*) echo "web_assets: unsupported Tailwind platform: $platform" >&2; return 1 ;;
-	esac
+# Tailwind as lustre_dev_tools caches it on Apple silicon, the one binary
+# lustre_build may re-sign.
+tailwind="$client/.lustre/bin/tailwindcss-macos-arm64/tailwindcss-macos-arm64"
 
-	binary="$client/build/web_asset_tools/tailwindcss"
-	if [ -x "$binary" ] && [ "$(digest_of "$binary")" = "$sha" ]; then
-		return 0
-	fi
-	mkdir -p "$(dirname "$binary")"
-	download=$(mktemp "$binary.XXXXXXXX")
-	trap 'rm -f "$download"' EXIT
-	curl --fail --silent --show-error --location \
-		"https://github.com/tailwindlabs/tailwindcss/releases/download/v$version/tailwindcss-$target" \
-		--output "$download"
-	if [ "$(digest_of "$download")" != "$sha" ]; then
-		echo "web_assets: Tailwind v$version ($target) checksum mismatch" >&2
-		return 1
-	fi
-	chmod +x "$download"
-	mv -f "$download" "$binary"
-)
+lustre_build() {
+	(cd "$client" && gleam run -m lustre/dev build --minify --no-html \
+		--outdir=build/web_assets)
+}
+
+# A failed first build on macOS is most often the fresh Tailwind refusing to
+# run (see the header). Re-sign it only when its signature does not verify,
+# and retry once, so any other failure still stops the build with its own
+# message.
+lustre_build_signed() {
+	lustre_build && return 0
+	[ "$(uname -s)" = Darwin ] && [ -f "$tailwind" ] || return 1
+	codesign --verify "$tailwind" 2>/dev/null && return 1
+	echo "web_assets: re-signing the downloaded Tailwind ad hoc (see the header)" >&2
+	codesign --force --sign - "$tailwind"
+	lustre_build
+}
 
 build() {
 	local path
-	prepare_tailwind
 	rm -rf "$scratch"
 	mkdir -p "$static"
-	(cd "$client" && gleam run -m lustre/dev build --minify --no-html \
-		--outdir=build/web_assets)
+	lustre_build_signed
 	stamp "$scratch/web_client.js" "$static/web_client.mjs" bundle_inputs \
 		"The web view's client components"
 	stamp "$scratch/web_client.css" "$static/web_client.css" stylesheet_inputs \

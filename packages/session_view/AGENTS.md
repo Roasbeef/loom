@@ -73,7 +73,7 @@ dismissed strand is simply not handed in, and a strand that failed again is.
   `FoldsOnceOpened`): the live rail's classifier, pure over `turns.Piece` and
   `approval.Review`. Pending approvals are pinned, keyed `approval:<id>`, in
   the order raised; every other row folds once opened and comes newest first,
-  keyed by its piece (a turn with failed steps once, under the turn's key, from its divider's failed count). A head carries no identity, and is
+  keyed by its piece (a turn with failed steps once, under the turn's key, from its divider's failed count). A child's result head is the outcome word and the first line of the child's report. Failed responses whose rows are adjacent and read the same (equal cut heads) lift as one row under the first response's key, with `· N times` in the head; a non-failing answer, a worked step or an owner prompt ends the run, bookkeeping does not. A child's report line is read with `spoken_breaks` and loses Markdown heading marks. A failed call's line (`Worked.last_failure`) names its result's first line, for a foreground `code_mode` call its card's failure text, and for a program that finished with failed calls its call count. A head carries no identity, and is
   one line of at most 120 graphemes, untrusted text for a text node; a peer
   message's head never claims relevance or that it is unanswered. Stuck
   strands and asks join the pinned group in phase 1.

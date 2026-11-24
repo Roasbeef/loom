@@ -1443,7 +1443,8 @@ page keys and nonces, and the relay into the session's gateway.
   page's `PeerUnreachable` and `PeerCrowded`): why a page
   has no session, as a closed type. `OtherPage` is `page_grant`'s 403 for a live
   page key whose grant names another page (a home key typed onto a session's
-  address); it is final and says the link was opened for a different page, not
+  address, or a session's key onto the home's or the admin page's, which
+  have their own headlines); it is final and says the link was opened for a different page, not
   that the page ended (protocol-change/051, the addendum of 2026-11-20). `PageEnded` means eight hours ran out, the
   daemon restarted, or the page was the oldest of `ending.max_pages` (four)
   when a newer link opened; a newer link ends nothing below that bound. `headline` and `advice(ending,
