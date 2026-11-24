@@ -1309,6 +1309,18 @@ page keys and nonces, and the relay into the session's gateway.
   program body and an answer's fence share it; a line the scanner has no
   class for is one text node. The rows are memoized per line, so a streamed
   delta scans only the line being written.
+- `markdown_view.quoted(text)`: the same renderer for a quote in the inbox's
+  reading panes (`inbox_parts.quote_nodes`, so every quoted agent or peer
+  message). It runs `text_hygiene.multiline` and `markdown.parse`, then turns each
+  link whose destination does not start with `http://` or `https://` into its
+  label as a code span; an `http(s)` link keeps `<loom-link>` and its browser
+  check. `block_clip.clip(text, bytes)` bounds the text first, between blocks
+  (a blank line outside a fence), with an oversized first block cut between its
+  lines and a fenced one closed. The daemon uses it for the brief's assistant text
+  (`assistant_bytes`, 1600) and the overview's last message (280), both of which
+  keep their newlines (protocol-change/125 addendum). `inbox_rule.head` is the
+  first line with its markers removed, and `brief_rule.current` decides whether a
+  held brief is as new as the overview's last message.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
   `tui/markdown` also draws. `view/lane` uses it for the speakers the

@@ -135,7 +135,9 @@ fn full_evidence() -> approval_evidence.Evidence {
 fn the_brief() -> session_brief.Brief {
   Brief(
     assistant: Some(session_brief.Assistant(
-      text: session_brief.untrusted("List renders; <i>fold</i> test waits."),
+      text: session_brief.untrusted(
+        "**List renders;** <i>fold</i> test waits.\n\n- see [the file](notes/a.md)\n- and [the docs](https://example.com/d)",
+      ),
       at: now - 300_000,
     )),
     steps: [
@@ -390,8 +392,15 @@ pub fn an_update_draws_the_latest_message_and_the_last_steps_test() {
   assert string.contains(html, "The agent&#39;s latest message, untrusted text")
   assert string.contains(
     html,
-    "List renders; &lt;i&gt;fold&lt;/i&gt; test waits.",
+    "<strong>List renders;</strong> &lt;i&gt;fold&lt;/i&gt; test waits.",
   )
+
+  // The list items are on their own lines, a relative link is code, and an
+  // address keeps the stream's link element.
+  assert string.contains(html, "<li class=\"md-item\">")
+  assert string.contains(html, "<code class=\"md-code-span\">the file</code>")
+  assert string.contains(html, "<loom-link>")
+  assert !string.contains(html, "<i>fold</i>")
   assert string.contains(html, "Last few steps")
   assert string.contains(html, "brief-ok")
   assert string.contains(html, "brief-bad")
@@ -588,4 +597,22 @@ pub fn a_quiet_session_with_an_open_ask_is_drawn_once_test() {
   assert string.contains(html, "agents stopped for you")
   assert !string.contains(html, "inbox-folded-names")
   assert !string.contains(html, "no one is waiting on you")
+}
+
+// An idle session whose last finished message is newer than the held brief's
+// message is not quoted from that brief, which belongs to an earlier turn.
+pub fn an_older_brief_is_not_the_idle_sessions_latest_message_test() {
+  let #(model, _, _) = fresh(full_evidence(), None)
+  let html = drawn(run(model, home.InboxOpened("B")))
+
+  assert !string.contains(html, "List renders;")
+}
+
+// With no time on the overview's message there is nothing newer to contradict
+// the brief, so an idle session quotes it.
+pub fn an_idle_session_with_no_message_time_quotes_its_brief_test() {
+  let #(model, _, _) = fresh(full_evidence(), None)
+  let html = drawn(run(model, home.InboxOpened("S")))
+
+  assert string.contains(html, "List renders;")
 }

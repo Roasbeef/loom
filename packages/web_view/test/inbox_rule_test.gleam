@@ -337,3 +337,36 @@ pub fn a_quiet_session_with_a_feed_row_is_not_folded_test() {
   // With every quiet session attended, the folded group is not listed at all.
   assert inbox_rule.grouped_with([asking], [], ["a"]) == []
 }
+
+// A title is the message's first line as words: the markers an agent wrote
+// around bold, code and a link are not drawn in it.
+pub fn a_head_has_no_markdown_markers_test() {
+  assert inbox_rule.head(report(
+      sessions.Idle,
+      Some("**Neither is committed.** See [`a/b`](a/b) and `make check`."),
+    ))
+    == "Neither is committed. See a/b and make check."
+
+  // A line that opens a list item is kept as written.
+  assert inbox_rule.head(report(sessions.Idle, Some("- first item")))
+    == "- first item"
+}
+
+// The title is the first line only, and a line whose markers leave no words
+// stays as written.
+pub fn a_head_stops_at_the_first_line_and_keeps_a_line_of_only_markers_test() {
+  assert inbox_rule.head(report(
+      sessions.Idle,
+      Some("**Done.**\n\n- first item\n- second item"),
+    ))
+    == "Done."
+  assert inbox_rule.head(report(sessions.Idle, Some("``\nrest"))) == "``"
+}
+
+// A one-line message is held whole by its head, so it is not quoted again, and
+// a message of several blocks or a cut head is not.
+pub fn a_head_holds_only_a_one_line_message_test() {
+  assert inbox_rule.head_holds("**Done.**\n", "Done.")
+  assert !inbox_rule.head_holds("Done.\n\nMore.", "Done.")
+  assert !inbox_rule.head_holds("Done. And more words.", "Done.")
+}

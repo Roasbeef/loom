@@ -98,3 +98,22 @@ pub fn shown(
     Some(session_brief.Unseen(_)) | None -> None
   }
 }
+
+/// Whether a held brief's latest message is at least as new as the last
+/// finished message the overview reports, so a brief read during an earlier turn
+/// is not drawn as what the agent last said after a later turn ended. A brief
+/// with no message is not current, and an overview with no time has nothing
+/// newer to contradict it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert brief_rule.current(brief, None) == True
+/// ```
+pub fn current(read: Brief, finished_at: Option(Int)) -> Bool {
+  case read.assistant, finished_at {
+    Some(assistant), Some(finished) -> assistant.at >= finished
+    Some(_), None -> True
+    None, Some(_) | None, None -> False
+  }
+}

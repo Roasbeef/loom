@@ -1224,7 +1224,7 @@ opens a saved session and never reads its database.
 | `working` | integer | optional | Number of strands with a current operation. |
 | `approvals` | integer | optional | Number of pending escalation records. |
 | `last_outcome` | string or null | optional | How main's last run ended: `completed`, `failed`, or `aborted`. `null` when main has not finished a run, or its latest terminal result is a compaction or navigation. |
-| `last_message` | string or null | optional | Main's final assistant text for that run, on one line, at most 280 bytes. |
+| `last_message` | string or null | optional | Main's final assistant text for that run, newlines kept, at most 280 bytes, cut between blocks. A reader that draws it on one line flattens it. See [Protocol 050](../protocol-change/050-session-activity.md), the addendum on newlines. |
 | `last_message_at` | integer or null | optional | Unix milliseconds of the entry behind `last_message`; `null` whenever `last_message` is. See [Protocol 050](../protocol-change/050-session-activity.md), the addendum on times. |
 | `turn_started_at` | integer or null | optional | Unix milliseconds at which the turn now open on main began; `null` while main runs nothing. |
 | `asks` | integer | optional | Number of asks that are open and routed to the owner. An ask routed to a strand is not counted. A client reads a missing member as 0. See [Protocol 050](../protocol-change/050-session-activity.md), the addendum on open asks. |
@@ -2229,7 +2229,8 @@ refused during a drain.
 0) and the current `epoch`, and answers `{"brief": {...}}`: a bounded account of
 the session's recent work for Home ([Protocol 125](../protocol-change/125-session-brief.md)).
 Its members, each omitted when it has nothing: `assistant` (`{text, trust, at}`,
-the latest assistant text even mid-turn, at most 600 bytes), `steps` (at most four
+the latest assistant text even mid-turn, newlines kept, at most 1600 bytes, cut
+between blocks), `steps` (at most four
 `{at, tool, words, trust, outcome}`, newest first, `outcome` being `running`,
 `succeeded` or `failed`), `strands` (at most twelve `{name, state, since}`, `state`
 being `working`, `idle` or `stopped`), `goal` (`{objective, status, tokens_used,

@@ -36,6 +36,7 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import session_view/markdown.{type Block, type Inline}
+import session_view/text_hygiene
 import web_view/code_view
 
 /// The elements for a parsed Markdown tree, one per top-level block.
@@ -50,6 +51,92 @@ import web_view/code_view
 /// ```
 pub fn blocks(tree: List(Block)) -> List(Element(message)) {
   list.map(tree, block_element)
+}
+
+/// A quoted message's Markdown as elements, with every link that the page would
+/// not open drawn as code.
+///
+/// The inbox quotes what an agent or a peer wrote, and an agent often names a
+/// file as `[label](path/to/file)`. In the stream such a link is `<loom-link>`,
+/// which stays plain text because a relative path is not an address the browser
+/// may open. Plain text would leave a file name looking like prose, so a
+/// destination that does not start with `http://` or `https://` is replaced by
+/// its label in the code face. A destination that does start so is kept as the
+/// stream draws it, and `<loom-link>` still applies its stricter check
+/// (`web_client/link_rule`) before it makes the label clickable. Everything else
+/// is `blocks`: raw HTML is text, and an image is its text, not a request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let children = markdown_view.quoted("**Done.** See [the file](notes/a.md)")
+/// ```
+pub fn quoted(text: String) -> List(Element(message)) {
+  markdown.parse(text_hygiene.multiline(text))
+  |> list.map(unlink_block)
+  |> blocks
+}
+
+/// A block with its links that the page would not open turned into code spans.
+fn unlink_block(block: Block) -> Block {
+  case block {
+    markdown.Paragraph(inlines:) -> markdown.Paragraph(unlink(inlines))
+    markdown.Heading(level:, inlines:) ->
+      markdown.Heading(level, unlink(inlines))
+    markdown.CodeBlock(..) | markdown.Rule -> block
+    markdown.Quote(blocks:) -> markdown.Quote(list.map(blocks, unlink_block))
+    markdown.Alert(kind:, blocks:) ->
+      markdown.Alert(kind, list.map(blocks, unlink_block))
+    markdown.BulletList(items:) ->
+      markdown.BulletList(list.map(items, list.map(_, unlink_block)))
+    markdown.OrderedList(start:, items:) ->
+      markdown.OrderedList(start, list.map(items, list.map(_, unlink_block)))
+    markdown.Table(header:, rows:) ->
+      markdown.Table(
+        list.map(header, unlink_cell),
+        list.map(rows, list.map(_, unlink_cell)),
+      )
+    markdown.Footnote(label:, blocks:) ->
+      markdown.Footnote(label, list.map(blocks, unlink_block))
+  }
+}
+
+/// A table cell with its links handled as in a paragraph.
+fn unlink_cell(cell: markdown.Cell) -> markdown.Cell {
+  markdown.Cell(cell.align, unlink(cell.inlines))
+}
+
+/// The inlines with each link whose destination is not `http` or `https`
+/// replaced by its label as a code span, looking inside emphasis.
+fn unlink(inlines: List(Inline)) -> List(Inline) {
+  list.map(inlines, fn(inline) {
+    case inline {
+      markdown.Link(label:, destination:) ->
+        case web_address(destination) {
+          True -> markdown.Link(unlink(label), destination)
+          False -> markdown.Code(markdown.plain(label))
+        }
+      markdown.Emphasis(children:) -> markdown.Emphasis(unlink(children))
+      markdown.Strong(children:) -> markdown.Strong(unlink(children))
+      markdown.Strikethrough(children:) ->
+        markdown.Strikethrough(unlink(children))
+      markdown.Text(..)
+      | markdown.Code(..)
+      | markdown.Image(..)
+      | markdown.Task(..)
+      | markdown.FootnoteRef(..)
+      | markdown.Break -> inline
+    }
+  })
+}
+
+/// Whether a destination starts like a web address, in any letter case. This is
+/// only the choice between a link and code; `<loom-link>` decides whether the
+/// address is clickable.
+fn web_address(destination: String) -> Bool {
+  let lower = string.lowercase(destination)
+
+  string.starts_with(lower, "http://") || string.starts_with(lower, "https://")
 }
 
 /// The first line of a text's Markdown as inline elements, flattened to one
