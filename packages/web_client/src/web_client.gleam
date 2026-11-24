@@ -50,6 +50,9 @@
 ////   document's shape in its place.
 //// - `<loom-popover wanted="open">` (`web_client/popover`) opens and closes
 ////   the home's account panel from the person's name in the bar.
+//// - `<loom-picklist>` (`web_client/picklist`) is the keyboard of the new-session
+////   composer's folder list: it focuses the search field when the list opens,
+////   moves the focus with the arrow keys and closes the list on Escape.
 //// - `<loom-dismiss>` (`web_client/dismiss`) closes the bar's context
 ////   disclosure when a press lands outside it or Escape is pressed.
 //// - `<loom-saved>` (`web_client/saved`) folds and unfolds the sidebar's saved
@@ -90,6 +93,7 @@ import web_client/follow
 import web_client/link
 import web_client/mermaid
 import web_client/notes
+import web_client/picklist
 import web_client/popover
 import web_client/rename
 import web_client/reveal
@@ -130,6 +134,7 @@ pub fn main() -> Nil {
 
   // Custom components for inspector notes, popovers, and inline tools.
   let _ = notes.register()
+  let _ = picklist.register()
   let _ = popover.register()
   let _ = rename.register()
   let _ = reveal.register()
