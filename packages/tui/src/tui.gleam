@@ -120,6 +120,7 @@ import tui/acp/server as acp_server
 import tui/admission
 import tui/agent_strip
 import tui/appearance
+import tui/ask_board
 import tui/attachment
 import tui/bootstrap
 import tui/buffered
@@ -1013,6 +1014,7 @@ pub fn new_model_with_clock(
       client_build: build_identity.current(),
       control_request: None,
       activity_poll: tui_model.ActivityDue,
+      asks: ask_board.empty(),
       reconnect: ReconnectIdle,
       creation_key: None,
       configuring: None,
