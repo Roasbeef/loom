@@ -598,3 +598,21 @@ pub fn a_quiet_session_with_an_open_ask_is_drawn_once_test() {
   assert !string.contains(html, "inbox-folded-names")
   assert !string.contains(html, "no one is waiting on you")
 }
+
+// An idle session whose last finished message is newer than the held brief's
+// message is not quoted from that brief, which belongs to an earlier turn.
+pub fn an_older_brief_is_not_the_idle_sessions_latest_message_test() {
+  let #(model, _, _) = fresh(full_evidence(), None)
+  let html = drawn(run(model, home.InboxOpened("B")))
+
+  assert !string.contains(html, "List renders;")
+}
+
+// With no time on the overview's message there is nothing newer to contradict
+// the brief, so an idle session quotes it.
+pub fn an_idle_session_with_no_message_time_quotes_its_brief_test() {
+  let #(model, _, _) = fresh(full_evidence(), None)
+  let html = drawn(run(model, home.InboxOpened("S")))
+
+  assert string.contains(html, "List renders;")
+}

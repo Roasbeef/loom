@@ -72,6 +72,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/operator.{type Delivery}
+import web_view/brief_rule
 import web_view/composer
 import web_view/inbox_rule.{type Folder, type Group, type Kind, type Thread}
 import web_view/session_brief.{type Brief}
@@ -1030,16 +1031,27 @@ fn said(thread: Thread, kind: Kind, brief: Option(Brief)) -> Element(message) {
   // left whole is the title already, so its quote would repeat it.
   let head = inbox_rule.thread_head(thread)
 
-  // A working session quotes its brief even when the brief has no words yet,
-  // and any other session quotes it only when it has some.
+  // A working session quotes its brief even when it has no words yet, because
+  // the turn is still running. An idle session quotes it only when its message
+  // is at least as new as the overview's last finished one, so the brief of an
+  // earlier turn is not shown after a later turn ended. A failed or settled
+  // session never shows a held brief: the page stopped reading it.
   let by_brief = case kind, brief {
     inbox_rule.Working, Some(read) -> Some(read)
-    _, Some(read) ->
-      case brief_said(read) {
-        "" -> None
-        _ -> Some(read)
+    inbox_rule.Idle, Some(read) ->
+      case
+        brief_said(read) != ""
+        && brief_rule.current(read, thread.report.last_message_at)
+      {
+        True -> Some(read)
+        False -> None
       }
-    _, None -> None
+    inbox_rule.ApprovalPending, _
+    | inbox_rule.Failed, _
+    | inbox_rule.Settled, _
+    | inbox_rule.Working, None
+    | inbox_rule.Idle, None
+    -> None
   }
 
   // An approval leaves the words out. A brief's message keeps the paragraph and
