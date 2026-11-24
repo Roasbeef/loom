@@ -413,6 +413,46 @@ pub type Command {
     /// The command's body fields.
     fields: List(#(String, json.JsonValue)),
   )
+
+  /// One of the attention commands a session's open asks are read and answered
+  /// with (`protocol-change/120` and `128`). Each takes the authenticated epoch.
+  AttentionCommand(
+    /// Which read or answer, with the body it carries.
+    request: AttentionRequest,
+  )
+}
+
+/// The attention commands the terminal sends. A closed set, so the wire name
+/// and the body of each come from one place and a caller cannot name a command
+/// this module does not validate.
+pub type AttentionRequest {
+  /// `sessions.attention` for one session: the feed row that counts its open
+  /// asks and lists the first of them.
+  ReadAttentionFeed(
+    /// The canonical session identity.
+    session: String,
+  )
+
+  /// `attention.read`: one ask in full, with the revision an answer must name.
+  ReadAttentionRecord(
+    /// The canonical session identity.
+    session: String,
+    /// The ask's identifier, as the feed listed it.
+    id: String,
+  )
+
+  /// `attention.answer`: the owner's answer to one ask, which the daemon checks
+  /// against the stored ask, delivers to the asking strand and settles.
+  AnswerAttentionAsk(
+    /// The canonical session identity.
+    session: String,
+    /// The ask's identifier.
+    ask: String,
+    /// The revision of the `attention.read` the person answered from.
+    revision: Int,
+    /// The answer object of protocol-change/119, without its `ask` key.
+    answer: json.JsonValue,
+  )
 }
 
 /// The most sessions one `SessionActivity` request may name.
@@ -741,6 +781,13 @@ pub type Reply {
     /// The daemon's reply body, unread.
     document: json.JsonValue,
   )
+
+  /// The answer to an attention command. The body is kept whole and
+  /// `tui/ask_board` reads the fields it draws.
+  AttentionReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -838,6 +885,9 @@ pub fn name(command: Command) -> String {
     DirectoryStatus -> "directory.status"
     SessionsElsewhere(..) -> "sessions.elsewhere"
     ProjectsCommand(name:, ..) -> name
+    AttentionCommand(ReadAttentionFeed(..)) -> "sessions.attention"
+    AttentionCommand(ReadAttentionRecord(..)) -> "attention.read"
+    AttentionCommand(AnswerAttentionAsk(..)) -> "attention.answer"
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -868,9 +918,12 @@ pub fn mutates(command: Command) -> Bool {
     | ProjectsCommand("projects.board", _)
     | ProjectsCommand("projects.ticket", _)
     | ProjectsCommand("projects.list", _)
+    | AttentionCommand(ReadAttentionFeed(..))
+    | AttentionCommand(ReadAttentionRecord(..))
     | SessionActivity(..) -> False
     ProjectsCommand(..) -> True
-    SetDefault(..)
+    AttentionCommand(AnswerAttentionAsk(..))
+    | SetDefault(..)
     | RenameSession(..)
     | CreateSession(..)
     | OpenSession(..)
@@ -925,6 +978,55 @@ pub fn encode(
   }
 }
 
+/// The body of an attention command, with the epoch and every identifier
+/// checked the way the daemon checks it.
+///
+/// The ask and record identifiers are bounded text rather than a grammar of
+/// their own: the daemon words a malformed one `bad_request`, and an id this
+/// terminal copied from the daemon's own feed is well formed.
+fn attention_fields(
+  request: AttentionRequest,
+  epoch: String,
+) -> Result(List(#(String, json.JsonValue)), String) {
+  // Each request validates the identifiers it names and carries the epoch.
+  case request {
+    ReadAttentionFeed(session:) -> {
+      use Nil <- result.map(valid_id(session))
+      [
+        #("sessions", json.Array([json.String(session)])),
+        #("epoch", json.String(epoch)),
+      ]
+    }
+    ReadAttentionRecord(session:, id:) -> {
+      use Nil <- result.try(valid_id(session))
+      use id <- result.map(bounded_text(json.String(id), 64))
+      [
+        #("session", json.String(session)),
+        #("id", json.String(id)),
+        #("epoch", json.String(epoch)),
+      ]
+    }
+    AnswerAttentionAsk(session:, ask:, revision:, answer:) -> {
+      use Nil <- result.try(valid_id(session))
+      use ask <- result.try(bounded_text(json.String(ask), 64))
+
+      // A revision is the sequence number of a cell, so it is never negative.
+      use Nil <- result.map(case revision >= 0 {
+        True -> Ok(Nil)
+        False -> Error("invalid ask revision")
+      })
+
+      [
+        #("session", json.String(session)),
+        #("ask", json.String(ask)),
+        #("revision", json.Int(revision)),
+        #("answer", answer),
+        #("epoch", json.String(epoch)),
+      ]
+    }
+  }
+}
+
 // The members of a `sessions.elsewhere` request. A cursor follows one group's
 // rows, so it is sent only with the group it belongs to, and each is checked
 // here as the daemon will check it.
@@ -972,6 +1074,7 @@ fn command_fields(command: Command, epoch: Epoch) {
     SessionsElsewhere(orchestrator, after) ->
       elsewhere_fields(orchestrator, after)
     ProjectsCommand(_, fields) -> Ok(fields)
+    AttentionCommand(request) -> attention_fields(request, epoch_value)
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       // Validate continuation token.
       use Nil <- result.try(case after {
@@ -1470,6 +1573,8 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "projects.label"
     | "projects.labels"
     | "projects.verdict" -> Ok(ProjectsReply(body))
+    "sessions.attention" | "attention.read" | "attention.answer" ->
+      Ok(AttentionReply(body))
     "status" -> result.map(summary(body), StatusReply)
     "ui.link" -> {
       use path <- result.try(text_at(body, "path", 1024))

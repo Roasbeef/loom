@@ -306,3 +306,19 @@ pub fn a_confirm_answered_no_and_a_picked_label_are_worded_test() {
 pub fn the_prompt_bound_is_the_composers_test() {
   assert attention_answer.max_prompt_bytes == 16_384
 }
+
+pub fn a_prompt_is_recognised_by_its_first_line_test() {
+  let text = attention_answer.prompt_text(ask(), [#("q1", attention.Yes)])
+  assert attention_answer.is_prompt(text)
+  assert attention_answer.is_prompt("Answer to your ask ask-3f9c01a2b4.")
+}
+
+pub fn text_that_only_resembles_a_prompt_is_not_one_test() {
+  assert !attention_answer.is_prompt("")
+  assert !attention_answer.is_prompt("Answer to your question.")
+  assert !attention_answer.is_prompt("Answer to your ask ask-xyz.")
+  assert !attention_answer.is_prompt("Answer to your ask ask-3f9c01a2b4")
+  assert !attention_answer.is_prompt(
+    "Please read:\nAnswer to your ask ask-3f9c01a2b4.",
+  )
+}

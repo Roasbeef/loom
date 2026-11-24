@@ -50,6 +50,7 @@ import session_view/attempt
 import session_view/shared_set
 import tui/access_overlay
 import tui/agents
+import tui/ask_control
 import tui/attachment
 import tui/daemon/protocol as control_protocol
 import tui/inbound
@@ -555,6 +556,8 @@ fn finish_control(model: Model, result) {
     | Some(Ok(job.ProjectChanged(..) as outcome))
     | Some(Ok(job.ProjectRuled(..) as outcome)) ->
       project_control.finish(model, outcome)
+    Some(Ok(job.AskAnswered(session:, ask:, delivery:))) ->
+      ask_control.answered(model, session, ask, delivery)
     Some(Ok(SessionDeleted(id))) ->
       catalogue_removed(model, id, "deleted session ")
     Some(Ok(SessionArchived(id))) ->
@@ -1278,6 +1281,16 @@ fn finish_peer_operation(model: Model, document: json.JsonValue) {
 
 /// Records daemon control failure reason onto active overlay.
 fn finish_control_failure(model: Model, reason: String) {
+  // A request the ask card started fails into the card, which words it for the
+  // owner or rests quietly; no overlay asked for it.
+  case ask_control.owns_request(model) {
+    True -> ask_control.failed(model, reason)
+    False -> finish_overlay_failure(model, reason)
+  }
+}
+
+/// Records a failed control job on the overlay that asked for it.
+fn finish_overlay_failure(model: Model, reason: String) {
   case model.view.overlay {
     PeerLinkManager(state) ->
       Model(
@@ -1554,7 +1567,21 @@ pub fn service_activity(model: Model) -> Model {
     // The project board is polled from the same tick, so the tick's chain of
     // services does not grow a step for it.
     ProjectScreen(_), _ -> project_control.service(model)
-    _, _ -> model
+
+    // Everything else is the ask card's to poll: it reads only when no surface
+    // owns the control request.
+    NoOverlay, _
+    | ModelSelector(_), _
+    | AgentInspector(_), _
+    | GoalInspector(_), _
+    | DaemonSelector(_), _
+    | PeerLinkManager(_), _
+    | AccessManager(_), _
+    | ApprovalInspector(_), _
+    | ProposalReview(_), _
+    | EvolutionReview(_), _
+    | MemoryOverview(_), _
+    -> ask_control.service(model)
   }
 }
 

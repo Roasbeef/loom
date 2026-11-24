@@ -58,6 +58,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import session_view/connection_event
+import tui/ask_jobs
 import tui/bootstrap
 import tui/buffered
 import tui/connection
@@ -188,6 +189,7 @@ pub fn file(
       running,
       job.ActivityArrived(key:, reply:),
     )
+    job.AsksArrived(key:, reply:) -> #(running, job.AsksArrived(key:, reply:))
     job.AttachArrived(key:, reply:) -> #(
       running,
       job.AttachArrived(key:, reply:),
@@ -301,6 +303,17 @@ pub fn start(running: Running, key: Key, spec: job.Spec) -> Running {
         with_control(running, control, fn(host) { fn() { activity(host, ids) } }),
         activity_timeout_ms,
         job.ActivityArrived,
+      )
+
+    // A read makes up to three requests in turn, each bounded at five
+    // seconds, on a connection of its own.
+    job.Asks(control:, session:) ->
+      start_task(
+        running,
+        key,
+        with_control(running, control, fn(host) { fn() { asks(host, session) } }),
+        20_000,
+        job.AsksArrived,
       )
 
     job.Attach(route:, within_ms:) ->
@@ -490,6 +503,7 @@ pub fn dropped(arrival: Arrival(daemon_selection.Host)) -> Nil {
     | job.ControlArrived(..)
     | job.ReconnectArrived(..)
     | job.ActivityArrived(..)
+    | job.AsksArrived(..)
     | job.ConfigurationArrived(..)
     | job.ImageArrived(..) -> Nil
   }
@@ -698,7 +712,8 @@ fn control_deadline(request: job.ControlJob) -> Int {
     | job.ReadProjectTicket(..)
     | job.ReadProjectLabels(..)
     | job.ChangeProject(..)
-    | job.ChangeRule(..) -> 12_000
+    | job.ChangeRule(..)
+    | job.AnswerAsk(..) -> 12_000
   }
 }
 
@@ -732,6 +747,8 @@ fn control_work(
         project_jobs.read_labels(host, project, rule)
       job.ChangeProject(change:) -> project_jobs.change(host, change)
       job.ChangeRule(change:) -> project_jobs.change_rule(host, change)
+      job.AnswerAsk(session:, ask:, revision:, answer:) ->
+        ask_jobs.answer(host, session, ask, revision, answer)
     }
   }
 }
@@ -767,6 +784,7 @@ fn load_page(host, command, collection, session, workspace) {
     | control_protocol.DirectoryReply(_)
     | control_protocol.ElsewhereReply(_)
     | control_protocol.ProjectsReply(_)
+    | control_protocol.AttentionReply(_)
     | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
       Error("catalogue returned an unexpected control reply")
@@ -913,6 +931,19 @@ fn change_access(host, command) {
   }
 }
 
+/// Reads a session's open asks on a connection the worker opens and closes, so
+/// the terminal's borrowed control connection is never held by a poll.
+fn asks(
+  host: daemon_selection.Host,
+  session: String,
+) -> Result(job.AsksRead, String) {
+  use owned <- result.try(daemon_selection.reconnect(host, process.self()))
+  let outcome = ask_jobs.read_asks(owned, session)
+  daemon.close(daemon_selection.control(owned))
+
+  outcome
+}
+
 /// Polls daemon activity for session IDs on an independent connection.
 fn activity(
   host: daemon_selection.Host,
@@ -943,6 +974,7 @@ fn activity(
     | control_protocol.DirectoryReply(_)
     | control_protocol.ElsewhereReply(_)
     | control_protocol.ProjectsReply(_)
+    | control_protocol.AttentionReply(_)
     | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
       Error("activity returned an unexpected control reply")
