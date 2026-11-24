@@ -644,12 +644,12 @@ never a message held by a read nobody could confirm.
   drops the answer from the request. The owner's second answer settles it, as
   119 already says the later answer stands.
 - An input that arrives after the answer has reached the strand and before its
-  record settles is held, because the ask still reads as open. The answer's run
-  has already placed the items held before it, so this one waits in
-  `pending_next_run` and nothing starts a run for it: settling the record does
-  not wake the strand. It rides ahead of the strand's next input, whoever sends
-  it. The window is one store write long, and the held item is not lost, so
-  this is documented rather than given a wake of its own.
+  record settles is held, because the ask still reads as open. It waits in
+  `pending_next_run`, and settling the record does not wake the strand. A held
+  item is placed only when a run starts, ahead of that run's own prompt, so an
+  input steered into a run still open after the settle is read before it. The
+  window is the settle call to the session and its store write, and the held
+  item is not lost, so this is documented rather than given a wake of its own.
 - The hold applies to every run of a strand while an ask of it is open, and not
   only to the tail of the run that made the ask. If the owner says "continue"
   and that run works for an hour, an advisor block, a rule injection, peer mail,

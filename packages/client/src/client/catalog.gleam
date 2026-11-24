@@ -515,8 +515,8 @@ pub const advisor_role = model.Custom("advisor")
 ///
 pub const router_role = model.Custom("router")
 
-// The six routable roles, in the canonical order listings use. The
-// advisor comes last because it is the only one no session needs, and
+// The seven routable roles, in the canonical order listings use. The
+// advisor and the router come last because no session needs them, and
 // this order is the one an operator reads down.
 const routable_roles = [
   model.Main,
