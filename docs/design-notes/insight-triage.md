@@ -432,9 +432,16 @@ message, its last few steps and its delegates, with a message box offering Queue
 and Steer (`attention-inbox/README.md`, section 2.1). The owner decided on
 2026-11-23 to fold the insights into that folder, rather than add a separate
 Insights folder. This revises an earlier form of this note, which had a separate
-folder. The change has two parts, which share one set of rows.
+folder. The change has three parts, which share one set of rows.
 
-- **The list.** Updates orders its sessions by each session's most important
+- **The band.** At the head of the Updates list, a band "Top across sessions"
+  lists up to five `high` rows from every running session, each naming its
+  session, newest first among equals. Pressing one opens that session's Update
+  thread scrolled to that insight row. The band is drawn only when a triage role
+  is routed and at least one row is `high`. It is never counted in the need pill,
+  and approvals, asks, stuck strands and peer messages never appear in it, the
+  same rules as the section below.
+- **The list.** Below the band, Updates orders its sessions by each session's most important
   insight. A session with a `high` label shows a "1 high" chip in the triage chip
   style. A session whose insights are unlabelled or `normal` shows a neutral
   count, "2 insights". Sessions with no insights sort last. With no triage role
@@ -446,7 +453,7 @@ folder. The change has two parts, which share one set of rows.
   rows to one line ("1 low folded").
 
 [`insight-triage/updates-mockup.html`](insight-triage/updates-mockup.html) is a
-static sketch of both parts in both themes.
+static sketch of all three parts in both themes.
 
 Which rows appear is fixed by the classifier's `FoldsOnceOpened` kinds
 (`session_view/attention.gleam`, `Kind`). Four of them are Updates insights:
@@ -593,7 +600,8 @@ acted-on event record, shared with the meta layer. Protocol changes: a record
 kind and its feed row, and the event record. The request in this slice reads
 whole slices, so its cost ceiling is revisited from slice 1's measurements.
 
-**Slice 3: insights in Updates and the step threshold.** The Updates list order,
+**Slice 3: insights in Updates and the step threshold.** The "Top across sessions" band
+(up to five `high` rows), the Updates list order,
 its "1 high" and "2 insights" chips and its "Insights since you looked" section,
 as in section 7 (with a per-owner record of when each thread was last opened),
 and an optional step-threshold cadence. One protocol change puts the `why` line in
@@ -695,4 +703,5 @@ Each can be answered with a choice.
 
 8. **Does the Home digest belong in this work?** Answered by the owner on
    2026-11-23: yes, in slice 3, folded into the Updates folder (revised the same
-   day from a separate Insights folder; see the mockup in section 7).
+   day from a separate Insights folder; see the mockup in section 7), with a "Top across sessions" band of up to five
+   high rows at the head of Updates, added the same day.
