@@ -640,6 +640,9 @@ extended by the M3 runtime wave.
   → commit and re-plan on `Transition`/`Finish`; on `Dispatch` commit the
   intent *then* start the effect; on `AwaitEffect(key)` resolve the key; on
   `Wait` schedule a timer or a poll permit; on `Fault` stop abnormally.
+  `checkpoint_threshold` evaluates the host hook only at a running
+  checkpoint. Other passes supply `ThresholdNotExceeded`. The planner
+  owns inbox order and threshold deduplication within a checkpoint.
 - **Restart callbacks retain only their own inputs.** `api.open_published`
   projects option fields before constructing runtime and driver builders.
   `supervisor.start_published` captures the classifier and driver builder

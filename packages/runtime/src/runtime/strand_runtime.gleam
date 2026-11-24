@@ -94,7 +94,8 @@
 //// 2. `drive` runs the planning loop under a fuel bound, and `drive_loop`
 ////    reloads the registers with `load`, recording whether work is open.
 //// 3. `plan_with` builds `build_inputs` for the pure planner and
-////    dispatches on the action it returns.
+////    dispatches on the action it returns. `checkpoint_threshold` reads
+////    compaction inputs only on running checkpoints.
 //// 4. `commit_then` commits the planned transaction, reloading on a stale
 ////    expectation, and only then continues the loop.
 //// 5. `start_effect` begins a dispatched effect on a monitored process
@@ -3615,16 +3616,35 @@ fn build_inputs(
     preparation: loaded.preparation,
     tool_args_keys: loaded.tool_args_keys,
     preparation_keys: loaded.preparation_keys,
-    threshold: state.effects.hooks.threshold(effects.ThresholdQuery(
-      operation: loaded.op.id,
-      strand: state.strand,
-      messages: projected.messages,
-      carried: projected.carried,
-      previous_summary: projected.previous_summary,
-    )),
+    threshold: checkpoint_threshold(state, loaded, projected),
     poll_permit: state.poll_permit,
     observation:,
   )
+}
+
+/// Supplies the planner's threshold input at the boundary where it can be used.
+fn checkpoint_threshold(
+  state: State,
+  loaded: Loaded,
+  projected: hooks.Projected,
+) -> planner.ThresholdStatus {
+  // Only a running checkpoint can enter the planner's threshold step.
+  // Keep the hook on every such pass. The planner still orders inbox work
+  // and tracks whether this trigger has already been checked.
+  case loaded.op_state, loaded.op.intent {
+    RunState(control: operation.Running, phase: operation.Checkpoint(..), ..),
+      RunIntent(..)
+    ->
+      state.effects.hooks.threshold(effects.ThresholdQuery(
+        operation: loaded.op.id,
+        strand: state.strand,
+        messages: projected.messages,
+        carried: projected.carried,
+        previous_summary: projected.previous_summary,
+      ))
+    RunState(..), _ | CompactionState(..), _ | NavigationState(..), _ ->
+      planner.ThresholdNotExceeded
+  }
 }
 
 // --- small helpers --------------------------------------------------------
