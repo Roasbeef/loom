@@ -986,10 +986,20 @@ pub fn a_session_with_an_open_ask_reads_asked_on_the_session_page_test() {
   let #(model, _) =
     with_watches(listing(), [
       #("B", sessions.Watch(sessions.Idle, 1)),
-      #("A", sessions.Watch(sessions.Working, 0)),
+      #("A", sessions.Watch(sessions.Working, 1)),
     ])
   let assert Ok(words) = dict.get(component.session_watching(model), "B")
   assert words == "asked"
+
+  // A working session with an ask reads asked, not running.
+  let assert Ok(working) = dict.get(component.session_watching(model), "A")
+  assert working == "asked"
+
+  // A pending approval outranks the ask.
+  let #(model, _) =
+    with_watches(listing(), [#("B", sessions.Watch(sessions.NeedsYou, 1))])
+  let assert Ok(approval) = dict.get(component.session_watching(model), "B")
+  assert approval == "approval"
 
   // Asks are the daemon's count, so the page's own row reads them too, while
   // its state stays the lane's.
