@@ -27,6 +27,15 @@
 #    ask stays open until the owner answers it; the fake logs the next
 #    request's last message, which is the answer's readable text.
 #
+# 5. More prompts the attention inbox needs (see fake_anthropic.py): "need
+#    network" (an approval, since the jail's network is off), "ask kinds one"
+#    and "ask kinds two" (every answer kind), "post a notice", "make changes"
+#    (worktree hunks in the git workspace), "work slowly" (a 45 s turn, for
+#    Queue and Steer) and "code mode ask" (ask and notice from a program).
+#    `control.py ... raw projects.create` on "$DIR/project-ws" and then
+#    `projects.post` gives a ticket at person/answer: the router accepts the
+#    first candidate and the worker asks a question.
+#
 # The scripted endpoint answers by role and by what the last message says;
 # see fake_anthropic.py.
 set -euo pipefail
@@ -110,6 +119,9 @@ model_id = "fake-summarize"
 context_window = 200000
 max_output_tokens = 2000
 
+[tools]
+network = "off"
+
 [roles]
 main = ["fake-main"]
 subagent = ["fake-sub"]
@@ -117,10 +129,24 @@ advisor = ["fake-advisor"]
 summarize = ["fake-summarize"]
 EOF
 
+# The workspace is a repository with one commit, so a session's edits show as
+# worktree hunks in the review pane. The project workspace is a second
+# repository, because a project clones its workspace.
+for repo in "$dir/workspace" "$dir/project-ws"; do
+	mkdir -p "$repo/src"
+	[ -f "$repo/src/a.gleam" ] || printf 'pub fn main() { Nil }\n' >"$repo/src/a.gleam"
+	if [ ! -d "$repo/.git" ]; then
+		git -C "$repo" init -q -b main
+		git -C "$repo" add -A
+		git -C "$repo" -c user.name=seed -c user.email=seed@example.com commit -qm "Seed"
+	fi
+done
+
 python3 "$here/fake_anthropic.py" "$fake_port" >"$dir/fake.log" 2>&1 &
 echo $! >"$dir/fake.pid"
 HOME="$dir/home" WEB_SEED_KEY=scripted "$root/bin/loomd" --state-dir "$state" \
 	--bind "127.0.0.1:$port" --config "$state/loom.toml" --ui --best-effort \
+	--codemode-seed "$root/build/codemode-seed" --capacity 24 \
 	>"$dir/loomd.log" 2>&1 &
 echo $! >"$dir/loomd.pid"
 
@@ -150,3 +176,5 @@ echo "vetting lint: $vetting"
 echo "lint census:  $census"
 echo "operator: http://127.0.0.1:$port$(python3 "$here/control.py" "$state" "$port" ui "$vetting" operator)"
 echo "observer: http://127.0.0.1:$port$(python3 "$here/control.py" "$state" "$port" ui "$vetting" observer)"
+echo "operator home: http://127.0.0.1:$port$(python3 "$here/control.py" "$state" "$port" ui home operator)"
+echo "observer home: http://127.0.0.1:$port$(python3 "$here/control.py" "$state" "$port" ui home observer)"

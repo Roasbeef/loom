@@ -70,6 +70,59 @@ ASK_QUESTIONS = [
     {"prompt": "Keep the parts of the work that do not depend on it moving?", "kind": "confirm"},
 ]
 
+# Asks that cover every answer kind, four questions at most per ask. The
+# first set is confirm, choice, multiple choice and checklist; the second is
+# the fill-in kinds. An Other answer is typed on any of the first set.
+ASK_KINDS_ONE = [
+    {"prompt": "Keep the retry fix in this change?", "kind": "confirm"},
+    {"prompt": "Which retry policy?", "kind": "choice", "options": [
+        {"label": "Fixed delay", "note": "Simple and predictable.", "recommended": True},
+        {"label": "Exponential backoff", "note": "Gentler on a failing service."},
+        {"label": "No retry", "note": "Surface the error at once."}]},
+    {"prompt": "Which files may I touch?", "kind": "multiple", "min": 1, "max": 2, "options": [
+        {"label": "src/a.gleam"}, {"label": "src/b.gleam"}, {"label": "test/a_test.gleam"}]},
+    {"prompt": "Which checks should run?", "kind": "checklist", "options": [
+        {"label": "format"}, {"label": "lint"}, {"label": "unit tests"}]},
+]
+ASK_KINDS_TWO = [
+    {"prompt": "What should the branch be called?", "kind": "fill", "format": "text"},
+    {"prompt": "How many retries?", "kind": "fill", "format": "number"},
+    {"prompt": "Where is the tracking issue?", "kind": "fill", "format": "url"},
+    {"prompt": "Which file holds the policy?", "kind": "fill", "format": "path"},
+]
+
+# The program a code_mode call submits: it asks two questions and records a
+# notice, through the same capabilities the ask and notice tools back.
+CODE_MODE_PROGRAM = """import cap/attention
+import cap/report
+import gleam/option.{None, Some}
+
+pub fn main() -> report.Outcome {
+  let questions = [
+    attention.confirm("Should the program's retry change ship?"),
+    attention.choose("Which cache does the program prefer?", [
+      attention.alternative("Scratch tmpfs"),
+      attention.alternative("Empty dir"),
+    ]),
+  ]
+  case attention.ask(questions, to: None, why: Some("A program needs a decision.")) {
+    Error(error) -> report.failure(attention.error_text(error))
+    Ok(ask_id) ->
+      case
+        attention.notice(
+          attention.Bug,
+          "The program saw no backoff in the retry loop.",
+          path: Some("src/a.gleam"),
+          line: Some(1),
+        )
+      {
+        Error(error) -> report.failure(attention.error_text(error))
+        Ok(notice_id) -> report.text("asked " <> ask_id <> ", noticed " <> notice_id)
+      }
+  }
+}
+"""
+
 # Many small diagrams in one answer, for measuring what each diagram's own
 # renderer frame costs. Send "mermaid many" to get it.
 MERMAID_MANY_ANSWER = "## Many diagrams\n\n" + "\n".join(
@@ -143,6 +196,9 @@ def main_turn(messages):
     warm = usage(1400, 40000, 600, 600)
     if results:
         names = {called(messages, r.get("tool_use_id")) for r in results}
+        if names & {"bash", "code_mode", "notice", "fs_write"} and "agent_spawn" not in names:
+            sys.stderr.write("fake-main tool result: %s\n" % json.dumps(text_of(last.get("content", ""))[:600]))
+            return [("text", "Finished that step.")], "end_turn", warm
         if "fs_read" in names:
             return [("text", "The check failed: the fold-order test file is missing.")], "end_turn", warm
         if "agent_spawn" in names:
@@ -166,6 +222,44 @@ def main_turn(messages):
         )
         return [("text", answer)], "end_turn", warm
     said = text_of(last.get("content", ""))
+    lowered = said.lower()
+    if "need network" in lowered:
+        # A bash call that asks for full network while the jail's network is
+        # off, so the daemon records an escalation and waits for a decision.
+        return (
+            [("tool_use", "bash", {"command": "echo network-check-ran", "permissions": {"network": "full"}})],
+            "tool_use",
+            warm,
+        )
+    if "ask kinds one" in lowered:
+        NUDGED.set()
+        return [("tool_use", "ask", {"questions": ASK_KINDS_ONE, "why": "Four kinds in one ask."})], "tool_use", warm
+    if "ask kinds two" in lowered:
+        NUDGED.set()
+        return [("tool_use", "ask", {"questions": ASK_KINDS_TWO, "why": "The fill-in kinds."})], "tool_use", warm
+    if "post a notice" in lowered:
+        return (
+            [
+                ("text", "Noting something I saw."),
+                ("tool_use", "notice", {"kind": "risk", "text": "The retry loop has no backoff and can hammer the service.", "path": "src/a.gleam", "line": 1}),
+            ],
+            "tool_use",
+            warm,
+        )
+    if "make changes" in lowered:
+        return (
+            [
+                ("tool_use", "fs_write", {"path": "src/a.gleam", "content": "pub fn main() { retry(3) }\n\npub fn retry(n: Int) -> Int {\n  case n {\n    0 -> 0\n    _ -> retry(n - 1)\n  }\n}\n"}),
+                ("tool_use", "fs_write", {"path": "test/a_test.gleam", "content": "pub fn retry_test() {\n  assert retry(3) == 0\n}\n"}),
+            ],
+            "tool_use",
+            warm,
+        )
+    if "work slowly" in lowered:
+        return [("tool_use", "bash", {"command": "sleep 45; echo slow-done"})], "tool_use", warm
+    if "code mode ask" in lowered:
+        NUDGED.set()
+        return [("tool_use", "code_mode", {"program": CODE_MODE_PROGRAM})], "tool_use", warm
     if "ask me first" in said.lower():
         # The advisor stays quiet, so its nudge cannot wake the strand that is
         # meant to be waiting on the owner.
@@ -217,6 +311,41 @@ def main_turn(messages):
             usage(1800, 0, 40000, 30000),
         )
     return [("text", "Noted: " + said.strip().splitlines()[-1][:120])], "end_turn", warm
+
+
+def tool_names(body):
+    return {t.get("name") for t in body.get("tools", [])}
+
+
+def router_turn(body, messages):
+    """The project router accepts the first candidate it is offered."""
+    last = messages[-1]
+    if tool_results(last):
+        sys.stderr.write("fake-router route result: %s\n" % json.dumps(text_of(last.get("content", ""))[:400]))
+        return [("text", "Routed.")], "end_turn", usage(500, 0, 0, 0)
+    said = text_of(last.get("content", ""))
+    found = re.findall(r'"trigger":"([^"]+)"', said)
+    sys.stderr.write("fake-router offer: %s\n" % json.dumps(said[:1500]))
+    trigger = found[0] if found else "unknown"
+    return (
+        [("tool_use", "route", {"items": [{"trigger": trigger, "action": "accept", "title": "Fix the retry loop"}]})],
+        "tool_use",
+        usage(500, 0, 0, 0),
+    )
+
+
+def worker_turn(body, messages):
+    """A project worker asks a question and stops, which leaves its ticket at person/answer."""
+    last = messages[-1]
+    if tool_results(last):
+        return [("text", "Waiting for the answer.")], "end_turn", usage(500, 0, 0, 0)
+    said = text_of(last.get("content", ""))
+    sys.stderr.write("fake-worker message: %s\n" % json.dumps(said[:800]))
+    return (
+        [("tool_use", "project_report", {"status": "waiting", "question": "Which database should the retry log use?"})],
+        "tool_use",
+        usage(500, 0, 0, 0),
+    )
 
 
 def sub_turn(messages):
@@ -271,7 +400,12 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
-        if model == "fake-advisor":
+        names = tool_names(body)
+        if "route" in names:
+            blocks, stop, used = router_turn(body, messages)
+        elif "project_report" in names:
+            blocks, stop, used = worker_turn(body, messages)
+        elif model == "fake-advisor":
             blocks, stop, used = advisor_turn(messages)
         elif model == "fake-sub":
             blocks, stop, used = sub_turn(messages)
