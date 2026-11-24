@@ -182,7 +182,9 @@ you · 3 insights").
    this before phase 2. The choice then is to re-cut the pure half of
    `project/visible-failures` onto `main` (the ranking's recommendation), or
    to review and merge `project/warm-template` first and take
-   `visible-failures` whole.
+   `visible-failures` whole. *As built:* `person/check` is a stage the page
+   knows, drawn raw and filed under To review with reviews, not under Needs
+   you (see 7.4).
 7. **The project meta layer is still not designed.** No concept draws the
    pieces of project mode taken from the DeepSeek super-agent prototype:
    - the router as the one agent you talk to;

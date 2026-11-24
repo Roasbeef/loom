@@ -38,8 +38,9 @@
 #    "commit then wait" makes the worker commit a file and report waiting; the
 #    project's check (always failing, see [project] below) rejects the head,
 #    the worker is told and reports waiting again, and the ticket is then at
-#    person/check. Stopping a worker's session (`sessions.close`) leaves its
-#    ticket with no session, which is when the daemon offers Retry.
+#    person/check. Stopping a worker's session (`control.py PORT STATE stop
+#    SESSION`, which sends `sessions.stop`) leaves its ticket with no session,
+#    which is when the daemon offers Retry.
 #
 # The scripted endpoint answers by role and by what the last message says;
 # see fake_anthropic.py.

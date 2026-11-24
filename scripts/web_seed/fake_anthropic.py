@@ -361,7 +361,7 @@ def worker_commit_turn(messages):
     if committed:
         return [waiting], "tool_use", usage(500, 0, 0, 0)
     command = (
-        "printf 'retry log\\n' > retry.log && git add -A && "
+        "printf 'retry log\\n' > retry.log && git add retry.log && "
         "git -c user.name=worker -c user.email=worker@example.com commit -qm 'Add a retry log'"
     )
     return [("tool_use", "bash", {"command": command})], "tool_use", usage(500, 0, 0, 0)
