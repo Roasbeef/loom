@@ -505,6 +505,20 @@ pub fn a_question_identifier_or_any_unknown_field_is_refused_test() {
   )
 }
 
+// A model that puts a question's text under a guessed name is told the names
+// the schema takes, so the next call can be right.
+pub fn an_unknown_field_names_the_fields_that_are_taken_test() {
+  refused_with(
+    ask_args([
+      json.Object([
+        field("description", json.String("Keep it?")),
+        field("kind", json.String("confirm")),
+      ]),
+    ]),
+    "unknown field `description`; the fields are `prompt`, `kind`, `options`, `min`, `max`, `format`",
+  )
+}
+
 pub fn a_refusal_from_the_host_continues_the_run_and_says_which_bound_test() {
   let refusing =
     attention.Attention(
