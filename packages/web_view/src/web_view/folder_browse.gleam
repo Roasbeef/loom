@@ -23,8 +23,8 @@
 //// 1. The page builds a trail from the listing it holds: the listing's own trail
 ////    plus a child's name, or a prefix of the trail. It never builds one from
 ////    the browser's text.
-//// 2. The daemon checks the trail's spelling and depth (`folder_listing.spelled`,
-////    which applies `component_ok` and `depth_limit`), resolves the trail against the home, and
+//// 2. The daemon checks the trail's spelling (each name with `component_ok`) and
+////    its depth against the depth bound, resolves the trail against the home, and
 ////    answers a `Listing` whose trail is the canonical one, or a `Refusal`.
 //// 3. `trail_text` writes a trail as the `~/` path the creation judges.
 
