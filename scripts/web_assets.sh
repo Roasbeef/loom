@@ -27,10 +27,9 @@
 # They land in packages/web_view/priv/static, which the daemon reads once at
 # startup and a release carries like any application's priv.
 #
-# lustre_dev_tools downloads its bundler (Bun) and Tailwind the first time,
-# checking each against a sha256 it carries for its pinned version, and
-# caches them under packages/web_client/build. That is the one step that
-# needs the network, and only `make gen-client` takes it.
+# lustre_dev_tools downloads and verifies Bun. This script pins Tailwind
+# separately because Lustre 2.4.0 selects a standalone macOS binary whose
+# signature fails on macOS 27. Only `make gen-client` downloads tools.
 #
 # ## Why the gate needs no toolchain
 #
@@ -59,9 +58,11 @@ bundle_inputs() {
 	find "$client/src" \( -name '*.gleam' -o -name '*.mjs' \) | LC_ALL=C sort
 }
 
-# The stylesheet's inputs: the Tailwind input, every source it scans, and
-# the lock that names the lustre_dev_tools, and so the Tailwind, version.
+# The stylesheet records the Tailwind pin, the Lustre configuration, and
+# the sources Tailwind scans.
 stylesheet_inputs() {
+	echo scripts/web_assets.sh
+	echo "$client/gleam.toml"
 	echo "$client/src/web_client.css"
 	echo "$client/manifest.toml"
 	find packages/web_view/src "$client/src" -name '*.gleam' | LC_ALL=C sort
@@ -204,8 +205,45 @@ stamp() {
 	} >"$output"
 }
 
+# Keep unverified downloads away from Lustre's executable path. The digest
+# also rejects a cache populated for another platform or Tailwind version.
+prepare_tailwind() (
+	local version=4.3.5 target sha binary download platform
+	platform="$(uname -s)/$(uname -m)"
+	if [[ $platform == Linux/* && $(ldd --version 2>&1 || true) == *musl* ]]; then
+		platform+=/musl
+	fi
+	case "$platform" in
+	Darwin/arm64) target=macos-arm64; sha=f3f4f5d1727e2b693b8f1c9a1492b5dd87008c86ea286bee1589cb458e6235fc ;;
+	Darwin/x86_64) target=macos-x64; sha=a63702686a3ed048b3135d84a73be49ea9d47f880c9b20e54b3ef60934ad8cdf ;;
+	Linux/aarch64|Linux/arm64) target=linux-arm64; sha=ffcd0d21dbd7c605dc12743ff0c0b47debc963c86b399674084c1c8f2c96ecad ;;
+	Linux/x86_64) target=linux-x64; sha=e47695cee3f0d90623a91f3939b08bdee610eb5ad99340adff9d4145b284d6cc ;;
+	Linux/aarch64/musl|Linux/arm64/musl) target=linux-arm64-musl; sha=564dad3028c029b0c69042c66a7a79873ed7289b73fcb7b37973fbf79cb9a32f ;;
+	Linux/x86_64/musl) target=linux-x64-musl; sha=bb050edd13f15006d872a9bb1772b908618a8df6806d30bf095cba26a09e640b ;;
+	*) echo "web_assets: unsupported Tailwind platform: $platform" >&2; return 1 ;;
+	esac
+
+	binary="$client/build/web_asset_tools/tailwindcss"
+	if [ -x "$binary" ] && [ "$(digest_of "$binary")" = "$sha" ]; then
+		return 0
+	fi
+	mkdir -p "$(dirname "$binary")"
+	download=$(mktemp "$binary.XXXXXXXX")
+	trap 'rm -f "$download"' EXIT
+	curl --fail --silent --show-error --location \
+		"https://github.com/tailwindlabs/tailwindcss/releases/download/v$version/tailwindcss-$target" \
+		--output "$download"
+	if [ "$(digest_of "$download")" != "$sha" ]; then
+		echo "web_assets: Tailwind v$version ($target) checksum mismatch" >&2
+		return 1
+	fi
+	chmod +x "$download"
+	mv -f "$download" "$binary"
+)
+
 build() {
 	local path
+	prepare_tailwind
 	rm -rf "$scratch"
 	mkdir -p "$static"
 	(cd "$client" && gleam run -m lustre/dev build --minify --no-html \
