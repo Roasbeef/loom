@@ -7379,7 +7379,7 @@ read and a remembered full network makes the item `on`; a word that cannot be
 exact (no policy, unreadable grants, loopback) is left out and `off` is never a
 guess. The call and command inside a `code_mode` program are not read from its
 source (a decoy would mislead) and the record holds none. `Overview` adds
-`last_message_at` and `turn_started_at` (050 addendum).
+`last_message_at` and `turn_started_at` (050 addendum), and `asks`, the count `attention.open_owner_asks` makes of the open asks routed to the owner (050 addendum on open asks), from one more prefix listing. `server.report_of` reads it totally into `Report.asks` (missing or malformed is 0), and `server.watches_of` narrows reports to `sessions.Watch` for the session page's sidebar.
 
 `session.brief` (protocol-change/125): `client/session_brief` is the resident side
 (`peer_mail.SessionBrief(since)`): one scan of main's last 80 message entries
